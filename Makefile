@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy verify status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify status clean
 
 help: ## Show this help
 	@echo "khenrix-utils — install targets (skills do the real setup):"
@@ -36,6 +36,11 @@ setup-codex: render ## Install the khenrix marketplace + plugin into Codex
 setup-agy: render ## Install the khenrix plugin into Antigravity (agy)
 	agy plugin install $(REPO)/marketplaces/agy/plugins/khenrix-utils
 	@echo "✅ Installed. Run the khenrix-setup skill inside agy to reconcile config."
+
+khenrix-refresh: ## Re-render + push the latest plugin/skill/engine into all installed CLIs
+	$(PY) scripts/refresh.py
+
+refresh: khenrix-refresh ## Alias for khenrix-refresh
 
 verify: render ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check

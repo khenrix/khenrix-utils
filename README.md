@@ -65,7 +65,14 @@ make verify         # validate manifests + skills
 - **The reconcile skill itself:** per-CLI under
   `plugins/<cli>/khenrix-utils/skills/khenrix-setup/`
 
-After editing, run `make render` (or any `setup-*`, which renders first).
+After editing, run **`make khenrix-refresh`** — it re-renders and pushes the
+updated plugin/skill/engine into every installed CLI in one step (Claude and
+Codex cache plugins by version, so a plain edit isn't picked up until you
+refresh). Then re-run `/khenrix-setup` in a CLI to apply any new capabilities.
+
+```bash
+make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
+```
 
 ## Layout
 
