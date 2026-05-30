@@ -1,0 +1,10 @@
+{
+  "name": "khenrix-utils",
+  "version": "0.1.0",
+  "description": "Shared khenrix capabilities for Antigravity (agy): the khenrix-setup reconcile skill plus the LLM-agnostic source of truth (MCP servers, settings, base instructions).",
+  "author": {
+    "name": "khenrix"
+  },
+  "homepage": "https://github.com/khenrix/khenrix-utils",
+  "skills": "./skills/"
+}

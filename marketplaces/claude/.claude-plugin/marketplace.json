@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "khenrix-claude-marketplace",
+  "description": "khenrix personal capabilities for Claude Code (shared MCP servers, settings, and the khenrix-setup reconcile skill).",
+  "owner": {
+    "name": "khenrix"
+  },
+  "plugins": [
+    {
+      "name": "khenrix-utils",
+      "description": "Bundles the khenrix-setup reconcile skill and the LLM-agnostic source of truth so Claude Code shares the same MCP servers, settings, and house style as Codex and agy.",
+      "author": {
+        "name": "khenrix"
+      },
+      "category": "productivity",
+      "source": "./plugins/khenrix-utils",
+      "homepage": "https://github.com/khenrix/khenrix-utils"
+    }
+  ]
+}

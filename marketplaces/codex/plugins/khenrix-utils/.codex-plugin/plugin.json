@@ -1,0 +1,19 @@
+{
+  "name": "khenrix-utils",
+  "version": "0.1.0",
+  "description": "Shared khenrix capabilities for Codex: the khenrix-setup reconcile skill plus the LLM-agnostic source of truth (MCP servers, settings, base instructions).",
+  "author": {
+    "name": "khenrix"
+  },
+  "homepage": "https://github.com/khenrix/khenrix-utils",
+  "repository": "https://github.com/khenrix/khenrix-utils",
+  "keywords": ["mcp", "codex", "setup"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "khenrix Utils",
+    "shortDescription": "Reconcile Codex with the shared khenrix capabilities",
+    "longDescription": "Installs the khenrix-setup skill, which reviews Codex's MCP servers, settings and AGENTS.md against capabilities.toml and additively syncs them with Claude Code and agy.",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/khenrix/khenrix-utils"
+  }
+}

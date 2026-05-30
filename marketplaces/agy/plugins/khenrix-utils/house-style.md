@@ -1,0 +1,35 @@
+<!-- khenrix-managed:begin house-style -->
+<!-- Managed by khenrix-utils (capabilities.yaml -> instructions.source).
+     Edit this block in the khenrix-utils repo, not in the rendered file.
+     Content outside this marker block is yours and is never touched. -->
+
+# khenrix house style
+
+Shared working agreement for every agentic CLI (Claude Code, Codex, Antigravity/agy)
+on this machine. Keep guidance provider-agnostic — anything CLI-specific belongs in
+that CLI's own config, not here.
+
+## Working principles
+
+- Read before you write. Understand the surrounding code and match its conventions
+  (naming, structure, comment density) instead of imposing a new style.
+- Prefer the smallest change that fully solves the problem. Avoid speculative
+  abstraction and unrelated refactors.
+- Reuse existing utilities and patterns over adding new dependencies.
+- Report outcomes honestly: if something failed, was skipped, or is unverified, say so.
+
+## Safety
+
+- Never commit secrets, tokens, or credentials. Reference env vars or on-disk paths.
+- For destructive or outward-facing actions (deletes, pushes, deploys), confirm first
+  unless explicitly authorised.
+- Treat `~/git` as the primary workspace; avoid writing outside it without reason.
+
+## Tooling
+
+- These CLIs share a managed set of MCP servers and skills via `khenrix-utils`.
+  Run the `khenrix-setup` skill to reconcile a CLI's config with the source of truth.
+- MCP servers and settings added outside `khenrix-utils` are intentionally preserved —
+  do not remove machine-specific configuration.
+
+<!-- khenrix-managed:end house-style -->

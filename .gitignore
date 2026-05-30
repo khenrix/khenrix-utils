@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Backups produced by the reconcile skill (never commit machine state)
+*.khenrix-backup
+*.bak
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+{
+  "name": "khenrix-utils",
+  "description": "Shared khenrix capabilities for Claude Code: bundles the khenrix-setup reconcile skill and the LLM-agnostic source of truth (MCP servers, settings, base instructions).",
+  "version": "0.1.0",
+  "author": {
+    "name": "khenrix"
+  },
+  "homepage": "https://github.com/khenrix/khenrix-utils"
+}

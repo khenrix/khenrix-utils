@@ -1,0 +1,82 @@
+# khenrix-utils — LLM-agnostic source of truth
+#
+# Declares the capabilities every configured CLI should have: MCP servers,
+# skills, base instructions and baseline settings.
+#
+# The per-CLI `khenrix-setup` reconcile skill reads this file, compares it
+# against the live config of whichever CLI it runs inside, and applies ONLY the
+# additions/updates declared here. It never deletes entries it does not own —
+# machine-specific extras are always preserved.
+#
+# Format note: TOML (not YAML) so Python's stdlib `tomllib` can read it with
+# zero install on any machine. Secrets are NEVER inlined — use ${HOME}/env refs.
+# `${HOME}` and `${VAR}` are expanded by the reconcile script at apply time.
+
+version = 1
+
+# ---------------------------------------------------------------------------
+# MCP servers — portable across all three CLIs.
+# `platform` (linux|darwin|windows) gates an entry to matching OSes.
+# `transport` is http (url) or stdio (command/args/env).
+# ---------------------------------------------------------------------------
+[mcp_servers.context7]
+transport = "http"
+url = "https://mcp.context7.com/mcp"
+
+[mcp_servers.vercel]
+transport = "stdio"
+command = "npx"
+args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
+[mcp_servers.vercel.env]
+BROWSER = "${HOME}/.local/bin/windows-chrome"
+
+[mcp_servers.google-drive]
+transport = "stdio"
+# node path may differ per machine; the skill falls back to `node` on PATH.
+command = "${HOME}/.asdf/installs/nodejs/26.2.0/bin/node"
+args = ["${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
+[mcp_servers.google-drive.env]
+GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
+GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
+
+[mcp_servers.chrome-devtools]
+platform = "windows"   # PowerShell launcher — skipped on non-Windows hosts
+transport = "stdio"
+command = "powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
+
+# Provider-specific docs MCP. Only the matching CLI gets it; omit a provider to
+# add nothing (Claude and agy have no official docs server today).
+[docs_mcp.codex]
+name = "openaiDeveloperDocs"
+transport = "http"
+url = "https://developers.openai.com/mcp"
+
+# ---------------------------------------------------------------------------
+# Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
+# each plugin by scripts/render.py. `khenrix-setup` is per-CLI (CLI-specific
+# config paths) and is authored directly in each plugin.
+# ---------------------------------------------------------------------------
+[[skills]]
+name = "khenrix-setup"
+per_cli = true
+
+# ---------------------------------------------------------------------------
+# Baseline settings/policy — mapped to each CLI's native settings by the skill.
+# Applied only when the target key is ABSENT (never overrides your tuning).
+# ---------------------------------------------------------------------------
+[settings]
+approval_policy = "on-request"   # codex: approval_policy | claude: permissions | agy: prompt
+sandbox = "workspace-write"      # codex: sandbox_mode    | agy: --sandbox default
+trusted_paths = ["${HOME}", "${HOME}/git"]
+
+# ---------------------------------------------------------------------------
+# Base instructions — one house-style doc rendered into each CLI's memory file
+# via an idempotent managed block (content outside the block is preserved).
+# ---------------------------------------------------------------------------
+[instructions]
+source = "house-style.md"
+[instructions.targets]
+claude = "${HOME}/.claude/CLAUDE.md"
+codex = "${HOME}/.codex/AGENTS.md"
+agy = "${HOME}/.gemini/GEMINI.md"
