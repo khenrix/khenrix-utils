@@ -31,5 +31,8 @@ that CLI's own config, not here.
   Run the `khenrix-setup` skill to reconcile a CLI's config with the source of truth.
 - MCP servers and settings added outside `khenrix-utils` are intentionally preserved —
   do not remove machine-specific configuration.
+- To get a second opinion, a sibling CLI can be run headlessly with permissions bypassed
+  (non-interactive print/exec mode) — see `headless-invocation.md`. Useful for
+  cross-reviewing a plan or diff before acting.
 
 <!-- khenrix-managed:end house-style -->

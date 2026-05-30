@@ -24,7 +24,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIS = ("claude", "codex", "agy")
-BUNDLED = ["capabilities.toml", "house-style.md"]
+BUNDLED = ["capabilities.toml", "house-style.md", "headless-invocation.md"]
 BUNDLED_DIRS = ["statusline"]
 # Shared engine/helper scripts bundled into every skill's scripts/ dir so each
 # skill is self-contained after a marketplace copies the plugin.
