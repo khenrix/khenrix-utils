@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Shared khenrix statusline renderer for Claude Code and Antigravity CLI."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+RESET = "\033[0m"
+COLORS = {
+    "dim": "\033[90m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "red": "\033[31m",
+    "cyan": "\033[36m",
+    "magenta": "\033[35m",
+    "white": "\033[37m",
+}
+
+
+def use_color() -> bool:
+    return os.environ.get("NO_COLOR") is None
+
+
+def color(name: str, text: str) -> str:
+    if not text or not use_color():
+        return text
+    return COLORS.get(name, "") + text + RESET
+
+
+def short_model(name: str) -> str:
+    # Strip the vendor prefix so any version renders compactly (e.g.
+    # "Claude Opus 4.8" -> "Opus 4.8", "Gemini 3 Pro" -> "3 Pro").
+    for prefix in ("Claude ", "Gemini "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name.strip() or "model"
+
+
+def model_name(payload: dict) -> str:
+    model = payload.get("model")
+    if isinstance(model, dict):
+        return short_model(str(model.get("display_name") or model.get("name") or model.get("id") or "model"))
+    if isinstance(model, str):
+        return short_model(model)
+    return "model"
+
+
+def workspace_path(payload: dict) -> str | None:
+    for key in ("cwd", "current_dir"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val
+    workspace = payload.get("workspace")
+    if isinstance(workspace, dict):
+        for key in ("current_dir", "cwd", "project_dir"):
+            val = workspace.get(key)
+            if not isinstance(val, str) or not val:
+                continue
+            if val.startswith("file://"):
+                val = val.removeprefix("file://")
+            return val
+    return None
+
+
+def project_name(payload: dict) -> str:
+    cwd = workspace_path(payload)
+    if not cwd:
+        return "workspace"
+    return Path(cwd).name or cwd
+
+
+def run_git(cwd: str, *args: str) -> str | None:
+    try:
+        res = subprocess.run(
+            ["git", "-C", cwd, *args],
+            capture_output=True,
+            text=True,
+            timeout=0.25,
+            check=False,
+        )
+    except Exception:
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout.strip()
+
+
+def git_segment(payload: dict) -> str | None:
+    cwd = workspace_path(payload)
+    if not cwd or not Path(cwd).exists():
+        return None
+    if run_git(cwd, "rev-parse", "--is-inside-work-tree") != "true":
+        return None
+    branch = run_git(cwd, "branch", "--show-current") or run_git(cwd, "rev-parse", "--short", "HEAD")
+    if not branch:
+        return None
+    dirty = bool(run_git(cwd, "status", "--porcelain"))
+    return color("yellow" if dirty else "cyan", f"git {branch}{'*' if dirty else ''}")
+
+
+def pct_color(value: float) -> str:
+    if value >= 85:
+        return "red"
+    if value >= 65:
+        return "yellow"
+    return "green"
+
+
+def context_segment(payload: dict) -> str | None:
+    candidates = []
+    for key in ("context_window", "context", "contextWindow"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            candidates.append(val)
+    for ctx in candidates:
+        used = ctx.get("used_percentage")
+        if used is None and "remaining_percentage" in ctx:
+            try:
+                used = 100 - float(ctx["remaining_percentage"])
+            except (TypeError, ValueError):
+                used = None
+        if used is None and ctx.get("context_window_size"):
+            try:
+                total = float(ctx["context_window_size"])
+                current = float(ctx.get("total_input_tokens", 0)) + float(ctx.get("total_output_tokens", 0))
+                used = current * 100 / total if total else None
+            except (TypeError, ValueError):
+                used = None
+        if used is not None:
+            try:
+                value = float(used)
+            except (TypeError, ValueError):
+                continue
+            return "ctx " + color(pct_color(value), f"{value:.1f}%")
+    return None
+
+
+def cost_segment(payload: dict) -> str | None:
+    cost = payload.get("cost")
+    if not isinstance(cost, dict):
+        return None
+    total = cost.get("total_cost_usd")
+    try:
+        value = float(total)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return f"${value:.2f}"
+
+
+def rate_limit_segments(payload: dict) -> list[str]:
+    limits = payload.get("rate_limits")
+    if not isinstance(limits, dict):
+        return []
+    out = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+        window = limits.get(key)
+        if not isinstance(window, dict) or window.get("used_percentage") is None:
+            continue
+        try:
+            used = float(window["used_percentage"])
+        except (TypeError, ValueError):
+            continue
+        out.append(f"{label} " + color(pct_color(used), f"{used:.0f}%"))
+    return out
+
+
+def reliable_mode(payload: dict) -> str | None:
+    for key in ("planning_mode", "planningMode", "mode", "current_mode", "agent_mode"):
+        val = payload.get(key)
+        if isinstance(val, dict):
+            val = val.get("value") or val.get("name")
+        if isinstance(val, bool):
+            return "PLAN" if val else "FAST"
+        if not isinstance(val, str):
+            continue
+        normalized = val.lower()
+        if "planning" in normalized or normalized in {"plan", "planning_mode_on"}:
+            return "PLAN"
+        if "fast" in normalized or normalized in {"planning_mode_off"}:
+            return "FAST"
+    return None
+
+
+def permission_segment(payload: dict) -> str | None:
+    for key in ("permission_mode", "permissionMode"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val.replace("_", "-")
+    sandbox = payload.get("sandbox")
+    if isinstance(sandbox, dict) and "enabled" in sandbox:
+        return "SANDBOX" if sandbox.get("enabled") else color("yellow", "LOCAL")
+    return None
+
+
+def agent_state_segment(payload: dict) -> str | None:
+    val = payload.get("agent_state")
+    if isinstance(val, str) and val:
+        return val.upper()
+    return None
+
+
+def truncate(line: str, width: int) -> str:
+    plain_padding = 1
+    if width <= 0 or len(strip_ansi(line)) <= width - plain_padding:
+        return line
+    target = max(20, width - plain_padding - 1)
+    out = []
+    visible = 0
+    in_escape = False
+    for ch in line:
+        out.append(ch)
+        if ch == "\033":
+            in_escape = True
+        elif in_escape and ch == "m":
+            in_escape = False
+        elif not in_escape:
+            visible += 1
+            if visible >= target:
+                break
+    if use_color():
+        out.append(RESET)
+    out.append("...")
+    return "".join(out)
+
+
+def strip_ansi(text: str) -> str:
+    out = []
+    in_escape = False
+    for ch in text:
+        if ch == "\033":
+            in_escape = True
+            continue
+        if in_escape:
+            if ch == "m":
+                in_escape = False
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def terminal_width(payload: dict) -> int:
+    try:
+        return int(payload.get("terminal_width") or 0)
+    except (TypeError, ValueError):
+        return shutil.get_terminal_size((120, 20)).columns
+
+
+def render(cli: str, payload: dict) -> str:
+    mode = reliable_mode(payload)
+    segments = []
+    if mode:
+        segments.append(color("magenta" if mode == "PLAN" else "yellow", mode))
+    segments.extend([
+        color("white", model_name(payload)),
+        color("cyan", project_name(payload)),
+    ])
+    git = git_segment(payload)
+    if git:
+        segments.append(git)
+    ctx = context_segment(payload)
+    if ctx:
+        segments.append(ctx)
+    if cli == "claude":
+        cost = cost_segment(payload)
+        if cost:
+            segments.append(cost)
+        segments.extend(rate_limit_segments(payload))
+    state = agent_state_segment(payload)
+    if state:
+        segments.append(state)
+    perm = permission_segment(payload)
+    if perm:
+        segments.append(perm)
+    line = " | ".join(str(s) for s in segments if s)
+    return truncate(" " + line + " ", terminal_width(payload))
+
+
+def main(argv: list[str]) -> int:
+    cli = argv[1] if len(argv) > 1 else "auto"
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        sys.stdout.write(render(cli, payload) + "\n")
+    except Exception as exc:
+        sys.stdout.write(color("red", f" statusline error: {exc} ") + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

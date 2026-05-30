@@ -3,7 +3,7 @@
 
 Makes every plugin self-contained so it works after being installed/copied by a
 marketplace:
-  * copies capabilities.toml + house-style.md to the plugin root
+  * copies capabilities.toml + house-style.md + statusline/ to the plugin root
   * copies shared/skills/<name>/ into the plugin's skills/
   * copies scripts/lib/reconcile.py into each khenrix-setup skill's scripts/
   * validates every SKILL.md (name + description, length/char rules)
@@ -25,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CLIS = ("claude", "codex", "agy")
 BUNDLED = ["capabilities.toml", "house-style.md"]
+BUNDLED_DIRS = ["statusline"]
 # Shared engine/helper scripts bundled into every skill's scripts/ dir so each
 # skill is self-contained after a marketplace copies the plugin.
 LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
@@ -82,6 +83,12 @@ def render():
         # 1. bundle the source of truth
         for f in BUNDLED:
             shutil.copy2(ROOT / f, pdir / f)
+        for d in BUNDLED_DIRS:
+            dst = pdir / d
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(ROOT / d, dst,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         # 2. copy shared skills (canonical bodies) into the plugin
         for s in shared_skills:
             dst = pdir / "skills" / s.name
@@ -96,7 +103,7 @@ def render():
                 for lib in LIB_SCRIPTS:
                     shutil.copy2(lib, skill / "scripts" / lib.name)
     libs = ", ".join(p.name for p in LIB_SCRIPTS)
-    print(f"rendered: bundled {BUNDLED} + [{libs}] into {len(CLIS)} plugins; "
+    print(f"rendered: bundled {BUNDLED} + {BUNDLED_DIRS} + [{libs}] into {len(CLIS)} plugins; "
           f"{len(shared_skills)} shared skill(s)")
 
 
@@ -107,6 +114,8 @@ def clean():
         for f in BUNDLED:
             (pdir / f).unlink(missing_ok=True)
             removed += 1
+        for d in BUNDLED_DIRS:
+            shutil.rmtree(pdir / d, ignore_errors=True)
         skills_root = pdir / "skills"
         if skills_root.exists():
             for skill in skills_root.iterdir():

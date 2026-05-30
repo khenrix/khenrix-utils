@@ -2,7 +2,8 @@
 
 One source of truth for the agentic CLIs on this machine — **Claude Code**,
 **Codex**, and **Antigravity (`agy`)** — so they all share the same MCP servers,
-skills, base instructions, baseline settings, and managed shell aliases.
+skills, base instructions, baseline settings, a shared status line, and managed
+shell aliases.
 
 ## How it works
 
@@ -98,6 +99,7 @@ make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
 | `capabilities.toml` | LLM-agnostic capability manifest (zero-dependency TOML) |
 | `house-style.md` | Shared base instructions → CLAUDE.md / AGENTS.md / GEMINI.md |
 | `shared/skills/` | Canonical skill bodies copied into every plugin |
+| `statusline/khenrix-statusline` | Shared status line renderer (Claude + agy), installed by the reconcile engine |
 | `marketplaces/<cli>/` | Per-CLI marketplace + plugin (Claude/Codex have a marketplace manifest; agy installs the plugin dir directly) |
 | `marketplaces/<cli>/plugins/khenrix-utils/` | Per-CLI plugin (bundles skills + a copy of the source of truth) |
 | `scripts/render.py` | Renders shared assets into plugins; validates |
@@ -116,6 +118,28 @@ codexo='codex --dangerously-bypass-approvals-and-sandbox'
 
 These bypass normal permission prompts, so they are intended only for trusted
 workspaces or externally sandboxed environments.
+
+## Managed status line
+
+A single zero-dependency Python renderer (`statusline/khenrix-statusline`,
+stdlib-only) drives the status line for both **Claude Code** and **agy**. It reads
+the CLI's JSON status payload on stdin and prints one compact line:
+
+```
+Opus 4.8 | khenrix-utils | git main* | ctx 42.7% | $1.23 | 5h 12% | 7d 63% | acceptEdits
+```
+
+Segments are emitted only when the data is present, so the same script adapts to
+each CLI's payload (cost and rate-limit segments are Claude-only). Colour follows
+context/limit thresholds and respects `NO_COLOR`; any error degrades to a single
+non-fatal line so the CLI never breaks.
+
+`khenrix-setup --apply` installs the renderer to
+`~/.local/share/khenrix-utils/statusline/khenrix-statusline` (a stable path, not the
+version-pinned plugin cache) and points each CLI's `statusLine` setting at it. Codex
+instead uses its native TUI status line, configured via `[settings.codex.tui]`. The
+install obeys the same non-destructive rules — an existing renderer is only
+overwritten on `--update-drift`, and a hand-set `statusLine` is left untouched.
 
 ## Why TOML, not YAML
 

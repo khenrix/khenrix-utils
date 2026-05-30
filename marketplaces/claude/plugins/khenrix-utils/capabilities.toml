@@ -74,6 +74,50 @@ approval_policy = "on-request"   # codex: approval_policy | claude: permissions 
 sandbox = "workspace-write"      # codex: sandbox_mode    | agy: --sandbox default
 trusted_paths = ["${HOME}", "${HOME}/git"]
 
+# Codex TUI defaults. These are applied additively by khenrix-setup and can be
+# reordered later with `/statusline`.
+[settings.codex.tui]
+status_line = [
+  "model-with-reasoning",
+  "run-state",
+  "fast-mode",
+  "project-name",
+  "git-branch",
+  "branch-changes",
+  "pull-request-number",
+  "permissions",
+  "approval-mode",
+  "context-remaining",
+  "five-hour-limit",
+  "weekly-limit",
+  "task-progress",
+]
+status_line_use_colors = true
+
+# Command-based statuslines for CLIs that support stdin JSON payload renderers.
+# The reconcile engine installs the executable before configuring these paths.
+[settings.claude.statusLine]
+type = "command"
+command = "${HOME}/.local/share/khenrix-utils/statusline/khenrix-statusline claude"
+
+[settings.agy]
+# Old exploratory action names that can make agy keybinding loading unreliable.
+keybinding_cleanup = [
+  "cli.toggle_mode",
+  "cli.cycle_permission_mode",
+  "confirm.cycle_mode",
+  "confirm.cycleMode",
+  "KeyCycleMode",
+  "confirm:cycleMode",
+]
+
+[settings.agy.statusLine]
+type = "command"
+command = "${HOME}/.local/share/khenrix-utils/statusline/khenrix-statusline agy"
+
+[settings.agy.keybindings]
+"cli.cycle_mode" = ["shift+tab", "ctrl+alt+m"]
+
 # ---------------------------------------------------------------------------
 # Shell aliases — appended as an idempotent managed block.
 # These are intentionally "dangerous/full-auto" launchers for trusted,

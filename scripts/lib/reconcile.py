@@ -96,6 +96,31 @@ def backup(path) -> Path | None:
     return None
 
 
+def read_json_object(path: Path) -> dict:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_json_object(path: Path, data: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def shell_command_executable(command: str) -> Path | None:
+    try:
+        parts = shlex.split(expand(command))
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    return Path(parts[0])
+
+
 # ----- desired state ---------------------------------------------------------
 def desired_mcp(caps: dict, cli: str) -> dict:
     """name -> spec, platform-filtered, including the provider docs server."""
@@ -199,6 +224,62 @@ def classify_mcp(cli: str, desired: dict, current: dict):
 
 
 # ----- live state: settings --------------------------------------------------
+def toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return toml_scalar(v)
+    if isinstance(v, list):
+        return toml_array(v)
+    raise TypeError(f"unsupported TOML value: {v!r}")
+
+
+def toml_table_bounds(lines: list[str], table: str) -> tuple[int, int] | None:
+    header = f"[{table}]"
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?$", line):
+            if line.split("#", 1)[0].strip() == header:
+                start = i
+                break
+    if start is None:
+        return None
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?$", lines[i]):
+            end = i
+            break
+    return start, end
+
+
+def set_toml_table_key(text: str, table: str, key: str, value) -> str:
+    rendered = f"{key} = {toml_value(value)}\n"
+    lines = text.splitlines(keepends=True)
+    bounds = toml_table_bounds(lines, table)
+    if bounds is None:
+        subtable_re = re.compile(rf"^\s*\[{re.escape(table)}\.")
+        for i, line in enumerate(lines):
+            if subtable_re.match(line):
+                block = [f"[{table}]\n", rendered, "\n"]
+                lines[i:i] = block
+                return "".join(lines)
+        sep = "" if not text else ("\n" if text.endswith("\n") else "\n\n")
+        return text + sep + f"[{table}]\n{rendered}"
+
+    start, end = bounds
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    for i in range(start + 1, end):
+        if key_re.match(lines[i]):
+            lines[i] = rendered
+            return "".join(lines)
+
+    insert_at = end
+    if insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+    lines.insert(insert_at, rendered)
+    return "".join(lines)
+
+
 def settings_report(cli: str, caps: dict):
     """Return (rows, apply_fn). apply_fn(update_drift) -> list[str] of actions."""
     want = caps.get("settings", {})
@@ -207,6 +288,47 @@ def settings_report(cli: str, caps: dict):
     if cli == "agy":
         return agy_settings(want)
     return claude_settings(want)
+
+
+def desired_statusline(want: dict, cli: str) -> dict | None:
+    spec = want.get(cli, {}).get("statusLine")
+    return expand(spec) if isinstance(spec, dict) else None
+
+
+def statusline_asset_report(cli: str, caps: dict):
+    spec = desired_statusline(caps.get("settings", {}), cli)
+    if not spec:
+        return [], (lambda update_drift: [])
+    command = spec.get("command")
+    dest = shell_command_executable(command) if isinstance(command, str) else None
+    src = caps["_dir"] / "statusline" / "khenrix-statusline"
+    if not dest:
+        return [["statusline executable", "INFO", "command path could not be parsed"]], (lambda update_drift: [])
+    if not src.exists():
+        return [[str(src), "INFO", "source asset missing"]], (lambda update_drift: [])
+    same = dest.exists() and dest.read_bytes() == src.read_bytes()
+    if same:
+        rows = [[str(dest), "MATCH", "installed"]]
+        status = "MATCH"
+    elif dest.exists():
+        rows = [[str(dest), "UPDATE", "installed renderer drifted"]]
+        status = "UPDATE"
+    else:
+        rows = [[str(dest), "ADD", "install statusline renderer"]]
+        status = "ADD"
+
+    def apply(update_drift):
+        if status == "MATCH":
+            return []
+        if status == "UPDATE" and not update_drift:
+            return [f"statusline asset: {dest} drifted (skipped; use --update-drift)"]
+        backup(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        dest.chmod(dest.stat().st_mode | 0o755)
+        return [f"statusline asset: installed renderer to {dest}"]
+
+    return rows, apply
 
 
 def codex_settings(want: dict):
@@ -232,13 +354,39 @@ def codex_settings(want: dict):
         else:
             rows.append([f"trust {path}", "ADD", "trusted"]); todo.append(("trust", path))
 
+    tui_want = want.get("codex", {}).get("tui", {})
+    tui_have = cfg.get("tui", {})
+    for key, val in tui_want.items():
+        have = tui_have.get(key)
+        row_key = f"tui.{key}"
+        if have == val:
+            rows.append([row_key, "MATCH", toml_value(val)])
+        elif have is None:
+            rows.append([row_key, "ADD", toml_value(val)])
+            todo.append(("tui", key, val, "ADD"))
+        else:
+            rows.append([row_key, "UPDATE", f"{toml_value(have)} → {toml_value(val)}"])
+            todo.append(("tui", key, val, "UPDATE"))
+
     def apply(update_drift):
-        if not todo:
+        pending = [t for t in todo if len(t) != 4 or t[3] == "ADD" or update_drift]
+        if not pending:
             return []
         p = codex_config_path()
         backup(p)
+        p.parent.mkdir(parents=True, exist_ok=True)
         chunks = []
-        for kind, a in todo:
+        tui_updates = []
+        skipped_tui_updates = []
+        for item in todo:
+            if len(item) == 4:
+                kind, key, val, status = item
+                if status == "UPDATE" and not update_drift:
+                    skipped_tui_updates.append(key)
+                    continue
+                tui_updates.append((key, val))
+                continue
+            kind, a = item
             if kind == "trust":
                 chunks.append(f'\n[projects."{a}"]\ntrust_level = "trusted"\n')
             else:
@@ -250,8 +398,17 @@ def codex_settings(want: dict):
         if simple:
             text = simple + text
         text = text + tables
+        for key, val in tui_updates:
+            text = set_toml_table_key(text, "tui", key, val)
         p.write_text(text)
-        return [f"codex settings: wrote {len(todo)} key(s) to {p}"]
+        actions = [f"codex settings: wrote {len(pending)} key(s) to {p}"]
+        if skipped_tui_updates:
+            actions.append(
+                "codex settings: skipped drifted TUI key(s) "
+                + ", ".join(skipped_tui_updates)
+                + " (use --update-drift)"
+            )
+        return actions
 
     return rows, apply
 
@@ -260,9 +417,24 @@ def agy_settings_path() -> Path:
     return Path(expand("${HOME}/.gemini/antigravity-cli/settings.json"))
 
 
+def agy_keybindings_path() -> Path:
+    return Path(expand("${HOME}/.gemini/antigravity-cli/keybindings.json"))
+
+
+def statusline_config_rows(data: dict, want: dict | None):
+    if not want:
+        return [], None
+    have = data.get("statusLine")
+    if have == want:
+        return [["statusLine", "MATCH", want.get("command", "")]], None
+    if have is None:
+        return [["statusLine", "ADD", want.get("command", "")]], ("ADD", want)
+    return [["statusLine", "UPDATE", f"{have!r} → {want!r}"]], ("UPDATE", want)
+
+
 def agy_settings(want: dict):
     p = agy_settings_path()
-    data = json.loads(p.read_text()) if p.exists() and p.stat().st_size else {}
+    data = read_json_object(p)
     rows, missing = [], []
     tw = data.get("trustedWorkspaces", [])
     for path in expand(want.get("trusted_paths", [])):
@@ -270,26 +442,106 @@ def agy_settings(want: dict):
             rows.append([f"trust {path}", "MATCH", "trusted"])
         else:
             rows.append([f"trust {path}", "ADD", "trusted"]); missing.append(path)
+    status_rows, status_todo = statusline_config_rows(data, desired_statusline(want, "agy"))
+    rows.extend(status_rows)
+
+    kp = agy_keybindings_path()
+    key_data = read_json_object(kp)
+    agy_want = want.get("agy", {})
+    key_want = expand(agy_want.get("keybindings", {}))
+    cleanup = list(agy_want.get("keybinding_cleanup", []))
+    key_todo = []
+    for key, val in key_want.items():
+        have = key_data.get(key)
+        row_key = f"keybindings.{key}"
+        if have == val:
+            rows.append([row_key, "MATCH", ", ".join(val)])
+        elif have is None:
+            rows.append([row_key, "ADD", ", ".join(val)])
+            key_todo.append(("set", "ADD", key, val))
+        else:
+            rows.append([row_key, "UPDATE", f"{have!r} → {val!r}"])
+            key_todo.append(("set", "UPDATE", key, val))
+    cleanup_present = [key for key in cleanup if key in key_data]
+    if cleanup_present:
+        rows.append(["keybindings cleanup", "UPDATE", "remove unsupported mode aliases"])
+        key_todo.extend(("remove", "UPDATE", key, None) for key in cleanup_present)
+    elif cleanup:
+        rows.append(["keybindings cleanup", "MATCH", "no unsupported mode aliases"])
     rows.append(["approval/sandbox", "INFO", "agy prompts per-action; no static key"])
 
     def apply(update_drift):
-        if not missing:
-            return []
-        backup(p)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        data.setdefault("trustedWorkspaces", [])
-        data["trustedWorkspaces"].extend(m for m in missing if m not in data["trustedWorkspaces"])
-        p.write_text(json.dumps(data, indent=2) + "\n")
-        return [f"agy settings: added {len(missing)} trusted workspace(s) to {p}"]
+        actions = []
+        settings_changed = False
+        skipped = []
+        if missing:
+            data.setdefault("trustedWorkspaces", [])
+            data["trustedWorkspaces"].extend(m for m in missing if m not in data["trustedWorkspaces"])
+            settings_changed = True
+        if status_todo:
+            status, val = status_todo
+            if status == "ADD" or update_drift:
+                data["statusLine"] = val
+                settings_changed = True
+            else:
+                skipped.append("statusLine")
+        if settings_changed:
+            backup(p)
+            write_json_object(p, data)
+            actions.append(f"agy settings: updated {p}")
+        if skipped:
+            actions.append("agy settings: skipped drifted key(s) " + ", ".join(skipped) + " (use --update-drift)")
+
+        key_changed = False
+        key_skipped = []
+        for action, status, key, val in key_todo:
+            if status == "ADD" or update_drift:
+                if action == "set":
+                    key_data[key] = val
+                elif action == "remove":
+                    key_data.pop(key, None)
+                key_changed = True
+            else:
+                key_skipped.append(key)
+        if key_changed:
+            backup(kp)
+            write_json_object(kp, key_data)
+            actions.append(f"agy keybindings: updated {kp}")
+        if key_skipped:
+            actions.append(
+                "agy keybindings: skipped drifted key(s) "
+                + ", ".join(key_skipped)
+                + " (use --update-drift)"
+            )
+        return actions
 
     return rows, apply
 
 
+def claude_settings_path() -> Path:
+    return Path(expand("${HOME}/.claude/settings.json"))
+
+
 def claude_settings(want: dict):
-    rows = [["approval/sandbox", "INFO", "Claude uses permissions/--permission-mode, not static keys"]]
+    p = claude_settings_path()
+    data = read_json_object(p)
+    rows, status_todo = statusline_config_rows(data, desired_statusline(want, "claude"))
+    rows.append(["approval/sandbox", "INFO", "Claude uses permissions/--permission-mode, not static keys"])
     if want.get("trusted_paths"):
         rows.append(["trusted_paths", "INFO", "Claude trusts on first run; not reconciled here"])
-    return rows, (lambda update_drift: [])
+
+    def apply(update_drift):
+        if not status_todo:
+            return []
+        status, val = status_todo
+        if status == "UPDATE" and not update_drift:
+            return [f"claude settings: {p} statusLine drifted (skipped; use --update-drift)"]
+        backup(p)
+        data["statusLine"] = val
+        write_json_object(p, data)
+        return [f"claude settings: updated statusLine in {p}"]
+
+    return rows, apply
 
 
 # ----- live state: shell aliases --------------------------------------------
@@ -467,6 +719,9 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
     set_rows, set_apply = settings_report(cli, caps)
     print_rows("Settings:", set_rows)
 
+    asset_rows, asset_apply = statusline_asset_report(cli, caps)
+    print_rows("Statusline assets:", asset_rows)
+
     alias_rows, alias_apply = shell_aliases_report(caps)
     print_rows("Shell aliases:", alias_rows)
 
@@ -474,8 +729,8 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
     print_rows("Base instructions:", ins_rows)
 
     if not apply:
-        adds = sum(1 for r in mcp_rows + set_rows + alias_rows + ins_rows if r[1] == "ADD")
-        drift = sum(1 for r in mcp_rows + set_rows + alias_rows + ins_rows if r[1] == "UPDATE")
+        adds = sum(1 for r in mcp_rows + set_rows + asset_rows + alias_rows + ins_rows if r[1] == "ADD")
+        drift = sum(1 for r in mcp_rows + set_rows + asset_rows + alias_rows + ins_rows if r[1] == "UPDATE")
         print(f"\nReview only. {adds} to add, {drift} drifted. "
               f"Re-run with --apply to add missing entries.")
         return
@@ -488,6 +743,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
         elif status == "UPDATE" and update_drift:
             actions.append("drift update for MCP not auto-applied; edit manually: " + name)
     actions += set_apply(update_drift)
+    actions += asset_apply(update_drift)
     actions += alias_apply(update_drift)
     actions += ins_apply(update_drift)
     if actions:
