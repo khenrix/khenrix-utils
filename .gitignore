@@ -11,3 +11,12 @@ venv/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Personal, per-machine Claude Code guidance (not shared)
+CLAUDE.local.md
+
+# llm-council eval run artifacts (machine state; keep evals.json, not the runs)
+evals/llm-council/workspace/
+
+# Claude Code local runtime state
+.claude/scheduled_tasks.lock

@@ -1,0 +1,42 @@
+{
+  "skill_name": "llm-council",
+  "notes": "Each with-skill run nests a REAL 3-CLI council (claude+codex+agy headless), so these are expensive and need all three CLIs installed + authenticated. Prompts are deliberately the kind of high-stakes / ambiguous question where independent models may diverge — that's what makes synthesis worth grading. Assertions check that the orchestrator produced ONE integrated answer with attribution and conflict-handling, not three stapled summaries.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "architecture-decision-postgres-vs-sqlite",
+      "prompt": "Ask all three CLIs and give me the best combined answer: I'm building a small internal analytics tool that 4-5 teammates will use. It ingests about 50MB of CSV per day and runs occasional heavy aggregation queries (joins, window functions) for dashboards. Should I use SQLite or Postgres? I want a clear recommendation with the reasoning, not a fence-sit.",
+      "files": [],
+      "assertions": [
+        "Gives a single clear recommendation (SQLite or Postgres), not a non-committal answer",
+        "Synthesizes into one integrated answer rather than three separate provider summaries pasted together",
+        "Attributes which provider(s) contributed what or where they agreed/disagreed",
+        "Addresses the concrete constraints from the prompt (multi-user concurrency, ~50MB/day, heavy aggregation queries)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "subtle-bug-review-consensus",
+      "prompt": "Use the council to get a high-confidence answer. Does this Python function have a bug, and if so what is it?\n\n    def chunk(items, n):\n        out = []\n        for i in range(0, len(items), n):\n            out.append(items[i:i+n])\n        return out\n\n    def dedupe_preserve_order(seq):\n        seen = {}\n        return [x for x in seq if x not in seen and not seen.update({x: 1})]\n\nFocus on dedupe_preserve_order. Tell me definitively whether it is correct.",
+      "files": [],
+      "assertions": [
+        "Reaches a definitive verdict on dedupe_preserve_order rather than hedging",
+        "Correctly reasons about the `not seen.update(...)` side-effect trick (update returns None, so `not None` is True) and whether the dedupe actually works",
+        "Notes agreement or disagreement across the three providers and resolves it with reasoning rather than a blind majority vote",
+        "Produces one synthesized conclusion, not three separate provider analyses"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "judgment-call-retry-policy",
+      "prompt": "I want a cross-model second opinion before I commit to this. We have a backend service that makes lots of outbound HTTP calls to internal and third-party APIs. A teammate wants to wrap EVERY outbound call in automatic retries with exponential backoff. Is that a good idea? Give me a balanced but decisive recommendation on where retries belong and where they don't.",
+      "files": [],
+      "assertions": [
+        "Gives a decisive recommendation (not 'it depends' with no guidance) about where retries belong vs. don't",
+        "Raises the key risk that blanket retries on non-idempotent calls can cause duplicate side-effects / retry storms",
+        "Integrates the three responses into one answer and flags any disagreement between them",
+        "Notes which provider raised which point (attribution)"
+      ]
+    }
+  ]
+}

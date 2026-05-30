@@ -65,6 +65,12 @@ per_cli = true
 name = "khenrix-upgrade"
 per_cli = true
 
+# Shared skill — one body in shared/skills/llm-council/, auto-rendered byte-identical
+# into all three plugins (no per_cli). Listed here for discoverability; render.py
+# discovers it by globbing shared/skills/, not from this entry.
+[[skills]]
+name = "llm-council"
+
 # ---------------------------------------------------------------------------
 # Baseline settings/policy — mapped to each CLI's native settings by the skill.
 # Applied only when the target key is ABSENT (never overrides your tuning).
