@@ -87,26 +87,41 @@ obvious log lines.
 
 ## 4. Synthesize the best answer
 
-This is the actual skill. Produce **one** integrated answer — not three summaries
-stapled together:
+Write the single best answer to the user's question. **It should read like one
+expert's answer — not a report about a council.** The three runs are your *input*;
+the user wants the conclusion, not a tour of how three models voted. A leaner,
+decisive answer beats a longer one that shows its work — so use the council to make
+your answer more *correct and confident*, not longer.
 
-- **Agreement → confidence.** Where all valid providers converge, state it plainly;
-  independent agreement across different models is strong signal.
-- **Disagreement → reason it out.** Where they conflict, don't majority-vote blindly.
-  Look at the actual arguments, check them against the code/facts, and decide which is
-  correct (or flag a genuine open question). The minority answer is sometimes the right
-  one — that's much of the value of asking three.
-- **Unique contributions.** Surface anything only one provider raised (an edge case, a
-  risk, a better approach) and fold it in if it holds up.
-- **Attribute.** Briefly note who contributed what and who was right on the
-  contested points, so the user can see how the council reached the answer.
-- **Stay neutral.** Don't privilege this CLI's own provider just because you're it —
-  all three ran under the same headless conditions; weigh them on merit.
+The discipline that makes this good:
 
-If `summary.degraded` is true, say so: which provider failed, its `reason`, and that
-the synthesis is based on the N that succeeded. If fewer than two providers are
-valid, tell the user the council was inconclusive — offer to answer directly in this
-session or to retry with a longer `--timeout`.
+- **No process narration.** Do **not** add a "how the council reached this" section,
+  and do **not** do per-point bookkeeping ("Claude said X, agy said Y, Codex added
+  Z"). That is padding — it restates the answer as meeting minutes and lowers
+  signal-to-noise. Just give the answer.
+- **Fold unique points in silently.** If only one provider caught a correct edge
+  case, risk, or better approach, incorporate it as part of the answer. Don't credit
+  it — the user cares that it's there, not who said it.
+- **Surface genuine disagreement — this is the one thing worth the words.** When the
+  providers actually conflict on something that matters, present the conflict and
+  resolve it: weigh the arguments against the facts/code and say which is right (or
+  flag it as a real open question). Don't majority-vote blindly; the minority answer
+  is sometimes correct. This — plus catching a wrong answer — is the council's real
+  payoff over asking one model, so spend words here, not on attribution.
+- **Confidence, at most one line.** If all valid providers independently converged,
+  you may note it in a single clause ("all three independently agree, so this is
+  high-confidence") — only if it helps. Skip it otherwise.
+- **Answer only what was asked.** No tangents on things the user didn't raise.
+- **Length target:** about as tight as a strong single-expert answer to the same
+  question. If the council mostly agreed, your answer should be roughly that length —
+  the council de-risked it; it didn't earn extra paragraphs.
+- **Stay neutral.** Don't privilege this CLI's own provider; all three ran under the
+  same headless conditions — weigh them on merit.
+
+If `summary.degraded` is true, add a brief one-line note of which provider failed and
+its `reason`, and that the answer rests on the N that succeeded — then give the answer
+as usual. If fewer than two providers are valid, tell the user the council was
+inconclusive and offer to answer directly or retry with a longer `--timeout`.
 
 ## Failure handling
 
