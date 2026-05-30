@@ -37,6 +37,30 @@
         "Integrates the three responses into one answer and flags any disagreement between them",
         "Notes which provider raised which point (attribution)"
       ]
+    },
+    {
+      "id": 3,
+      "name": "hard-sql-null-not-in",
+      "prompt": "We need a report of \"customers who have never placed an order.\" A teammate wrote this query against our Postgres database and wants to ship it:\n\n    SELECT c.name\n    FROM customers c\n    WHERE c.id NOT IN (SELECT o.customer_id FROM orders o);\n\nIs this correct and safe to ship as-is? Tell me definitively, and if there's a problem, give the fix.",
+      "files": [],
+      "assertions": [
+        "Reaches the correct verdict: NOT safe to ship as-is",
+        "Correctly explains the NOT IN + NULL three-valued-logic trap (one NULL in the subquery collapses the result to zero rows)",
+        "Gives a correct fix (NOT EXISTS, or LEFT JOIN ... WHERE IS NULL)",
+        "Concise and decisive — no padding, no process narration"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "hard-latency-retry-trap",
+      "prompt": "Our internal API has a p50 latency of 40ms but a p99 of 800ms. A teammate proposes adding a 200ms timeout plus one automatic retry to every call, to cut the p99. Will that actually reduce our p99, and should we do it? Give me a decisive recommendation.",
+      "files": [],
+      "assertions": [
+        "Avoids the glib 'yes, retries cut p99' trap and is decisive",
+        "Notes the 200ms timeout sits far below p99 (cuts legitimately-slow successful requests) and/or that the benefit depends on tail latency being independent vs. correlated/load-driven",
+        "Warns about retry storms and duplicate side-effects on non-idempotent calls; recommends diagnosing the tail first and/or hedged requests",
+        "Does not overstate the win (a retried request already spent the first timeout, so the ceiling is ~2x the timeout, not the timeout)"
+      ]
     }
   ]
 }
