@@ -43,6 +43,8 @@ practices, review the khenrix skills with Codex's own tooling, then improve the
    - `skill-creator/scripts/quick_validate.py <skill-dir>` to validate frontmatter
      and structure, plus the skill-creator workflow for description/quality,
    - `plugin-creator/scripts/validate_plugin.py <plugin-dir>` for the plugin.
+   - If either validator fails because Python cannot import `yaml`, run it from a
+     temporary venv with `PyYAML` instead of installing packages globally.
    Collect concrete improvements; keep each skill's purpose intact.
 
 4. **Synthesize into two buckets.**

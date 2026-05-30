@@ -13,7 +13,14 @@
     "displayName": "khenrix Utils",
     "shortDescription": "Reconcile Codex with the shared khenrix capabilities",
     "longDescription": "Installs the khenrix-setup skill, which reviews Codex's MCP servers, settings and AGENTS.md against capabilities.toml and additively syncs them with Claude Code and agy.",
+    "developerName": "khenrix",
     "category": "Productivity",
+    "capabilities": [
+      "Reconcile Codex config with shared khenrix MCP servers and settings",
+      "Install shared house-style instructions additively",
+      "Research and report Codex model, feature, and skill upgrade recommendations"
+    ],
+    "defaultPrompt": "Use khenrix-setup to reconcile this Codex installation with the shared khenrix source of truth, or use khenrix-upgrade to review and modernize how this machine uses Codex.",
     "websiteURL": "https://github.com/khenrix/khenrix-utils"
   }
 }
