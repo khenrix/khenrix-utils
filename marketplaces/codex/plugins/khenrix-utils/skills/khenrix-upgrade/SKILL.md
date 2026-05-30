@@ -5,19 +5,20 @@ description: Researches the latest Codex CLI changes, models, reasoning settings
 
 # khenrix-upgrade (Codex)
 
-Modernize how this machine uses Codex. You research the latest changes and best
-practices, review the khenrix skills with Codex's own tooling, then improve the
+Modernize how this machine uses Codex. You research the latest changes and
+best practices, review the khenrix skills with Codex's own tooling, then improve the
 **khenrix-utils repo** and write a report of recommended live-config tuning. The
-**purpose** of each skill must not change — only *how* we use the CLI and models.
+**purpose** of each skill must not change — only *how* we use the CLI and models to
+get better results.
 
 ## Ground rules
 - **Edit the repo, not the installed copy.** Locate the khenrix-utils repo
-  (default `~/.../git/khenrix-utils` — the dir with `capabilities.toml` and `.git`).
-  All edits + the report go there, then `make khenrix-refresh`.
+  (default `~/.../git/khenrix-utils` — the directory containing `capabilities.toml`
+  and `.git`). All edits + the report go there. Then `make khenrix-refresh`.
 - **Repo edits are applied with confirmation; live-config tuning is only
   recommended** (model, reasoning effort, experimental flags), never auto-applied.
-- **Preserve purpose.** Improve description/structure/instructions/model usage,
-  never a skill's behavior.
+- **Preserve purpose.** Improve descriptions/triggering, structure, instructions,
+  model usage — never the behavior a skill is meant to deliver.
 
 ## Steps
 
@@ -48,20 +49,22 @@ practices, review the khenrix skills with Codex's own tooling, then improve the
    Collect concrete improvements; keep each skill's purpose intact.
 
 4. **Synthesize into two buckets.**
-   - **Repo edits** (apply with confirmation): SKILL.md improvements, new useful MCP
-     servers / settings / house-style in `capabilities.toml` + `house-style.md`.
+   - **Repo edits** (apply with confirmation): SKILL.md wording/structure, new
+     genuinely-useful MCP servers / settings / house-style in `capabilities.toml`
+     and `house-style.md`.
    - **Live-config recommendations** (report only): `model`,
      `model_reasoning_effort`, `plan_mode_reasoning_effort`, `[features.*]` in
      `~/.codex/config.toml` — with exact `codex -c key=value` or edit commands.
 
-5. **Apply repo edits.** Show diffs, confirm, edit the repo, then run
-   `make khenrix-refresh` from the **repo root** (the directory with the `Makefile`
-   / `capabilities.toml`, not the installed plugin dir). If `capabilities.toml`
-   changed, remind the user to run the `khenrix-setup` skill. Offer to commit.
+5. **Apply repo edits.** Show each change as a diff, get approval, edit the repo,
+   then run `make khenrix-refresh` from the **repo root** (the directory with the
+   `Makefile` / `capabilities.toml`, not the installed plugin dir). If
+   `capabilities.toml` changed, remind the user to run the `khenrix-setup` skill to apply it to the
+   live config. Offer to commit.
 
-6. **Write the report** to `docs/upgrades/codex-<YYYY-MM-DD>.md` (today's date):
-   findings per dimension, repo changes applied, deferred live-config
-   recommendations with copy-paste commands.
+6. **Write the report** to `docs/upgrades/codex-<YYYY-MM-DD>.md` in the repo
+   (use today's date): findings per dimension, repo changes applied, and the
+   deferred live-config recommendations with copy-paste commands.
 
 ## Notes
 - Codex caches plugins by version, so `make khenrix-refresh` is required for the

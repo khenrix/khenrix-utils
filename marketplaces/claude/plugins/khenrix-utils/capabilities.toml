@@ -54,8 +54,11 @@ url = "https://developers.openai.com/mcp"
 
 # ---------------------------------------------------------------------------
 # Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
-# each plugin by scripts/render.py. `khenrix-setup` is per-CLI (CLI-specific
-# config paths) and is authored directly in each plugin.
+# each plugin by scripts/render.py. `khenrix-setup` and `khenrix-upgrade` are
+# per-CLI: their shared body lives in shared/skill-templates/<name>/SKILL.md.tmpl
+# and render.py fills the provider-specific facts from [skill_facts.<name>.<cli>]
+# at the bottom of this file. Edit the template (shared prose) or the facts
+# (provider-specific values) — never the rendered marketplaces/.../SKILL.md.
 # ---------------------------------------------------------------------------
 [[skills]]
 name = "khenrix-setup"
@@ -146,3 +149,170 @@ source = "house-style.md"
 claude = "${HOME}/.claude/CLAUDE.md"
 codex = "${HOME}/.codex/AGENTS.md"
 agy = "${HOME}/.gemini/GEMINI.md"
+
+# ===========================================================================
+# Skill facts — provider-specific fill-ins for the templated per-CLI skills
+# (khenrix-setup, khenrix-upgrade). render.py substitutes these into
+# shared/skill-templates/<skill>/SKILL.md.tmpl via string.Template. Shared prose
+# lives in the template; only genuine provider differences (paths, commands,
+# config terms, per-CLI procedure) live here. Multi-line values keep their
+# leading indentation because they land inside numbered-list items in the body.
+# ===========================================================================
+
+[skill_facts.khenrix-setup.claude]
+description = "Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+allowed_tools_line = "\nallowed-tools: Bash, Read"
+display_name = "Claude Code"
+cli = "claude"
+reconcile_path = "${CLAUDE_PLUGIN_ROOT}/skills/khenrix-setup/scripts/reconcile.py"
+summarize = """the diff for the user in plain language: what will be added,
+   what is already in sync, and confirm that EXTRA entries will be left alone.
+   Call out anything notable (e.g. a Windows-only server skipped on this host)."""
+apply_summary = """This adds MCP servers via `claude mcp add --scope user`, ensures the
+   managed alias block in `~/.bash_aliases`, ensures the house-style block in
+   `~/.claude/CLAUDE.md`, and reports each action taken."""
+verify_step = """Run `claude mcp list` and confirm the newly added servers appear.
+   Note that MCP changes take effect in a new session."""
+settings_note = """- Claude's approval/sandbox model differs from Codex's, so those baseline
+  settings are reported as informational only and are not written here.
+"""
+
+[skill_facts.khenrix-setup.codex]
+description = "Reconciles this Codex installation with the shared khenrix source of truth — reviews the live MCP servers in config.toml, the approval/sandbox/trust settings, shell aliases, and AGENTS.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Codex environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+allowed_tools_line = ""
+display_name = "Codex"
+cli = "codex"
+reconcile_path = "$PLUGIN_ROOT/skills/khenrix-setup/scripts/reconcile.py"
+summarize = """the diff: which `[mcp_servers.*]` tables will be appended,
+   which settings/trust entries are added, and confirm EXTRA entries (e.g. a
+   Windows-only `chrome-devtools` on a non-Windows host) are left untouched."""
+apply_summary = """New MCP servers are appended as TOML tables, absent `approval_policy` /
+   `sandbox_mode` / `[projects."…"]` trust keys are added, the managed alias
+   block is ensured in `~/.bash_aliases`, and the house-style block is ensured in
+   `~/.codex/AGENTS.md`."""
+verify_step = """Show the relevant `[mcp_servers.*]` sections of
+   `~/.codex/config.toml` so the user can confirm. Changes apply on the next
+   Codex session."""
+settings_note = ""
+
+[skill_facts.khenrix-setup.agy]
+description = "Reconciles this Antigravity (agy) installation with the shared khenrix source of truth — reviews the live MCP servers in ~/.gemini/config/mcp_config.json, the trusted workspaces, shell aliases, and GEMINI.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their agy environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+allowed_tools_line = ""
+display_name = "Antigravity / agy"
+cli = "agy"
+reconcile_path = "$HOME/.gemini/config/plugins/khenrix-utils/skills/khenrix-setup/scripts/reconcile.py"
+summarize = """the diff: which MCP servers will be added to
+   `mcp_config.json`, which trusted workspaces are added to
+   `~/.gemini/antigravity-cli/settings.json`, and that EXTRA entries are left
+   untouched. Note that http servers are written with `httpUrl` and stdio
+   servers with `command`/`args`/`env`."""
+apply_summary = """This merges MCP servers into `mcp_config.json`, adds trusted workspaces,
+   ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
+   block in `~/.gemini/GEMINI.md`."""
+verify_step = """Show `~/.gemini/config/mcp_config.json` so the user can confirm.
+   Restart agy to pick up new servers."""
+settings_note = """- agy prompts per-action for approvals, so there is no static approval/sandbox
+  key to reconcile (reported as informational).
+"""
+
+[skill_facts.khenrix-upgrade.claude]
+description = "Researches the latest Claude Code CLI changes, models, experimental features and best practices, then reviews and improves how this machine uses Claude Code — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Claude Code setup, pick a newer/better model, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used."
+allowed_tools_line = "\nallowed-tools: Bash, Read, Edit, WebSearch, WebFetch"
+display_name = "Claude Code"
+cli = "claude"
+inventory_path = "${CLAUDE_PLUGIN_ROOT}/skills/khenrix-upgrade/scripts/inventory.py"
+review_target = "skills/plugins with Claude's own tooling"
+liveconfig_scope = " (written to the report with exact commands), never auto-applied."
+inventory_note = ""
+research_block = """Run a thorough, multi-source, citation-checked pass using
+   the **deep-research** skill (invoke it via the Skill tool), plus `WebSearch` /
+   `WebFetch` on:
+   - the latest Claude Code version + notable `CHANGELOG.md` entries since the
+     installed version (`anthropics/claude-code`),
+   - the newest recommended Claude model(s) and when to use which,
+   - experimental features / flags worth trying,
+   - current best practices from `code.claude.com/docs` and the community.
+   Capture concrete, dated findings with sources."""
+review_block = """For each skill listed in the inventory, use
+   Claude's native tooling:
+   - the **skill-creator** skill (invoke via the Skill tool) to assess and improve
+     a skill's description/structure/triggering,
+   - the **plugin-dev** `skill-reviewer` agent (launch via the Agent/Task tool) for
+     a quality review, and `plugin-validator` for the plugin manifest.
+   Collect concrete improvement suggestions. Keep each skill's purpose intact."""
+liveconfig_bucket = """model choice (`/model` or
+     `settings.json` `model`), and any new settings — with exact commands."""
+refresh_note = ""
+setup_ref = "`/khenrix-setup`"
+notes_block = """- Use the deep-research skill for step 2 unless the user asks for a quick check.
+- For settings changes, the built-in **update-config** skill can apply
+  `settings.json` edits — but per the design, surface those as recommendations."""
+
+[skill_facts.khenrix-upgrade.codex]
+description = "Researches the latest Codex CLI changes, models, reasoning settings, experimental features and best practices, then reviews and improves how this machine uses Codex — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Codex setup, pick a newer/better model or reasoning effort, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used."
+allowed_tools_line = ""
+display_name = "Codex"
+cli = "codex"
+inventory_path = "$PLUGIN_ROOT/skills/khenrix-upgrade/scripts/inventory.py"
+review_target = "skills with Codex's own tooling"
+liveconfig_scope = " (model, reasoning effort, experimental flags), never auto-applied."
+inventory_note = """ (Codex provides `$PLUGIN_ROOT` for the
+   installed plugin)"""
+research_block = """Run a thorough, multi-source pass:
+   - the latest Codex version + changelog highlights (`codex --version`,
+     developers.openai.com),
+   - the newest recommended model + `model_reasoning_effort` — use the
+     `openaiDeveloperDocs` MCP (`search_openai_docs` / `fetch_openai_doc`) and the
+     `openai-docs` system skill's `scripts/resolve-latest-model-info.js`
+     (`~/.codex/skills/.system/openai-docs/`),
+   - experimental `[features.*]` flags and config keys worth trying,
+   - current best practices for prompting/using Codex well.
+   Capture concrete, dated findings with sources."""
+review_block = """For each skill in the inventory, use Codex's
+   native tooling under `~/.codex/skills/.system/`:
+   - `skill-creator/scripts/quick_validate.py <skill-dir>` to validate frontmatter
+     and structure, plus the skill-creator workflow for description/quality,
+   - `plugin-creator/scripts/validate_plugin.py <plugin-dir>` for the plugin.
+   - If either validator fails because Python cannot import `yaml`, run it from a
+     temporary venv with `PyYAML` instead of installing packages globally.
+   Collect concrete improvements; keep each skill's purpose intact."""
+liveconfig_bucket = """`model`,
+     `model_reasoning_effort`, `plan_mode_reasoning_effort`, `[features.*]` in
+     `~/.codex/config.toml` — with exact `codex -c key=value` or edit commands."""
+refresh_note = ""
+setup_ref = "the `khenrix-setup` skill"
+notes_block = """- Codex caches plugins by version, so `make khenrix-refresh` is required for the
+  CLI to pick up skill edits.
+- Prefer the bundled fallback `~/.codex/skills/.system/openai-docs/references/latest-model.md`
+  if the model-discovery script can't reach the network."""
+
+[skill_facts.khenrix-upgrade.agy]
+description = "Researches the latest Antigravity (agy) / Gemini CLI changes, models, experimental features and best practices, then reviews and improves how this machine uses agy — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their agy setup, adopt a newer/better Gemini model, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used."
+allowed_tools_line = ""
+display_name = "Antigravity / agy"
+cli = "agy"
+inventory_path = "$HOME/.gemini/config/plugins/khenrix-utils/skills/khenrix-upgrade/scripts/inventory.py"
+review_target = "skills/plugins"
+liveconfig_scope = """, never auto-applied. agy's model is chosen at runtime, so model
+  guidance is recommendation-only."""
+inventory_note = """ (agy installs this plugin at a fixed
+   path)"""
+research_block = """Run a thorough, multi-source pass:
+   - the latest agy changes via `agy changelog`,
+   - the newest recommended Gemini model(s) and when to use which (Gemini docs),
+   - experimental features / capabilities worth trying,
+   - current best practices for getting better results with agy/Gemini.
+   Capture concrete, dated findings with sources."""
+review_block = """agy has no skill-creator; use its native
+   validator for each plugin:
+   ```bash
+   agy plugin validate <plugin-dir>
+   ```
+   For skill *quality* (description/triggering/structure), apply the general Agent
+   Skills best practices from research. Keep each skill's purpose intact."""
+liveconfig_bucket = """trusted workspaces, MCP, and
+     any agy/Gemini usage guidance — with exact steps."""
+refresh_note = "; for agy this re-installs the plugin"
+setup_ref = "the `khenrix-setup` skill"
+notes_block = """- agy lacks bundled skill/plugin creation tooling, so this variant leans more on
+  research + `agy plugin validate` than on a native skill reviewer."""

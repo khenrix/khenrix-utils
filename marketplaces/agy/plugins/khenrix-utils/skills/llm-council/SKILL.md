@@ -21,8 +21,13 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > **Cost & when to use.** This runs three full agent turns in parallel (including a
 > fresh headless run of *this* CLI), so it costs ~3x a normal turn. Use it for
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
-> not routine tasks. It bypasses all permission/sandbox prompts (same caveat as the
-> `clauded`/`aggy`/`codexo` aliases); only run it in a trusted workspace.
+> not routine tasks.
+>
+> **Read-only by default.** Members run in a read-and-plan-only posture — they read the
+> repo and use their own installed skills, but **cannot modify anything**, which suits
+> the council's job (a second opinion / synthesis, not edits) and makes it safe to
+> convene even mid-task. Pass `--allow-writes` only when you explicitly want the members
+> to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
 
 ## 1. Locate the engine
 
@@ -57,14 +62,34 @@ PROMPT_FILE="$(mktemp)"
 cat > "$PROMPT_FILE" <<'EOF'
 <the user's task, exactly as they asked it>
 EOF
-python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --out json
+python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --out json          # normal mode (default)
+# high-stakes / maximum confidence:
+python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 ```
 
 The engine prints a JSON **manifest** to stdout (also saved to
-`<workdir>/manifest.json`). Useful flags: `--timeout SECONDS` (per-attempt, default
-300 — raise it for big tasks), `--retries N` (default 2), `--providers claude,codex`
-(narrow the panel), `--model-claude/-codex/-agy ID` (pin a model). Defaults are fine
-for most runs.
+`<workdir>/manifest.json`). Useful flags: `--mode normal|deep` (see below),
+`--allow-writes` (drop the default read-only posture so members can edit/execute),
+`--timeout SECONDS` (per-attempt; default is per-mode — 300 normal / 600 deep — raise
+it for big tasks), `--retries N` (default 2), `--providers claude,codex` (narrow the
+panel), `--model-claude/-codex/-agy ID` (override a model for one run). Defaults are
+fine for most runs.
+
+### Models & thinking modes
+
+The council is a fixed panel of three models, each at a configurable thinking tier.
+Two modes, **same models**, differ only in how hard they think:
+
+- **`normal`** (default) — all members at **high** thinking. Use for most council runs.
+- **`deep`** — same members at **maximum** reasoning + a longer timeout. Use for
+  genuinely high-stakes / maximum-confidence asks (architecture, risky changes), or
+  when the user says "deep", "think hard", or "maximum confidence".
+
+The panel and tiers live in **one place** — the `MODES` table at the top of
+`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.5, Gemini 3.5 Flash). To change
+a model or tier, edit one cell there; nothing else needs to change. Note: `agy` has no
+per-run model/thinking flag — it reads both from `~/.gemini/antigravity-cli/settings.json`,
+so its row documents the intended config but is set there, not by `--mode`.
 
 **The engine handles the "valid result or retry" contract for you.** Each provider
 is validated (exit 0, non-empty answer, no auth/rate-limit error) and retried with
@@ -146,8 +171,12 @@ died. The only hard stop is zero valid providers.
 
 ## Tuning (for maintainers)
 
-When a real headless run surfaces a new failure string or an output-parsing quirk, the
-fix lives in `scripts/fanout.py`: `PERSISTENT_SENTINELS` (fatal — auth/quota, not
+To change which models sit on the council or how hard they think, edit the `MODES`
+table at the top of `scripts/fanout.py` (one cell per model/tier); the per-provider
+flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives in
+`build_real_spec`. When a real headless run surfaces a new failure string or an
+output-parsing quirk, the fix also lives in `scripts/fanout.py`: `PERSISTENT_SENTINELS`
+(fatal — auth/quota, not
 retried) vs `TRANSIENT_SENTINELS` (retryable — rate-limit, overloaded),
 `extract_claude_json` / `extract_raw` (how each CLI's answer is pulled out), and the
 `build_real_spec` argv builders (the exact headless flags — kept in sync with

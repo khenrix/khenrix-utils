@@ -11,13 +11,14 @@ marketplace:
 Modes:
   render.py            render + validate
   render.py --check    validate only (non-zero exit on any problem)
-  render.py --clean    remove rendered copies (keeps per-CLI khenrix-setup body)
+  render.py --clean    remove rendered copies (incl. generated templated skills)
 """
 from __future__ import annotations
 
 import argparse
 import re
 import shutil
+import string
 import sys
 import tomllib
 from pathlib import Path
@@ -31,6 +32,10 @@ BUNDLED_DIRS = ["statusline"]
 LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
                ROOT / "scripts" / "lib" / "inventory.py"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
+# Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
+# capabilities.toml; render.py generates each plugin's SKILL.md from them.
+TEMPLATED_SKILLS = ("khenrix-setup", "khenrix-upgrade")
+TMPL_ROOT = ROOT / "shared" / "skill-templates"
 
 
 def plugin_dir(cli: str) -> Path:
@@ -75,11 +80,49 @@ def iter_skills():
             yield from sk.glob("*/SKILL.md")
 
 
+def load_caps() -> dict:
+    with open(ROOT / "capabilities.toml", "rb") as f:
+        return tomllib.load(f)
+
+
+def render_templated_skill(skill: str, cli: str, caps: dict, problems: list):
+    """Fill shared/skill-templates/<skill>/SKILL.md.tmpl with the per-CLI facts
+    from [skill_facts.<skill>.<cli>]. Returns the body, or None (recording a
+    problem) if the template or any token is missing."""
+    tmpl_path = TMPL_ROOT / skill / "SKILL.md.tmpl"
+    if not tmpl_path.exists():
+        problems.append(f"{skill}: template missing at {tmpl_path.relative_to(ROOT)}")
+        return None
+    facts = caps.get("skill_facts", {}).get(skill, {}).get(cli)
+    if facts is None:
+        problems.append(f"{skill}: no [skill_facts.{skill}.{cli}] in capabilities.toml")
+        return None
+    tmpl = string.Template(tmpl_path.read_text())
+    missing = set(tmpl.get_identifiers()) - set(facts)  # get_identifiers: py3.11+
+    if missing:
+        problems.append(f"{skill}/{cli}: facts missing tokens {sorted(missing)}")
+        return None
+    try:
+        return tmpl.substitute(facts)
+    except (KeyError, ValueError) as e:  # stray/invalid $placeholder in the template
+        problems.append(f"{skill}/{cli}: substitution failed: {e}")
+        return None
+
+
 def render():
+    caps = load_caps()
+    problems: list[str] = []
     shared_skills = sorted((ROOT / "shared" / "skills").glob("*/"))
     for cli in CLIS:
         pdir = plugin_dir(cli)
         pdir.mkdir(parents=True, exist_ok=True)
+        # 0. generate the templated per-CLI skill bodies from shared template + facts
+        for skill in TEMPLATED_SKILLS:
+            body = render_templated_skill(skill, cli, caps, problems)
+            if body is not None:
+                dst = pdir / "skills" / skill
+                dst.mkdir(parents=True, exist_ok=True)
+                (dst / "SKILL.md").write_text(body)
         # 1. bundle the source of truth
         for f in BUNDLED:
             shutil.copy2(ROOT / f, pdir / f)
@@ -102,9 +145,14 @@ def render():
                 (skill / "scripts").mkdir(parents=True, exist_ok=True)
                 for lib in LIB_SCRIPTS:
                     shutil.copy2(lib, skill / "scripts" / lib.name)
+    if problems:
+        print("RENDER FAILED:")
+        for p in problems:
+            print(f"  ✗ {p}")
+        raise SystemExit(1)
     libs = ", ".join(p.name for p in LIB_SCRIPTS)
     print(f"rendered: bundled {BUNDLED} + {BUNDLED_DIRS} + [{libs}] into {len(CLIS)} plugins; "
-          f"{len(shared_skills)} shared skill(s)")
+          f"{len(shared_skills)} shared skill(s); {len(TEMPLATED_SKILLS)} templated skill(s)")
 
 
 def clean():
@@ -121,6 +169,9 @@ def clean():
             for skill in skills_root.iterdir():
                 for lib in LIB_SCRIPTS:
                     (skill / "scripts" / lib.name).unlink(missing_ok=True)
+        # generated templated skill bodies are regenerable — drop them too
+        for skill in TEMPLATED_SKILLS:
+            (pdir / "skills" / skill / "SKILL.md").unlink(missing_ok=True)
     print(f"cleaned rendered copies ({removed} files targeted)")
 
 

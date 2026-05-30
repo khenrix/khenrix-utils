@@ -38,6 +38,36 @@ MANIFEST_SCHEMA = 1
 DEFAULT_PROVIDERS = ["claude", "codex", "agy"]
 RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on disk
 
+# --------------------------------------------------------------------------- #
+# Council models + thinking modes — THE single place to change who sits on the
+# council and how hard they think. Edit a cell to swap a model or thinking tier.
+#   normal — the default; all members at high thinking.
+#   deep   — same models, maximum reasoning (and a longer default timeout) for
+#            high-stakes / maximum-confidence questions.
+# `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
+# CLI's own flag. agy exposes no per-run model/thinking flag — it reads both from
+# ~/.gemini/antigravity-cli/settings.json — so its cell documents the intended
+# config but is NOT applied at run time (see build_real_spec / agy_configured_model).
+# --------------------------------------------------------------------------- #
+MODES = {
+    "normal": {
+        "claude": {"model": "claude-opus-4-8",        "thinking": "high"},
+        "codex":  {"model": "gpt-5.5",                "thinking": "high"},
+        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
+    },
+    "deep": {
+        "claude": {"model": "claude-opus-4-8",        "thinking": "max"},
+        "codex":  {"model": "gpt-5.5",                "thinking": "max"},
+        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "max"},
+    },
+}
+DEFAULT_MODE = "normal"
+MODE_TIMEOUT = {"normal": 300, "deep": 600}  # per-attempt seconds used when --timeout is unset
+
+# Map the abstract thinking tier to each provider's own flag value.
+CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
+CODEX_EFFORT = {"high": "high", "max": "high"}   # codex model_reasoning_effort tops out at "high"
+
 # Substrings that mark a provider's output as a failure rather than an answer.
 # Scanned in stderr and the provider's log file always, and in the result text ONLY
 # when the exit code is nonzero (so an exit-0 answer that legitimately discusses
@@ -133,30 +163,53 @@ class ProviderSpec:
     stdin: Optional[str]             # text piped to stdin, or None
     extract: Callable[[str], tuple[str, Optional[str]]]
     model: Optional[str] = None
+    thinking: Optional[str] = None   # abstract tier (high|max) recorded for provenance
     log_file: Optional[str] = None   # if set, scanned for sentinels on failure
 
 
+def agy_configured_model() -> Optional[str]:
+    """agy's model+thinking live in its settings file, not a CLI flag. Read it
+    best-effort so the manifest reports agy's *actual* model (e.g. 'Gemini 3.5
+    Flash (High)'); return None if the file/key is absent."""
+    try:
+        p = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        return json.loads(p.read_text()).get("model")
+    except Exception:  # noqa: BLE001 — best-effort; never fail a run over this
+        return None
+
+
 def build_real_spec(name: str, prompt: str, timeout: int,
-                    models: dict, workdir: Path) -> ProviderSpec:
-    model = models.get(name)
+                    cfg: dict, workdir: Path) -> ProviderSpec:
+    """cfg maps provider -> {"model": str, "thinking": "high"|"max"} (from MODES,
+    with per-run --model-* overrides already merged in by resolve_mode_config)."""
+    pc = cfg.get(name, {})
+    model, thinking = pc.get("model"), pc.get("thinking")
     if name == "claude":
         argv = ["claude", "-p", prompt, "--output-format", "json",
                 "--dangerously-skip-permissions"]
         if model:
             argv += ["--model", model]
-        return ProviderSpec("claude", argv, None, extract_claude_json, model)
+        if thinking:
+            argv += ["--effort", CLAUDE_EFFORT.get(thinking, thinking)]
+        return ProviderSpec("claude", argv, None, extract_claude_json, model, thinking)
     if name == "codex":
         # prompt via stdin (codex exec -) so it never enters a shell-escaped argv.
         argv = ["codex", "exec", "-", "--dangerously-bypass-approvals-and-sandbox"]
         if model:
             argv += ["-m", model]
-        return ProviderSpec("codex", argv, prompt, extract_raw, model)
+        if thinking:
+            # codex -c parses the value as TOML, so quote the string explicitly.
+            argv += ["-c", f'model_reasoning_effort="{CODEX_EFFORT.get(thinking, thinking)}"']
+        return ProviderSpec("codex", argv, prompt, extract_raw, model, thinking)
     if name == "agy":
         # agy uses Go-style flag parsing: -p/--print is a boolean and the prompt is a
         # positional arg. Go's flag package STOPS at the first positional, so every flag
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
-        # agy exposes no --model flag, so a model override isn't supported here.
+        # agy exposes NO --model / thinking flag: both come from
+        # ~/.gemini/antigravity-cli/settings.json, so the MODES cell for agy is
+        # documentation only and can't be pinned per-run. We read the configured model
+        # for the manifest so provenance is truthful.
         # --log-file captures agy's real failure reason: on a 429 it prints nothing to
         # stdout/stderr and only logs e.g. "RESOURCE_EXHAUSTED ... Individual quota
         # reached" — run_provider scans this file to turn an opaque `empty` into a clear
@@ -166,8 +219,35 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         logf = str(Path(workdir) / "agy.cli.log")
         argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", f"{pt}s",
                 "--log-file", logf, "-p", prompt]
-        return ProviderSpec("agy", argv, None, extract_raw, model, log_file=logf)
+        return ProviderSpec("agy", argv, None, extract_raw,
+                            agy_configured_model() or model, thinking, log_file=logf)
     raise ValueError(f"unknown provider: {name}")
+
+
+def _replace_flag(argv: list, old: str, new_tokens: list) -> list:
+    out: list = []
+    for a in argv:
+        out.extend(new_tokens) if a == old else out.append(a)
+    return out
+
+
+def make_readonly(spec: ProviderSpec) -> ProviderSpec:
+    """Swap a provider's "bypass everything" flag for a read-and-plan-only posture, in
+    place. Unlike sandboxing HOME, this keeps the real HOME (so auth still resolves) but
+    forbids writes — the executor can read/plan but cannot mutate config. Shared by the
+    eval harness (executor runs) and reused by any read-only council mode.
+
+    agy has no clean headless read-only flag (it prompts per-action); `--sandbox` is the
+    closest and is best-effort — verify before relying on it for agy."""
+    if spec.name == "claude":
+        spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
+                                  ["--permission-mode", "plan"])
+    elif spec.name == "codex":
+        spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
+                                  ["--sandbox", "read-only"])
+    elif spec.name == "agy":
+        spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions", ["--sandbox"])
+    return spec
 
 
 # --------------------------------------------------------------------------- #
@@ -295,6 +375,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "raw_stdout_file": str(stdout_file),
         "raw_stderr_file": str(stderr_file),
         "model": spec.model,
+        "thinking": spec.thinking,
         "attempt_log": attempt_log,
     }
 
@@ -302,7 +383,9 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
 def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                 backoff: float, workdir: Path,
                 prompt: Optional[str] = None,
-                requested: Optional[list] = None) -> dict:
+                requested: Optional[list] = None,
+                mode: Optional[str] = None,
+                read_only: Optional[bool] = None) -> dict:
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     started = _now_iso()
@@ -322,7 +405,7 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
         "started_at": started,
         "finished_at": finished,
         "config": {"retries": retries, "timeout": timeout, "backoff": backoff,
-                   "providers": requested},
+                   "providers": requested, "mode": mode, "read_only": read_only},
         "summary": {"requested": len(requested), "valid": valid,
                     "failed": len(requested) - valid,
                     "degraded": valid < len(requested)},
@@ -352,10 +435,19 @@ def _render_text(manifest: dict) -> str:
     s = manifest["summary"]
     lines = [f"council: {s['valid']}/{s['requested']} valid"
              + ("  (DEGRADED)" if s["degraded"] else "")]
+    cfg = manifest.get("config", {})
+    tags = []
+    if cfg.get("mode"):
+        tags.append(f"mode: {cfg['mode']}")
+    if cfg.get("read_only") is not None:
+        tags.append("read-only" if cfg["read_only"] else "writes")
+    if tags:
+        lines[0] += "  [" + ", ".join(tags) + "]"
     for p in manifest["providers"]:
         mark = "✓" if p["valid"] else "✗"
-        lines.append(f"  {mark} {p['name']:<7} {p['reason']:<14} "
-                     f"{p['attempts']}x  {p['duration_sec']}s  → {p['result_file']}")
+        meta = f"{p.get('model') or '-'}/{p.get('thinking') or '-'}"
+        lines.append(f"  {mark} {p['name']:<7} {p['reason']:<14} {p['attempts']}x  "
+                     f"{p['duration_sec']}s  {meta}  → {p['result_file']}")
     return "\n".join(lines)
 
 
@@ -376,11 +468,15 @@ def smoke(args) -> int:
     prompt = "Reply with exactly one word and nothing else: pong"
     providers = args.providers.split(",") if args.providers else ["claude"]
     workdir = Path(tempfile.mkdtemp(prefix="llm-council-smoke-"))
-    models = _models(args)
-    specs = [build_real_spec(p, prompt, args.timeout, models, workdir) for p in providers]
-    manifest = run_council(specs, retries=args.retries, timeout=args.timeout,
+    timeout = effective_timeout(args)
+    cfg = resolve_mode_config(args)
+    specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
+    if args.read_only:
+        for s in specs:
+            make_readonly(s)
+    manifest = run_council(specs, retries=args.retries, timeout=timeout,
                            backoff=args.backoff, workdir=workdir, prompt=prompt,
-                           requested=providers)
+                           requested=providers, mode=args.mode, read_only=args.read_only)
     print(_render_text(manifest))
     ok = all(p["valid"] and "pong" in Path(p["result_file"]).read_text().lower()
              for p in manifest["providers"])
@@ -388,10 +484,22 @@ def smoke(args) -> int:
     return 0 if ok else 1
 
 
-def _models(args) -> dict:
-    return {k: v for k, v in (("claude", args.model_claude),
-                              ("codex", args.model_codex),
-                              ("agy", args.model_agy)) if v}
+def effective_timeout(args) -> int:
+    """--timeout if given, else the per-mode default (deep gets a longer window)."""
+    if args.timeout is not None:
+        return args.timeout
+    return MODE_TIMEOUT.get(args.mode, MODE_TIMEOUT[DEFAULT_MODE])
+
+
+def resolve_mode_config(args) -> dict:
+    """Per-provider {model, thinking} for the chosen mode, with --model-* overrides
+    applied on top (ad-hoc per-run model swaps without touching the MODES table)."""
+    base = {p: dict(v) for p, v in MODES.get(args.mode, MODES[DEFAULT_MODE]).items()}
+    for p, m in (("claude", args.model_claude), ("codex", args.model_codex),
+                 ("agy", args.model_agy)):
+        if m:
+            base.setdefault(p, {})["model"] = m
+    return base
 
 
 # --------------------------------------------------------------------------- #
@@ -566,8 +674,17 @@ def parse_args(argv=None):
     src.add_argument("--prompt-file", help="read prompt from a file (preferred)")
     ap.add_argument("--providers", default=",".join(DEFAULT_PROVIDERS),
                     help="comma list (default: claude,codex,agy)")
+    ap.add_argument("--mode", choices=list(MODES), default=DEFAULT_MODE,
+                    help=f"thinking mode → models+effort from the MODES table (default: {DEFAULT_MODE})")
+    ro = ap.add_mutually_exclusive_group()
+    ro.add_argument("--read-only", dest="read_only", action="store_true", default=True,
+                    help="members read & plan only — they still use their skills but cannot "
+                         "modify anything (default; the council's job is advice/synthesis)")
+    ro.add_argument("--allow-writes", dest="read_only", action="store_false",
+                    help="let members write/execute with full permissions (opt out of read-only)")
     ap.add_argument("--retries", type=int, default=2, help="max retries per provider")
-    ap.add_argument("--timeout", type=int, default=300, help="per-attempt seconds")
+    ap.add_argument("--timeout", type=int, default=None,
+                    help="per-attempt seconds (default: per-mode — normal 300, deep 600)")
     ap.add_argument("--backoff", type=float, default=5.0, help="base backoff seconds")
     ap.add_argument("--workdir", help="output dir (default: a fresh temp dir)")
     ap.add_argument("--model-claude")
@@ -604,7 +721,9 @@ def main(argv=None) -> int:
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
     workdir = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="llm-council-"))
     workdir.mkdir(parents=True, exist_ok=True)
-    specs = [build_real_spec(p, prompt, args.timeout, _models(args), workdir) for p in providers]
+    timeout = effective_timeout(args)
+    cfg = resolve_mode_config(args)
+    specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
 
     overrides = {}
     for item in args.provider_cmd_override:
@@ -615,9 +734,16 @@ def main(argv=None) -> int:
         if name in by_name and tokens:
             by_name[name].argv = tokens + by_name[name].argv[1:]
 
-    manifest = run_council(specs, retries=args.retries, timeout=args.timeout,
+    # Read-only is the default council posture: members read & use their skills but
+    # cannot modify anything. --allow-writes opts out. Applied after overrides so a
+    # test override's binary is preserved.
+    if args.read_only:
+        for s in specs:
+            make_readonly(s)
+
+    manifest = run_council(specs, retries=args.retries, timeout=timeout,
                            backoff=args.backoff, workdir=workdir, prompt=prompt,
-                           requested=providers)
+                           requested=providers, mode=args.mode, read_only=args.read_only)
     print(json.dumps(manifest, indent=2) if args.out == "json" else _render_text(manifest))
     return 0 if manifest["summary"]["valid"] > 0 else 1
 

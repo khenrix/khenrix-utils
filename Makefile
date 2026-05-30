@@ -10,9 +10,10 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify test smoke-llm-council status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify test smoke-llm-council eval eval-test status clean
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
+EVAL := scripts/eval_harness.py
 
 help: ## Show this help
 	@echo "khenrix-utils — install targets (skills do the real setup):"
@@ -52,6 +53,12 @@ test: ## Run the deterministic llm-council engine self-test (no token cost)
 
 smoke-llm-council: ## Live smoke test of the council vs one real provider (costs tokens, needs auth)
 	$(PY) $(LLM_COUNCIL) --smoke --providers claude --timeout 60
+
+eval-test: ## Hermetic eval-harness logic tests (no token cost)
+	$(PY) $(EVAL) --self-test
+
+eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
+	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),)
 
 status: ## Show what each CLI currently has vs the source of truth (read-only)
 	$(PY) scripts/lib/reconcile.py --status --all

@@ -62,5 +62,4 @@ only after the user confirms.
   local tweaks.
 - Claude's approval/sandbox model differs from Codex's, so those baseline
   settings are reported as informational only and are not written here.
-- To inspect the source of truth, read
-  `${CLAUDE_PLUGIN_ROOT}/capabilities.toml`.
+- To inspect the source of truth, read `capabilities.toml` at the plugin root.

@@ -15,8 +15,8 @@ Thumbs.db
 # Personal, per-machine Claude Code guidance (not shared)
 CLAUDE.local.md
 
-# llm-council eval run artifacts (machine state; keep evals.json, not the runs)
-evals/llm-council/workspace/
+# skill-eval run artifacts (machine state; keep each evals.json, not the runs)
+evals/*/workspace/
 
 # Claude Code local runtime state
 .claude/scheduled_tasks.lock

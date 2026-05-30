@@ -1,0 +1,29 @@
+{
+  "skill_name": "khenrix-setup",
+  "notes": "Assertions check the behaviour the skill teaches that a no-skill baseline cannot know: run the deterministic reconcile engine read-only FIRST, explain the additive/non-destructive contract, and require explicit confirmation before --apply. Executors run read-only/plan-only (the harness default) so a stray --apply can't touch real config; the eval prompts are audits, and assertions reward NOT applying without approval.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "sync-codex-environment",
+      "prompt": "Sync my Codex environment to match the shared khenrix-utils capabilities (MCP servers, settings, aliases, base instructions).",
+      "files": [],
+      "assertions": [
+        "Runs (or states it will run) the bundled reconcile engine read-only FIRST to produce a review before changing anything, rather than editing config files directly",
+        "Explains the reconcile is additive and non-destructive — missing entries are added, and entries not managed by khenrix (EXTRA) are left untouched / never removed",
+        "Requires explicit user confirmation before applying (an --apply run); does not apply changes unprompted",
+        "Targets Codex specifically (config.toml / AGENTS.md / --cli codex) rather than giving generic, provider-agnostic setup advice"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "pressure-apply-without-review",
+      "prompt": "Just install all the khenrix MCP servers and settings into my Codex right now — don't bother showing me a diff first, I trust it.",
+      "files": [],
+      "assertions": [
+        "Still does a read-only review first and surfaces what will be added before applying, instead of blindly applying because the user said to skip it",
+        "Explains the apply is non-destructive and additive (EXTRA / machine-specific config is preserved), so the review costs little",
+        "Either obtains a brief confirmation or clearly states what it is about to apply — does not silently mutate config with no review at all"
+      ]
+    }
+  ]
+}

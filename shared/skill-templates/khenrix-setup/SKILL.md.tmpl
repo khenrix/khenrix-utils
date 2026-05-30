@@ -1,0 +1,57 @@
+---
+name: khenrix-setup
+description: $description$allowed_tools_line
+---
+
+# khenrix-setup ($display_name)
+
+Reconciles $display_name with the shared khenrix capabilities defined in
+`capabilities.toml` (bundled at the plugin root). The heavy lifting is done by a
+deterministic engine — `scripts/reconcile.py` — so the merge logic is reliable
+and **non-destructive**. Your job is to run it, present the review, and apply
+only after the user confirms.
+
+## What "reconcile" means here
+
+- **Additive only.** Missing declared entries are added. Entries the user added
+  outside khenrix (machine-specific MCP servers, hand-tuned settings, aliases) are
+  reported as `EXTRA` and **never removed**.
+- **Review before write.** The default run is read-only. Nothing is written
+  until the user approves an `--apply` run.
+- **Backups.** Every file the engine modifies is copied to `*.khenrix-backup`
+  first.
+
+## Steps
+
+1. **Review (read-only).** Run the engine and show the user its full output:
+
+   ```bash
+   python3 "$reconcile_path" --cli $cli
+   ```
+
+   The report lists each MCP server, setting, and the base-instructions file as
+   one of: ✅ MATCH, ➕ ADD (missing), ✏️ UPDATE (drifted), ⏭️ EXTRA (unmanaged,
+   left untouched).
+
+2. **Summarize** $summarize
+
+3. **Confirm.** Ask the user to approve applying the additions. Do not proceed
+   without an explicit yes.
+
+4. **Apply.** On approval, run:
+
+   ```bash
+   python3 "$reconcile_path" --cli $cli --apply
+   ```
+
+   $apply_summary
+
+5. **Verify.** $verify_step
+
+## Notes
+
+- If the user explicitly wants drifted managed entries re-aligned to the source
+  of truth (not just additions), add `--update-drift` to the apply command.
+  Default behaviour leaves existing managed entries as-is to avoid clobbering
+  local tweaks.
+$settings_note- To inspect the source of truth, read `capabilities.toml` at the plugin root.

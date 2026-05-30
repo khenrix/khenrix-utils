@@ -80,8 +80,11 @@ make verify         # validate manifests + skills
 - **Shared house style:** `house-style.md` (rendered into each CLI's memory file
   inside an idempotent `khenrix-managed` block)
 - **Shared skills:** `shared/skills/<name>/SKILL.md` (rendered into every plugin)
-- **The reconcile skill itself:** per-CLI under
-  `plugins/<cli>/khenrix-utils/skills/khenrix-setup/`
+- **The `khenrix-setup` / `khenrix-upgrade` skills:** one shared body in
+  `shared/skill-templates/<skill>/SKILL.md.tmpl`, with the provider-specific bits
+  (paths, commands, config terms, per-CLI procedure) in the
+  `[skill_facts.<skill>.<cli>]` tables in `capabilities.toml`. `render.py` fills the
+  template per CLI — never edit the generated `marketplaces/.../SKILL.md`.
 
 After editing, run **`make khenrix-refresh`** — it re-renders and pushes the
 updated plugin/skill/engine into every installed CLI in one step (Claude and
@@ -99,6 +102,7 @@ make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
 | `capabilities.toml` | LLM-agnostic capability manifest (zero-dependency TOML) |
 | `house-style.md` | Shared base instructions → CLAUDE.md / AGENTS.md / GEMINI.md |
 | `shared/skills/` | Canonical skill bodies copied into every plugin |
+| `shared/skill-templates/` | Shared body templates for the per-CLI skills (filled from `[skill_facts.*]`) |
 | `statusline/khenrix-statusline` | Shared status line renderer (Claude + agy), installed by the reconcile engine |
 | `marketplaces/<cli>/` | Per-CLI marketplace + plugin (Claude/Codex have a marketplace manifest; agy installs the plugin dir directly) |
 | `marketplaces/<cli>/plugins/khenrix-utils/` | Per-CLI plugin (bundles skills + a copy of the source of truth) |

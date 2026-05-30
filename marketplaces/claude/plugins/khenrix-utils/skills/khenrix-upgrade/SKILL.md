@@ -7,10 +7,10 @@ allowed-tools: Bash, Read, Edit, WebSearch, WebFetch
 # khenrix-upgrade (Claude Code)
 
 Modernize how this machine uses Claude Code. You research the latest changes and
-best practices, review the khenrix skills/plugins with Claude's own tooling, then
-improve the **khenrix-utils repo** and write a report of recommended live-config
-tuning. The **purpose** of each skill must not change — only *how* we use the CLI
-and models to get better results.
+best practices, review the khenrix skills/plugins with Claude's own tooling, then improve the
+**khenrix-utils repo** and write a report of recommended live-config tuning. The
+**purpose** of each skill must not change — only *how* we use the CLI and models to
+get better results.
 
 ## Ground rules
 - **Edit the repo, not the installed copy.** Locate the khenrix-utils repo
@@ -56,9 +56,8 @@ and models to get better results.
 5. **Apply repo edits.** Show each change as a diff, get approval, edit the repo,
    then run `make khenrix-refresh` from the **repo root** (the directory with the
    `Makefile` / `capabilities.toml`, not the installed plugin dir). If
-   `capabilities.toml` changed,
-   remind the user to run `/khenrix-setup` to apply it to the live config. Offer to
-   commit.
+   `capabilities.toml` changed, remind the user to run `/khenrix-setup` to apply it to the
+   live config. Offer to commit.
 
 6. **Write the report** to `docs/upgrades/claude-<YYYY-MM-DD>.md` in the repo
    (use today's date): findings per dimension, repo changes applied, and the

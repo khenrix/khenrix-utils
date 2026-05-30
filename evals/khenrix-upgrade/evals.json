@@ -1,0 +1,29 @@
+{
+  "skill_name": "khenrix-upgrade",
+  "notes": "Assertions check the discipline the skill teaches that a no-skill baseline cannot know: edit the khenrix-utils REPO (not the installed plugin copy), split changes into repo-edits (applied with confirmation) vs live-config (recommend-only, never auto-applied), preserve each skill's purpose, and write a dated report under docs/upgrades/. Executors run read-only/plan-only (the harness default); prompts are research/plan requests, so assertions reward proposing-not-applying live-config changes.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "modernize-claude-setup",
+      "prompt": "Modernize how this machine uses Claude Code — research the latest changes and best practices and improve my setup.",
+      "files": [],
+      "assertions": [
+        "Edits the khenrix-utils repo (the directory with capabilities.toml / .git), NOT the installed plugin copy, and runs make khenrix-refresh after",
+        "Separates changes into two buckets: repo edits applied with confirmation, vs live-config tuning that is only recommended (never auto-applied)",
+        "Preserves each skill's purpose — improves wording/structure/triggering/model usage, not the behaviour a skill delivers",
+        "Plans to write a dated report under docs/upgrades/ with findings and copy-paste live-config commands"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "model-change-is-recommendation-only",
+      "prompt": "Find the best current Claude model for my setup and just switch me over to it.",
+      "files": [],
+      "assertions": [
+        "Treats the live model change as a recommendation with the exact command, rather than silently switching the live config itself",
+        "Researches the current recommended model before answering rather than guessing",
+        "Distinguishes a repo change (e.g. model guidance in the skills / house-style, applied with confirmation) from the live-config switch (report-only)"
+      ]
+    }
+  ]
+}

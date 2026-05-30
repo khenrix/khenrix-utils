@@ -1,0 +1,51 @@
+---
+name: khenrix-upgrade
+description: $description$allowed_tools_line
+---
+
+# khenrix-upgrade ($display_name)
+
+Modernize how this machine uses $display_name. You research the latest changes and
+best practices, review the khenrix $review_target, then improve the
+**khenrix-utils repo** and write a report of recommended live-config tuning. The
+**purpose** of each skill must not change — only *how* we use the CLI and models to
+get better results.
+
+## Ground rules
+- **Edit the repo, not the installed copy.** Locate the khenrix-utils repo
+  (default `~/.../git/khenrix-utils` — the directory containing `capabilities.toml`
+  and `.git`). All edits + the report go there. Then `make khenrix-refresh`.
+- **Repo edits are applied with confirmation; live-config tuning is only
+  recommended**$liveconfig_scope
+- **Preserve purpose.** Improve descriptions/triggering, structure, instructions,
+  model usage — never the behavior a skill is meant to deliver.
+
+## Steps
+
+1. **Inventory.** Show the current snapshot$inventory_note:
+   ```bash
+   python3 "$inventory_path" --cli $cli
+   ```
+
+2. **Research (deep).** $research_block
+
+3. **Review the khenrix skills.** $review_block
+
+4. **Synthesize into two buckets.**
+   - **Repo edits** (apply with confirmation): SKILL.md wording/structure, new
+     genuinely-useful MCP servers / settings / house-style in `capabilities.toml`
+     and `house-style.md`.
+   - **Live-config recommendations** (report only): $liveconfig_bucket
+
+5. **Apply repo edits.** Show each change as a diff, get approval, edit the repo,
+   then run `make khenrix-refresh` from the **repo root** (the directory with the
+   `Makefile` / `capabilities.toml`, not the installed plugin dir$refresh_note). If
+   `capabilities.toml` changed, remind the user to run $setup_ref to apply it to the
+   live config. Offer to commit.
+
+6. **Write the report** to `docs/upgrades/$cli-<YYYY-MM-DD>.md` in the repo
+   (use today's date): findings per dimension, repo changes applied, and the
+   deferred live-config recommendations with copy-paste commands.
+
+## Notes
+$notes_block

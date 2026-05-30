@@ -5,36 +5,42 @@ description: Reconciles this Codex installation with the shared khenrix source o
 
 # khenrix-setup (Codex)
 
-Reconciles Codex with the shared khenrix capabilities in `capabilities.toml`
-(bundled at the plugin root). A deterministic engine — `scripts/reconcile.py` —
-does the diff and the **non-destructive** merge. Run it, present the review,
-then apply only after the user confirms.
+Reconciles Codex with the shared khenrix capabilities defined in
+`capabilities.toml` (bundled at the plugin root). The heavy lifting is done by a
+deterministic engine — `scripts/reconcile.py` — so the merge logic is reliable
+and **non-destructive**. Your job is to run it, present the review, and apply
+only after the user confirms.
 
 ## What "reconcile" means here
 
-- **Additive only.** Missing declared `[mcp_servers.*]` tables, settings keys,
-  trusted projects and shell aliases are added. Anything you configured outside
-  khenrix (e.g. a machine-only MCP server) is reported as `EXTRA` and **never removed**.
-- **Review before write.** The default run is read-only.
-- **Backups.** `~/.codex/config.toml` and `AGENTS.md` are copied to
-  `*.khenrix-backup` before any change.
+- **Additive only.** Missing declared entries are added. Entries the user added
+  outside khenrix (machine-specific MCP servers, hand-tuned settings, aliases) are
+  reported as `EXTRA` and **never removed**.
+- **Review before write.** The default run is read-only. Nothing is written
+  until the user approves an `--apply` run.
+- **Backups.** Every file the engine modifies is copied to `*.khenrix-backup`
+  first.
 
 ## Steps
 
-1. **Review (read-only).** Run the bundled engine and show its full output (Codex
-   provides `$PLUGIN_ROOT` for the installed plugin):
+1. **Review (read-only).** Run the engine and show the user its full output:
 
    ```bash
    python3 "$PLUGIN_ROOT/skills/khenrix-setup/scripts/reconcile.py" --cli codex
    ```
 
+   The report lists each MCP server, setting, and the base-instructions file as
+   one of: ✅ MATCH, ➕ ADD (missing), ✏️ UPDATE (drifted), ⏭️ EXTRA (unmanaged,
+   left untouched).
+
 2. **Summarize** the diff: which `[mcp_servers.*]` tables will be appended,
    which settings/trust entries are added, and confirm EXTRA entries (e.g. a
    Windows-only `chrome-devtools` on a non-Windows host) are left untouched.
 
-3. **Confirm.** Ask the user to approve. Do not proceed without an explicit yes.
+3. **Confirm.** Ask the user to approve applying the additions. Do not proceed
+   without an explicit yes.
 
-4. **Apply.** On approval:
+4. **Apply.** On approval, run:
 
    ```bash
    python3 "$PLUGIN_ROOT/skills/khenrix-setup/scripts/reconcile.py" --cli codex --apply
@@ -51,6 +57,8 @@ then apply only after the user confirms.
 
 ## Notes
 
-- Drift on an entry that already exists is reported but not overwritten unless
-  the user asks; add `--update-drift` to the apply command only then.
+- If the user explicitly wants drifted managed entries re-aligned to the source
+  of truth (not just additions), add `--update-drift` to the apply command.
+  Default behaviour leaves existing managed entries as-is to avoid clobbering
+  local tweaks.
 - To inspect the source of truth, read `capabilities.toml` at the plugin root.
