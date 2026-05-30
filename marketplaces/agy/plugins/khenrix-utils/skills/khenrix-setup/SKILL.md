@@ -1,6 +1,6 @@
 ---
 name: khenrix-setup
-description: Reconciles this Antigravity (agy) installation with the shared khenrix source of truth — reviews the live MCP servers in ~/.gemini/config/mcp_config.json, the trusted workspaces, and GEMINI.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their agy environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
+description: Reconciles this Antigravity (agy) installation with the shared khenrix source of truth — reviews the live MCP servers in ~/.gemini/config/mcp_config.json, the trusted workspaces, shell aliases, and GEMINI.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their agy environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
 ---
 
 # khenrix-setup (Antigravity / agy)
@@ -13,8 +13,9 @@ then apply only after the user confirms.
 ## What "reconcile" means here
 
 - **Additive only.** Missing declared MCP servers (added to
-  `~/.gemini/config/mcp_config.json`) and trusted workspaces are added. Anything
-  configured outside khenrix is reported as `EXTRA` and **never removed**.
+  `~/.gemini/config/mcp_config.json`), trusted workspaces and shell aliases are
+  added. Anything configured outside khenrix is reported as `EXTRA` and **never
+  removed**.
 - **Review before write.** The default run is read-only.
 - **Backups.** Modified files are copied to `*.khenrix-backup` first.
 
@@ -43,8 +44,9 @@ then apply only after the user confirms.
    python3 scripts/reconcile.py --cli agy --apply
    ```
 
-   This merges MCP servers into `mcp_config.json`, adds trusted workspaces, and
-   ensures the house-style block in `~/.gemini/GEMINI.md`.
+   This merges MCP servers into `mcp_config.json`, adds trusted workspaces,
+   ensures the managed alias block in `~/.bashrc`, and ensures the house-style
+   block in `~/.gemini/GEMINI.md`.
 
 5. **Verify.** Show `~/.gemini/config/mcp_config.json` so the user can confirm.
    Restart agy to pick up new servers.

@@ -1,6 +1,6 @@
 ---
 name: khenrix-setup
-description: Reconciles this Codex installation with the shared khenrix source of truth — reviews the live MCP servers in config.toml, the approval/sandbox/trust settings, and AGENTS.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Codex environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
+description: Reconciles this Codex installation with the shared khenrix source of truth — reviews the live MCP servers in config.toml, the approval/sandbox/trust settings, shell aliases, and AGENTS.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Codex environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
 ---
 
 # khenrix-setup (Codex)
@@ -12,9 +12,9 @@ then apply only after the user confirms.
 
 ## What "reconcile" means here
 
-- **Additive only.** Missing declared `[mcp_servers.*]` tables, settings keys and
-  trusted projects are added. Anything you configured outside khenrix (e.g. a
-  machine-only MCP server) is reported as `EXTRA` and **never removed**.
+- **Additive only.** Missing declared `[mcp_servers.*]` tables, settings keys,
+  trusted projects and shell aliases are added. Anything you configured outside
+  khenrix (e.g. a machine-only MCP server) is reported as `EXTRA` and **never removed**.
 - **Review before write.** The default run is read-only.
 - **Backups.** `~/.codex/config.toml` and `AGENTS.md` are copied to
   `*.khenrix-backup` before any change.
@@ -44,8 +44,9 @@ then apply only after the user confirms.
    ```
 
    New MCP servers are appended as TOML tables, absent `approval_policy` /
-   `sandbox_mode` / `[projects."…"]` trust keys are added, and the house-style
-   block is ensured in `~/.codex/AGENTS.md`.
+   `sandbox_mode` / `[projects."…"]` trust keys are added, the managed alias
+   block is ensured in `~/.bashrc`, and the house-style block is ensured in
+   `~/.codex/AGENTS.md`.
 
 5. **Verify.** Show the relevant `[mcp_servers.*]` sections of
    `~/.codex/config.toml` so the user can confirm. Changes apply on the next

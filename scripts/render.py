@@ -25,7 +25,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CLIS = ("claude", "codex", "agy")
 BUNDLED = ["capabilities.toml", "house-style.md"]
-RECONCILE = ROOT / "scripts" / "lib" / "reconcile.py"
+# Shared engine/helper scripts bundled into every skill's scripts/ dir so each
+# skill is self-contained after a marketplace copies the plugin.
+LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
+               ROOT / "scripts" / "lib" / "inventory.py"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 
 
@@ -85,12 +88,15 @@ def render():
             if dst.exists():
                 shutil.rmtree(dst)
             shutil.copytree(s, dst)
-        # 3. bundle the reconcile engine next to the per-CLI khenrix-setup skill
-        setup = pdir / "skills" / "khenrix-setup"
-        if setup.exists():
-            (setup / "scripts").mkdir(parents=True, exist_ok=True)
-            shutil.copy2(RECONCILE, setup / "scripts" / "reconcile.py")
-    print(f"rendered: bundled {BUNDLED} + reconcile.py into {len(CLIS)} plugins; "
+        # 3. bundle the shared engine/helper scripts into every skill's scripts/
+        skills_root = pdir / "skills"
+        if skills_root.exists():
+            for skill in (d for d in skills_root.iterdir() if (d / "SKILL.md").exists()):
+                (skill / "scripts").mkdir(parents=True, exist_ok=True)
+                for lib in LIB_SCRIPTS:
+                    shutil.copy2(lib, skill / "scripts" / lib.name)
+    libs = ", ".join(p.name for p in LIB_SCRIPTS)
+    print(f"rendered: bundled {BUNDLED} + [{libs}] into {len(CLIS)} plugins; "
           f"{len(shared_skills)} shared skill(s)")
 
 
@@ -101,8 +107,11 @@ def clean():
         for f in BUNDLED:
             (pdir / f).unlink(missing_ok=True)
             removed += 1
-        recon = pdir / "skills" / "khenrix-setup" / "scripts" / "reconcile.py"
-        recon.unlink(missing_ok=True)
+        skills_root = pdir / "skills"
+        if skills_root.exists():
+            for skill in skills_root.iterdir():
+                for lib in LIB_SCRIPTS:
+                    (skill / "scripts" / lib.name).unlink(missing_ok=True)
     print(f"cleaned rendered copies ({removed} files targeted)")
 
 

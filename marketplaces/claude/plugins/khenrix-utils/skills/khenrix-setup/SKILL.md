@@ -1,6 +1,6 @@
 ---
 name: khenrix-setup
-description: Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
+description: Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
 allowed-tools: Bash, Read
 ---
 
@@ -15,7 +15,7 @@ only after the user confirms.
 ## What "reconcile" means here
 
 - **Additive only.** Missing declared entries are added. Entries the user added
-  outside khenrix (machine-specific MCP servers, hand-tuned settings) are
+  outside khenrix (machine-specific MCP servers, hand-tuned settings, aliases) are
   reported as `EXTRA` and **never removed**.
 - **Review before write.** The default run is read-only. Nothing is written
   until the user approves an `--apply` run.
@@ -48,7 +48,8 @@ only after the user confirms.
    ```
 
    This adds MCP servers via `claude mcp add --scope user`, ensures the
-   house-style block in `~/.claude/CLAUDE.md`, and reports each action taken.
+   managed alias block in `~/.bashrc`, ensures the house-style block in
+   `~/.claude/CLAUDE.md`, and reports each action taken.
 
 5. **Verify.** Run `claude mcp list` and confirm the newly added servers appear.
    Note that MCP changes take effect in a new session.

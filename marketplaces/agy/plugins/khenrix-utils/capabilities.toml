@@ -61,6 +61,10 @@ url = "https://developers.openai.com/mcp"
 name = "khenrix-setup"
 per_cli = true
 
+[[skills]]
+name = "khenrix-upgrade"
+per_cli = true
+
 # ---------------------------------------------------------------------------
 # Baseline settings/policy — mapped to each CLI's native settings by the skill.
 # Applied only when the target key is ABSENT (never overrides your tuning).
@@ -69,6 +73,18 @@ per_cli = true
 approval_policy = "on-request"   # codex: approval_policy | claude: permissions | agy: prompt
 sandbox = "workspace-write"      # codex: sandbox_mode    | agy: --sandbox default
 trusted_paths = ["${HOME}", "${HOME}/git"]
+
+# ---------------------------------------------------------------------------
+# Shell aliases — appended as an idempotent managed block.
+# These are intentionally "dangerous/full-auto" launchers for trusted,
+# externally sandboxed environments.
+# ---------------------------------------------------------------------------
+[shell_aliases]
+target = "${HOME}/.bashrc"
+[shell_aliases.entries]
+clauded = "claude --dangerously-skip-permissions"
+aggy = "agy --dangerously-skip-permissions"
+codexo = "codex --dangerously-bypass-approvals-and-sandbox"
 
 # ---------------------------------------------------------------------------
 # Base instructions — one house-style doc rendered into each CLI's memory file

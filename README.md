@@ -2,7 +2,7 @@
 
 One source of truth for the agentic CLIs on this machine — **Claude Code**,
 **Codex**, and **Antigravity (`agy`)** — so they all share the same MCP servers,
-skills, base instructions, and baseline settings.
+skills, base instructions, baseline settings, and managed shell aliases.
 
 ## How it works
 
@@ -38,6 +38,23 @@ make setup-agy      # ... into Antigravity
 Then, inside the CLI, invoke the skill (e.g. `/khenrix-setup` in Claude Code).
 It prints a review table and asks before writing anything.
 
+### Keeping a CLI current — `khenrix-upgrade`
+
+Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:
+
+1. snapshot the current setup (`scripts/inventory.py`),
+2. **deep-research** the latest version changes, models, experimental features and
+   best practices for that CLI,
+3. review the khenrix skills with the CLI's native tooling (Claude `skill-creator`
+   / `skill-reviewer`; Codex `quick_validate.py`; agy `plugin validate`),
+4. apply repo improvements (SKILL.md / `capabilities.toml` / house-style) with
+   diffs + confirmation, then `make khenrix-refresh`, and
+5. write a dated report to `docs/upgrades/<cli>-<date>.md` with recommended
+   live-config tuning (model, reasoning effort, experimental flags) to apply yourself.
+
+It only improves **how** we use the CLI and models — it never changes what a skill
+is meant to do. Live model/flag changes are recommended, not auto-applied.
+
 ### Install mechanism differs per CLI
 
 The three CLIs ship the plugin slightly differently (the reconcile engine is
@@ -58,7 +75,7 @@ make verify         # validate manifests + skills
 
 ## Editing the source of truth
 
-- **MCP servers / settings / instruction targets:** `capabilities.toml`
+- **MCP servers / settings / shell aliases / instruction targets:** `capabilities.toml`
 - **Shared house style:** `house-style.md` (rendered into each CLI's memory file
   inside an idempotent `khenrix-managed` block)
 - **Shared skills:** `shared/skills/<name>/SKILL.md` (rendered into every plugin)
@@ -85,6 +102,20 @@ make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
 | `marketplaces/<cli>/plugins/khenrix-utils/` | Per-CLI plugin (bundles skills + a copy of the source of truth) |
 | `scripts/render.py` | Renders shared assets into plugins; validates |
 | `scripts/lib/reconcile.py` | The diff/merge engine the skills call |
+
+## Managed aliases
+
+`khenrix-setup --apply` adds an idempotent block to `~/.bashrc` with full-auto
+launch aliases:
+
+```bash
+clauded='claude --dangerously-skip-permissions'
+aggy='agy --dangerously-skip-permissions'
+codexo='codex --dangerously-bypass-approvals-and-sandbox'
+```
+
+These bypass normal permission prompts, so they are intended only for trusted
+workspaces or externally sandboxed environments.
 
 ## Why TOML, not YAML
 
