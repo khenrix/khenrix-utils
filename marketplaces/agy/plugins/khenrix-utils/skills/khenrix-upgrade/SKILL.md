@@ -1,6 +1,6 @@
 ---
 name: khenrix-upgrade
-description: Researches the latest Antigravity (agy) / Gemini version changes, models, experimental features and best practices, then reviews and improves how this setup uses agy — updating the khenrix-utils repo (skills, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their agy setup, adopt a newer/better Gemini model, try new features, or review and improve the khenrix skills/plugins. Does NOT change what the skills do — only how the CLI and models are used.
+description: Researches the latest Antigravity (agy) / Gemini CLI changes, models, experimental features and best practices, then reviews and improves how this machine uses agy — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their agy setup, adopt a newer/better Gemini model, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used.
 ---
 
 # khenrix-upgrade (Antigravity / agy)
@@ -22,9 +22,10 @@ skill must not change — only *how* we use the CLI and models.
 
 ## Steps
 
-1. **Inventory.** Show the current snapshot (run from this skill's `scripts/` dir):
+1. **Inventory.** Show the current snapshot (agy installs this plugin at a fixed
+   path):
    ```bash
-   python3 scripts/inventory.py --cli agy
+   python3 "$HOME/.gemini/config/plugins/khenrix-utils/skills/khenrix-upgrade/scripts/inventory.py" --cli agy
    ```
 
 2. **Research (deep).** Run a thorough, multi-source pass:
@@ -48,10 +49,11 @@ skill must not change — only *how* we use the CLI and models.
    - **Live-config recommendations** (report only): trusted workspaces, MCP, and
      any agy/Gemini usage guidance — with exact steps.
 
-5. **Apply repo edits.** Show diffs, confirm, edit the repo, run
-   `make khenrix-refresh` (for agy this re-installs the plugin). If
-   `capabilities.toml` changed, remind the user to run the `khenrix-setup` skill.
-   Offer to commit.
+5. **Apply repo edits.** Show diffs, confirm, edit the repo, then run
+   `make khenrix-refresh` from the **repo root** (the directory with the `Makefile`
+   / `capabilities.toml`, not the installed plugin dir; for agy this re-installs the
+   plugin). If `capabilities.toml` changed, remind the user to run the
+   `khenrix-setup` skill. Offer to commit.
 
 6. **Write the report** to `docs/upgrades/agy-<YYYY-MM-DD>.md` (today's date):
    findings per dimension, repo changes applied, deferred recommendations.

@@ -1,6 +1,6 @@
 ---
 name: khenrix-upgrade
-description: Researches the latest Claude Code version changes, models, experimental features and best practices, then reviews and improves how this setup uses the CLI — updating the khenrix-utils repo (skills, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Claude Code setup, pick a newer/better model, try new features, or review and improve the khenrix skills/plugins. Does NOT change what the skills do — only how the CLI and models are used.
+description: Researches the latest Claude Code CLI changes, models, experimental features and best practices, then reviews and improves how this machine uses Claude Code — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Claude Code setup, pick a newer/better model, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used.
 allowed-tools: Bash, Read, Edit, WebSearch, WebFetch
 ---
 
@@ -54,7 +54,9 @@ and models to get better results.
      `settings.json` `model`), and any new settings — with exact commands.
 
 5. **Apply repo edits.** Show each change as a diff, get approval, edit the repo,
-   then from the repo run `make khenrix-refresh`. If `capabilities.toml` changed,
+   then run `make khenrix-refresh` from the **repo root** (the directory with the
+   `Makefile` / `capabilities.toml`, not the installed plugin dir). If
+   `capabilities.toml` changed,
    remind the user to run `/khenrix-setup` to apply it to the live config. Offer to
    commit.
 

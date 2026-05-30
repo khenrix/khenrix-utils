@@ -48,7 +48,7 @@ only after the user confirms.
    ```
 
    This adds MCP servers via `claude mcp add --scope user`, ensures the
-   managed alias block in `~/.bashrc`, ensures the house-style block in
+   managed alias block in `~/.bash_aliases`, ensures the house-style block in
    `~/.claude/CLAUDE.md`, and reports each action taken.
 
 5. **Verify.** Run `claude mcp list` and confirm the newly added servers appear.

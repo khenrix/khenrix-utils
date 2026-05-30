@@ -21,15 +21,12 @@ then apply only after the user confirms.
 
 ## Steps
 
-1. **Review (read-only).** Run the bundled engine and show its full output. The
-   script lives in this skill's `scripts/` directory:
+1. **Review (read-only).** Run the bundled engine and show its full output (Codex
+   provides `$PLUGIN_ROOT` for the installed plugin):
 
    ```bash
-   python3 scripts/reconcile.py --cli codex
+   python3 "$PLUGIN_ROOT/skills/khenrix-setup/scripts/reconcile.py" --cli codex
    ```
-
-   (If the working directory isn't the skill root, use the absolute path to this
-   skill's `scripts/reconcile.py`.)
 
 2. **Summarize** the diff: which `[mcp_servers.*]` tables will be appended,
    which settings/trust entries are added, and confirm EXTRA entries (e.g. a
@@ -40,12 +37,12 @@ then apply only after the user confirms.
 4. **Apply.** On approval:
 
    ```bash
-   python3 scripts/reconcile.py --cli codex --apply
+   python3 "$PLUGIN_ROOT/skills/khenrix-setup/scripts/reconcile.py" --cli codex --apply
    ```
 
    New MCP servers are appended as TOML tables, absent `approval_policy` /
    `sandbox_mode` / `[projects."…"]` trust keys are added, the managed alias
-   block is ensured in `~/.bashrc`, and the house-style block is ensured in
+   block is ensured in `~/.bash_aliases`, and the house-style block is ensured in
    `~/.codex/AGENTS.md`.
 
 5. **Verify.** Show the relevant `[mcp_servers.*]` sections of

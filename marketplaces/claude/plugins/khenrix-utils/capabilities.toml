@@ -80,7 +80,7 @@ trusted_paths = ["${HOME}", "${HOME}/git"]
 # externally sandboxed environments.
 # ---------------------------------------------------------------------------
 [shell_aliases]
-target = "${HOME}/.bashrc"
+target = "${HOME}/.bash_aliases"
 [shell_aliases.entries]
 clauded = "claude --dangerously-skip-permissions"
 aggy = "agy --dangerously-skip-permissions"

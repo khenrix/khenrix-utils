@@ -1,6 +1,6 @@
 ---
 name: khenrix-upgrade
-description: Researches the latest Codex version changes, models, reasoning settings, experimental features and best practices, then reviews and improves how this setup uses Codex — updating the khenrix-utils repo (skills, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Codex setup, pick a newer/better model or reasoning effort, try new features, or review and improve the khenrix skills/plugins. Does NOT change what the skills do — only how the CLI and models are used.
+description: Researches the latest Codex CLI changes, models, reasoning settings, experimental features and best practices, then reviews and improves how this machine uses Codex — updating the khenrix-utils repo (skill wording, MCP, settings, house style) and writing a report of recommended live-config tuning. Use when the user wants to modernize, tune up, upgrade, or refresh their Codex setup, pick a newer/better model or reasoning effort, try experimental features, or review/improve the khenrix skills. Does NOT change what the skills do — only how the CLI and models are used.
 ---
 
 # khenrix-upgrade (Codex)
@@ -21,9 +21,10 @@ practices, review the khenrix skills with Codex's own tooling, then improve the
 
 ## Steps
 
-1. **Inventory.** Show the current snapshot (run from this skill's `scripts/` dir):
+1. **Inventory.** Show the current snapshot (Codex provides `$PLUGIN_ROOT` for the
+   installed plugin):
    ```bash
-   python3 scripts/inventory.py --cli codex
+   python3 "$PLUGIN_ROOT/skills/khenrix-upgrade/scripts/inventory.py" --cli codex
    ```
 
 2. **Research (deep).** Run a thorough, multi-source pass:
@@ -51,9 +52,10 @@ practices, review the khenrix skills with Codex's own tooling, then improve the
      `model_reasoning_effort`, `plan_mode_reasoning_effort`, `[features.*]` in
      `~/.codex/config.toml` — with exact `codex -c key=value` or edit commands.
 
-5. **Apply repo edits.** Show diffs, confirm, edit the repo, run
-   `make khenrix-refresh`. If `capabilities.toml` changed, remind the user to run
-   the `khenrix-setup` skill. Offer to commit.
+5. **Apply repo edits.** Show diffs, confirm, edit the repo, then run
+   `make khenrix-refresh` from the **repo root** (the directory with the `Makefile`
+   / `capabilities.toml`, not the installed plugin dir). If `capabilities.toml`
+   changed, remind the user to run the `khenrix-setup` skill. Offer to commit.
 
 6. **Write the report** to `docs/upgrades/codex-<YYYY-MM-DD>.md` (today's date):
    findings per dimension, repo changes applied, deferred live-config

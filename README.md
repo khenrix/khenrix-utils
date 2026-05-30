@@ -105,7 +105,7 @@ make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
 
 ## Managed aliases
 
-`khenrix-setup --apply` adds an idempotent block to `~/.bashrc` with full-auto
+`khenrix-setup --apply` adds an idempotent block to `~/.bash_aliases` with full-auto
 launch aliases:
 
 ```bash

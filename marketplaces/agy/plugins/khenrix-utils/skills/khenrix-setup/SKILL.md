@@ -21,14 +21,12 @@ then apply only after the user confirms.
 
 ## Steps
 
-1. **Review (read-only).** Run the bundled engine and show its full output:
+1. **Review (read-only).** Run the bundled engine and show its full output (agy
+   installs this plugin at a fixed path):
 
    ```bash
-   python3 scripts/reconcile.py --cli agy
+   python3 "$HOME/.gemini/config/plugins/khenrix-utils/skills/khenrix-setup/scripts/reconcile.py" --cli agy
    ```
-
-   (If the working directory isn't the skill root, use the absolute path to this
-   skill's `scripts/reconcile.py`.)
 
 2. **Summarize** the diff: which MCP servers will be added to
    `mcp_config.json`, which trusted workspaces are added to
@@ -41,11 +39,11 @@ then apply only after the user confirms.
 4. **Apply.** On approval:
 
    ```bash
-   python3 scripts/reconcile.py --cli agy --apply
+   python3 "$HOME/.gemini/config/plugins/khenrix-utils/skills/khenrix-setup/scripts/reconcile.py" --cli agy --apply
    ```
 
    This merges MCP servers into `mcp_config.json`, adds trusted workspaces,
-   ensures the managed alias block in `~/.bashrc`, and ensures the house-style
+   ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
    block in `~/.gemini/GEMINI.md`.
 
 5. **Verify.** Show `~/.gemini/config/mcp_config.json` so the user can confirm.
