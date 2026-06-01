@@ -29,6 +29,18 @@ def category_id(database, slug):
     return rows[0]["id"] if rows else None
 
 
+def low_confidence(database, threshold=0.6, limit=200):
+    """Reviewed rows whose enrichment was a low-confidence auto-label (places/mcc guesses) — surface them
+    so the user can re-confirm. `reopen` one to redo it. Excludes NULL confidence (manually-set rows)."""
+    return database.select("transaction", {
+        "review_status": "eq.reviewed",
+        "enrichment_confidence": "lt." + str(threshold),
+        "select": ("id,account_id,booked_date,charged_amount_minor,currency,raw_descriptor,"
+                   "merchant_id,category_id,enrichment_source,enrichment_confidence"),
+        "order": "enrichment_confidence.asc", "limit": str(limit),
+    })
+
+
 # ── split math (materialized rows; payer absorbs the öre remainder) ─────────────
 def even_split(shareable_minor, person_ids, payer_id):
     """Even split that sums EXACTLY to shareable_minor; the PAYER absorbs the öre remainder.
@@ -70,9 +82,12 @@ def cache_alias(database, *, provider, normalized_descriptor, merchant_id,
 
 
 def commit(database, tx_id, *, shareable_minor, split_type, splits,
-           merchant_id=None, merchant_location_id=None, category_id=None):
+           merchant_id=None, merchant_location_id=None, category_id=None,
+           enrichment_source=None, enrichment_confidence=None):
     """Finalize a transaction: set fields, replace split rows, mark reviewed.
-    Invariant (caller-enforced): sum(amt for _, amt in splits) == shareable_minor."""
+    Invariant (caller-enforced): sum(amt for _, amt in splits) == shareable_minor.
+    `enrichment_source` (cache|details|mcc|places|wint|manual) + `enrichment_confidence` (0..1) record
+    HOW the merchant/category was derived — so low-confidence auto-labels can be re-reviewed later."""
     if shareable_minor == 0 and splits:
         # a personal / zero-shareable row must carry NO split rows (else a bad zero-sum split hits the balance)
         raise ValueError("zero shareable (personal) must have no split rows")
@@ -82,12 +97,15 @@ def commit(database, tx_id, *, shareable_minor, split_type, splits,
     elif shareable_minor:
         # nonzero shareable with no split rows would silently leave the balance empty — reject it
         raise ValueError(f"shareable {shareable_minor} requires split rows (use shareable 0 for personal)")
-    # Single transactional RPC (migration 005) — update + replace-splits atomically, so a partial
+    if enrichment_confidence is not None and not (0 <= enrichment_confidence <= 1):
+        raise ValueError(f"enrichment_confidence {enrichment_confidence} out of range 0..1")
+    # Single transactional RPC (migration 005/008/009) — update + replace-splits atomically, so a partial
     # failure can't leave a 'reviewed' row with zero/partial splits silently dropped from the balance.
     database.request("POST", "/rpc/review_commit", body={
         "p_tx": tx_id, "p_shareable": shareable_minor, "p_split_type": split_type,
         "p_merchant": merchant_id, "p_location": merchant_location_id, "p_category": category_id,
         "p_splits": [{"person_id": pid, "share_amount_minor": amt} for pid, amt in splits],
+        "p_enrich_source": enrichment_source, "p_enrich_confidence": enrichment_confidence,
     }, prefer="return=minimal")
 
 
@@ -133,11 +151,17 @@ def _selftest():
         splits = even_split(-10001, [cid, aid], payer_id=cid)        # payer absorbs öre
         assert sum(a for _, a in splits) == -10001, splits
         commit(d, tx["id"], shareable_minor=-10001, split_type="even", splits=splits,
-               merchant_id=m["id"], merchant_location_id=loc["id"], category_id=cat)
+               merchant_id=m["id"], merchant_location_id=loc["id"], category_id=cat,
+               enrichment_source="details", enrichment_confidence=0.9)   # provenance recorded
 
         row = d.select("transaction", {"id": "eq." + tx["id"],
-                                       "select": "review_status,category_id,shareable_amount_minor"})[0]
+                "select": "review_status,category_id,shareable_amount_minor,enrichment_source,enrichment_confidence"})[0]
         assert row["review_status"] == "reviewed" and row["shareable_amount_minor"] == -10001, row
+        assert row["enrichment_source"] == "details" and float(row["enrichment_confidence"]) == 0.9, row
+        # provenance helpers: MCC map + captured-hint (seeded tx has no raw_observation) + low-confidence filter
+        assert enrich.category_for_mcc("5411") == "dagligvaror" and enrich.category_for_mcc("3201") == "resa"
+        assert enrich.captured_hint(d, tx["id"], "swedbank") == {}, "no raw_observation → empty hint"
+        assert tx["id"] not in {r["id"] for r in low_confidence(d, threshold=0.6)}, "0.9 is not low-confidence"
         bal = sum(r["owed_minor"] for r in d.select("v_balance", {"debtor_id": "eq." + aid}))
         assert bal == -5000, f"Anna owed {bal}, expected -5000 (debtor gets clean half; payer absorbs the öre)"
         # H4: a fresh resolve of the SAME raw descriptor must now hit the cache (the "free next time" promise)

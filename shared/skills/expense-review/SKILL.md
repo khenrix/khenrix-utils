@@ -47,16 +47,25 @@ Tell the user how many are queued, then process them **one at a time** (or batch
 
 For each transaction:
 
-**a. Resolve the merchant (local-first).** `enrich.resolve_merchant(d, provider, raw_descriptor)` returns
-`source: cache` (already known → auto-fill, no questions), or `source: places` with a `candidate`
-(Google Places suggestion), or `source: none` (fall back to your own reasoning from the descriptor).
-The `provider` is the account's provider (`swedbank`/`amex`/`sas`).
+**a. Resolve the merchant (local-first, captured-details before Places).** Always pass the **transaction
+id** so the resolver can use what the *source already captured* before spending a Places call —
+`enrich.resolve_merchant(d, provider, raw_descriptor, tx_id=r["id"])` returns a `source`:
+- `cache` → known alias, **auto-fill, no questions** (`merchant_id`/`merchant_location_id` set; `confidence` carried).
+- `details` → the **source's own merchant name** (Amex `mn`/`extended_details.merchant`; a Swedbank details
+  pass): use `captured.name` as the canonical merchant; the Places `candidate`, if any, only corroborates
+  address/website. This is the common, high-trust path for Amex — prefer it over re-guessing from the descriptor.
+- `mcc` → no name but a captured MCC → `mcc_category` is the taxonomy slug to default the category to.
+- `places` → a Google Places `candidate` (suggestion to confirm).
+- `none` → fall back to your own reasoning from the descriptor + ask the user.
+
+`provider` is the account's provider (`swedbank`/`amex`/`sas`). Record which `source` won (+ a confidence)
+on commit (step d) so the label is auditable and low-confidence guesses can be re-reviewed.
 
 ```bash
 python3 - <<'PY'
 import db, enrich, json
 d = db.PostgREST()
-print(json.dumps(enrich.resolve_merchant(d, "amex", "KLARNA *SYSTEMBOLAGET STHLM"), default=str))
+print(json.dumps(enrich.resolve_merchant(d, "amex", "SPOTIFYSE STOCKHOLM", tx_id="<tx-uuid>"), default=str))
 PY
 ```
 
@@ -65,9 +74,10 @@ PY
 - New merchant → confirm the canonical name with the user, then `review.upsert_merchant(...)`,
   optionally `review.upsert_location(...)`, and **always** `review.cache_alias(...)` so it's free next time.
 
-**b. Categorize.** Order: cached merchant default → `mcc` (if present, map via taxonomy) → descriptor rules
-in `taxonomy.md` → your best judgment. Propose one of the 14 category slugs; let the user correct.
-Write the confirmed category onto the merchant (`default_category_id`) so repeats auto-fill.
+**b. Categorize.** Order: cached merchant default → **MCC** (`enrich.category_for_mcc(mcc)`, or the
+`mcc_category` already on the resolve result) → descriptor rules in `taxonomy.md` → your best judgment.
+Propose one of the 14 category slugs; let the user correct. Write the confirmed category onto the merchant
+(`default_category_id`) so repeats auto-fill.
 
 **c. Decide the split.** Default is **even 50/50 of the shareable amount**, where `shareable_amount_minor`
 defaults to `charged_amount_minor`. Ask only when it isn't the default. Cases:
@@ -89,9 +99,16 @@ cat = review.category_id(d, "systembolaget")
 TX = "<transaction-uuid>"; SHAREABLE = -23900            # from the row / user's adjustment
 splits = review.even_split(SHAREABLE, [cid, aid], payer_id=cid)
 review.commit(d, TX, shareable_minor=SHAREABLE, split_type="even", splits=splits,
-              merchant_id="<merchant-uuid>", merchant_location_id=None, category_id=cat)
+              merchant_id="<merchant-uuid>", merchant_location_id=None, category_id=cat,
+              enrichment_source="details", enrichment_confidence=0.9)   # how the merchant was derived
 PY
 ```
+
+**Provenance & re-review.** Always pass `enrichment_source` + `enrichment_confidence` on commit — they
+record *how* the label was derived so guesses can be revisited. Convention: `cache`→1.0 (carry the alias's
+confidence), `manual`→1.0, `details`→0.9, `wint`→0.9, `places`→0.7, `mcc`→0.5 (category only — merchant still
+uncertain). Later, `review.low_confidence(d, threshold=0.6)` lists reviewed rows that were low-confidence
+auto-labels; `review.reopen(d, TX)` any you want to redo.
 
 ## Ignored / transfers / refunds
 
@@ -106,7 +123,8 @@ keeps owing her half. Only `mark_ignored(..., kind="refund")` a refund of a *per
 `expense-fetch` auto-links Wint receipts to bank rows. Handle the two ends:
 - A bank charge with **`is_reimbursable=true`** (it mirrors a `wint_expense.charge_transaction_id`) is a
   *company* cost, not a household one → default it to **`split_type='personal'`, `shareable_minor=0`, no
-  splits** (off the Christoffer↔Anna balance — the company pays it back). Still categorize it normally.
+  splits** (off the Christoffer↔Anna balance — the company pays it back). Still categorize it normally; the
+  merchant comes from the linked receipt's supplier → commit with `enrichment_source='wint'`.
 - A **reimbursement deposit** (`kind='reimbursement'`, `is_transfer=true`) is already off the balance —
   leave it `ignored`; don't split or categorize it as income.
 - Show settlement state with `d.select("v_wint_reconciliation", {})`: `pending` (awaiting payout),

@@ -1,6 +1,6 @@
 {
   "skill_name": "expense-review",
-  "notes": "These grade the categorize/split/merchant DECISIONS the skill encodes (compact SE taxonomy, charged-vs-shareable split model, öre-rounding direction, personal/ignored/reimbursable rules, brand→location canonicalization, processor stripping, refund-of-shared). Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) gets several of these wrong (refund→ignore overcharges; öre floored to the debtor; company expense split with Anna) where the skill's rule is right. Money is integer öre; expenses negative.",
+  "notes": "These grade the categorize/split/merchant DECISIONS the skill encodes (compact SE taxonomy, charged-vs-shareable split model, öre-rounding direction, personal/ignored/reimbursable rules, brand→location canonicalization, processor stripping, refund-of-shared, captured-details-before-Places ordering, and enrichment provenance/confidence labeling). Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) gets several of these wrong (refund→ignore overcharges; öre floored to the debtor; company expense split with Anna; web-searching a noisy descriptor instead of using the source's own captured merchant name; not down-weighting an MCC-only category) where the skill's rule is right. Money is integer öre; expenses negative.",
   "evals": [
     {
       "id": 0,
@@ -72,6 +72,30 @@
         "Explicitly says it should NOT be ignored (ignoring it leaves Anna owing her half of the original purchase)",
         "The refund's split sums to its shareable amount",
         "Notes this differs from a refund of a personal/ignored purchase (which would be ignored)"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "captured-merchant-before-places",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I'm reviewing an Amex transaction: raw descriptor \"AMAZONRETAIL*NN79L8KZ4 WWW.AMAZON.SE\", -211.04 SEK. The source (Amex) already captured a clean merchant name \"AMAZON RETAIL\" for this row, with no MCC. State exactly: how you resolve the merchant (do you use the captured name, or send the raw descriptor to a Google Places / web lookup?), the ORDER you try things in, the category, and what enrichment provenance — source + rough confidence — you record.",
+      "files": [],
+      "assertions": [
+        "Uses the source-captured merchant name (Amazon) rather than parsing or web-searching the noisy raw descriptor",
+        "Tries the local alias cache first, then the source-captured details, BEFORE any Google Places / external lookup",
+        "Does NOT send the raw 'AMAZONRETAIL*NN79L8KZ4 WWW.AMAZON.SE' string to an external merchant lookup as the merchant query",
+        "Records provenance as source 'details' with high confidence (~0.9), distinct from a lower-confidence Places guess; categorizes as shopping"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "mcc-only-low-confidence-provenance",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A card transaction has an unhelpful descriptor with no recognizable merchant name, but the feed carried an MCC of 5814 (fast-food restaurant). State exactly: what category you assign and how, what enrichment source and confidence you record, whether the merchant identity is considered settled, and whether this row should be easy to find later for re-review.",
+      "files": [],
+      "assertions": [
+        "Assigns the restaurang (restaurant/café) category by mapping the MCC 5814",
+        "Records enrichment source 'mcc' with LOW confidence (around 0.5) because the MCC gives the category but not the merchant",
+        "Treats the merchant identity as still uncertain (not a confident merchant match)",
+        "Says the low-confidence label can be surfaced later for re-review (e.g. a low-confidence queue) and corrected"
       ]
     }
   ]
