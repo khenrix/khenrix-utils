@@ -40,9 +40,11 @@ GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
 GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
 
 [mcp_servers.chrome-devtools]
-platform = "windows"   # PowerShell launcher — skipped on non-Windows hosts
+platform = "windows"   # PowerShell launcher — also eligible on WSL (interop)
 transport = "stdio"
-command = "powershell.exe"
+# Absolute WSL-interop shim (not bare `powershell.exe`) so the launcher resolves
+# even when the CLI starts the server with a minimal PATH.
+command = "${HOME}/.local/bin/powershell.exe"
 args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
 
 # Provider-specific docs MCP. Only the matching CLI gets it; omit a provider to

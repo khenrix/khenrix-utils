@@ -83,6 +83,21 @@ def current_os() -> str:
     )
 
 
+def is_wsl() -> bool:
+    return "microsoft" in platform.release().lower()
+
+
+def host_platforms() -> set:
+    """Platform tags this host can launch a server on. An MCP `platform` gate
+    matches if it is in this set. WSL satisfies both "linux" (native binaries)
+    and "windows" (Windows binaries via interop, e.g. powershell.exe), so
+    interop-launched servers like chrome-devtools reconcile here too."""
+    tags = {current_os()}
+    if current_os() == "linux" and is_wsl():
+        tags.add("windows")
+    return tags
+
+
 def run(cmd: list[str]):
     return subprocess.run(cmd, capture_output=True, text=True)
 
@@ -125,10 +140,10 @@ def shell_command_executable(command: str) -> Path | None:
 def desired_mcp(caps: dict, cli: str) -> dict:
     """name -> spec, platform-filtered, including the provider docs server."""
     out = {}
-    osname = current_os()
+    hosts = host_platforms()
     for name, spec in caps.get("mcp_servers", {}).items():
         plat = spec.get("platform")
-        if plat and plat != osname:
+        if plat and plat not in hosts:
             continue
         out[name] = spec
     docs = caps.get("docs_mcp", {}).get(cli)
