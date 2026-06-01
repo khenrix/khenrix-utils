@@ -1,6 +1,6 @@
 {
   "skill_name": "expense-review",
-  "notes": "These grade the categorize/split/merchant DECISIONS the skill encodes (compact SE taxonomy, charged-vs-shareable split model, öre-rounding direction, personal/ignored/reimbursable rules, brand→location canonicalization, processor stripping, refund-of-shared, captured-details-before-Places ordering, and enrichment provenance/confidence labeling). Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) gets several of these wrong (refund→ignore overcharges; öre floored to the debtor; company expense split with Anna; web-searching a noisy descriptor instead of using the source's own captured merchant name; not down-weighting an MCC-only category) where the skill's rule is right. Money is integer öre; expenses negative.",
+  "notes": "These grade the categorize/split/merchant DECISIONS the skill encodes (compact SE taxonomy, charged-vs-shareable split model, öre-rounding direction, personal/ignored/reimbursable rules, brand→location canonicalization, processor stripping, refund-of-shared, captured-details-before-Places ordering, and enrichment provenance/confidence labeling). Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) gets several of these wrong (refund→ignore overcharges; öre floored to the debtor; company expense split with Anna; web-searching a noisy descriptor instead of using the source's own captured merchant name; not down-weighting an MCC-only category; force-matching an Amazon order to one charge when it shipped/billed in pieces) where the skill's rule is right. Money is integer öre; expenses negative.",
   "evals": [
     {
       "id": 0,
@@ -96,6 +96,18 @@
         "Records enrichment source 'mcc' with LOW confidence (around 0.5) because the MCC gives the category but not the merchant",
         "Treats the merchant identity as still uncertain (not a confident merchant match)",
         "Says the low-confidence label can be surfaced later for re-review (e.g. a low-confidence queue) and corrected"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "deep-enrich-amazon-order-detail",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have several Amazon charges on my Amex (e.g. -211.04 SEK) and I want to know WHAT I actually bought, not just 'Amazon'. I'm willing to log in to Amazon. Note that Amazon often splits one order into several card charges (it ships and bills per shipment). State exactly: how you'd get the line items, how you'd match Amazon orders to the card charge(s) including the multi-charge-per-order case, what you'd do when a match is ambiguous, where the line items get stored, and how the charge is labelled afterwards.",
+      "files": [],
+      "assertions": [
+        "Logs into Amazon's own account (human login) and pulls the order's line items — not a Google Places / web guess from the descriptor",
+        "Matches orders to charges by amount + date conservatively, explicitly handling one order → several charges (per-shipment), and links all those charges to the single order",
+        "On an ambiguous or non-unique match, flags it for manual linking rather than force-matching",
+        "Stores the itemized line items (an order with its lines, linked to the charge) so 'what did I buy' is queryable, and labels the charge with enrichment source 'merchant' (high confidence); treats this as an opt-in step while the rest of review stays offline"
       ]
     }
   ]

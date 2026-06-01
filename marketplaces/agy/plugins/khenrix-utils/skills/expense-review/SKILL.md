@@ -4,12 +4,14 @@ description: >-
   Go through un-handled bank/card transactions in the Supabase expense database one at a time —
   resolve each to a canonical merchant, categorize it, and decide how the cost splits between
   Christoffer Henriksson and Anna Knoph (default 50/50 of an adjustable shareable amount; or mark it
-  personal / ignored). Reads transactions that expense-fetch ingested (review_status='new'); needs no
-  bank access. Use when the user wants to review, categorize, split, or "go through" their expenses,
-  settle who owes whom, or fix a previously-reviewed transaction. Triggers: "go through my expenses",
-  "review expenses", "categorize transactions", "split the costs", "what does Anna owe", "handle the
-  new transactions".
-allowed-tools: Bash, Read
+  personal / ignored). Reads transactions that expense-fetch ingested (review_status='new'); the core
+  pass needs no browser, plus an optional in-review deep-enrichment that logs into a merchant
+  (Amazon/Google/PayPal) to pull order line items for opaque charges. Use when the user wants to review,
+  categorize, split, or "go through" their expenses, settle who owes whom, fix a previously-reviewed
+  transaction, or itemize what a charge was. Triggers: "go through my expenses", "review expenses",
+  "categorize transactions", "split the costs", "what does Anna owe", "handle the new transactions",
+  "what did I buy on Amazon", "pull the order detail", "itemize this charge".
+allowed-tools: Bash, Read, mcp__chrome-devtools__list_pages, mcp__chrome-devtools__new_page, mcp__chrome-devtools__select_page, mcp__chrome-devtools__navigate_page, mcp__chrome-devtools__take_snapshot, mcp__chrome-devtools__click, mcp__chrome-devtools__evaluate_script, mcp__chrome-devtools__list_network_requests, mcp__chrome-devtools__get_network_request
 ---
 
 # expense-review
@@ -130,6 +132,38 @@ keeps owing her half. Only `mark_ignored(..., kind="refund")` a refund of a *per
 - Show settlement state with `d.select("v_wint_reconciliation", {})`: `pending` (awaiting payout),
   `paid_unlinked` (Wint paid out but no matching Swedbank deposit found — help the user locate/confirm it),
   `settled` (matched). Summarize "company expenses still owed to you: N (X kr)".
+
+## Deep-enrichment — pull a merchant's own order detail (opt-in, in-review, human login)
+
+Some charges name a merchant but not *what was bought* (Amazon), or hide the real payee (PayPal, online
+Google Pay). For those you can log into the **merchant's own account** and pull the order line items, matched
+to the card charge(s). This is the **only** part of review that drives the browser — everything else is
+offline. It's **opt-in**: skipping just leaves the row enriched at the normal `details`/`places` level.
+
+Engine: `deepenrich.py` (matcher + DB writers, tested). Tables: `merchant_order` + `merchant_order_line` +
+`order_charge_link` (migration 010); `v_transaction_detail` joins a transaction to its line items.
+
+1. **Find the queue.** `deepenrich.needs_deep_enrich(d, source="amazon")` returns unlinked purchase charges
+   whose merchant is in the registry (`amazon`/`paypal`/`google-play`/`google-pay`/`apple`/`klarna`). Batch by
+   merchant; tell the user ("8 Amazon charges lack order detail — pull them? you'll log in"). Proceed only on yes.
+2. **Capture the orders (human-in-the-loop).** User logs into the merchant (e.g. `amazon.se` → "Returer och
+   beställningar"). Drive the *authenticated* session like a fetch adapter — capture the order list + per-order
+   detail. **Amazon**: each order page shows items + a *per-shipment* payment; build one `order` dict per order:
+   `{source:"amazon", external_order_id, order_date, total_minor(+), currency, status, raw,
+   shipments?:[{amount_minor(+), date?}], lines:[{description, qty?, amount_minor(+), category_hint?}]}`. Scrape
+   the DOM via `evaluate_script`, or use the Blob→`/mnt/c/.../Downloads` bridge for any JSON (same CSP lesson as
+   the banks; never hardcode endpoints).
+3. **Match (conservative).** `charges = deepenrich.needs_deep_enrich(d, source=...)`;
+   `m = deepenrich.match_orders_to_charges(orders, charges)`. It links ONLY unambiguous matches (per-shipment
+   exact, else a unique order-total subset-sum within the date window) and never reuses a charge. **Show the
+   user `m["ambiguous"]` + `m["unmatched"]`** — link those by hand or skip; never force a match.
+4. **Attach + finalize.** For each link, `deepenrich.attach(d, order, order["lines"], [tx_id])` writes the order
+   + lines + charge link. Then run the normal Step-2 loop on each linked charge using the line items to pick the
+   merchant/category, and **commit with `enrichment_source='merchant'`, `enrichment_confidence≈0.95`**. A single
+   order spanning several charges (Amazon ships in pieces) links all of them to the one order.
+
+Other merchants (`google-play`/`one`, `paypal`, `apple`, `klarna`) follow the same shape; build the adapter when
+needed. Full design + roadmap: `~/.claude/plans/merchant-deep-enrichment.md`.
 
 ## Batch mode (keep it fast)
 
