@@ -1,0 +1,78 @@
+{
+  "skill_name": "expense-review",
+  "notes": "These grade the categorize/split/merchant DECISIONS the skill encodes (compact SE taxonomy, charged-vs-shareable split model, öre-rounding direction, personal/ignored/reimbursable rules, brand→location canonicalization, processor stripping, refund-of-shared). Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) gets several of these wrong (refund→ignore overcharges; öre floored to the debtor; company expense split with Anna) where the skill's rule is right. Money is integer öre; expenses negative.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "coop-same-brand-new-location",
+      "prompt": "Answer inline in prose — do NOT enter plan mode, write a plan file, or run any tools; just state the answer. I'm recording a transaction: raw descriptor \"COOP NÄRA FINSPÅNG\", -104.93 SEK, Swedbank account. The database already has a merchant \"Coop\" (slug coop) with one location \"Coop Älvsjö\" (Stockholm). State exactly: which merchant to use, whether a new location is created, the category, and the 50/50 split between Christoffer (payer) and Anna in öre.",
+      "files": [],
+      "assertions": [
+        "Reuses the EXISTING 'Coop' merchant rather than creating a second Coop merchant",
+        "Adds a NEW merchant_location 'Coop Nära Finspång' (Finspång) under the existing Coop via foreign key",
+        "Categorizes as groceries (dagligvaror)",
+        "Splits the full charged amount 50/50; on the odd öre the debtor (Anna) gets the clean 5246 öre and the payer absorbs 5247 öre (sum 10493)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "reimbursed-group-dinner-shareable",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I (Christoffer) paid a 2000 SEK restaurant bill on my Amex for a dinner with Anna and three friends; the three friends Swished me back 1200 SEK total. State exactly how to record this so BOTH the charged amount and the Christoffer/Anna split are correct: give the charged amount, the shareable amount, and each person's share.",
+      "files": [],
+      "assertions": [
+        "Keeps the charged amount at 2000 SEK (does not overwrite it with the shared figure)",
+        "Sets the shareable amount to the truly-shared 800 SEK (shareable < charged)",
+        "Splits the 800 SEK 50/50 → 400 SEK each; the 1200 SEK reimbursed portion stays off the Christoffer↔Anna balance",
+        "Does NOT mark it personal (it is partly shared with Anna)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "anna-absent-personal",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A 450 SEK restaurant charge on my card from a work lunch Anna was not part of — entirely my own cost. State exactly how the split should be recorded: the split type, the shareable amount, and whether Anna owes anything.",
+      "files": [],
+      "assertions": [
+        "Marks it personal (split_type personal), not split with Anna",
+        "Sets the shareable amount to 0 so it contributes nothing to the Anna↔Christoffer balance, with NO split rows",
+        "Anna owes nothing for it",
+        "Still keeps the charged amount (450 SEK) and still categorizes it"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "processor-stripping-systembolaget",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. Raw descriptor \"KLARNA *SYSTEMBOLAGET STHLM\", -239.00 SEK. State the merchant, the category, and how the merchant lookup should be done.",
+      "files": [],
+      "assertions": [
+        "Strips the KLARNA * payment-processor prefix before matching (Klarna is NOT the merchant)",
+        "Resolves the merchant to Systembolaget",
+        "Categorizes as Systembolaget (alcohol), not generic shopping",
+        "Would not send 'KLARNA *SYSTEMBOLAGET' verbatim to an external merchant lookup (expands STHLM→Stockholm for location)"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "internal-transfer-and-reimbursable",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. Two rows: (a) a -8000 SEK payment from my Swedbank account, \"ÖVERFÖRING SAS MASTERCARD\" — me paying off my own SAS card bill; (b) a -979 SEK Amex charge that is a company expense already in Wint and flagged is_reimbursable. State exactly how EACH should be handled for the Christoffer/Anna split and balance.",
+      "files": [],
+      "assertions": [
+        "Treats (a) as an internal transfer — ignored / is_transfer, kept off the household balance, not split, not a spend category",
+        "Treats (b) the reimbursable company expense as personal / shareable 0 — kept off the Christoffer↔Anna balance because the company reimburses it",
+        "Does NOT split either one 50/50 with Anna",
+        "Still categorizes (b) normally while keeping it off the split"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "refund-of-shared-credits-anna",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A +500 SEK refund/credit on my Amex for a jacket I returned. That jacket was a shared purchase Anna and I had previously split 50/50. State exactly how to record this refund so the balance stays correct — and say explicitly whether it should be 'ignored'.",
+      "files": [],
+      "assertions": [
+        "Splits the refund symmetrically — positive shareable, opposite sign of the original — crediting Anna back ~250 SEK",
+        "Explicitly says it should NOT be ignored (ignoring it leaves Anna owing her half of the original purchase)",
+        "The refund's split sums to its shareable amount",
+        "Notes this differs from a refund of a personal/ignored purchase (which would be ignored)"
+      ]
+    }
+  ]
+}

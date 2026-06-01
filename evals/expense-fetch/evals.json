@@ -1,0 +1,90 @@
+{
+  "skill_name": "expense-fetch",
+  "notes": "These grade the ingest/dedup/reconcile/capture DECISIONS the skill encodes. Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, and an operational skill otherwise defers to plan-mode and answers nothing. The discriminating signal is that the naive answer (no skill) tends to get these wrong (collapse same-day dupes; replay endpoints to paginate; treat 'since latest' as always safe) where the skill's rule is right. Money is integer öre; expenses negative.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "same-day-identical-not-collapsed",
+      "prompt": "Answer inline in prose — do NOT enter plan mode, write a plan file, or run any tools; just state the answer. My Swedbank feed for one day has two byte-for-byte identical transactions: both \"PRESSBYRAN 42084\", both -39.00 SEK, both 2026-05-24, and the provider gives no unique id for them. State exactly how the import should handle these two rows, the specific risk a naive dedup would cause, and whether re-fetching the same window later would double-insert or stay safe.",
+      "files": [],
+      "assertions": [
+        "Keeps BOTH transactions — does not collapse the two identical same-day purchases into one",
+        "Explains a naive hash over (account, date, amount, descriptor) would silently drop the second",
+        "Uses a per-(date,amount,descriptor) occurrence index (or running balance/source_seq) so identical same-day rows get distinct keys",
+        "Notes re-fetching the same window stays idempotent"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "pending-to-booked-promotion",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. Yesterday I imported a PENDING Amex transaction: id ABC123, -500.00 SEK, 'ICA SUPERMARKET'. Today it has BOOKED with the same id but -512.30 SEK (FX) and a different posting date. State exactly how a re-import should handle this so I don't end up with two transactions.",
+      "files": [],
+      "assertions": [
+        "Matches the existing row by its stable provider id (external_id) and UPDATES it rather than inserting",
+        "Promotes booking_status pending → booked and corrects the amount/date in place",
+        "Only mutates if it hasn't already been reviewed",
+        "Does not create a second transaction for the same external id"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "wint-reimbursement-reconciliation",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A Wint company receipt: 500 SEK, 2026-02-10, 'Eget utlägg', PaidOut=true, PaymentDate 2026-02-20. My bank data has a -500 SEK Amex charge on 2026-02-10 and a +500 SEK Swedbank deposit on 2026-02-20. State exactly how these should be linked, how it affects the Christoffer/Anna household split, and what should happen if two different bank charges both matched the receipt's amount and date.",
+      "files": [],
+      "assertions": [
+        "Links the receipt to the -500 charge and marks that charge reimbursable",
+        "Links the receipt to the +500 deposit and marks the deposit a reimbursement / transfer",
+        "Keeps the reimbursable charge OFF the Christoffer↔Anna balance (company cost, reimbursed)",
+        "Only auto-links on an unambiguous single match (else leaves it for manual confirmation)"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "capture-not-replay",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. To fetch my Swedbank and Amex transactions via the chrome-devtools MCP, should I read the endpoint URL once and then re-issue (replay) that request myself with query params to paginate? State the robust approach and why.",
+      "files": [],
+      "assertions": [
+        "Says to CAPTURE the app's own already-authenticated responses, not replay from scratch",
+        "Explains bare replays fail (Amex 400 'account token', Swedbank 401) because the app injects auth headers the page can't reconstruct",
+        "Does not recommend hardcoding endpoint URLs as a durable contract",
+        "Notes Wint is the exception where replay works (capturable short-lived bearer token + CORS allows the app origin)"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "idless-partial-fetch-overlap",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. My SAS Excel export has no stable per-row id and no running-balance column. If I always fetch only 'since the latest stored date', could I lose a transaction? State how the fetch window should be set and why.",
+      "files": [],
+      "assertions": [
+        "Recognizes occurrence-based dedup can't disambiguate a lone identical row in a partial fetch — a genuine same-day duplicate could be dropped",
+        "Recommends an overlap window (a few days before the latest stored date) so same-day duplicate groups arrive complete",
+        "Notes feeds with a stable external_id or a running-balance source_seq are immune",
+        "Does not claim a naive 'since latest' slice is always safe for an id-less feed"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "sas-has-no-json-api",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I want to fetch my SAS EuroBonus World Mastercard (SEB Kort) transactions programmatically the way I do for Swedbank/Amex — by capturing a JSON transactions API. Is there one for SAS/SEB Kort, and what is the realistic approach to get those transactions into the database?",
+      "files": [],
+      "assertions": [
+        "States there is NO clean JSON transactions API to capture for SAS/SEB Kort (the portal is a Next.js RSC app and secure.sebkort.com is WAF-protected)",
+        "Recommends the manual Excel export (Kontoutdrag → Exportera till Excel) ingested as XLSX",
+        "Does NOT invent or assume a JSON transactions endpoint for SAS",
+        "Notes SAS detail is thin, so it leans on the review skill's enrichment to fill merchant/category"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "swedbank-two-pass-details",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. When I fetch my Swedbank transactions, the list rows lack merchant / MCC / message detail I need. How do I capture the full detail for each transaction, and how should the fetch be structured?",
+      "files": [],
+      "assertions": [
+        "Knows the list endpoint (engagement/transactions/{accountId}) omits the full detail and there is a per-transaction details endpoint (engagement/transactions/details/{id})",
+        "Describes a two-pass capture: list to get each row's detail id, then fetch each detail and merge",
+        "Says to CAPTURE the app's own responses rather than replaying (bare replay 401s) and to store the full payload",
+        "Sets external_id from the stable detail id for reliable dedup/promotion"
+      ]
+    }
+  ]
+}
