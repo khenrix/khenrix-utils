@@ -25,13 +25,18 @@ _FIELD_MASK = ",".join([
 
 
 def _places_key():
-    if os.environ.get("GOOGLE_PLACES_API_KEY"):
-        return os.environ["GOOGLE_PLACES_API_KEY"]
+    names = ("EXPENSES_GOOGLE_PLACES_API_KEY", "GOOGLE_PLACES_API_KEY")   # namespaced name preferred
+    for n in names:
+        if os.environ.get(n):
+            return os.environ[n]
     if _ENV_PATH.exists():                                   # fallback to the shared env file
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if line.startswith("GOOGLE_PLACES_API_KEY=") and not line.startswith("#"):
-                return line.split("=", 1)[1].strip().strip('"').strip("'") or None
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() in names:
+                return v.strip().strip('"').strip("'") or None
     return None
 
 

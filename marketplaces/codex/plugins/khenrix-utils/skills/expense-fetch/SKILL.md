@@ -23,7 +23,7 @@ work. Never hardcode endpoint URLs as a durable contract; discover them live. En
 `db.py` + `normalize.py` (deterministic, tested).
 
 ## Setup
-- `cd scripts/`; secrets from `~/.config/khenrix-utils/expenses.env` (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`).
+- `cd scripts/`; secrets from `~/.config/khenrix-utils/expenses.env` or env (`SUPABASE_URL`, `EXPENSES_SUPABASE_SECRET_KEY` — falls back to `SUPABASE_SECRET_KEY`).
 - Apply migrations once if the DB is empty: `psql "$POSTGRES_URL_NON_POOLING" -f migrations/001_init.sql` (then `002`,`003`).
 - Confirm the chrome-devtools MCP is connected (`list_pages`). Money is integer **öre**; expenses negative.
 - **Default window** per account = `db.get_last_tx_date(d, slug)` (fetch only newer); also accept "last week", a range, or "all".

@@ -22,7 +22,7 @@ and split math; **you** do the merchant/category/split reasoning and talk to the
 ## Setup (once per run)
 
 - `cd` to this skill's `scripts/` directory so `import db, review, enrich, normalize` resolve.
-- Secrets load from `~/.config/khenrix-utils/expenses.env` (or env): `SUPABASE_URL`, `SUPABASE_SECRET_KEY`
+- Secrets load from `~/.config/khenrix-utils/expenses.env` (or env): `SUPABASE_URL`, `EXPENSES_SUPABASE_SECRET_KEY`
   (+ optional `GOOGLE_PLACES_API_KEY`). If a Supabase var is missing, stop and tell the user.
 - Category meanings + merchant→category rules: read `../references/taxonomy.md`.
 - **Never print secrets.** Money is integer **öre** everywhere (−10000 = −100.00 SEK; expenses are negative).

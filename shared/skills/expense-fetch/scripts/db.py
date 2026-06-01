@@ -16,8 +16,12 @@ import urllib.parse
 from pathlib import Path
 
 ENV_PATH = Path.home() / ".config" / "khenrix-utils" / "expenses.env"
-_ENV_KEYS = ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
-             "SUPABASE_PUBLISHABLE_KEY", "GOOGLE_PLACES_API_KEY")
+# EXPENSES_-prefixed names take precedence so they don't collide with other Supabase projects' keys
+# in the user's shell; the unprefixed names remain as fallbacks.
+_ENV_KEYS = ("EXPENSES_SUPABASE_URL", "SUPABASE_URL",
+             "EXPENSES_SUPABASE_SECRET_KEY", "SUPABASE_SECRET_KEY", "SUPABASE_SERVICE_ROLE_KEY",
+             "EXPENSES_SUPABASE_PUBLISHABLE_KEY", "SUPABASE_PUBLISHABLE_KEY",
+             "EXPENSES_GOOGLE_PLACES_API_KEY", "GOOGLE_PLACES_API_KEY")
 
 
 def load_env():
@@ -49,12 +53,13 @@ class PostgRESTError(RuntimeError):
 class PostgREST:
     def __init__(self, cfg=None):
         cfg = cfg or load_env()
-        url = cfg.get("SUPABASE_URL")
-        # New-format secret key (sb_secret_...) preferred; legacy service_role JWT as fallback.
-        self.key = cfg.get("SUPABASE_SECRET_KEY") or cfg.get("SUPABASE_SERVICE_ROLE_KEY")
+        url = cfg.get("EXPENSES_SUPABASE_URL") or cfg.get("SUPABASE_URL")
+        # Prefer the namespaced EXPENSES_ secret; new-format sb_secret_ key, then legacy service_role JWT.
+        self.key = (cfg.get("EXPENSES_SUPABASE_SECRET_KEY") or cfg.get("SUPABASE_SECRET_KEY")
+                    or cfg.get("SUPABASE_SERVICE_ROLE_KEY"))
         if not url or not self.key:
             raise SystemExit(
-                "Missing SUPABASE_URL / SUPABASE_SECRET_KEY "
+                "Missing SUPABASE_URL / EXPENSES_SUPABASE_SECRET_KEY "
                 f"(set them in {ENV_PATH} or the environment)."
             )
         self.host = urllib.parse.urlparse(url).netloc
