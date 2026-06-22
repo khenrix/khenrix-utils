@@ -96,6 +96,10 @@ TRANSIENT_SENTINELS = [
     "try again later",
     "temporarily unavailable",
 ]
+# Real-world failure strings observed across the three CLIs (extend in place so the
+# additions read as list growth, not string concatenation). All lowercase — input is lowered.
+PERSISTENT_SENTINELS.extend(["unauthenticated", "permission denied"])
+TRANSIENT_SENTINELS.extend(["heap out of memory", "econnreset", "503"])
 NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota"}
 
 
@@ -653,6 +657,11 @@ def self_test() -> int:
     cx = m["providers"][0]
     check("noisy-ok: valid despite sentinel-laden stderr", cx["valid"] and cx["reason"] == "ok")
     check("noisy-ok: single attempt (not failed+retried)", cx["attempts"] == 1)
+
+    # S13 — classify_sentinel directly covers the real-world strings folded into the tables.
+    check("sentinel: unauthenticated → persistent", classify_sentinel("UNAUTHENTICATED") == "auth_or_quota")
+    check("sentinel: heap OOM → transient", classify_sentinel("heap out of memory") == "error_sentinel")
+    check("sentinel: clean text → None", classify_sentinel("here is your answer") is None)
 
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:

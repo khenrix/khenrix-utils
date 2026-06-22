@@ -53,6 +53,11 @@ agy -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)" \
 - `-p` / `--print` runs a single prompt non-interactively and prints the response.
 - `--print-timeout <dur>` bounds the wait (default `5m`).
 - `--add-dir <path>` widens the workspace.
+- **Auth EOL (as of 2026-06):** consumer-OAuth Gemini/agy access is slated to wind down
+  around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an
+  auth/quota error (it prints nothing to stdout on a 429 and logs `RESOURCE_EXHAUSTED` /
+  `Individual quota reached`), this is the likely cause; the council classifies it
+  `auth_or_quota` and does not retry.
 
 ## Cross-review example
 
