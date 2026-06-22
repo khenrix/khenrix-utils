@@ -165,6 +165,12 @@ claude = "${HOME}/.claude/CLAUDE.md"
 codex = "${HOME}/.codex/AGENTS.md"
 agy = "${HOME}/.gemini/GEMINI.md"
 
+# Per-CLI instruction overlays — appended INSIDE the managed house-style block for the
+# matching CLI only (raw markdown; reconcile injects it between the markers). Omit a CLI
+# to add nothing. Additive + drift-aware, same as the shared house-style block.
+[instructions.overlays]
+claude = "overlays/claude.md"
+
 # ===========================================================================
 # Skill facts — provider-specific fill-ins for the templated per-CLI skills
 # (khenrix-setup, khenrix-upgrade). render.py substitutes these into

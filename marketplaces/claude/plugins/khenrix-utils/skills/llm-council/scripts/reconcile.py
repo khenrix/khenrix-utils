@@ -612,18 +612,27 @@ def shell_aliases_report(caps: dict):
 
 
 # ----- live state: instructions ----------------------------------------------
-def managed_block(caps: dict) -> str:
+def managed_block(caps: dict, cli: str | None = None) -> str:
     src = caps["_dir"] / caps["instructions"]["source"]
     text = src.read_text()
     i, j = text.find(MANAGED_BEGIN), text.find(MANAGED_END)
     if i == -1 or j == -1:
-        return text.strip() + "\n"
-    return text[i:j + len(MANAGED_END)]
+        # no markers in source → inject them, so the result is always a managed block
+        # (keeps reconcile idempotent even if house-style.md ever loses its markers)
+        body, end = MANAGED_BEGIN + "\n" + text.strip() + "\n", MANAGED_END
+    else:
+        body, end = text[i:j], text[j:j + len(MANAGED_END)]
+    # per-CLI overlay: appended INSIDE the managed markers for the matching CLI only
+    overlay_fn = (caps["instructions"].get("overlays") or {}).get(cli) if cli else None
+    if overlay_fn:
+        ov = (caps["_dir"] / overlay_fn).read_text().strip()
+        body = body.rstrip() + "\n\n" + ov + "\n"
+    return body + end
 
 
 def instructions_report(cli: str, caps: dict):
     target = Path(expand(caps["instructions"]["targets"][cli]))
-    block = managed_block(caps)
+    block = managed_block(caps, cli)
     cur = target.read_text() if target.exists() else ""
     i, j = cur.find(MANAGED_BEGIN), cur.find(MANAGED_END)
     present = i != -1 and j != -1

@@ -62,6 +62,7 @@ smoke-llm-council: ## Live smoke test of the council vs one real provider (costs
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test
 	$(PY) scripts/lib/checks.py --self-test
+	$(PY) scripts/lib/reconcile_test.py
 
 eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
 	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),)
