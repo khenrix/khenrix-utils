@@ -66,6 +66,7 @@ eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) scripts/lib/checks.py --self-test
 	$(PY) scripts/lib/reconcile_test.py
 	$(PY) scripts/claude_session_stats.py --self-test
+	$(PY) scripts/session_report.py --self-test
 	$(PY) scripts/eval_trigger.py --self-test
 
 eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
