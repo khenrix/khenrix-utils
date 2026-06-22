@@ -35,4 +35,13 @@ that CLI's own config, not here.
   (non-interactive print/exec mode) — see `headless-invocation.md`. Useful for
   cross-reviewing a plan or diff before acting.
 
+## Skill & command hygiene
+
+- In skills that declare `allowed-tools`, keep each Bash command a single command —
+  do NOT chain with `&&`, `||`, or `;`; chaining defeats allow-list matching and forces
+  a permission prompt. Run separate steps instead.
+- Read env vars with `printenv VAR` and check the exit code, not `${VAR}` expansion —
+  some CLIs treat `${VAR}` as a prompt-worthy security concern even when allow-listed.
+- Interpret `test`/`command -v` exit codes directly; don't `echo` a result and re-parse it.
+
 <!-- khenrix-managed:end house-style -->

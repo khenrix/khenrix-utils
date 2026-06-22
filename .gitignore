@@ -20,3 +20,6 @@ evals/*/workspace/
 
 # Claude Code local runtime state
 .claude/scheduled_tasks.lock
+
+# Large external archives reviewed locally — never commit (may contain secrets)
+*.zip
