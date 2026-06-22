@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify test smoke-llm-council eval eval-test status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test smoke-llm-council eval eval-test status clean
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -48,6 +48,11 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 verify: render ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 
+precommit: verify ## Commit-boundary gate: render must be in sync (Inc7 adds the eval-receipt gate)
+	$(PY) scripts/render.py
+	@git diff --quiet -- marketplaces/ || { echo "✗ render drift: regenerate + stage rendered output ('git add marketplaces/')"; exit 1; }
+	@echo "✅ render in sync"
+
 test: ## Run the deterministic llm-council engine self-test (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
 
@@ -56,6 +61,7 @@ smoke-llm-council: ## Live smoke test of the council vs one real provider (costs
 
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test
+	$(PY) scripts/lib/checks.py --self-test
 
 eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
 	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),)

@@ -55,6 +55,19 @@ transport = "http"
 url = "https://developers.openai.com/mcp"
 
 # ---------------------------------------------------------------------------
+# Approved model IDs per provider — the single registry the model-consistency
+# lint (scripts/lib/checks.py) cross-checks fanout.py's MODES against. This is a
+# CONSISTENCY check (every MODES model is registered), NOT a freshness check —
+# keeping models current is khenrix-upgrade's job. Values are the literal source
+# strings; agy's is a display label (its real model lives in ~/.gemini settings).
+# ---------------------------------------------------------------------------
+[models]
+last_reviewed = "2026-06-22"
+claude = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+codex  = ["gpt-5.5"]
+agy    = ["Gemini 3.5 Flash (High)"]
+
+# ---------------------------------------------------------------------------
 # Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
 # each plugin by scripts/render.py. `khenrix-setup` and `khenrix-upgrade` are
 # per-CLI: their shared body lives in shared/skill-templates/<name>/SKILL.md.tmpl

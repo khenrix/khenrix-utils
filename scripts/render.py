@@ -186,6 +186,11 @@ def check() -> int:
             tomllib.load(f)
     except Exception as e:  # noqa: BLE001
         problems.append(f"capabilities.toml: {e}")
+    # deterministic source-of-truth checks — skip if capabilities.toml itself failed to parse
+    if not any("capabilities.toml" in p for p in problems):
+        sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+        import checks  # noqa: E402
+        problems.extend(checks.run_all(ROOT))
     if problems:
         print("VALIDATION FAILED:")
         for p in problems:
