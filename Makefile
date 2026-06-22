@@ -47,11 +47,13 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 
 verify: render ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
+	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
-precommit: verify ## Commit-boundary gate: render must be in sync (Inc7 adds the eval-receipt gate)
+precommit: verify ## Commit-boundary gate: render in sync + every changed skill has a fresh eval receipt
 	$(PY) scripts/render.py
 	@git diff --quiet -- marketplaces/ || { echo "✗ render drift: regenerate + stage rendered output ('git add marketplaces/')"; exit 1; }
-	@echo "✅ render in sync"
+	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
+	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
 
 test: ## Run the deterministic llm-council engine self-test (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test

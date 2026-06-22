@@ -42,6 +42,7 @@ import argparse
 import json
 import re
 import statistics
+import subprocess
 import sys
 from pathlib import Path
 
@@ -307,6 +308,41 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
     return runs
 
 
+def _checks():
+    sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+    import checks  # noqa: E402
+    return checks
+
+
+def _write_receipt(skill, *, providers, mode, judge, delta, seeded):
+    """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
+    For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark."""
+    c = _checks()
+    rec = {
+        "skill": skill,
+        "source_hash": c.source_hash(ROOT, skill),
+        "eval_set_hash": c.eval_set_hash(ROOT, skill),
+        "providers": providers, "mode": mode, "judge": judge,
+        "delta_pass_rate": delta,
+        "provenance": "seeded: blessed current committed state" if seeded else "eval",
+    }
+    if skill == "llm-council":
+        rc = subprocess.run([sys.executable, str(FANOUT_DIR / "fanout.py"), "--self-test"])
+        if rc.returncode != 0:  # never bless a failing engine with a green receipt
+            raise SystemExit("llm-council self-test failed; not writing receipt")
+        rec.update(self_test=True, synthesis_review="manual-attested")
+    (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
+
+
+def seed_receipts(args) -> int:
+    """Stamp a receipt for every eval'd skill at its current committed state."""
+    for skill in _checks()._evald_skills(ROOT):
+        _write_receipt(skill, providers=args.providers.split(","), mode=args.mode,
+                       judge=args.judge, delta=None, seeded=True)
+        print(f"  seeded receipt: {skill}")
+    return 0
+
+
 def run(args) -> int:
     spec = load_evals(args.skill)
     evals = spec["evals"]
@@ -337,6 +373,9 @@ def run(args) -> int:
     (itdir / "benchmark.json").write_text(json.dumps(benchmark, indent=2))
     _print_summary(benchmark, itdir)
     d = benchmark["run_summary"]["delta"].get("pass_rate")
+    if d is None or d >= 0:  # passing run → refresh the receipt
+        _write_receipt(args.skill, providers=providers, mode=args.mode,
+                       judge=args.judge, delta=d, seeded=False)
     return 0 if (d is None or d >= 0) else 1
 
 
@@ -440,6 +479,8 @@ def parse_args(argv=None):
     sb.add_argument("--no-readonly", dest="readonly", action="store_false",
                     help="run executors with full permissions (only for skills that must write)")
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")
+    ap.add_argument("--seed-receipt", action="store_true",
+                    help="stamp receipt.json for every eval'd skill at its current committed state")
     return ap.parse_args(argv)
 
 
@@ -447,8 +488,10 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.seed_receipt:
+        return seed_receipts(args)
     if not args.skill:
-        sys.exit("--skill is required (or use --self-test)")
+        sys.exit("--skill is required (or use --self-test / --seed-receipt)")
     return run(args)
 
 

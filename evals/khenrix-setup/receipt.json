@@ -1,0 +1,12 @@
+{
+  "skill": "khenrix-setup",
+  "source_hash": "375cdcea69f56f776678be391a49f5bf93cf15e6c1dc4e3a14ad441045c0b737",
+  "eval_set_hash": "44c575ebf43510a62c0a34239393504671aafc1c5474648f67aaf6b330880070",
+  "providers": [
+    "claude"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": null,
+  "provenance": "seeded: blessed current committed state"
+}

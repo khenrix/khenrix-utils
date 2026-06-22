@@ -106,11 +106,102 @@ def run_all(root: Path = ROOT) -> list[str]:
     return model_crosscheck(root) + scan_secrets(root) + structure_checks(root, caps)
 
 
+# --------------------------------------------------------------------------- #
+# Eval-receipt gate (Increment 7) — source-input closure → hash → freshness gate.
+# --------------------------------------------------------------------------- #
+LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundled into every skill
+GLOBAL_INPUTS = ["scripts/render.py"]  # render assembly affects EVERY rendered body
+# Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
+# capabilities.toml + house-style.md (+ overlays); llm-council bundles headless-invocation.md.
+SKILL_EXTRA = {
+    "khenrix-setup":   ["capabilities.toml", "house-style.md"],
+    "khenrix-upgrade": ["capabilities.toml", "house-style.md"],
+    "llm-council":     ["headless-invocation.md"],
+}
+
+
+def _sha(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+def _skill_source_files(root: Path, skill: str) -> list[Path]:
+    """Full behavior-affecting input closure for a skill: its own dir, the LIB_SCRIPTS
+    + render.py bundled/applied to every skill, and skill-specific extras (reconcile
+    inputs / overlays / headless doc). Excludes pycache/pyc."""
+    files = []
+    for base in (root / "shared" / "skills" / skill,
+                 root / "shared" / "skill-templates" / skill):
+        if base.is_dir():
+            files += [p for p in base.rglob("*") if p.is_file()
+                      and "__pycache__" not in p.parts and p.suffix != ".pyc"]
+    for rel in LIB_SCRIPTS + GLOBAL_INPUTS + SKILL_EXTRA.get(skill, []):
+        p = root / rel
+        if p.is_file():
+            files.append(p)
+    if skill in ("khenrix-setup", "khenrix-upgrade"):  # overlays change reconcile output
+        caps = _load_caps(root)
+        for ov in (caps.get("instructions", {}).get("overlays") or {}).values():
+            p = root / ov
+            if p.is_file():
+                files.append(p)
+    return files
+
+
+def source_manifest(root: Path, skill: str) -> list:
+    """Sorted (relpath, sha256) pairs + canonical skill_facts slice for templated skills."""
+    entries = []
+    for p in _skill_source_files(root, skill):
+        entries.append((str(p.relative_to(root)), _sha(p.read_bytes())))
+    caps = _load_caps(root)
+    facts = caps.get("skill_facts", {}).get(skill)
+    if facts is not None:
+        entries.append((f"skill_facts:{skill}",
+                        _sha(json.dumps(facts, sort_keys=True).encode())))
+    return sorted(entries)
+
+
+def source_hash(root: Path, skill: str) -> str:
+    return _sha(json.dumps(source_manifest(root, skill), sort_keys=True).encode())
+
+
+def eval_set_hash(root: Path, skill: str) -> str:
+    return _sha((root / "evals" / skill / "evals.json").read_bytes())
+
+
+def _evald_skills(root: Path) -> list[str]:
+    return sorted(p.name for p in (root / "evals").glob("*/")
+                  if (p / "evals.json").exists())
+
+
+def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
+    out = []
+    for skill in _evald_skills(root):
+        rp = root / "evals" / skill / "receipt.json"
+        if not rp.exists():
+            out.append(f"receipt: {skill} has no receipt — run `make eval SKILL={skill}` (or `--seed-receipt`)")
+            continue
+        rec = json.loads(rp.read_text())
+        if rec.get("source_hash") != source_hash(root, skill):
+            out.append(f"receipt: {skill} changed since last eval — run `make eval SKILL={skill}`")
+        elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
+            out.append(f"receipt: {skill} eval set changed — run `make eval SKILL={skill}`")
+    return ["(advisory) " + m for m in out] if advisory else out
+
+
 def _self_test() -> int:
     ok = []
     ok.append(("secret regex detects slack", any(rx.search("xoxp-1234567890abcde") for rx in SECRET_FAIL)))
     ok.append(("secret regex ignores prose", not any(rx.search("the quick brown fox jumps") for rx in SECRET_FAIL)))
     ok.append(("secret regex detects AKIA", any(rx.search("AKIAIOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
+    # hash stability + closure membership (mutating any listed file WILL change source_hash)
+    ok.append(("source_hash stable", source_hash(ROOT, "llm-council") == source_hash(ROOT, "llm-council")))
+    ok.append(("llm-council closure includes fanout.py",
+               any("fanout.py" in r for r, _ in source_manifest(ROOT, "llm-council"))))
+    ok.append(("every skill closure includes reconcile.py (LIB_SCRIPTS)",
+               any("reconcile.py" in r for r, _ in source_manifest(ROOT, "expense-review"))))
+    ok.append(("khenrix-setup closure includes capabilities.toml + render.py",
+               {"capabilities.toml", "scripts/render.py"} <=
+               {r for r, _ in source_manifest(ROOT, "khenrix-setup")}))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

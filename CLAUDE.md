@@ -61,6 +61,14 @@ harness is the baseline that also covers agy. `llm-council` is the exception —
 model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness
 (see the process doc).
 
+`make eval` writes `evals/<skill>/receipt.json` (skill source-closure hash + eval-set hash)
+on a passing run. **`make precommit`** is the commit-boundary gate: it checks render is in
+sync AND that every eval'd skill's receipt matches its current source (a changed skill with a
+stale/missing receipt fails). `make verify` only warns about stale receipts — run
+`make precommit` before committing a skill change. The source closure includes the bundled
+`scripts/lib/*` and `scripts/render.py`, so editing the reconcile engine correctly stales
+every skill. Seed receipts for the current blessed state with `eval_harness.py --seed-receipt`.
+
 ## Constraints
 
 - Python is stdlib-only (no pip dependencies; `tomllib`, `json`, `subprocess`, …). Don't

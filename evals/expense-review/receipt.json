@@ -1,0 +1,12 @@
+{
+  "skill": "expense-review",
+  "source_hash": "5dae72778f1fbf57ced01f7c83c3d694aad279d71c2dd13c46e363530463fb52",
+  "eval_set_hash": "c7b1d307ba290d2c28d91c42ab61205eae964cac2034f7ff97e5fedd5c57098e",
+  "providers": [
+    "claude"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": null,
+  "provenance": "seeded: blessed current committed state"
+}
