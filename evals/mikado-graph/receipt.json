@@ -1,0 +1,14 @@
+{
+  "skill": "mikado-graph",
+  "source_hash": "d33a6c436bb43361fb2c60129f9a7cd564ca80872dac0a4b5428b902598a7730",
+  "eval_set_hash": "6362877f623d5455dc19e254a3d22b16a64dccb55d16cf6c9c3421e6b3a0c646",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.1042,
+  "provenance": "eval"
+}

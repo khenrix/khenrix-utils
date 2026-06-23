@@ -1,0 +1,54 @@
+{
+  "skill_name": "mikado-graph",
+  "notes": "Grade the Mikado Method DECISIONS: revert-on-discovery (keep the prerequisite learning, throw away the half-done attempt), leaf-first ordering (only nodes whose prerequisites are all done are actionable), re-implement-don't-cherry-pick (implement a ready node fresh on a clean base, not by salvaging the reverted spike), and reactive splitting of a sprawled branch into independently-mergeable nodes. The naive answer (no skill) tends to: power through the breakage, start at the goal, salvage the spike branch, or keep pushing one giant branch. Inline Q&A; read-only harness.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "revert-on-discovery",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I started a big refactor; partway in it breaks three call sites that each need their own prep first. Using the Mikado Method, state exactly what to do with my current half-done changes and how to record what I learned.",
+      "files": [],
+      "assertions": [
+        "Records each newly-discovered prerequisite as a child node of the change being attempted",
+        "REVERTS the half-done attempt (the Mikado move) rather than pushing through the breakage",
+        "Keeps the learning (the graph/prerequisites), not the half-done code",
+        "Plans to do the prerequisites first, then re-attempt the original change"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "leaf-first-only-ready",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. My Mikado graph: goal depends on A and B; A depends on C; B and C have no unmet prerequisites. Using the method, state which node(s) I should implement first and why, and whether I can start on the goal now.",
+      "files": [],
+      "assertions": [
+        "Says to start with the leaves B and C (nodes whose prerequisites are all done), in any order",
+        "Does NOT start the goal (it has unmet prerequisites A and B)",
+        "Notes A becomes actionable only after C is done; goal only after A and B",
+        "Frames only leaf/ready nodes as actionable, enforced by the dependency order"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "reimplement-not-cherrypick",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A prerequisite node just became ready (all its deps are done). I still have the messy exploratory branch from when I first discovered this prerequisite. Using the Mikado Method, state how I implement the now-ready node.",
+      "files": [],
+      "assertions": [
+        "Implements the ready node FRESH on a clean/current base",
+        "Does NOT cherry-pick or salvage the reverted exploratory/spike branch",
+        "Treats the spike code as throwaway and the graph as the durable artifact",
+        "Makes it an independently-mergeable commit"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "reactive-split-sprawled-branch",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I have a branch that sprawled into 40 files and won't merge cleanly. Using the Mikado Method reactively, state how to turn it into something mergeable.",
+      "files": [],
+      "assertions": [
+        "Factors the sprawl into a dependency graph of smaller nodes (what could merge on its own; what blocks what)",
+        "Re-implements each node cleanly on main rather than forcing the giant branch through",
+        "Each node is independently mergeable; a node that can't merge alone has a hidden prerequisite to add",
+        "Abandons/throws away the sprawled branch as the source of truth (the graph + fresh commits replace it)"
+      ]
+    }
+  ]
+}

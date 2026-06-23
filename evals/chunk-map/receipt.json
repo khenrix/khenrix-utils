@@ -1,0 +1,14 @@
+{
+  "skill": "chunk-map",
+  "source_hash": "8145caecc16814a3f8b36fba52a6ed7163ad1876e605c314f15fad8bf554df11",
+  "eval_set_hash": "fefc0d74b2ac3dd3832cca91f1e336534657ec14e67bd3e5e8ede369b9837a03",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.0833,
+  "provenance": "eval"
+}

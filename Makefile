@@ -68,6 +68,8 @@ eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) scripts/claude_session_stats.py --self-test
 	$(PY) scripts/session_report.py --self-test
 	$(PY) scripts/eval_trigger.py --self-test
+	$(PY) shared/skills/chunk-map/scripts/codebase_stats.py --self-test
+	$(PY) shared/skills/mikado-graph/scripts/mikado.py --self-test
 
 eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
 	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),)

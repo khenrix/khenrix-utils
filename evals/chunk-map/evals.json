@@ -1,0 +1,54 @@
+{
+  "skill_name": "chunk-map",
+  "notes": "Grade the chunk-map method DECISIONS: size by reasoning-capacity (not a fixed line count), git co-change as the PRIMARY boundary signal (imports second — they miss hidden coupling), lazy staleness derived via git diff against a recorded sha (never a stored flag), and seam-leak detection by grepping cross-chunk refs to non-exposed symbols. The naive answer (no skill) tends to: split strictly at a line-count threshold; use only the import graph; store an is_stale flag; silently widen a seam. Inline Q&A; read-only harness.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "size-by-reasoning-not-linecount",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I'm chunking a codebase for review. One file is a 240-line dense state machine; another area is 760 lines of flat data-transfer structs. Using the chunk-map approach, state how you decide chunk size for each, and whether a strict 'split every 400 lines' rule is right.",
+      "files": [],
+      "assertions": [
+        "Sizes by reasoning capacity / one coherent responsibility, NOT a fixed line count (200–800 is a guide, not a rule)",
+        "Would keep the dense 240-line state machine as one chunk (or even cap smaller) and may keep the 760-line flat structs as one chunk",
+        "Rejects a strict 'split every 400 lines' rule; never splits mid-responsibility to hit a number",
+        "Split criterion = you can no longer state what it does / exposes / depends on without re-reading"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "cochange-primary-boundary-signal",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. Two files in different directories have NO import between them but they change together in almost every commit (a serializer and a schema). The import graph says they're unrelated. Using chunk-map, state which boundary signal wins and how you'd record this.",
+      "files": [],
+      "assertions": [
+        "Treats git temporal CO-CHANGE as the primary boundary signal, ahead of the import graph",
+        "Says the import graph misses exactly this kind of hidden coupling",
+        "Groups the two together (or records them as a coupling/seam) despite no import — e.g. a couples_with edge in the map",
+        "Mentions deriving co-change from git history (e.g. git log --name-only) rather than imports alone"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "lazy-staleness-not-stored-flag",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. The chunk map was built at commit X; the repo has moved on. Using chunk-map, state exactly how you tell which chunks are now stale, and whether you store an is_stale field on each chunk.",
+      "files": [],
+      "assertions": [
+        "Does NOT store an is_stale flag; derives staleness lazily at read time",
+        "Diffs changed files against the recorded reviewed_sha (e.g. git diff --name-only <reviewed_sha> HEAD) and maps them back to chunks",
+        "Only the chunks whose files changed are stale and get re-derived (not the whole map)",
+        "Frames the map as a snapshot at reviewed_sha, not a live index"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "seam-leak-surface-not-widen",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. While mapping, you find another chunk references a symbol that the owning chunk does NOT list in its exposed seam. Using chunk-map, state what this means and what you do.",
+      "files": [],
+      "assertions": [
+        "Identifies it as a seam leak — a reference reaching past the chunk's declared interface into its internals",
+        "Verifies via grep for cross-chunk references to symbols not in the chunk's 'exposes' list",
+        "SURFACES it (either fix the coupling, or add the symbol to exposes deliberately) rather than silently widening the seam",
+        "Treats the declared seam as a contract that the leak contradicts"
+      ]
+    }
+  ]
+}

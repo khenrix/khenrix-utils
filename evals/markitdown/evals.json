@@ -1,0 +1,54 @@
+{
+  "skill_name": "markitdown",
+  "notes": "Grade the conversion DECISIONS the skill encodes that a no-skill baseline gets wrong: the trap is bare `uvx markitdown` (base package, fails on real office files) vs the required `--from 'markitdown[all]'` form; preflighting `uv`/`uvx` presence; sensible default output filename; routing scanned PDFs through the az-doc-intel extra; and that wrapping via uvx adds NO repo dependency. Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, so the discriminating signal is the inline answer. A naive answer tends to suggest bare `uvx markitdown` or `pip install markitdown`; the skill's guidance does not.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "all-extra-not-bare-uvx",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have a Word file at /tmp/contract.docx and I want it as Markdown using the markitdown tool via uvx. Give the exact one-line command, and explain what goes wrong if I just run `uvx markitdown /tmp/contract.docx`.",
+      "files": [],
+      "assertions": [
+        "Uses `uvx --from 'markitdown[all]' markitdown` — the [all] extra form, with the spec quoted",
+        "Explains bare `uvx markitdown` installs the BASE package only (no docx/pdf/office extras) and fails or returns empty/garbled output on real office files",
+        "Writes the output with `-o` to a sensible path such as /tmp/contract.md (input stem + .md, same directory)",
+        "Does NOT tell the user to `pip install markitdown` or otherwise add a dependency"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "preflight-uv-presence",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. Before I convert a PDF to Markdown with the uvx-based markitdown approach, what should be checked first, and what do I do if it's not there?",
+      "files": [],
+      "assertions": [
+        "Preflights that `uv` / `uvx` is available (e.g. `command -v uv`) before attempting the conversion",
+        "If missing, points to installing uv via the astral.sh installer (curl -LsSf https://astral.sh/uv/install.sh | sh)",
+        "Notes uvx runs markitdown in an ephemeral/cached environment so nothing is installed into the repo (no dependency added)",
+        "Mentions the conversion command still uses the `--from 'markitdown[all]'` form, not bare `uvx markitdown`"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "scanned-pdf-az-doc-intel",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I ran markitdown on a scanned PDF (it's just page images, no embedded text) and got an empty Markdown file. Why, and how do I actually get the text out?",
+      "files": [],
+      "assertions": [
+        "Explains the default local extraction can't read image-only / scanned PDFs (no embedded text → empty output)",
+        "Recommends the Azure Document Intelligence path — the `markitdown[all,az-doc-intel]` extra with `-d` and `-e $AZURE_DOC_INTEL_ENDPOINT`",
+        "Notes this is gated / opt-in (requires the endpoint env var set; a paid external service), not the default",
+        "Does NOT claim the standard `[all]` local path will OCR a scanned/image-only PDF"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "no-repo-dependency-default-output",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I want to add document-to-Markdown conversion to this repo, but it's a stdlib-only, no-dependency project. Can I use markitdown without violating that, and where does the converted file land by default?",
+      "files": [],
+      "assertions": [
+        "Confirms it adds NO repo dependency — markitdown is run via `uvx` (ephemeral, cached env), nothing pip-installed or added to requirements/venv",
+        "States the conversion command is `uvx --from 'markitdown[all]' markitdown <input> -o <output.md>` (the [all] extra form)",
+        "Default output is the input's stem with a .md suffix next to the source (e.g. report.pdf → report.md); without -o it goes to stdout",
+        "Does NOT recommend `pip install markitdown` or adding it as a project dependency"
+      ]
+    }
+  ]
+}
