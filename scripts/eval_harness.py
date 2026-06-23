@@ -239,8 +239,8 @@ def grade(answer: str, ev: dict, condition: str, judge: str, cfg: dict, workdir:
           *, timeout: int) -> dict:
     prompt = GRADE_TMPL.format(prompt=ev["prompt"], assertions=_numbered(ev["assertions"]),
                                answer=answer or "(no answer produced)")
-    text, _ = run_text(judge, prompt, cfg, workdir / "judge", timeout=timeout, retries=1,
-                       readonly=False)
+    text, _ = run_text(judge, prompt, cfg, workdir / "judge", timeout=timeout, retries=2,
+                       readonly=False)  # retries=2: a transient empty judge call → false 0/4 ("no verdict")
     return parse_grading(text, ev["assertions"], f"eval-{ev['id']}-{ev['name']}", condition)
 
 
@@ -249,8 +249,8 @@ def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
     a, b, key = blind_pair(with_text, without_text, ev["id"])
     prompt = COMPARE_TMPL.format(prompt=ev["prompt"], assertions=_numbered(ev["assertions"]),
                                  a=a or "(empty)", b=b or "(empty)")
-    text, _ = run_text(judge, prompt, cfg, workdir / "compare", timeout=timeout, retries=1,
-                       readonly=False)
+    text, _ = run_text(judge, prompt, cfg, workdir / "compare", timeout=timeout, retries=2,
+                       readonly=False)  # retries=2: transient judge failure → false tie
     return parse_comparison(text, key)
 
 

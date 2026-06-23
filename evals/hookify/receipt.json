@@ -1,0 +1,14 @@
+{
+  "skill": "hookify",
+  "source_hash": "af13a15bc4d7cffbac4dff1600822ba0066025afd7b0486d29d7718b840d5da5",
+  "eval_set_hash": "838533c2ea0cbc1b3fc7df754efddf69479edc1b0b844b0e9e100a13b4a03991",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.25,
+  "provenance": "eval"
+}

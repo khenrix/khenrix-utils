@@ -1,0 +1,54 @@
+{
+  "skill_name": "hookify",
+  "notes": "Each prompt is an INLINE Q&A that forbids plan-mode/tools so the harness can grade the classification the skill teaches: a recurring correction → the RIGHT Claude Code hook EVENT + matcher + warn-vs-block action + a correct settings.json hook JSON shape, with the Claude-only caveat and a confirm-before-write step. The discriminating signal vs a naive (no-skill) answer: naive answers tend to put a 'don't run X command' rule on the wrong event or in memory/CLAUDE.md instead of a PreToolUse Bash matcher; choose 'block' where a cheap 'warn' (PostToolUse) is correct, or vice-versa; conflate a 'don't finish before Y' rule (Stop hook) with a PreToolUse tool gate; emit malformed hook JSON (missing the matcher+hooks[] group or the hookSpecificOutput/permissionDecision contract); silently write settings.json without confirmation; and forget that hooks are Claude-Code-only and won't fire for Codex/agy. id 3 explicitly probes the multi-CLI caveat.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "block-full-test-suite-pretooluse-bash",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. Three times this session I've had to stop you running the entire test suite — I only ever want the single changed test file run, because the full suite is slow here. Turn this correction into a durable hook so you stop doing it. State exactly: which Claude Code hook EVENT this maps to, what the matcher is, whether it should block or just warn, the shape of the hook entry you'd add to settings.json, and what you do before writing it.",
+      "files": [],
+      "assertions": [
+        "Classifies this as a PreToolUse hook with a matcher targeting the Bash tool (because the bad action is running a command), NOT PostToolUse/Stop/UserPromptSubmit and NOT a CLAUDE.md/memory note",
+        "Chooses BLOCK (deny) — a recurring costly action it should prevent — by inspecting tool_input.command, e.g. exit 2 with a stderr reason or stdout {\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",...}}",
+        "Shows a settings.json hooks entry of the correct shape: hooks.PreToolUse → a group with \"matcher\" plus \"hooks\":[{\"type\":\"command\",\"command\":\"...\"}]",
+        "Confirms with the user / shows the JSON before writing settings.json rather than editing it unprompted"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "changelog-before-finish-stop-hook",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I keep having to remind you to update CHANGELOG.md before you wrap up a change — you finish without it every time. Make a hook so you can't forget. State exactly which hook EVENT fits, whether it uses a matcher, whether it warns or blocks, and how blocking works for that event.",
+      "files": [],
+      "assertions": [
+        "Maps 'don't FINISH before doing Y' to a Stop hook (gates completion), NOT a PreToolUse tool gate and not PostToolUse",
+        "Notes the Stop event takes NO matcher (unlike tool events)",
+        "Chooses to BLOCK completion until the changelog condition holds — via stdout {\"decision\":\"block\",\"reason\":\"...\"} (or exit 2 + stderr) — rather than merely warning, and guards against a Stop loop (e.g. honoring stop_hook_active)",
+        "Confirms before writing the hook to settings.json"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "protect-generated-files-warn-vs-block",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I've corrected you twice for editing files under marketplaces/ — those are generated and my edits get overwritten; I want the source of truth edited instead. Hookify this. State exactly: the hook EVENT and matcher, whether it should block or just warn (and why), the field of the hook input you'd inspect, and a correct hook JSON shape that denies the edit with a reason.",
+      "files": [],
+      "assertions": [
+        "Classifies as a PreToolUse hook matching the edit tools (Edit|Write|MultiEdit) — catching the edit BEFORE it happens — not PostToolUse (which fires after the edit already landed)",
+        "Inspects tool_input.file_path against the marketplaces/ path to decide",
+        "Chooses BLOCK/deny (overwritten-by-regeneration is a real, repeated cost) and emits the deny via the hookSpecificOutput.permissionDecision=\"deny\" contract with a permissionDecisionReason (or exit 2 + stderr), in a valid hooks.PreToolUse matcher+hooks[] group",
+        "Confirms with the user before writing to settings.json"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "codex-multi-cli-caveat",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I keep telling you to use rg instead of grep and you forget — turn it into a hook. By the way I'm running this in Codex, not Claude Code. State exactly what you do.",
+      "files": [],
+      "assertions": [
+        "States that Claude Code hooks (settings.json hooks.<EventName>) are Claude-Code-specific and will NOT fire for Codex, so it does not just hand over a Claude hook as the answer",
+        "Points the user to Codex's own configuration mechanism (config.toml / AGENTS.md) to encode the rule instead, or describes the rule in plain terms for them to encode there",
+        "Still identifies the underlying classification (a 'don't run command X' correction = a PreToolUse-on-Bash style guardrail) so the equivalent can be expressed in the right place",
+        "Does not silently write a Claude settings.json hook for a Codex user"
+      ]
+    }
+  ]
+}
