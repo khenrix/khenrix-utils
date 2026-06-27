@@ -217,8 +217,16 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # --log-file captures agy's real failure reason: on a 429 it prints nothing to
         # stdout/stderr and only logs e.g. "RESOURCE_EXHAUSTED ... Individual quota
         # reached" — run_provider scans this file to turn an opaque `empty` into a clear
-        # `auth_or_quota`. print-timeout self-terminates just inside the engine timeout
-        # (capped at 120s; agy hangs the full window on a quota wall otherwise).
+        # `auth_or_quota`. print-timeout self-terminates agy on a CLEAN idle wait (e.g. a
+        # quota wall) just inside the engine timeout; capped at 120s so a quota-walled agy
+        # fails FAST. NOTE (verified 2026-06-26): print-timeout does NOT fire on agy's *busy*
+        # hangs. agy's headless `-p` mode reliably returns only trivial/short outputs;
+        # non-trivial reasoning/review prompts churn WITHOUT emitting (0 bytes) and ride the
+        # engine subprocess timeout to a `timeout` — across thinking tiers, with or without
+        # file reads. This is an upstream Antigravity-CLI limitation, so substantive council
+        # reviews effectively run on the other members until agy's headless CLI can complete
+        # a non-trivial generation. (Raising this cap does NOT help — it only makes a
+        # quota-wall fail slower.)
         pt = max(5, min(int(timeout) - 5, 120))
         logf = str(Path(workdir) / "agy.cli.log")
         argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", f"{pt}s",
@@ -241,8 +249,15 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     forbids writes — the executor can read/plan but cannot mutate config. Shared by the
     eval harness (executor runs) and reused by any read-only council mode.
 
-    agy has no clean headless read-only flag (it prompts per-action); `--sandbox` is the
-    closest and is best-effort — verify before relying on it for agy."""
+    agy has NO working headless read-only flag. `--sandbox` (the obvious choice) BREAKS agy
+    non-interactively: agy locates/reads files via terminal commands (find/grep) that the
+    sandbox's terminal restrictions block, so it stalls on "searching…" and hangs the full
+    engine window with EMPTY output — verified 2026-06-26 (--sandbox, even WITH
+    --dangerously-skip-permissions, never completes a file read; plain
+    --dangerously-skip-permissions reads + answers in seconds). So agy stays headless and its
+    read-only posture rests on the council's review INTENT (members are asked to review, not
+    edit) + the trusted workspace, not a sandbox flag. (For true write-isolation, run agy in a
+    throwaway git worktree — a heavier change, out of scope here.)"""
     if spec.name == "claude":
         spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
                                   ["--permission-mode", "plan"])
@@ -250,7 +265,8 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
         spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
                                   ["--sandbox", "read-only"])
     elif spec.name == "agy":
-        spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions", ["--sandbox"])
+        # KEEP --dangerously-skip-permissions (see docstring): --sandbox hangs agy headless.
+        pass
     return spec
 
 
