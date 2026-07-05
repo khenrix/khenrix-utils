@@ -186,9 +186,10 @@ printf '%s' '{"target":"<t>","finding_id":"<slug>","decision":"applied|rejected|
   | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
 ```
 
-5. Gate + ship: `make precommit` (must be clean — includes fresh receipts and rendered
-   `marketplaces/` staged), then ONE commit to main
-   (`skills: tuneup <target> — <summary>`), then `make khenrix-refresh`. Release the lock.
+5. Gate + ship: **stage everything first** (`git -C "$REPO" add -A` — precommit's drift
+   check compares the working tree against the staged rendered `marketplaces/`, so an
+   unstaged render fails it), then `make precommit` (must be clean), then ONE commit to
+   main (`skills: tuneup <target> — <summary>`), then `make khenrix-refresh`. Release the lock.
 
 ## Failure handling
 
