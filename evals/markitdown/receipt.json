@@ -1,7 +1,7 @@
 {
   "skill": "markitdown",
-  "source_hash": "7f6bbdb207b98b8bf1db51819bcd9106265855529c01be0f91d772c60040ff4f",
-  "eval_set_hash": "1306467fc2aef1498a2e13f4f64534cbe14a68415e4823ef82e69166c2f629ea",
+  "source_hash": "7ca29dd7ec6482e45d07eb714a8ad4bdd119ed0392ac6077807e34bb9731744e",
+  "eval_set_hash": "74a41331526562e266f09e268ef77d3085ae39c7c3eb94a18eb022a153cda965",
   "providers": [
     "claude",
     "codex",
@@ -9,6 +9,6 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.375,
+  "delta_pass_rate": 0.5166,
   "provenance": "eval"
 }

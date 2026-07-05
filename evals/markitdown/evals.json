@@ -49,6 +49,17 @@
         "Default output is the input's stem with a .md suffix next to the source (e.g. report.pdf → report.md); without -o it goes to stdout",
         "Does NOT recommend `pip install markitdown` or adding it as a project dependency"
       ]
+    },
+    {
+      "id": 4,
+      "name": "prerelease-pin-for-latest",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I want the newest markitdown (0.1.6) for its PDF fixes, but `uvx --from 'markitdown[all]' markitdown --version` keeps giving me 0.1.5 with no error at all. Why does this happen, what exact command gets me 0.1.6, and should that become my default invocation?",
+      "files": [],
+      "assertions": [
+        "Explains the silent backtrack: markitdown 0.1.6's [all] extra pulls a PRE-RELEASE dependency (azure-ai-contentunderstanding>=1.2.0b1, via the Content Understanding converter) and uv disallows pre-releases by default, so the resolver quietly falls back to 0.1.5",
+        "Preferred fix: pin 0.1.6 with the standard non-Azure-CU extras so NO pre-release override is needed — e.g. `uvx --from 'markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription,youtube-transcription]==0.1.6' markitdown ...`",
+        "Mentions `--prerelease=allow` with the pinned `[all]==0.1.6` only for when the Azure Content Understanding path itself is wanted, kept scoped to that invocation and NOT made the default (it broadens pre-release acceptance to every transitive dependency)"
+      ]
     }
   ]
 }
