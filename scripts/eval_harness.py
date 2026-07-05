@@ -373,10 +373,18 @@ def run(args) -> int:
     (itdir / "benchmark.json").write_text(json.dumps(benchmark, indent=2))
     _print_summary(benchmark, itdir)
     d = benchmark["run_summary"]["delta"].get("pass_rate")
-    if d is None or d >= 0:  # passing run → refresh the receipt
+    gate_ok = d is None or d >= 0
+    if args.skill == "llm-council":
+        # Orchestrator exception (docs/skill-eval-process.md): harness executors run
+        # under LLM_COUNCIL_DEPTH=1, so an injected llm-council body can never convene
+        # a real nested council — the judged delta here measures solo answers, i.e.
+        # noise. The benchmark stays as advisory signal; the receipt gate is fanout
+        # --self-test (enforced inside _write_receipt), never this delta.
+        gate_ok = True
+    if gate_ok:  # passing run → refresh the receipt
         _write_receipt(args.skill, providers=providers, mode=args.mode,
                        judge=args.judge, delta=d, seeded=False)
-    return 0 if (d is None or d >= 0) else 1
+    return 0 if gate_ok else 1
 
 
 def _mode_args(args):
@@ -475,7 +483,7 @@ def parse_args(argv=None):
     ap.add_argument("--timeout", type=int, default=None, help="per-attempt seconds (per-mode default)")
     sb = ap.add_mutually_exclusive_group()
     sb.add_argument("--readonly", dest="readonly", action="store_true", default=True,
-                    help="run executors read-only / plan-only so an eval can't mutate config (default: on)")
+                    help="run executors read-only / plan-only (claude/codex mechanically, agy best-effort) so an eval can't mutate config (default: on)")
     sb.add_argument("--no-readonly", dest="readonly", action="store_false",
                     help="run executors with full permissions (only for skills that must write)")
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")

@@ -243,6 +243,12 @@ def _replace_flag(argv: list, old: str, new_tokens: list) -> list:
     return out
 
 
+READONLY_REVIEWER_NOTE = (
+    "You are a read-only council reviewer. Answer directly and completely in your final "
+    "message. Do not write, create, or update any plan file, and do not use ExitPlanMode."
+)
+
+
 def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     """Swap a provider's "bypass everything" flag for a read-and-plan-only posture, in
     place. Unlike sandboxing HOME, this keeps the real HOME (so auth still resolves) but
@@ -259,8 +265,13 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     edit) + the trusted workspace, not a sandbox flag. (For true write-isolation, run agy in a
     throwaway git worktree — a heavier change, out of scope here.)"""
     if spec.name == "claude":
+        # Plan mode is the read-only mechanism, but its harness invites writing a plan
+        # FILE (the one write plan mode allows) — suppress that side effect mechanically
+        # (deny the plan-approval tool) and by instruction (answer inline).
         spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
-                                  ["--permission-mode", "plan"])
+                                  ["--permission-mode", "plan",
+                                   "--disallowedTools", "ExitPlanMode",
+                                   "--append-system-prompt", READONLY_REVIEWER_NOTE])
     elif spec.name == "codex":
         spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
                                   ["--sandbox", "read-only"])
@@ -679,6 +690,22 @@ def self_test() -> int:
     check("sentinel: heap OOM → transient", classify_sentinel("heap out of memory") == "error_sentinel")
     check("sentinel: clean text → None", classify_sentinel("here is your answer") is None)
 
+    # S14 — make_readonly argv contracts (plan-file suppression is mechanical + prompt).
+    cl = build_real_spec("claude", "q", 30, {"claude": {"model": "m", "thinking": "high"}}, wd("ro"))
+    make_readonly(cl)
+    check("readonly: claude bypass flag swapped out", "--dangerously-skip-permissions" not in cl.argv)
+    check("readonly: claude gets plan mode", "--permission-mode" in cl.argv and "plan" in cl.argv)
+    check("readonly: claude denies ExitPlanMode", "--disallowedTools" in cl.argv and "ExitPlanMode" in cl.argv)
+    check("readonly: claude instructed to answer inline (no plan files)",
+          any("plan file" in str(a) for a in cl.argv))
+    cx14 = build_real_spec("codex", "q", 30, {}, wd("ro"))
+    make_readonly(cx14)
+    check("readonly: codex sandboxed read-only", "--sandbox" in cx14.argv and "read-only" in cx14.argv)
+    ag14 = build_real_spec("agy", "q", 30, {}, wd("ro"))
+    before14 = list(ag14.argv)
+    make_readonly(ag14)
+    check("readonly: agy argv unchanged (no working headless sandbox)", ag14.argv == before14)
+
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
         line = f"  {'PASS' if ok else 'FAIL'}  {label}"
@@ -759,9 +786,11 @@ def main(argv=None) -> int:
         if name in by_name and tokens:
             by_name[name].argv = tokens + by_name[name].argv[1:]
 
-    # Read-only is the default council posture: members read & use their skills but
-    # cannot modify anything. --allow-writes opts out. Applied after overrides so a
-    # test override's binary is preserved.
+    # Read-only is the default council posture: claude/codex are mechanically
+    # constrained (plan mode + plan-file suppression / read-only sandbox); agy is
+    # best-effort (see make_readonly). --allow-writes opts out. Applied after overrides
+    # so a test override's binary is preserved (overrides replace argv[0] only, so the
+    # bypass flag make_readonly swaps is always present).
     if args.read_only:
         for s in specs:
             make_readonly(s)

@@ -23,10 +23,12 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
 > not routine tasks.
 >
-> **Read-only by default.** Members run in a read-and-plan-only posture — they read the
-> repo and use their own installed skills, but **cannot modify anything**, which suits
-> the council's job (a second opinion / synthesis, not edits) and makes it safe to
-> convene even mid-task. Pass `--allow-writes` only when you explicitly want the members
+> **Read-only by default.** Members run in a read-and-plan posture: Claude (plan mode,
+> with plan-file writes suppressed) and Codex (read-only sandbox) are **mechanically
+> constrained**; agy is best-effort — its headless sandbox hangs (see `make_readonly`),
+> so its posture rests on review intent plus the trusted workspace. This suits the
+> council's job (a second opinion / synthesis, not edits) and makes it safe to convene
+> even mid-task. Pass `--allow-writes` only when you explicitly want the members
 > to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
 
 ## 1. Locate the engine
@@ -157,7 +159,7 @@ inconclusive and offer to answer directly or retry with a longer `--timeout`.
 | `auth_or_quota` | not logged in, or a quota/usage wall — **not retried**, since it won't clear on a retry | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
 | `nonzero_exit` | crashed with no recognized cause | name the provider, quote the stderr tail; proceed if possible |
-| `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence |
+| `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy** specifically: substantive prompts often ride the whole window regardless of tier (upstream headless limitation — see the note in `build_real_spec`), and retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
 | `empty` / `parse_failure` | no usable answer extracted | drop it from synthesis; note it failed |
 
 Note: some CLIs report their real failure only in a log, not on stdout/stderr (agy prints

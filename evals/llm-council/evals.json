@@ -1,6 +1,6 @@
 {
   "skill_name": "llm-council",
-  "notes": "Each with-skill run nests a REAL 3-CLI council (claude+codex+agy headless), so these are expensive and need all three CLIs installed + authenticated. Prompts are deliberately the kind of high-stakes / ambiguous question where independent models may diverge — that's what makes synthesis worth grading. Assertions check that the orchestrator produced ONE integrated answer with attribution and conflict-handling, not three stapled summaries.",
+  "notes": "Each with-skill run nests a REAL 3-CLI council (claude+codex+agy headless), so these are expensive and need all three CLIs installed + authenticated. Prompts are deliberately the kind of high-stakes / ambiguous question where independent models may diverge — that's what makes synthesis worth grading. Assertions check that the orchestrator produced ONE integrated answer with conflict-handling and NO per-provider attribution — the skill's synthesis doctrine explicitly forbids meeting-minutes bookkeeping ('Claude said X, codex added Y'); genuine disagreement gets surfaced and resolved, contributions are folded in silently.",
   "evals": [
     {
       "id": 0,
@@ -10,7 +10,7 @@
       "assertions": [
         "Gives a single clear recommendation (SQLite or Postgres), not a non-committal answer",
         "Synthesizes into one integrated answer rather than three separate provider summaries pasted together",
-        "Attributes which provider(s) contributed what or where they agreed/disagreed",
+        "Surfaces any genuine cross-model disagreement and resolves it with reasoning — WITHOUT per-provider attribution bookkeeping (no 'provider A said X, provider B said Y' meeting minutes)",
         "Addresses the concrete constraints from the prompt (multi-user concurrency, ~50MB/day, heavy aggregation queries)"
       ]
     },
@@ -22,7 +22,7 @@
       "assertions": [
         "Reaches a definitive verdict on dedupe_preserve_order rather than hedging",
         "Correctly reasons about the `not seen.update(...)` side-effect trick (update returns None, so `not None` is True) and whether the dedupe actually works",
-        "Notes agreement or disagreement across the three providers and resolves it with reasoning rather than a blind majority vote",
+        "If the members genuinely disagreed, presents and resolves the conflict with reasoning rather than a blind majority vote — per-provider attribution is not required and should not dominate the answer",
         "Produces one synthesized conclusion, not three separate provider analyses"
       ]
     },
@@ -34,8 +34,8 @@
       "assertions": [
         "Gives a decisive recommendation (not 'it depends' with no guidance) about where retries belong vs. don't",
         "Raises the key risk that blanket retries on non-idempotent calls can cause duplicate side-effects / retry storms",
-        "Integrates the three responses into one answer and flags any disagreement between them",
-        "Notes which provider raised which point (attribution)"
+        "Integrates the members' responses into one answer and, if they genuinely disagreed, flags and resolves the conflict (a converged panel needs no disagreement section)",
+        "Reads like one expert's answer — unique member points folded in silently, without per-provider attribution"
       ]
     },
     {

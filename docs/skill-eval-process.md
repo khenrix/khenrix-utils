@@ -65,9 +65,11 @@ make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep
 ```
 
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
-provider's bypass flag — claude `--permission-mode plan`, codex `--sandbox read-only`, agy
-`--sandbox`), so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) can't touch
-the real machine during an eval, while the real HOME is kept so auth still resolves
+provider's bypass flag — claude `--permission-mode plan` plus plan-file suppression
+(`--disallowedTools ExitPlanMode` + an appended system prompt), codex `--sandbox read-only`;
+agy stays **unsandboxed best-effort** — its sandbox hangs headless, see `make_readonly`'s
+docstring), so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
+mechanically constrained on claude/codex during an eval, while the real HOME is kept so auth still resolves
 (sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
 three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
 iteration and the full panel for the final gate. `--no-readonly` opts out when a skill
