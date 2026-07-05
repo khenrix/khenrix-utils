@@ -93,3 +93,11 @@ with-skill/baseline harness. Its model/mode wiring is verified **deterministical
 `python3 shared/skills/llm-council/scripts/fanout.py --self-test` and a live `--smoke`
 (inspect the manifest's `model`/`thinking` and `[mode: …]`). Its synthesis quality has a
 bespoke blind-review workspace under `evals/llm-council/` (authored with skill-creator).
+
+## Maintenance runs (skill-tuneup)
+
+The `skill-tuneup` skill automates this loop for periodic maintenance of an existing
+skill: it researches upstream drift since the target's last substantive commit, audits,
+applies user-approved fixes, scaffolds a missing eval set per this doc, and iterates
+`make eval` to a fresh receipt before committing. Its per-target decisions live in
+`docs/tuneups/log/`.

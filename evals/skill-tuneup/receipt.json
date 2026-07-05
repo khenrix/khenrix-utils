@@ -1,0 +1,14 @@
+{
+  "skill": "skill-tuneup",
+  "source_hash": "08be3eb4563091d4a03fb794369f02554c3e48cc73beb3b9ac3f623e93ce6537",
+  "eval_set_hash": "b8dab64c5a59c47bc7bfc690a8f43b12c3cb73bf835b6b8cdf52eb4a0b3d8728",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.5,
+  "provenance": "eval"
+}
