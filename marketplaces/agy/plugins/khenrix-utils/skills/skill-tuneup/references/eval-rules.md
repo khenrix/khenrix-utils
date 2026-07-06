@@ -3,14 +3,18 @@
 The repo's eval harness IS the benchmark (`docs/skill-eval-process.md` is the authority;
 read it before scaffolding). Key invariants:
 
-- Executors run **read-only/plan-only by default** — safe to run mid-tuneup.
+- Executors run **read-only by default** — mechanical on claude (plan mode, plan-file
+  writes suppressed) and codex (read-only sandbox); best-effort on agy (its sandbox
+  hangs headless; see `docs/skill-eval-process.md`) — safe to run mid-tuneup.
 - **Baseline caveat**: `without_skill` is the executor's ambient env; if the old skill
   version is installed (a prior `make khenrix-refresh`), the comparison is new-vs-old,
   not with-vs-without. Iterate BEFORE refreshing for the cleanest signal.
-- A passing run (`delta.pass_rate >= 0` AND blind winner `with_skill`) writes
-  `evals/<t>/receipt.json` — the exact artifact `make precommit` gates on.
+- A run with `delta.pass_rate >= 0` writes `evals/<t>/receipt.json` — the exact
+  artifact `make precommit` gates on. The blind winner being `with_skill` is the
+  commit gate YOU verify (per the process doc); the harness does not enforce it.
 - **llm-council is special**: its receipt is gated by `fanout.py --self-test` (+ a live
-  `--smoke`), not the judge harness — injecting its body would spawn nested councils.
+  `--smoke`), not the judge harness — executors run under `LLM_COUNCIL_DEPTH=1`, so the
+  judged delta never exercises a real council and is advisory only.
 
 ## Scaffolding a missing eval set
 

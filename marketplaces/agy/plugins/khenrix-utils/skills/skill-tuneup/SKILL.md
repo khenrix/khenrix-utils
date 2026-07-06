@@ -197,6 +197,7 @@ printf '%s' '{"target":"<t>","finding_id":"<slug>","decision":"applied|rejected|
 |---|---|
 | Target doesn't exist | list valid targets (`shared/skills/*` + templated pair), ask |
 | Council degraded (`summary.valid` < 3) | proceed with what's valid, tell the user which member failed and why (`reason` field) |
+| agy persistently timing out on fan-outs | it often rides the whole window headless (see llm-council's failure table); a `--providers claude,codex` panel is an acceptable degraded fallback for the two reviews — say so, don't treat it as a routine shortcut |
 | Council zero-valid | skip that review, say so loudly, ask the user whether to proceed on self-review only |
 | Eval cap reached, not green | stop; record unresolved failures in run log + hand to user |
 | `make precommit` fails | fix render drift / receipts; never bypass the gate |
