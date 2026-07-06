@@ -89,12 +89,14 @@ genuinely must write. agy's headless read-only is best-effort — verify before 
 
 ## Orchestrator skills (llm-council)
 
-`llm-council` is special: injecting its body makes an executor try to fan out a *nested*
-council, which the `LLM_COUNCIL_DEPTH` guard blocks — so it isn't run through the
-with-skill/baseline harness. Its model/mode wiring is verified **deterministically** by
-`python3 shared/skills/llm-council/scripts/fanout.py --self-test` and a live `--smoke`
-(inspect the manifest's `model`/`thinking` and `[mode: …]`). Its synthesis quality has a
-bespoke blind-review workspace under `evals/llm-council/` (authored with skill-creator).
+`llm-council` is special: harness executors run under `LLM_COUNCIL_DEPTH=1`, so an
+injected body cannot convene a real nested council — the with-skill/baseline benchmark
+still runs but its delta measures solo answers and is **advisory only**, never the
+receipt gate. What earns the receipt is the model/mode wiring verified
+**deterministically** by `python3 shared/skills/llm-council/scripts/fanout.py
+--self-test` and a live `--smoke` (inspect the manifest's `model`/`thinking` and
+`[mode: …]`). Its synthesis quality has a bespoke blind-review workspace under
+`evals/llm-council/` (authored with skill-creator).
 
 ## Maintenance runs (skill-tuneup)
 

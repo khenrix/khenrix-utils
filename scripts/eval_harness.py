@@ -19,9 +19,10 @@ Model:
   - INSTRUCTION/KNOWLEDGE skills (khenrix-setup, khenrix-upgrade, …): the executor
     reads the injected SKILL.md and should behave per its instructions — exactly what
     with_skill-vs-baseline measures.
-  - ORCHESTRATOR skills (llm-council): injecting its body makes the executor try to
-    fan out a nested council, which the LLM_COUNCIL_DEPTH guard blocks. Its mode/model
-    wiring is verified deterministically by `fanout.py --self-test` / `--smoke`, not here.
+  - ORCHESTRATOR skills (llm-council): executors run under LLM_COUNCIL_DEPTH=1, so an
+    injected body cannot convene a real nested council — the benchmark runs but is
+    advisory only (see the gate exception in run()). Its mode/model wiring is verified
+    deterministically by `fanout.py --self-test` / `--smoke`, which gates its receipt.
 
 Baseline semantics (important): `without_skill` is the executor's AMBIENT environment on
 the bare prompt — it is only truly skill-free if the skill is NOT already installed on
