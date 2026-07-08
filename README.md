@@ -5,6 +5,11 @@ One source of truth for the agentic CLIs on this machine — **Claude Code**,
 skills, base instructions, baseline settings, a shared status line, and managed
 shell aliases.
 
+> **Bringing up a new machine or syncing across two?** See
+> [`docs/machine-setup.md`](docs/machine-setup.md) — full replication steps + what
+> syncs via git (this repo, the Obsidian vault, project repos) vs what's re-created
+> per machine (Claude settings, MCP secrets, tooling).
+
 ## How it works
 
 ```
