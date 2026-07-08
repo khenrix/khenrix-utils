@@ -1,14 +1,14 @@
 {
   "skill": "llm-council",
-  "source_hash": "3ce41bb43e4ea8a002c2e776dafc229a6c5cbafa0aa264a5c70fbb88013ada31",
+  "source_hash": "6ab1f0b8ceec86317555b53798fb639797e4275a8702a0091964bcc73369a0bb",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.05,
-  "provenance": "eval",
+  "delta_pass_rate": null,
+  "provenance": "seeded: blessed current committed state",
   "self_test": true,
   "synthesis_review": "manual-attested"
 }
