@@ -118,6 +118,25 @@ status_line = [
 ]
 status_line_use_colors = true
 
+# Claude baseline settings — written to ~/.claude/settings.json ONLY when the key is ABSENT
+# (never overrides your per-machine tuning; drift is reported, not changed).
+[settings.claude]
+model = "opus[1m]"
+effortLevel = "xhigh"
+tui = "fullscreen"
+theme = "dark-ansi"
+skipDangerousModePermissionPrompt = true
+skipWorkflowUsageWarning = true
+
+[settings.claude.voice]
+enabled = true
+mode = "hold"
+
+# Stop hook: the reconcile engine installs hooks/<script> → ~/.claude/hooks/ (like the statusline
+# asset) THEN registers this stanza in settings.json. Added only when no Stop hook exists yet.
+[settings.claude.hooks.Stop]
+script = "hooks/wiki-autosave-gate.sh"
+
 # Command-based statuslines for CLIs that support stdin JSON payload renderers.
 # The reconcile engine installs the executable before configuring these paths.
 [settings.claude.statusLine]
@@ -189,13 +208,16 @@ reconcile_path = "${CLAUDE_PLUGIN_ROOT}/skills/khenrix-setup/scripts/reconcile.p
 summarize = """the diff for the user in plain language: what will be added,
    what is already in sync, and confirm that EXTRA entries will be left alone.
    Call out anything notable (e.g. a Windows-only server skipped on this host)."""
-apply_summary = """This adds MCP servers via `claude mcp add --scope user`, ensures the
-   managed alias block in `~/.bash_aliases`, ensures the house-style block in
-   `~/.claude/CLAUDE.md`, and reports each action taken."""
+apply_summary = """This adds MCP servers via `claude mcp add --scope user`; writes any MISSING
+   baseline settings (model, effort, tui, theme, voice, skip-prompts) to
+   `~/.claude/settings.json`; installs + registers the Stop hook and the statusline renderer;
+   ensures the managed alias block in `~/.bash_aliases` and the house-style block in
+   `~/.claude/CLAUDE.md`; and reports each action taken."""
 verify_step = """Run `claude mcp list` and confirm the newly added servers appear.
    Note that MCP changes take effect in a new session."""
-settings_note = """- Claude's approval/sandbox model differs from Codex's, so those baseline
-  settings are reported as informational only and are not written here.
+settings_note = """- Baseline settings (model, effort, tui, theme, voice, skip-prompts) and the Stop
+  hook are applied ONLY when absent — your existing values are kept, never overridden. Only
+  approval/sandbox stay informational (Claude uses permissions/--permission-mode, not static keys).
 """
 
 [skill_facts.khenrix-setup.codex]

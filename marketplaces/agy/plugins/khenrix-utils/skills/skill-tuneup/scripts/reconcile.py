@@ -346,6 +346,44 @@ def statusline_asset_report(cli: str, caps: dict):
     return rows, apply
 
 
+def hook_asset_report(cli: str, caps: dict):
+    """Install any bundled hook scripts declared under [settings.claude.hooks.<event>] to
+    ~/.claude/hooks/ (the settings.json stanza that points at them is written by claude_settings,
+    exactly as the statusline binary is installed here and its path configured by the settings).
+    Claude-only for now."""
+    if cli != "claude":
+        return [], (lambda update_drift: [])
+    hooks = ((caps.get("settings", {}).get("claude") or {}).get("hooks") or {})
+    rows, todo = [], []
+    for event, spec in hooks.items():
+        script = spec.get("script")
+        if not script:
+            continue
+        src = caps["_dir"] / script
+        dest = Path(claude_hook_command(script))
+        if not src.exists():
+            rows.append([str(src), "INFO", "source hook missing"]); continue
+        if dest.exists() and dest.read_bytes() == src.read_bytes():
+            rows.append([str(dest), "MATCH", f"{event} hook installed"]); continue
+        status = "UPDATE" if dest.exists() else "ADD"
+        rows.append([str(dest), status, f"install {event} hook script"])
+        todo.append((status, src, dest))
+
+    def apply(update_drift):
+        out = []
+        for status, src, dest in todo:
+            if status == "UPDATE" and not update_drift:
+                out.append(f"hook asset: {dest} drifted (skipped; use --update-drift)"); continue
+            backup(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            dest.chmod(dest.stat().st_mode | 0o755)
+            out.append(f"hook asset: installed {dest}")
+        return out
+
+    return rows, apply
+
+
 def codex_settings(want: dict):
     cfg = codex_load()
     rows, todo = [], []
@@ -537,24 +575,77 @@ def claude_settings_path() -> Path:
     return Path(expand("${HOME}/.claude/settings.json"))
 
 
+def claude_hook_command(script) -> str:
+    """Installed path of a bundled hook script → ~/.claude/hooks/<basename> (the command the
+    settings.json stanza points at; the file itself is installed by hook_asset_report)."""
+    return expand("${HOME}/.claude/hooks/" + Path(str(script)).name)
+
+
+def claude_has_hook(data: dict, event: str, command: str) -> bool:
+    for group in (data.get("hooks", {}) or {}).get(event, []) or []:
+        if any(h.get("command") == command for h in (group.get("hooks", []) or [])):
+            return True
+    return False
+
+
+def _fmt(val) -> str:
+    return json.dumps(val) if isinstance(val, (dict, list)) else str(val)
+
+
 def claude_settings(want: dict):
     p = claude_settings_path()
     data = read_json_object(p)
     rows, status_todo = statusline_config_rows(data, desired_statusline(want, "claude"))
+    cw = want.get("claude") or {}
+    key_todo = []      # (key, value) baseline keys to add ONLY when absent
+    hook_todo = []     # (event, command) hook stanzas to register when the event has none yet
+    for key, val in cw.items():
+        if key == "statusLine":
+            continue   # configured above (statusline_config_rows) + installed by the asset report
+        if key == "hooks":
+            for event, spec in (val or {}).items():
+                cmd = claude_hook_command(spec.get("script"))
+                if claude_has_hook(data, event, cmd):
+                    rows.append([f"hooks.{event}", "MATCH", cmd])
+                elif (data.get("hooks", {}) or {}).get(event):
+                    rows.append([f"hooks.{event}", "INFO", f"kept your existing {event} hook(s)"])
+                else:
+                    rows.append([f"hooks.{event}", "ADD", cmd]); hook_todo.append((event, cmd))
+            continue
+        val = expand(val)
+        have = data.get(key)
+        if have == val:
+            rows.append([key, "MATCH", _fmt(val)])
+        elif key in data:
+            rows.append([key, "INFO", f"kept your {key} (baseline {_fmt(val)})"])
+        else:
+            rows.append([key, "ADD", _fmt(val)]); key_todo.append((key, val))
     rows.append(["approval/sandbox", "INFO", "Claude uses permissions/--permission-mode, not static keys"])
     if want.get("trusted_paths"):
         rows.append(["trusted_paths", "INFO", "Claude trusts on first run; not reconciled here"])
 
     def apply(update_drift):
-        if not status_todo:
-            return []
-        status, val = status_todo
-        if status == "UPDATE" and not update_drift:
-            return [f"claude settings: {p} statusLine drifted (skipped; use --update-drift)"]
-        backup(p)
-        data["statusLine"] = val
-        write_json_object(p, data)
-        return [f"claude settings: updated statusLine in {p}"]
+        actions, changed = [], False
+        if status_todo:
+            status, val = status_todo
+            if status == "UPDATE" and not update_drift:
+                actions.append(f"claude settings: {p} statusLine drifted (skipped; use --update-drift)")
+            else:
+                data["statusLine"] = val; changed = True
+                actions.append("claude settings: set statusLine")
+        for key, val in key_todo:
+            data[key] = val; changed = True
+        if key_todo:
+            actions.append("claude settings: added " + ", ".join(k for k, _ in key_todo))
+        for event, cmd in hook_todo:
+            data.setdefault("hooks", {}).setdefault(event, []).append(
+                {"hooks": [{"type": "command", "command": cmd}]})
+            changed = True
+            actions.append(f"claude settings: registered {event} hook")
+        if changed:
+            backup(p)
+            write_json_object(p, data)
+        return actions
 
     return rows, apply
 
@@ -746,6 +837,9 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
     asset_rows, asset_apply = statusline_asset_report(cli, caps)
     print_rows("Statusline assets:", asset_rows)
 
+    hook_rows, hook_apply = hook_asset_report(cli, caps)
+    print_rows("Hook assets:", hook_rows)
+
     alias_rows, alias_apply = shell_aliases_report(caps)
     print_rows("Shell aliases:", alias_rows)
 
@@ -753,8 +847,8 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
     print_rows("Base instructions:", ins_rows)
 
     if not apply:
-        adds = sum(1 for r in mcp_rows + set_rows + asset_rows + alias_rows + ins_rows if r[1] == "ADD")
-        drift = sum(1 for r in mcp_rows + set_rows + asset_rows + alias_rows + ins_rows if r[1] == "UPDATE")
+        adds = sum(1 for r in mcp_rows + set_rows + asset_rows + hook_rows + alias_rows + ins_rows if r[1] == "ADD")
+        drift = sum(1 for r in mcp_rows + set_rows + asset_rows + hook_rows + alias_rows + ins_rows if r[1] == "UPDATE")
         print(f"\nReview only. {adds} to add, {drift} drifted. "
               f"Re-run with --apply to add missing entries.")
         return
@@ -768,6 +862,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
             actions.append("drift update for MCP not auto-applied; edit manually: " + name)
     actions += set_apply(update_drift)
     actions += asset_apply(update_drift)
+    actions += hook_apply(update_drift)
     actions += alias_apply(update_drift)
     actions += ins_apply(update_drift)
     if actions:

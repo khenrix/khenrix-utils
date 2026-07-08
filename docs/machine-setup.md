@@ -14,7 +14,7 @@ tooling) is re-created per machine — `khenrix-setup` does most of that for you
 | MCP servers, skills, base instructions, baseline settings | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** (this repo) + `/khenrix-setup` applies it into the live CLI |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
-| Claude settings (`~/.claude/settings.json`), hooks, statusline binary | machine-local | **not git** — re-created per machine (values below) |
+| Claude baseline settings + Stop hook + statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + `/khenrix-setup` installs/registers them (add-when-absent, never overrides your tuning) |
 | MCP secrets / OAuth tokens | machine-local (`~/.config/...`, env) | **not git** — re-auth per machine |
 | Tooling (asdf/node, uv, jq, WSL bridges) | machine-local | **not git** — install per machine |
 
@@ -55,21 +55,24 @@ claude plugin marketplace add ~/git/obsidian-vault   # claude-obsidian lives in 
 #   typescript-lsp, pyright-lsp, security-guidance, playwright, claude-md-management
 ```
 
-## 3. Reconcile config (the big one)
+## 3. Reconcile config — the big step (does almost everything now)
 
 Inside Claude Code, run **`/khenrix-setup`**. It diffs the live config against
-`capabilities.toml` and additively applies the MCP servers, skills, base
-instructions, and baseline settings. Review its table, approve.
+`capabilities.toml` and additively applies — **only when a value is absent, never
+overriding your tuning** — all of:
 
-## 4. Copy the machine-local bits khenrix-setup doesn't own
+- **MCP servers** + **skills** + **base instructions** (`~/.claude/CLAUDE.md`)
+- **Baseline settings** → `~/.claude/settings.json`: `model=opus[1m]`, `effortLevel=xhigh`,
+  `tui=fullscreen`, `theme=dark-ansi`, `voice` (hold), `skipDangerousModePermissionPrompt`,
+  `skipWorkflowUsageWarning`
+- **The Stop hook** — installs `wiki-autosave-gate.sh` → `~/.claude/hooks/` **and** registers
+  the stanza (skipped if you already have a Stop hook)
+- **The statusline** — installs the renderer + points `statusLine` at it
 
-- `~/.claude/settings.json`: `model=opus[1m]`, `effortLevel=xhigh`, `tui=fullscreen`,
-  `theme=dark-ansi`, `voice` (hold), `skipDangerousModePermissionPrompt`,
-  `skipWorkflowUsageWarning`, the `Stop` hook, and `statusLine`.
-- `~/.claude/hooks/wiki-autosave-gate.sh` (the once-per-session wiki-save nudge).
-- The statusline binary → `~/.local/share/khenrix-utils/statusline/khenrix-statusline`.
+Review its table, approve. That's it — there's no longer a machine-local settings/hook to
+hand-copy (all of the above ships in this repo now).
 
-## 5. Re-auth the MCP secrets (these never copy — obtain on the new machine)
+## 4. Re-auth MCP secrets — the only truly-manual step left (never copy)
 
 - **google-drive** — drop `gcp-oauth.keys.json` in `~/.config/google-drive-mcp/`,
   run its OAuth flow → `tokens.json`.
@@ -119,6 +122,7 @@ After pulling khenrix-utils changes that touch skills/MCP/settings, re-run
 
 ### What does NOT sync (re-apply per machine)
 
-Claude `settings.json`, the hook + statusline binary, all MCP secrets/tokens, and
-the tooling/WSL bridges. `khenrix-setup` + section 4–5 above rebuild these; they
-never travel through git (secrets and machine-specific paths must not).
+Only the things that *can't* safely travel through git: **MCP secrets/tokens** (re-auth,
+section 4) and the **tooling/WSL bridges** (install, Prerequisites). Everything else —
+including Claude settings, the Stop hook, and the statusline — is now declared in this repo
+and applied by `/khenrix-setup`, so it no longer needs hand-copying.
