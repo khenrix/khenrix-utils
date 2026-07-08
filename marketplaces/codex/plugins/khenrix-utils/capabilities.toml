@@ -47,6 +47,16 @@ transport = "stdio"
 command = "${HOME}/.local/bin/powershell.exe"
 args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
 
+# LinkedIn — portable, no secret in config; auth is an interactive per-machine login via the tool.
+# (Slack is deliberately NOT managed here: its XOXC/XOXD are per-machine, session-scoped, rotating
+# tokens that don't belong in a shared source of truth — add it by hand per machine.)
+[mcp_servers.linkedin]
+transport = "stdio"
+command = "uvx"
+args = ["mcp-server-linkedin@latest"]
+[mcp_servers.linkedin.env]
+UV_HTTP_TIMEOUT = "300"
+
 # Provider-specific docs MCP. Only the matching CLI gets it; omit a provider to
 # add nothing (Claude and agy have no official docs server today).
 [docs_mcp.codex]
