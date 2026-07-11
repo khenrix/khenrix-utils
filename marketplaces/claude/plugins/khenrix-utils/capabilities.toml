@@ -73,7 +73,7 @@ url = "https://developers.openai.com/mcp"
 # ---------------------------------------------------------------------------
 [models]
 last_reviewed = "2026-07-11"
-claude = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+claude = ["claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
 codex  = ["gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.5 Flash (High)"]
 
@@ -131,7 +131,7 @@ status_line_use_colors = true
 # Claude baseline settings — written to ~/.claude/settings.json ONLY when the key is ABSENT
 # (never overrides your per-machine tuning; drift is reported, not changed).
 [settings.claude]
-model = "opus[1m]"
+model = "best"
 effortLevel = "xhigh"
 tui = "fullscreen"
 theme = "dark-ansi"

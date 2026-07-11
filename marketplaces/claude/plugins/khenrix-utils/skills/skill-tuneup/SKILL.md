@@ -130,9 +130,11 @@ Before anything becomes a proposed fix, get the council's verdict on the delta l
 
 ```bash
 P=$(mktemp); cat > "$P" <<'EOF'
-Here are my upstream-change findings for khenrix-utils skill <target> since <baseline>.
-Did I miss a relevant CLI/engine/model/convention change? Is any finding wrong,
-irrelevant, or already handled? Which are worth acting on vs noise? Be specific.
+Review these upstream-change findings for khenrix-utils skill <target> since <baseline>
+— do not modify anything; answer in your final message.
+For each finding, give a verdict (confirmed / refuted / noise) with concrete evidence.
+Then list any relevant CLI/engine/model/convention change I missed. Verdicts first,
+summary last; if everything holds, say so explicitly.
 <the delta list>
 EOF
 python3 "$FANOUT" --prompt-file "$P" --out json
@@ -173,7 +175,7 @@ with rationale, never auto-applied.
 2. Council-review the diff (self-target rules apply if the target is llm-council):
 
 ```bash
-D=$(mktemp); { echo "Review this khenrix-utils skill-tuneup diff for correctness, over-engineering, stale references, and missed edge cases. Proportionate findings only."; git -C "$REPO" diff; } > "$D"
+D=$(mktemp); { echo "Adversarially review this khenrix-utils skill-tuneup diff — look for the strongest reasons it should not ship; do not modify anything. Prioritize correctness, over-engineering, stale references, and missed edge cases. Report findings first, ordered by severity, each tied to a file/hunk with a concrete fix; ground every claim in the diff; prefer one strong finding over several weak ones. If it looks safe, say so explicitly and name residual risks."; git -C "$REPO" diff; } > "$D"
 python3 "$FANOUT" --prompt-file "$D" --out json
 ```
 

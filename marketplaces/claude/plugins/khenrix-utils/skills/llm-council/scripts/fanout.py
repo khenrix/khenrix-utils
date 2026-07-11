@@ -51,12 +51,12 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # --------------------------------------------------------------------------- #
 MODES = {
     "normal": {
-        "claude": {"model": "claude-opus-4-8",        "thinking": "high"},
+        "claude": {"model": "claude-fable-5",         "thinking": "high"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
         "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        "claude": {"model": "claude-opus-4-8",        "thinking": "max"},
+        "claude": {"model": "claude-fable-5",         "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
         "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "max"},
     },
@@ -172,6 +172,7 @@ class ProviderSpec:
     model: Optional[str] = None
     thinking: Optional[str] = None   # abstract tier (high|max) recorded for provenance
     log_file: Optional[str] = None   # if set, scanned for sentinels on failure
+    cwd: Optional[str] = None        # if set, the provider runs from this directory
 
 
 def agy_configured_model() -> Optional[str]:
@@ -265,8 +266,9 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     --dangerously-skip-permissions, never completes a file read; plain
     --dangerously-skip-permissions reads + answers in seconds). So agy stays headless and its
     read-only posture rests on the council's review INTENT (members are asked to review, not
-    edit) + the trusted workspace, not a sandbox flag. (For true write-isolation, run agy in a
-    throwaway git worktree — a heavier change, out of scope here.)"""
+    edit) + the trusted workspace, not a sandbox flag. Since 2026-07-11 the engine adds two
+    soft layers: the READONLY_POSTURE prompt line, and isolate_agy_worktree (cwd-relative
+    mutations land in a throwaway git worktree — the observed breakout class)."""
     if spec.name == "claude":
         # Plan mode is the read-only mechanism, but its harness invites writing a plan
         # FILE (the one write plan mode allows) — suppress that side effect mechanically
@@ -282,6 +284,82 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
         # KEEP --dangerously-skip-permissions (see docstring): --sandbox hangs agy headless.
         pass
     return spec
+
+
+def _warn_isolation(detail: str) -> None:
+    sys.stderr.write(f"WARNING: agy worktree isolation degraded — {detail}; "
+                     "agy runs in the real cwd (posture line only).\n")
+
+
+def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
+                         repo_dir: Optional[str] = None) -> Optional[tuple]:
+    """Point agy's cwd at a throwaway git worktree so cwd-relative mutations — the
+    observed breakout class (2026-07-11: editing files, re-seeding receipts, `git add`)
+    — land in a discarded copy instead of the real checkout. Honestly scoped: agy keeps
+    full filesystem access headless (no sandbox works, see make_readonly), so
+    absolute-path writes remain possible; this redirects the accident path, it is not a
+    sandbox. Identical conditions beat containment: the worktree mirrors the working
+    tree (uncommitted tracked changes incl. binary; untracked files are absent), the
+    caller's position inside the repo is preserved so relative paths resolve the same
+    for every member, and if the mirror cannot be reproduced faithfully the isolation
+    is ABANDONED with a stderr warning rather than letting agy silently review
+    HEAD-only content. Quiet no-op outside a git repo.
+    Returns (repo_root, worktree_path) for remove_agy_worktree."""
+    handle = None
+    try:
+        top = subprocess.run(["git", "-C", repo_dir or ".", "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode != 0:
+            return None  # not a git repo — nothing to isolate, nothing to warn about
+        repo = top.stdout.strip()
+        # Unregister worktrees leaked by previously crashed runs (temp dirs vanish but
+        # their .git/worktrees/ registrations do not).
+        subprocess.run(["git", "-C", repo, "worktree", "prune"],
+                       capture_output=True, text=True, timeout=10)
+        wt = str(Path(workdir) / "agy-worktree")
+        add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, "HEAD"],
+                             capture_output=True, text=True, timeout=30)
+        if add.returncode != 0:
+            _warn_isolation(f"worktree add failed: {add.stderr.strip()[:120]}")
+            return None
+        handle = (repo, wt)
+        diff = subprocess.run(["git", "-C", repo, "diff", "--binary", "--full-index", "HEAD"],
+                              capture_output=True, text=True, timeout=30)
+        if diff.returncode != 0:
+            remove_agy_worktree(handle)
+            _warn_isolation("could not read the working-tree diff")
+            return None
+        if diff.stdout.strip():
+            ap = subprocess.run(["git", "-C", wt, "apply"], input=diff.stdout,
+                                capture_output=True, text=True, timeout=30)
+            if ap.returncode != 0:
+                remove_agy_worktree(handle)
+                _warn_isolation("could not mirror uncommitted changes")
+                return None
+        try:
+            rel = Path(repo_dir or os.getcwd()).resolve().relative_to(Path(repo).resolve())
+            spec.cwd = str(Path(wt) / rel)
+        except ValueError:
+            spec.cwd = wt
+        Path(spec.cwd).mkdir(parents=True, exist_ok=True)  # subdir may hold only untracked files
+        return handle
+    except Exception:  # noqa: BLE001 — isolation is best-effort, never fail the run
+        remove_agy_worktree(handle)
+        _warn_isolation("unexpected error during setup")
+        return None
+
+
+def remove_agy_worktree(handle: Optional[tuple]) -> None:
+    """Discard the throwaway worktree (and anything agy wrote into it)."""
+    if not handle:
+        return
+    repo, wt = handle
+    try:
+        # Double --force: the worktree is expected to be dirty if agy misbehaved.
+        subprocess.run(["git", "-C", repo, "worktree", "remove", "--force", "--force", wt],
+                       capture_output=True, text=True, timeout=30)
+    except Exception:  # noqa: BLE001 — best-effort cleanup; workdir is a temp dir
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +421,8 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         t0 = time.monotonic()
         try:
             cp = subprocess.run(spec.argv, input=spec.stdin, capture_output=True,
-                                text=True, timeout=timeout, env=child_env())
+                                text=True, timeout=timeout, env=child_env(),
+                                cwd=spec.cwd)
         except FileNotFoundError:
             dur = round(time.monotonic() - t0, 2)
             attempt_log.append({"attempt": n, "reason": "not_installed",
@@ -410,6 +489,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "raw_stderr_file": str(stderr_file),
         "model": spec.model,
         "thinking": spec.thinking,
+        "isolated_cwd": spec.cwd,
         "attempt_log": attempt_log,
     }
 
@@ -525,12 +605,19 @@ def smoke(args) -> int:
     timeout = effective_timeout(args)
     cfg = resolve_mode_config(args)
     specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
+    agy_wt = None
     if args.read_only:
         for s in specs:
             make_readonly(s)
-    manifest = run_council(specs, retries=args.retries, timeout=timeout,
-                           backoff=args.backoff, workdir=workdir, prompt=prompt,
-                           requested=providers, mode=args.mode, read_only=args.read_only)
+        agy_spec = next((s for s in specs if s.name == "agy"), None)
+        if agy_spec:
+            agy_wt = isolate_agy_worktree(agy_spec, workdir)
+    try:
+        manifest = run_council(specs, retries=args.retries, timeout=timeout,
+                               backoff=args.backoff, workdir=workdir, prompt=prompt,
+                               requested=providers, mode=args.mode, read_only=args.read_only)
+    finally:
+        remove_agy_worktree(agy_wt)
     print(_render_text(manifest))
     ok = all(p["valid"] and "pong" in Path(p["result_file"]).read_text().lower()
              for p in manifest["providers"])
@@ -741,6 +828,47 @@ def self_test() -> int:
     check("posture: reaches the agy argv (the one unconstrained member)",
           any(READONLY_POSTURE in str(a) for a in ag15.argv))
 
+    # S16 — agy worktree isolation: cwd redirected to a throwaway copy that mirrors the
+    # working tree (incl. uncommitted tracked changes); cleanup removes it; non-repo no-op.
+    repo16 = wd("wt_repo")
+    gitc = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo16)]
+    subprocess.run(gitc[:5] + ["-C", str(repo16), "init", "-q"], capture_output=True)
+    (repo16 / "f.txt").write_text("committed")
+    (repo16 / "sub").mkdir()
+    (repo16 / "sub" / "g.txt").write_text("sub-file")
+    (repo16 / "b.bin").write_bytes(bytes(range(256)))
+    subprocess.run(gitc + ["add", "-A"], capture_output=True)
+    subprocess.run(gitc + ["commit", "-q", "-m", "c1"], capture_output=True)
+    (repo16 / "f.txt").write_text("working-tree")
+    (repo16 / "b.bin").write_bytes(bytes(reversed(range(256))))  # dirty BINARY change
+    ag16 = build_real_spec("agy", "q", 30, {}, wd("wt_wd"))
+    handle = isolate_agy_worktree(ag16, wd("wt_wd"), repo_dir=str(repo16))
+    check("worktree: cwd redirected into workdir",
+          handle is not None and ag16.cwd == handle[1]
+          and str(wd("wt_wd")) in (ag16.cwd or ""))
+    check("worktree: mirrors uncommitted working tree",
+          handle is not None and (Path(handle[1]) / "f.txt").read_text() == "working-tree")
+    check("worktree: mirrors dirty BINARY files (--binary diff)",
+          handle is not None
+          and (Path(handle[1]) / "b.bin").read_bytes() == bytes(reversed(range(256))))
+    if handle:
+        (Path(handle[1]) / "escaped.txt").write_text("dirty")  # simulate a misbehaving agy
+    remove_agy_worktree(handle)
+    check("worktree: removed even when dirty",
+          handle is not None and not Path(handle[1]).exists())
+    # Invoked from a subdirectory: agy's cwd must be the SAME subdir inside the worktree,
+    # so relative paths resolve identically for every member.
+    ag16s = build_real_spec("agy", "q", 30, {}, wd("wt_wd_sub"))
+    hs = isolate_agy_worktree(ag16s, wd("wt_wd_sub"), repo_dir=str(repo16 / "sub"))
+    check("worktree: caller's subdir position preserved",
+          hs is not None and ag16s.cwd == str(Path(hs[1]) / "sub")
+          and Path(ag16s.cwd).is_dir())
+    remove_agy_worktree(hs)
+    ag16b = build_real_spec("agy", "q", 30, {}, wd("wt_wd2"))
+    check("worktree: no-op outside a git repo",
+          isolate_agy_worktree(ag16b, wd("wt_wd2"), repo_dir=str(wd("wt_norepo"))) is None
+          and ag16b.cwd is None)
+
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
         line = f"  {'PASS' if ok else 'FAIL'}  {label}"
@@ -826,16 +954,24 @@ def main(argv=None) -> int:
 
     # Read-only is the default council posture: claude/codex are mechanically
     # constrained (plan mode + plan-file suppression / read-only sandbox); agy is
-    # best-effort (see make_readonly). --allow-writes opts out. Applied after overrides
-    # so a test override's binary is preserved (overrides replace argv[0] only, so the
-    # bypass flag make_readonly swaps is always present).
+    # best-effort (see make_readonly) — it additionally gets a throwaway-worktree cwd so
+    # cwd-relative mutations are discarded. --allow-writes opts out. Applied after
+    # overrides so a test override's binary is preserved (overrides replace argv[0]
+    # only, so the bypass flag make_readonly swaps is always present).
+    agy_wt = None
     if args.read_only:
         for s in specs:
             make_readonly(s)
+        agy_spec = by_name.get("agy")
+        if agy_spec:
+            agy_wt = isolate_agy_worktree(agy_spec, workdir)
 
-    manifest = run_council(specs, retries=args.retries, timeout=timeout,
-                           backoff=args.backoff, workdir=workdir, prompt=prompt,
-                           requested=providers, mode=args.mode, read_only=args.read_only)
+    try:
+        manifest = run_council(specs, retries=args.retries, timeout=timeout,
+                               backoff=args.backoff, workdir=workdir, prompt=prompt,
+                               requested=providers, mode=args.mode, read_only=args.read_only)
+    finally:
+        remove_agy_worktree(agy_wt)
     print(json.dumps(manifest, indent=2) if args.out == "json" else _render_text(manifest))
     return 0 if manifest["summary"]["valid"] > 0 else 1
 
