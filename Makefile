@@ -33,7 +33,7 @@ setup-claude: render ## Install the khenrix marketplace + plugin into Claude Cod
 
 setup-codex: render ## Install the khenrix marketplace + plugin into Codex
 	codex plugin marketplace add $(REPO)/marketplaces/codex
-	codex plugin add khenrix-utils
+	codex plugin add khenrix-utils@khenrix-codex-marketplace
 	@echo "✅ Installed. Run the khenrix-setup skill inside Codex to reconcile config."
 
 setup-agy: render ## Install the khenrix plugin into Antigravity (agy)
