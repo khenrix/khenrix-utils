@@ -1,12 +1,14 @@
 {
   "skill": "skill-tuneup",
-  "source_hash": "7ac70335f0e6f9c7913eb4434b4c53936dcfe07077079d83aa5a891c509def4e",
+  "source_hash": "05b050703bd68d3c53aca9134f1173ab68e7be4aa4190e872178c8c37c1b28d5",
   "eval_set_hash": "b8dab64c5a59c47bc7bfc690a8f43b12c3cb73bf835b6b8cdf52eb4a0b3d8728",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.3411,
+  "provenance": "eval"
 }

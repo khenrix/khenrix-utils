@@ -26,12 +26,14 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > **Read-only by default.** Members run in a read-and-plan posture: Claude (plan mode,
 > with plan-file writes suppressed) and Codex (read-only sandbox) are **mechanically
 > constrained**; agy is best-effort — its headless sandbox hangs (see `make_readonly`),
-> so the engine prepends a read-only posture line to every member's prompt (identical
-> conditions preserved; added after agy was observed *executing* a review-framed prompt
-> — editing, staging, re-seeding receipts — on 2026-07-11). This suits the
-> council's job (a second opinion / synthesis, not edits) and makes it low-risk to
-> convene even mid-task — but agy's guard is instruction-only, so prefer
-> `--providers claude,codex` when strict isolation matters. Pass `--allow-writes` only when you explicitly want the members
+> so the engine adds two soft layers: a read-only posture line prepended to every
+> member's prompt (identical conditions preserved), and a throwaway git-worktree cwd for
+> agy so cwd-relative mutations are discarded (both added after agy was observed
+> *executing* a review-framed prompt — editing, staging, re-seeding receipts — on
+> 2026-07-11; absolute-path writes remain possible, so prefer `--providers claude,codex`
+> when strict isolation matters). This suits the council's job (a second opinion /
+> synthesis, not edits) and makes it low-risk to convene even
+> mid-task. Pass `--allow-writes` only when you explicitly want the members
 > to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
 
 ## 1. Locate the engine
@@ -72,6 +74,20 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --out json          # normal mode
 python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 ```
 
+### Prompt shape (matters most for the codex seat)
+
+- **Open with the request-type verb.** GPT-5.6 dispatches on it: "Review …" / "Diagnose …
+  — do not modify anything" lands in a bucket that natively forbids writes and stops short
+  of implementing fixes; "fix"/"implement" authorizes edits. Match the verb to intent.
+- **Review asks need an explicit output contract** (5.6 dropped its built-in one):
+  findings first, ordered by severity, each with file:line evidence; then open
+  questions/assumptions; summary last; if clean, say so explicitly with residual risks.
+- **Supply defaults for ambiguity.** Headless members never ask clarifying questions —
+  they guess. "If X is ambiguous, assume Y; state assumptions inline."
+- **Don't write "think harder"** — reasoning depth is the `--mode` knob, prose adds nothing.
+  Do authorize length when you want depth ("a long structured answer is expected");
+  the codex harness biases hard toward brevity otherwise.
+
 The engine prints a JSON **manifest** to stdout (also saved to
 `<workdir>/manifest.json`). Useful flags: `--mode normal|deep` (see below),
 `--allow-writes` (drop the default read-only posture so members can edit/execute),
@@ -91,7 +107,7 @@ Two modes, **same models**, differ only in how hard they think:
   when the user says "deep", "think hard", or "maximum confidence".
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
-`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.6 Sol, Gemini 3.5 Flash). To change
+`scripts/fanout.py` (currently Claude Fable 5, GPT-5.6 Sol, Gemini 3.5 Flash). To change
 a model or tier, edit one cell there; nothing else needs to change. Note: `agy` has no
 per-run model/thinking flag — it reads both from `~/.gemini/antigravity-cli/settings.json`,
 so its row documents the intended config but is set there, not by `--mode`.
