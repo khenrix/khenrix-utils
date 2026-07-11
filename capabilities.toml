@@ -72,9 +72,9 @@ url = "https://developers.openai.com/mcp"
 # strings; agy's is a display label (its real model lives in ~/.gemini settings).
 # ---------------------------------------------------------------------------
 [models]
-last_reviewed = "2026-06-22"
+last_reviewed = "2026-07-11"
 claude = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
-codex  = ["gpt-5.5"]
+codex  = ["gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.5 Flash (High)"]
 
 # ---------------------------------------------------------------------------

@@ -52,12 +52,12 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 MODES = {
     "normal": {
         "claude": {"model": "claude-opus-4-8",        "thinking": "high"},
-        "codex":  {"model": "gpt-5.5",                "thinking": "high"},
+        "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
         "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
     },
     "deep": {
         "claude": {"model": "claude-opus-4-8",        "thinking": "max"},
-        "codex":  {"model": "gpt-5.5",                "thinking": "max"},
+        "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
         "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "max"},
     },
 }
@@ -66,7 +66,10 @@ MODE_TIMEOUT = {"normal": 300, "deep": 600}  # per-attempt seconds used when --t
 
 # Map the abstract thinking tier to each provider's own flag value.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
-CODEX_EFFORT = {"high": "high", "max": "high"}   # codex model_reasoning_effort tops out at "high"
+# gpt-5.6-sol accepts low/medium/high/xhigh/max/ultra (probed 2026-07-11); "ultra" is
+# deliberately unused — it spawns internal sub-agents (a council inside a council member)
+# and is Pro-plan-gated, so deep mode maps to "max".
+CODEX_EFFORT = {"high": "high", "max": "max"}
 
 # Substrings that mark a provider's output as a failure rather than an answer.
 # Scanned in stderr and the provider's log file always, and in the result text ONLY
@@ -482,6 +485,24 @@ def _render_text(manifest: dict) -> str:
     return "\n".join(lines)
 
 
+# Prepended to the prompt (identically for every member) when the council runs
+# read-only. claude/codex are mechanically constrained anyway; this is the only guard
+# that reaches agy — a SOFT guard (instruction, not enforcement; the durable fix is
+# worktree isolation, see make_readonly), added after agy executed a review-framed
+# prompt (editing files, re-seeding receipts, staging) on 2026-07-11. claude also gets
+# the plan-mode-specific READONLY_REVIEWER_NOTE via make_readonly — keep both in mind
+# when editing either wording. Says "as text", not "prose only": answers may still
+# contain code blocks/diffs — the guard is against mutating state, not against code.
+READONLY_POSTURE = ("COUNCIL POSTURE: read-only — do not create, modify, stage, or "
+                    "commit files, or change any repo/system state; propose any "
+                    "changes as text in your answer.")
+
+
+def apply_readonly_posture(prompt: str) -> str:
+    """One identical posture line for all members, preserving identical conditions."""
+    return f"{READONLY_POSTURE}\n\n{prompt}"
+
+
 def resolve_prompt(args) -> str:
     if args.prompt is not None:
         return args.prompt
@@ -497,6 +518,8 @@ def resolve_prompt(args) -> str:
 # --------------------------------------------------------------------------- #
 def smoke(args) -> int:
     prompt = "Reply with exactly one word and nothing else: pong"
+    if args.read_only:
+        prompt = apply_readonly_posture(prompt)  # smoke exercises the real prompt shape
     providers = args.providers.split(",") if args.providers else ["claude"]
     workdir = Path(tempfile.mkdtemp(prefix="llm-council-smoke-"))
     timeout = effective_timeout(args)
@@ -706,6 +729,18 @@ def self_test() -> int:
     make_readonly(ag14)
     check("readonly: agy argv unchanged (no working headless sandbox)", ag14.argv == before14)
 
+    # S15 — read-only posture line (the only guard that reaches agy): prepended intact,
+    # original prompt preserved, and identical for every member by construction.
+    aug = apply_readonly_posture("original question")
+    check("posture: line prepended", aug.startswith(READONLY_POSTURE))
+    check("posture: original prompt preserved", aug.endswith("original question"))
+    check("posture: main() honors --allow-writes wiring",
+          parse_args(["--prompt", "x", "--allow-writes"]).read_only is False
+          and parse_args(["--prompt", "x"]).read_only is True)
+    ag15 = build_real_spec("agy", apply_readonly_posture("q"), 30, {}, wd("ro"))
+    check("posture: reaches the agy argv (the one unconstrained member)",
+          any(READONLY_POSTURE in str(a) for a in ag15.argv))
+
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
         line = f"  {'PASS' if ok else 'FAIL'}  {label}"
@@ -769,6 +804,9 @@ def main(argv=None) -> int:
         print(json.dumps({"error": "empty_prompt",
                           "detail": "provide --prompt, --prompt-file, or pipe via stdin"}))
         return 2
+
+    if args.read_only:
+        prompt = apply_readonly_posture(prompt)
 
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
     workdir = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="llm-council-"))

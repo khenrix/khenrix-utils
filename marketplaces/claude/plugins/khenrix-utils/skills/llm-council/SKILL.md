@@ -26,9 +26,12 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > **Read-only by default.** Members run in a read-and-plan posture: Claude (plan mode,
 > with plan-file writes suppressed) and Codex (read-only sandbox) are **mechanically
 > constrained**; agy is best-effort — its headless sandbox hangs (see `make_readonly`),
-> so its posture rests on review intent plus the trusted workspace. This suits the
-> council's job (a second opinion / synthesis, not edits) and makes it safe to convene
-> even mid-task. Pass `--allow-writes` only when you explicitly want the members
+> so the engine prepends a read-only posture line to every member's prompt (identical
+> conditions preserved; added after agy was observed *executing* a review-framed prompt
+> — editing, staging, re-seeding receipts — on 2026-07-11). This suits the
+> council's job (a second opinion / synthesis, not edits) and makes it low-risk to
+> convene even mid-task — but agy's guard is instruction-only, so prefer
+> `--providers claude,codex` when strict isolation matters. Pass `--allow-writes` only when you explicitly want the members
 > to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
 
 ## 1. Locate the engine
@@ -88,7 +91,7 @@ Two modes, **same models**, differ only in how hard they think:
   when the user says "deep", "think hard", or "maximum confidence".
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
-`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.5, Gemini 3.5 Flash). To change
+`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.6 Sol, Gemini 3.5 Flash). To change
 a model or tier, edit one cell there; nothing else needs to change. Note: `agy` has no
 per-run model/thinking flag — it reads both from `~/.gemini/antigravity-cli/settings.json`,
 so its row documents the intended config but is set there, not by `--mode`.
