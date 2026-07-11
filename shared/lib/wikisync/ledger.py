@@ -211,6 +211,19 @@ class Ledger:
         return self.conn.execute("SELECT * FROM page WHERE source_url=?",
                                  (source_url,)).fetchone()
 
+    def all_pages(self) -> list:
+        return self.conn.execute("SELECT * FROM page ORDER BY page_id").fetchall()
+
+    def active_items_for_url(self, url: str) -> list:
+        return self.conn.execute(
+            "SELECT * FROM source_item WHERE canonical_url=? AND active=1 ORDER BY item_id",
+            (url,)).fetchall()
+
+    def job_state_counts(self) -> dict:
+        rows = self.conn.execute(
+            "SELECT job_state, COUNT(*) c FROM source_item GROUP BY job_state").fetchall()
+        return {(r["job_state"] or "none"): r["c"] for r in rows}
+
     def page_removable(self, page_id: int) -> bool:
         """A page is removable only when every source_item owning its URL is inactive."""
         row = self.conn.execute("SELECT source_url FROM page WHERE page_id=?",
