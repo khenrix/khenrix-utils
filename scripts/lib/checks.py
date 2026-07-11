@@ -118,6 +118,12 @@ SKILL_EXTRA = {
     "khenrix-upgrade": ["capabilities.toml", "house-style.md"],
     "llm-council":     ["headless-invocation.md"],
 }
+# Extra behavior-affecting DIRECTORIES per skill (rglob'd into the closure). The wiki
+# skills' SKILL.md drives a shared stdlib engine — editing it must stale both receipts.
+SKILL_EXTRA_DIRS = {
+    "khenrix-wiki-add":  ["shared/lib/wikisync"],
+    "khenrix-wiki-sync": ["shared/lib/wikisync"],
+}
 
 
 def _sha(b: bytes) -> str:
@@ -138,6 +144,11 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
         p = root / rel
         if p.is_file():
             files.append(p)
+    for d in SKILL_EXTRA_DIRS.get(skill, []):  # whole shared-engine dirs into the closure
+        base = root / d
+        if base.is_dir():
+            files += [p for p in base.rglob("*") if p.is_file()
+                      and "__pycache__" not in p.parts and p.suffix != ".pyc"]
     if skill in ("khenrix-setup", "khenrix-upgrade"):  # overlays change reconcile output
         caps = _load_caps(root)
         for ov in (caps.get("instructions", {}).get("overlays") or {}).values():
@@ -165,7 +176,19 @@ def source_hash(root: Path, skill: str) -> str:
 
 
 def eval_set_hash(root: Path, skill: str) -> str:
-    return _sha((root / "evals" / skill / "evals.json").read_bytes())
+    """Hash evals.json PLUS the evals/<skill>/fixtures/ tree, so changing a fixture
+    re-arms the receipt. Backward-compatible: a skill with no fixtures/ dir hashes to
+    exactly sha256(evals.json) as before."""
+    ev_dir = root / "evals" / skill
+    h = hashlib.sha256()
+    h.update((ev_dir / "evals.json").read_bytes())
+    fx = ev_dir / "fixtures"
+    if fx.is_dir():
+        for p in sorted(fx.rglob("*")):
+            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
+                h.update(str(p.relative_to(ev_dir)).encode())
+                h.update(_sha(p.read_bytes()).encode())
+    return h.hexdigest()
 
 
 def _evald_skills(root: Path) -> list[str]:
@@ -185,6 +208,12 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
             out.append(f"receipt: {skill} changed since last eval — run `make eval SKILL={skill}`")
         elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
             out.append(f"receipt: {skill} eval set changed — run `make eval SKILL={skill}`")
+        # Blind A/B gate: a real receipt must record a with_skill win. Seeded receipts
+        # (blind_winner absent/None) and the orchestrator exception are exempt.
+        bw = rec.get("blind_winner")
+        if bw is not None and bw not in ("with_skill", "n/a-orchestrator"):
+            out.append(f"receipt: {skill} blind A/B winner is '{bw}', not with_skill — "
+                       f"re-run `make eval SKILL={skill}`")
     return ["(advisory) " + m for m in out] if advisory else out
 
 
@@ -202,6 +231,14 @@ def _self_test() -> int:
     ok.append(("khenrix-setup closure includes capabilities.toml + render.py",
                {"capabilities.toml", "scripts/render.py"} <=
                {r for r, _ in source_manifest(ROOT, "khenrix-setup")}))
+    # eval_set_hash stays backward-compatible for a skill with no fixtures/ dir
+    ok.append(("eval_set_hash == sha256(evals.json) when no fixtures",
+               eval_set_hash(ROOT, "llm-council") ==
+               _sha((ROOT / "evals" / "llm-council" / "evals.json").read_bytes())))
+    # the wiki skills route their shared engine into the closure via SKILL_EXTRA_DIRS
+    ok.append(("wiki skills map shared/lib/wikisync into their closure",
+               SKILL_EXTRA_DIRS.get("khenrix-wiki-add") == ["shared/lib/wikisync"] and
+               SKILL_EXTRA_DIRS.get("khenrix-wiki-sync") == ["shared/lib/wikisync"]))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

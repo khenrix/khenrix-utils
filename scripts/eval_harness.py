@@ -45,6 +45,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -66,6 +67,47 @@ def strip_frontmatter(skill_md: str) -> str:
         if end != -1:
             return skill_md[skill_md.find("\n", end + 1) + 1:].lstrip("\n")
     return skill_md
+
+
+def materialize_fixtures(ev: dict, src_dir: Path, dest: Path) -> Path:
+    """Copy every fixture named in ev['files'] from src_dir into dest (created), so
+    both conditions read identical local files. A name may be a file or a subdir
+    (copied recursively). Missing sources are skipped silently — the eval author
+    owns evals/<skill>/fixtures/. Returns dest (what {fixture_dir} resolves to)."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in ev.get("files") or []:
+        src = src_dir / name
+        if src.is_file():
+            (dest / name).parent.mkdir(parents=True, exist_ok=True)
+            (dest / name).write_bytes(src.read_bytes())
+        elif src.is_dir():
+            for p in src.rglob("*"):
+                if p.is_file():
+                    d = dest / name / p.relative_to(src)
+                    d.parent.mkdir(parents=True, exist_ok=True)
+                    d.write_bytes(p.read_bytes())
+    return dest
+
+
+def render_prompt(ev: dict, fixture_dir: Path) -> str:
+    """Substitute the {fixture_dir} placeholder in the eval prompt with the
+    materialized workspace path (identical for both conditions)."""
+    return ev["prompt"].replace("{fixture_dir}", str(fixture_dir))
+
+
+def blind_winner(comparisons: list) -> str:
+    """Aggregate the per-eval blind A/B verdicts into one winner: whichever
+    condition won strictly more evals, else 'tie'. This is the gate the receipt
+    records — a skill must win the blind comparison, not merely tie."""
+    tally = {"with_skill": 0, "without_skill": 0, "tie": 0}
+    for c in comparisons:
+        cond = (c or {}).get("winner_condition", "tie")
+        tally[cond] = tally.get(cond, 0) + 1
+    if tally["with_skill"] > tally["without_skill"]:
+        return "with_skill"
+    if tally["without_skill"] > tally["with_skill"]:
+        return "without_skill"
+    return "tie"
 
 
 def build_condition_prompt(skill_body: str, eval_prompt: str, condition: str) -> str:
@@ -286,12 +328,15 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
                           readonly: bool) -> list:
     body = load_skill_body(skill, provider)
     base = itdir / f"eval-{ev['id']}-{ev['name']}"
+    fixtures_src = EVALS_ROOT / skill / "fixtures"
     runs = []
     outputs = {}
     for condition in ("with_skill", "without_skill"):
         wd = base / f"{provider}__{condition}"
         wd.mkdir(parents=True, exist_ok=True)
-        prompt = build_condition_prompt(body, ev["prompt"], condition)
+        fx = materialize_fixtures(ev, fixtures_src, wd / "fixtures")
+        eval_prompt = render_prompt(ev, fx)
+        prompt = build_condition_prompt(body, eval_prompt, condition)
         (wd / "prompt.txt").write_text(prompt)
         text, rec = run_text(provider, prompt, cfg, wd, timeout=timeout, retries=retries,
                              readonly=readonly)
@@ -314,7 +359,7 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
     cmp = compare(outputs["with_skill"], outputs["without_skill"], ev, judge, cfg, base,
                   timeout=timeout)
     (base / "comparison.json").write_text(json.dumps(cmp, indent=2))
-    return runs
+    return runs, cmp
 
 
 def _checks():
@@ -323,9 +368,10 @@ def _checks():
     return checks
 
 
-def _write_receipt(skill, *, providers, mode, judge, delta, seeded):
+def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None):
     """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
-    For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark."""
+    For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark.
+    `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded)."""
     c = _checks()
     rec = {
         "skill": skill,
@@ -333,6 +379,7 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded):
         "eval_set_hash": c.eval_set_hash(ROOT, skill),
         "providers": providers, "mode": mode, "judge": judge,
         "delta_pass_rate": delta,
+        "blind_winner": blind_winner,
         "provenance": "seeded: blessed current committed state" if seeded else "eval",
     }
     if skill == "llm-council":
@@ -362,12 +409,15 @@ def run(args) -> int:
     itdir.mkdir(parents=True, exist_ok=True)
 
     all_runs = []
+    comparisons = []
     for provider in providers:
         for ev in evals:
             print(f"  · {provider} / eval-{ev['id']}-{ev['name']} …", flush=True)
-            all_runs.extend(run_eval_for_provider(
+            runs, cmp = run_eval_for_provider(
                 args.skill, provider, ev, args.judge, cfg, itdir,
-                timeout=timeout, retries=args.retries, readonly=args.readonly))
+                timeout=timeout, retries=args.retries, readonly=args.readonly)
+            all_runs.extend(runs)
+            comparisons.append(cmp)
 
     benchmark = {
         "metadata": {"skill_name": args.skill, "judge": args.judge,
@@ -382,24 +432,40 @@ def run(args) -> int:
     (itdir / "benchmark.json").write_text(json.dumps(benchmark, indent=2))
     _print_summary(benchmark, itdir)
     d = benchmark["run_summary"]["delta"].get("pass_rate")
-    gate_ok = d is None or d >= 0
+    bw = blind_winner(comparisons)
+    print(f"  blind A/B winner: {bw}   ({_blind_tally(comparisons)})")
+    # Gate: non-negative delta AND the skill wins the blind comparison (a tie fails).
+    gate_ok = (d is None or d >= 0) and bw == "with_skill"
     if args.skill == "llm-council":
         # Orchestrator exception (docs/skill-eval-process.md): harness executors run
         # under LLM_COUNCIL_DEPTH=1, so an injected llm-council body can never convene
-        # a real nested council — the judged delta here measures solo answers, i.e.
-        # noise. The benchmark stays as advisory signal; the receipt gate is fanout
-        # --self-test (enforced inside _write_receipt), never this delta.
+        # a real nested council — the judged delta AND blind A/B measure solo answers,
+        # i.e. noise. The benchmark stays advisory; the receipt gate is fanout
+        # --self-test (enforced inside _write_receipt), never this delta/winner.
         gate_ok = True
+        bw = "n/a-orchestrator"
     if gate_ok:  # passing run → refresh the receipt
         _write_receipt(args.skill, providers=providers, mode=args.mode,
-                       judge=args.judge, delta=d, seeded=False)
+                       judge=args.judge, delta=d, blind_winner=bw, seeded=False)
     return 0 if gate_ok else 1
 
 
+def _blind_tally(comparisons: list) -> dict:
+    t = {"with_skill": 0, "without_skill": 0, "tie": 0}
+    for c in comparisons:
+        cond = (c or {}).get("winner_condition", "tie")
+        t[cond] = t.get(cond, 0) + 1
+    return t
+
+
 def _mode_args(args):
-    """Adapt our args into the shape fanout.resolve_mode_config/effective_timeout read."""
+    """Adapt our args into the shape fanout.resolve_mode_config/effective_timeout read.
+    The --model-* overrides let evals run when a MODES-default model is walled (e.g. a
+    Fable-5 credit wall → --model-claude claude-opus-4-8); record the substitution."""
     ns = argparse.Namespace(mode=args.mode, timeout=args.timeout,
-                            model_claude=None, model_codex=None, model_agy=None)
+                            model_claude=getattr(args, "model_claude", None),
+                            model_codex=getattr(args, "model_codex", None),
+                            model_agy=getattr(args, "model_agy", None))
     return ns
 
 
@@ -469,6 +535,30 @@ def self_test() -> int:
     check("aggregate delta", agg["delta"]["pass_rate"] == 0.75)
     check("aggregate skips all-null tokens", "tokens" not in agg["with_skill"])
 
+    # fixture materialization + {fixture_dir} substitution (Task 1)
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        src = tdp / "fixtures"
+        src.mkdir()
+        (src / "bm.json").write_text('{"k":1}')
+        ev = {"id": 0, "name": "fx", "prompt": "read {fixture_dir}/bm.json",
+              "files": ["bm.json"], "assertions": ["x"]}
+        ws = materialize_fixtures(ev, src_dir=src, dest=tdp / "ws")
+        check("fixtures materialized into workspace", (ws / "bm.json").exists())
+        rp = render_prompt(ev, ws)
+        check("fixture_dir placeholder substituted", "{fixture_dir}" not in rp and str(ws) in rp)
+        check("no-files eval is a no-op copy",
+              materialize_fixtures({"prompt": "x"}, src_dir=src, dest=tdp / "ws2").exists())
+
+    # blind-winner aggregation across comparisons (Task 1)
+    comps = [{"winner_condition": "with_skill"}, {"winner_condition": "with_skill"},
+             {"winner_condition": "without_skill"}]
+    check("blind_winner picks majority with_skill", blind_winner(comps) == "with_skill")
+    check("blind_winner tie on equal", blind_winner(
+        [{"winner_condition": "with_skill"}, {"winner_condition": "without_skill"}]) == "tie")
+    check("blind_winner without_skill when it leads", blind_winner(
+        [{"winner_condition": "without_skill"}, {"winner_condition": "tie"}]) == "without_skill")
+
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
         line = f"  {'PASS' if ok else 'FAIL'}  {label}"
@@ -487,6 +577,10 @@ def parse_args(argv=None):
     ap.add_argument("--judge", default=DEFAULT_JUDGE, help="grading/comparison model")
     ap.add_argument("--mode", choices=list(fanout.MODES), default="normal",
                     help="thinking mode for executors + judge (fanout MODES)")
+    ap.add_argument("--model-claude", help="override the claude executor+judge model "
+                    "(e.g. claude-opus-4-8 when the MODES default is unavailable)")
+    ap.add_argument("--model-codex", help="override the codex executor model")
+    ap.add_argument("--model-agy", help="override the agy executor model")
     ap.add_argument("--iteration", type=int, default=1, help="workspace iteration-N")
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--timeout", type=int, default=None, help="per-attempt seconds (per-mode default)")
