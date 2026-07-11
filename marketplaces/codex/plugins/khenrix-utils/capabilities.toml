@@ -99,6 +99,16 @@ per_cli = true
 [[skills]]
 name = "llm-council"
 
+# Wiki ingestion skills — shared bodies in shared/skills/, both driving the bundled
+# `wikisync` stdlib engine (shared/lib/wikisync/ → each plugin's lib/). wiki-add ingests
+# one item; wiki-sync batch-reconciles bookmarks + Instagram saves. Listed for
+# discoverability; render.py globs shared/skills/.
+[[skills]]
+name = "khenrix-wiki-add"
+
+[[skills]]
+name = "khenrix-wiki-sync"
+
 # ---------------------------------------------------------------------------
 # Baseline settings/policy — mapped to each CLI's native settings by the skill.
 # Applied only when the target key is ABSENT (never overrides your tuning).

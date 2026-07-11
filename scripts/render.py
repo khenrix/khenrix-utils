@@ -31,6 +31,10 @@ BUNDLED_DIRS = ["statusline", "overlays", "hooks"]
 # skill is self-contained after a marketplace copies the plugin.
 LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
                ROOT / "scripts" / "lib" / "inventory.py"]
+# Shared stdlib engines under shared/lib/<name>/, bundled once per plugin at lib/<name>/
+# so skills can `PYTHONPATH=<plugin>/lib python3 -m <name>` after a marketplace copy.
+# Runtime code only — tests are excluded to keep the plugin lean.
+SHARED_LIBS = ["wikisync"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
@@ -145,6 +149,15 @@ def render():
                 (skill / "scripts").mkdir(parents=True, exist_ok=True)
                 for lib in LIB_SCRIPTS:
                     shutil.copy2(lib, skill / "scripts" / lib.name)
+        # 4. bundle shared stdlib engines (runtime only) at the plugin's lib/<name>/
+        for name in SHARED_LIBS:
+            src = ROOT / "shared" / "lib" / name
+            if src.is_dir():
+                dst = pdir / "lib" / name
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst,
+                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
     if problems:
         print("RENDER FAILED:")
         for p in problems:
@@ -169,6 +182,7 @@ def clean():
             for skill in skills_root.iterdir():
                 for lib in LIB_SCRIPTS:
                     (skill / "scripts" / lib.name).unlink(missing_ok=True)
+        shutil.rmtree(pdir / "lib", ignore_errors=True)   # bundled shared engines
         # generated templated skill bodies are regenerable — drop them too
         for skill in TEMPLATED_SKILLS:
             (pdir / "skills" / skill / "SKILL.md").unlink(missing_ok=True)
