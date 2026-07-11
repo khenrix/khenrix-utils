@@ -1,0 +1,75 @@
+{
+  "checksum": "fixture",
+  "roots": {
+    "bookmark_bar": {
+      "type": "folder",
+      "name": "Bokmärkesfältet",
+      "children": [
+        {
+          "type": "folder",
+          "name": "Food",
+          "children": [
+            {
+              "type": "folder",
+              "name": "Main",
+              "children": [
+                {
+                  "type": "folder",
+                  "name": "Italian",
+                  "children": [
+                    {
+                      "type": "url",
+                      "guid": "g-carbonara",
+                      "name": "Best Carbonara",
+                      "url": "https://ex.com/carbonara",
+                      "date_added": "13350000000000000"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "folder",
+          "name": "Favorites",
+          "children": [
+            {
+              "type": "url",
+              "guid": "g-carbonara-fav",
+              "name": "Carbonara (saved again)",
+              "url": "https://ex.com/carbonara",
+              "date_added": "13350000000000000"
+            },
+            {
+              "type": "url",
+              "guid": "g-tracked",
+              "name": "Tracked Link",
+              "url": "https://ex.com/deal?utm_source=ig&v=42",
+              "date_added": "0"
+            }
+          ]
+        }
+      ]
+    },
+    "other": {
+      "type": "folder",
+      "name": "Andra bokmärken",
+      "children": []
+    },
+    "synced": {
+      "type": "folder",
+      "name": "Bokmärken i mobilen",
+      "children": [
+        {
+          "type": "url",
+          "guid": "g-mobile",
+          "name": "Mobile Save",
+          "url": "https://ex.com/mobile",
+          "date_added": "13350000000000000"
+        }
+      ]
+    }
+  },
+  "version": 1
+}
