@@ -62,7 +62,10 @@ MODES = {
     },
 }
 DEFAULT_MODE = "normal"
-MODE_TIMEOUT = {"normal": 300, "deep": 600}  # per-attempt seconds used when --timeout is unset
+# Deep raised 600->1200 (2026-07-11): fable-5@max measured 649s and sol@max 796s on a
+# substantive review — 600 killed both. For big deep prompts prefer --retries 0/1: a
+# member that rode the window once will ride it again, and retries multiply the wait.
+MODE_TIMEOUT = {"normal": 300, "deep": 1200}  # per-attempt seconds used when --timeout is unset
 
 # Map the abstract thinking tier to each provider's own flag value.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
@@ -899,7 +902,8 @@ def parse_args(argv=None):
                     help="let members write/execute with full permissions (opt out of read-only)")
     ap.add_argument("--retries", type=int, default=2, help="max retries per provider")
     ap.add_argument("--timeout", type=int, default=None,
-                    help="per-attempt seconds (default: per-mode — normal 300, deep 600)")
+                    help=f"per-attempt seconds (default: per-mode — "
+                         f"normal {MODE_TIMEOUT['normal']}, deep {MODE_TIMEOUT['deep']})")
     ap.add_argument("--backoff", type=float, default=5.0, help="base backoff seconds")
     ap.add_argument("--workdir", help="output dir (default: a fresh temp dir)")
     ap.add_argument("--model-claude")

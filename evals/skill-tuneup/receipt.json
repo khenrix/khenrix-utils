@@ -1,6 +1,6 @@
 {
   "skill": "skill-tuneup",
-  "source_hash": "05b050703bd68d3c53aca9134f1173ab68e7be4aa4190e872178c8c37c1b28d5",
+  "source_hash": "70e2ba0ee2726a29443a976ce2ac66eaf08e48bdd191071afeab356ff2938ee0",
   "eval_set_hash": "b8dab64c5a59c47bc7bfc690a8f43b12c3cb73bf835b6b8cdf52eb4a0b3d8728",
   "providers": [
     "claude",
@@ -9,6 +9,6 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.3411,
+  "delta_pass_rate": 0.2612,
   "provenance": "eval"
 }

@@ -4,8 +4,9 @@ The repo's eval harness IS the benchmark (`docs/skill-eval-process.md` is the au
 read it before scaffolding). Key invariants:
 
 - Executors run **read-only by default** — mechanical on claude (plan mode, plan-file
-  writes suppressed) and codex (read-only sandbox); best-effort on agy (its sandbox
-  hangs headless; see `docs/skill-eval-process.md`) — safe to run mid-tuneup.
+  writes suppressed) and codex (read-only sandbox); agy gets two soft layers (a
+  READONLY_POSTURE line prepended to every executor's prompt + a throwaway git-worktree
+  cwd; absolute-path writes remain possible) — lower-risk to run mid-tuneup, not sealed.
 - **Baseline caveat**: `without_skill` is the executor's ambient env; if the old skill
   version is installed (a prior `make khenrix-refresh`), the comparison is new-vs-old,
   not with-vs-without. Iterate BEFORE refreshing for the cleanest signal.

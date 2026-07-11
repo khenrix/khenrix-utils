@@ -2,7 +2,14 @@
 
 A structural pass (stale-model detector + frontmatter + path checks) is necessary but
 NEVER sufficient — a clean detector does not mean a skill is current. Every deep run does
-the procedure below. The only exception is an explicitly offline run the user asked for.
+the procedure below. Two exceptions only: an explicitly offline run the user asked for,
+or **reusing a recent pass** — research is not skipped but REUSED when ALL of: a
+completed research pass covering the same coupling inventory was logged <24h ago AND its
+full upstream-delta list is still available in the current session's context (the log
+records decisions, not the delta list itself); every commit since that pass matches
+run-log entries (i.e. is this machinery's own work); and fresh CLI re-probes show zero
+drift since it. Structural cleanliness is never grounds for reuse, a coupling-inventory
+change voids it, and the reuse is recorded in the run log.
 
 ## 1. Frame everything as "what changed since the baseline"
 

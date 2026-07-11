@@ -67,13 +67,15 @@ make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
 provider's bypass flag — claude `--permission-mode plan` plus plan-file suppression
 (`--disallowedTools ExitPlanMode` + an appended system prompt), codex `--sandbox read-only`;
-agy stays **unsandboxed best-effort** — its sandbox hangs headless, see `make_readonly`'s
-docstring), so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
+agy gets two SOFT layers — a READONLY_POSTURE line prepended to every executor's prompt
+and a throwaway git-worktree cwd, since its sandbox hangs headless (see `make_readonly`'s
+docstring); cwd-relative writes are discarded but absolute-path writes remain possible —
+so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
 mechanically constrained on claude/codex during an eval, while the real HOME is kept so auth still resolves
 (sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
 three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
 iteration and the full panel for the final gate. `--no-readonly` opts out when a skill
-genuinely must write. agy's headless read-only is best-effort — verify before trusting it.
+genuinely must write. agy's containment is posture + worktree, not a sandbox — lower-risk, not sealed.
 
 ## Per-provider tooling (accelerators, not the gate)
 

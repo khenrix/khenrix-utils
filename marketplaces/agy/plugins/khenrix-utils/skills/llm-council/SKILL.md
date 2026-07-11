@@ -91,7 +91,7 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 The engine prints a JSON **manifest** to stdout (also saved to
 `<workdir>/manifest.json`). Useful flags: `--mode normal|deep` (see below),
 `--allow-writes` (drop the default read-only posture so members can edit/execute),
-`--timeout SECONDS` (per-attempt; default is per-mode — 300 normal / 600 deep — raise
+`--timeout SECONDS` (per-attempt; default is per-mode — 300 normal / 1200 deep — raise
 it for big tasks), `--retries N` (default 2), `--providers claude,codex` (narrow the
 panel), `--model-claude/-codex/-agy ID` (override a model for one run). Defaults are
 fine for most runs.
