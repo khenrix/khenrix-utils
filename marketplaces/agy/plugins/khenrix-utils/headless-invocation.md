@@ -4,9 +4,11 @@ How to run any sibling agentic CLI on this machine **non-interactively, with all
 permission prompts bypassed**, so one agent can shell out to another and capture a text
 response — e.g. Claude drafts a plan, then asks Codex (or agy) to review it before acting.
 
-> **Safety:** every command below bypasses all permission/sandbox checks. Use only in
-> trusted workspaces or externally sandboxed environments — same caveat as the
-> `clauded` / `aggy` / `codexo` launch aliases.
+> **Safety:** the full-perms flags below bypass all permission/sandbox checks — use them
+> only in trusted workspaces or externally sandboxed environments (same caveat as the
+> `clauded` / `aggy` / `codexo` launch aliases). For review-only invocations prefer each
+> CLI's read-only variant instead: claude `--permission-mode plan`, codex
+> `--sandbox read-only`, agy `--mode plan`.
 
 ## Per-CLI quick reference
 
@@ -46,12 +48,20 @@ cat plan.md | codex exec --dangerously-bypass-approvals-and-sandbox \
 ### Antigravity (agy)
 
 ```bash
-agy -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)" \
-  --dangerously-skip-permissions
+agy --mode plan -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
+# flags MUST precede -p (Go flag parsing stops at the first positional) — a flag placed
+# after the prompt is silently dropped; use --mode plan for review-only invocations
 ```
 
 - `-p` / `--print` runs a single prompt non-interactively and prints the response.
+  (agy 1.1.1 fixed `-p` hanging when run from scripts/subprocesses — substantive
+  prompts complete headless now; earlier versions reliably rode the timeout.)
 - `--print-timeout <dur>` bounds the wait (default `5m`).
+- `--model "<name>"` pins the model per-run (since 1.1.1; `agy models` lists values —
+  the thinking tier is encoded in the name, e.g. "Gemini 3.5 Flash (High)").
+- `--mode plan` is a mechanical read-only mode that works headless (unlike `--sandbox`,
+  which hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since); use it for
+  review-only invocations.
 - `--add-dir <path>` widens the workspace.
 - **Auth EOL (as of 2026-06):** consumer-OAuth Gemini/agy access is slated to wind down
   around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an
@@ -71,4 +81,6 @@ missing steps, and anything that won't work." \
 ```
 
 Swap the CLI and full-perms flag from the table above to route the review to whichever
-model you want (e.g. `agy -p ... --dangerously-skip-permissions`).
+model you want — but for agy put every flag BEFORE `-p` (Go flag parsing stops at the
+first positional), and prefer `--mode plan` over the bypass flag for review-only asks
+(e.g. `agy --mode plan -p "..."`).

@@ -23,16 +23,14 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
 > not routine tasks.
 >
-> **Read-only by default.** Members run in a read-and-plan posture: Claude (plan mode,
-> with plan-file writes suppressed) and Codex (read-only sandbox) are **mechanically
-> constrained**; agy is best-effort — its headless sandbox hangs (see `make_readonly`),
-> so the engine adds two soft layers: a read-only posture line prepended to every
-> member's prompt (identical conditions preserved), and a throwaway git-worktree cwd for
-> agy so cwd-relative mutations are discarded (both added after agy was observed
-> *executing* a review-framed prompt — editing, staging, re-seeding receipts — on
-> 2026-07-11; absolute-path writes remain possible, so prefer `--providers claude,codex`
-> when strict isolation matters). This suits the council's job (a second opinion /
-> synthesis, not edits) and makes it low-risk to convene even
+> **Read-only by default.** All three members are now **mechanically constrained**:
+> Claude (plan mode, plan-file writes suppressed), Codex (read-only sandbox), and agy
+> (`--mode plan`, available since agy 1.1.1 — probed 2026-07-11: it mechanically blocked
+> a write the model claimed to have made). Two soft layers remain on top: a read-only
+> posture line prepended to every member's prompt (identical conditions preserved) and a
+> throwaway git-worktree cwd for agy — both added after the 2026-07-11 breakout incident,
+> kept as defense in depth. This suits the council's job (a second opinion / synthesis,
+> not edits) and makes it low-risk to convene even
 > mid-task. Pass `--allow-writes` only when you explicitly want the members
 > to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
 
@@ -108,9 +106,15 @@ Two modes, **same models**, differ only in how hard they think:
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
 `scripts/fanout.py` (currently Claude Fable 5, GPT-5.6 Sol, Gemini 3.5 Flash). To change
-a model or tier, edit one cell there; nothing else needs to change. Note: `agy` has no
-per-run model/thinking flag — it reads both from `~/.gemini/antigravity-cli/settings.json`,
-so its row documents the intended config but is set there, not by `--mode`.
+a model or tier, edit one cell there; nothing else needs to change. Since agy 1.1.1 the
+engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
+string — `agy models` lists valid values), so the agy cell's MODEL is enforced like the
+others; its tier tops out at "(High)" (no Flash Max tier exists), so deep mode deepens
+the claude and codex seats only.
+Deep-mode members need 650–800s each at max reasoning (measured 2026-07-11): launch deep
+fan-outs in the background, or make sure any outer command cap exceeds
+`--timeout × (retries+1)` — a killed fan-out loses its results, and a SIGKILL
+(unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
 
 **The engine handles the "valid result or retry" contract for you.** Each provider
 is validated (exit 0, non-empty answer, no auth/rate-limit error) and retried with
@@ -178,7 +182,7 @@ inconclusive and offer to answer directly or retry with a longer `--timeout`.
 | `auth_or_quota` | not logged in, or a quota/usage wall — **not retried**, since it won't clear on a retry | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
 | `nonzero_exit` | crashed with no recognized cause | name the provider, quote the stderr tail; proceed if possible |
-| `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy** specifically: substantive prompts often ride the whole window regardless of tier (upstream headless limitation — see the note in `build_real_spec`), and retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
+| `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy**: pre-1.1.1 CLIs reliably rode the whole window on substantive prompts (fixed upstream — see the HISTORY note in `build_real_spec`; 1.1.1 completed 54–97s reviews on 2026-07-11). If it recurs, retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
 | `empty` / `parse_failure` | no usable answer extracted | drop it from synthesis; note it failed |
 
 Note: some CLIs report their real failure only in a log, not on stdout/stderr (agy prints

@@ -24,6 +24,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -45,9 +47,9 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 #   deep   — same models, maximum reasoning (and a longer default timeout) for
 #            high-stakes / maximum-confidence questions.
 # `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
-# CLI's own flag. agy exposes no per-run model/thinking flag — it reads both from
-# ~/.gemini/antigravity-cli/settings.json — so its cell documents the intended
-# config but is NOT applied at run time (see build_real_spec / agy_configured_model).
+# CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
+# encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
+# applied at run time — `agy models` lists the valid strings.
 # --------------------------------------------------------------------------- #
 MODES = {
     "normal": {
@@ -58,7 +60,9 @@ MODES = {
     "deep": {
         "claude": {"model": "claude-fable-5",         "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
-        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "max"},
+        # Flash tops out at "(High)" — no Max tier exists per `agy models` (2026-07-11),
+        # so agy's deep seat runs identically to normal; "high" keeps provenance truthful.
+        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
     },
 }
 DEFAULT_MODE = "normal"
@@ -179,9 +183,9 @@ class ProviderSpec:
 
 
 def agy_configured_model() -> Optional[str]:
-    """agy's model+thinking live in its settings file, not a CLI flag. Read it
-    best-effort so the manifest reports agy's *actual* model (e.g. 'Gemini 3.5
-    Flash (High)'); return None if the file/key is absent."""
+    """Provenance FALLBACK only (since 1.1.1 the engine pins agy's model via --model):
+    read the settings file so the manifest can still report agy's model when no MODES
+    cell/override supplied one; return None if the file/key is absent."""
     try:
         p = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
         return json.loads(p.read_text()).get("model")
@@ -217,29 +221,35 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # positional arg. Go's flag package STOPS at the first positional, so every flag
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
-        # agy exposes NO --model / thinking flag: both come from
-        # ~/.gemini/antigravity-cli/settings.json, so the MODES cell for agy is
-        # documentation only and can't be pinned per-run. We read the configured model
-        # for the manifest so provenance is truthful.
+        # Since agy 1.1.1, `--model` pins the model per-run (thinking tier is encoded in
+        # the model string, e.g. "Gemini 3.5 Flash (High)"; `agy models` lists them) —
+        # the settings.json read remains only as manifest-provenance fallback.
         # --log-file captures agy's real failure reason: on a 429 it prints nothing to
         # stdout/stderr and only logs e.g. "RESOURCE_EXHAUSTED ... Individual quota
         # reached" — run_provider scans this file to turn an opaque `empty` into a clear
         # `auth_or_quota`. print-timeout self-terminates agy on a CLEAN idle wait (e.g. a
         # quota wall) just inside the engine timeout; capped at 120s so a quota-walled agy
-        # fails FAST. NOTE (verified 2026-06-26): print-timeout does NOT fire on agy's *busy*
-        # hangs. agy's headless `-p` mode reliably returns only trivial/short outputs;
-        # non-trivial reasoning/review prompts churn WITHOUT emitting (0 bytes) and ride the
-        # engine subprocess timeout to a `timeout` — across thinking tiers, with or without
-        # file reads. This is an upstream Antigravity-CLI limitation, so substantive council
-        # reviews effectively run on the other members until agy's headless CLI can complete
-        # a non-trivial generation. (Raising this cap does NOT help — it only makes a
-        # quota-wall fail slower.)
+        # fails FAST. The 120s cap was calibrated on pre-1.1.1 clean-idle semantics; all
+        # observed 1.1.1 completions run 54-100s (under it) — if agy answers ever truncate
+        # near 120s, re-probe whether 1.1.1 made print-timeout a hard wall and raise it.
+        # HISTORY: pre-1.1.1 (verified 2026-06-26), agy's headless `-p` mode
+        # churned without emitting on non-trivial prompts and rode the window to `timeout`;
+        # agy 1.1.1's release notes fixed `-p` hanging in subprocesses, and on 2026-07-11
+        # agy completed multiple substantive council reviews in 54–97s. Timeouts can still
+        # happen — treat them per the failure table, not as a certainty.
         pt = max(5, min(int(timeout) - 5, 120))
         logf = str(Path(workdir) / "agy.cli.log")
         argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", f"{pt}s",
-                "--log-file", logf, "-p", prompt]
+                "--log-file", logf]
+        if model:
+            argv += ["--model", model]
+        argv += ["-p", prompt]
+        # agy's tier is encoded in the model label — derive the recorded tier from the
+        # FINAL string so a cross-tier --model-agy override can't leave stale provenance.
+        final_model = model or agy_configured_model()
+        m = re.search(r"\((Low|Medium|High)\)", final_model or "")
         return ProviderSpec("agy", argv, None, extract_raw,
-                            agy_configured_model() or model, thinking, log_file=logf)
+                            final_model, m.group(1).lower() if m else None, log_file=logf)
     raise ValueError(f"unknown provider: {name}")
 
 
@@ -262,16 +272,19 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     forbids writes — the executor can read/plan but cannot mutate config. Shared by the
     eval harness (executor runs) and reused by any read-only council mode.
 
-    agy has NO working headless read-only flag. `--sandbox` (the obvious choice) BREAKS agy
+    agy's read-only flag is `--mode plan` (1.1.1+). `--sandbox` (the earlier candidate) BROKE agy
     non-interactively: agy locates/reads files via terminal commands (find/grep) that the
     sandbox's terminal restrictions block, so it stalls on "searching…" and hangs the full
     engine window with EMPTY output — verified 2026-06-26 (--sandbox, even WITH
     --dangerously-skip-permissions, never completes a file read; plain
     --dangerously-skip-permissions reads + answers in seconds). So agy stays headless and its
-    read-only posture rests on the council's review INTENT (members are asked to review, not
-    edit) + the trusted workspace, not a sandbox flag. Since 2026-07-11 the engine adds two
-    soft layers: the READONLY_POSTURE prompt line, and isolate_agy_worktree (cwd-relative
-    mutations land in a throwaway git worktree — the observed breakout class)."""
+    read-only posture no longer rests on intent alone: since agy 1.1.1, `--mode plan`
+    works headless (probed 2026-07-11: reads files, answers fast, and mechanically blocked
+    a write it claimed to have made) — so the bypass flag is swapped for it, mirroring
+    claude's plan mode. Two soft layers remain on top: the READONLY_POSTURE prompt line
+    and isolate_agy_worktree (cwd-relative mutations land in a throwaway git worktree).
+    HISTORY: `--sandbox` (the pre-1.1.1 candidate) hung agy headless — verified
+    2026-06-26; do not resurrect it without re-probing."""
     if spec.name == "claude":
         # Plan mode is the read-only mechanism, but its harness invites writing a plan
         # FILE (the one write plan mode allows) — suppress that side effect mechanically
@@ -284,24 +297,51 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
         spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
                                   ["--sandbox", "read-only"])
     elif spec.name == "agy":
-        # KEEP --dangerously-skip-permissions (see docstring): --sandbox hangs agy headless.
-        pass
+        spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
+                                  ["--mode", "plan"])
     return spec
+
+
+_LIVE_WORKTREES: set = set()   # (repo, wt) handles; registered the moment `worktree add` succeeds
+_HANDLER_FIRED = False
+
+
+def _signal_cleanup(signum, frame):
+    """SIGTERM/SIGINT: a default-disposition SIGTERM kills Python without running
+    `finally`, and sys.exit here would unwind into the executor's __exit__, which blocks
+    on live member subprocesses for minutes — so remove the registered worktrees
+    directly and hard-exit with the conventional 128+signum."""
+    global _HANDLER_FIRED
+    if not _HANDLER_FIRED:            # re-entry guard: a second signal skips straight to exit
+        _HANDLER_FIRED = True
+        for handle in list(_LIVE_WORKTREES):
+            remove_agy_worktree(handle)
+    os._exit(128 + signum)
+
+
+def install_cleanup_handler() -> None:
+    """Install in main()/smoke() BEFORE any worktree is created. Main-thread only —
+    off-main-thread callers get ValueError, which is ignored (they also never create
+    worktrees without a main-thread orchestrator)."""
+    try:
+        signal.signal(signal.SIGTERM, _signal_cleanup)
+        signal.signal(signal.SIGINT, _signal_cleanup)
+    except ValueError:  # noqa: PERF203 — not the main thread; nothing to protect here
+        pass
 
 
 def _warn_isolation(detail: str) -> None:
     sys.stderr.write(f"WARNING: agy worktree isolation degraded — {detail}; "
-                     "agy runs in the real cwd (posture line only).\n")
+                     "agy runs in the real cwd (plan mode + posture line still apply).\n")
 
 
 def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
                          repo_dir: Optional[str] = None) -> Optional[tuple]:
     """Point agy's cwd at a throwaway git worktree so cwd-relative mutations — the
     observed breakout class (2026-07-11: editing files, re-seeding receipts, `git add`)
-    — land in a discarded copy instead of the real checkout. Honestly scoped: agy keeps
-    full filesystem access headless (no sandbox works, see make_readonly), so
-    absolute-path writes remain possible; this redirects the accident path, it is not a
-    sandbox. Identical conditions beat containment: the worktree mirrors the working
+    — land in a discarded copy instead of the real checkout. Since agy 1.1.1 the primary
+    write barrier is `--mode plan` (see make_readonly); this worktree is defense in depth
+    for the day plan mode fails or regresses. Identical conditions beat containment: the worktree mirrors the working
     tree (uncommitted tracked changes incl. binary; untracked files are absent), the
     caller's position inside the repo is preserved so relative paths resolve the same
     for every member, and if the mirror cannot be reproduced faithfully the isolation
@@ -326,15 +366,18 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
             _warn_isolation(f"worktree add failed: {add.stderr.strip()[:120]}")
             return None
         handle = (repo, wt)
+        _LIVE_WORKTREES.add(handle)   # from this instant a signal can clean it up
+        # bytes mode end-to-end: text=True would newline-translate CRLF patch content
+        # and raise on non-UTF-8 files, silently degrading isolation for such repos.
         diff = subprocess.run(["git", "-C", repo, "diff", "--binary", "--full-index", "HEAD"],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, timeout=30)
         if diff.returncode != 0:
             remove_agy_worktree(handle)
             _warn_isolation("could not read the working-tree diff")
             return None
         if diff.stdout.strip():
             ap = subprocess.run(["git", "-C", wt, "apply"], input=diff.stdout,
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, timeout=30)
             if ap.returncode != 0:
                 remove_agy_worktree(handle)
                 _warn_isolation("could not mirror uncommitted changes")
@@ -353,7 +396,8 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
 
 
 def remove_agy_worktree(handle: Optional[tuple]) -> None:
-    """Discard the throwaway worktree (and anything agy wrote into it)."""
+    """Discard the throwaway worktree (and anything agy wrote into it). Idempotent —
+    also deregisters the handle, so handler-then-finally double-removal is harmless."""
     if not handle:
         return
     repo, wt = handle
@@ -363,6 +407,9 @@ def remove_agy_worktree(handle: Optional[tuple]) -> None:
                        capture_output=True, text=True, timeout=30)
     except Exception:  # noqa: BLE001 — best-effort cleanup; workdir is a temp dir
         pass
+    # Deregister AFTER the attempt: a signal landing mid-removal still sees the handle,
+    # so the handler can retry; double removal is idempotent.
+    _LIVE_WORKTREES.discard(handle)
 
 
 # --------------------------------------------------------------------------- #
@@ -569,9 +616,9 @@ def _render_text(manifest: dict) -> str:
 
 
 # Prepended to the prompt (identically for every member) when the council runs
-# read-only. claude/codex are mechanically constrained anyway; this is the only guard
-# that reaches agy — a SOFT guard (instruction, not enforcement; the durable fix is
-# worktree isolation, see make_readonly), added after agy executed a review-framed
+# read-only. Defense in depth: every member is now mechanically constrained (claude
+# plan mode, codex sandbox, agy --mode plan since 1.1.1) — this line and the agy
+# worktree are the soft layers on top, added after agy executed a review-framed
 # prompt (editing files, re-seeding receipts, staging) on 2026-07-11. claude also gets
 # the plan-mode-specific READONLY_REVIEWER_NOTE via make_readonly — keep both in mind
 # when editing either wording. Says "as text", not "prose only": answers may still
@@ -610,6 +657,7 @@ def smoke(args) -> int:
     specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
     agy_wt = None
     if args.read_only:
+        install_cleanup_handler()   # BEFORE any worktree exists — SIGTERM skips finally
         for s in specs:
             make_readonly(s)
         agy_spec = next((s for s in specs if s.name == "agy"), None)
@@ -815,11 +863,26 @@ def self_test() -> int:
     make_readonly(cx14)
     check("readonly: codex sandboxed read-only", "--sandbox" in cx14.argv and "read-only" in cx14.argv)
     ag14 = build_real_spec("agy", "q", 30, {}, wd("ro"))
-    before14 = list(ag14.argv)
     make_readonly(ag14)
-    check("readonly: agy argv unchanged (no working headless sandbox)", ag14.argv == before14)
+    check("readonly: agy bypass flag swapped for plan mode (1.1.1)",
+          "--dangerously-skip-permissions" not in ag14.argv
+          and "--mode" in ag14.argv and "plan" in ag14.argv)
+    check("readonly: agy flags still precede the positional prompt (Go flag parsing)",
+          ag14.argv.index("plan") < ag14.argv.index("-p"))
+    ag14m = build_real_spec("agy", "q", 30,
+                            {"agy": {"model": "Gemini 3.5 Flash (High)", "thinking": "high"}},
+                            wd("ro"))
+    check("agy: per-run --model passed and precedes the prompt (1.1.1)",
+          "--model" in ag14m.argv and "Gemini 3.5 Flash (High)" in ag14m.argv
+          and ag14m.argv.index("--model") < ag14m.argv.index("-p")
+          and ag14m.model == "Gemini 3.5 Flash (High)")
+    ag14x = build_real_spec("agy", "q", 30,
+                            {"agy": {"model": "Gemini 3.5 Flash (Medium)", "thinking": "high"}},
+                            wd("ro"))
+    check("agy: cross-tier override records the LABEL's tier, not the mode's",
+          ag14x.thinking == "medium")
 
-    # S15 — read-only posture line (the only guard that reaches agy): prepended intact,
+    # S15 — read-only posture line (agy's defense-in-depth atop plan mode): prepended intact,
     # original prompt preserved, and identical for every member by construction.
     aug = apply_readonly_posture("original question")
     check("posture: line prepended", aug.startswith(READONLY_POSTURE))
@@ -828,7 +891,7 @@ def self_test() -> int:
           parse_args(["--prompt", "x", "--allow-writes"]).read_only is False
           and parse_args(["--prompt", "x"]).read_only is True)
     ag15 = build_real_spec("agy", apply_readonly_posture("q"), 30, {}, wd("ro"))
-    check("posture: reaches the agy argv (the one unconstrained member)",
+    check("posture: reaches the agy argv (defense-in-depth layer)",
           any(READONLY_POSTURE in str(a) for a in ag15.argv))
 
     # S16 — agy worktree isolation: cwd redirected to a throwaway copy that mirrors the
@@ -844,6 +907,12 @@ def self_test() -> int:
     subprocess.run(gitc + ["commit", "-q", "-m", "c1"], capture_output=True)
     (repo16 / "f.txt").write_text("working-tree")
     (repo16 / "b.bin").write_bytes(bytes(reversed(range(256))))  # dirty BINARY change
+    # CRLF + non-UTF-8 (latin-1) content: a text-mode pipe would newline-translate or
+    # raise UnicodeDecodeError — the mirror must stay byte-exact for such repos too.
+    (repo16 / "crlf.txt").write_bytes(b"caf\xe9 line one\r\nline two\r\n")
+    subprocess.run(gitc + ["add", "crlf.txt"], capture_output=True)
+    subprocess.run(gitc + ["commit", "-q", "-m", "c2"], capture_output=True)
+    (repo16 / "crlf.txt").write_bytes(b"caf\xe9 CHANGED\r\nline two\r\n")
     ag16 = build_real_spec("agy", "q", 30, {}, wd("wt_wd"))
     handle = isolate_agy_worktree(ag16, wd("wt_wd"), repo_dir=str(repo16))
     check("worktree: cwd redirected into workdir",
@@ -854,6 +923,9 @@ def self_test() -> int:
     check("worktree: mirrors dirty BINARY files (--binary diff)",
           handle is not None
           and (Path(handle[1]) / "b.bin").read_bytes() == bytes(reversed(range(256))))
+    check("worktree: byte-exact for CRLF + non-UTF-8 content (bytes-mode pipe)",
+          handle is not None
+          and (Path(handle[1]) / "crlf.txt").read_bytes() == b"caf\xe9 CHANGED\r\nline two\r\n")
     if handle:
         (Path(handle[1]) / "escaped.txt").write_text("dirty")  # simulate a misbehaving agy
     remove_agy_worktree(handle)
@@ -871,6 +943,30 @@ def self_test() -> int:
     check("worktree: no-op outside a git repo",
           isolate_agy_worktree(ag16b, wd("wt_wd2"), repo_dir=str(wd("wt_norepo"))) is None
           and ag16b.cwd is None)
+
+    # S17 — signal cleanup: a default-disposition SIGTERM skips `finally` (observed leak
+    # 2026-07-11); the handler must remove registered worktrees and hard-exit 128+signum.
+    # Direct handler test with os._exit stubbed — a subprocess signal test would be
+    # disproportionate.
+    repo17 = wd("sig_repo")
+    g17 = ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-C", str(repo17)]
+    subprocess.run(g17[:5] + ["-C", str(repo17), "init", "-q"], capture_output=True)
+    (repo17 / "f.txt").write_text("x")
+    subprocess.run(g17 + ["add", "-A"], capture_output=True)
+    subprocess.run(g17 + ["commit", "-q", "-m", "c"], capture_output=True)
+    ag17 = build_real_spec("agy", "q", 30, {}, wd("sig_wd"))
+    h17 = isolate_agy_worktree(ag17, wd("sig_wd"), repo_dir=str(repo17))
+    check("signal: live worktree is registered", h17 is not None and h17 in _LIVE_WORKTREES)
+    exit_codes: list = []
+    real_exit = os._exit
+    os._exit = exit_codes.append  # type: ignore[assignment] — stub; handler never returns in prod
+    globals()["_HANDLER_FIRED"] = False
+    _signal_cleanup(signal.SIGTERM, None)
+    os._exit = real_exit  # type: ignore[assignment]
+    check("signal: handler removed the worktree and deregistered it",
+          h17 is not None and h17 not in _LIVE_WORKTREES and not Path(h17[1]).exists())
+    check("signal: hard-exits with 128+signum (143)", exit_codes == [143])
+    globals()["_HANDLER_FIRED"] = False  # reset for any later checks
 
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
@@ -957,16 +1053,17 @@ def main(argv=None) -> int:
             by_name[name].argv = tokens + by_name[name].argv[1:]
 
     # Read-only is the default council posture: claude/codex are mechanically
-    # constrained (plan mode + plan-file suppression / read-only sandbox); agy is
-    # best-effort (see make_readonly) — it additionally gets a throwaway-worktree cwd so
-    # cwd-relative mutations are discarded. --allow-writes opts out. Applied after
+    # constrained (claude: plan mode + plan-file suppression; codex: read-only sandbox;
+    # agy: --mode plan since 1.1.1) — agy additionally gets a throwaway-worktree cwd so
+    # cwd-relative mutations are discarded (defense in depth). --allow-writes opts out. Applied after
     # overrides so a test override's binary is preserved (overrides replace argv[0]
     # only, so the bypass flag make_readonly swaps is always present).
     agy_wt = None
     if args.read_only:
+        install_cleanup_handler()   # BEFORE any worktree exists — SIGTERM skips finally
         for s in specs:
             make_readonly(s)
-        agy_spec = by_name.get("agy")
+        agy_spec = by_name.get("agy")  # plan-mode-constrained; worktree adds defense in depth
         if agy_spec:
             agy_wt = isolate_agy_worktree(agy_spec, workdir)
 
