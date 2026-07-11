@@ -20,6 +20,14 @@ get better results.
   recommended** (written to the report with exact commands), never auto-applied.
 - **Preserve purpose.** Improve descriptions/triggering, structure, instructions,
   model usage — never the behavior a skill is meant to deliver.
+- **Never assert model or CLI facts from memory.** Names, tiers, pricing, and "the
+  best current model" MUST come from this run's research or a live probe — even
+  when you are confident you already know. Say how each fact was verified.
+- **A model switch is two artifacts, never one action**: a repo-side guidance edit
+  (applied with confirmation) plus the exact live-config command in the report
+  (recommend-only — never run it yourself).
+- **Every run ends with the dated report** at `docs/upgrades/claude-<YYYY-MM-DD>.md` —
+  even a single-question run records its recommendation and commands there.
 
 ## Steps
 

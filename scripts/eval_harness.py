@@ -180,11 +180,19 @@ def run_text(provider: str, prompt: str, cfg: dict, workdir: Path, *,
     (`make_readonly`) so a skill that mutates config (khenrix-setup/upgrade) can't
     touch the real machine during an eval — while keeping the real HOME so auth still
     resolves (sandboxing HOME instead would hide credentials and every run would fail)."""
+    if readonly:
+        prompt = fanout.apply_readonly_posture(prompt)  # same soft layer as the council
     spec = fanout.build_real_spec(provider, prompt, timeout, cfg, workdir)
+    agy_wt = None
     if readonly:
         fanout.make_readonly(spec)
-    m = fanout.run_council([spec], retries=retries, timeout=timeout, backoff=2.0,
-                           workdir=workdir, prompt=prompt)
+        if spec.name == "agy":  # and the same worktree containment as the council
+            agy_wt = fanout.isolate_agy_worktree(spec, workdir)
+    try:
+        m = fanout.run_council([spec], retries=retries, timeout=timeout, backoff=2.0,
+                               workdir=workdir, prompt=prompt)
+    finally:
+        fanout.remove_agy_worktree(agy_wt)
     rec = m["providers"][0]
     text = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
     return text, rec

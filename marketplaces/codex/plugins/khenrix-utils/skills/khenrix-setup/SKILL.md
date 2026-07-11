@@ -21,6 +21,19 @@ only after the user confirms.
 - **Backups.** Every file the engine modifies is copied to `*.khenrix-backup`
   first.
 
+## Non-negotiables
+
+- **The read-only review always happens — even when the user waives it.** "Just
+  apply it, I trust it" waives the confirmation pause, not the review: the review
+  run is instant and free, so run it anyway and show the ➕ ADD list before (or
+  alongside) the apply. If this session cannot execute commands, state the exact
+  read-only command and what its report will show — never endorse a blind apply.
+- **State the contract out loud in your answer**: additive and non-destructive —
+  missing entries are added, EXTRA (machine-specific) entries are never removed,
+  and every touched file gets a `*.khenrix-backup`.
+- **Name what will change.** Before any apply, enumerate what the review found to
+  add — a bare "applied it" with no list is never acceptable.
+
 ## Steps
 
 1. **Review (read-only).** Run the engine and show the user its full output:
