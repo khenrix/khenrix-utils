@@ -1,0 +1,1 @@
+{"mcpServers": {"context7": {"httpUrl": "https://mcp.context7.com/mcp"}, "vercel": {"command": "npx", "args": ["-y", "mcp-remote"]}}}
