@@ -69,6 +69,13 @@ class TestRoute(unittest.TestCase):
         r = route(_item(collection="Other/Memes"), {"type": "recipe"})
         self.assertEqual(r.kind, "recipe")
 
+    def test_method_steps_do_not_become_tags(self):
+        # 'method' is the recipe STEPS field; only 'technique' feeds method/* tags.
+        r = route(_item(), {"method": ["Soak capers in wine 10 min", "Char the chilli"],
+                            "technique": ["grill"]})
+        self.assertIn("method/grill", r.tags)
+        self.assertFalse(any("soak" in t or "char" in t or "capers" in t for t in r.tags))
+
 
 class TestRenderMerge(unittest.TestCase):
     def test_manual_section_survives_refetch(self):

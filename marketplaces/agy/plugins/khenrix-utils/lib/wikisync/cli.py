@@ -159,7 +159,9 @@ def _extraction_only(job: dict) -> dict:
 
 
 def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
-    now = now if now is not None else job.get("now", "")
+    # An empty --now (the CLI default) must fall back to the job's own timestamp, else
+    # created/updated render blank.
+    now = now or job.get("now") or ""
     c = canonicalize(_source_url(job))
     native_id = job.get("native_id") or c.native_id or c.canonical
     channel = job.get("source_channel") or "manual"

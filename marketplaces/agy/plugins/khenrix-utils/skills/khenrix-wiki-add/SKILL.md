@@ -102,7 +102,7 @@ Assemble one JSON object. Required: `source_url`. Everything else improves the p
   "method": ["Chop small leaves into the beef with aromatics", "Wrap, skewer, grill"],
   "notes": "Leaf stem doubles as the fastener.",
   "caveats": "Quantities not stated in the video; typical proportions used.",
-  "diet": [], "method_tags": [], "protein": ["beef"],
+  "diet": ["gluten-free"], "technique": ["grill"], "protein": ["beef"],
   "fetch_capabilities": ["caption", "comments", "video_frames", "transcript"],
   "fetched_at": "2026-07-12T09:00:00+00:00",
   "captures": [
@@ -116,9 +116,10 @@ Assemble one JSON object. Required: `source_url`. Everything else improves the p
 Field notes:
 - `type` — omit to let the folder/collection decide (`Food/*` → recipe, `Köpa?/Gift` →
   product, `Github Inspo/Tech` → inspiration, else source). Set it explicitly to override.
-- Facet lists (`diet`, `method` as `method_tags`, `protein`) become namespaced tags
-  (`diet/vegetarian`, `method/grill`, `protein/beef`). Add every useful facet — searchability
-  is the point. Use the controlled vocabulary the engine already knows; invent sparingly.
+- `method` is the recipe STEPS (rendered as the Method section). Cooking-technique tags
+  come from a SEPARATE `technique` list — never put steps in `technique`. Facet lists
+  (`diet`, `technique`, `protein`) become namespaced tags (`diet/vegetarian`,
+  `method/grill`, `protein/beef`). Add every useful facet — searchability is the point.
 - `captures[]` — the RAW fetched artifacts. These are cached so the page can be reprocessed
   later without re-hitting the source. Always include the caption; include comments and any
   transcript you pulled.

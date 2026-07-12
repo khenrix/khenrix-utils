@@ -32,6 +32,15 @@ class TestCaptureStore(unittest.TestCase):
             s.put("g1", "caption", b"one")
             self.assertIsNotNone(s.latest("g1", "caption"))
 
+    def test_url_item_id_roundtrips(self):
+        # web bookmarks have no short native id → item_id is the full URL (has / and :)
+        with tempfile.TemporaryDirectory() as td:
+            s = CaptureStore(td)
+            c = s.put("https://ex.com/a/b?x=1", "extraction", b'{"k":1}')
+            self.assertEqual(c.capture_id.count("/"), 1)          # exactly one separator
+            self.assertEqual(s.get(c.capture_id), b'{"k":1}')
+            self.assertIsNotNone(s.latest("https://ex.com/a/b?x=1", "extraction"))
+
     def test_get_unknown_returns_none(self):
         with tempfile.TemporaryDirectory() as td:
             s = CaptureStore(td)

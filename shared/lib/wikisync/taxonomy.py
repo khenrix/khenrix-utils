@@ -94,10 +94,13 @@ def route(item, extraction: dict) -> Route:
         t = _first_match(segs, tbl)
         if t:
             tags.add(t)
-    # facets the LLM extraction supplies, namespaced
-    for facet in ("diet", "method", "protein", "meal", "occasion"):
-        for v in extraction.get(facet, []) or []:
-            tags.add(f"{facet}/{_tagslug(v)}")
+    # facets the LLM extraction supplies, as (extraction key -> tag namespace). Cooking
+    # technique comes from 'technique', NOT 'method' — 'method' is the recipe STEPS field
+    # (rendered as the Method section); reading it here would turn each step into a tag.
+    for key, ns in (("diet", "diet"), ("technique", "method"), ("protein", "protein"),
+                    ("meal", "meal"), ("occasion", "occasion")):
+        for v in extraction.get(key, []) or []:
+            tags.add(f"{ns}/{_tagslug(v)}")
     # pre-namespaced tags passed straight through
     for t in extraction.get("tags", []) or []:
         tags.add(t)

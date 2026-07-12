@@ -54,6 +54,13 @@ class TestCommit(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cli.cmd_commit(_ctx(td), {"native_id": "i1", "summary": "x"})
 
+    def test_job_now_used_when_flag_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _ctx(td)
+            res = cli.cmd_commit(ctx, {"native_id": "i9", "source_url": "https://ex.com/z",
+                                       "title": "Z", "now": NOW})
+            self.assertIn(NOW, (ctx.cfg.vault / res["path"]).read_text())
+
     def test_writes_page_and_records(self):
         with tempfile.TemporaryDirectory() as td:
             ctx = _ctx(td)
