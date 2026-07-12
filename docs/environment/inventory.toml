@@ -1,0 +1,288 @@
+# docs/environment/inventory.toml
+# Desired-state manifest — the reproduction target for a new machine.
+# env_inventory.py renders inventory.md from THIS file and --checks live state against it.
+# Edit this toml; never hand-edit inventory.md. Versions are best-effort references, not pins.
+
+[meta]
+snapshot_date = "2026-07-12"
+# status enum: present | ported | native | not-applicable | claude-only
+
+[[plugins]]
+name = "khenrix-utils"
+source = "local:~/git/khenrix-utils"
+version = "local"
+components = ["skills", "hooks"]
+claude = "present"
+codex = "present"
+agy = "present"
+portability = "already cross-CLI via reconcile"
+
+[[plugins]]
+name = "superpowers"
+source = "gh:anthropics/claude-plugins-official"
+version = "6.1.1"
+components = ["skills", "hooks"]
+claude = "present"
+codex = "native"
+agy = "ported"
+portability = "codex uses native plugin; skills ported to agy only; hooks claude-only"
+
+[[plugins]]
+name = "claude-obsidian"
+source = "local:~/git/obsidian-vault"
+version = "local"
+components = ["skills", "commands", "hooks", "agents"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "non-wiki skills ported; wiki set OUT of scope; commands/hooks/agents claude-only"
+
+[[plugins]]
+name = "skill-creator"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["skills"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "skill portable"
+
+[[plugins]]
+name = "frontend-design"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["skills"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "skill portable"
+
+[[plugins]]
+name = "claude-md-management"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["skills", "commands"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "skill portable; command claude-only"
+
+[[plugins]]
+name = "last30days"
+source = "gh:mvanhorn/last30days-skill"
+version = "best-effort"
+components = ["skills", "hooks"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "skill portable; hooks claude-only"
+
+[[plugins]]
+name = "watch"
+source = "gh:bradautomates/claude-video"
+version = "best-effort"
+components = ["skills", "hooks"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "skill portable; hooks claude-only"
+
+[[plugins]]
+name = "code-review"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["commands"]
+claude = "present"
+codex = "claude-only"
+agy = "claude-only"
+portability = "slash-command — claude-only"
+
+[[plugins]]
+name = "code-simplifier"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["agents"]
+claude = "present"
+codex = "claude-only"
+agy = "claude-only"
+portability = "subagent — claude-only"
+
+[[plugins]]
+name = "security-guidance"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["hooks"]
+claude = "present"
+codex = "claude-only"
+agy = "claude-only"
+portability = "PostToolUse hooks — claude-only"
+
+[[plugins]]
+name = "playwright"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["mcp"]
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "MCP portable — see [[mcp]] playwright"
+
+[[plugins]]
+name = "pyright-lsp"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["lsp"]
+claude = "present"
+codex = "claude-only"
+agy = "claude-only"
+portability = "each CLI has its own LSP — claude-only"
+
+[[plugins]]
+name = "typescript-lsp"
+source = "claude-plugins-official"
+version = "best-effort"
+components = ["lsp"]
+claude = "present"
+codex = "claude-only"
+agy = "claude-only"
+portability = "each CLI has its own LSP — claude-only"
+
+[[plugins]]
+name = "codex"
+source = "gh:openai/codex-plugin-cc"
+version = "1.0.6"
+components = ["skills", "commands", "hooks", "agents"]
+claude = "present"
+codex = "not-applicable"
+agy = "not-applicable"
+portability = "IS the Claude->Codex bridge — claude-only"
+
+# ---- MCP servers ----
+
+[[mcp]]
+name = "context7"
+transport = "http"
+owner = "reconcile"
+secret = false
+claude = "present"
+codex = "present"
+agy = "present"
+
+[[mcp]]
+name = "vercel"
+transport = "stdio"
+owner = "reconcile"
+secret = false
+claude = "present"
+codex = "present"
+agy = "present"
+
+[[mcp]]
+name = "google-drive"
+transport = "stdio"
+owner = "reconcile"
+secret = true
+claude = "present"
+codex = "present"
+agy = "present"
+
+[[mcp]]
+name = "chrome-devtools"
+transport = "stdio"
+owner = "reconcile"
+secret = false
+claude = "present"
+codex = "present"
+agy = "present"
+portability = "host-os-conditional: Windows PowerShell command shape (WSL interop)"
+
+[[mcp]]
+name = "linkedin"
+transport = "stdio"
+owner = "reconcile"
+secret = false
+claude = "present"
+codex = "present"
+agy = "present"
+portability = "interactive per-machine login; no stored credential (UV_HTTP_TIMEOUT is tuning)"
+
+[[mcp]]
+name = "slack"
+transport = "stdio"
+owner = "bootstrap"
+secret = false
+native_equiv = "slack"
+claude = "present"
+codex = "native"
+agy = "ported"
+portability = "session-scoped rotating token; interactive re-auth per session; codex uses native plugin"
+
+[[mcp]]
+name = "codebase-memory-mcp"
+transport = "stdio"
+owner = "bootstrap"
+secret = false
+claude = "present"
+codex = "ported"
+agy = "ported"
+portability = "local on-disk store path — see auth-and-secrets.md"
+
+[[mcp]]
+name = "playwright"
+transport = "stdio"
+owner = "bootstrap"
+secret = false
+claude = "present"
+codex = "ported"
+agy = "ported"
+
+[[mcp]]
+name = "openaiDeveloperDocs"
+transport = "http"
+owner = "bootstrap"
+secret = false
+claude = "not-applicable"
+codex = "present"
+agy = "not-applicable"
+portability = "codex-only HTTP docs MCP"
+
+[[mcp]]
+name = "gmail"
+transport = "oauth-connector"
+owner = "bootstrap"
+secret = false
+claude = "present"
+codex = "not-applicable"
+agy = "not-applicable"
+portability = "claude.ai OAuth connector — claude-only"
+
+[[mcp]]
+name = "calendar"
+transport = "oauth-connector"
+owner = "bootstrap"
+secret = false
+claude = "present"
+codex = "not-applicable"
+agy = "not-applicable"
+portability = "claude.ai OAuth connector — claude-only"
+
+[[mcp]]
+name = "drive-connector"
+transport = "oauth-connector"
+owner = "bootstrap"
+secret = false
+claude = "present"
+codex = "not-applicable"
+agy = "not-applicable"
+portability = "claude.ai OAuth connector (distinct from the stdio google-drive MCP) — claude-only"
+
+[[mcp]]
+name = "github"
+transport = "n/a"
+owner = "bootstrap"
+secret = false
+xor_exempt = true
+claude = "not-applicable"
+codex = "native"
+agy = "not-applicable"
+portability = "codex-native enhancement; no MCP/plugin counterpart on Claude (gh CLI + codex bridge)"

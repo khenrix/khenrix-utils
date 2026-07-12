@@ -23,3 +23,6 @@ evals/*/workspace/
 
 # Large external archives reviewed locally — never commit (may contain secrets)
 *.zip
+
+# env_inventory.py observed-state report (local host state — never committed)
+docs/environment/observed-state.json
