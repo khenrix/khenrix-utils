@@ -34,9 +34,9 @@ Snapshot: 2026-07-12. Desired-state — the reproduction target. Versions are be
 | linkedin | stdio | reconcile | False | present | present | present | interactive per-machine login; no stored credential (UV_HTTP_TIMEOUT is tuning) |
 | slack | stdio | bootstrap | False | present | native | ported | session-scoped rotating token; interactive re-auth per session; codex uses native plugin |
 | codebase-memory-mcp | stdio | bootstrap | False | present | ported | ported | local on-disk store path — see auth-and-secrets.md |
-| playwright | stdio | bootstrap | False | present | ported | ported |  |
+| playwright | stdio | bootstrap | False | plugin-provided | ported | ported | claude: provided by the playwright plugin (not in mcp config); codex/agy: standalone MCP |
 | openaiDeveloperDocs | http | bootstrap | False | not-applicable | present | not-applicable | codex-only HTTP docs MCP |
-| gmail | oauth-connector | bootstrap | False | present | not-applicable | not-applicable | claude.ai OAuth connector — claude-only |
-| calendar | oauth-connector | bootstrap | False | present | not-applicable | not-applicable | claude.ai OAuth connector — claude-only |
-| drive-connector | oauth-connector | bootstrap | False | present | not-applicable | not-applicable | claude.ai OAuth connector (distinct from the stdio google-drive MCP) — claude-only |
+| gmail | oauth-connector | bootstrap | False | connector | not-applicable | not-applicable | claude.ai OAuth connector — claude-only |
+| calendar | oauth-connector | bootstrap | False | connector | not-applicable | not-applicable | claude.ai OAuth connector — claude-only |
+| drive-connector | oauth-connector | bootstrap | False | connector | not-applicable | not-applicable | claude.ai OAuth connector (distinct from the stdio google-drive MCP) — claude-only |
 | github | n/a | bootstrap | False | not-applicable | native | not-applicable | XOR-exempt; codex-native enhancement; no MCP/plugin counterpart on Claude (gh CLI + codex bridge) |
