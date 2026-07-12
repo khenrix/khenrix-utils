@@ -175,8 +175,9 @@ def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
 
     existing_row = ctx.ledger.find_page_by_url(c.canonical)
     existing_text = None
+    old_path = existing_row["path"] if existing_row is not None else None
     if existing_row is not None:
-        p = Path(ctx.cfg.vault) / existing_row["path"]
+        p = Path(ctx.cfg.vault) / old_path
         if p.is_file():
             existing_text = p.read_text()
 
@@ -195,10 +196,20 @@ def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
     ctx.store.put(native_id, "extraction", ext_blob)
 
     _write_page(ctx, doc.path, doc.text)
+    _remove_stale_page(ctx, old_path, doc.path)
     ctx.ledger.record_page(path=doc.path, source_url=c.canonical,
                            generated_hash=doc.generated_hash, now=now)
     ctx.ledger.job_transition(iid, "committed")
     return {"path": doc.path, "generated_hash": doc.generated_hash, "committed": True}
+
+
+def _remove_stale_page(ctx: Context, old_path: str | None, new_path: str) -> None:
+    """When a re-commit/reprocess changes the filename (e.g. the title changed), delete
+    the page's old file so a stale duplicate isn't left behind in the vault."""
+    if old_path and old_path != new_path:
+        stale = Path(ctx.cfg.vault) / old_path
+        if stale.is_file():
+            stale.unlink()
 
 
 # --------------------------------------------------------------------------- #

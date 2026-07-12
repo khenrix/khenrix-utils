@@ -74,6 +74,17 @@ class TestCommit(unittest.TestCase):
             self.assertTrue(res["path"].startswith("wiki/recipes/"))
             self.assertIsNotNone(ctx.ledger.find_page_by_url("https://ex.com/carbonara"))
 
+    def test_retitle_removes_stale_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _ctx(td)
+            base = {"native_id": "i1", "source_url": "https://ex.com/x",
+                    "collection": "Food/Main/Italian", "now": NOW}
+            first = cli.cmd_commit(ctx, {**base, "title": "Old Title"})
+            second = cli.cmd_commit(ctx, {**base, "title": "New Title"})
+            self.assertNotEqual(first["path"], second["path"])           # filename changed
+            self.assertFalse((ctx.cfg.vault / first["path"]).exists())   # old file removed
+            self.assertTrue((ctx.cfg.vault / second["path"]).exists())   # new file present
+
 
 class TestAdopt(unittest.TestCase):
     def test_matches_by_source_url_and_is_idempotent(self):
