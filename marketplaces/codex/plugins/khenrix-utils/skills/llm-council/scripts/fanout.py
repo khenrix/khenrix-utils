@@ -46,6 +46,8 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 #   normal — the default; all members at high thinking.
 #   deep   — same models, maximum reasoning (and a longer default timeout) for
 #            high-stakes / maximum-confidence questions.
+# The claude seat is claude-opus-4-8 (2026-07-12): a TEMPORARY default while Claude
+# Fable 5 is credit-walled — restore "claude-fable-5" here (both modes) when it returns.
 # `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
@@ -53,12 +55,12 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # --------------------------------------------------------------------------- #
 MODES = {
     "normal": {
-        "claude": {"model": "claude-fable-5",         "thinking": "high"},
+        "claude": {"model": "claude-opus-4-8",         "thinking": "high"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
         "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        "claude": {"model": "claude-fable-5",         "thinking": "max"},
+        "claude": {"model": "claude-opus-4-8",         "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
         # Flash tops out at "(High)" — no Max tier exists per `agy models` (2026-07-11),
         # so agy's deep seat runs identically to normal; "high" keeps provenance truthful.

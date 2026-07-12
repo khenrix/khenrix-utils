@@ -105,7 +105,7 @@ Two modes, **same models**, differ only in how hard they think:
   when the user says "deep", "think hard", or "maximum confidence".
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
-`scripts/fanout.py` (currently Claude Fable 5, GPT-5.6 Sol, Gemini 3.5 Flash). To change
+`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.6 Sol, Gemini 3.5 Flash). To change
 a model or tier, edit one cell there; nothing else needs to change. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
 string — `agy models` lists valid values), so the agy cell's MODEL is enforced like the
