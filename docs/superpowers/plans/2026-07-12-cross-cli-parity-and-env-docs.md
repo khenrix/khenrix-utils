@@ -1409,6 +1409,28 @@ git commit -m "feat(env): wire env self-tests into eval-test + regenerate invent
 
 **3. Type consistency** — `PROBE_ERROR` sentinel used consistently (T5 defines, T6 consumes); `FAIL_CLASSES`/`classify` names match across T6 self-test and impl; `merge`/`MergeConflict`/`write_merged` consistent in T8; `scan_path(Path)` signature consistent T7/T9/T10; `secrets_doc_gaps` keys (`undocumented`/`stale`) match T10 self-test and impl; manifest field names (`native_equiv`, `xor_exempt`, `owner`) consistent T1↔T6.
 
+## Execution status (2026-07-12)
+
+Tasks 1–10 + T11 Steps 1–3 executed inline and committed (all `--self-test`s green,
+`make eval-test`/`make verify` green, `env_inventory.py --check` green). T11 Steps 4–5
+(live parity) partially executed:
+
+- **Done + verified:** codex parity MCPs (playwright, codebase-memory-mcp); agy parity
+  MCPs (playwright, slack, codebase-memory-mcp, merged via `mcp_merge`, config backed up);
+  codex-native plugins (slack, github, superpowers@openai-curated). `--check` now reports
+  23 satisfied / 16 not-applicable / **0 failing, 0 XOR violations**. (github registers as
+  a codex MCP via its native plugin — expected, `xor_exempt`; no competing shared MCP added.)
+- **Deferred (with reason): skill-body porting to codex/agy.** Discovery showed both CLIs
+  deliver skills through *managed* mechanisms — codex via installed plugins (and built-ins
+  under `~/.codex/skills/.system/`; skill-creator + superpowers are already **native** on
+  codex, so they are not ported there), agy via `plugins/<name>/` + `import_manifest.json`
+  — not loose skill dirs, and codex exposes no `skill list` to *verify* a hand-copied skill
+  is discoverable. Copying files into guessed locations would be an unverifiable "ported"
+  claim (the exact fidelity risk the design flagged). **Correct follow-up:** extend
+  `render.py` to emit a "khenrix-ported" third-party-skills plugin per CLI and register it
+  through each CLI's own import path, then validate discoverability — a scoped next task,
+  not a blind copy. The manifest's `ported` skill statuses stand as the *intent*.
+
 ## Execution Handoff
 
 Deferred by design — the user directed that this plan be **written now and executed later in a separate session**. Do not begin execution in this session. When resuming, use **superpowers:subagent-driven-development** (fresh subagent per task, review between tasks) for T1–T10, and execute T11 (live machine mutations + parity installs) inline with the user present, since it is not git-reversible and touches real CLI config/auth.

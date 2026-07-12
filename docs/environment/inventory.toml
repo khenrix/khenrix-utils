@@ -43,9 +43,9 @@ source = "claude-plugins-official"
 version = "best-effort"
 components = ["skills"]
 claude = "present"
-codex = "ported"
+codex = "native"
 agy = "ported"
-portability = "skill portable"
+portability = "codex has it built-in (.system/skill-creator); port to agy only"
 
 [[plugins]]
 name = "frontend-design"

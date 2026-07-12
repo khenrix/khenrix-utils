@@ -10,7 +10,7 @@ Snapshot: 2026-07-12. Desired-state — the reproduction target. Versions are be
 | khenrix-utils | local:~/git/khenrix-utils | local | skills, hooks | present | present | present | already cross-CLI via reconcile |
 | superpowers | gh:anthropics/claude-plugins-official | 6.1.1 | skills, hooks | present | native | ported | codex uses native plugin; skills ported to agy only; hooks claude-only |
 | claude-obsidian | local:~/git/obsidian-vault | local | skills, commands, hooks, agents | present | ported | ported | non-wiki skills ported; wiki set OUT of scope; commands/hooks/agents claude-only |
-| skill-creator | claude-plugins-official | best-effort | skills | present | ported | ported | skill portable |
+| skill-creator | claude-plugins-official | best-effort | skills | present | native | ported | codex has it built-in (.system/skill-creator); port to agy only |
 | frontend-design | claude-plugins-official | best-effort | skills | present | ported | ported | skill portable |
 | claude-md-management | claude-plugins-official | best-effort | skills, commands | present | ported | ported | skill portable; command claude-only |
 | last30days | gh:mvanhorn/last30days-skill | best-effort | skills, hooks | present | ported | ported | skill portable; hooks claude-only |
