@@ -69,6 +69,14 @@ class TestRoute(unittest.TestCase):
         r = route(_item(collection="Other/Memes"), {"type": "recipe"})
         self.assertEqual(r.kind, "recipe")
 
+    def test_string_facet_coerced_not_char_split(self):
+        # an LLM may return diet/protein as a string, not a list
+        r = route(_item(), {"diet": "gluten-free, dairy-free", "protein": "beef"})
+        self.assertIn("diet/gluten-free", r.tags)
+        self.assertIn("diet/dairy-free", r.tags)
+        self.assertIn("protein/beef", r.tags)
+        self.assertFalse(any(len(t.split("/", 1)[1]) == 1 for t in r.tags if "/" in t))
+
     def test_method_steps_do_not_become_tags(self):
         # 'method' is the recipe STEPS field; only 'technique' feeds method/* tags.
         r = route(_item(), {"method": ["Soak capers in wine 10 min", "Char the chilli"],

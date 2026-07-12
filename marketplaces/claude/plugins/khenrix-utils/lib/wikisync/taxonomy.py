@@ -99,8 +99,15 @@ def route(item, extraction: dict) -> Route:
     # (rendered as the Method section); reading it here would turn each step into a tag.
     for key, ns in (("diet", "diet"), ("technique", "method"), ("protein", "protein"),
                     ("meal", "meal"), ("occasion", "occasion")):
-        for v in extraction.get(key, []) or []:
-            tags.add(f"{ns}/{_tagslug(v)}")
+        raw = extraction.get(key)
+        # An LLM may hand back a string ("gluten-free, dairy-free") instead of a list;
+        # coerce it so we don't iterate character-by-character into single-letter tags.
+        if isinstance(raw, str):
+            raw = raw.replace(";", ",").split(",")
+        for v in raw or []:
+            v = str(v).strip()
+            if v:
+                tags.add(f"{ns}/{_tagslug(v)}")
     # pre-namespaced tags passed straight through
     for t in extraction.get("tags", []) or []:
         tags.add(t)
