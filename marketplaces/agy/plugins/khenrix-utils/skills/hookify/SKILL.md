@@ -42,9 +42,10 @@ State it back in one line and confirm you have it right before authoring anythin
 
 ## Step 2 — classify into EVENT + trigger + action
 
-Map the correction to a Claude Code hook **event**. The full event set:
+Map the correction to a Claude Code hook **event**. The common guardrail events:
 `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `Notification`
-(plus `PreCompact` and others — these cover almost every guardrail).
+(Claude Code defines ~30 in total — incl. `PreCompact`, `SessionEnd`, `PostToolUseFailure` — but
+these cover almost every guardrail).
 
 | Correction shape | Event | Matcher | Action |
 |---|---|---|---|
@@ -70,7 +71,8 @@ and/or **stdout JSON**. Key stdin fields:
 
 - All events: `session_id`, `cwd`, `hook_event_name`, `transcript_path`, `permission_mode`.
 - Tool events: `tool_name`, `tool_input` (e.g. `tool_input.command` for Bash, `tool_input.file_path`
-  for Edit/Write).
+  for Edit/Write). **`PostToolUse` also gets `tool_response`** — the tool's result (shape is
+  tool-specific: Bash gives stdout/exit, Write gives the written path) — read it for a follow-up.
 - `UserPromptSubmit`: `prompt`. `Stop`: `stop_hook_active`.
 
 **Blocking a PreToolUse action — two ways:**
@@ -88,13 +90,24 @@ and/or **stdout JSON**. Key stdin fields:
   }
 }
 ```
-`permissionDecision` is `"deny"` (block), `"allow"` (auto-approve), or `"ask"` (prompt the user).
+`permissionDecision` can be `"deny"` (block), `"allow"` (auto-approve), `"ask"` (prompt the user),
+or `"defer"` (non-interactive only — pause the tool call for an external UI/SDK to resume; ignored,
+with a warning, in an interactive session).
 
 Exit-code meaning: **0** = success (stdout JSON parsed; for `UserPromptSubmit`/`SessionStart`, stdout
 is added to context); **2** = blocking error (stderr shown to the agent, action prevented); **any
 other** = non-blocking error (logged, action continues). For **`UserPromptSubmit`**, exit 2 blocks the
 prompt with the stderr message. For **`Stop`**, block with stdout JSON `{"decision":"block","reason":"…"}`
 (or exit 2 + stderr) to force more work before finishing.
+
+**Warn without blocking (exit 0):** to flag but let the action proceed, exit 0 and emit either
+`systemMessage` (a note shown to the **user**) or `hookSpecificOutput.additionalContext` (guidance fed
+to **Claude**). For a "stop repeating the mistake" nudge, `additionalContext` is usually the one you
+want — it steers the agent, not the human:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"You edited a generated file under marketplaces/ — edit the source of truth and re-render instead."}}
+```
 
 Use `${CLAUDE_PROJECT_DIR}` in commands to reference the project root portably.
 
@@ -150,6 +163,12 @@ to stdout (or exits 2 with that message on stderr). Guard against loops by honor
 
 Keep matchers narrow (a precise tool/path regex beats a broad one), reasons short and actionable, and
 the predicate cheap. Prefer `jq` to read `tool_input`; interpret exit codes, don't echo-and-grep.
+**Fail closed, not open.** The `jq -e '…' && {block} || exit 0` idiom above blocks only when `jq`
+runs *and* the predicate matches — if `jq` is missing (exit 127) the `&&` short-circuits to the
+`|| exit 0` branch and the guard silently **stops enforcing**. For a guard that must not lapse, gate
+on `command -v jq` first (or invert so the unknown/error path blocks). A slow predicate (e.g. a `Stop`
+hook running `make verify`) can also outrun the hook's default timeout — set `"timeout": <seconds>`
+on that hook entry if so.
 
 ## Step 5 — confirm, then write
 

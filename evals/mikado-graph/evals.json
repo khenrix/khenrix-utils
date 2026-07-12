@@ -5,7 +5,7 @@
     {
       "id": 0,
       "name": "revert-on-discovery",
-      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I started a big refactor; partway in it breaks three call sites that each need their own prep first. Using the Mikado Method, state exactly what to do with my current half-done changes and how to record what I learned.",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I started a big refactor; partway in it breaks three call sites that each need their own prep first. Using the Mikado Method, state exactly what to do with my current half-done changes and how to record what I learned.",
       "files": [],
       "assertions": [
         "Records each newly-discovered prerequisite as a child node of the change being attempted",
@@ -17,7 +17,7 @@
     {
       "id": 1,
       "name": "leaf-first-only-ready",
-      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. My Mikado graph: goal depends on A and B; A depends on C; B and C have no unmet prerequisites. Using the method, state which node(s) I should implement first and why, and whether I can start on the goal now.",
+      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. My Mikado graph: goal depends on A and B; A depends on C; B and C have no unmet prerequisites. Using the method, state which node(s) I should implement first and why, and whether I can start on the goal now.",
       "files": [],
       "assertions": [
         "Says to start with the leaves B and C (nodes whose prerequisites are all done), in any order",
@@ -29,7 +29,7 @@
     {
       "id": 2,
       "name": "reimplement-not-cherrypick",
-      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A prerequisite node just became ready (all its deps are done). I still have the messy exploratory branch from when I first discovered this prerequisite. Using the Mikado Method, state how I implement the now-ready node.",
+      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. A prerequisite node just became ready (all its deps are done). I still have the messy exploratory branch from when I first discovered this prerequisite. Using the Mikado Method, state how I implement the now-ready node.",
       "files": [],
       "assertions": [
         "Implements the ready node FRESH on a clean/current base",
@@ -41,13 +41,37 @@
     {
       "id": 3,
       "name": "reactive-split-sprawled-branch",
-      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I have a branch that sprawled into 40 files and won't merge cleanly. Using the Mikado Method reactively, state how to turn it into something mergeable.",
+      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. I have a branch that sprawled into 40 files and won't merge cleanly. Using the Mikado Method reactively, state how to turn it into something mergeable.",
       "files": [],
       "assertions": [
         "Factors the sprawl into a dependency graph of smaller nodes (what could merge on its own; what blocks what)",
         "Re-implements each node cleanly on main rather than forcing the giant branch through",
         "Each node is independently mergeable; a node that can't merge alone has a hidden prerequisite to add",
         "Abandons/throws away the sprawled branch as the source of truth (the graph + fresh commits replace it)"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "dangling-dep-engine-flags-undefined",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. My .mikado/plan.md graph has a node \"add-tests\" whose deps list [\"ci-setup\"], but there is no node with id \"ci-setup\" anywhere in the graph (I think I renamed it). Using the mikado-graph approach, state how you'd find out what's actually going on and whether \"add-tests\" is ready.",
+      "files": [],
+      "assertions": [
+        "Reaches for the bundled engine \u2014 running mikado.py on .mikado/plan.md \u2014 as the authority, rather than eyeballing the graph or manually reasoning about readiness (the skill's explicit 'don't eyeball it, ask the engine' rule; a no-skill answer wouldn't know a bundled engine exists)",
+        "Identifies ci-setup as an UNDEFINED/nonexistent node (a dangling reference, almost certainly the rename typo), NOT an ordinary unmet prerequisite that just needs doing",
+        "States the engine treats a dependency on an undefined node as invalid input \u2014 it refuses the plan with an explicit error (e.g. 'depends on undefined node \"ci-setup\"') and exits nonzero, rather than silently listing add-tests as blocked-forever",
+        "Fix is to correct the dangling reference (repoint the dep id or add the missing ci-setup node), NOT to 'go do ci-setup'"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "cycle-engine-errors-nothing-ready",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. In my .mikado/plan.md, node A deps on B and node B deps on A (both status todo). Using the mikado-graph approach, state how you determine which nodes are ready and what you do about this graph.",
+      "files": [],
+      "assertions": [
+        "Reaches for the bundled engine (mikado.py on the plan) to classify readiness, per the skill's 'ask the engine, don't eyeball' rule (a no-skill answer wouldn't invoke a bundled engine)",
+        "Identifies A\u2194B as a dependency CYCLE \u2014 neither can ever be ready because each blocks the other",
+        "States the engine specifically DETECTS the cycle and reports it as an error (e.g. a '\u2717 CYCLE' report) exiting nonzero, rather than printing a normal READY/BLOCKED classification",
+        "No node is actionable until the cycle is broken by removing/repointing the mis-modeled edge (a genuine prerequisite relationship is never mutual) \u2014 not by arbitrarily starting one"
       ]
     }
   ]

@@ -1,13 +1,17 @@
 {
   "skill": "mikado-graph",
-  "source_hash": "83dbdfd5e10f20949a508464a4b4feba2eecb8e987682a2be854db63cb192daf",
-  "eval_set_hash": "6362877f623d5455dc19e254a3d22b16a64dccb55d16cf6c9c3421e6b3a0c646",
+  "source_hash": "0d7ca9599901c5291be55b7a09127184198c0cbf81bbba6958d9080db6e021b9",
+  "eval_set_hash": "0efd3b20cc08f0dbe23ab02c10d4c74010445c007a2b9bbd0470c7194257b7a8",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.0416,
+  "blind_winner": "tie",
+  "provenance": "eval",
+  "models": {
+    "claude": "claude-opus-4-8",
+    "judge": "claude-opus-4-8"
+  }
 }

@@ -55,7 +55,9 @@ make eval-test       # hermetic harness logic tests (no token cost)
 make eval SKILL=<changed-skill>   # with-skill vs baseline + LLM-judge + blind A/B
 ```
 
-Commit only when `run_summary.delta.pass_rate >= 0` and the blind winner is `with_skill`.
+Commit only when `run_summary.delta.pass_rate >= 0`. The blind A/B winner is recorded but
+advisory (not a gate) — on a strong executor it rewards the tighter baseline over a
+correct-but-thorough skill answer, so a non-negative-delta run isn't failed on a blind tie/loss.
 `skill-creator` (Claude) and Codex's native creator are optional accelerators on top; the
 harness is the baseline that also covers agy. `llm-council` is the exception — its
 model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness

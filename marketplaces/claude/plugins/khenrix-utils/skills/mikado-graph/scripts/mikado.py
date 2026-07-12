@@ -22,6 +22,33 @@ def parse_graph(text: str) -> dict:
     return json.loads(m.group(1))
 
 
+def validate(graph: dict) -> None:
+    """Preflight the parsed graph and raise ValueError with a clear message on the common
+    hand-authoring mistakes — otherwise a missing `id` is a bare KeyError, a duplicate id
+    silently overwrites (masking a typo), and a dep naming an undefined node blocks that
+    node forever looking like a real prerequisite. One strict preflight beats three
+    silent failure modes."""
+    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+        raise ValueError('graph must be an object with a "nodes" list')
+    ids: set = set()
+    for i, n in enumerate(graph["nodes"]):
+        if not isinstance(n, dict):
+            raise ValueError(f"node #{i} is not an object")
+        nid = n.get("id")
+        if not isinstance(nid, str) or not nid:
+            raise ValueError(f'node #{i} is missing a non-empty string "id"')
+        if nid in ids:
+            raise ValueError(f"duplicate node id: {nid!r}")
+        ids.add(nid)
+    for n in graph["nodes"]:
+        deps = n.get("deps", [])
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            raise ValueError(f'node {n["id"]!r}: "deps" must be a list of strings')
+        for d in deps:
+            if d not in ids:
+                raise ValueError(f"node {n['id']!r} depends on undefined node {d!r}")
+
+
 def _status(nodes: dict, nid: str) -> str:
     return nodes.get(nid, {}).get("status", "todo")
 
@@ -81,6 +108,19 @@ def _self_test() -> int:
     # parse fence
     txt = "# x\n\n```json\n{\"nodes\": [{\"id\": \"z\", \"status\": \"todo\", \"deps\": []}]}\n```\n## z\nnote"
     ok.append(("parse_graph reads fence", parse_graph(txt)["nodes"][0]["id"] == "z"))
+
+    # validate() turns silent/ugly failures into clear preflight errors
+    def _bad(bad_graph, frag):
+        try:
+            validate(bad_graph)
+            return False
+        except ValueError as e:
+            return frag in str(e)
+    ok.append(("validate: accepts a good graph", validate(g) is None))
+    ok.append(("validate: missing id → clear error", _bad({"nodes": [{"status": "todo"}]}, "id")))
+    ok.append(("validate: duplicate id → clear error", _bad({"nodes": [{"id": "x"}, {"id": "x"}]}, "duplicate")))
+    ok.append(("validate: dangling dep → clear error", _bad({"nodes": [{"id": "a", "deps": ["ghost"]}]}, "undefined")))
+    ok.append(("validate: nodes not a list → clear error", _bad({"nodes": "nope"}, "nodes")))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1
@@ -95,7 +135,11 @@ def main(argv=None) -> int:
         return _self_test()
     if not args.plan:
         sys.exit("usage: mikado.py .mikado/plan.md  (or --self-test)")
-    graph = parse_graph(Path(args.plan).read_text())
+    try:
+        graph = parse_graph(Path(args.plan).read_text(encoding="utf-8"))
+        validate(graph)
+    except (OSError, ValueError) as e:   # file / fence / JSON / schema — clean msg, not a traceback
+        sys.exit(f"error: {e}")
     r = classify(graph)
     if r["cycle"]:
         print("✗ CYCLE detected:", " -> ".join(r["cycle"][0]))

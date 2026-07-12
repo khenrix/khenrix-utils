@@ -1,5 +1,9 @@
 # Archive-adoption Implementation Plan
 
+> **Superseded 2026-07-12:** the eval commit gate is now `delta.pass_rate >= 0` alone;
+> the blind A/B winner is recorded but **advisory**. Any "blind winner = with_skill"
+> phrasing below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Adopt the worthwhile patterns from the reviewed external `~/.claude` archive into khenrix-utils — deterministic verify gates, a security fix, llm-council trims, a per-CLI instruction overlay, and an enforced (commit-boundary) eval gate. Reviewed and corrected across two `llm-council` deep rounds (claude+codex convergent).

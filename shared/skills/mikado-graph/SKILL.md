@@ -60,7 +60,16 @@ Why it's a prerequisite; how it was done; the PR link.
 A node is **ready** when its status isn't `done` and **every** dep is `done`. Don't eyeball it — ask the engine:
 
 ```bash
-python3 scripts/mikado.py .mikado/plan.md
+# Locate the bundled engine — cwd is the target repo, not the plugin, so resolve $MIKADO first:
+MIKADO=""
+for c in \
+  "${CLAUDE_PLUGIN_ROOT:-}/skills/mikado-graph/scripts/mikado.py" \
+  "${PLUGIN_ROOT:-}/skills/mikado-graph/scripts/mikado.py" \
+  "$HOME/.gemini/config/plugins/khenrix-utils/skills/mikado-graph/scripts/mikado.py"; do
+  if [ -f "$c" ]; then MIKADO="$c"; break; fi
+done
+if [ -z "$MIKADO" ]; then echo "mikado.py not found — is khenrix-utils installed?"; exit 1; fi
+python3 "$MIKADO" .mikado/plan.md
 ```
 
 It prints READY (do these now, in any order — they're independent) and BLOCKED (with the unmet deps),

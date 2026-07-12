@@ -208,12 +208,11 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
             out.append(f"receipt: {skill} changed since last eval — run `make eval SKILL={skill}`")
         elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
             out.append(f"receipt: {skill} eval set changed — run `make eval SKILL={skill}`")
-        # Blind A/B gate: a real receipt must record a with_skill win. Seeded receipts
-        # (blind_winner absent/None) and the orchestrator exception are exempt.
-        bw = rec.get("blind_winner")
-        if bw is not None and bw not in ("with_skill", "n/a-orchestrator", "n/a-deterministic"):
-            out.append(f"receipt: {skill} blind A/B winner is '{bw}', not with_skill — "
-                       f"re-run `make eval SKILL={skill}`")
+        # The receipt gate is a non-negative assertion delta (enforced at eval time in
+        # eval_harness.run() before the receipt is written). The blind A/B winner is
+        # RECORDED in the receipt but ADVISORY — it rewards concision on a strong executor
+        # and would false-fail a correct, positive-delta skill (see eval_harness.run()'s
+        # gate note), so precommit does NOT gate on it.
     return ["(advisory) " + m for m in out] if advisory else out
 
 

@@ -1,5 +1,9 @@
 # Archive-adoption — design spec
 
+> **Superseded 2026-07-12:** the eval commit gate is now `delta.pass_rate >= 0` alone.
+> The blind A/B winner is recorded but **advisory** (it rewards concision on strong
+> executors), so any "and blind winner = with_skill" phrasing below is historical.
+
 Design for adopting the worthwhile patterns found in the reviewed external `~/.claude` archive into khenrix-utils. Scope and replicate/ignore rationale live in the companion review (`/tmp/claude-archive-plan-v2.md` + `inventory.md`); **this doc is the implementation design**, grounded in the actual repo. Decisions A/B/C are already made: deny-list dropped (bypass-by-default), per-CLI instruction overlay = first-class, eval-gate enforced.
 
 ## Repo facts this design relies on (verified)

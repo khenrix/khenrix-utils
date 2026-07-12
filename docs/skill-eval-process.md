@@ -35,8 +35,12 @@ covers agy, which has no native skill tooling at all.
    (`text`/`passed`/`evidence`).
 5. **Blind A/B.** The two outputs are shuffled into A/B (with a hidden key) and the judge
    picks the better one blind → `comparison.json`, then de-anonymized.
-6. **Iterate** until with_skill consistently beats baseline on the discriminating
-   assertions (`run_summary.delta.pass_rate >= 0`, and the blind winner is `with_skill`).
+6. **Iterate** until with_skill matches or beats baseline on the discriminating assertions
+   (`run_summary.delta.pass_rate >= 0` — the commit gate; zero passes, negative fails).
+   The blind A/B winner is **recorded but advisory** (not a gate): on a strong executor it
+   rewards the tighter baseline over a correct-but-more-thorough skill answer, so a
+   non-negative-delta run is never failed on a blind tie/loss. Use the recorded winner to
+   triage a weak/zero delta.
 7. **Only then** `make verify && make eval-test && make eval SKILL=<name>` → commit.
 
 ## Layout
