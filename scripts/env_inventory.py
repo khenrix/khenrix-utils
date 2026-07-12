@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "docs/environment/inventory.toml"
 DOC = ROOT / "docs/environment/inventory.md"
 REPORT = ROOT / "docs/environment/observed-state.json"   # gitignored
+SECRETS_DOC = ROOT / "docs/environment/auth-and-secrets.md"
+CAPS = ROOT / "capabilities.toml"
 
 STATUS = {"present", "ported", "native", "not-applicable", "claude-only", "gh-cli",
           "awaiting-auth", "connector", "plugin-provided"}
@@ -260,6 +262,42 @@ def xor_violations(m: dict, observed: dict) -> list[str]:
     return out
 
 
+def _secret_refs(caps_path: Path = CAPS) -> set[str]:
+    """The authoritative env-var surface: every [mcp_servers.*.env] key in capabilities.toml."""
+    with open(caps_path, "rb") as fh:
+        caps = tomllib.load(fh)
+    keys: set[str] = set()
+    for spec in caps.get("mcp_servers", {}).values():
+        for k in (spec.get("env") or {}):
+            keys.add(k)
+    return keys
+
+
+def _documented_env(text: str) -> set[str]:
+    """Env-var names the doc documents — only backtick-quoted uppercase tokens, so prose
+    mentions (e.g. XOXC/XOXD token types) don't count as documented refs."""
+    return set(re.findall(r"`([A-Z][A-Z0-9_]{3,})`", text))
+
+
+def secrets_doc_gaps(refs: set[str], documented: set[str], allow: set[str]) -> dict:
+    """Both-directions set check between implementation refs and documented entries."""
+    return {
+        "undocumented": sorted(refs - documented - allow),   # in code, not in docs
+        "stale": sorted(documented - refs - allow),          # in docs, no real ref
+    }
+
+
+def _run_check_secrets_doc() -> int:
+    refs = _secret_refs()
+    documented = _documented_env(SECRETS_DOC.read_text()) if SECRETS_DOC.exists() else set()
+    gaps = secrets_doc_gaps(refs, documented, allow=set())
+    if gaps["undocumented"] or gaps["stale"]:
+        print(f"✗ auth-and-secrets.md gaps: {gaps}")
+        return 1
+    print(f"✓ auth-and-secrets.md complete both directions ({len(refs)} env refs)")
+    return 0
+
+
 def _run_check(m: dict) -> int:
     obs = probe_all()
     fails: list[str] = []
@@ -366,6 +404,14 @@ def _self_test() -> int:
     viol2 = xor_violations({"mcp": [{"name": "github", "xor_exempt": True, "codex": "native"}]},
                            {"codex": {"native_plugins": {"github"}, "mcp": {"github"}}})
     ok.append(("XOR skips xor-exempt github", viol2 == []))
+    ok.append(("undocumented ref caught",
+               secrets_doc_gaps(refs={"A", "B"}, documented={"A"}, allow=set())["undocumented"] == ["B"]))
+    ok.append(("stale doc entry caught",
+               secrets_doc_gaps(refs={"A"}, documented={"A", "STALE"}, allow=set())["stale"] == ["STALE"]))
+    ok.append(("allowlisted entry ignored",
+               secrets_doc_gaps(refs={"A"}, documented={"A", "MANUAL"}, allow={"MANUAL"})["stale"] == []))
+    ok.append(("_documented_env extracts only backticked uppercase",
+               _documented_env("plain XOXC and `GOOGLE_DRIVE_MCP_TOKEN_PATH`") == {"GOOGLE_DRIVE_MCP_TOKEN_PATH"}))
     failed = [n for n, p in ok if not p]
     for n, p in ok:
         print(f"  {'ok' if p else 'FAIL'}  {n}")
@@ -380,6 +426,8 @@ def main() -> int:
     ap.add_argument("--check-render", action="store_true", help="fail if inventory.md is stale")
     ap.add_argument("--probe", action="store_true", help="write the sanitized observed-state report")
     ap.add_argument("--check", action="store_true", help="classify live state vs the manifest")
+    ap.add_argument("--check-secrets-doc", action="store_true",
+                    help="both-directions completeness of auth-and-secrets.md vs env refs")
     args = ap.parse_args()
     if args.self_test:
         return _self_test()
@@ -387,6 +435,8 @@ def main() -> int:
         p = write_report()
         print(f"wrote {p}")
         return 0
+    if args.check_secrets_doc:
+        return _run_check_secrets_doc()
     m = load_manifest()
     if args.check:
         return _run_check(m)
