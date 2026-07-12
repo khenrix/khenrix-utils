@@ -41,11 +41,14 @@ _CUISINE = [
     ("indian", "cuisine/indian"), ("french", "cuisine/french"),
     ("greek", "cuisine/greek"),
 ]
-# collection keyword → page type (checked in order; first hit wins)
+# collection keyword → page type (checked in order; FIRST hit wins). Order matters:
+# shopping intent (a "Köpa?" folder and its subfolders like "Kitchen & Cooking") must
+# beat food/recipe keywords, so product is checked before recipe. "kitchen" is NOT a
+# recipe trigger — in this vault it only appears under the shopping tree.
 _TYPE_HINTS = [
-    (("food", "kitchen", "foodapp", "treats", "recipe"), "recipe"),
-    (("köpa", "kopa", "gift", "home & garden", "wishlist", "furniture", "decor",
-      "beauty", "clothing"), "product"),
+    (("köpa", "kopa", "gift", "wishlist", "home & garden", "furniture", "decor",
+      "beauty", "clothing", "sports & outdoor"), "product"),
+    (("food", "foodapp", "recipe", "treats"), "recipe"),
     (("github", "inspo", "tech"), "inspiration"),
 ]
 

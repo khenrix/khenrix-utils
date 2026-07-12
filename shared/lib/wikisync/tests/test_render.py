@@ -52,6 +52,11 @@ class TestRoute(unittest.TestCase):
         self.assertEqual(r.kind, "product")
         self.assertTrue(r.target_dir.endswith("products"))
 
+    def test_shopping_intent_beats_recipe_keyword(self):
+        # "Kitchen & Cooking" is kitchen GEAR under the Köpa? (buy) tree, not recipes.
+        r = route(_item(collection="Bokmärkesfältet/Köpa?/Kitchen & Cooking"), {})
+        self.assertEqual(r.kind, "product")
+
     def test_inspiration_routing(self):
         r = route(_item(collection="Bokmärkesfältet/Github Inspo"), {})
         self.assertEqual(r.kind, "inspiration")
