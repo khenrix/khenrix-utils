@@ -120,6 +120,12 @@ skill for the per-item procedure and the extraction schema.
 - **Volume:** for a large backfill, dispatch a batch of fetch subagents, collect their extraction
   JSONs, then commit them sequentially. Cap standard-pass fetches per host (`per_host_cap`) so you
   don't hammer one site.
+- **Bot-blocked ≠ deferred.** Lightweight fetchers (WebFetch/markitdown) are 403/503-blocked by
+  many real recipe sites (Serious Eats, Simply Recipes, AllRecipes, BBC Good Food, food.com, …).
+  A subagent should mark those `deferred: bot-blocked` (a distinct reason), NOT `unavailable`.
+  After the batch, collect the `bot-blocked` items and re-fetch them on Claude through the
+  **chrome-devtools browser fallback** (see khenrix-wiki-add §4) before they stay deferred — the
+  browser renders past the block. Genuine 404/dead-DNS/parked/auth-gated items stay deferred.
 - Update the wiki index / `log.md` / `hot.md` **once per batch**, not per item.
 
 ## 5. Deep pass (capped)
