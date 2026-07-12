@@ -125,7 +125,9 @@ skill for the per-item procedure and the extraction schema.
   A subagent should mark those `deferred: bot-blocked` (a distinct reason), NOT `unavailable`.
   After the batch, collect the `bot-blocked` items and re-fetch them on Claude through the
   **chrome-devtools browser fallback** (see khenrix-wiki-add §4) before they stay deferred — the
-  browser renders past the block. Genuine 404/dead-DNS/parked/auth-gated items stay deferred.
+  browser renders past the block. For items that are genuinely dead (404/dead-DNS/SSL), try the
+  **Wayback Machine** next (archive.org availability → browser fetch of the `id_` snapshot; see
+  khenrix-wiki-add §4). Only what has no snapshot — and auth-gated dashboards — stays deferred.
 - Update the wiki index / `log.md` / `hot.md` **once per batch**, not per item.
 
 ## 5. Deep pass (capped)
