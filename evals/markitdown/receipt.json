@@ -1,6 +1,6 @@
 {
   "skill": "markitdown",
-  "source_hash": "5362690148b5c9761dab097ea71ba2225daf60386aa1ecccf4d85e6958d08f1b",
+  "source_hash": "ba89ed79255ae1168211a89f4c0fff1d0e310362e00ce3dbc1a47a8ff50608a0",
   "eval_set_hash": "74a41331526562e266f09e268ef77d3085ae39c7c3eb94a18eb022a153cda965",
   "providers": [
     "claude"
@@ -8,5 +8,6 @@
   "mode": "normal",
   "judge": "claude",
   "delta_pass_rate": null,
+  "blind_winner": null,
   "provenance": "seeded: blessed current committed state"
 }

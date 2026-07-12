@@ -1,14 +1,13 @@
 {
   "skill": "khenrix-upgrade",
-  "source_hash": "572c5b3592369fcbaddfcd8480900c96420b93b222beb68033b4860850fe6de7",
+  "source_hash": "a295344880f23dd69b69a1c6d17177a605fd8ba3767475c2071525dab9d09fc8",
   "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.3472,
-  "provenance": "eval"
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }

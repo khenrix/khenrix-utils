@@ -1,6 +1,6 @@
 {
   "skill": "hookify",
-  "source_hash": "f41a7b25c855c4abd460001db2145badcc5b7011007cc09524be1e03defca73a",
+  "source_hash": "a3b79579b690c79f560f8ea8dec3ae3d4f277379a2573aa5ec056353b4bdb381",
   "eval_set_hash": "838533c2ea0cbc1b3fc7df754efddf69479edc1b0b844b0e9e100a13b4a03991",
   "providers": [
     "claude"
@@ -8,5 +8,6 @@
   "mode": "normal",
   "judge": "claude",
   "delta_pass_rate": null,
+  "blind_winner": null,
   "provenance": "seeded: blessed current committed state"
 }
