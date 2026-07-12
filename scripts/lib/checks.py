@@ -77,6 +77,23 @@ def scan_secrets(root: Path) -> list[str]:
     return problems
 
 
+def scan_path(path: Path) -> list[str]:
+    """Shape-limited secret scan over ONE file (for gitignored artifacts the
+    git-ls-files walk in scan_secrets can't see). Empty if the file is absent —
+    so a not-yet-generated report never crashes a gate."""
+    if not path.exists():
+        return []
+    hits: list[str] = []
+    text = path.read_text(errors="replace")
+    for i, line in enumerate(text.splitlines(), 1):
+        for rx in SECRET_FAIL:
+            m = rx.search(line)
+            if m and hashlib.sha256(m.group(0).encode()).hexdigest() not in SECRET_ALLOW_SHA:
+                hits.append(f"{path}:{i}: matches secret pattern /{rx.pattern[:20]}…/")
+                break
+    return hits
+
+
 def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
     """Template/declaration parity + duplicate rendered skills. (Frontmatter rules
     stay in render.validate_skill; this only covers what's deterministic here.)"""
@@ -238,6 +255,18 @@ def _self_test() -> int:
     ok.append(("wiki skills map shared/lib/wikisync into their closure",
                SKILL_EXTRA_DIRS.get("khenrix-wiki-add") == ["shared/lib/wikisync"] and
                SKILL_EXTRA_DIRS.get("khenrix-wiki-sync") == ["shared/lib/wikisync"]))
+    # scan_path: file-scoped shim for gitignored artifacts. Build a slack-shaped token from
+    # fragments at RUNTIME so no contiguous token literal lives in this file — otherwise the
+    # synthetic test value itself trips push-protection / secret scanners.
+    import tempfile
+    _planted = "xox" + "b-" + ("2" * 12) + "-" + ("3" * 12) + "-" + ("abcd" * 6)
+    _d = Path(tempfile.mkdtemp())
+    _p = _d / "leak.txt"
+    _p.write_text(f"token = {_planted}\n")
+    ok.append(("scan_path flags a planted token", len(scan_path(_p)) >= 1))
+    _p.unlink()
+    _d.rmdir()
+    ok.append(("scan_path on missing file is empty", scan_path(Path("/nonexistent/xyz.json")) == []))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1
