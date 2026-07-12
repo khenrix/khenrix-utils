@@ -18,6 +18,79 @@ REPORT = ROOT / "docs/environment/observed-state.json"   # gitignored
 STATUS = {"present", "ported", "native", "not-applicable", "claude-only", "gh-cli", "awaiting-auth"}
 CLIS = ("claude", "codex", "agy")
 
+REDACTED = "<redacted>"
+# key names whose VALUES are always secret-bearing
+_SECRET_KEY = re.compile(r"(token|secret|key|cred|password|passwd|cookie|auth|session|bearer)", re.I)
+# env vars that are tuning/config, not secrets (values kept)
+_SAFE_ENV = {"UV_HTTP_TIMEOUT"}
+
+
+def _redact_url(u: str) -> str:
+    try:
+        parts = urlsplit(u)
+    except ValueError:
+        return REDACTED
+    netloc = parts.netloc
+    if "@" in netloc:                        # strip userinfo
+        netloc = REDACTED + "@" + netloc.split("@", 1)[1]
+    query = REDACTED if parts.query else ""  # drop query values wholesale
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+
+
+def _sanitize_map(v):
+    """env/headers/cookies: keep names, redact values unless explicitly safe."""
+    if not isinstance(v, dict):
+        return sanitize(v)
+    return {k: (v[k] if k in _SAFE_ENV else REDACTED) for k in v}
+
+
+def _sanitize_args(lst):
+    """Command args: a secret can be a bare value after a flag (`--token X`) or
+    inline (`--token=X`), with no key to match on. Redact those positionally."""
+    out = []
+    redact_next = False
+    for el in lst:
+        if redact_next:
+            out.append(REDACTED)
+            redact_next = False
+            continue
+        if isinstance(el, str):
+            if el.startswith("-") and "=" in el:
+                flag, _, _val = el.partition("=")
+                if _SECRET_KEY.search(flag):
+                    out.append(flag + "=" + REDACTED)
+                    continue
+            if el.startswith("-") and _SECRET_KEY.search(el):
+                out.append(el)
+                redact_next = True
+                continue
+            if "://" in el:
+                out.append(_redact_url(el))
+                continue
+        out.append(sanitize(el))
+    return out
+
+
+def sanitize(obj):
+    """Recursively strip every value-bearing channel; keep only safe symbolic refs."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, str) and _SECRET_KEY.search(str(k)) and k not in _SAFE_ENV:
+                out[k] = REDACTED
+            elif str(k).lower() in ("env", "headers", "cookies"):
+                out[k] = _sanitize_map(v)
+            elif str(k).lower() in ("args", "argv") and isinstance(v, list):
+                out[k] = _sanitize_args(v)
+            elif isinstance(v, str) and "://" in v:
+                out[k] = _redact_url(v)
+            else:
+                out[k] = sanitize(v)
+        return out
+    if isinstance(obj, list):
+        return [sanitize(x) for x in obj]
+    return obj
+
 
 def load_manifest(path: Path = MANIFEST) -> dict:
     with open(path, "rb") as fh:
@@ -72,6 +145,21 @@ def _self_test() -> int:
         {"plugins": [{"name": "x", "source": "s", "version": "v",
                       "components": ["skills"], "claude": "BOGUS", "codex": "present",
                       "agy": "present", "portability": "p"}], "mcp": []}) != []))
+    SENTINEL = "SUPERSECRETVALUE123"
+    dirty = {
+        "command": "node", "args": ["--token", SENTINEL],
+        "env": {"API_KEY": SENTINEL, "UV_HTTP_TIMEOUT": "300"},
+        "headers": {"Authorization": f"Bearer {SENTINEL}"},
+        "cookies": {"session": SENTINEL},
+        "url": f"https://user:{SENTINEL}@example.com/path?token={SENTINEL}",
+        "nested": [{"password": SENTINEL}],
+    }
+    clean = sanitize(dirty)
+    blob = json.dumps(clean)
+    ok.append(("sentinel never survives sanitize", SENTINEL not in blob))
+    ok.append(("safe tuning value preserved", "300" in blob))
+    ok.append(("env var NAMES preserved", "API_KEY" in blob and "UV_HTTP_TIMEOUT" in blob))
+    ok.append(("url host preserved", "example.com" in blob))
     failed = [n for n, p in ok if not p]
     for n, p in ok:
         print(f"  {'ok' if p else 'FAIL'}  {n}")
