@@ -24,6 +24,65 @@ MANAGED_END = "<!-- khenrix:managed:end -->"
 
 _YAML_SPECIAL = set(":#\"'{}[]|>&*!%@`,")
 
+_URL_RE = re.compile(r"https?://[^\s)\]<>\"']+")
+
+# how each fetch-capability reads in the human "provenance" line
+_CAP_LABEL = {
+    "caption": "post caption",
+    "comments": "top comments",
+    "video_frames": "video (frames)",
+    "video_note": "video (frames)",
+    "transcript": "video transcript",
+    "original-source": "linked original recipe",
+    "archive": "web-archive snapshot",
+    "metadata": "page metadata",
+    "article_body": "article text",
+    "readme": "repo README",
+}
+
+
+def _first_url(text: str) -> str | None:
+    m = _URL_RE.search(text or "")
+    return m.group(0).rstrip(".,;")  if m else None
+
+
+def _provides_text(capabilities) -> str:
+    seen, out = set(), []
+    for c in capabilities or []:
+        lbl = _CAP_LABEL.get(c, c)
+        if lbl not in seen:
+            seen.add(lbl)
+            out.append(lbl)
+    return ", ".join(out)
+
+
+def _collect_sources(source_url, channel, author, capabilities, extraction):
+    """Ordered [(label, url, provides)] for the Sources section. Primary = the saved
+    item; additional = declared extraction['sources'] plus any URL found in
+    original-source / archive captures (so resync knows exactly where each fact lives).
+    De-duped by url."""
+    primary_caps = [c for c in (capabilities or []) if c not in ("original-source", "archive")]
+    label = (channel or "source").replace("-", " ")
+    if author:
+        label = f"{label} · {author}"
+    out = [(label, source_url, _provides_text(primary_caps) or "the saved item")]
+    seen = {source_url}
+    for s in extraction.get("sources", []) or []:
+        u = (s.get("url") or "").strip()
+        if u and u not in seen:
+            out.append((s.get("label") or "original source", u, s.get("provides") or ""))
+            seen.add(u)
+    for cap in extraction.get("captures", []) or []:
+        kind = cap.get("kind", "")
+        if kind in ("original-source", "archive"):
+            u = _first_url(cap.get("text", ""))
+            if u and u not in seen:
+                lbl = "original recipe" if kind == "original-source" else "web archive"
+                prov = "full recipe" if kind == "original-source" else "archived page"
+                out.append((lbl, u, prov))
+                seen.add(u)
+    return out
+
 
 @dataclass(frozen=True)
 class PageDoc:
@@ -77,7 +136,7 @@ def _yaml_frontmatter(fields: list[tuple[str, object]]) -> str:
 
 
 def _managed_body(title, source_url, author, channel, capabilities, fetched_at,
-                  extraction) -> str:
+                  extraction, sources) -> str:
     lines = [f"# {title}", ""]
     src = f"> {source_url}" + (f" — {author}" if author else "")
     lines += ["> [!info] Source", src]
@@ -101,6 +160,13 @@ def _managed_body(title, source_url, author, channel, capabilities, fetched_at,
         lines += ["## Notes", str(extraction["notes"]), ""]
     if extraction.get("caveats"):
         lines += ["> [!warning] Extraction caveats", f"> {extraction['caveats']}", ""]
+    # Sources & provenance — every place a fact came from, so a resync is unambiguous.
+    if sources:
+        lines.append("## Sources")
+        for label, url, provides in sources:
+            tail = f" — {provides}" if provides else ""
+            lines.append(f"- **{label}:** {url}{tail}")
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -116,6 +182,9 @@ def render_page(item, extraction: dict, route: Route, existing_text: str | None 
     capabilities = extraction.get("fetch_capabilities") or extraction.get("capabilities") or []
     fetched_at = extraction.get("fetched_at") or now
     created = extraction.get("created") or now
+
+    sources = _collect_sources(source_url, channel, author, capabilities, extraction)
+    additional_sources = [u for (_lbl, u, _p) in sources[1:]]
 
     frontmatter = _yaml_frontmatter([
         ("schema_version", SCHEMA_VERSION),
@@ -135,11 +204,12 @@ def render_page(item, extraction: dict, route: Route, existing_text: str | None 
         ("extractor_version", extraction.get("extractor_version", 1)),
         ("taxonomy_version", TAXONOMY_VERSION),
         ("fetch_capabilities", list(capabilities)),
+        ("additional_sources", additional_sources),
         ("fetched_at", fetched_at),
     ])
 
     body = _managed_body(title, source_url, author, channel, capabilities, fetched_at,
-                         extraction)
+                         extraction, sources)
     managed = f"{MANAGED_START}\n{body}{MANAGED_END}"
 
     # Preserve anything the user hand-wrote after the managed region.

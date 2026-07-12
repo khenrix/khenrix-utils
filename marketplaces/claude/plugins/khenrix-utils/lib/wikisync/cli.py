@@ -31,6 +31,7 @@ from .config import Config, load_config
 from .ledger import Ledger
 from .render import render_page
 from .sources import SourceItem
+from .vocab import Vocabulary
 from .sources.bookmarks import read_bookmarks
 from .sources.instagram_export import read_export
 from .taxonomy import TAXONOMY_VERSION, route
@@ -154,8 +155,10 @@ def _write_page(ctx: Context, rel_path: str, text: str) -> None:
 
 
 def _extraction_only(job: dict) -> dict:
-    """The content-bearing slice of a job, for the reprocess-from-cache capture."""
-    return {k: v for k, v in job.items() if k not in ("captures", "now")}
+    """The content-bearing slice of a job, for the reprocess-from-cache snapshot. Captures
+    are KEPT so a later reprocess can still re-derive sources (the external URLs live in
+    original-source/archive captures) and re-mine facets. Only the run timestamp is dropped."""
+    return {k: v for k, v in job.items() if k != "now"}
 
 
 def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
@@ -182,6 +185,7 @@ def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
             existing_text = p.read_text()
 
     r = route(item, job)
+    Vocabulary(ctx.cfg.state_dir).record(r.tags)   # learn any new tags this item introduced
     doc = render_page(item, job, r, existing_text=existing_text, now=now)
 
     # persist raw captures + a reprocessable extraction snapshot
@@ -215,8 +219,13 @@ def _remove_stale_page(ctx: Context, old_path: str | None, new_path: str) -> Non
 # --------------------------------------------------------------------------- #
 # reprocess — re-render from cached extraction, no network
 # --------------------------------------------------------------------------- #
+def _write_vocab_dashboard(ctx: Context, vocab: Vocabulary) -> None:
+    _write_page(ctx, "wiki/meta/tag-vocabulary.md", vocab.render_dashboard())
+
+
 def cmd_reprocess(ctx: Context, now: str = "", only_stale: bool = False) -> list[str]:
     out = []
+    all_tags: list[list[str]] = []
     for prow in ctx.ledger.all_pages():
         url = prow["source_url"]
         items = ctx.ledger.active_items_for_url(url)
@@ -232,6 +241,7 @@ def cmd_reprocess(ctx: Context, now: str = "", only_stale: bool = False) -> list
         item = SourceItem(native_id=it["native_id"], canonical_url=url,
                           title=it["title"] or "", collection=ext.get("collection", ""))
         r = route(item, ext)
+        all_tags.append(list(r.tags))
         page_path = Path(ctx.cfg.vault) / prow["path"]
         existing = page_path.read_text() if page_path.is_file() else None
         doc = render_page(item, ext, r, existing_text=existing, now=now)
@@ -239,7 +249,18 @@ def cmd_reprocess(ctx: Context, now: str = "", only_stale: bool = False) -> list
         ctx.ledger.record_page(path=doc.path, source_url=url,
                                generated_hash=doc.generated_hash, now=now)
         out.append(doc.path)
+    # a full pass is authoritative for tag counts — rebuild the vocabulary + dashboard
+    vocab = Vocabulary(ctx.cfg.state_dir)
+    vocab.rebuild(all_tags)
+    _write_vocab_dashboard(ctx, vocab)
     return out
+
+
+def cmd_vocab(ctx: Context, write: bool = False) -> dict:
+    v = Vocabulary(ctx.cfg.state_dir)
+    if write:
+        _write_vocab_dashboard(ctx, v)
+    return v.data()
 
 
 # --------------------------------------------------------------------------- #
@@ -314,6 +335,9 @@ def main(argv=None) -> int:
     ap_ = sub.add_parser("adopt")
     ap_.add_argument("--path", required=True)
     sub.add_parser("report")
+    vp = sub.add_parser("vocab")
+    vp.add_argument("--write", action="store_true",
+                    help="also (re)write the vault tag-vocabulary dashboard")
 
     args = ap.parse_args(argv)
     ctx = _make_context(args)
@@ -332,6 +356,8 @@ def main(argv=None) -> int:
         print(json.dumps(cmd_adopt(ctx, args.path), indent=2))
     elif args.cmd == "report":
         print(json.dumps(cmd_report(ctx), indent=2))
+    elif args.cmd == "vocab":
+        print(json.dumps(cmd_vocab(ctx, args.write), indent=2))
     return 0
 
 

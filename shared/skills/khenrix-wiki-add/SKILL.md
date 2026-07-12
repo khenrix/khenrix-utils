@@ -138,12 +138,21 @@ Assemble one JSON object. Required: `source_url`. Everything else improves the p
   "notes": "Leaf stem doubles as the fastener.",
   "caveats": "Quantities not stated in the video; typical proportions used.",
   "diet": ["gluten-free"], "technique": ["grill"], "protein": ["beef"],
-  "fetch_capabilities": ["caption", "comments", "video_frames", "transcript"],
+  "cuisine": ["vietnamese"], "course": ["main"], "meal": ["dinner"],
+  "occasion": ["party"], "ingredient": ["lemongrass"], "texture": ["crispy"],
+  "sources": [
+    {"url": "https://www.instagram.com/reel/DajH0TsShpP/", "label": "instagram saved · @cuppabeans",
+     "provides": "caption, top comments, video frames"},
+    {"url": "https://cuppabeans.com/bo-la-lot", "label": "original recipe (creator's blog)",
+     "provides": "exact quantities + method"}
+  ],
+  "fetch_capabilities": ["caption", "comments", "video_frames", "transcript", "original-source"],
   "fetched_at": "2026-07-12T09:00:00+00:00",
   "captures": [
     {"kind": "caption", "text": "<raw caption text>"},
     {"kind": "comments", "text": "<top comments, verbatim>"},
-    {"kind": "transcript", "text": "<if /watch produced one>"}
+    {"kind": "transcript", "text": "<if /watch produced one>"},
+    {"kind": "original-source", "text": "<the real recipe URL + what it gave you>"}
   ]
 }
 ```
@@ -152,12 +161,30 @@ Field notes:
 - `type` — omit to let the folder/collection decide (`Food/*` → recipe, `Köpa?/Gift` →
   product, `Github Inspo/Tech` → inspiration, else source). Set it explicitly to override.
 - `method` is the recipe STEPS (rendered as the Method section). Cooking-technique tags
-  come from a SEPARATE `technique` list — never put steps in `technique`. Facet lists
-  (`diet`, `technique`, `protein`) become namespaced tags (`diet/vegetarian`,
-  `method/grill`, `protein/beef`). Add every useful facet — searchability is the point.
+  come from a SEPARATE `technique` list — never put steps in `technique`. Do NOT number the
+  method strings ("1. …") — the renderer numbers them, so a leading number double-prints.
+- **Facets → namespaced tags. Mine every useful one — searchability is the whole point.**
+  These extraction keys become tags: `diet`→`diet/*`, `technique`→`method/*`, `protein`→
+  `protein/*`, `cuisine`→`cuisine/*`, `course`→`course/*`, `meal`→`meal/*`, `occasion`→
+  `occasion/*`, `ingredient`→`ingredient/*` (the hero/standout ingredients), `texture`→
+  `texture/*`. For an Instagram save the folder can't supply `cuisine`/`course` (everything
+  lands in one saved collection), so YOU must set them from the dish. You can also pass
+  ready-made `tags: ["cuisine/thai"]` straight through.
+- **Reuse the existing vocabulary — this is how tags stay consistent and self-improve.**
+  Before choosing facet values, run `wk vocab` (JSON of every tag already in use, by
+  namespace, with counts). Prefer an existing tag when it fits (`cuisine/japanese`, not a
+  new `cuisine/japan`); coin a new one only when nothing matches. The engine records new
+  tags automatically and refreshes `wiki/meta/tag-vocabulary.md` on each reprocess.
+- **`sources[]` — record EVERY place a fact came from, with provenance.** Each entry is
+  `{url, label, provides}`. Always include the saved item itself; and when you trace the
+  real recipe to a blog/site or recover it from an archive, add that URL too with what it
+  gave you ("exact quantities + method"). These render as a **## Sources** section and a
+  machine-readable `additional_sources` frontmatter list, so a future resync knows exactly
+  where each piece of information lives. (As a fallback the engine also auto-derives a
+  source URL from any `original-source`/`archive` capture, but set `sources` explicitly.)
 - `captures[]` — the RAW fetched artifacts. These are cached so the page can be reprocessed
-  later without re-hitting the source. Always include the caption; include comments and any
-  transcript you pulled.
+  later without re-hitting the source. Always include the caption; include comments, any
+  transcript you pulled, and an `original-source` capture holding the real recipe URL.
 - `fetch_capabilities` — what you actually captured, so a later deep pass knows what's missing.
 
 Write it to a temp file (avoids shell-quoting pain):

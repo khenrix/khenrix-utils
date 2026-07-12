@@ -125,5 +125,41 @@ class TestRenderMerge(unittest.TestCase):
         self.assertTrue(doc.path.endswith(".md"))
 
 
+class TestSources(unittest.TestCase):
+    def test_declared_source_renders_with_provenance(self):
+        item = _item(url="https://www.instagram.com/p/ABC/")
+        r = route(item, {})
+        ext = {"source_channel": "instagram-saved",
+               "fetch_capabilities": ["caption", "comments"],
+               "sources": [{"url": "https://blog.com/carbonara", "label": "original recipe",
+                            "provides": "full ingredients + method"}]}
+        doc = render_page(item, ext, r)
+        self.assertIn("## Sources", doc.text)
+        self.assertIn("https://blog.com/carbonara", doc.text)
+        self.assertIn("full ingredients + method", doc.text)
+        # machine-readable for resync
+        self.assertIn("additional_sources:", doc.text)
+        # the saved post is the primary source and listed too
+        self.assertIn("https://www.instagram.com/p/ABC/", doc.text)
+
+    def test_original_source_url_autoderived_from_capture(self):
+        item = _item(url="https://www.instagram.com/p/XYZ/")
+        r = route(item, {})
+        ext = {"source_channel": "instagram-saved",
+               "fetch_capabilities": ["caption", "original-source"],
+               "captures": [{"kind": "original-source",
+                             "text": "Full recipe: https://daigasikfaan.co/steamed-egg/ — 3 eggs"}]}
+        doc = render_page(item, ext, r)
+        self.assertIn("https://daigasikfaan.co/steamed-egg/", doc.text)
+        self.assertIn("additional_sources:", doc.text)
+
+    def test_no_extra_sources_leaves_only_primary(self):
+        item = _item(url="https://ex.com/x")
+        r = route(item, {})
+        doc = render_page(item, {"source_channel": "chrome-bookmarks",
+                                 "fetch_capabilities": ["article_body"]}, r)
+        self.assertIn("additional_sources: []", doc.text)   # empty list, no phantom sources
+
+
 if __name__ == "__main__":
     unittest.main()

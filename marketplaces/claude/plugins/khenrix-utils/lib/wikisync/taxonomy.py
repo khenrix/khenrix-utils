@@ -98,7 +98,9 @@ def route(item, extraction: dict) -> Route:
     # technique comes from 'technique', NOT 'method' — 'method' is the recipe STEPS field
     # (rendered as the Method section); reading it here would turn each step into a tag.
     for key, ns in (("diet", "diet"), ("technique", "method"), ("protein", "protein"),
-                    ("meal", "meal"), ("occasion", "occasion")):
+                    ("cuisine", "cuisine"), ("course", "course"),
+                    ("meal", "meal"), ("occasion", "occasion"),
+                    ("ingredient", "ingredient"), ("texture", "texture")):
         raw = extraction.get(key)
         # An LLM may hand back a string ("gluten-free, dairy-free") instead of a list;
         # coerce it so we don't iterate character-by-character into single-letter tags.
