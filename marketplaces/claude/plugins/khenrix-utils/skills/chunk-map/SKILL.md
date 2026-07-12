@@ -35,7 +35,16 @@ no import links them (hidden coupling — a serializer and its schema, a flag an
 The import graph is the *second* signal; it misses exactly this. Get both:
 
 ```bash
-python3 scripts/codebase_stats.py --root . --commits 400
+# Locate the bundled engine — cwd is the target repo, not the plugin, so resolve $STATS first:
+STATS=""
+for c in \
+  "${CLAUDE_PLUGIN_ROOT:-}/skills/chunk-map/scripts/codebase_stats.py" \
+  "${PLUGIN_ROOT:-}/skills/chunk-map/scripts/codebase_stats.py" \
+  "$HOME/.gemini/config/plugins/khenrix-utils/skills/chunk-map/scripts/codebase_stats.py"; do
+  if [ -f "$c" ]; then STATS="$c"; break; fi
+done
+if [ -z "$STATS" ]; then echo "codebase_stats.py not found — is khenrix-utils installed?"; exit 1; fi
+python3 "$STATS" --root . --commits 400
 ```
 
 This prints LOC rolled up per top-2-level dir + the most-coupled dir pairs (co-change count). Read
@@ -67,11 +76,14 @@ Add `.chunkmap/` to `.gitignore` (it's a per-developer working artifact, not sha
 Don't store "is this stale". At read time, diff against the recorded sha:
 
 ```bash
-git diff --name-only <reviewed_sha> HEAD
+git diff --name-status -M <reviewed_sha> HEAD
 ```
 
-Any changed file maps back to its chunk(s) → those chunks are stale; re-derive just those. A map is
-a snapshot of understanding at `reviewed_sha`, not a live index.
+Any changed file maps back to its chunk(s) → those chunks are stale; re-derive just those. Use
+`--name-status -M` (not bare `--name-only`): a rename prints `R<score>\t<old>\t<new>`, so you can
+stale BOTH the source chunk (old path) and the destination chunk — `--name-only` shows only the new
+path and silently leaves the source chunk looking current. A map is a snapshot of understanding at
+`reviewed_sha`, not a live index.
 
 ## Seam-leak verification
 A chunk's seam is a lie if other chunks reach *past* it into internals. After drafting boundaries,

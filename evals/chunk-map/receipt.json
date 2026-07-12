@@ -1,12 +1,17 @@
 {
   "skill": "chunk-map",
-  "source_hash": "f856deeb7a297130091511b66939ccb1b95e4f7ce488c52deb7aef2aeacce5dc",
+  "source_hash": "78a2a3c7834851e597dd895f71cb66763a71ecf351acc014d86d8d55ae931ad6",
   "eval_set_hash": "fefc0d74b2ac3dd3832cca91f1e336534657ec14e67bd3e5e8ede369b9837a03",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.0,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "models": {
+    "claude": "claude-opus-4-8",
+    "judge": "claude-opus-4-8"
+  }
 }

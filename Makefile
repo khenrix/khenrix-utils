@@ -73,7 +73,7 @@ eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) shared/skills/skill-tuneup/scripts/tuneup.py --self-test
 
 eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=claude,codex,agy] [MODE=normal|deep] (costs tokens)
-	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),)
+	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),) $(if $(MODELCLAUDE),--model-claude "$(MODELCLAUDE)",) $(if $(MODELCODEX),--model-codex "$(MODELCODEX)",) $(if $(MODELAGY),--model-agy "$(MODELAGY)",)
 
 status: ## Show what each CLI currently has vs the source of truth (read-only)
 	$(PY) scripts/lib/reconcile.py --status --all
