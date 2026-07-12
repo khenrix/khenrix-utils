@@ -1420,16 +1420,18 @@ Tasks 1–10 + T11 Steps 1–3 executed inline and committed (all `--self-test`s
   codex-native plugins (slack, github, superpowers@openai-curated). `--check` now reports
   23 satisfied / 16 not-applicable / **0 failing, 0 XOR violations**. (github registers as
   a codex MCP via its native plugin — expected, `xor_exempt`; no competing shared MCP added.)
-- **Deferred (with reason): skill-body porting to codex/agy.** Discovery showed both CLIs
-  deliver skills through *managed* mechanisms — codex via installed plugins (and built-ins
-  under `~/.codex/skills/.system/`; skill-creator + superpowers are already **native** on
-  codex, so they are not ported there), agy via `plugins/<name>/` + `import_manifest.json`
-  — not loose skill dirs, and codex exposes no `skill list` to *verify* a hand-copied skill
-  is discoverable. Copying files into guessed locations would be an unverifiable "ported"
-  claim (the exact fidelity risk the design flagged). **Correct follow-up:** extend
-  `render.py` to emit a "khenrix-ported" third-party-skills plugin per CLI and register it
-  through each CLI's own import path, then validate discoverability — a scoped next task,
-  not a blind copy. The manifest's `ported` skill statuses stand as the *intent*.
+- **Done + verified: skill-body porting to codex/agy** (via `scripts/port-skills.sh`).
+  Rather than vendor third-party skill bodies into this repo (some carry a `license:`, and
+  pushing them would redistribute them), the script copies them from *this machine's* Claude
+  caches into a machine-local **`khenrix-ported`** plugin and installs it through each CLI's
+  own mechanism: agy `plugin install <dir>` (verified via `agy plugin list` → 18 skills),
+  codex local marketplace + `plugin add` (verified via `codex plugin list` → 8 skills,
+  installed+enabled). Curation follows the design rule — superpowers methodology skills →
+  agy only (codex has superpowers native); frontend-design + claude-md-improver + 6 obsidian
+  non-wiki skills → both; **kept Claude-only** (mechanism/hook/script-bound): using-superpowers,
+  subagent-driven-development, dispatching-parallel-agents, skill-creator (native on codex),
+  last30days, watch. `port-skills.sh` is idempotent and wired into `bootstrap-machine.sh`
+  after the Claude-plugin install step.
 
 ## Execution Handoff
 

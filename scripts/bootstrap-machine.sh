@@ -87,4 +87,9 @@ run make -C "$REPO" khenrix-refresh
 # exact headless invocation + success check at T11, e.g.:
 #   run python3 "$REPO/scripts/lib/reconcile.py" --apply --all   # then assert exit 0
 
+echo "== Ported third-party skills (codex + agy) =="
+# Mirrors portable Claude skill bodies onto codex/agy from THIS machine's Claude caches
+# (not vendored — must run AFTER the Claude plugins above are installed). Idempotent.
+run bash "$REPO/scripts/port-skills.sh"
+
 echo "== Done (dry-run=$DRY) =="
