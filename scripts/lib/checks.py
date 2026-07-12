@@ -211,7 +211,7 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
         # Blind A/B gate: a real receipt must record a with_skill win. Seeded receipts
         # (blind_winner absent/None) and the orchestrator exception are exempt.
         bw = rec.get("blind_winner")
-        if bw is not None and bw not in ("with_skill", "n/a-orchestrator"):
+        if bw is not None and bw not in ("with_skill", "n/a-orchestrator", "n/a-deterministic"):
             out.append(f"receipt: {skill} blind A/B winner is '{bw}', not with_skill — "
                        f"re-run `make eval SKILL={skill}`")
     return ["(advisory) " + m for m in out] if advisory else out

@@ -1,0 +1,9 @@
+{
+  "channel": "instagram-saved",
+  "scope": "all",
+  "status": "partial",
+  "note": "Enumeration was interrupted by a login challenge before reaching the end of the saved list.",
+  "items": [
+    {"native_id": "GHI333", "canonical_url": "https://www.instagram.com/reel/GHI333/", "collection": "Instagram/Saved/Food"}
+  ]
+}

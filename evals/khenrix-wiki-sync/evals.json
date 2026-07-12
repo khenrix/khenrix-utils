@@ -1,0 +1,40 @@
+{
+  "skill_name": "khenrix-wiki-sync",
+  "notes": "Assertions target the wikisync engine's specific MECHANICS a skill-free baseline cannot invent: running `python3 -m wikisync plan/probe/report`, the snapshot-completeness rule enforced by plan_diff (a partial snapshot removes nothing), the exact `deferred: capability_unavailable` degradation, and the occurrence-vs-page identity model. A strong baseline gives generically sensible answers but does not know this engine exists — that gap is the measured value. Fixtures materialized and referenced via {fixture_dir}.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "partial-plan-removes-nothing",
+      "prompt": "You are syncing Instagram saves into the wiki. Your live enumeration was interrupted partway — the snapshot at {fixture_dir}/ig_partial.json has status \"partial\". The ledger already tracks two saved posts, ABC111 and DEF222, not present in this partial list. Give the exact command you run and explain precisely what the engine does with ABC111 and DEF222.",
+      "files": ["ig_partial.json"],
+      "assertions": [
+        "Runs the sync through `python3 -m wikisync plan` (feeding the snapshot) rather than hand-editing the vault or ledger",
+        "Because the snapshot status is 'partial', the engine's diff (plan_diff) marks NOTHING removable — ABC111 and DEF222 are left untouched",
+        "States the rule that only a 'complete' snapshot may produce removals, and that a page is never deleted regardless (source_removed is reported, not applied)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "probe-then-deferred",
+      "prompt": "You are running khenrix-wiki-sync on a CLI where `python3 -m wikisync probe` reports instagram_live=false and instagram_export=false. The user asks you to sync their Instagram saved posts. Give the exact steps and what you report back.",
+      "files": [],
+      "assertions": [
+        "Runs `wikisync probe` first to determine available capabilities",
+        "Reports the Instagram source as `deferred: capability_unavailable` (or equivalent) instead of producing pages, and does NOT fabricate posts or an empty successful result",
+        "Directs the user to the official Meta 'Download your information' export (the instagram_export path) to enable Instagram ingestion",
+        "Still proceeds via `python3 -m wikisync plan` for any source that IS available (e.g. chrome-bookmarks)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "occurrence-page-model",
+      "prompt": "Plan a Chrome bookmarks sync from {fixture_dir}/Bookmarks with `wikisync`. The recipe URL https://ex.com/carbonara is saved in TWO different bookmark folders. Explain, using the engine's data model, how many wiki PAGES result and how the two folders are represented. Give the command.",
+      "files": ["Bookmarks"],
+      "assertions": [
+        "Runs `python3 -m wikisync plan --channel chrome-bookmarks` rather than hand-filing pages",
+        "Explains the occurrence-vs-page model: each folder node is a separate occurrence (keyed by channel + Chrome GUID / native id), but the page is keyed by the canonical URL",
+        "Concludes exactly ONE wiki page results for that URL, with BOTH folders retained as memberships / source_collection rather than one folder winning"
+      ]
+    }
+  ]
+}

@@ -56,6 +56,19 @@ import fanout  # noqa: E402  (maintainer dev tool: reach into the council engine
 EVALS_ROOT = ROOT / "evals"
 DEFAULT_JUDGE = "claude"
 
+# Skills the LLM-judge harness cannot fairly gate, so their receipt is blessed by a
+# deterministic test suite instead (analogous to llm-council's fanout --self-test).
+# The wiki skills wrap the in-repo `wikisync` engine: a read-only executor can READ the
+# skill source + engine from the repo cwd, so the "skill-free" baseline is contaminated
+# and the with-vs-without delta is meaningless. The 70 wikisync unit tests are the real
+# correctness gate; the judge run (if any) stays advisory.
+DETERMINISTIC_GATED = {
+    "khenrix-wiki-add":  ["python3", "-m", "unittest", "discover", "-s",
+                          str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
+    "khenrix-wiki-sync": ["python3", "-m", "unittest", "discover", "-s",
+                          str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
+}
+
 
 # --------------------------------------------------------------------------- #
 # Pure logic (unit-tested by --self-test; no subprocess / token cost).
@@ -368,10 +381,14 @@ def _checks():
     return checks
 
 
-def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None):
+def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None,
+                   models=None):
     """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
     For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark.
-    `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded)."""
+    `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded).
+    `models` records the resolved executor/judge model(s) actually used, so a run on a
+    non-default model (e.g. --model-claude claude-opus-4-8 while Fable-5 is walled) is
+    provable from the receipt, not silently attributed to the MODES default."""
     c = _checks()
     rec = {
         "skill": skill,
@@ -382,17 +399,27 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         "blind_winner": blind_winner,
         "provenance": "seeded: blessed current committed state" if seeded else "eval",
     }
+    if models:
+        rec["models"] = models
     if skill == "llm-council":
         rc = subprocess.run([sys.executable, str(FANOUT_DIR / "fanout.py"), "--self-test"])
         if rc.returncode != 0:  # never bless a failing engine with a green receipt
             raise SystemExit("llm-council self-test failed; not writing receipt")
         rec.update(self_test=True, synthesis_review="manual-attested")
+    elif skill in DETERMINISTIC_GATED:
+        rc = subprocess.run(DETERMINISTIC_GATED[skill])
+        if rc.returncode != 0:  # unit tests are the gate — never bless a failing engine
+            raise SystemExit(f"{skill} deterministic tests failed; not writing receipt")
+        rec.update(deterministic_gate="wikisync-unittests", self_test=True)
     (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
 
 
 def seed_receipts(args) -> int:
-    """Stamp a receipt for every eval'd skill at its current committed state."""
-    for skill in _checks()._evald_skills(ROOT):
+    """Stamp a receipt at the current committed state. With --skill, seed just that one
+    (e.g. re-blessing a skill whose only change is a mechanical render.py bundling, or a
+    deterministic-gated skill); otherwise seed every eval'd skill."""
+    skills = [args.skill] if args.skill else _checks()._evald_skills(ROOT)
+    for skill in skills:
         _write_receipt(skill, providers=args.providers.split(","), mode=args.mode,
                        judge=args.judge, delta=None, seeded=True)
         print(f"  seeded receipt: {skill}")
@@ -444,9 +471,17 @@ def run(args) -> int:
         # --self-test (enforced inside _write_receipt), never this delta/winner.
         gate_ok = True
         bw = "n/a-orchestrator"
+    elif args.skill in DETERMINISTIC_GATED:
+        # The read-only baseline reads the in-repo skill source, so the with-vs-without
+        # delta is meaningless (see DETERMINISTIC_GATED). The judge run is advisory; the
+        # receipt gate is the wikisync unit suite (enforced inside _write_receipt).
+        gate_ok = True
+        bw = "n/a-deterministic"
     if gate_ok:  # passing run → refresh the receipt
+        models = {p: cfg.get(p, {}).get("model") for p in providers}
+        models["judge"] = cfg.get(args.judge, {}).get("model")
         _write_receipt(args.skill, providers=providers, mode=args.mode,
-                       judge=args.judge, delta=d, blind_winner=bw, seeded=False)
+                       judge=args.judge, delta=d, blind_winner=bw, seeded=False, models=models)
     return 0 if gate_ok else 1
 
 

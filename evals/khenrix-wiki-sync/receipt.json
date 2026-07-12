@@ -1,0 +1,15 @@
+{
+  "skill": "khenrix-wiki-sync",
+  "source_hash": "0e491841e77fadad5d14bb2d9e9d9187922807ba9fcb3923b8b672fe4c449689",
+  "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
+  "providers": [
+    "claude"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state",
+  "deterministic_gate": "wikisync-unittests",
+  "self_test": true
+}

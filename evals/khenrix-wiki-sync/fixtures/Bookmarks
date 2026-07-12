@@ -1,0 +1,29 @@
+{
+  "roots": {
+    "bookmark_bar": {
+      "type": "folder",
+      "name": "Bokmärkesfältet",
+      "children": [
+        {
+          "type": "folder",
+          "name": "Food",
+          "children": [
+            {"type": "folder", "name": "Main", "children": [
+              {"type": "folder", "name": "Italian", "children": [
+                {"type": "url", "guid": "g-carb-1", "name": "Best Carbonara", "url": "https://ex.com/carbonara", "date_added": "13350000000000000"}
+              ]}
+            ]}
+          ]
+        },
+        {
+          "type": "folder",
+          "name": "Favorites",
+          "children": [
+            {"type": "url", "guid": "g-carb-2", "name": "Carbonara again", "url": "https://ex.com/carbonara", "date_added": "13350000000000000"}
+          ]
+        }
+      ]
+    }
+  },
+  "version": 1
+}
