@@ -25,13 +25,17 @@ per-machine = anything with a secret, a path, or an OS-specific shim.**
 
 ## Prerequisites (install per machine)
 
-- **asdf** → Node (currently `v26.2.0`) — npx/node resolve through it
-- **uv / uvx** (`~/.local/bin`) — for `uvx`-launched MCPs + Python
-- **jq**, and the **`claude`** CLI (`~/.local/bin`)
-- **WSL only** — the Windows bridges in `~/.local/bin`: `powershell.exe` shim +
-  `windows-chrome` (used by the `chrome-devtools` MCP and vercel's `BROWSER`).
-  On native Linux/macOS: drop `chrome-devtools` and point `vercel`'s `BROWSER`
-  at your real browser.
+- **mise** (`~/.local/bin/mise`) → Node (currently `v26.2.0`), uv and jq — runtimes
+  resolve through it (replaced asdf in the 2026-07-08 migration). Python comes from `uv`.
+- **uv / uvx** — for `uvx`-launched MCPs + Python
+- the **`claude`** CLI (`~/.local/bin`)
+- **WSL/Linux** — the `chrome-devtools` MCP runs on mise Node driving a user-dir
+  "Chrome for Testing" (`~/.local/share/chrome-for-testing/`), shown via WSLg — no
+  system Chrome or admin needed. The `wsl-chrome` launcher opens the same persistent
+  profile so you can log into sites once and share that session with the agent; vercel's
+  `BROWSER` points at it too. Provision per machine (no sudo) — see the `chrome-devtools`
+  entry in `capabilities.toml` for the exact steps. On a host with no display, drop
+  `chrome-devtools`.
 
 ## 1. Clone the git-synced repos
 

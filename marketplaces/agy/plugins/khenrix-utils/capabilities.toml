@@ -28,24 +28,41 @@ transport = "stdio"
 command = "npx"
 args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
 [mcp_servers.vercel.env]
-BROWSER = "${HOME}/.local/bin/windows-chrome"
+# Opens URLs in the WSLg Chrome-for-Testing profile (was a missing windows-chrome
+# shim — there is no Windows Chrome on this host).
+BROWSER = "${HOME}/.local/bin/wsl-chrome"
 
 [mcp_servers.google-drive]
 transport = "stdio"
-# node path may differ per machine; the skill falls back to `node` on PATH.
-command = "${HOME}/.asdf/installs/nodejs/26.2.0/bin/node"
-args = ["${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
+# Launched through mise (absolute path so it resolves with a minimal PATH); mise
+# picks the active Node 26 — no hard-coded runtime path to go stale. (Was a dead
+# ~/.asdf/... path after the 2026-07-08 asdf→mise migration.)
+command = "${HOME}/.local/bin/mise"
+args = ["exec", "node@26", "--", "node", "${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
 [mcp_servers.google-drive.env]
 GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
 GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
 
 [mcp_servers.chrome-devtools]
-platform = "windows"   # PowerShell launcher — also eligible on WSL (interop)
+platform = "linux"   # WSL/Linux-native: mise Node + Chrome for Testing, shown via WSLg
 transport = "stdio"
-# Absolute WSL-interop shim (not bare `powershell.exe`) so the launcher resolves
-# even when the CLI starts the server with a minimal PATH.
-command = "${HOME}/.local/bin/powershell.exe"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
+# Runs under mise's Node (absolute mise path so it resolves even with a minimal
+# PATH), launching a user-dir "Chrome for Testing" — no system Chrome, no admin.
+# Provision per machine (no sudo):
+#   npx -y @puppeteer/browsers install chrome@stable --path ${HOME}/.local/share/chrome-for-testing
+#   ln -sfn <installed>/chrome ${HOME}/.local/share/chrome-for-testing/current
+# `current` is a stable symlink so Chrome updates don't touch this file.
+# LD_LIBRARY_PATH supplies libasound.so.2 — the one lib WSLg doesn't ship (extract
+# from the libasound2t64 .deb into extra-libs/, no sudo). DISPLAY=:0 is WSLg's X11.
+# --userDataDir is an explicit PERSISTENT profile (not --isolated), so logins,
+# cookies and history survive across runs — that's the "normal session". Seed it
+# by opening the same profile yourself with the `wsl-chrome` launcher.
+command = "${HOME}/.local/bin/mise"
+args = ["exec", "node@26", "--", "npx", "-y", "chrome-devtools-mcp@latest", "--executablePath", "${HOME}/.local/share/chrome-for-testing/current", "--userDataDir", "${HOME}/.local/share/chrome-for-testing/profile"]
+[mcp_servers.chrome-devtools.env]
+LD_LIBRARY_PATH = "${HOME}/.local/share/chrome-for-testing/extra-libs"
+DISPLAY = ":0"
+CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS = "1"
 
 # LinkedIn — portable, no secret in config; auth is an interactive per-machine login via the tool.
 # (Slack is deliberately NOT managed here: its XOXC/XOXD are per-machine, session-scoped, rotating
