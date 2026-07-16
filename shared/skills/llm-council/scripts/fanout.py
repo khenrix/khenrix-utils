@@ -635,6 +635,26 @@ def apply_readonly_posture(prompt: str) -> str:
     return f"{READONLY_POSTURE}\n\n{prompt}"
 
 
+# Members run with each CLI's full skill/plugin surface (verified 2026-07-13: claude -p,
+# codex exec, and agy -p all discover installed skills, including the khenrix-ported set) —
+# nudge them to USE those skills, but bar the one recursive skill. Engine-level defense in
+# depth: the LLM_COUNCIL_DEPTH guard already hard-blocks a nested fan-out, but a member
+# that tries llm-council anyway wastes its whole turn on the refusal — the note prevents
+# the attempt. Applied only on the council paths (main/smoke), NEVER in build_real_spec:
+# the eval harness reuses build_real_spec for executors, where "you are a council member"
+# would be false and would distort the with-vs-without benchmark.
+MEMBER_SKILLS_NOTE = ("COUNCIL MEMBER NOTE: use any skills/plugins available in your "
+                      "environment when they materially help with this task — EXCEPT any "
+                      "council/fan-out skill (e.g. llm-council). You are already answering "
+                      "as a council member: never convene another council or delegate this "
+                      "question to other CLIs.")
+
+
+def apply_member_note(prompt: str) -> str:
+    """One identical skills note for all members, preserving identical conditions."""
+    return f"{MEMBER_SKILLS_NOTE}\n\n{prompt}"
+
+
 def resolve_prompt(args) -> str:
     if args.prompt is not None:
         return args.prompt
@@ -650,8 +670,9 @@ def resolve_prompt(args) -> str:
 # --------------------------------------------------------------------------- #
 def smoke(args) -> int:
     prompt = "Reply with exactly one word and nothing else: pong"
+    prompt = apply_member_note(prompt)           # smoke exercises the real prompt shape
     if args.read_only:
-        prompt = apply_readonly_posture(prompt)  # smoke exercises the real prompt shape
+        prompt = apply_readonly_posture(prompt)
     providers = args.providers.split(",") if args.providers else ["claude"]
     workdir = Path(tempfile.mkdtemp(prefix="llm-council-smoke-"))
     timeout = effective_timeout(args)
@@ -896,6 +917,20 @@ def self_test() -> int:
     check("posture: reaches the agy argv (defense-in-depth layer)",
           any(READONLY_POSTURE in str(a) for a in ag15.argv))
 
+    # S15b — member skills note: prepended intact, question preserved, composes with the
+    # posture line (main() order: note first, then posture wraps it), bars llm-council by
+    # name, and must NOT be baked into build_real_spec (the eval harness reuses it).
+    mem = apply_member_note("original question")
+    check("member-note: line prepended", mem.startswith(MEMBER_SKILLS_NOTE))
+    check("member-note: original prompt preserved", mem.endswith("original question"))
+    check("member-note: bars llm-council by name", "llm-council" in MEMBER_SKILLS_NOTE)
+    both = apply_readonly_posture(apply_member_note("q"))
+    check("member-note: composes with posture (posture outermost)",
+          both.startswith(READONLY_POSTURE) and MEMBER_SKILLS_NOTE in both and both.endswith("q"))
+    bare = build_real_spec("claude", "q", 30, {}, wd("memnote"))
+    check("member-note: NOT injected by build_real_spec (harness reuses it)",
+          all(MEMBER_SKILLS_NOTE not in str(a) for a in bare.argv))
+
     # S16 — agy worktree isolation: cwd redirected to a throwaway copy that mirrors the
     # working tree (incl. uncommitted tracked changes); cleanup removes it; non-repo no-op.
     repo16 = wd("wt_repo")
@@ -1035,6 +1070,7 @@ def main(argv=None) -> int:
                           "detail": "provide --prompt, --prompt-file, or pipe via stdin"}))
         return 2
 
+    prompt = apply_member_note(prompt)   # skills-encouraged, council-recursion-barred
     if args.read_only:
         prompt = apply_readonly_posture(prompt)
 

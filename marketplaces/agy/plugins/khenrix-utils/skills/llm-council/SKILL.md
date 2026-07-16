@@ -60,7 +60,10 @@ should use X" or "convene the council on Y", pass just "should I use X" / "Y": k
 their wording and intent, but drop the "ask the others / use the council" wrapper.
 Don't summarize or editorialize the question otherwise. This keeps all three answering
 the *same* thing and avoids a provider trying to convene its own council (the
-`LLM_COUNCIL_DEPTH` guard blocks the recursion, but it wastes a turn).
+`LLM_COUNCIL_DEPTH` guard blocks the recursion, but it wastes a turn). The engine also
+prepends one identical member note to every seat: use whatever skills your environment
+provides when they help, but never a council/fan-out skill — so members benefit from
+their installed skills without re-convening the council.
 
 ```bash
 PROMPT_FILE="$(mktemp)"
