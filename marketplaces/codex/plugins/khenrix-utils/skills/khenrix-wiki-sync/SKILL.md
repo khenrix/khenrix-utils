@@ -11,7 +11,7 @@ description: >-
   improves. Use when the user says "sync my wiki", "import my bookmarks / Instagram saves",
   "resync the wiki", "pull in my saved posts", or wants the whole saved corpus filed at once.
   For a single link use khenrix-wiki-add.
-allowed-tools: Bash, Read, WebFetch
+allowed-tools: Bash, Read, WebFetch, WebSearch
 ---
 
 # khenrix-wiki-sync — reconcile all saved sources into the wiki
@@ -72,11 +72,12 @@ wk plan --channel instagram-export > /tmp/wk-ig-plan.json
 
 ### Instagram — live accelerator (opt-in, Claude only)
 
-Only when `instagram_live` is true AND the user opted in. **Meta's terms restrict automated
-collection even while logged in** — so this pass is conservative and stops at the first sign of
-friction. Open `https://www.instagram.com/<user>/saved/all-posts/` with chrome-devtools, then
-scroll-and-collect with `evaluate_script` using stable anchor selectors (never replayed private
-GraphQL):
+Only when `instagram_live` is true AND the account owner expressly authorized this pass.
+**Meta's terms prohibit automated collection without express permission — even on your own
+logged-in account** — so the export path above is the default, and this one is conservative and
+stops at the first sign of friction. Open `https://www.instagram.com/<user>/saved/all-posts/`
+with chrome-devtools, then scroll-and-collect with `evaluate_script` using stable anchor
+selectors (never replayed private GraphQL):
 
 ```js
 () => {
@@ -89,7 +90,9 @@ GraphQL):
 }
 ```
 
-Loop: collect → scroll one viewport → wait a **randomized 1.5–4 s** → collect again. Stop when
+Loop: collect → scroll one viewport → wait **~2 s** so the page can load and you don't hammer
+Meta (a plain fixed delay — never vary the pacing to imitate human behavior) → collect again.
+Stop when
 either (a) no new hrefs appear across 3 consecutive scrolls **and** the page shows the end of the
 list → the run is **complete**; or (b) you hit any login/challenge/verification screen, a 429, or
 a rate-limit notice → **stop immediately, do not retry or evade**, and mark the run **partial**.
@@ -132,11 +135,18 @@ skill for the per-item procedure and the extraction schema.
 
 ## 5. Deep pass (capped)
 
-Some recipe reels have no recipe in the caption. Those jobs come back with
-`target_capabilities` lacking `transcript`. Collect them into a review queue and run the deep
-capture (`/watch` → frames + transcript) on at most `deep_cap` per run (default 10); commit
-those, and leave the rest queued in the ledger for a later run. Deep is costly — don't run it on
-everything.
+Some recipe reels have no recipe in the caption. Those jobs come back carrying
+`transcript-if-deep` in `target_capabilities` (the engine marks reels/YouTube by URL kind; it
+never emits a bare `transcript` at plan time) — that's a **candidate** marker, not a queue
+signal: a transcript is only ever a *deep* output, so "no transcript yet" is true of every
+candidate. Queue only the ones whose standard pass yielded **no usable recipe** — you can't cook
+from what you got. That includes a music-only / text-overlay reel; a caption + comments with
+neither ingredients nor method and no `original-source` link to follow; and the common partial
+case: ingredients listed but the method only spoken or shown on screen. Skip a candidate whose
+caption already carried the complete recipe (ingredients *and* method), and skip a video that
+isn't a recipe at all. Run the deep capture (`/watch` → frames + transcript) on at most
+`deep_cap` per run (default 10); commit those, and leave the rest queued in the ledger for a
+later run. Deep is costly — don't run it on everything.
 
 ## 6. Removals + report
 
