@@ -1,17 +1,21 @@
 {
   "skill": "hookify",
-  "source_hash": "6880316b620b24b5905a7213f89dd96f31cbe98153b33b29ba1c9fa3c1fdef9c",
-  "eval_set_hash": "e85a9e6fc1914272ab36f770fc44ea126111db4b88393bcf2cd6be328cd81882",
+  "source_hash": "6e848075c0299d63c328c392515b81ee76e28287d0f026983aef08a2c40ed0eb",
+  "eval_set_hash": "25a319aff709f2cf09f67d31ae46b092cefe0196fc4fa1b5989358dc6f999422",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.2,
-  "blind_winner": "without_skill",
+  "delta_pass_rate": 0.2333,
+  "blind_winner": "with_skill",
   "provenance": "eval",
   "models": {
     "claude": "claude-opus-4-8",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.5 Flash (High)",
     "judge": "claude-opus-4-8"
   }
 }

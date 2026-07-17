@@ -171,10 +171,14 @@ def parse_grading(raw: str, assertions: list, eval_name: str, condition: str) ->
             "passed": passed, "total": len(assertions), "expectations": exps}
 
 
-def blind_pair(with_text: str, without_text: str, idx: int):
+def blind_pair(with_text: str, without_text: str, idx):
     """Assign the two outputs to A/B deterministically (no RNG — alternate by eval
-    index so neither condition sits in a fixed slot across the set). Returns
-    (a_text, b_text, key) where key maps each slot back to its condition."""
+    id so neither condition sits in a fixed slot across the set). Returns
+    (a_text, b_text, key) where key maps each slot back to its condition.
+    Eval ids may be ints OR descriptive string slugs — derive a stable parity for
+    both (byte-sum is deterministic; `str % int` on a slug is a TypeError)."""
+    if not isinstance(idx, int):
+        idx = sum(str(idx).encode())
     if idx % 2 == 0:
         return with_text, without_text, {"A": "with_skill", "B": "without_skill"}
     return without_text, with_text, {"A": "without_skill", "B": "with_skill"}
