@@ -12,6 +12,7 @@ import argparse, json, re, sys
 from pathlib import Path
 
 FENCE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
+_STATUSES = {"todo", "in_progress", "done"}   # the documented status vocabulary
 
 
 def parse_graph(text: str) -> dict:
@@ -25,8 +26,9 @@ def parse_graph(text: str) -> dict:
 def validate(graph: dict) -> None:
     """Preflight the parsed graph and raise ValueError with a clear message on the common
     hand-authoring mistakes — otherwise a missing `id` is a bare KeyError, a duplicate id
-    silently overwrites (masking a typo), and a dep naming an undefined node blocks that
-    node forever looking like a real prerequisite. One strict preflight beats three
+    silently overwrites (masking a typo), a dep naming an undefined node blocks that
+    node forever looking like a real prerequisite, and a mistyped status (`"don"`) makes an
+    unfinished node read as not-done → wrongly READY. One strict preflight beats four
     silent failure modes."""
     if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
         raise ValueError('graph must be an object with a "nodes" list')
@@ -39,6 +41,10 @@ def validate(graph: dict) -> None:
             raise ValueError(f'node #{i} is missing a non-empty string "id"')
         if nid in ids:
             raise ValueError(f"duplicate node id: {nid!r}")
+        status = n.get("status", "todo")
+        if not isinstance(status, str) or status not in _STATUSES:  # str guard: [] / {} / null are unhashable/invalid
+            raise ValueError(
+                f"node {nid!r} has unknown status {status!r} (expected one of {sorted(_STATUSES)})")
         ids.add(nid)
     for n in graph["nodes"]:
         deps = n.get("deps", [])
@@ -121,6 +127,14 @@ def _self_test() -> int:
     ok.append(("validate: duplicate id → clear error", _bad({"nodes": [{"id": "x"}, {"id": "x"}]}, "duplicate")))
     ok.append(("validate: dangling dep → clear error", _bad({"nodes": [{"id": "a", "deps": ["ghost"]}]}, "undefined")))
     ok.append(("validate: nodes not a list → clear error", _bad({"nodes": "nope"}, "nodes")))
+    ok.append(("validate: typo'd status → clear error (not a silent READY)",
+               _bad({"nodes": [{"id": "a", "status": "don", "deps": []}]}, "unknown status")))
+    ok.append(("validate: absent status defaults to todo (accepted)",
+               validate({"nodes": [{"id": "a", "deps": []}]}) is None))
+    ok.append(("validate: non-string status ([]) → clear error, not a TypeError traceback",
+               _bad({"nodes": [{"id": "a", "status": [], "deps": []}]}, "unknown status")))
+    ok.append(("validate: null status → clear error, not a TypeError traceback",
+               _bad({"nodes": [{"id": "a", "status": None, "deps": []}]}, "unknown status")))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

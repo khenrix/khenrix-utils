@@ -1,17 +1,21 @@
 {
   "skill": "mikado-graph",
-  "source_hash": "0d7ca9599901c5291be55b7a09127184198c0cbf81bbba6958d9080db6e021b9",
-  "eval_set_hash": "0efd3b20cc08f0dbe23ab02c10d4c74010445c007a2b9bbd0470c7194257b7a8",
+  "source_hash": "63cf77980c39701962dce2fd8416f15852600d125af32964a70a3aa6200df3fd",
+  "eval_set_hash": "b80e13c3f6578772d10d7c5ed3d67c7c0abc463fd0d91076b64580fae55405c2",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0416,
-  "blind_winner": "tie",
+  "delta_pass_rate": 0.0695,
+  "blind_winner": "with_skill",
   "provenance": "eval",
   "models": {
     "claude": "claude-opus-4-8",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.5 Flash (High)",
     "judge": "claude-opus-4-8"
   }
 }
