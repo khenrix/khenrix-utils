@@ -9,9 +9,13 @@
 # Detection rules that matter:
 #   - repo-ness via `git rev-parse --git-dir`, NEVER `[ -d .git ]`
 #     (a linked worktree's .git is a FILE)
-#   - `ahead` covers ALL local branches AND a detached HEAD. `git worktree add
-#     <path> <commit>` leaves a DETACHED head, and commits made there are
-#     reachable from no branch at all -- `--branches` alone cannot see them.
+#   - `ahead` covers EVERY local ref (not just branches) AND a detached HEAD.
+#     `git worktree add <path> <commit>` leaves a DETACHED head, and a commit can
+#     also survive on a tag or an arbitrary `refs/archive/...` ref after its
+#     branch is deleted -- `--branches` alone sees none of those. See unpushed().
+#   - a repo-like thing git REFUSES to open is labelled `broken-*`, never dropped
+#     and never silently skipped. Dropping it is a false clean; that is the whole
+#     failure mode this gate exists to prevent.
 #   - flags are independent booleans; a dir can carry several
 #
 # Exit codes:
@@ -147,7 +151,19 @@ classify() {
     # gitdir pointer), not a plain directory. The remediation for `not-a-repo`
     # is `git init`, which would corrupt it -- so it gets its own label that no
     # consumer can mistake for an empty folder.
-    if [ -f "$d/.git" ]; then printf 'broken-worktree'; else printf 'not-a-repo'; fi
+    if [ -f "$d/.git" ]; then printf 'broken-worktree'; return; fi
+    # I7: likewise a BARE repo git refuses to open. It has no `.git` entry at
+    # all, so without this it fell through to `not-a-repo` -- or, before the
+    # `--is-bare-repository` guard was dropped from candidates(), was dropped
+    # from the scan entirely and produced exit 0 while its objects sat on disk.
+    # A uid/`safe.directory` mismatch is the realistic cause AND is exactly what
+    # a WSL distro migration produces, so this is the likeliest corruption here,
+    # not a contrived one. Structural signature only -- git is by definition
+    # unavailable as the authority once it has refused to open the thing.
+    if [ -d "$d/objects" ] && [ -d "$d/refs" ] && [ -f "$d/HEAD" ]; then
+      printf 'broken-bare-repo'; return
+    fi
+    printf 'not-a-repo'
     return
   fi
 
@@ -190,14 +206,36 @@ classify() {
 
 unpushed() {  # commits present locally but on no remote; one sha per line
   local d="$1"
+  local -a lrefs=()
+  # C4: every LOCAL ref, not just refs/heads/. Three distinct kinds of local-only
+  # work live outside refs/heads/, and `--branches` sees none of them:
+  #   * a commit reachable only from a TAG -- commit on a topic branch, `git tag
+  #     keepme`, checkout main, delete the branch. On no branch, not HEAD, on no
+  #     remote: previously zero rows and exit 0.
+  #   * a commit under an arbitrary ref such as refs/archive/... written by
+  #     `git update-ref` -- same invisibility.
+  #   * a DETACHED HEAD (C1), handled by the second walk below.
+  # Enumerating refs covers the first two; `--branches --tags` would have covered
+  # only the tag case and left refs/archive/... silently uncovered.
+  #
+  # refs/stash is the ONE deliberate exclusion, and the reason `--all` is wrong
+  # here: a stash commit drags in its index/untracked parent commits, which on
+  # this machine gave ~/git/fairshare a spurious `ahead 2 unpushed` that was
+  # nothing but its own stash. A false alarm erodes trust in a blocking gate.
+  # Nothing is lost: a repo holding a stash already reports the INDEPENDENT
+  # `has-stash` flag, so it is still unsafe and still reported.
+  mapfile -t lrefs < <(git -C "$d" for-each-ref --format='%(refname)' 2>/dev/null \
+    | grep -Ev '^refs/(remotes|stash)($|/)')
   {
-    # any commit on any local branch that no remote has
-    git -C "$d" rev-list --branches --not --remotes 2>/dev/null
+    [ ${#lrefs[@]} -gt 0 ] && git -C "$d" rev-list "${lrefs[@]}" --not --remotes 2>/dev/null
     # C1: ...plus commits reachable ONLY from HEAD. A detached HEAD (which is
     # what `git worktree add <path> <commit>` produces, and this machine has
-    # three worktrees) is in refs/heads/ nowhere, so --branches walks straight
-    # past it and the repo reports clean while holding unpushed work.
-    git -C "$d" rev-list HEAD --not --branches --remotes 2>/dev/null
+    # three worktrees) is in refs/heads/ nowhere, so the ref walk above misses
+    # it. Kept as a SEPARATE rev-list rather than appended to "${lrefs[@]}": in a
+    # repo whose HEAD is unborn, naming HEAD makes rev-list fail outright and
+    # discard the ref walk's output with it -- failing OPEN, the one direction
+    # this gate must never fail.
+    git -C "$d" rev-list HEAD --not --remotes 2>/dev/null
   } | sort -u
 }
 
@@ -226,9 +264,20 @@ candidates() {
         'h '*)
           # Confirm rather than trust the filename: a stray file called HEAD is
           # not a repo, and a bare repo's own logs/HEAD would otherwise nominate
-          # its logs/ directory. git itself is the authority (never [ -d .git ]).
+          # its logs/ directory. The STRUCTURAL check is the whole confirmation.
+          #
+          # I7: there used to be a second `--is-bare-repository || continue`
+          # guard here, and it made this path fail OPEN while every other path
+          # fails closed. Anything git refuses to open -- a uid/`safe.directory`
+          # mismatch, which is precisely what a WSL migration produces -- was
+          # silently dropped, so a bare repo holding the only copy of a commit
+          # yielded zero rows and exit 0. The same corruption on a NON-bare repo
+          # correctly reported `not-a-repo` and exit 1; this path was the
+          # outlier. Nominating it unconditionally lets classify() label it
+          # `broken-bare-repo` instead. The structural check alone already
+          # rejects every noise case (logs/, refs/, objects/, a stray HEAD file),
+          # and adds zero rows on the real machine.
           [ -d "$d/objects" ] && [ -d "$d/refs" ] || continue
-          [ "$(git -C "$d" rev-parse --is-bare-repository 2>/dev/null)" = true ] || continue
           printf '%s\n' "$d" ;;
       esac
     done < <(find "$r" -mindepth 1 -maxdepth "$MAXDEPTH" \

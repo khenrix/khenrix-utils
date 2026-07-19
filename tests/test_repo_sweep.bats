@@ -206,6 +206,95 @@ detail_for() {  # $1 = exact path -> that row's detail field
   [ -z "$(flags_for "$bare/logs")" ]
 }
 
+@test "a bare repo git REFUSES to open is labelled, never dropped" {
+  # I7: the bare-discovery path used to `continue` past anything
+  # `--is-bare-repository` rejected, so it failed OPEN while every other path
+  # fails closed. A uid/safe.directory mismatch -- what a WSL distro migration
+  # produces -- made a bare repo holding the ONLY copy of a commit yield zero
+  # rows and exit 0. core.repositoryformatversion is the deterministic stand-in:
+  # both make git refuse to open the repo, which is the condition under test.
+  d=$(mkrepo anchor)                # readable, clean: the scan is otherwise fine
+  mkremote "$d" anchor-bare.git
+  mkdir -p "$FIXT/archive"
+  bare="$FIXT/archive/only.git"
+  git init -q --bare "$bare"
+  wc="$BATS_TEST_TMPDIR/wc"; git clone -q "$bare" "$wc" 2>/dev/null
+  gitq "$wc" commit -q --allow-empty -m "ONLY COPY"
+  git -C "$wc" push -q origin HEAD:refs/heads/main
+  git -C "$bare" config core.repositoryformatversion 99   # git now refuses it
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [ "$(flags_for "$bare")" = "broken-bare-repo" ]
+  [ "$status" -eq 1 ]
+  # ...and it must NOT be mistaken for an empty folder: the remediation for
+  # not-a-repo is `git init`, which would overwrite these objects.
+  [[ "$(flags_for "$bare")" != *not-a-repo* ]]
+}
+
+@test "commit reachable only from a TAG is flagged ahead" {
+  # C4: unpushed() walked --branches + HEAD only. Commit on a topic branch, tag
+  # it, delete the branch -- the commit is on no branch, is not HEAD, and no
+  # remote has it, so the repo reported clean while holding the only copy.
+  d=$(mkrepo tagonly)
+  mkremote "$d" tagonly-bare.git
+  git -C "$d" checkout -q -b topic
+  gitq "$d" commit -q --allow-empty -m "TAGGED WORK"
+  git -C "$d" tag keepme
+  git -C "$d" checkout -q main
+  git -C "$d" branch -q -D topic
+  [ -z "$(git -C "$d" branch --contains keepme 2>/dev/null)" ]  # on no branch
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [[ "$(flags_for "$d")" == *ahead* ]]
+  [ "$(detail_for "$d")" = "1 unpushed" ]
+}
+
+@test "commit under an arbitrary non-branch non-tag ref is flagged ahead" {
+  # The residual gap `--branches --tags` would have left: `git update-ref` can
+  # park a commit under any refs/ namespace at all.
+  d=$(mkrepo archref)
+  mkremote "$d" archref-bare.git
+  git -C "$d" checkout -q -b topic
+  gitq "$d" commit -q --allow-empty -m "ARCHIVED WORK"
+  sha=$(git -C "$d" rev-parse HEAD)
+  git -C "$d" checkout -q main
+  git -C "$d" branch -q -D topic
+  git -C "$d" update-ref refs/archive/2026 "$sha"
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [[ "$(flags_for "$d")" == *ahead* ]]
+  [ "$(detail_for "$d")" = "1 unpushed" ]
+}
+
+@test "a stash does NOT inflate the ahead count with its own internals" {
+  # The reason unpushed() enumerates refs minus refs/stash rather than using
+  # --all: a stash commit drags in its index/untracked parents, which gave
+  # ~/git/fairshare a spurious `ahead 2 unpushed` that was only its own stash.
+  # A stashed repo is still reported -- via the independent has-stash flag.
+  d=$(mkrepo stashonly)
+  mkremote "$d" stashonly-bare.git
+  echo change > "$d/f"; git -C "$d" add f
+  gitq "$d" stash -q
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [[ "$(flags_for "$d")" == *has-stash* ]]
+  [[ "$(flags_for "$d")" != *ahead* ]]
+  [ -z "$(detail_for "$d")" ]
+}
+
+@test "a watchlisted EXPECT_DIRS entry that is not a repo is reported" {
+  # REPO_SWEEP_EXPECT_DIRS was only ever UNSET in this suite, so the entire
+  # EXPECT_DIRS enumeration in candidates() was untested: deleting it left the
+  # suite green while silently dropping ~/bin and ~/exercism from the real run.
+  # EXPECT_DIRS names EXACT directories, unlike EXPECT_PARENTS which enumerates
+  # children -- so the fixture is deliberately NOT a child of any watched parent.
+  d=$(mkrepo anchor)                # keeps the scan non-empty and otherwise clean
+  mkremote "$d" anchor-bare.git
+  mkdir -p "$FIXT/loose/expected" "$FIXT/loose/sibling"
+  export REPO_SWEEP_EXPECT_DIRS="$FIXT/loose/expected"
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [ "$(flags_for "$FIXT/loose/expected")" = "not-a-repo" ]
+  [ "$status" -eq 1 ]
+  # Scoping still holds: a sibling that is NOT on the list stays unreported.
+  [ -z "$(flags_for "$FIXT/loose/sibling")" ]
+}
+
 @test "a stray file named HEAD does not nominate its directory as a repo" {
   # Bare-repo discovery keys off HEAD files, so it must CONFIRM with git rather
   # than trust the filename. Without that check any directory holding an
