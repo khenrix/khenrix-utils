@@ -43,7 +43,8 @@ set -uo pipefail   # deliberately NOT -e: keep classifying past a failure
 # Every direct child of these directories is expected to be a repo:
 EXPECT_PARENTS=("$HOME/git")
 # These exact directories are expected to be repos:
-EXPECT_DIRS=("$HOME/wedding" "$HOME/exercism" "$HOME/bin" "$HOME/docs")
+# ~/bin deliberately absent: it holds only a re-downloadable binary, never work.
+EXPECT_DIRS=("$HOME/wedding" "$HOME/exercism" "$HOME/docs")
 # ---------------------------------------------------------------------------
 # Test hooks: colon-separated overrides for the two lists above. Unset in
 # normal use; the .bats suite sets them to point at its fixture tree.
@@ -63,7 +64,14 @@ ROOTS_EXPLICIT=0
 # system logs -- so they are noise in a sweep for at-risk USER work. They are
 # still captured by the home archive via ~/.gemini; excluding them here only
 # affects reporting.
-EXCLUDE_RE='/(node_modules|\.venv|\.cache|\.npm|\.tmp/plugins|\.gemini/antigravity-cli/brain)(/|$)'
+#
+# The trailing group covers per-tool session state that lands inside the scan
+# roots: agent session logs (.playwright-mcp, .antigravitycli, .cursor) and
+# regenerable plugin checkouts (plugins/cache/temp_git_*). All are archived with
+# $HOME; excluding them only affects reporting. NOTE .cursor also holds stale
+# worktree REGISTRATIONS -- those are still visible via `git worktree list` in
+# the owning repo, which is what Plan 4's restoration step reads.
+EXCLUDE_RE='/(node_modules|\.venv|\.cache|\.npm|\.tmp/plugins|\.gemini/antigravity-cli/brain|\.playwright-mcp|\.antigravitycli|\.cursor|plugins/cache/temp_git_[^/]*)(/|$)'
 # Generous: ordinary clones nest arbitrarily (I1 -- a clone at depth 3 under a
 # clean outer repo used to be invisible), and linked worktrees live at e.g.
 # <repo>/.claude/worktrees/<name>/.git which is already 5 deep. Cost is low
