@@ -97,16 +97,30 @@ esac
 norm() { local p="$1"; while [ "$p" != "/" ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done; printf '%s' "$p"; }
 for i in "${!ROOTS[@]}"; do ROOTS[$i]=$(norm "${ROOTS[$i]}"); done
 
-# I2: a named root that does not exist, or that we cannot read, is a scan
-# error -- not an empty-but-clean result. Default roots are allowed to be
-# absent (not every machine has ~/.gemini); if they ALL are, the zero-candidate
-# check below still catches it.
-if [ "$ROOTS_EXPLICIT" -eq 1 ]; then
-  for r in "${ROOTS[@]}"; do
-    [ -d "$r" ] || die "root does not exist: $r"
-    { [ -r "$r" ] && [ -x "$r" ]; } || die "root is not readable: $r"
-  done
-fi
+# I2: a root that does not exist, or that we cannot read, is a scan error --
+# not an empty-but-clean result.
+#
+# (I6) This used to run only when --roots was passed, so the PRODUCTION
+# default-roots path validated nothing at all: an unreadable ~/git produced a
+# green gate. Existence stays conditional -- a NAMED root that is absent is a
+# typo, while a default root may legitimately be absent (not every machine has
+# ~/.gemini) -- but READABILITY is now enforced on both paths. An existing root
+# we cannot open is never safe to treat as empty.
+for r in "${ROOTS[@]}"; do
+  if [ ! -d "$r" ]; then
+    [ "$ROOTS_EXPLICIT" -eq 1 ] && die "root does not exist: $r"
+    continue
+  fi
+  { [ -r "$r" ] && [ -x "$r" ]; } || die "root is not readable: $r"
+done
+
+# (I6) Unreadable subtrees found mid-walk are a scan error too. `find` reports
+# them on stderr; the old `2>/dev/null` discarded that, so a mode-000 directory
+# holding unpushed work scanned as clean. We test only whether stderr is
+# NON-EMPTY, never its wording: /usr/bin/find here is bfs, whose message format
+# differs from GNU find's, and neither is a stable interface.
+SCAN_ERR=$(mktemp)
+trap 'rm -f "$SCAN_ERR"' EXIT
 
 is_under() {  # $1 under-or-equal-to $2
   [ "$1" = "$2" ] && return 0
@@ -114,15 +128,16 @@ is_under() {  # $1 under-or-equal-to $2
   return 1
 }
 
-repo_expected() {  # is a repo expected to exist at $1?
-  local d="$1" p
-  for p in "${EXPECT_DIRS[@]}"; do [ "$d" = "$(norm "$p")" ] && return 0; done
-  for p in "${EXPECT_PARENTS[@]}"; do [ "$(dirname "$d")" = "$(norm "$p")" ] && return 0; done
-  # A directory holding a .git entry that git nonetheless rejects is corruption,
-  # never an ordinary folder -- always worth a row wherever it lives.
-  [ -e "$d/.git" ] && return 0
-  return 1
-}
+# NOTE (I4): there is deliberately no `repo_expected()` filter here any more.
+# `not-a-repo` scoping is enforced UPSTREAM, by candidates() simply never
+# nominating ordinary directories -- a candidate is a dir holding a .git entry,
+# a confirmed bare repo, or a watchlist entry, and nothing else. A post-hoc
+# filter re-testing the watchlist was therefore vacuous by construction: every
+# candidate that can classify `not-a-repo` satisfied it. Instrumenting the
+# branch confirmed it suppressed 0 rows across the whole suite and 0 on the
+# real machine, and deleting it left all tests green -- dead code behind a
+# passing test. Test "not-a-repo is reported inside the watchlist..." now
+# exercises the real mechanism instead.
 
 classify() {
   local d="$1"; local -a f=()
@@ -147,6 +162,12 @@ classify() {
   elif [ -f "$d/.git" ]; then
     f+=(submodule)
   fi
+
+  # I5: a BARE repo has no working tree, so `dirty`/`has-stash` can never fire
+  # for it and its remediation differs (you push FROM it; `git init` is wrong).
+  # Label it so a row like `archive/only-copy.git  no-remote` is not misread as
+  # an ordinary clone whose checkout lives somewhere safe.
+  [ "$(git -C "$d" rev-parse --is-bare-repository 2>/dev/null)" = true ] && f+=(bare)
 
   local remotes; remotes=$(git -C "$d" remote 2>/dev/null)
   if [ -z "$remotes" ]; then
@@ -181,20 +202,43 @@ unpushed() {  # commits present locally but on no remote; one sha per line
 }
 
 candidates() {
-  local r p
+  local r p line d
   for r in "${ROOTS[@]}"; do
     [ -d "$r" ] || continue
-    # Repo roots, at any depth: every .git entry (dir OR file) names one.
+    # ONE walk per root, emitting two kinds of hit:
+    #   g <dir>  dir holds a .git entry (dir OR file) -- an ordinary repo root
+    #   h <dir>  dir holds a file named HEAD -- a POSSIBLE bare repo top level
+    #
+    # I5 (REGRESSION): keying discovery off `.git` alone made every bare repo
+    # invisible. A bare repo has no `.git` entry at all, so a bare repo holding
+    # the only copy of a commit produced zero rows and exit 0 -- precisely the
+    # false clean this gate exists to prevent. Its top level instead holds HEAD,
+    # objects/ and refs/. Matching the HEAD *file* is name-independent, so it
+    # also catches bare repos NOT named *.git, which `-name '*.git'` would miss.
+    #
     # -printf '%h' instead of `xargs dirname` -- C3: xargs word-splits on
     # whitespace, so a worktree under ".../my repo/" was dropped entirely and a
     # truncated path got classified under the wrong label.
-    find "$r" -mindepth 1 -maxdepth "$MAXDEPTH" \
+    while IFS= read -r line; do
+      d="${line:2}"
+      case "$line" in
+        'g '*) printf '%s\n' "$d" ;;
+        'h '*)
+          # Confirm rather than trust the filename: a stray file called HEAD is
+          # not a repo, and a bare repo's own logs/HEAD would otherwise nominate
+          # its logs/ directory. git itself is the authority (never [ -d .git ]).
+          [ -d "$d/objects" ] && [ -d "$d/refs" ] || continue
+          [ "$(git -C "$d" rev-parse --is-bare-repository 2>/dev/null)" = true ] || continue
+          printf '%s\n' "$d" ;;
+      esac
+    done < <(find "$r" -mindepth 1 -maxdepth "$MAXDEPTH" \
       \( -type d \( -name node_modules -o -name .venv -o -name .cache -o -name .npm \) -prune \) -o \
-      \( -name .git -prune -printf '%h\n' \) 2>/dev/null
+      \( -name .git -prune -printf 'g %h\n' \) -o \
+      \( -type f -name HEAD -printf 'h %h\n' \) 2>>"$SCAN_ERR")
     # ...plus the places where a repo is EXPECTED, so a missing one is visible.
     for p in "${EXPECT_PARENTS[@]}"; do
       p=$(norm "$p")
-      is_under "$p" "$r" && find "$p" -mindepth 1 -maxdepth 1 -type d 2>/dev/null
+      is_under "$p" "$r" && find "$p" -mindepth 1 -maxdepth 1 -type d 2>>"$SCAN_ERR"
     done
     for p in "${EXPECT_DIRS[@]}"; do
       p=$(norm "$p")
@@ -204,6 +248,14 @@ candidates() {
 }
 
 mapfile -t CANDS < <(candidates)
+
+# (I6) A subtree we could not enter may hold anything, including the only copy
+# of some work. An incomplete scan is a scan error -- reporting it as clean is
+# the failure mode this gate exists to prevent, so this fails CLOSED.
+if [ -s "$SCAN_ERR" ]; then
+  die "scan incomplete, some paths could not be read:
+$(sed 's/^/  /' "$SCAN_ERR")"
+fi
 
 # I2: nothing scanned is a scan error, not "all clean".
 [ ${#CANDS[@]} -eq 0 ] && die "no candidates found under: ${ROOTS[*]}"
@@ -231,8 +283,6 @@ for d in "${CANDS[@]}"; do
 
   flags=$(classify "$d")
   [ "$flags" = clean ] && continue          # only report actionable rows
-  # I4: an ordinary non-repo directory outside the watchlist is not our problem.
-  [ "$flags" = not-a-repo ] && ! repo_expected "$d" && continue
   UNSAFE=1
   detail=""
   [[ "$flags" == *ahead* ]] && detail="$(unpushed "$d" | wc -l) unpushed"

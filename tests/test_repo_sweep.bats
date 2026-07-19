@@ -28,7 +28,13 @@ mkrepo() {  # $1 = name
 }
 
 mkremote() {  # $1 = repo dir, $2 = bare name -- pushes main with upstream set
-  local bare="$FIXT/$2"; git init -q --bare "$bare"
+  # The bare remote lives OUTSIDE $FIXT (the scanned root) on purpose. Bare
+  # repos are candidates now (I5), and a bare repo with no remote of its own is
+  # correctly unsafe -- so a remote parked inside the scan tree would add a row
+  # to every fixture that calls this and make "all candidates clean" untestable.
+  # A real clean clone's remote is on a server, not in the tree being migrated.
+  local bare="$BATS_TEST_TMPDIR/remotes/$2"; mkdir -p "$(dirname "$bare")"
+  git init -q --bare "$bare"
   git -C "$1" remote add origin "$bare"
   git -C "$1" push -q -u origin main
 }
@@ -131,7 +137,8 @@ detail_for() {  # $1 = exact path -> that row's detail field
   inner="$outer/a/b/inner"; mkdir -p "$inner"
   git -C "$inner" init -q
   gitq "$inner" commit -q --allow-empty -m init
-  bare="$FIXT/inner-bare.git"; git init -q --bare "$bare"
+  bare="$BATS_TEST_TMPDIR/remotes/inner-bare.git"   # outside $FIXT -- see mkremote
+  mkdir -p "$(dirname "$bare")"; git init -q --bare "$bare"
   git -C "$inner" remote add origin "$bare"
   git -C "$inner" push -q -u origin main
   gitq "$inner" commit -q --allow-empty -m unpushed
@@ -160,12 +167,83 @@ detail_for() {  # $1 = exact path -> that row's detail field
   [[ "$(flags_for "$par/vendor")" != *worktree* ]]
 }
 
-@test "non-repo directory outside the watchlist produces no row" {
+@test "not-a-repo is reported inside the watchlist and absent outside it" {
   # I4: flagging every ordinary folder buried the ~15 actionable rows under 3256.
-  mkrepo anchor >/dev/null          # keeps the scan non-empty (see exit-2 tests)
-  mkdir -p "$FIXT/ordinary"
+  #
+  # This test previously asserted only the ABSENT half, with setup() having
+  # unset the watchlist hooks -- so its fixture was never a candidate and the
+  # assertion held for the wrong reason. It passed unchanged when the filter it
+  # claimed to cover was deleted. Both halves are now exercised in one scan with
+  # the watchlist actually pointed at the fixture, so the reported half fails if
+  # scoping is over-tightened and the absent half fails if it is loosened.
+  mkdir -p "$FIXT/watched/missing" "$FIXT/elsewhere/ordinary"
+  export REPO_SWEEP_EXPECT_PARENTS="$FIXT/watched"
   run "$SWEEP" --format tsv --roots "$FIXT"
-  [ -z "$(flags_for "$FIXT/ordinary")" ]
+  [ "$(flags_for "$FIXT/watched/missing")" = "not-a-repo" ]
+  [ -z "$(flags_for "$FIXT/elsewhere/ordinary")" ]
+}
+
+@test "bare repo nested below the scan root is found, never invisible" {
+  # REGRESSION: candidates() emitted only the dirname of each .git entry, and a
+  # bare repo HAS no .git entry -- so a bare repo holding the only copy of a
+  # commit produced zero rows and exit 0. Reviewer's fixture shape: a clean
+  # pushed repo beside a bare repo one level deeper than any watchlist entry,
+  # which is the arrangement no other rule catches.
+  d=$(mkrepo clean)
+  mkremote "$d" clean-bare.git
+  mkdir -p "$FIXT/archive"
+  bare="$FIXT/archive/only-copy.git"
+  git init -q --bare "$bare"
+  wc="$BATS_TEST_TMPDIR/wc"; git clone -q "$bare" "$wc" 2>/dev/null
+  gitq "$wc" commit -q --allow-empty -m "UNIQUE WORK"
+  git -C "$wc" push -q origin HEAD:refs/heads/main
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [[ "$(flags_for "$bare")" == *bare* ]]
+  [[ "$(flags_for "$bare")" == *no-remote* ]]
+  [ "$status" -eq 1 ]
+  # The bare repo itself, not its internals: its own logs/HEAD must not nominate
+  # logs/ as a second, bogus candidate.
+  [ -z "$(flags_for "$bare/logs")" ]
+}
+
+@test "a stray file named HEAD does not nominate its directory as a repo" {
+  # Bare-repo discovery keys off HEAD files, so it must CONFIRM with git rather
+  # than trust the filename. Without that check any directory holding an
+  # unrelated file called HEAD becomes a candidate and, having no .git, reports
+  # not-a-repo -- reintroducing exactly the noise the I4 scoping removed.
+  d=$(mkrepo anchor)
+  mkremote "$d" anchor-bare.git
+  mkdir -p "$FIXT/notes"
+  echo "release notes" > "$FIXT/notes/HEAD"
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  [ -z "$(flags_for "$FIXT/notes")" ]
+  [ "$status" -eq 0 ]
+}
+
+@test "unreadable subtree inside a readable root is a scan error, not all-clean" {
+  # A directory we cannot enter may hold anything, including the only copy of
+  # some work -- here a repo with an unpushed commit. `find` reports it on
+  # stderr; discarding that turned a blind spot into a green gate.
+  d=$(mkrepo anchor)                # readable, clean: the scan is otherwise fine
+  mkremote "$d" anchor-bare.git
+  mkdir -p "$FIXT/locked/repo"
+  git -C "$FIXT/locked/repo" init -q
+  gitq "$FIXT/locked/repo" commit -q --allow-empty -m "UNPUSHED WORK"
+  chmod 000 "$FIXT/locked"
+  run "$SWEEP" --format tsv --roots "$FIXT"
+  chmod 755 "$FIXT/locked"          # before asserting, so a failure still cleans up
+  [ "$status" -eq 2 ]
+}
+
+@test "unreadable DEFAULT root is a scan error, not all-clean" {
+  # I2 validated named roots only, and only when --roots was passed explicitly,
+  # so the production default-roots path -- the one the migration gate actually
+  # runs -- validated nothing at all.
+  mkdir -p "$FIXT/home/git"
+  chmod 000 "$FIXT/home/git"
+  run env HOME="$FIXT/home" "$SWEEP" --format tsv
+  chmod 755 "$FIXT/home/git"
+  [ "$status" -eq 2 ]
 }
 
 @test "exit code is 1 when any unsafe flag present" {
