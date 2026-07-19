@@ -66,6 +66,11 @@ that CLI's own config, not here.
 ## Safety
 
 - Never commit secrets, tokens, or credentials. Reference env vars or on-disk paths.
+- Use the 1Password MCP for Developer Environments when available: it can mount secrets into
+  an authorized process without returning their values to the agent. It is not a website-login
+  credential API. For browser logins, ask the user to approve 1Password browser autofill; never
+  request, read, paste, print, or persist passwords, passkeys, recovery codes, cookies, or tokens.
+- Treat 1Password unlock/approval, OTP, CAPTCHA, and BankID as human-assisted checkpoints.
 - For destructive or outward-facing actions (deletes, pushes, deploys), confirm first
   unless explicitly authorised.
 - Treat `~/git` as the primary workspace; avoid writing outside it without reason.

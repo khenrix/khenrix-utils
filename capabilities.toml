@@ -47,6 +47,15 @@ transport = "stdio"
 command = "${HOME}/.local/bin/powershell.exe"
 args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
 
+# 1Password's local MCP is shipped by the Windows desktop app. On WSL, launch it through
+# the existing PowerShell interop shim so every CLI talks to the same user-approved app.
+# This MCP manages Developer Environments; it never returns vault item secrets.
+[mcp_servers.1password]
+platform = "windows"
+transport = "stdio"
+command = "${HOME}/.local/bin/powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''& "$env:LOCALAPPDATA\Microsoft\WindowsApps\1password-mcp.exe"''']
+
 # LinkedIn — portable, no secret in config; auth is an interactive per-machine login via the tool.
 # (Slack is deliberately NOT managed here: its XOXC/XOXD are per-machine, session-scoped, rotating
 # tokens that don't belong in a shared source of truth — add it by hand per machine.)
