@@ -53,7 +53,13 @@ fi
 FORMAT=tsv
 ROOTS=()
 ROOTS_EXPLICIT=0
-EXCLUDE_RE='/(node_modules|\.venv|\.cache|\.npm|\.tmp/plugins)(/|$)'
+# Antigravity CLI keeps one throwaway git repo per session under
+# .gemini/antigravity-cli/brain/<uuid> (441 of them / 227MB here). They are
+# machine-generated state -- every .user_uploaded/ is empty, contents are
+# system logs -- so they are noise in a sweep for at-risk USER work. They are
+# still captured by the home archive via ~/.gemini; excluding them here only
+# affects reporting.
+EXCLUDE_RE='/(node_modules|\.venv|\.cache|\.npm|\.tmp/plugins|\.gemini/antigravity-cli/brain)(/|$)'
 # Generous: ordinary clones nest arbitrarily (I1 -- a clone at depth 3 under a
 # clean outer repo used to be invisible), and linked worktrees live at e.g.
 # <repo>/.claude/worktrees/<name>/.git which is already 5 deep. Cost is low
