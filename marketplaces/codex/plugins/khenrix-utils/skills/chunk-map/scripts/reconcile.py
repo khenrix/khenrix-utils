@@ -875,7 +875,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Reconcile a CLI's config toward capabilities.toml")
     ap.add_argument("--cli", choices=CLIS)
-    ap.add_argument("--all", action="store_true", help="review every CLI (read-only)")
+    ap.add_argument("--all", action="store_true", help="operate on every CLI (read-only unless --apply is also given)")
     ap.add_argument("--status", action="store_true", help="read-only review (default)")
     ap.add_argument("--apply", action="store_true", help="add missing declared entries")
     ap.add_argument("--update-drift", action="store_true", help="also re-apply drifted managed entries")
@@ -883,8 +883,11 @@ def main(argv=None):
 
     caps = load_caps()
     if args.all or not args.cli:
+        # --apply/--update-drift must propagate; hardcoding False here made
+        # `reconcile.py --apply --all` a silent no-op (bootstrap-machine.sh:88).
+        eff_apply = args.apply and not args.status
         for c in CLIS:
-            reconcile(c, caps, apply=False, update_drift=False)
+            reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift)
         return 0
     reconcile(args.cli, caps, apply=args.apply and not args.status, update_drift=args.update_drift)
     return 0
