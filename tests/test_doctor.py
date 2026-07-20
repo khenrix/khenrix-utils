@@ -14,6 +14,7 @@ import pathlib
 import shlex
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -651,7 +652,12 @@ def _mcp_ps(*responses):
     """
     # bash, not sh: dash's builtin echo expands backslash escapes, which would
     # mangle 'C:\\Program Files\\nodejs\\node.exe' into three lines at the \\n.
-    body = "\n".join("echo " + shlex.quote(r) for r in responses)
+    return _mcp_ps_raw("\n".join("    echo " + shlex.quote(r) for r in responses))
+
+
+def _mcp_ps_raw(body):
+    """_mcp_ps with an arbitrary shell body for the MCP branch, so a test can
+    make the server behave differently per attempt."""
     return f"""#!/usr/bin/env bash
 cmd=""
 while [ $# -gt 0 ]; do
@@ -662,7 +668,9 @@ case "$cmd" in
   *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
   *"Get-Command npx.cmd"*) echo 'NPX={NPX_RESOLVED}' ;;
   *"{NPX_RESOLVED}"*)
-    cat > /dev/null
+    while IFS= read -r line; do
+      case "$line" in *tools/list*) break ;; esac
+    done
 {body}
     ;;
 esac
@@ -682,11 +690,41 @@ TOOLS_EMPTY = '{"result":{"tools":[]},"jsonrpc":"2.0","id":2}'
 def test_mcp_check_rejects_an_initialize_only_response(tmp_path):
     """The initialize reply advertises `"tools":{"listChanged":true}` in its
     capabilities. A substring search for '"tools"' therefore passes even when
-    tools/list never answered -- this test pins the parsed behaviour."""
+    tools/list never answered -- this test pins the parsed behaviour.
+
+    NOT-PASS rather than FAIL, since the flake fix: a server that answered
+    `initialize` and then went quiet is the exact signature the real 1Password
+    MCP produced ~1 run in 13 while being perfectly healthy, so it is reported
+    UNPROVEN. The trap this test exists for is unchanged -- the substring bug
+    would report PASS here, and PASS is what it asserts against."""
     r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
             env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_ONLY)))})
     c = checks_of(r)["mcp-chrome-devtools"]
-    assert c["status"] == "FAIL", c
+    assert c["status"] != "PASS", "a tools/list that never answered was certified"
+    assert c["status"] == "SKIP", c
+    assert "UNPROVEN" in c["detail"], "the reader must be told which it was"
+
+
+def test_chrome_devtools_shares_the_retrying_probe(tmp_path):
+    """REQUIREMENT: the flake lived in the SHARED helper, so chrome-devtools was
+    exposed to it too. Fixing it in one caller and not the other would leave the
+    same defect behind a different name. This drives the chrome-devtools check
+    through a server that fails the way the real 1Password one did, twice, and
+    succeeds on the third attempt."""
+    log = tmp_path / "attempts"
+    mcp_body = f"""    n=0
+    [ -f {shlex.quote(str(log))} ] && read n < {shlex.quote(str(log))}
+    n=$((n+1))
+    echo "$n" > {shlex.quote(str(log))}
+    if [ "$n" -ge 3 ]; then
+      echo {shlex.quote(INIT_OK)}
+      echo {shlex.quote(TOOLS_TWO)}
+    fi"""
+    r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps_raw(mcp_body)))})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "PASS", c
+    assert log.read_text().strip() == "3", "the shared probe did not retry"
 
 
 def test_mcp_check_passes_on_a_non_empty_tools_list(tmp_path):
@@ -734,7 +772,9 @@ case "$cmd" in
   *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
   *"Get-Command npx.cmd"*) echo 'NPX={NPX_RESOLVED}' ;;
   *"{NPX_RESOLVED}"*)
-    cat > /dev/null
+    while IFS= read -r line; do
+      case "$line" in *tools/list*) break ;; esac
+    done
     echo {shlex.quote(INIT_OK)}
     echo {shlex.quote(TOOLS_TWO)}
     ;;
@@ -1196,12 +1236,106 @@ done
 exit 0
 """
 
-# Configured, launches, answers nothing -- a dead MCP.
+# Configured, launches, and dies saying why -- a PROVEN-broken MCP. It does not
+# wait for EOF first: the probe now holds stdin open (see the MCP section of
+# doctor.py), so a fixture that blocks on `cat > /dev/null` would be testing the
+# client's grace period rather than a dead server.
 MCP_DEAD = """#!/bin/sh
-cat > /dev/null
 echo "1password-mcp: cannot reach the desktop app" >&2
 exit 1
 """
+
+# THE FLAKE, REPRODUCED. The real 1Password server answered `initialize` and
+# then exited 0 without answering tools/list -- rc=0, empty stderr, 0.26s -- on
+# 3 of 40 doctor runs. This fixture does exactly that for every attempt before
+# `succeed_on`, and completes the handshake on that attempt, so a test can pin
+# both halves: one unanswered probe must not FAIL, and a retry must be able to
+# recover. The counter file records how many times it was actually launched.
+#
+# SHELL BUILTINS ONLY (`read`, `[`, `echo`) -- no `cat`. op_check REPLACES $PATH
+# with an empty directory, which the MCP inherits, so a `cat` here silently
+# fails and the counter reads 0 every time: the fixture would report "launched
+# once" no matter how many times it really ran, and the retry test would fail
+# against a probe that was retrying correctly.
+MCP_FLAKY_TEMPLATE = """#!/bin/sh
+n=0
+[ -f COUNTER ] && read n < COUNTER
+n=$((n+1))
+echo "$n" > COUNTER
+saw_init=0
+while IFS= read -r line; do
+  case "$line" in
+    *notifications/initialized*) saw_init=1 ;;
+    *initialize*) echo '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}' ;;
+    *tools/list*)
+      if [ "$n" -ge SUCCEED_ON ] && [ "$saw_init" = 1 ]; then
+        echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_environments"},{"name":"authenticate"}]}}'
+      fi
+      exit 0
+      ;;
+  esac
+done
+exit 0
+"""
+
+# Launches, speaks nothing at all, and never exits: the case the retry budget
+# has to BOUND rather than answer.
+MCP_SILENT = """#!/bin/sh
+while IFS= read -r line; do :; done
+sleep 300
+"""
+
+
+# The OTHER transient shape, and the one that survived the first fix: the server
+# dies at startup with a diagnostic instead of going quiet. One such death is
+# not proof that 1Password is unusable -- a FAIL still surfaced once in ~40 runs
+# on this healthy machine after the stdin race was closed -- so it is retried,
+# and only becomes a verdict when EVERY attempt does it.
+MCP_DIES_TEMPLATE = """#!/bin/sh
+n=0
+[ -f COUNTER ] && read n < COUNTER
+n=$((n+1))
+echo "$n" > COUNTER
+if [ "$n" -lt SUCCEED_ON ]; then
+  echo "1password-mcp: cannot reach the desktop app" >&2
+  exit 1
+fi
+saw_init=0
+while IFS= read -r line; do
+  case "$line" in
+    *notifications/initialized*) saw_init=1 ;;
+    *initialize*) echo '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}' ;;
+    *tools/list*)
+      if [ "$saw_init" = 1 ]; then
+        echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_environments"},{"name":"authenticate"}]}}'
+      fi
+      exit 0
+      ;;
+  esac
+done
+exit 0
+"""
+
+
+def _counted_mcp(tmp_path, name, template, succeed_on):
+    """(path, counter_path) for an MCP that succeeds only on attempt `succeed_on`."""
+    counter = tmp_path / f"{name}.count"
+    p = tmp_path / f"{name}.sh"
+    p.write_text(template
+                 .replace("COUNTER", shlex.quote(str(counter)))
+                 .replace("SUCCEED_ON", str(succeed_on)))
+    p.chmod(0o755)
+    return p, counter
+
+
+def mcp_flaky(tmp_path, name, succeed_on):
+    """An MCP that goes QUIET -- answers initialize, then exits 0 saying nothing."""
+    return _counted_mcp(tmp_path, name, MCP_FLAKY_TEMPLATE, succeed_on)
+
+
+def mcp_dies(tmp_path, name, succeed_on):
+    """An MCP that DIES at startup with a diagnostic on stderr."""
+    return _counted_mcp(tmp_path, name, MCP_DIES_TEMPLATE, succeed_on)
 
 
 def op_home(tmp_path, mcp_command=None, cli="claude"):
@@ -1301,7 +1435,12 @@ def test_the_mcp_probe_sends_the_initialized_notification(tmp_path):
 
 def test_onepassword_fails_when_both_are_configured_and_neither_works(tmp_path):
     """FAIL only when 1Password is clearly INTENDED and no path works, and the
-    detail must name every path tried and what each did."""
+    detail must name every path tried and what each did.
+
+    This MCP does not merely go quiet -- it exits non-zero with a diagnostic,
+    which is a VERDICT, not a missed answer. That distinction is the whole point
+    of the retry work: FAIL must still be reachable, or the fix would have
+    turned the check into decoration."""
     mcp = tmp_path / "mcp-dead.sh"
     mcp.write_text(MCP_DEAD)
     mcp.chmod(0o755)
@@ -1310,7 +1449,135 @@ def test_onepassword_fails_when_both_are_configured_and_neither_works(tmp_path):
     assert c["status"] == "FAIL", c
     assert "`op` CLI" in c["detail"], "must name the CLI path it tried"
     assert "1Password MCP (claude:1password)" in c["detail"], "must name the MCP entry"
-    assert "no tools/list response" in c["detail"], "must say what the MCP did"
+    assert "exited 1" in c["detail"], "must say what the MCP did"
+    assert "cannot reach the desktop app" in c["detail"], "must relay its diagnostic"
+
+
+# --- the flake: transient vs definitive ------------------------------------
+#
+# Measured before the fix: 3 FAILs in 40 consecutive full doctor runs on an
+# unchanged machine, with `claude mcp list` reporting ✔ Connected throughout.
+# The failing probe was never slow -- rc=0, empty stderr, ~0.26s, holding a
+# complete `initialize` reply and no tools/list. See the MCP section of
+# doctor.py for the root cause (this client closed stdin into a race).
+
+def test_a_single_unanswered_probe_does_not_produce_FAIL(tmp_path):
+    """REGRESSION, and the reason this work happened. One probe that goes quiet
+    is not evidence that 1Password is broken. A gate that FAILs ~1 run in 13 on
+    a healthy machine trains its reader to ignore failures, which destroys the
+    value of every other check in the file."""
+    mcp, counter = mcp_flaky(tmp_path, "never", succeed_on=99)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] != "FAIL", "an unanswered probe was reported as broken"
+    assert c["status"] == "SKIP", c
+    assert int(counter.read_text().strip()) > 1, "it gave up after one attempt"
+
+
+def test_the_unproven_detail_says_it_is_unproven_and_why(tmp_path):
+    """A reader who cannot tell proven-broken from no-verdict cannot act. The
+    detail must name the state, the path it tried, and what to do next."""
+    mcp, _ = mcp_flaky(tmp_path, "quiet", succeed_on=99)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert "UNPROVEN" in c["detail"], c
+    assert "neither confirmed working nor confirmed broken" in c["detail"], c
+    assert "Re-run" in c["detail"], "must tell the reader what to do"
+    assert "1Password MCP (claude:1password)" in c["detail"], "must name the entry"
+
+
+def test_a_late_answer_still_PASSes_because_the_probe_retries(tmp_path):
+    """RETRY, proven by counting launches: this server reproduces the real
+    failure twice and completes the handshake on the third attempt. A one-shot
+    probe reports SKIP here; only a retrying one reaches PASS."""
+    mcp, counter = mcp_flaky(tmp_path, "thirdtime", succeed_on=3)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "PASS", c
+    assert "via the MCP only" in c["detail"], "PASS must say WHICH path works"
+    assert counter.read_text().strip() == "3", "the probe did not retry"
+
+
+def test_a_server_that_answers_immediately_is_launched_exactly_once(tmp_path):
+    """The retry loop must not tax the healthy path: a server that answers first
+    time is never asked twice."""
+    mcp, counter = mcp_flaky(tmp_path, "prompt", succeed_on=1)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "PASS", c
+    assert "2 tools" in c["detail"], c
+    assert counter.read_text().strip() == "1", "a healthy server was probed twice"
+
+
+def test_a_server_that_never_speaks_is_UNPROVEN_and_stays_bounded(tmp_path):
+    """The other transient shape: not a quick quiet exit but a server that hangs
+    forever. It must reach UNPROVEN rather than FAIL, and the budget -- not the
+    server -- must decide when to stop. Driven at the helper so the timeouts can
+    be small; the status mapping is covered by the check-level tests above."""
+    mcp = tmp_path / "mcp-silent.sh"
+    mcp.write_text(MCP_SILENT)
+    mcp.chmod(0o755)
+    # budget=7 leaves no room for a second 5s attempt, so a probe that honours
+    # it stops at ~5s. One that ignores it runs all three (~18s with backoff),
+    # which is what the bound below catches.
+    t0 = time.monotonic()
+    tools, err, outcome = doctor.mcp_tools_over_stdio(
+        [str(mcp)], timeout=5, budget=7)
+    elapsed = time.monotonic() - t0
+    assert outcome == doctor.MCP_UNPROVEN, (outcome, err)
+    assert tools is None
+    assert "unproven after 1 attempt" in err, err
+    assert elapsed < 12, f"the budget did not bound a hanging server ({elapsed:.1f}s)"
+
+
+def test_a_transient_startup_death_is_retried_rather_than_failed(tmp_path):
+    """REGRESSION on the FIRST fix. Closing the stdin race removed the quiet
+    failures but a FAIL still appeared once in ~40 runs, because a server that
+    exits non-zero was being treated as a verdict from one sample. This server
+    dies once with a diagnostic and works the second time -- exactly that
+    residual -- and must end PASS, not FAIL."""
+    mcp, counter = mcp_dies(tmp_path, "diesonce", succeed_on=2)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "PASS", c
+    assert counter.read_text().strip() == "2", "a dying server was not retried"
+
+
+def test_a_server_that_dies_every_time_is_still_a_FAIL(tmp_path):
+    """The other half, and the one that keeps the check's teeth: retrying must
+    not turn a genuinely dead MCP into an unprovable one. Consistent
+    self-reported death across every attempt IS proof."""
+    mcp, counter = mcp_dies(tmp_path, "alwaysdies", succeed_on=99)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "FAIL", c
+    assert "on all 3 attempt(s)" in c["detail"], "must say it was retried"
+    assert "cannot reach the desktop app" in c["detail"], "must relay the diagnostic"
+    assert counter.read_text().strip() == "3", "gave up before the budget allowed"
+
+
+def test_a_proven_verdict_is_not_retried(tmp_path):
+    """Retrying a server that already gave an answer only makes the doctor
+    slower at reaching the same conclusion -- and an empty tool set IS an
+    answer."""
+    counter = tmp_path / "empty.count"
+    mcp = tmp_path / "mcp-empty.sh"
+    mcp.write_text(f"""#!/bin/sh
+n=0
+[ -f {shlex.quote(str(counter))} ] && read n < {shlex.quote(str(counter))}
+echo "$((n+1))" > {shlex.quote(str(counter))}
+while IFS= read -r line; do
+  case "$line" in
+    *tools/list*) echo '{{"jsonrpc":"2.0","id":2,"result":{{"tools":[]}}}}'; exit 0 ;;
+  esac
+done
+exit 0
+""")
+    mcp.chmod(0o755)
+    tools, err, outcome = doctor.mcp_tools_over_stdio([str(mcp)], timeout=10, budget=30)
+    assert outcome == doctor.MCP_BROKEN, (outcome, err)
+    assert "empty tool set" in err, err
+    assert counter.read_text().strip() == "1", "a definitive verdict was retried"
 
 
 @pytest.mark.skipif(not doctor.is_wsl(), reason="the boundary note only applies under WSL")

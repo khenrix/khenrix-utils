@@ -44,8 +44,11 @@ TWO INDEPENDENT AXES — do not conflate them:
     both were still dead. Destructiveness is a separate concern with a separate
     flag, so anyone mid-copy-paste opts out explicitly and knowingly.
 
-Every subprocess call goes through sh(), which refuses an unbounded timeout: a
-doctor that hangs is worse than one that fails.
+Every subprocess is bounded: a doctor that hangs is worse than one that fails.
+Nearly all of them go through sh(), which refuses an unbounded timeout. The one
+exception is the MCP probe, which needs to keep stdin open while it reads (see
+_mcp_probe_once — closing it early was a real flake) and so drives Popen
+directly; it carries its own deadline and always reaps the process.
 """
 from __future__ import annotations
 
@@ -61,6 +64,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zlib
 from pathlib import Path
@@ -85,7 +89,8 @@ def check(name, hardware=False, wsl_only=False, network=False, invasive=False):
 
 
 def sh(cmd, timeout=30, input=None, **kw):
-    """The only subprocess entry point. An unbounded timeout is a bug, not a default."""
+    """The subprocess entry point for every check but the MCP probe (see the
+    module docstring). An unbounded timeout is a bug, not a default."""
     if timeout is None:
         raise ValueError("sh() requires a bounded timeout")
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
@@ -524,23 +529,99 @@ def _no_shim():
 
 # --- MCP ------------------------------------------------------------------
 
-def mcp_tools_over_stdio(cmd, timeout, cwd=None, env=None):
-    """Speak MCP over stdio; return (tools, error) — exactly one is None.
+# WHY THIS PROBE RETRIES, AND WHY IT ALSO HOLDS stdin OPEN — measured, not guessed.
+#
+#     `onepassword-usable` flaked: 3 FAILs in 40 consecutive full runs on an
+#     unchanged machine, while `claude mcp list` reported the server ✔ Connected
+#     throughout. The obvious reading — "cold start through the Windows interop
+#     shim outran a tight timeout" — is WRONG, and the measurement is what says
+#     so. Every failing probe returned in ~0.26s with rc=0 and an EMPTY stderr,
+#     against a success p50 of 0.25s (min 0.25, max 0.28 over 85 probes).
+#     Nothing was ever slow. Widening the timeout would have changed nothing.
+#
+#     The stdout of a failing probe holds a complete `initialize` reply and
+#     nothing else. The cause is THIS CLIENT: writing the three messages with
+#     `subprocess.run(input=...)` closes stdin the instant the last byte lands,
+#     and the 1Password server (Rust, rmcp 1.1.0) races its EOF-triggered
+#     shutdown against dispatching the `tools/list` already sitting in its
+#     queue. A controlled A/B over identical Popen/reader machinery, varying
+#     ONLY when stdin closes, measured 9 failures in 50 closing immediately and
+#     0 in 50 holding it open. (The rate is load-dependent: 3/40 across full
+#     doctor runs, 4/47 isolated, 9/50 in the A/B. It is never zero.)
+#
+#     So the fix has two layers, and they are not interchangeable:
+#       1. Hold stdin open (_mcp_probe_once) — removes the race itself. This is
+#          also what a real MCP client does; stdio servers stream, they do not
+#          wait for EOF before answering.
+#       2. Retry with backoff (mcp_tools_over_stdio) — defence in depth for the
+#          conditions this client cannot control: a cold Windows-interop start,
+#          or the 1Password desktop app not granting a fresh connection promptly.
+#     Layer 2 alone would paper over a client bug while leaving the doctor slow
+#     and still occasionally wrong; layer 1 alone would leave a one-shot probe
+#     with no tolerance for a genuinely slow start — as the SECOND failure mode
+#     proved.
+#
+# THE SECOND FAILURE MODE, found by re-measuring instead of declaring victory.
+#     With layer 1 in place a FAIL still appeared once in 40 full runs, and it
+#     was a DIFFERENT shape: the server exited non-zero at startup rather than
+#     going quiet, so the probe classified it as a verdict from a single sample.
+#     400 isolated probes then produced zero failures, which is the useful clue
+#     — it only happens inside a FULL run, where the chrome-devtools check has
+#     just driven npx/Node on the Windows side. The load, not the server, is
+#     what makes 1Password refuse a fresh connection. So a non-zero exit is
+#     treated as retryable evidence rather than proof, and only becomes a
+#     verdict when EVERY attempt reports it. That keeps FAIL reachable for a
+#     genuinely dead MCP while a one-off startup death costs a 1s retry.
+#
+# WHY AN "UNPROVEN" OUTCOME EXISTS. A gate that FAILs on a healthy machine
+#     trains its reader to ignore failures, which destroys the value of every
+#     other check in this file — a flaky check is worse than no check. But the
+#     fix for a flaky FAIL is NOT a blanket PASS; that is the vacuous-green
+#     defect this repo has closed repeatedly. "The server never answered" and
+#     "the server is broken" are different claims, and only the second deserves
+#     FAIL. The third outcome says so out loud instead of rounding to whichever
+#     colour is convenient.
+MCP_OK = "ok"              # PROVEN WORKING: a non-empty tools list came back.
+MCP_BROKEN = "broken"      # PROVEN BROKEN: it launched and definitively refused.
+MCP_UNPROVEN = "unproven"  # NO VERDICT: it never finished the handshake.
+
+# Three attempts turn even the worst measured per-probe rate (18%) into ~0.6%,
+# and that is the SECOND line of defence: layer 1 already drove it to 0/50.
+# Backoff doubles from 1s. The observed failure is instant, so three attempts
+# plus backoff costs ~3s in the case that actually happens — not three timeouts.
+MCP_ATTEMPTS = 3
+MCP_BACKOFF = 1.0
+# Never start an attempt too short to mean anything: a 2s window that expires
+# would be recorded as evidence when it is only impatience.
+MCP_MIN_ATTEMPT = 5.0
+# How long stdin stays open while no reply has arrived. The race window is
+# ~0.26s here, so this is ~19x margin; afterwards stdin is closed anyway so a
+# server that only acts on EOF still gets one, and reading continues to the
+# attempt's deadline either way.
+MCP_STDIN_GRACE = 5.0
+
+
+def _mcp_probe_once(cmd, timeout, cwd=None, env=None):
+    """One MCP handshake. Returns (tools, error, outcome, retryable).
+
+    `retryable` is FALSE only when the server gave a WELL-FORMED ANSWER to
+    tools/list — a result or a JSON-RPC error. That is a verdict; asking again
+    only makes the doctor slower at hearing the same thing. Everything else,
+    INCLUDING a non-zero exit, is retried: after the stdin race was fixed a FAIL
+    still surfaced once in ~40 runs on this healthy machine, which is evidence
+    that this server can die transiently at startup, so "it exited 1" is not on
+    its own proof that 1Password is broken here. Consistency across attempts is
+    what promotes it to proof — see mcp_tools_over_stdio.
+
+    Deliberately NOT routed through sh(): sh() is subprocess.run(input=...),
+    whose stdin close is the race described above. The bound sh() exists to
+    enforce is kept — every path below observes the deadline and reaps the
+    process.
 
     Note the trap this avoids: the `initialize` reply advertises
     `"capabilities":{"tools":{"listChanged":true}}`, so a substring search for
     '"tools"' passes even when tools/list never answered. The response is parsed
-    and matched on the request id.
-
-    Shared by every MCP check on purpose. Two copies of this parser would mean
-    the trap could be closed in one and left open in the other.
-
-    `notifications/initialized` is REQUIRED, not ceremony. The spec says the
-    client sends it after `initialize`, and a strict server rejects everything
-    until it arrives: the 1Password MCP answers tools/list with
-    `ExpectedInitializedNotification` and nothing else, which reads exactly like
-    a dead server. chrome-devtools happens to be lenient, so omitting it looked
-    correct for as long as chrome-devtools was the only server probed."""
+    and matched on the request id."""
     payload = "\n".join([
         json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2024-11-05", "capabilities": {},
@@ -549,29 +630,145 @@ def mcp_tools_over_stdio(cmd, timeout, cwd=None, env=None):
         json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     ]) + "\n"
     try:
-        r = sh(cmd, input=payload, timeout=timeout, cwd=cwd, env=env)
-    except subprocess.TimeoutExpired:
-        return None, f"did not respond within {timeout}s"
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, cwd=cwd, env=env)
     except OSError as e:
-        return None, f"could not be launched ({type(e).__name__}: {e})"
+        return None, f"could not be launched ({type(e).__name__}: {e})", MCP_BROKEN, True
 
-    tools = None
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+    got, errs = {}, []
+    done = threading.Event()
+
+    def read_stdout():
         try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
-        if msg.get("id") == 2 and isinstance(msg.get("result"), dict):
-            tools = msg["result"].get("tools")
-    if tools is None:
-        return None, ("no tools/list response. "
-                      f"stderr: {(r.stderr or '').strip()[:200]}")
-    if not isinstance(tools, list) or not tools:
-        return None, "answered tools/list with an empty tool set"
-    return tools, None
+            for line in p.stdout:
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("id") != 2:
+                    continue
+                if isinstance(msg.get("result"), dict):
+                    got["tools"] = msg["result"].get("tools")
+                elif msg.get("error") is not None:
+                    got["rpc_error"] = str(msg["error"])[:200]
+                return
+        except (OSError, ValueError):
+            pass
+        finally:
+            # Set on EOF too, not only on an answer: a server that exits without
+            # replying ends the attempt at once rather than burning the whole
+            # timeout, which is what keeps the retries below cheap.
+            done.set()
+
+    def read_stderr():
+        try:
+            errs.append(p.stderr.read() or "")
+        except OSError:
+            pass
+
+    t_out = threading.Thread(target=read_stdout, daemon=True)
+    t_err = threading.Thread(target=read_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
+
+    deadline = time.monotonic() + timeout
+    try:
+        p.stdin.write(payload)
+        p.stdin.flush()
+    except OSError:
+        pass                       # died on write; the readers report why
+    # THE FIX. stdin stays open across the window in which the server dispatches
+    # what was just written. Closing it here is the race that caused the flake.
+    done.wait(min(MCP_STDIN_GRACE, timeout / 2.0))
+    try:
+        p.stdin.close()
+    except OSError:
+        pass
+    done.wait(max(0.0, deadline - time.monotonic()))
+
+    answered = done.is_set()
+    self_exited = p.poll() is not None
+    rc = p.returncode
+    if not self_exited:
+        p.terminate()
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+    t_out.join(2)
+    t_err.join(2)
+    stderr = "".join(errs).strip()
+    tail = f". stderr: {stderr[:200]}" if stderr else ""
+
+    # A well-formed answer to tools/list — result or error — is the one outcome
+    # worth nothing to repeat.
+    if "rpc_error" in got:
+        return None, f"rejected tools/list: {got['rpc_error']}{tail}", MCP_BROKEN, False
+    if "tools" in got:
+        tools = got["tools"]
+        if isinstance(tools, list) and tools:
+            return tools, None, MCP_OK, False
+        return None, f"answered tools/list with an empty tool set{tail}", MCP_BROKEN, False
+    if self_exited and rc:
+        # It ran and died on its own. Evidence of breakage, but not proof from a
+        # single sample: only if EVERY attempt does this does it become a verdict.
+        return None, f"exited {rc} without answering tools/list{tail}", MCP_BROKEN, True
+    if not answered:
+        return None, f"did not respond within {timeout:.0f}s{tail}", MCP_UNPROVEN, True
+    return None, ("closed the connection after `initialize` without answering "
+                  f"tools/list{tail}"), MCP_UNPROVEN, True
+
+
+def mcp_tools_over_stdio(cmd, timeout, cwd=None, env=None, budget=None,
+                         attempts=MCP_ATTEMPTS):
+    """Speak MCP over stdio; return (tools, error, outcome).
+
+    `timeout` bounds ONE attempt; `budget` bounds the whole call including
+    backoff, and defaults to a single attempt's worth. The doctor must not hang,
+    so no attempt starts that the remaining budget cannot cover.
+
+    Shared by every MCP check on purpose. Two copies of this parser would mean
+    the trap could be closed in one and left open in the other — and the flake
+    fixed above lived here, so both callers were exposed to it.
+
+    `notifications/initialized` is REQUIRED, not ceremony. The spec says the
+    client sends it after `initialize`, and a strict server rejects everything
+    until it arrives: the 1Password MCP answers tools/list with
+    `ExpectedInitializedNotification` and nothing else, which reads exactly like
+    a dead server. chrome-devtools happens to be lenient, so omitting it looked
+    correct for as long as chrome-devtools was the only server probed."""
+    deadline = time.monotonic() + (timeout if budget is None else budget)
+    tried, err, all_broken = 0, "no attempt was made", True
+    while tried < attempts:
+        remaining = deadline - time.monotonic()
+        if tried and remaining < MCP_MIN_ATTEMPT:
+            break
+        tried += 1
+        tools, err, outcome, retryable = _mcp_probe_once(
+            cmd, timeout=max(MCP_MIN_ATTEMPT, min(timeout, remaining)),
+            cwd=cwd, env=env)
+        if outcome == MCP_OK:
+            return tools, None, MCP_OK
+        all_broken = all_broken and outcome == MCP_BROKEN
+        if not retryable:
+            return None, err, outcome
+        wait = MCP_BACKOFF * (2 ** (tried - 1))
+        if tried < attempts and deadline - time.monotonic() > wait + MCP_MIN_ATTEMPT:
+            time.sleep(wait)
+    if all_broken:
+        # Every attempt reported its own death, the same way each time. Repeated
+        # self-reported failure IS proof; that is what makes FAIL still reachable
+        # rather than everything decaying to "unproven".
+        return None, f"{err} — on all {tried} attempt(s)", MCP_BROKEN
+    # Mixed or silent: the signature of a flake, not a verdict.
+    return None, f"{err} — unproven after {tried} attempt(s)", MCP_UNPROVEN
 
 
 @check("mcp-chrome-devtools", wsl_only=True, network=True)
@@ -597,9 +794,20 @@ def _mcp_chrome():
     cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
            f'& "{npx}" -y chrome-devtools-mcp@latest']
 
-    tools, err = mcp_tools_over_stdio(cmd, timeout=180, cwd=win_cwd())
-    if err:
+    # 180s per attempt covers a COLD `npx -y` that has to fetch the package;
+    # 240s total therefore buys one full cold start plus, when a probe fails
+    # fast (the flake signature — see the MCP section), several cheap retries.
+    # Retrying a genuine 180s timeout three times would be 9 minutes for no new
+    # information, which is why the bound is a budget and not an attempt count.
+    tools, err, outcome = mcp_tools_over_stdio(
+        cmd, timeout=180, budget=240, cwd=win_cwd())
+    if outcome == MCP_BROKEN:
         return "FAIL", f"chrome-devtools MCP {err}"
+    if outcome == MCP_UNPROVEN:
+        return "SKIP", (f"UNPROVEN — chrome-devtools MCP {err}. It is configured "
+                        "and launchable, so this run proved neither that it works "
+                        "nor that it is broken; re-run, and if it never answers "
+                        "treat it as broken.")
     return "PASS", f"chrome-devtools MCP returned {len(tools)} tools over stdio"
 
 
@@ -928,8 +1136,15 @@ OP_MCP_CONFIGS = (
 OP_MCP_NAME = re.compile(r"1password|onepassword", re.I)
 
 # Tight on purpose: the MCP is a local executable, so a slow answer is a broken
-# answer, and a doctor that hangs is worse than one that fails.
+# answer, and a doctor that hangs is worse than one that fails. 30s is ~115x the
+# measured p50 (0.25s) — generous for a cold Windows-interop start without ever
+# letting one server stall the run.
 OP_MCP_TIMEOUT = 30
+# The whole retried call, backoff included. The failure this budget exists for
+# is INSTANT, so the realistic worst case is ~3s (three fast failures + 1s + 2s
+# backoff); 75s only binds if the server also hangs, and caps that at one
+# 30s attempt, 1s, a second 30s attempt, and no room for a third.
+OP_MCP_BUDGET = 75
 OP_CLI_TIMEOUT = 20
 
 WSL_BOUNDARY = (
@@ -1052,23 +1267,24 @@ def _onepassword():
 
     cli_ok, cli_detail = op_cli_status(op)
 
-    mcp_ok, mcp_detail = False, "1Password MCP: not configured in any CLI"
+    mcp_ok, mcp_unproven = False, False
+    mcp_detail = "1Password MCP: not configured in any CLI"
     failures = []
     for labels, argv, env in entries:
         label = ", ".join(labels)
         # Only a Windows-side launcher wants /mnt/c; relocating a pure-Linux
         # subprocess would be an unexplained side effect (see win_cwd()).
         cwd = win_cwd() if "powershell.exe" in argv[0] else None
-        tools, err = mcp_tools_over_stdio(
-            argv, timeout=OP_MCP_TIMEOUT, cwd=cwd,
+        tools, err, outcome = mcp_tools_over_stdio(
+            argv, timeout=OP_MCP_TIMEOUT, budget=OP_MCP_BUDGET, cwd=cwd,
             env=dict(os.environ, **env) if env else None)
-        if err:
-            failures.append(f"1Password MCP ({label}) {err}")
-            continue
-        mcp_ok = True
-        mcp_detail = (f"1Password MCP ({label}) launched and answered tools/list "
-                      f"with {len(tools)} tools")
-        break
+        if outcome == MCP_OK:
+            mcp_ok = True
+            mcp_detail = (f"1Password MCP ({label}) launched and answered "
+                          f"tools/list with {len(tools)} tools")
+            break
+        failures.append(f"1Password MCP ({label}) {err}")
+        mcp_unproven = mcp_unproven or outcome == MCP_UNPROVEN
     if entries and not mcp_ok:
         mcp_detail = "; ".join(failures)
 
@@ -1082,6 +1298,18 @@ def _onepassword():
                         "`op run --` / `op read` are CLI features the MCP does not "
                         "provide, so op:// references cannot be resolved here until "
                         f"the CLI has its own auth. {cli_detail}")
+    if mcp_unproven:
+        # NOT a FAIL: the CLI is proven unusable, but the MCP never finished the
+        # handshake, so nothing was proven about it either way. Claiming
+        # "1Password is broken" on that evidence is the cry-wolf failure this
+        # file exists to avoid — and claiming PASS would be vacuous green.
+        return "SKIP", ("UNPROVEN — no path to 1Password could be PROVEN either "
+                        "way on this run. The MCP is configured and launchable "
+                        "but did not complete the handshake within the retry "
+                        f"budget, so it is neither confirmed working nor "
+                        f"confirmed broken. Tried: {cli_detail} | {mcp_detail}. "
+                        "Re-run the doctor; a server that never answers across "
+                        "runs is broken and should be investigated.")
     return "FAIL", ("1Password is configured here but NO path to it works. "
                     f"Tried: {cli_detail} | {mcp_detail}")
 
