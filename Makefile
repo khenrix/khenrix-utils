@@ -66,7 +66,12 @@ khenrix-refresh: ## Re-render + push the latest plugin/skill/engine into all ins
 
 refresh: khenrix-refresh ## Alias for khenrix-refresh
 
-verify: render doctor-test bats-test ## Validate manifests and skills without touching any CLI
+# council-test and eval-test are in the gate DELIBERATELY. Without them,
+# `make verify` went green on a change that removed mcp_merge's same-name
+# collision guard -- i.e. a change that silently overwrites the user's existing
+# MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
+# suites guarding destructive behaviour must be inside the gate, not beside it.
+verify: render doctor-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 

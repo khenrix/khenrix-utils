@@ -166,8 +166,7 @@ hand-copy (all of the above ships in this repo now).
 
 ## 5. Re-auth MCP secrets — the only truly-manual step left (never copy)
 
-- **google-drive** — drop `gcp-oauth.keys.json` in `~/.config/google-drive-mcp/`,
-  run its OAuth flow → `tokens.json`.
+
 - **vercel** — first run does a browser OAuth handshake.
 - **slack** — set `SLACK_MCP_XOXC_TOKEN` + `SLACK_MCP_XOXD_TOKEN` (from your Slack session).
 - **linkedin** — logs in via the tool (`uvx mcp-server-linkedin`).

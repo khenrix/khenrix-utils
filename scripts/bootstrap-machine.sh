@@ -6,7 +6,7 @@
 # plugins install at marketplace HEAD). Secrets/auth are provisioned by hand — see
 # docs/environment/auth-and-secrets.md. This script NEVER prints or stores a secret value.
 #
-# Ownership: the 5 shared MCPs (context7, vercel, google-drive, chrome-devtools, linkedin)
+# Ownership: the 4 shared MCPs (context7, vercel, chrome-devtools, linkedin)
 # are owned by khenrix reconcile (via `khenrix-setup`), NOT by this script. Bootstrap only
 # adds the parity additions (playwright / slack / codebase-memory-mcp on codex+agy) and the
 # one-time marketplace/plugin setup.
@@ -99,7 +99,8 @@ echo "== Claude MCP =="
 
 echo "== Codex (native XOR shared-MCP) =="
 # Native-preferred ONLY where reconcile does NOT own the capability: slack, github,
-# superpowers@openai-curated. google-drive stays the reconcile MCP (NO native drive plugin).
+# superpowers@openai-curated. (google-drive was decommissioned 2026-07-20 -- the native
+# claude.ai Drive MCP covers it, and the stdio one hardcoded an asdf node path.)
 # Parity MCP additions on codex: playwright, codebase-memory-mcp (NOT slack — slack is native).
 # Reproduce the active openaiDeveloperDocs HTTP MCP.
 # NOTE: confirm exact `codex mcp add` / `codex plugin install` non-interactive syntax at

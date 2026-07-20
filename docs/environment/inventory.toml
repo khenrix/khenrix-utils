@@ -178,7 +178,10 @@ codex = "present"
 agy = "present"
 
 [[mcp]]
-name = "google-drive"
+# DECOMMISSIONED 2026-07-20: redundant with the native claude.ai Drive MCP, and its
+# command hardcoded ~/.asdf/installs/nodejs/26.2.0/bin/node, which the mise migration
+# deletes. Removed from capabilities.toml and from all three live CLI configs.
+name = "google-drive-DECOMMISSIONED"
 transport = "stdio"
 owner = "reconcile"
 secret = true
