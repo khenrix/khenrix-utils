@@ -69,9 +69,13 @@ doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
 	elif command -v uvx >/dev/null 2>&1; then \
 		uvx --with pytest pytest -q $(DOCTOR_TESTS); \
 	else \
-		echo "  ⚠ doctor-test SKIPPED — $(DOCTOR_TESTS) needs pytest, which is not"; \
+		echo "  ✗ doctor-test CANNOT RUN — $(DOCTOR_TESTS) needs pytest, which is not"; \
 		echo "    importable by '$(PY)', and 'uvx' is not on PATH either."; \
 		echo "    Install uv (https://docs.astral.sh/uv/) or 'pip install pytest'."; \
+		echo "    Failing rather than exiting 0: a green 'verify' must never mean"; \
+		echo "    'the suite was skipped' — that is the exact defect doctor.py exists"; \
+		echo "    to catch, and it would hide it in our own gate."; \
+		exit 1; \
 	fi
 
 smoke-llm-council: ## Live smoke test of the council vs one real provider (costs tokens, needs auth)
