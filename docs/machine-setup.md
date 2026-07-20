@@ -23,9 +23,20 @@ per-machine = anything with a secret, a path, or an OS-specific shim.**
 
 ---
 
-## Prerequisites (install per machine)
+## 0. Get `git` and this repo
 
-Run **Tier 0 first** — it needs no credentials and works on a bare distro:
+Tier 0 lives *in* this repo and is what installs `git` — so on a genuinely bare
+distro one manual step comes first, and only one:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone git@github.com:khenrix/khenrix-utils.git ~/git/khenrix-utils
+cd ~/git/khenrix-utils
+```
+
+## 1. Prerequisites — run Tier 0
+
+It needs no credentials and is safe on a bare distro:
 
 ```bash
 ./scripts/bootstrap-tier0.sh --dry-run   # see the plan; mutates nothing
@@ -50,6 +61,16 @@ Still manual, because WSL cannot install them:
   resolves it (PATH → Program Files → Program Files (x86) → LOCALAPPDATA).
   Override with `WINDOWS_CHROME_PATH` if it lives somewhere exotic.
 
+Two separate doctor checks cover this bridge, and the distinction matters:
+`--only windows-chrome` proves the *browser* exists (it reads the version
+resource out of chrome.exe), while `--only windows-chrome-shim` proves the
+*shim can actually launch it* by pointing `WINDOWS_CHROME_PATH` at a throwaway
+recorder and asserting the URL arrives intact. The shim once spent its entire
+life unable to launch anything — an AV refuses `FromBase64String` next to
+`Start-Process` as a fileless-PowerShell signature — while the browser check
+reported PASS throughout, because Chrome did exist. Values now cross the
+boundary through `WSLENV`, never on the command line.
+
 Then, per machine:
 
 - **asdf** → Node (currently `v26.2.0`) — npx/node resolve through it
@@ -58,16 +79,17 @@ Then, per machine:
 - On native Linux/macOS: Tier 0 skips the Windows bridges; drop `chrome-devtools`
   and point `vercel`'s `BROWSER` at your real browser.
 
-## 1. Clone the git-synced repos
+## 2. Clone the remaining git-synced repos
+
+`khenrix-utils` is already cloned (step 0). The rest:
 
 ```bash
-git clone git@github.com:khenrix/khenrix-utils.git   ~/git/khenrix-utils
 git clone git@github.com:khenrix/obsidian-vault.git  ~/git/obsidian-vault   # private
 # + your project repos, e.g.:
 git clone <hunter remote> ~/git/hunter               # brings its .claude/skills along
 ```
 
-## 2. Install the Claude plugins
+## 3. Install the Claude plugins
 
 ```bash
 cd ~/git/khenrix-utils && make setup-claude          # khenrix marketplace + plugin
@@ -80,7 +102,7 @@ claude plugin marketplace add ~/git/obsidian-vault   # claude-obsidian lives in 
 #   typescript-lsp, pyright-lsp, security-guidance, playwright, claude-md-management
 ```
 
-## 3. Reconcile config — the big step (does almost everything now)
+## 4. Reconcile config — the big step (does almost everything now)
 
 Inside Claude Code, run **`/khenrix-setup`**. It diffs the live config against
 `capabilities.toml` and additively applies — **only when a value is absent, never
@@ -97,7 +119,7 @@ overriding your tuning** — all of:
 Review its table, approve. That's it — there's no longer a machine-local settings/hook to
 hand-copy (all of the above ships in this repo now).
 
-## 4. Re-auth MCP secrets — the only truly-manual step left (never copy)
+## 5. Re-auth MCP secrets — the only truly-manual step left (never copy)
 
 - **google-drive** — drop `gcp-oauth.keys.json` in `~/.config/google-drive-mcp/`,
   run its OAuth flow → `tokens.json`.

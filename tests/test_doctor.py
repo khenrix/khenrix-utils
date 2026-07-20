@@ -398,6 +398,129 @@ def test_windows_chrome_fails_when_the_path_has_no_version_resource(tmp_path):
     assert "version" in c["detail"].lower()
 
 
+# --- windows-chrome-shim --------------------------------------------------
+#
+# `windows-chrome` above asserts the BROWSER exists. These assert the SHIM can
+# drive it -- a different claim, and the one that was never made. The shim
+# spent its whole life unable to launch anything (the AV refuses
+# FromBase64String + Start-Process on one command line) while `windows-chrome`
+# reported PASS the entire time, because Chrome did exist.
+
+PS_TEMPPATH = """#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-Command" ]; then cmd="$2"; fi
+  shift
+done
+case "$cmd" in
+  *GetTempPath*) echo "$FAKE_WIN_TMP" ;;
+esac
+exit 0
+"""
+
+# wslpath stand-in: the fake "Windows temp" IS a real Linux directory here, so
+# both translations are the identity.
+WSLPATH_IDENTITY = """#!/usr/bin/env bash
+shift
+printf '%s\\n' "$1"
+"""
+
+
+def _shim_home(tmp_path, chrome_body):
+    """A $HOME carrying a temp-path-aware powershell.exe and a windows-chrome."""
+    home = fake_home(tmp_path, PS_TEMPPATH)
+    wc = home / ".local" / "bin" / "windows-chrome"
+    wc.write_text(chrome_body)
+    wc.chmod(0o755)
+    return home
+
+
+def _run_shim_check(tmp_path, home, extra_env=None):
+    wsl = bin_dir(tmp_path, "wslpath", body=WSLPATH_IDENTITY)
+    wintmp = tmp_path / "wintmp"
+    wintmp.mkdir(exist_ok=True)
+    env = {"HOME": str(home), "FAKE_WIN_TMP": str(wintmp),
+           "PATH": f"{wsl}:{os.environ['PATH']}"}
+    env.update(extra_env or {})
+    r = run("--json", "--profile", "portable", "--only", "windows-chrome-shim", env=env)
+    return checks_of(r)["windows-chrome-shim"]
+
+
+# A windows-chrome that behaves: it "launches" the recorder by appending the URL
+# to the log the recorder would have written.
+WC_GOOD = """#!/usr/bin/env bash
+log="${WINDOWS_CHROME_PATH%.cmd}.txt"
+printf 'RAW=["%s"]\\n' "$1" >> "$log"
+exit 0
+"""
+
+# The real C1 failure: powershell.exe is refused at CreateProcess time, so the
+# shim exits non-zero having launched nothing.
+WC_AV_BLOCKED = """#!/usr/bin/env bash
+echo "powershell.exe: Invalid argument" >&2
+echo "windows-chrome: failed to launch $1" >&2
+exit 1
+"""
+
+# Exits 0, launches nothing. Exit 0 alone is not evidence.
+WC_SILENT = """#!/usr/bin/env bash
+exit 0
+"""
+
+WC_MANGLES = """#!/usr/bin/env bash
+log="${WINDOWS_CHROME_PATH%.cmd}.txt"
+printf 'RAW=[https://wrong.example/lost]\\n' >> "$log"
+exit 0
+"""
+
+
+def test_chrome_shim_passes_when_the_url_arrives_intact(tmp_path):
+    c = _run_shim_check(tmp_path, _shim_home(tmp_path, WC_GOOD))
+    assert c["status"] == "PASS", c
+
+
+def test_chrome_shim_fails_when_the_shim_is_absent(tmp_path):
+    home = fake_home(tmp_path, PS_TEMPPATH)
+    c = _run_shim_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "missing shim" in c["detail"] and "Tier 0" in c["detail"]
+
+
+def test_chrome_shim_fails_when_powershell_is_refused_at_launch(tmp_path):
+    """The C1 regression: an AV blocks the CreateProcess, so nothing launches.
+    This is the case every mocked test was structurally unable to see."""
+    c = _run_shim_check(tmp_path, _shim_home(tmp_path, WC_AV_BLOCKED))
+    assert c["status"] == "FAIL", c
+    assert "cannot launch anything" in c["detail"]
+
+
+def test_chrome_shim_fails_when_it_exits_0_having_launched_nothing(tmp_path):
+    c = _run_shim_check(tmp_path, _shim_home(tmp_path, WC_SILENT))
+    assert c["status"] == "FAIL", c
+    assert "never invoked" in c["detail"]
+
+
+def test_chrome_shim_fails_when_the_url_does_not_arrive_intact(tmp_path):
+    c = _run_shim_check(tmp_path, _shim_home(tmp_path, WC_MANGLES))
+    assert c["status"] == "FAIL", c
+    assert "intact" in c["detail"]
+
+
+def test_chrome_shim_check_runs_under_the_portable_profile(tmp_path):
+    """The Surface Book 2 is exactly where a dead BROWSER hook goes unnoticed,
+    and `portable` is the profile reached for on the second machine."""
+    c = _run_shim_check(tmp_path, _shim_home(tmp_path, WC_GOOD))
+    assert c["status"] == "PASS", c
+    assert not c["hardware"], "must not be hardware-gated out of portable"
+
+
+def test_chrome_shim_cleans_up_its_recorder(tmp_path):
+    """Read-only apart from its own temp files — nothing may be left behind."""
+    wintmp = tmp_path / "wintmp"
+    _run_shim_check(tmp_path, _shim_home(tmp_path, WC_GOOD))
+    assert list(wintmp.iterdir()) == [], f"left files behind: {list(wintmp.iterdir())}"
+
+
 # --- clipboard-image-roundtrip -------------------------------------------
 
 # A powershell.exe stand-in emulating the Windows clipboard: SetImage records

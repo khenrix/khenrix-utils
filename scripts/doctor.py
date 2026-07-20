@@ -60,6 +60,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zlib
 from pathlib import Path
 
@@ -256,6 +257,107 @@ def _win_chrome():
     if not ver:
         return "FAIL", f"chrome.exe at {path} has no version resource — not a real binary"
     return "PASS", f"chrome {ver} at {path}"
+
+
+@check("windows-chrome-shim", wsl_only=True)
+def _win_chrome_shim():
+    """Behavioural: make ~/.local/bin/windows-chrome actually LAUNCH something,
+    and require the URL to arrive intact.
+
+    This is a different assertion from `windows-chrome`, which reads the Chrome
+    binary's VersionInfo. That proves the BROWSER exists; it says nothing about
+    the shim that is supposed to drive it. The gap is not hypothetical: the shim
+    shipped in a state where `powershell.exe` refused to start at all (the AV on
+    this fleet blocks `FromBase64String` + `Start-Process` on one command line as
+    a fileless-PowerShell signature), and because every check only ever asked
+    "does Chrome exist?", that answered yes throughout.
+
+    Non-invasive, and NOT profile-gated -- the second machine is exactly where a
+    dead BROWSER hook goes unnoticed. Instead of opening a browser,
+    WINDOWS_CHROME_PATH is pointed at a recorder .cmd in the Windows temp
+    directory that appends its arguments to a file. The shim launches the
+    recorder, the nonce is read back, both files are removed. ~1s, no window.
+
+    A mock cannot replace this. The failure it exists to catch happens at
+    CreateProcess time, before PowerShell runs, so anything that pattern-matches
+    the command text instead of executing it will report success."""
+    shim = Path.home() / ".local" / "bin" / "windows-chrome"
+    if not shim.exists():
+        return "FAIL", f"missing shim {shim} — Tier 0 must provision it"
+    ps = ps_shim()
+    if not ps.exists():
+        return "FAIL", f"no powershell shim at {ps}; cannot stage a recorder"
+
+    try:
+        r = sh([str(ps), "-NoProfile", "-Command",
+                "Write-Output ([IO.Path]::GetTempPath())"],
+               timeout=60, cwd=win_cwd())
+    except subprocess.TimeoutExpired:
+        return "FAIL", "could not read the Windows temp path within 60s"
+    win_tmp = (r.stdout or "").replace("\r", "").strip().splitlines()
+    if r.returncode != 0 or not win_tmp or not win_tmp[0].strip():
+        return "FAIL", ("could not locate the Windows temp directory "
+                        f"(rc={r.returncode}) — interop is broken; see windows-interop")
+    try:
+        u = sh(["wslpath", "-u", win_tmp[0].strip()], timeout=15)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "SKIP", "wslpath unavailable; cannot stage a Windows-visible recorder"
+    tmp_dir = Path((u.stdout or "").strip())
+    if not tmp_dir.is_dir():
+        return "SKIP", f"Windows temp {tmp_dir} not visible from WSL"
+
+    token = "khenrix-doctor-" + secrets.token_hex(8)
+    rec, log = tmp_dir / f"{token}.cmd", tmp_dir / f"{token}.txt"
+    nonce_url = f"https://khenrix-doctor.invalid/{token}"
+    # Delayed expansion keeps cmd.exe from re-parsing the recorded value. The
+    # nonce carries no '&' on purpose: `cmd /c` splits its own command line on
+    # it, which is a property of batch recorders, not of the shim.
+    rec.write_text("@echo off\r\n"
+                   "setlocal EnableDelayedExpansion\r\n"
+                   'set "ARGS=%*"\r\n'
+                   f'>>"%~dp0{token}.txt" echo RAW=[!ARGS!]\r\n')
+    try:
+        try:
+            w = sh(["wslpath", "-w", str(rec)], timeout=15)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return "SKIP", "wslpath unavailable; cannot address the recorder"
+        win_rec = (w.stdout or "").strip()
+        if not win_rec:
+            return "FAIL", f"wslpath could not translate {rec} for Windows"
+
+        env = dict(os.environ, WINDOWS_CHROME_PATH=win_rec)
+        try:
+            got = sh([str(shim), nonce_url], timeout=90, env=env)
+        except subprocess.TimeoutExpired:
+            return "FAIL", "windows-chrome did not return within 90s"
+        if got.returncode != 0:
+            return "FAIL", (f"windows-chrome exited {got.returncode} launching a "
+                            f"recorder: {(got.stderr or '').strip()[:200]} — the shim "
+                            "cannot launch anything; Chrome existing is irrelevant")
+
+        # Start-Process is asynchronous (correct for a browser), so the recorder
+        # lands shortly after the shim returns.
+        recorded = ""
+        for _ in range(40):
+            if log.exists() and log.stat().st_size > 0:
+                recorded = log.read_text(errors="replace")
+                break
+            time.sleep(0.25)
+    finally:
+        for f in (rec, log):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    if not recorded.strip():
+        return "FAIL", ("windows-chrome exited 0 but the recorder was never "
+                        "invoked — nothing was launched (exit 0 alone proves "
+                        "nothing; that is how a dead shim survived)")
+    if nonce_url not in recorded:
+        return "FAIL", ("the recorder ran but the URL did not arrive intact: "
+                        f"{recorded.strip()[:160]!r} (expected {nonce_url})")
+    return "PASS", f"windows-chrome launched a recorder and delivered {nonce_url} intact"
 
 
 # --- Clipboard ------------------------------------------------------------
