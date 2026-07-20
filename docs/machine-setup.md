@@ -25,13 +25,38 @@ per-machine = anything with a secret, a path, or an OS-specific shim.**
 
 ## Prerequisites (install per machine)
 
+Run **Tier 0 first** — it needs no credentials and works on a bare distro:
+
+```bash
+./scripts/bootstrap-tier0.sh --dry-run   # see the plan; mutates nothing
+./scripts/bootstrap-tier0.sh             # provision
+```
+
+It installs the apt base (`git curl jq unzip ca-certificates`), **creates the WSL
+Windows bridges** in `~/.local/bin` (`powershell.exe` shim + `windows-chrome`) —
+these used to be a hand-rolled manual step, which is exactly how a second machine
+ended up with a `chrome-devtools` MCP that was configured and dead — and reports
+anything it cannot install itself. It is idempotent; re-running is safe.
+
+Still manual, because WSL cannot install them:
+
+- **Windows-side Node.js** — `winget install OpenJS.NodeJS.LTS`. **Not optional
+  on WSL, and not the same thing as WSL's node.** The `chrome-devtools` MCP runs
+  on the *Windows* side through the PowerShell shim and spawns `npx.cmd` there,
+  so a WSL-only Node leaves it dead at spawn. Tier 0 reports it as MISSING and
+  `python3 scripts/doctor.py --only windows-node` verifies it by making
+  `node.exe` evaluate an expression.
+- **Google Chrome on Windows** — any install location works; `windows-chrome`
+  resolves it (PATH → Program Files → Program Files (x86) → LOCALAPPDATA).
+  Override with `WINDOWS_CHROME_PATH` if it lives somewhere exotic.
+
+Then, per machine:
+
 - **asdf** → Node (currently `v26.2.0`) — npx/node resolve through it
 - **uv / uvx** (`~/.local/bin`) — for `uvx`-launched MCPs + Python
 - **jq**, and the **`claude`** CLI (`~/.local/bin`)
-- **WSL only** — the Windows bridges in `~/.local/bin`: `powershell.exe` shim +
-  `windows-chrome` (used by the `chrome-devtools` MCP and vercel's `BROWSER`).
-  On native Linux/macOS: drop `chrome-devtools` and point `vercel`'s `BROWSER`
-  at your real browser.
+- On native Linux/macOS: Tier 0 skips the Windows bridges; drop `chrome-devtools`
+  and point `vercel`'s `BROWSER` at your real browser.
 
 ## 1. Clone the git-synced repos
 
