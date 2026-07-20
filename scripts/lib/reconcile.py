@@ -883,8 +883,11 @@ def main(argv=None):
 
     caps = load_caps()
     if args.all or not args.cli:
+        # --apply/--update-drift must propagate; hardcoding False here made
+        # `reconcile.py --apply --all` a silent no-op (bootstrap-machine.sh:88).
+        eff_apply = args.apply and not args.status
         for c in CLIS:
-            reconcile(c, caps, apply=False, update_drift=False)
+            reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift)
         return 0
     reconcile(args.cli, caps, apply=args.apply and not args.status, update_drift=args.update_drift)
     return 0
