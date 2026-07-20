@@ -157,11 +157,35 @@ def is_http(spec: dict) -> bool:
 
 
 # ----- live state: MCP -------------------------------------------------------
-def claude_mcp_current() -> dict:
-    res = run(["claude", "mcp", "list"])
+def claude_mcp_path() -> Path:
+    return Path(expand("${HOME}/.claude.json"))
+
+
+def claude_mcp_load() -> dict:
+    """User-scope MCP servers, exactly where `claude mcp add --scope user` writes
+    them. This is the structured source of truth — `claude mcp list` renders a
+    lossy one-line summary (args space-joined, multi-line args split across
+    lines), which cannot be compared field-by-field against capabilities.toml."""
+    servers = read_json_object(claude_mcp_path()).get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
+
+
+def claude_mcp_listed() -> dict:
+    """Names `claude mcp list` reports, for presence only. Covers servers that
+    live outside ~/.claude.json (plugin-provided, claude.ai-managed) so they are
+    still reported as EXTRA. Endpoint text is NOT used for drift comparison."""
+    try:
+        res = run(["claude", "mcp", "list"])
+    except (OSError, subprocess.SubprocessError):
+        return {}
     cur = {}
     for line in res.stdout.splitlines():
         line = line.rstrip()
+        # Everything below this header is advice/warnings ("Location: …",
+        # "For help configuring MCP servers, see: …") — all of which contain
+        # ": " and were being reported as EXTRA servers that do not exist.
+        if line.startswith("MCP config diagnostics"):
+            break
         if not line or line.startswith("Checking") or ": " not in line:
             continue
         name, rest = line.split(": ", 1)
@@ -169,6 +193,13 @@ def claude_mcp_current() -> dict:
         # `claude mcp list` appends a transport annotation like " (HTTP)"/" (SSE)".
         endpoint = re.sub(r"\s*\((?:HTTP|SSE|STDIO|stdio)\)\s*$", "", endpoint)
         cur[name.strip()] = {"endpoint": endpoint}
+    return cur
+
+
+def claude_mcp_current() -> dict:
+    cur = {name: dict(spec) for name, spec in claude_mcp_load().items()}
+    for name, entry in claude_mcp_listed().items():
+        cur.setdefault(name, entry)
     return cur
 
 
@@ -210,28 +241,44 @@ def mcp_current(cli: str) -> dict:
     return {"claude": claude_mcp_current, "codex": codex_mcp_current, "agy": agy_mcp_current}[cli]()
 
 
-def mcp_drift(cli: str, spec: dict, cur: dict) -> str | None:
+def mcp_live(cur: dict) -> dict:
+    """Normalise one backend's live MCP entry into a common shape.
+
+    The three CLIs spell the same fields differently — claude/codex use `url`,
+    agy uses `httpUrl` — but the *comparison* must not differ per CLI, or a
+    backend can silently skip a check. Normalise here, compare once below."""
+    return {"url": cur.get("url") or cur.get("httpUrl"),
+            "command": cur.get("command"),
+            "args": list(cur.get("args") or [])}
+
+
+def mcp_drift(spec: dict, cur: dict) -> str | None:
+    """Drift between a declared spec and the live entry, or None if in sync.
+
+    Deliberately takes no `cli`: the comparison is identical for every backend,
+    and not receiving the CLI makes re-introducing a per-CLI skip impossible.
+    Note also the absence of `and have` / `and hc` guards — a live entry MISSING
+    the field we declared is drift (the declared transport is not what is
+    installed), not a match. Guarding on it reported ✅ MATCH for a server that
+    was plainly wrong."""
     spec = expand(spec)
+    have = mcp_live(cur)
     if is_http(spec):
         want = spec.get("url")
-        have = {"claude": cur.get("endpoint"), "codex": cur.get("url"),
-                "agy": cur.get("httpUrl") or cur.get("url")}[cli]
-        if want and have and want != have:
-            return f"url: {have} → {want}"
+        if want and want != have["url"]:
+            return f"url: {have['url']} → {want}"
         return None
-    if cli in ("codex", "agy"):
-        wc, wa = spec.get("command"), list(spec.get("args", []))
-        hc, ha = cur.get("command"), list(cur.get("args", []))
-        if wc and hc and (wc != hc or wa != ha):
-            return "command/args differ"
+    wc, wa = spec.get("command"), list(spec.get("args", []))
+    if wc and (wc != have["command"] or wa != have["args"]):
+        return "command/args differ"
     return None
 
 
-def classify_mcp(cli: str, desired: dict, current: dict):
+def classify_mcp(desired: dict, current: dict):
     rows, extras = [], [n for n in current if n not in desired]
     for name, spec in desired.items():
         if name in current:
-            d = mcp_drift(cli, spec, current[name])
+            d = mcp_drift(spec, current[name])
             rows.append([name, "UPDATE" if d else "MATCH", d or ""])
         else:
             rows.append([name, "ADD", "will add"])
@@ -828,7 +875,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
     print(f"\n=== khenrix-setup · {cli} ===")
     desired = desired_mcp(caps, cli)
     cur = mcp_current(cli)
-    mcp_rows, extras = classify_mcp(cli, desired, cur)
+    mcp_rows, extras = classify_mcp(desired, cur)
     print_rows("MCP servers:", mcp_rows, extras)
 
     set_rows, set_apply = settings_report(cli, caps)
@@ -875,7 +922,7 @@ def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Reconcile a CLI's config toward capabilities.toml")
     ap.add_argument("--cli", choices=CLIS)
-    ap.add_argument("--all", action="store_true", help="review every CLI (read-only)")
+    ap.add_argument("--all", action="store_true", help="operate on every CLI (read-only unless --apply is also given)")
     ap.add_argument("--status", action="store_true", help="read-only review (default)")
     ap.add_argument("--apply", action="store_true", help="add missing declared entries")
     ap.add_argument("--update-drift", action="store_true", help="also re-apply drifted managed entries")
@@ -883,8 +930,11 @@ def main(argv=None):
 
     caps = load_caps()
     if args.all or not args.cli:
+        # --apply/--update-drift must propagate; hardcoding False here made
+        # `reconcile.py --apply --all` a silent no-op (bootstrap-machine.sh:88).
+        eff_apply = args.apply and not args.status
         for c in CLIS:
-            reconcile(c, caps, apply=False, update_drift=False)
+            reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift)
         return 0
     reconcile(args.cli, caps, apply=args.apply and not args.status, update_drift=args.update_drift)
     return 0

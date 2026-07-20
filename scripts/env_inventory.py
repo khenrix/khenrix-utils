@@ -377,7 +377,12 @@ def _self_test() -> int:
     ok.append(("url host preserved", "example.com" in blob))
     md = render_md(m)
     ok.append(("render includes a known plugin", "superpowers" in md))
-    ok.append(("render includes a known mcp", "google-drive" in md))
+    # chrome-devtools, not google-drive: the canary must be an MCP that is still
+    # managed. google-drive was decommissioned 2026-07-20 (redundant with the
+    # native claude.ai Drive MCP, and it hardcoded an asdf node path), so pinning
+    # the render check to it would keep passing on a stale fixture while the real
+    # render broke.
+    ok.append(("render includes a known mcp", "chrome-devtools" in md))
     ok.append(("render is deterministic", render_md(m) == md))
     ok.append(("render carries no sentinel", SENTINEL not in md))
     ok.append(("render marks github xor-exempt", "xor-exempt" in md.lower()))

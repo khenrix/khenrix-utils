@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -110,19 +111,143 @@ TRANSIENT_SENTINELS = [
 ]
 # Real-world failure strings observed across the three CLIs (extend in place so the
 # additions read as list growth, not string concatenation). All lowercase — input is lowered.
-PERSISTENT_SENTINELS.extend(["unauthenticated", "permission denied"])
+PERSISTENT_SENTINELS.extend(["unauthenticated"])
 TRANSIENT_SENTINELS.extend(["heap out of memory", "econnreset", "503"])
-NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota"}
+# A seat that could not get its OWN tool call approved. Distinct from auth_or_quota
+# on purpose: an outage is the provider's problem and will recur, but this is OUR
+# invocation defect — the seat authenticated fine and simply could not be granted
+# permission to read the thing it was asked to review. Observed on the agy seat
+# (tool_confirmation_manager.go:183) when it ran with `--mode plan` but WITHOUT
+# `--dangerously-skip-permissions`: headless mode has no one to prompt, so agy
+# soft-denied its own ReadFile and answered from an empty context.
+TOOL_PERMISSION_SENTINELS = [
+    "tool_confirmation_manager",
+    "permission denied",
+    "tool permission",
+    "permission request",
+    "requires approval",
+    "user did not approve",
+]
+NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota", "tool_permission"}
+
+# Actionable next step per failure cause, carried into the manifest so the
+# synthesizer can tell the user something better than "the seat failed".
+REASON_HINTS = {
+    "tool_permission": ("headless mode cannot prompt for tool approval — pass the seat's "
+                        "auto-approve flag (agy: --dangerously-skip-permissions, kept "
+                        "alongside --mode plan)"),
+    "auth_or_quota": "log in or wait out the quota window; this seat is not retried",
+    "did_not_read_input": ("the seat answered without opening its input — check that its "
+                           "read tools are approved and the prompt fits its context"),
+    "non_substantive": "the seat returned a stub answer rather than a real one",
+}
 
 
 def classify_sentinel(text: str) -> Optional[str]:
-    """Map error text to a reason: persistent auth/quota, transient, or None."""
+    """Map error text to a reason: tool-permission denial, persistent auth/quota,
+    transient, or None. Tool-permission is checked FIRST — it is the most specific
+    and the only one of the three we can actually fix on our side."""
     low = (text or "").lower()
+    if any(s in low for s in TOOL_PERMISSION_SENTINELS):
+        return "tool_permission"
     if any(s in low for s in PERSISTENT_SENTINELS):
         return "auth_or_quota"
     if any(s in low for s in TRANSIENT_SENTINELS):
         return "error_sentinel"
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Seat validity — non-empty is NOT a pass.
+# --------------------------------------------------------------------------- #
+# A seat's answer must clear a length floor AND quote the per-run sentinel that was
+# injected into its prompt. 400 chars is deliberately low: it rejects "I was unable to
+# read the document." and other one-line non-answers without touching a terse-but-real
+# reply. Raise it only with evidence — a floor that rejects real answers is worse than
+# the bug it guards.
+MIN_SUBSTANTIVE_CHARS = 400
+
+SENTINEL_PREFIX = "SENTINEL-"
+SENTINEL_NOTE = (
+    "PROOF OF READING: quote the token `{token}` verbatim, on its own line, somewhere in "
+    "your final response — this confirms you actually opened and read the material below. "
+    "An answer that omits the token is discarded as unread and the seat is scored failed."
+)
+
+
+def make_sentinel() -> str:
+    """A fresh per-run token. Unique per run so a seat cannot satisfy the check by
+    echoing a token it saw in an earlier transcript."""
+    return SENTINEL_PREFIX + uuid.uuid4().hex[:12]
+
+
+def apply_sentinel(prompt: str, token: str) -> str:
+    """One identical proof-of-reading instruction for all members, prompt preserved."""
+    return f"{SENTINEL_NOTE.format(token=token)}\n\n{prompt}"
+
+
+def _cites_sentinel(text: str, token: Optional[str]) -> bool:
+    """No token configured (smoke, eval harness) → nothing to prove. Case-insensitive
+    so a model that reflows or backticks the token still counts as having read."""
+    return not token or token.lower() in (text or "").lower()
+
+
+def score_seat(output: str, prompt_token: Optional[str] = None,
+               min_chars: int = MIN_SUBSTANTIVE_CHARS) -> dict:
+    """Score one seat's answer: {"status": "ok"|"failed", "cause": str, ...}.
+
+    A seat is `ok` only if it produced substantive output AND demonstrably read its
+    input. Non-empty is NOT sufficient: during the bootstrap-hardening review the agy
+    seat soft-denied its own ReadFile, returned one sentence, and scored ok — silently
+    turning a 3-seat verdict into a 2-seat one that the synthesis reported as three.
+
+    Sentinel keywords are consulted ONLY after the answer has already failed the
+    substance test, which preserves the invariant the noisy-ok regression bought:
+    sentinels refine the *reason* of a failing attempt, they never veto a real answer.
+    A 2000-char reply that discusses rate limits is an answer, not a rate-limit error.
+    """
+    text = (output or "").strip()
+    if not text:
+        return {"status": "failed", "cause": "empty"}
+
+    substantive = len(text) >= min_chars
+    if substantive and _cites_sentinel(text, prompt_token):
+        return {"status": "ok", "cause": "ok"}
+
+    refined = classify_sentinel(text)
+    if refined:
+        rec = {"status": "failed", "cause": refined}
+        if REASON_HINTS.get(refined):
+            rec["hint"] = REASON_HINTS[refined]
+        return rec
+    if not substantive:
+        return {"status": "failed", "cause": "non_substantive",
+                "detail": f"{len(text)} chars < {min_chars}",
+                "hint": REASON_HINTS["non_substantive"]}
+    return {"status": "failed", "cause": "did_not_read_input",
+            "detail": f"response never cites sentinel {prompt_token!r}",
+            "hint": REASON_HINTS["did_not_read_input"]}
+
+
+def council_header(manifest: dict) -> str:
+    """The one line the synthesis MUST open with, so a reduced panel can never be
+    mistaken for a full one. States seats responded / attempted and names every failed
+    seat with its cause — the failure the incident exposed was not the missing seat but
+    the missing *disclosure* of the missing seat."""
+    s = manifest["summary"]
+    ok, total = s["valid"], s["requested"]
+    head = f"**Council: {ok} of {total} seats responded"
+    if ok == total:
+        return head + ".**"
+    lost = []
+    for p in manifest["providers"]:
+        if p.get("valid"):
+            continue
+        detail = f"{p['name']} ({p.get('reason') or 'unknown'}"
+        if p.get("hint"):
+            detail += f" — {p['hint']}"
+        lost.append(detail + ")")
+    return head + " — DEGRADED.**  Failed: " + "; ".join(lost)
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +307,10 @@ class ProviderSpec:
     thinking: Optional[str] = None   # abstract tier (high|max) recorded for provenance
     log_file: Optional[str] = None   # if set, scanned for sentinels on failure
     cwd: Optional[str] = None        # if set, the provider runs from this directory
+    sentinel: Optional[str] = None   # per-run proof-of-reading token this seat must quote
+    # Length floor for a substantive answer. Council seats use the default; callers whose
+    # correct answer is legitimately tiny (--smoke expects "pong") set it to 0.
+    min_chars: int = MIN_SUBSTANTIVE_CHARS
 
 
 def agy_configured_model() -> Optional[str]:
@@ -299,8 +428,16 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
         spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
                                   ["--sandbox", "read-only"])
     elif spec.name == "agy":
+        # Plan mode is ADDED to the auto-approve flag, not swapped for it. Per
+        # `agy --help` the two are orthogonal: --dangerously-skip-permissions is
+        # "auto-approve all tool permission requests without prompting" (a prompting
+        # policy) while --mode sets the execution mode (accept-edits|plan). Swapping
+        # one for the other left agy headless with no way to approve its OWN reads:
+        # it soft-denied its ReadFile at tool_confirmation_manager.go:183 and answered
+        # from an empty context, which the engine then scored ok. Plan mode remains the
+        # write barrier; auto-approve only removes a prompt no one can answer.
         spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
-                                  ["--mode", "plan"])
+                                  ["--dangerously-skip-permissions", "--mode", "plan"])
     return spec
 
 
@@ -421,24 +558,31 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
              spec: ProviderSpec) -> tuple[bool, str, str]:
     """Return (valid, reason, result_text).
 
-    A clean exit with a non-empty answer is VALID. Sentinels never veto a real
-    answer — they only refine the *reason* of an already-failing attempt. This is
-    essential because some CLIs stream their whole session to stderr: codex echoes
-    the files it reads (e.g. this very SKILL.md, whose failure table lists "quota
-    reached" / "not logged in") into stderr, and an answer must not be discarded
-    just because that noise mentions a sentinel phrase. claude is the exception —
-    it reports its own errors structurally (is_error in the JSON), not via the exit
-    code, so that path is checked explicitly."""
+    A clean exit is necessary but NOT sufficient: the answer must also clear
+    score_seat (substantive length + the per-run sentinel proving the seat read its
+    input). Before that check existed, a seat that soft-denied its own ReadFile and
+    replied with one sentence scored `ok` and silently shrank the panel.
+
+    Sentinels never veto a real answer — they only refine the *reason* of an
+    already-failing attempt. This is essential because some CLIs stream their whole
+    session to stderr: codex echoes the files it reads (e.g. this very SKILL.md, whose
+    failure table lists "quota reached" / "not logged in") into stderr, and an answer
+    must not be discarded just because that noise mentions a sentinel phrase. claude is
+    the exception — it reports its own errors structurally (is_error in the JSON), not
+    via the exit code, so that path is checked explicitly."""
     result_text, extract_err = spec.extract(stdout)
     if extract_err == "parse_failure":
         return False, "parse_failure", result_text
     if extract_err == "claude_error":
         blob = f"{result_text}\n{stderr or ''}"
         return False, classify_sentinel(blob) or "error_sentinel", result_text
-    if exit_code == 0 and result_text.strip():
-        return True, "ok", result_text
-    base = "empty" if exit_code == 0 else "nonzero_exit"
-    return False, classify_sentinel(stderr) or base, result_text
+    if exit_code == 0:
+        seat = score_seat(result_text, spec.sentinel, spec.min_chars)
+        if seat["status"] == "ok":
+            return True, "ok", result_text
+        # `empty` keeps its historical name; the richer causes are new.
+        return False, seat["cause"], result_text
+    return False, classify_sentinel(stderr) or "nonzero_exit", result_text
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +679,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "duration_sec": final["duration_sec"],
         "valid": final["valid"],
         "reason": final["reason"],
+        "hint": REASON_HINTS.get(final["reason"]),
         "result_text": _truncate(final["result_text"]),
         "result_file": str(result_file),
         "raw_stdout_file": str(stdout_file),
@@ -574,9 +719,13 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                    "providers": requested, "mode": mode, "read_only": read_only},
         "summary": {"requested": len(requested), "valid": valid,
                     "failed": len(requested) - valid,
-                    "degraded": valid < len(requested)},
+                    "degraded": valid < len(requested),
+                    # Explicit seat accounting so the synthesizer cannot present a
+                    # reduced panel as a full one; `header` is emitted verbatim.
+                    "seats_attempted": len(requested), "seats_responded": valid},
         "providers": providers,
     }
+    manifest["summary"]["header"] = council_header(manifest)
     (workdir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     return manifest
 
@@ -599,8 +748,7 @@ def _write_attempt(workdir: Path, name: str, n: int, stdout: str, stderr: str) -
 
 def _render_text(manifest: dict) -> str:
     s = manifest["summary"]
-    lines = [f"council: {s['valid']}/{s['requested']} valid"
-             + ("  (DEGRADED)" if s["degraded"] else "")]
+    lines = [s.get("header") or council_header(manifest)]
     cfg = manifest.get("config", {})
     tags = []
     if cfg.get("mode"):
@@ -678,6 +826,8 @@ def smoke(args) -> int:
     timeout = effective_timeout(args)
     cfg = resolve_mode_config(args)
     specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
+    for s in specs:
+        s.min_chars = 0   # the correct smoke answer is the single word "pong"
     agy_wt = None
     if args.read_only:
         install_cleanup_handler()   # BEFORE any worktree exists — SIGTERM skips finally
@@ -725,15 +875,23 @@ STUB = Path(__file__).resolve().parent.parent / "tests" / "stub_provider.py"
 
 def _stub_spec(name: str, mode: str, *, as_: str = "raw", sleep: float = 0.0,
                counter: Optional[Path] = None,
-               extract: Optional[Callable] = None) -> ProviderSpec:
+               extract: Optional[Callable] = None,
+               answer: Optional[str] = None,
+               sentinel: Optional[str] = None,
+               min_chars: int = 0) -> ProviderSpec:
+    """min_chars defaults to 0 because most self-test checks exercise TRANSPORT
+    (retries, timeouts, parallelism, extraction) with a deliberately tiny canned
+    answer. The seat-substance checks (S18) opt into the real floor explicitly."""
     argv = [sys.executable, str(STUB), "--mode", mode, "--as", as_]
     if sleep:
         argv += ["--sleep", str(sleep)]
     if counter is not None:
         argv += ["--counter-file", str(counter)]
+    if answer is not None:
+        argv += ["--answer", answer]
     if extract is None:
         extract = extract_claude_json if as_ == "claude" else extract_raw
-    return ProviderSpec(name, argv, None, extract)
+    return ProviderSpec(name, argv, None, extract, sentinel=sentinel, min_chars=min_chars)
 
 
 def self_test() -> int:
@@ -887,11 +1045,20 @@ def self_test() -> int:
     check("readonly: codex sandboxed read-only", "--sandbox" in cx14.argv and "read-only" in cx14.argv)
     ag14 = build_real_spec("agy", "q", 30, {}, wd("ro"))
     make_readonly(ag14)
-    check("readonly: agy bypass flag swapped for plan mode (1.1.1)",
-          "--dangerously-skip-permissions" not in ag14.argv
-          and "--mode" in ag14.argv and "plan" in ag14.argv)
+    check("readonly: agy gets plan mode (the write barrier)",
+          "--mode" in ag14.argv and "plan" in ag14.argv)
+    # REGRESSION: plan mode used to REPLACE the auto-approve flag, which left agy
+    # unable to approve its own reads headlessly — it denied its ReadFile at
+    # tool_confirmation_manager.go:183 and answered from an empty context.
+    check("readonly: agy KEEPS auto-approve alongside plan mode (can read its input)",
+          "--dangerously-skip-permissions" in ag14.argv)
+    # Index lookups are guarded: a missing flag must report FAIL, not raise and abort
+    # the whole suite (a crashing check hides every check after it).
+    def _before_prompt(argv: list, *flags: str) -> bool:
+        return ("-p" in argv
+                and all(f in argv and argv.index(f) < argv.index("-p") for f in flags))
     check("readonly: agy flags still precede the positional prompt (Go flag parsing)",
-          ag14.argv.index("plan") < ag14.argv.index("-p"))
+          _before_prompt(ag14.argv, "plan", "--dangerously-skip-permissions"))
     ag14m = build_real_spec("agy", "q", 30,
                             {"agy": {"model": "Gemini 3.5 Flash (High)", "thinking": "high"}},
                             wd("ro"))
@@ -1005,6 +1172,94 @@ def self_test() -> int:
     check("signal: hard-exits with 128+signum (143)", exit_codes == [143])
     globals()["_HANDLER_FIRED"] = False  # reset for any later checks
 
+    # S18 — seat validity end-to-end through the REAL engine. Every case below exits 0
+    # with non-empty stdout, i.e. every one of them scored `ok` before this existed.
+    SENT = "SENTINEL-deadbeef01"
+    long_ok = ("A substantive council answer with real reasoning. " * 12
+               + f"\n{SENT}\n" + "Further detail and caveats. " * 12)
+    long_unread = "A confident answer produced without ever opening the material. " * 20
+
+    m = run_council([_stub_spec("agy", "ok", answer=long_ok, sentinel=SENT,
+                                min_chars=MIN_SUBSTANTIVE_CHARS)],
+                    retries=0, timeout=10, backoff=0.05, workdir=wd("seat_ok"), prompt="hi")
+    check("seat: substantive answer citing the sentinel is ok",
+          m["providers"][0]["valid"] and m["providers"][0]["reason"] == "ok")
+
+    m = run_council([_stub_spec("agy", "ok", answer="Yes, that approach is fine.",
+                                sentinel=SENT, min_chars=MIN_SUBSTANTIVE_CHARS)],
+                    retries=0, timeout=10, backoff=0.05, workdir=wd("seat_short"), prompt="hi")
+    ag = m["providers"][0]
+    check("seat: one-sentence answer is failed, not ok",
+          not ag["valid"] and ag["reason"] == "non_substantive")
+
+    m = run_council([_stub_spec("agy", "ok", answer=long_unread, sentinel=SENT,
+                                min_chars=MIN_SUBSTANTIVE_CHARS)],
+                    retries=0, timeout=10, backoff=0.05, workdir=wd("seat_unread"), prompt="hi")
+    ag = m["providers"][0]
+    check("seat: long answer that never cites the sentinel is failed",
+          not ag["valid"] and ag["reason"] == "did_not_read_input")
+
+    # ACCEPTANCE: the deliberately-broken seat — the exact agy round-2 shape.
+    m = run_council([_stub_spec("claude", "ok", as_="claude", answer=long_ok,
+                                sentinel=SENT, min_chars=MIN_SUBSTANTIVE_CHARS),
+                     _stub_spec("codex", "ok", answer=long_ok, sentinel=SENT,
+                                min_chars=MIN_SUBSTANTIVE_CHARS),
+                     _stub_spec("agy", "tool-denied", sentinel=SENT,
+                                min_chars=MIN_SUBSTANTIVE_CHARS)],
+                    retries=2, timeout=10, backoff=0.05, workdir=wd("seat_denied"),
+                    prompt="hi", requested=["claude", "codex", "agy"])
+    ag = next(p for p in m["providers"] if p["name"] == "agy")
+    check("seat: tool-denied seat is FAILED despite exit 0 + non-empty output",
+          not ag["valid"] and ag["status"] == "failed")
+    check("seat: tool-denial gets its own cause (not auth_or_quota)",
+          ag["reason"] == "tool_permission")
+    check("seat: tool_permission carries an actionable hint",
+          "auto-approve" in (ag.get("hint") or ""))
+    check("seat: tool_permission is not retried (1 attempt)", ag["attempts"] == 1)
+    check("seat: panel degrades to 2/3 in the summary",
+          m["summary"]["seats_responded"] == 2 and m["summary"]["seats_attempted"] == 3
+          and m["summary"]["degraded"])
+    hdr = m["summary"]["header"]
+    check("seat: header states the TRUE seat count", "2 of 3" in hdr and "3 of 3" not in hdr)
+    check("seat: header names the failed seat and its cause",
+          "agy" in hdr and "tool_permission" in hdr and "DEGRADED" in hdr)
+    check("seat: rendered text opens with that header", _render_text(m).startswith(hdr))
+
+    # S18b — a real answer must not be vetoed by keywords it legitimately discusses,
+    # and the all-ok header must not cry degraded.
+    quota_talk = ("Treat quota exceeded and permission denied as distinct failures; "
+                  "unauthorized is auth, not a rate limit. " * 8) + f"\n{SENT}\n"
+    m = run_council([_stub_spec("codex", "ok", answer=quota_talk, sentinel=SENT,
+                                min_chars=MIN_SUBSTANTIVE_CHARS)],
+                    retries=0, timeout=10, backoff=0.05, workdir=wd("seat_talk"), prompt="hi")
+    check("seat: an answer discussing quota/permission text stays valid",
+          m["providers"][0]["valid"])
+    full = {"summary": {"requested": 3, "valid": 3},
+            "providers": [{"name": n, "valid": True, "reason": "ok"}
+                          for n in ("claude", "codex", "agy")]}
+    check("seat: full panel header says 3 of 3 with no degraded note",
+          council_header(full) == "**Council: 3 of 3 seats responded.**")
+
+    # S18c — sentinel plumbing: default floor is real, main() injects a unique token,
+    # and the instruction reaches every seat's argv while preserving the prompt.
+    check("seat: ProviderSpec defaults to the real substantive floor",
+          ProviderSpec("x", [], None, extract_raw).min_chars == MIN_SUBSTANTIVE_CHARS
+          and MIN_SUBSTANTIVE_CHARS > 0)
+    check("sentinel: unique per run", make_sentinel() != make_sentinel())
+    # smoke()'s correct answer is the single word "pong" — it opts out of the floor by
+    # setting min_chars=0. Verify the exemption MECHANISM here; the smoke wiring itself
+    # can only be exercised against live binaries (`make smoke-llm-council`, costs tokens).
+    check("seat: min_chars=0 exempts a legitimately tiny answer (smoke's 'pong')",
+          score_seat("pong", None, 0)["status"] == "ok"
+          and score_seat("pong", None)["cause"] == "non_substantive")
+    aug = apply_sentinel("original question", SENT)
+    check("sentinel: instruction prepended, prompt preserved",
+          SENT in aug and "verbatim" in aug.lower() and aug.endswith("original question"))
+    check("sentinel: tool-permission text classified ahead of auth_or_quota",
+          classify_sentinel("tool_confirmation_manager.go:183: permission denied")
+          == "tool_permission")
+    check("sentinel: tool_permission is non-retryable", "tool_permission" in NONRETRYABLE_REASONS)
+
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
         line = f"  {'PASS' if ok else 'FAIL'}  {label}"
@@ -1073,6 +1328,11 @@ def main(argv=None) -> int:
     prompt = apply_member_note(prompt)   # skills-encouraged, council-recursion-barred
     if args.read_only:
         prompt = apply_readonly_posture(prompt)
+    # One sentinel for the whole run: identical conditions across seats, and each seat
+    # must quote it back to prove it opened the material rather than guessing from the
+    # question alone. Applied last so it is the first thing every member reads.
+    sentinel = make_sentinel()
+    prompt = apply_sentinel(prompt, sentinel)
 
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
     workdir = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="llm-council-"))
@@ -1080,6 +1340,8 @@ def main(argv=None) -> int:
     timeout = effective_timeout(args)
     cfg = resolve_mode_config(args)
     specs = [build_real_spec(p, prompt, timeout, cfg, workdir) for p in providers]
+    for s in specs:
+        s.sentinel = sentinel
 
     overrides = {}
     for item in args.provider_cmd_override:

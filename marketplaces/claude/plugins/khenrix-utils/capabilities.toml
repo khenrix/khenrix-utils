@@ -30,22 +30,31 @@ args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
 [mcp_servers.vercel.env]
 BROWSER = "${HOME}/.local/bin/windows-chrome"
 
-[mcp_servers.google-drive]
-transport = "stdio"
-# node path may differ per machine; the skill falls back to `node` on PATH.
-command = "${HOME}/.asdf/installs/nodejs/26.2.0/bin/node"
-args = ["${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
-[mcp_servers.google-drive.env]
-GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
-GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
 
+# google-drive was REMOVED 2026-07-20: redundant with the native claude.ai Drive
+# MCP, and its command hardcoded an asdf node path that the mise migration deletes.
+# Removing the declaration alone is a NO-OP -- reconcile.py is additive-only and
+# prints `EXTRA ... left untouched`. The live config needed explicit removal too.
 [mcp_servers.chrome-devtools]
 platform = "windows"   # PowerShell launcher — also eligible on WSL (interop)
 transport = "stdio"
 # Absolute WSL-interop shim (not bare `powershell.exe`) so the launcher resolves
-# even when the CLI starts the server with a minimal PATH.
+# even when the CLI starts the server with a minimal PATH. The shim itself is
+# provisioned by scripts/bootstrap-tier0.sh — it is NOT a manual step.
+#
+# Node is RESOLVED, not hardcoded. This previously pinned C:\Program Files\nodejs
+# twice; a per-user or winget Node install does not land there, so the server
+# died at spawn with no diagnosable message. Get-Command finds npx.cmd wherever
+# it is, the Program Files path survives only as a last-resort fallback, and a
+# genuinely missing Windows-side Node now reports the fix instead of failing mute.
+# (Windows-side Node is a real prerequisite: this MCP runs on the WINDOWS side
+# and cannot use WSL's node. `bootstrap-tier0.sh` reports it; `doctor.py` checks it.)
 command = "${HOME}/.local/bin/powershell.exe"
-args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''$env:Path = "C:\Program Files\nodejs;" + $env:Path; & "C:\Program Files\nodejs\npx.cmd" -y chrome-devtools-mcp@latest --autoConnect''']
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''
+$n = (Get-Command npx.cmd -EA SilentlyContinue).Source
+if (-not $n) { $n = "$env:ProgramFiles\nodejs\npx.cmd" }
+if (-not (Test-Path $n)) { Write-Error "Windows-side Node/npx not found; winget install OpenJS.NodeJS.LTS"; exit 1 }
+& $n -y chrome-devtools-mcp@latest --autoConnect''']
 
 # 1Password's local MCP is shipped by the Windows desktop app. On WSL, launch it through
 # the existing PowerShell interop shim so every CLI talks to the same user-approved app.

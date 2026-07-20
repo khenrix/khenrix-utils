@@ -62,6 +62,14 @@ agy --mode plan -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
 - `--mode plan` is a mechanical read-only mode that works headless (unlike `--sandbox`,
   which hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since); use it for
   review-only invocations.
+- **Pair `--mode plan` with `--dangerously-skip-permissions`, don't substitute it.** Per
+  `agy --help` the flags are orthogonal: `--dangerously-skip-permissions` is
+  "auto-approve all tool permission requests without prompting" (a *prompting* policy),
+  while `--mode` sets the execution mode (`accept-edits`, `plan`). Plan mode alone leaves
+  agy with tool prompts nobody can answer headlessly — it then soft-denies its **own**
+  `ReadFile` at `tool_confirmation_manager.go:183` and answers from an empty context,
+  producing a fluent one-sentence non-answer that looks like success. Plan mode is still
+  the write barrier; auto-approve only removes an unanswerable prompt.
 - `--add-dir <path>` widens the workspace.
 - **Auth EOL (as of 2026-06):** consumer-OAuth Gemini/agy access is slated to wind down
   around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an

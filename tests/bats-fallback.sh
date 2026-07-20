@@ -47,21 +47,44 @@ run() {
   return 0
 }
 
+# bats' `skip`. Reported LOUDLY and counted separately -- a test that cannot run
+# must never be indistinguishable from one that passed. 121 is just a sentinel
+# rc the runner recognises; the body already runs in its own subshell, so
+# exiting it does not disturb the harness.
+BATS_SKIP_RC=121
+skip() {
+  printf '%s' "${1:-no reason given}" > "${BATS_SKIP_REASON_FILE:-/dev/null}"
+  exit "$BATS_SKIP_RC"
+}
+
 # shellcheck disable=SC1090
 source "$GEN"
 
-PASS=0; FAIL=0; FAILED=()
+PASS=0; FAIL=0; SKIP=0; FAILED=(); SKIPPED=()
+BATS_SKIP_REASON_FILE=$(mktemp); export BATS_SKIP_REASON_FILE
+trap 'rm -f "$GEN" "$NAMES" "$BATS_SKIP_REASON_FILE"' EXIT
 i=0
-while IFS= read -r name; do
+# The work list is read on FD 3, not stdin, for the same reason.
+while IFS= read -r name <&3; do
   i=$((i+1))
   BATS_TEST_TMPDIR=$(mktemp -d); export BATS_TEST_TMPDIR
+  : > "$BATS_SKIP_REASON_FILE"
   setup   # must run in THIS shell: it exports FIXT/SWEEP the body relies on
   # NOT `if "bats_test_$i"; then` -- calling it in a condition context makes
   # bash suppress errexit for the whole call INCLUDING the body's own subshell,
   # so every assertion but the last would be silently ignored. Verified: with
   # that form, deleting `f+=(no-remote)` from the script left the suite green.
-  "bats_test_$i"; rc=$?
-  if [ "$rc" -eq 0 ]; then
+  # stdin from /dev/null. A test that drives something which DRAINS stdin
+  # (powershell.exe does, even with -Command) would otherwise eat the harness's
+  # own input and silently truncate the run -- observed: a suite of 35 reported
+  # "2 tests, 0 failures" and exited green. A test that needs stdin pipes it in
+  # itself. Real bats isolates this; the fallback must too.
+  "bats_test_$i" < /dev/null; rc=$?
+  if [ "$rc" -eq "$BATS_SKIP_RC" ]; then
+    reason=$(cat "$BATS_SKIP_REASON_FILE" 2>/dev/null)
+    SKIP=$((SKIP+1)); SKIPPED+=("$name -- ${reason:-no reason given}")
+    echo "ok $i - $name # skip ${reason:-no reason given}"
+  elif [ "$rc" -eq 0 ]; then
     PASS=$((PASS+1)); echo "ok $i - $name"
   else
     FAIL=$((FAIL+1)); FAILED+=("$name"); echo "not ok $i - $name"
@@ -70,9 +93,11 @@ while IFS= read -r name; do
   fi
   chmod -R u+rwX "$BATS_TEST_TMPDIR" 2>/dev/null
   rm -rf "$BATS_TEST_TMPDIR"
-done < "$NAMES"
+done 3< "$NAMES"
 
 echo
-echo "$((PASS+FAIL)) tests, $FAIL failures"
+echo "$((PASS+FAIL+SKIP)) tests, $FAIL failures, $SKIP skipped"
+# Skips are shouted, never buried: a test that could not run is not a pass.
+[ "$SKIP" -eq 0 ] || printf 'SKIPPED: %s\n' "${SKIPPED[@]}"
 [ "$FAIL" -eq 0 ] || { printf 'failed: %s\n' "${FAILED[@]}"; exit 1; }
 exit 0

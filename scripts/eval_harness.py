@@ -243,6 +243,12 @@ def run_text(provider: str, prompt: str, cfg: dict, workdir: Path, *,
     if readonly:
         prompt = fanout.apply_readonly_posture(prompt)  # same soft layer as the council
     spec = fanout.build_real_spec(provider, prompt, timeout, cfg, workdir)
+    # The council's substantive-answer floor and proof-of-read sentinel are COUNCIL
+    # policy, not a property of running a provider: an executor's correct answer here
+    # may legitimately be two lines, and no sentinel is injected into eval prompts. Opt
+    # out explicitly so the with-vs-without benchmark keeps its historical semantics —
+    # same reason build_real_spec never bakes in the council member note.
+    spec.min_chars = 0
     agy_wt = None
     if readonly:
         fanout.make_readonly(spec)
