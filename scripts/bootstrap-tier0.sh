@@ -304,7 +304,12 @@ for url in "$@"; do
   # -- so --load-extension becomes a switch, not part of the URL. A real URL
   # never contains a raw space or a double quote (both must be percent-encoded),
   # so rejecting them costs nothing and closes the split.
-  case "$url" in
+  # Matched against a LOWERCASED copy: URI schemes are case-insensitive per
+  # RFC 3986 §3.1, so `HTTPS://example.com` is a perfectly valid URL that the
+  # case-sensitive match used to refuse. Only the comparison is lowercased --
+  # $url itself is passed through untouched, since the path and query are NOT
+  # case-insensitive and must not be mangled.
+  case "${url,,}" in
     http://*|https://*) ;;
     *) echo "windows-chrome: refusing to open a non-http(s) argument: $url" >&2
        rc=1; continue ;;

@@ -332,6 +332,33 @@ setup_fallback_env() {
   [ ! -s "$FAKE_PS_LOG" ]
 }
 
+@test "windows-chrome ACCEPTS an uppercase scheme and preserves path case" {
+  # URI schemes are case-insensitive (RFC 3986 3.1), so HTTPS:// is a valid URL.
+  # The match used to be case-sensitive and refused it. The path/query are NOT
+  # case-insensitive, so the URL must still arrive with its case intact --
+  # lowercasing the whole argument would "fix" the scheme and break the URL.
+  plant_fake_ps
+  export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  "$TIER0" >/dev/null 2>&1
+  export FAKE_CHROME_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
+  run "$BIN/windows-chrome" "HTTPS://example.com/MixedCase?Q=AbC"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"non-http(s)"* ]]
+  grep -qF 'ARG=HTTPS://example.com/MixedCase?Q=AbC' "$FAKE_PS_LOG"
+}
+
+@test "windows-chrome REFUSES a mixed-case non-http(s) scheme" {
+  # The case-insensitive match must not become a hole: FiLe:// is still refused.
+  plant_fake_ps
+  export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  "$TIER0" >/dev/null 2>&1
+  export FAKE_CHROME_PATH='C:\Program Files\Google\Chrome\Application\chrome.exe'
+  run "$BIN/windows-chrome" "FiLe:///C:/Windows/System32/calc.exe"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-http(s)"* ]]
+  [ ! -s "$FAKE_PS_LOG" ]
+}
+
 @test "windows-chrome REFUSES a URL carrying extra Chrome switches" {
   # Start-Process appends ArgumentList to the target's command line, and
   # Chrome's parser splits it on whitespace -- so a space turns the remainder

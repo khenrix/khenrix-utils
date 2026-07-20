@@ -622,6 +622,16 @@ def test_solid_png_is_a_decodable_png():
 
 # --- mcp-chrome-devtools --------------------------------------------------
 
+# Deliberately NOT under C:\Program Files\nodejs — see _mcp_ps. This is where a
+# global `npm i -g npm` relocates npx.cmd, and it is the case that string-splitting
+# node.exe's directory gets wrong.
+NPX_RESOLVED = r"C:\Users\chris\AppData\Roaming\npm\npx.cmd"
+
+# The resolution script itself legitimately mentions the Program Files fallback;
+# strip that one literal before asserting no DERIVED path was ever launched.
+NPX_FALLBACK_LITERAL = r'"$env:ProgramFiles\nodejs\npx.cmd"'
+
+
 def _mcp_ps(*responses):
     """A powershell.exe stand-in for the MCP check.
 
@@ -631,10 +641,13 @@ def _mcp_ps(*responses):
     a trivially-passable back door in the one tool whose job is honest
     verification.
 
-    It is also a stricter fixture than the hook was: the npx branch matches on
-    `nodejs\\npx.cmd`, so it only answers if the doctor correctly derived the
-    node DIRECTORY from the located node.exe path -- logic the hook bypassed
-    entirely.
+    It is also a stricter fixture than the hook was, and stricter now than it
+    was when it matched `nodejs\\npx.cmd`: it answers the npx RESOLUTION probe
+    with a path in a DIFFERENT directory from node.exe (%APPDATA%\\npm, where a
+    global `npm i -g npm` puts it), and only serves the MCP on that resolved
+    path. A doctor that derives npx.cmd from node.exe's directory -- which is
+    what it used to do -- addresses a launcher this fixture never answers, so
+    the divergence shows up as a failure instead of a silent mismatch.
     """
     # bash, not sh: dash's builtin echo expands backslash escapes, which would
     # mangle 'C:\\Program Files\\nodejs\\node.exe' into three lines at the \\n.
@@ -647,7 +660,8 @@ while [ $# -gt 0 ]; do
 done
 case "$cmd" in
   *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
-  *"nodejs\\npx.cmd"*)
+  *"Get-Command npx.cmd"*) echo 'NPX={NPX_RESOLVED}' ;;
+  *"{NPX_RESOLVED}"*)
     cat > /dev/null
 {body}
     ;;
@@ -698,6 +712,65 @@ def test_mcp_check_fails_when_windows_node_is_absent(tmp_path):
     c = checks_of(r)["mcp-chrome-devtools"]
     assert c["status"] == "FAIL", c
     assert "windows-node" in c["detail"], c
+
+
+def test_mcp_check_launches_the_RESOLVED_npx_not_one_derived_from_node(tmp_path):
+    """REGRESSION. The check used to build npx.cmd by chopping the filename off
+    the located node.exe and appending `\\npx.cmd`, which assumes the two share a
+    directory. capabilities.toml resolves npx.cmd with Get-Command instead, so
+    the moment a global npm install moves npx.cmd to %APPDATA%\\npm the doctor
+    would verify a launcher the MCP does not use — and report PASS for it.
+
+    Pinned by recording what the shim was actually asked to run."""
+    log = tmp_path / "ps-commands.log"
+    home = fake_home(tmp_path, f"""#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-Command" ]; then cmd="$2"; fi
+  shift
+done
+printf '%s\\n' "$cmd" >> {shlex.quote(str(log))}
+case "$cmd" in
+  *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
+  *"Get-Command npx.cmd"*) echo 'NPX={NPX_RESOLVED}' ;;
+  *"{NPX_RESOLVED}"*)
+    cat > /dev/null
+    echo {shlex.quote(INIT_OK)}
+    echo {shlex.quote(TOOLS_TWO)}
+    ;;
+esac
+exit 0
+""")
+    r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(home)})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "PASS", c
+    seen = log.read_text()
+    assert NPX_RESOLVED in seen, f"never launched the resolved npx: {seen!r}"
+    assert "nodejs\\npx.cmd" not in seen.replace(NPX_FALLBACK_LITERAL, ""), (
+        f"launched an npx derived from node.exe's directory: {seen!r}")
+
+
+def test_mcp_check_fails_when_npx_cannot_be_resolved(tmp_path):
+    """Windows node present but npx.cmd resolvable nowhere: the MCP cannot be
+    launched, and the message must say so rather than blaming the server."""
+    home = fake_home(tmp_path, """#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-Command" ]; then cmd="$2"; fi
+  shift
+done
+case "$cmd" in
+  *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
+  *"Get-Command npx.cmd"*) exit 4 ;;
+esac
+exit 0
+""")
+    r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(home)})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "FAIL", c
+    assert "npx" in c["detail"].lower(), c
 
 
 def test_no_environment_override_can_replace_the_mcp_command(tmp_path):

@@ -148,6 +148,41 @@ def remember_windows_node(ps, stdout):
     return src
 
 
+_WIN_NPX_SOURCE: dict[str, str] = {}
+
+# The npx.cmd resolution below is a DELIBERATE MIRROR of the chrome-devtools
+# command in capabilities.toml: Get-Command first, the Program Files path only as
+# a last resort, Test-Path before use. Keep the two in step.
+#
+# This used to derive npx.cmd by string-splitting the located node.exe path
+# (`src.rsplit("\\", 1)[0] + "\\npx.cmd"`), which silently assumes the two live in
+# the same directory. They need not: a global `npm i -g npm` relocates npx.cmd to
+# %APPDATA%\npm, and the MCP declaration would then resolve one binary while the
+# doctor verified another — the doctor passing on a launcher the MCP never uses.
+_NPX_RESOLVE = ('$n = (Get-Command npx.cmd -EA SilentlyContinue).Source; '
+                'if (-not $n) { $n = "$env:ProgramFiles\\nodejs\\npx.cmd" }; '
+                'if (-not (Test-Path $n)) { exit 4 }; '
+                'Write-Output ("NPX=" + $n)')
+
+
+def windows_npx_source(ps, timeout=90):
+    """(path_to_npx.cmd, None) or (None, reason). Memoised; resolves, never derives."""
+    key = str(ps)
+    if key in _WIN_NPX_SOURCE:
+        return _WIN_NPX_SOURCE[key], None
+    try:
+        r = sh([str(ps), "-NoProfile", "-Command", _NPX_RESOLVE],
+               timeout=timeout, cwd=win_cwd())
+    except subprocess.TimeoutExpired:
+        return None, f"Windows-side npx probe timed out after {timeout}s"
+    if "NPX=" not in (r.stdout or ""):
+        return None, ("no Windows-side npx.cmd found (neither on PATH nor at "
+                      "%ProgramFiles%\\nodejs\\npx.cmd)")
+    src = (r.stdout or "").split("NPX=", 1)[1].splitlines()[0].strip()
+    _WIN_NPX_SOURCE[key] = src
+    return src, None
+
+
 # --- tiny stdlib PNG codec (no Pillow; stdlib-only is a hard constraint) ---
 
 def solid_png(w, h, rgb):
@@ -554,9 +589,13 @@ def _mcp_chrome():
     if src is None:
         return "FAIL", (f"{err}, so npx cannot run the MCP "
                         "(see the windows-node check)")
-    node_dir = src.rsplit("\\", 1)[0]
+    # RESOLVED, not derived from src's directory — see _NPX_RESOLVE.
+    npx, err = windows_npx_source(ps)
+    if npx is None:
+        return "FAIL", (f"{err}, so the MCP cannot be launched "
+                        f"(Windows node is at {src})")
     cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-           f'& "{node_dir}\\npx.cmd" -y chrome-devtools-mcp@latest']
+           f'& "{npx}" -y chrome-devtools-mcp@latest']
 
     tools, err = mcp_tools_over_stdio(cmd, timeout=180, cwd=win_cwd())
     if err:
