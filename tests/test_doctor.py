@@ -1063,6 +1063,277 @@ def test_check_skips_when_there_are_no_rc_files_at_all(tmp_path):
     assert c["status"] == "SKIP", c
 
 
+# --- onepassword-usable ---------------------------------------------------
+#
+# The question is "can this machine resolve a 1Password reference at all, and by
+# WHICH path?" -- not "is the CLI authenticated?", because driving 1Password
+# through the MCP alone is a legitimate configuration.
+#
+# Everything here runs against fake `op` binaries and fake MCP servers in temp
+# HOMEs. The real 1Password state is never touched and nothing ever attempts to
+# authenticate.
+
+OP_CHECK = "onepassword-usable"
+
+# `op account list --format=json` on an authenticated CLI.
+OP_AUTHED = """#!/bin/sh
+case "$*" in
+  *"account list"*) echo '[{"url":"example.1password.com","user_uuid":"UUUU"}]' ;;
+esac
+exit 0
+"""
+
+# The measured state on this machine: `op` runs, and reports no accounts.
+OP_NO_ACCOUNT = """#!/bin/sh
+case "$*" in
+  *"account list"*) echo '[]' ;;
+esac
+exit 0
+"""
+
+# A service account authenticates by token, so `account list` stays empty while
+# `whoami` works. Without this branch the doctor would FAIL a working CLI.
+OP_SERVICE_ACCOUNT = """#!/bin/sh
+case "$*" in
+  *"account list"*) echo '[]' ;;
+  *whoami*) echo '{"URL":"example.1password.com","ServiceAccountType":"USER"}' ;;
+esac
+exit 0
+"""
+
+# A SPEC-STRICT MCP server: it refuses tools/list until it has seen
+# `notifications/initialized`, which is what the real 1Password MCP does
+# (`ExpectedInitializedNotification`). The order of the cases matters --
+# "notifications/initialized" also contains "initialize".
+MCP_STRICT = """#!/bin/sh
+saw_init=0
+while IFS= read -r line; do
+  case "$line" in
+    *notifications/initialized*) saw_init=1 ;;
+    *initialize*) echo '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}' ;;
+    *tools/list*)
+      if [ "$saw_init" = 1 ]; then
+        echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_environments"},{"name":"authenticate"}]}}'
+      else
+        echo "Error: ExpectedInitializedNotification" >&2
+      fi
+      ;;
+  esac
+done
+exit 0
+"""
+
+# Configured, launches, answers nothing -- a dead MCP.
+MCP_DEAD = """#!/bin/sh
+cat > /dev/null
+echo "1password-mcp: cannot reach the desktop app" >&2
+exit 1
+"""
+
+
+def op_home(tmp_path, mcp_command=None, cli="claude"):
+    """A $HOME whose CLI config optionally registers a 1Password MCP."""
+    home = tmp_path / "op-home"
+    home.mkdir(parents=True, exist_ok=True)
+    if mcp_command is None:
+        return home
+    entry = {"type": "stdio", "command": str(mcp_command), "args": []}
+    if cli == "claude":
+        (home / ".claude.json").write_text(json.dumps({"mcpServers": {"1password": entry}}))
+    elif cli == "codex":
+        (home / ".codex").mkdir(exist_ok=True)
+        (home / ".codex" / "config.toml").write_text(
+            '[mcp_servers.1password]\n'
+            f'command = "{mcp_command}"\nargs = []\n')
+    elif cli == "agy":
+        (home / ".gemini" / "config").mkdir(parents=True, exist_ok=True)
+        (home / ".gemini" / "config" / "mcp_config.json").write_text(
+            json.dumps({"mcpServers": {"1password": entry}}))
+    return home
+
+
+def op_bin(tmp_path, body=None, copy_of=None):
+    return bin_dir(tmp_path, "op", body=body, copy_of=copy_of)
+
+
+def op_check(tmp_path, home, path_dirs=(), env=None):
+    """Run onepassword-usable against a fake HOME and a PATH we fully control.
+
+    PATH is REPLACED, never prepended: the real `op` lives in ~/.local/bin on
+    this machine and would otherwise be found and interrogated.
+    OP_SERVICE_ACCOUNT_TOKEN is cleared for the same reason -- a variable set in
+    the developer's shell must not change what these tests assert."""
+    e = {"HOME": str(home),
+         "PATH": os.pathsep.join([str(d) for d in path_dirs] or [str(tmp_path / "empty")]),
+         "OP_SERVICE_ACCOUNT_TOKEN": ""}
+    e.update(env or {})
+    r = run("--json", "--profile", "portable", "--only", OP_CHECK, env=e)
+    return checks_of(r)[OP_CHECK]
+
+
+def test_onepassword_skips_when_neither_cli_nor_mcp_is_configured(tmp_path):
+    """1Password is optional. Inapplicable must SKIP, never FAIL."""
+    c = op_check(tmp_path, op_home(tmp_path))
+    assert c["status"] == "SKIP", c
+    assert "optional" in c["detail"]
+
+
+def test_onepassword_passes_naming_the_cli_when_the_cli_is_authenticated(tmp_path):
+    c = op_check(tmp_path, op_home(tmp_path),
+                 path_dirs=[op_bin(tmp_path, body=OP_AUTHED)])
+    assert c["status"] == "PASS", c
+    assert "via the `op` CLI" in c["detail"], "PASS must say WHICH path works"
+    assert "1 account" in c["detail"], c
+
+
+def test_op_merely_on_path_but_unauthenticated_is_not_usable(tmp_path):
+    """THE POINT OF THIS CHECK. An `op` on PATH with no account resolves no
+    reference at all; certifying it would repeat the xclip-shim mistake."""
+    c = op_check(tmp_path, op_home(tmp_path),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "FAIL", c
+    assert "present is not usable" in c["detail"], c
+
+
+def test_onepassword_passes_naming_the_mcp_when_only_the_mcp_works(tmp_path):
+    """An unauthenticated CLI plus a working MCP is a WORKING configuration.
+    Failing it would be crying wolf at a machine that is fine."""
+    mcp = tmp_path / "mcp-strict.sh"
+    mcp.write_text(MCP_STRICT)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "PASS", c
+    assert "via the MCP only" in c["detail"], "PASS must say WHICH path works"
+    assert "2 tools" in c["detail"], c
+    # ...and must not imply everything is fine: op run / op read still cannot work.
+    assert "op run" in c["detail"] and "op read" in c["detail"], c
+
+
+def test_the_mcp_probe_sends_the_initialized_notification(tmp_path):
+    """REGRESSION. The MCP spec requires `notifications/initialized` after
+    `initialize`, and a strict server answers tools/list with
+    ExpectedInitializedNotification until it arrives -- which is indistinguishable
+    from a dead server. The real 1Password MCP is strict; chrome-devtools is
+    lenient, so omitting the notification looked correct for as long as
+    chrome-devtools was the only server ever probed. MCP_STRICT only answers
+    tools/list once it has seen the notification."""
+    mcp = tmp_path / "mcp-strict.sh"
+    mcp.write_text(MCP_STRICT)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp))
+    assert c["status"] == "PASS", c
+    assert "2 tools" in c["detail"], c
+
+
+def test_onepassword_fails_when_both_are_configured_and_neither_works(tmp_path):
+    """FAIL only when 1Password is clearly INTENDED and no path works, and the
+    detail must name every path tried and what each did."""
+    mcp = tmp_path / "mcp-dead.sh"
+    mcp.write_text(MCP_DEAD)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "FAIL", c
+    assert "`op` CLI" in c["detail"], "must name the CLI path it tried"
+    assert "1Password MCP (claude:1password)" in c["detail"], "must name the MCP entry"
+    assert "no tools/list response" in c["detail"], "must say what the MCP did"
+
+
+@pytest.mark.skipif(not doctor.is_wsl(), reason="the boundary note only applies under WSL")
+def test_the_failure_states_the_wsl_boundary_end_to_end(tmp_path):
+    """An ELF `op` under WSL with no account is the measured state on this
+    machine. Without the explanation the reader concludes their 1Password
+    desktop integration is broken and goes off re-toggling a setting that was
+    never the problem."""
+    mcp = tmp_path / "mcp-dead.sh"
+    mcp.write_text(MCP_DEAD)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
+                 path_dirs=[op_bin(tmp_path, copy_of="/bin/true")])
+    assert c["status"] == "FAIL", c
+    assert "WSL BOUNDARY" in c["detail"], c
+    assert "WINDOWS processes only" in c["detail"], c
+
+
+# The boundary logic itself is exercised in-process so it is asserted on EVERY
+# host, not only on the WSL machine that happens to have written it.
+
+def test_boundary_note_is_attached_for_a_linux_op_under_wsl(tmp_path):
+    op = op_bin(tmp_path, copy_of="/bin/true") / "op"
+    usable, detail = doctor.op_cli_status(str(op), wsl=True)
+    assert usable is False, detail
+    assert "WSL BOUNDARY" in detail
+    assert "op account add" in detail, "must say how to authenticate WSL's own op"
+    assert "OP_SERVICE_ACCOUNT_TOKEN" in detail, "must give the second way too"
+
+
+def test_boundary_note_is_not_attached_off_wsl(tmp_path):
+    """Off WSL there is no Windows desktop app to blame; the note would be noise."""
+    op = op_bin(tmp_path, copy_of="/bin/true") / "op"
+    usable, detail = doctor.op_cli_status(str(op), wsl=False)
+    assert usable is False, detail
+    assert "WSL BOUNDARY" not in detail, detail
+
+
+def test_a_service_account_token_counts_as_an_authenticated_cli(tmp_path):
+    """`op account list` is EMPTY under a service account, so account-list alone
+    would report a working CLI as unusable."""
+    c = op_check(tmp_path, op_home(tmp_path),
+                 path_dirs=[op_bin(tmp_path, body=OP_SERVICE_ACCOUNT)],
+                 env={"OP_SERVICE_ACCOUNT_TOKEN": "fake-not-a-real-token"})
+    assert c["status"] == "PASS", c
+    assert "via the `op` CLI" in c["detail"], c
+    assert "OP_SERVICE_ACCOUNT_TOKEN" in c["detail"], c
+
+
+def test_no_token_value_appears_in_the_output(tmp_path):
+    """Same rule as the rc-secrets check: never print the credential."""
+    token = "ops_" + "A1b2C3d4E5f6G7h8I9j0"
+    c = op_check(tmp_path, op_home(tmp_path),
+                 path_dirs=[op_bin(tmp_path, body=OP_SERVICE_ACCOUNT)],
+                 env={"OP_SERVICE_ACCOUNT_TOKEN": token})
+    assert c["status"] == "PASS", c
+    assert token not in json.dumps(c), "doctor leaked the service-account token"
+
+
+def test_a_codex_toml_mcp_entry_is_discovered_too(tmp_path):
+    """Each CLI keeps its registry in a different place and format. A 1Password
+    MCP configured only in Codex is still a working path on this machine."""
+    mcp = tmp_path / "mcp-strict.sh"
+    mcp.write_text(MCP_STRICT)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp, cli="codex"))
+    assert c["status"] == "PASS", c
+    assert "codex:1password" in c["detail"], c
+
+
+def test_an_agy_json_mcp_entry_is_discovered_too(tmp_path):
+    mcp = tmp_path / "mcp-strict.sh"
+    mcp.write_text(MCP_STRICT)
+    mcp.chmod(0o755)
+    c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp, cli="agy"))
+    assert c["status"] == "PASS", c
+    assert "agy:1password" in c["detail"], c
+
+
+def test_onepassword_runs_under_portable_and_is_not_invasive(tmp_path):
+    """Host-independent, and it only reads -- so `portable` must RUN it and no
+    skip flag may drop it."""
+    c = op_check(tmp_path, op_home(tmp_path),
+                 path_dirs=[op_bin(tmp_path, body=OP_NO_ACCOUNT)])
+    assert c["status"] == "FAIL", "portable must run this check, not skip it: %r" % c
+    assert not c["hardware"], "must not be hardware-gated out of portable"
+    assert not c["invasive"], "the check only reads"
+
+    r = run("--json", "--profile", "portable", "--skip-invasive", "--skip-network",
+            "--only", OP_CHECK,
+            env={"HOME": str(op_home(tmp_path)),
+                 "PATH": str(op_bin(tmp_path, body=OP_NO_ACCOUNT)),
+                 "OP_SERVICE_ACCOUNT_TOKEN": ""})
+    assert checks_of(r)[OP_CHECK]["status"] == "FAIL", "skip flags must not drop it"
+
+
 # --- the --scan-rc seam the migration script drives ------------------------
 #
 # scripts/migrate-secrets-to-1password.sh rewrites rc lines based on this

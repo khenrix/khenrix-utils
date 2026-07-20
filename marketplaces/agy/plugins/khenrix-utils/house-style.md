@@ -84,6 +84,9 @@ that CLI's own config, not here.
   op run -- ./your-app
   ```
   For a one-off read: `op read "op://Private/expenses/db-password"`.
+  `op run`/`op read` are **CLI** features — the 1Password MCP does not provide them,
+  and on WSL the desktop app's CLI integration is Windows-only, so WSL's `op` needs its
+  own `op account add` or `OP_SERVICE_ACCOUNT_TOKEN` (see `docs/machine-setup.md`).
   Config files that take literal values (e.g. an MCP `env` block) should hold
   `${VAR}` and let the shell supply it — Claude Code expands `${VAR}` and
   `${VAR:-default}` in `command`, `args`, `env`, `url` and `headers`.

@@ -128,6 +128,22 @@ hand-copy (all of the above ships in this repo now).
 - **linkedin** — logs in via the tool (`uvx mcp-server-linkedin`).
 - **claude.ai account MCPs** (Gmail / Calendar / Drive) — just sign into the same
   Claude account; they follow the account, not the machine.
+- **1Password** — two *independent* paths that do not substitute for each other:
+  - The **MCP** (`1password-mcp.exe`, launched through the PowerShell shim) works
+    once the Windows desktop app is installed; nothing to re-auth. MCP tools only
+    load at **CLI session start**, so enabling it mid-session needs a restart before
+    the tools are callable.
+  - The **`op` CLI inside WSL needs its own auth.** The desktop app's *"Integrate
+    with 1Password CLI"* exposes its auth socket to **Windows** processes only, and
+    the `op` installed in WSL is a **Linux** binary, so it reports `No accounts
+    configured for use with 1Password CLI` *with desktop integration fully enabled*.
+    That is the Windows/WSL boundary, not a broken setup — re-toggling the desktop
+    setting will never fix it. Authenticate WSL's `op` directly, either with
+    `op account add` (prompts for the master password; works in a Linux shell) or by
+    exporting `OP_SERVICE_ACCOUNT_TOKEN`.
+  - **`op run --` and `op read` are CLI features**, so a consumer running inside WSL
+    cannot resolve `op://` references through the MCP. `python3 scripts/doctor.py
+    --only onepassword-usable` reports which path (if any) actually works here.
 
 ---
 

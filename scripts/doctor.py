@@ -65,6 +65,11 @@ import time
 import zlib
 from pathlib import Path
 
+try:                                  # stdlib since 3.11; the doctor must still
+    import tomllib                    # import on an older interpreter, so a
+except ImportError:                   # missing tomllib costs one config source,
+    tomllib = None                    # not the whole script.
+
 CHECKS: list[dict] = []
 
 PS_SHIM = ".local/bin/powershell.exe"
@@ -484,14 +489,59 @@ def _no_shim():
 
 # --- MCP ------------------------------------------------------------------
 
-@check("mcp-chrome-devtools", wsl_only=True, network=True)
-def _mcp_chrome():
-    """Behavioural: speak MCP over stdio and require a non-empty tools LIST.
+def mcp_tools_over_stdio(cmd, timeout, cwd=None, env=None):
+    """Speak MCP over stdio; return (tools, error) — exactly one is None.
 
     Note the trap this avoids: the `initialize` reply advertises
     `"capabilities":{"tools":{"listChanged":true}}`, so a substring search for
     '"tools"' passes even when tools/list never answered. The response is parsed
     and matched on the request id.
+
+    Shared by every MCP check on purpose. Two copies of this parser would mean
+    the trap could be closed in one and left open in the other.
+
+    `notifications/initialized` is REQUIRED, not ceremony. The spec says the
+    client sends it after `initialize`, and a strict server rejects everything
+    until it arrives: the 1Password MCP answers tools/list with
+    `ExpectedInitializedNotification` and nothing else, which reads exactly like
+    a dead server. chrome-devtools happens to be lenient, so omitting it looked
+    correct for as long as chrome-devtools was the only server probed."""
+    payload = "\n".join([
+        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "khenrix-doctor", "version": "1"}}}),
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    ]) + "\n"
+    try:
+        r = sh(cmd, input=payload, timeout=timeout, cwd=cwd, env=env)
+    except subprocess.TimeoutExpired:
+        return None, f"did not respond within {timeout}s"
+    except OSError as e:
+        return None, f"could not be launched ({type(e).__name__}: {e})"
+
+    tools = None
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        if msg.get("id") == 2 and isinstance(msg.get("result"), dict):
+            tools = msg["result"].get("tools")
+    if tools is None:
+        return None, ("no tools/list response. "
+                      f"stderr: {(r.stderr or '').strip()[:200]}")
+    if not isinstance(tools, list) or not tools:
+        return None, "answered tools/list with an empty tool set"
+    return tools, None
+
+
+@check("mcp-chrome-devtools", wsl_only=True, network=True)
+def _mcp_chrome():
+    """Behavioural: speak MCP over stdio and require a non-empty tools LIST.
 
     There is deliberately NO environment override for the command. A hook that
     let $SOMETHING replace the MCP invocation would make this check trivially
@@ -508,33 +558,9 @@ def _mcp_chrome():
     cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
            f'& "{node_dir}\\npx.cmd" -y chrome-devtools-mcp@latest']
 
-    payload = "\n".join([
-        json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2024-11-05", "capabilities": {},
-            "clientInfo": {"name": "khenrix-doctor", "version": "1"}}}),
-        json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-    ]) + "\n"
-    try:
-        r = sh(cmd, input=payload, timeout=180, cwd=win_cwd())
-    except subprocess.TimeoutExpired:
-        return "FAIL", "chrome-devtools MCP did not respond within 180s"
-
-    tools = None
-    for line in (r.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
-        if msg.get("id") == 2 and isinstance(msg.get("result"), dict):
-            tools = msg["result"].get("tools")
-    if tools is None:
-        return "FAIL", ("no tools/list response from the chrome-devtools MCP. "
-                        f"stderr: {(r.stderr or '').strip()[:200]}")
-    if not isinstance(tools, list) or not tools:
-        return "FAIL", "chrome-devtools MCP answered tools/list with an empty tool set"
+    tools, err = mcp_tools_over_stdio(cmd, timeout=180, cwd=win_cwd())
+    if err:
+        return "FAIL", f"chrome-devtools MCP {err}"
     return "PASS", f"chrome-devtools MCP returned {len(tools)} tools over stdio"
 
 
@@ -820,6 +846,205 @@ def _rc_secrets():
         "house-style.md. scripts/migrate-secrets-to-1password.sh performs the "
         "move transactionally. Rotate anything that was exposed — it has been "
         "readable for as long as it has been on disk.")
+
+
+# --- 1Password ------------------------------------------------------------
+#
+# THE QUESTION THIS ASKS is "can this machine resolve a 1Password reference at
+# all, and by WHICH path?" — deliberately not "is the CLI authenticated?".
+# Driving 1Password through the MCP alone is a legitimate configuration, and a
+# check that failed it would be crying wolf at a working machine.
+#
+# THE WINDOWS/WSL BOUNDARY — the trap that cost real time here.
+#     The desktop app's "Integrate with 1Password CLI" exposes its auth socket
+#     to WINDOWS processes only. `op` installed inside WSL is a LINUX binary and
+#     cannot reach it, so it reports "No accounts configured for use with
+#     1Password CLI" with desktop integration fully enabled and healthy. That
+#     reads like a broken setup; it is a boundary. Whenever the CLI is unusable
+#     AND is a Linux binary under WSL, the detail says so outright — a FAIL that
+#     sends the reader back to re-toggle a setting that was never the problem is
+#     worse than no FAIL at all.
+#
+# THE MCP IS A SEPARATE PATH, NOT A SUBSTITUTE. `op run --` and `op read` are
+# CLI features; the MCP manages Developer Environments. A machine whose MCP
+# works and whose CLI has no account still cannot resolve an op:// reference,
+# so the MCP-only PASS says so rather than implying everything is fine.
+#
+# Same defect class as the Windows-side-Node prerequisite: an undocumented
+# requirement that fails silently and confusingly on a second machine.
+#
+# Not `hardware` — nothing here is host-specific, and `portable` is the profile
+# reached for on the second machine. Not `invasive` — it reads config and, at
+# most, starts an MCP that exists to be started. Not `network` — `op account
+# list` reads on-disk config and the MCP is a locally installed executable.
+
+# Where each CLI keeps its MCP registry. Top-level servers only: a per-project
+# override is not the machine's 1Password capability.
+OP_MCP_CONFIGS = (
+    ("claude", ".claude.json", "json", "mcpServers"),
+    ("codex", ".codex/config.toml", "toml", "mcp_servers"),
+    ("agy", ".gemini/config/mcp_config.json", "json", "mcpServers"),
+)
+
+OP_MCP_NAME = re.compile(r"1password|onepassword", re.I)
+
+# Tight on purpose: the MCP is a local executable, so a slow answer is a broken
+# answer, and a doctor that hangs is worse than one that fails.
+OP_MCP_TIMEOUT = 30
+OP_CLI_TIMEOUT = 20
+
+WSL_BOUNDARY = (
+    "WSL BOUNDARY, NOT A BROKEN SETUP: this `op` is a Linux binary, and the "
+    "1Password desktop app's \"Integrate with 1Password CLI\" exposes its auth "
+    "socket to WINDOWS processes only — desktop integration can be fully "
+    "enabled and this `op` still sees no account. Give WSL's own op its own "
+    "auth: `op account add` (prompts for the master password; works in a Linux "
+    "shell) or a service account via OP_SERVICE_ACCOUNT_TOKEN."
+)
+
+
+def expand_config_value(value):
+    """`${HOME}`/`~` in a config command survive into the live registry on some
+    CLIs and are pre-expanded on others; the doctor must launch either."""
+    return os.path.expandvars(os.path.expanduser(str(value)))
+
+
+def onepassword_mcp_entries(home):
+    """[(labels, argv, env)] — every DISTINCT configured 1Password MCP command.
+
+    Deduplicated by argv: all three CLIs point at the same executable on this
+    machine, and launching it three times proves nothing the first launch did
+    not while tripling the worst-case runtime."""
+    found = {}
+    for cli, rel, fmt, key in OP_MCP_CONFIGS:
+        path = home / rel
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        if fmt == "toml" and tomllib is None:
+            continue
+        try:
+            data = tomllib.loads(text) if fmt == "toml" else json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        servers = data.get(key) if isinstance(data, dict) else None
+        if not isinstance(servers, dict):
+            continue
+        for name, spec in servers.items():
+            if not OP_MCP_NAME.search(str(name)) or not isinstance(spec, dict):
+                continue
+            cmd = spec.get("command")
+            if not cmd:
+                continue
+            argv = tuple([expand_config_value(cmd)]
+                         + [expand_config_value(a) for a in (spec.get("args") or [])])
+            entry = found.setdefault(argv, {"labels": [], "env": {}})
+            entry["labels"].append(f"{cli}:{name}")
+            for k, v in (spec.get("env") or {}).items():
+                entry["env"][str(k)] = expand_config_value(v)
+    return [(v["labels"], list(argv), v["env"]) for argv, v in found.items()]
+
+
+def is_elf(path):
+    """True when `path` is a Linux ELF executable. READ, not inferred from the
+    name: an op.exe reached through interop is a PE, and which one is on PATH is
+    the entire substance of the boundary note."""
+    try:
+        return Path(path).read_bytes()[:4] == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def op_cli_status(op, wsl=None, timeout=OP_CLI_TIMEOUT):
+    """(usable, detail) for the `op` CLI.
+
+    USABLE MEANS AUTHENTICATED. `op` on PATH is exactly the presence check this
+    file exists to refuse: an unauthenticated `op` resolves no reference at all,
+    and certifying it would repeat the xclip-shim mistake in a new place."""
+    if wsl is None:
+        wsl = is_wsl()
+    if not op:
+        return False, "`op` CLI: not installed (not on PATH)"
+    try:
+        r = sh([op, "account", "list", "--format=json"], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"`op` CLI at {op}: `op account list` did not return within {timeout}s"
+    except OSError as e:
+        return False, f"`op` CLI at {op}: could not be executed ({type(e).__name__})"
+    try:
+        accounts = json.loads((r.stdout or "").strip() or "[]")
+    except ValueError:
+        accounts = None
+    if r.returncode == 0 and isinstance(accounts, list) and accounts:
+        # The COUNT only. Account emails and sign-in URLs are the user's, and
+        # this detail is printed, JSON-dumped, logged and pasted into agent
+        # transcripts — same rule as the rc-secrets check.
+        return True, f"`op` CLI at {op} is authenticated ({len(accounts)} account(s))"
+    if os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+        # A service account authenticates by token, so `op account list` stays
+        # EMPTY while the CLI works perfectly. Probed only when the variable is
+        # set — its value is never read, and `op whoami` cannot prompt, so this
+        # never turns the doctor into an interactive auth attempt.
+        try:
+            w = sh([op, "whoami", "--format=json"], timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            w = None
+        if w is not None and w.returncode == 0 and (w.stdout or "").strip():
+            return True, f"`op` CLI at {op} is authenticated via OP_SERVICE_ACCOUNT_TOKEN"
+        return False, (f"`op` CLI at {op}: OP_SERVICE_ACCOUNT_TOKEN is set but "
+                       "`op whoami` did not accept it")
+    detail = (f"`op` CLI at {op}: installed but NO account is configured, so it "
+              "cannot resolve an op:// reference — present is not usable")
+    if wsl and is_elf(op):
+        detail += ". " + WSL_BOUNDARY
+    return False, detail
+
+
+@check("onepassword-usable")
+def _onepassword():
+    home = Path.home()
+    op = shutil.which("op")
+    entries = onepassword_mcp_entries(home)
+    if not op and not entries:
+        return "SKIP", ("no `op` CLI on PATH and no 1Password MCP configured in "
+                        "any CLI — 1Password is optional and this machine does "
+                        "not use it")
+
+    cli_ok, cli_detail = op_cli_status(op)
+
+    mcp_ok, mcp_detail = False, "1Password MCP: not configured in any CLI"
+    failures = []
+    for labels, argv, env in entries:
+        label = ", ".join(labels)
+        # Only a Windows-side launcher wants /mnt/c; relocating a pure-Linux
+        # subprocess would be an unexplained side effect (see win_cwd()).
+        cwd = win_cwd() if "powershell.exe" in argv[0] else None
+        tools, err = mcp_tools_over_stdio(
+            argv, timeout=OP_MCP_TIMEOUT, cwd=cwd,
+            env=dict(os.environ, **env) if env else None)
+        if err:
+            failures.append(f"1Password MCP ({label}) {err}")
+            continue
+        mcp_ok = True
+        mcp_detail = (f"1Password MCP ({label}) launched and answered tools/list "
+                      f"with {len(tools)} tools")
+        break
+    if entries and not mcp_ok:
+        mcp_detail = "; ".join(failures)
+
+    if cli_ok and mcp_ok:
+        return "PASS", ("op:// resolvable via the `op` CLI, and the MCP answers too "
+                        f"— {cli_detail}; {mcp_detail}")
+    if cli_ok:
+        return "PASS", f"op:// resolvable via the `op` CLI — {cli_detail} ({mcp_detail})"
+    if mcp_ok:
+        return "PASS", (f"1Password reachable via the MCP only — {mcp_detail}. NOTE: "
+                        "`op run --` / `op read` are CLI features the MCP does not "
+                        "provide, so op:// references cannot be resolved here until "
+                        f"the CLI has its own auth. {cli_detail}")
+    return "FAIL", ("1Password is configured here but NO path to it works. "
+                    f"Tried: {cli_detail} | {mcp_detail}")
 
 
 # --- runner ---------------------------------------------------------------
