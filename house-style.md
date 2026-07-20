@@ -71,6 +71,26 @@ that CLI's own config, not here.
   credential API. For browser logins, ask the user to approve 1Password browser autofill; never
   request, read, paste, print, or persist passwords, passkeys, recovery codes, cookies, or tokens.
 - Treat 1Password unlock/approval, OTP, CAPTCHA, and BankID as human-assisted checkpoints.
+- **Never export a literal secret in a shell rc file** (`.bashrc`, `.zshrc`, `.profile`).
+  They are world-readable by every process the user runs, survive into backups and
+  transcripts, and nothing ever re-examines them. Three live secrets sat in `~/.bashrc`
+  here (a Supabase secret key, a database password, a Google Places API key) until a
+  grep found them by accident. Store them in 1Password and reference at use time:
+  ```bash
+  # .bashrc — a reference, not a value
+  export EXPENSES_DB_PASSWORD="op://Private/expenses/db-password"
+  # then run the consumer under `op run`, which resolves op:// refs into the
+  # child's environment without the value touching disk or the agent:
+  op run -- ./your-app
+  ```
+  For a one-off read: `op read "op://Private/expenses/db-password"`.
+  Config files that take literal values (e.g. an MCP `env` block) should hold
+  `${VAR}` and let the shell supply it — Claude Code expands `${VAR}` and
+  `${VAR:-default}` in `command`, `args`, `env`, `url` and `headers`.
+- Secrets are not only in the obvious file. When scrubbing, check the whole family:
+  the config, its rotating backups, `.credentials.json`, per-project `.env` files,
+  and shell rc files. Scrub the SOURCE first — backups that regenerate every couple
+  of minutes will otherwise be re-dirtied from it.
 - For destructive or outward-facing actions (deletes, pushes, deploys), confirm first
   unless explicitly authorised.
 - Treat `~/git` as the primary workspace; avoid writing outside it without reason.

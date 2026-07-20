@@ -54,6 +54,7 @@ import base64
 import json
 import os
 import random
+import re
 import secrets
 import shutil
 import struct
@@ -613,6 +614,214 @@ def _dual():
     return "PASS", f"version managers on PATH: {active[0] if active else 'none'}{note}"
 
 
+# --- Secrets --------------------------------------------------------------
+#
+# A shell rc file is the worst place a credential can sit: world-readable to
+# every process the user runs, copied wholesale into backups and tarballs, and
+# pasted into agent transcripts. Three live secrets sat in ~/.bashrc on this
+# machine indefinitely — a Supabase secret key, a database password and a Google
+# Places API key — as literal `export VAR="value"` lines. Nothing ever looked; a
+# grep found them by accident during unrelated work.
+#
+# DESIGN RULE — A LOW FALSE-POSITIVE RATE BEATS EXHAUSTIVE DETECTION.
+#     A check that cries wolf trains people to ignore it, which is strictly
+#     worse than no check. So there are exactly two high-confidence rules:
+#       1. the VALUE carries a known credential SHAPE (sb_secret_, AIza, ...)
+#       2. the NAME says credential AND the value is a plausible literal
+#     Everything house-style.md actually prescribes — ${VAR}, $(op read ...),
+#     op://Private/x/y, a path, an empty value — is the CORRECT pattern and
+#     must PASS. Rule 2 in particular is gated hard: TOKENIZERS_PARALLELISM
+#     matches /TOKEN/ and is not a secret.
+#
+# SECOND DESIGN RULE — NEVER PRINT A MATCHED VALUE.
+#     Reporting a secret to prove a secret is exposed spreads it further: into
+#     terminal scrollback, CI logs, `doctor --json` output and the next agent
+#     transcript. The detail line carries the file, the line number and the
+#     variable NAME. That is enough to act on and harmless to paste.
+#
+# Not `hardware` (so it runs under --profile portable — nothing here is
+# host-specific) and not `invasive` (it only reads).
+
+RC_FILES = (".bashrc", ".bash_profile", ".profile", ".zshrc", ".bash_aliases")
+
+# Each shape is a literal prefix plus ENOUGH trailing credential-shaped
+# characters that ordinary prose and paths cannot reach it: "/opt/sk-tools"
+# carries `sk-` but only five trailing characters, so it does not match.
+SECRET_SHAPES = (
+    ("Supabase secret key", re.compile(r"sb_secret_[A-Za-z0-9_\-]{16,}")),
+    ("Google API key", re.compile(r"AIza[A-Za-z0-9_\-]{30,}")),
+    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}")),
+    ("GitHub token", re.compile(r"ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}")),
+    ("OpenAI-style key", re.compile(r"sk-[A-Za-z0-9_\-]{20,}")),
+    ("AWS access key id", re.compile(r"AKIA[A-Z0-9]{16}")),
+    ("private key block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+)
+
+SECRETISH_NAME = re.compile(r"SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|CREDENTIAL")
+# A _FILE/_PATH/_DIR variable names WHERE the credential lives, never the
+# credential. Excluding the suffix keeps the common correct pattern quiet.
+LOCATION_NAME = re.compile(r"_(FILE|PATH|DIR|DIRECTORY|URL)$")
+
+EXPORT_RE = re.compile(r"^\s*export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+SOURCE_RE = re.compile(r"^\s*(?:source|\.)\s+(\S+)")
+
+# Values that match a secretish NAME but are plainly configuration, not
+# credentials. TOKENIZERS_PARALLELISM=false is the canonical example.
+NON_SECRET_LITERALS = frozenset(
+    {"true", "false", "yes", "no", "on", "off", "none", "null", "nil",
+     "unset", "default", "auto", "disabled", "enabled"})
+
+
+def rc_lines(path):
+    """Text lines of an rc file, or [] if it cannot be read. Read-only."""
+    try:
+        return path.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def rc_value(raw):
+    """The literal value from the right-hand side of an `export NAME=<raw>`.
+
+    Quoted values win over the rest of the line so a trailing `# comment` is
+    not mistaken for part of the value."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    m = re.match(r'"((?:[^"\\]|\\.)*)"', raw)
+    if m:
+        return m.group(1)
+    m = re.match(r"'([^']*)'", raw)
+    if m:
+        return m.group(1)
+    return raw.split()[0].split("#", 1)[0]
+
+
+def is_reference(value):
+    """True when the value POINTS AT a secret instead of being one.
+
+    `${BAR}`, `$(op read ...)`, `op://Private/x/y`, a path and an empty string
+    are all the pattern house-style.md prescribes. Flagging them would make the
+    check fire on correctly-migrated rc files, i.e. permanently."""
+    v = value.strip()
+    if not v:
+        return True
+    if "op://" in v:
+        return True
+    if "$" in v or "`" in v:
+        return True
+    if v.startswith(("/", "~")):
+        return True
+    return False
+
+
+def plausible_literal_secret(value):
+    """Rule-2 gate: could this literal plausibly BE a credential?
+
+    Rule 1 (shape) is self-evidencing; rule 2 has only the variable's name to go
+    on, so the value must clear a bar. Credentials are long, are not booleans or
+    version numbers, and contain no whitespace."""
+    v = value.strip()
+    if len(v) < 8:
+        return False
+    if v.lower() in NON_SECRET_LITERALS:
+        return False
+    if any(ch.isspace() for ch in v):
+        return False
+    if not any(ch.isalnum() for ch in v):
+        return False
+    if v.replace(".", "").replace("-", "").replace("_", "").isdigit():
+        return False
+    return True
+
+
+def rc_targets(home):
+    """rc files to scan: the usual five, plus whatever they `source`, ONE level
+    deep. Deeper nesting is rare and every level multiplies the chance of
+    resolving the wrong file. An unresolvable expansion (`. "$ASDF_DIR/asdf.sh"`)
+    is skipped rather than guessed at — scanning the wrong file is worse than
+    not scanning."""
+    seen, targets = set(), []
+
+    def add(p):
+        try:
+            rp = p.resolve()
+        except OSError:
+            return
+        if rp in seen or not rp.is_file():
+            return
+        seen.add(rp)
+        targets.append(p)
+
+    for name in RC_FILES:
+        add(home / name)
+    for p in list(targets):          # snapshot: sourced files are not re-scanned
+        for line in rc_lines(p):
+            m = SOURCE_RE.match(line)
+            if not m:
+                continue
+            raw = m.group(1).strip().strip("\"'")
+            if raw.startswith("~/"):
+                raw = str(home) + raw[1:]
+            elif raw.startswith("$HOME/"):
+                raw = str(home) + raw[5:]
+            if "$" in raw:
+                continue
+            cand = Path(raw)
+            add(cand if cand.is_absolute() else home / raw)
+    return targets
+
+
+def scan_rc_file(path, home=None):
+    """[(display, lineno, varname, why)] for one rc file. NEVER the value."""
+    home = home or Path.home()
+    try:
+        display = "~/" + str(path.relative_to(home))
+    except ValueError:
+        display = str(path)
+    found = []
+    for n, line in enumerate(rc_lines(path), 1):
+        m = EXPORT_RE.match(line)
+        if not m:
+            continue
+        name, value = m.group(1), rc_value(m.group(2))
+        shape = next((label for label, rx in SECRET_SHAPES if rx.search(value)), None)
+        if shape:
+            found.append((display, n, name, shape))
+            continue
+        if is_reference(value):
+            continue
+        if (SECRETISH_NAME.search(name) and not LOCATION_NAME.search(name)
+                and plausible_literal_secret(value)):
+            found.append((display, n, name, "credential-named variable holding a literal"))
+    return found
+
+
+@check("no-plaintext-secrets-in-shell-rc")
+def _rc_secrets():
+    home = Path.home()
+    targets = rc_targets(home)
+    if not targets:
+        return "SKIP", "no shell rc files found under $HOME"
+    found = [f for p in targets for f in scan_rc_file(p, home)]
+    if not found:
+        return "PASS", (f"no exported literal secrets in {len(targets)} shell rc "
+                        f"file(s); references (${{VAR}}, op://, $(...)) are the "
+                        f"correct pattern and pass")
+    where = "; ".join(f"{d}:{n} {name} [{why}]" for d, n, name, why in found)
+    return "FAIL", (
+        f"{len(found)} exported literal secret(s) in shell rc files: {where} "
+        "— VALUES WITHHELD DELIBERATELY (printing one to prove it is exposed "
+        "spreads it into scrollback, logs and transcripts). A shell rc is "
+        "world-readable to every process you run and is copied into backups, "
+        "tarballs and agent transcripts. Move each into 1Password and export a "
+        'REFERENCE instead: export NAME="op://Private/<item>/credential", then '
+        "run the consumer under `op run -- <cmd>`; see the secrets section of "
+        "house-style.md. scripts/migrate-secrets-to-1password.sh performs the "
+        "move transactionally. Rotate anything that was exposed — it has been "
+        "readable for as long as it has been on disk.")
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_checks(profile="full", only=None, wsl=None, skip_invasive=False,
@@ -670,7 +879,22 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--only", help="comma-separated check names to run")
     ap.add_argument("--list", action="store_true", help="list check names and exit")
+    ap.add_argument("--scan-rc", metavar="FILE",
+                    help="scan ONE rc file and print 'lineno<TAB>NAME<TAB>why' per "
+                         "exported literal secret, then exit. Values are never "
+                         "printed. This is the seam scripts/migrate-secrets-to-"
+                         "1password.sh drives, so the migration and the check can "
+                         "never disagree about what counts as a secret")
     args = ap.parse_args(argv)
+
+    if args.scan_rc:
+        p = Path(args.scan_rc).expanduser()
+        if not p.is_file():
+            print(f"not a readable file: {p}", file=sys.stderr)
+            return 2
+        for _, n, name, why in scan_rc_file(p):
+            print(f"{n}\t{name}\t{why}")
+        return 0
 
     if args.list:
         print("tags: hardware -> skipped by --profile portable; "

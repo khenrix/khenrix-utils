@@ -838,3 +838,258 @@ def test_one_manager_on_the_path_is_fine(tmp_path):
             env=env)
     c = checks_of(r)["no-dual-version-managers"]
     assert c["status"] == "PASS", c
+
+
+# --- no-plaintext-secrets-in-shell-rc -------------------------------------
+#
+# Three live credentials sat in ~/.bashrc on this machine indefinitely as
+# literal `export VAR="value"` lines. These fixtures drive the check through the
+# CLI against fake $HOME trees.
+#
+# The fixture values below are FAKE but SHAPED like the real thing -- that is
+# the whole point, since shape is what rule 1 matches on. They are also what the
+# leak tests search the output for.
+
+RC_CHECK = "no-plaintext-secrets-in-shell-rc"
+
+FAKE_GOOGLE = "AIzaSyD" + "9tQ3vBn7Kx2mLp0RfZs4WjH6cVaE1uYgT"   # AIza + 33
+FAKE_SUPABASE = "sb_secret_" + "7Kx2mLp0RfZs4WjH6cVaE1uYgT"
+FAKE_GITHUB = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+FAKE_PASSWORD = "correct-horse-battery-staple-99"
+
+# Every literal that must never reach the doctor's output.
+ALL_FAKE_VALUES = (FAKE_GOOGLE, FAKE_SUPABASE, FAKE_GITHUB, FAKE_PASSWORD)
+
+
+def rc_home(tmp_path, **files):
+    """A $HOME containing the named rc files with the given contents."""
+    home = tmp_path / "rc-home"
+    home.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (home / name.replace("__", ".")).write_text(body)
+    return home
+
+
+def rc_check(tmp_path, home):
+    r = run("--json", "--profile", "portable", "--only", RC_CHECK,
+            env={"HOME": str(home)})
+    return checks_of(r)[RC_CHECK], r.stdout
+
+
+# A clean rc: ordinary configuration, nothing credential-shaped.
+CLEAN_RC = """\
+# ordinary shell setup
+export EDITOR="vim"
+export LESS="-R -F -X"
+export MAKEFLAGS="-j8"
+alias ll='ls -la'
+"""
+
+# Every pattern house-style.md actually prescribes. All of these are CORRECT and
+# must pass -- a check that flags the fix it recommends is worse than useless,
+# because it can never be satisfied.
+REFERENCE_RC = """\
+export EXPENSES_DB_PASSWORD="op://Private/expenses/db-password"
+export SUPABASE_SECRET_KEY="${SUPABASE_SECRET_KEY}"
+export GOOGLE_PLACES_API_KEY="$(op read op://Private/places/credential)"
+export GITHUB_TOKEN="$GH_TOKEN_FROM_KEYCHAIN"
+export SOME_API_KEY=""
+export AWS_CREDENTIAL_FILE="$HOME/.aws/credentials"
+export NPM_TOKEN_PATH=~/.npm-token
+export OPENAI_API_KEY=`cat /run/secrets/openai`
+"""
+
+
+def test_clean_rc_files_pass(tmp_path):
+    c, _ = rc_check(tmp_path, rc_home(tmp_path, __bashrc=CLEAN_RC))
+    assert c["status"] == "PASS", c
+
+
+def test_a_literal_secret_in_bashrc_is_reported(tmp_path):
+    """The actual incident: an exported literal credential nobody ever looked at."""
+    home = rc_home(tmp_path, __bashrc=CLEAN_RC + (
+        f'export EXPENSES_SUPABASE_SECRET_KEY="{FAKE_SUPABASE}"\n'))
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "EXPENSES_SUPABASE_SECRET_KEY" in c["detail"]
+    # Derived, not hardcoded: an edit to CLEAN_RC must not silently stop this
+    # from asserting the line number.
+    lineno = CLEAN_RC.count("\n") + 1
+    assert f".bashrc:{lineno}" in c["detail"], (
+        "must report the line number: %r" % c["detail"])
+
+
+def test_references_are_not_flagged(tmp_path):
+    """${VAR}, $(op read ...), op://, backticks, empty values and paths are the
+    CORRECT pattern. Flagging them would make the check unsatisfiable and it
+    would be ignored -- the failure mode that matters most here."""
+    c, _ = rc_check(tmp_path, rc_home(tmp_path, __bashrc=REFERENCE_RC))
+    assert c["status"] == "PASS", c
+
+
+def test_secret_shaped_value_under_an_innocuous_name_is_caught(tmp_path):
+    """Rule 1 is name-independent. `MAPS_BACKEND` says nothing, but an
+    AIza-shaped 37-character literal is a Google API key whatever it is called."""
+    home = rc_home(tmp_path, __bashrc=f'export MAPS_BACKEND="{FAKE_GOOGLE}"\n')
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "MAPS_BACKEND" in c["detail"]
+
+
+def test_no_matched_value_appears_anywhere_in_the_output(tmp_path):
+    """THE POINT OF THE CHECK. Printing a secret to prove it is exposed spreads
+    it into scrollback, CI logs, --json output and the next agent transcript.
+    Asserted against the WHOLE stdout, not just the detail field."""
+    home = rc_home(tmp_path, __bashrc=(
+        f'export EXPENSES_SUPABASE_SECRET_KEY="{FAKE_SUPABASE}"\n'
+        f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n'
+        f'export EXPENSES_DB_PASSWORD="{FAKE_PASSWORD}"\n'
+        f'export MAPS_BACKEND="{FAKE_GITHUB}"\n'))
+    c, stdout = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    for value in ALL_FAKE_VALUES:
+        assert value not in stdout, f"doctor leaked a secret value: {value[:6]}..."
+    # ...and not in the human-readable rendering either.
+    plain = run("--profile", "portable", "--only", RC_CHECK,
+                env={"HOME": str(home)}).stdout
+    for value in ALL_FAKE_VALUES:
+        assert value not in plain, f"doctor leaked a secret value in text mode"
+    # It must still be actionable: every offending NAME is named.
+    for name in ("EXPENSES_SUPABASE_SECRET_KEY", "GOOGLE_PLACES_API_KEY",
+                 "EXPENSES_DB_PASSWORD", "MAPS_BACKEND"):
+        assert name in c["detail"], name
+
+
+def test_a_credential_named_variable_with_a_literal_is_flagged(tmp_path):
+    """Rule 2: the value has no recognisable shape (a database password is just
+    a string), so the NAME is the only signal."""
+    home = rc_home(tmp_path, __bashrc=f'export EXPENSES_DB_PASSWORD="{FAKE_PASSWORD}"\n')
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "EXPENSES_DB_PASSWORD" in c["detail"]
+
+
+def test_config_flags_that_merely_match_the_name_pattern_are_not_secrets(tmp_path):
+    """FALSE-POSITIVE GUARD. TOKENIZERS_PARALLELISM matches /TOKEN/ and is a
+    HuggingFace setting; so do a boolean, a numeric and a _FILE/_PATH variable.
+    A check that fires on these gets ignored, and an ignored check is worse than
+    no check."""
+    home = rc_home(tmp_path, __bashrc="""\
+export TOKENIZERS_PARALLELISM=false
+export VAULT_TOKEN_TTL=3600
+export SECRET_SERVICE_ENABLED=true
+export API_KEY_FILE=/etc/keys/api.key
+export GOOGLE_APPLICATION_CREDENTIALS_PATH=/etc/gcp.json
+export DB_PASSWORD_FILE=/run/secrets/db
+export CREDENTIAL_DIR=/var/lib/creds
+""")
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "PASS", c
+
+
+def test_other_rc_files_are_scanned_not_just_bashrc(tmp_path):
+    home = rc_home(tmp_path,
+                   __bashrc=CLEAN_RC,
+                   __zshrc=f'export SLACK_TOKEN="xoxb-{FAKE_GITHUB[4:]}"\n')
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert ".zshrc" in c["detail"], c
+
+
+def test_a_sourced_file_one_level_deep_is_scanned(tmp_path):
+    """A secret hidden one `source` away is exactly as exposed. `.bashrc` here
+    is clean; only the sourced file is dirty."""
+    home = rc_home(tmp_path,
+                   __bashrc=CLEAN_RC + 'source "$HOME/.secrets.env"\n',
+                   __secrets__env=f'export STRIPE_API_KEY="{FAKE_GOOGLE}"\n')
+    c, stdout = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "STRIPE_API_KEY" in c["detail"] and ".secrets.env" in c["detail"], c
+    assert FAKE_GOOGLE not in stdout
+
+
+def test_an_unresolvable_source_target_does_not_crash_the_check(tmp_path):
+    """`. "$ASDF_DIR/asdf.sh"` cannot be resolved without running the shell.
+    Guessing at it could scan the wrong file; the check skips it and still
+    reports on everything it CAN read."""
+    home = rc_home(tmp_path, __bashrc=(
+        '. "$ASDF_DIR/asdf.sh"\n'
+        'source /nonexistent/nowhere.sh\n'
+        f'export EXPENSES_DB_PASSWORD="{FAKE_PASSWORD}"\n'))
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "EXPENSES_DB_PASSWORD" in c["detail"]
+
+
+def test_the_failure_is_actionable_and_points_at_the_op_reference_pattern(tmp_path):
+    """A FAIL that does not say what to do instead gets silenced, not fixed."""
+    home = rc_home(tmp_path, __bashrc=f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n')
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", c
+    assert "op://" in c["detail"], "must point at the op:// reference pattern"
+    assert "house-style.md" in c["detail"]
+    assert "migrate-secrets-to-1password.sh" in c["detail"]
+
+
+def test_the_check_runs_under_the_portable_profile_and_is_not_invasive(tmp_path):
+    """Nothing here is host-specific, so `portable` -- the profile reached for on
+    a second machine -- must actually RUN it, not skip it. And it only reads, so
+    --skip-invasive must not drop it either."""
+    home = rc_home(tmp_path, __bashrc=f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n')
+    c, _ = rc_check(tmp_path, home)
+    assert c["status"] == "FAIL", "portable must run this check, not skip it: %r" % c
+    assert not c["hardware"], "must not be hardware-gated out of portable"
+    assert not c["invasive"], "the check only reads rc files"
+
+    r = run("--json", "--profile", "portable", "--skip-invasive", "--skip-network",
+            "--only", RC_CHECK, env={"HOME": str(home)})
+    assert checks_of(r)[RC_CHECK]["status"] == "FAIL", "skip flags must not drop it"
+
+
+def test_the_check_does_not_modify_the_rc_files_it_reads(tmp_path):
+    """Read-only is a hard constraint on the whole doctor."""
+    body = f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n'
+    home = rc_home(tmp_path, __bashrc=body)
+    before = (home / ".bashrc").read_bytes()
+    rc_check(tmp_path, home)
+    assert (home / ".bashrc").read_bytes() == before
+
+
+def test_check_skips_when_there_are_no_rc_files_at_all(tmp_path):
+    """Inapplicable must SKIP, never FAIL -- a tool that cries wolf is ignored."""
+    empty = tmp_path / "empty-home"
+    empty.mkdir()
+    c, _ = rc_check(tmp_path, empty)
+    assert c["status"] == "SKIP", c
+
+
+# --- the --scan-rc seam the migration script drives ------------------------
+#
+# scripts/migrate-secrets-to-1password.sh rewrites rc lines based on this
+# output. If it disagreed with the check, the two failure modes are a check that
+# can never go green and a rewrite of a line that was never a secret.
+
+def test_scan_rc_reports_line_and_name_without_the_value(tmp_path):
+    rc = tmp_path / "fixture.bashrc"
+    rc.write_text('export EDITOR="vim"\n'
+                  f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n')
+    r = run("--scan-rc", str(rc))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.startswith("2\tGOOGLE_PLACES_API_KEY\t"), r.stdout
+    assert FAKE_GOOGLE not in r.stdout
+
+
+def test_scan_rc_and_the_check_agree_on_what_is_a_secret(tmp_path):
+    """One detector, not two."""
+    body = REFERENCE_RC + f'export EXPENSES_DB_PASSWORD="{FAKE_PASSWORD}"\n'
+    home = rc_home(tmp_path, __bashrc=body)
+    c, _ = rc_check(tmp_path, home)
+    scanned = [l.split("\t")[1]
+               for l in run("--scan-rc", str(home / ".bashrc")).stdout.splitlines() if l]
+    assert scanned == ["EXPENSES_DB_PASSWORD"], scanned
+    assert c["status"] == "FAIL" and "EXPENSES_DB_PASSWORD" in c["detail"]
+
+
+def test_scan_rc_exits_2_on_a_missing_file(tmp_path):
+    r = run("--scan-rc", str(tmp_path / "nope"))
+    assert r.returncode == 2, r.stdout
