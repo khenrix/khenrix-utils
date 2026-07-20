@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 
@@ -82,13 +83,21 @@ exit 1
 
 # --- contract tests from the task brief -----------------------------------
 
+# The whole-suite tests below pass --skip-invasive --skip-network deliberately.
+# Those are now the ONLY way to keep the clipboard and the npm-fetching MCP
+# check out of a run: the profile no longer does it (see the portable-profile
+# tests further down, which is the entire point). Without the flags these tests
+# would clobber the developer's clipboard and spend a minute on npx.
+FAST = ("--skip-invasive", "--skip-network")
+
+
 def test_json_output_is_parseable():
-    r = run("--json", "--profile", "portable")
+    r = run("--json", "--profile", "portable", *FAST)
     json.loads(r.stdout)
 
 
 def test_every_check_has_a_status():
-    data = json.loads(run("--json", "--profile", "portable").stdout)
+    data = json.loads(run("--json", "--profile", "portable", *FAST).stdout)
     assert data["checks"], "no checks ran"
     for c in data["checks"]:
         assert c["status"] in ("PASS", "FAIL", "SKIP"), c
@@ -96,7 +105,7 @@ def test_every_check_has_a_status():
 
 
 def test_portable_profile_skips_not_fails_hardware_checks():
-    data = json.loads(run("--json", "--profile", "portable").stdout)
+    data = json.loads(run("--json", "--profile", "portable", *FAST).stdout)
     hw = [c for c in data["checks"] if c.get("hardware")]
     assert hw, "no hardware-tagged checks exist to exercise the portable profile"
     assert all(c["status"] != "FAIL" for c in hw), "hardware check FAILed in portable profile"
@@ -147,6 +156,38 @@ def test_hardware_check_runs_in_full_and_skips_in_portable(registry):
     assert port[0]["status"] == "SKIP" and failed == 0
 
 
+def test_invasive_and_network_are_not_profile_driven(registry):
+    """The two axes must stay independent.
+
+    REGRESSION. `portable` used to skip `invasive` and `network` too, which
+    meant the profile someone naturally reaches for on a second machine silently
+    skipped the clipboard round trip and the chrome-devtools MCP -- two of the
+    three capabilities that silently died on that machine. The doctor handed it
+    a clean report while both were dead. Profile answers "does this apply here";
+    the skip flags answer "do I want to pay for it now"."""
+    @doctor.check("inv-test", invasive=True)
+    def _i():
+        return "PASS", "invasive check ran"
+
+    @doctor.check("net-test", network=True)
+    def _n():
+        return "PASS", "network check ran"
+
+    names = ["inv-test", "net-test"]
+    port, _ = doctor.run_checks(profile="portable", only=names, wsl=True)
+    assert [c["status"] for c in port] == ["PASS", "PASS"], (
+        "portable must not skip invasive/network checks: %r" % (port,))
+
+    off, _ = doctor.run_checks(profile="full", only=names, wsl=True,
+                               skip_invasive=True, skip_network=True)
+    assert [c["status"] for c in off] == ["SKIP", "SKIP"], off
+
+    # ...and each flag skips only its own tag.
+    only_inv, _ = doctor.run_checks(profile="full", only=names, wsl=True,
+                                    skip_invasive=True)
+    assert [c["status"] for c in only_inv] == ["SKIP", "PASS"], only_inv
+
+
 def test_wsl_only_check_skips_off_wsl(registry):
     @doctor.check("wsl-test", wsl_only=True)
     def _w():
@@ -170,6 +211,39 @@ def test_exit_code_is_1_only_when_something_fails(tmp_path):
 def test_sh_refuses_an_unbounded_timeout():
     with pytest.raises(ValueError):
         doctor.sh(["true"], timeout=None)
+
+
+def test_sh_runs_linux_subprocesses_in_the_callers_directory():
+    """sh() used to force cwd=/mnt/c on EVERY subprocess, including pure-Linux
+    ones like ldconfig. Relocating a process the caller never asked to relocate
+    silently changes what its relative paths mean."""
+    r = doctor.sh(["pwd"], timeout=10)
+    assert r.stdout.strip() == os.getcwd()
+
+
+def test_windows_interop_subprocesses_run_from_a_windows_safe_directory(tmp_path):
+    """The other half: PowerShell warns and misbehaves from a UNC working
+    directory, so interop calls DO still run from /mnt/c. That is now win_cwd()'s
+    job rather than a global default in sh()."""
+    if not os.path.isdir("/mnt/c"):
+        pytest.skip("no /mnt/c on this host")
+    ps = """#!/usr/bin/env bash
+pwd > "$DOCTOR_TEST_PWD"
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-Command" ]; then cmd="$2"; fi
+  shift
+done
+case "$cmd" in
+  "Write-Output "*) echo "${cmd#Write-Output }" ;;
+esac
+exit 0
+"""
+    out = tmp_path / "interop-pwd.txt"
+    r = run("--json", "--profile", "portable", "--only", "windows-interop",
+            env={"HOME": str(fake_home(tmp_path, ps)), "DOCTOR_TEST_PWD": str(out)})
+    assert checks_of(r)["windows-interop"]["status"] == "PASS", r.stdout
+    assert out.read_text().strip() == "/mnt/c"
 
 
 def test_a_hanging_subprocess_becomes_FAIL_rather_than_hanging(registry):
@@ -425,48 +499,149 @@ def test_solid_png_is_a_decodable_png():
 
 # --- mcp-chrome-devtools --------------------------------------------------
 
+def _mcp_ps(*responses):
+    """A powershell.exe stand-in for the MCP check.
+
+    It plays both halves the doctor asks for: the Windows-node locate probe,
+    then the MCP server itself when npx is invoked. This replaced a DOCTOR_NPX
+    environment hook that let any caller substitute the whole MCP command --
+    a trivially-passable back door in the one tool whose job is honest
+    verification.
+
+    It is also a stricter fixture than the hook was: the npx branch matches on
+    `nodejs\\npx.cmd`, so it only answers if the doctor correctly derived the
+    node DIRECTORY from the located node.exe path -- logic the hook bypassed
+    entirely.
+    """
+    # bash, not sh: dash's builtin echo expands backslash escapes, which would
+    # mangle 'C:\\Program Files\\nodejs\\node.exe' into three lines at the \\n.
+    body = "\n".join("echo " + shlex.quote(r) for r in responses)
+    return f"""#!/usr/bin/env bash
+cmd=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-Command" ]; then cmd="$2"; fi
+  shift
+done
+case "$cmd" in
+  *"Get-Command node.exe"*) echo 'PATH=C:\\Program Files\\nodejs\\node.exe' ;;
+  *"nodejs\\npx.cmd"*)
+    cat > /dev/null
+{body}
+    ;;
+esac
+exit 0
+"""
+
+
+INIT_ONLY = ('{"result":{"protocolVersion":"2024-11-05","capabilities":'
+             '{"tools":{"listChanged":true}},"serverInfo":{"name":"chrome_devtools"}},'
+             '"jsonrpc":"2.0","id":1}')
+INIT_OK = '{"result":{"capabilities":{"tools":{}}},"jsonrpc":"2.0","id":1}'
+TOOLS_TWO = ('{"result":{"tools":[{"name":"click"},{"name":"navigate_page"}]},'
+             '"jsonrpc":"2.0","id":2}')
+TOOLS_EMPTY = '{"result":{"tools":[]},"jsonrpc":"2.0","id":2}'
+
+
 def test_mcp_check_rejects_an_initialize_only_response(tmp_path):
     """The initialize reply advertises `"tools":{"listChanged":true}` in its
     capabilities. A substring search for '"tools"' therefore passes even when
     tools/list never answered -- this test pins the parsed behaviour."""
-    ps = r"""#!/bin/sh
-cat > /dev/null
-echo '{"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"chrome_devtools"}},"jsonrpc":"2.0","id":1}'
-exit 0
-"""
-    home = fake_home(tmp_path, ps)
     r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
-            env={"HOME": str(home), "DOCTOR_NPX": str(home / ".local" / "bin" / "powershell.exe")})
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_ONLY)))})
     c = checks_of(r)["mcp-chrome-devtools"]
     assert c["status"] == "FAIL", c
 
 
 def test_mcp_check_passes_on_a_non_empty_tools_list(tmp_path):
-    ps = r"""#!/bin/sh
-cat > /dev/null
-echo '{"result":{"capabilities":{"tools":{}}},"jsonrpc":"2.0","id":1}'
-echo '{"result":{"tools":[{"name":"click"},{"name":"navigate_page"}]},"jsonrpc":"2.0","id":2}'
-exit 0
-"""
-    home = fake_home(tmp_path, ps)
     r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
-            env={"HOME": str(home), "DOCTOR_NPX": str(home / ".local" / "bin" / "powershell.exe")})
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_OK, TOOLS_TWO)))})
     c = checks_of(r)["mcp-chrome-devtools"]
     assert c["status"] == "PASS", c
     assert "2" in c["detail"]
 
 
 def test_mcp_check_fails_on_an_empty_tools_list(tmp_path):
-    ps = r"""#!/bin/sh
-cat > /dev/null
-echo '{"result":{"tools":[]},"jsonrpc":"2.0","id":2}'
-exit 0
-"""
-    home = fake_home(tmp_path, ps)
     r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
-            env={"HOME": str(home), "DOCTOR_NPX": str(home / ".local" / "bin" / "powershell.exe")})
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(TOOLS_EMPTY)))})
     c = checks_of(r)["mcp-chrome-devtools"]
     assert c["status"] == "FAIL", c
+
+
+def test_mcp_check_fails_when_windows_node_is_absent(tmp_path):
+    """No Windows node means npx cannot run the MCP at all. The message must
+    point at the windows-node check rather than blaming the MCP."""
+    r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(fake_home(tmp_path, PS_NO_NODE))})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "FAIL", c
+    assert "windows-node" in c["detail"], c
+
+
+def test_no_environment_override_can_replace_the_mcp_command(tmp_path):
+    """INTEGRITY GUARD. A hook that let an env var stand in for the whole MCP
+    invocation would make the check pass by simply exporting a variable. The
+    doctor must ignore any such variable and still talk to the real command."""
+    home = fake_home(tmp_path, PS_NO_NODE)
+    always_ok = bin_dir(tmp_path, "fake-mcp", body=(
+        "#!/bin/sh\ncat > /dev/null\n"
+        'echo \'{"result":{"tools":[{"name":"click"}]},"jsonrpc":"2.0","id":2}\'\n'))
+    r = run("--json", "--profile", "full", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(home), "DOCTOR_NPX": str(always_ok / "fake-mcp")})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "FAIL", "DOCTOR_NPX made a dead MCP report healthy"
+
+
+# --- profile vs. invasiveness, on the REAL named checks --------------------
+#
+# The tests above use synthetic checks to pin the runner's gating logic. These
+# pin the tagging of the three checks the doctor was actually written for, end
+# to end through the CLI. Both halves are needed: correct gating applied to
+# mis-tagged checks would still hand the second machine a clean report.
+
+def test_portable_runs_the_clipboard_check(tmp_path):
+    """REGRESSION: image paste is one of the capabilities that silently died on
+    the second machine. `portable` used to SKIP this."""
+    r = run("--json", "--profile", "portable", "--only", "clipboard-image-roundtrip",
+            env=_clip_env(tmp_path))
+    c = checks_of(r)["clipboard-image-roundtrip"]
+    assert c["status"] == "PASS", c
+
+
+def test_portable_runs_the_mcp_check(tmp_path):
+    """REGRESSION: the chrome-devtools MCP is another. `portable` used to SKIP it."""
+    r = run("--json", "--profile", "portable", "--only", "mcp-chrome-devtools",
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_OK, TOOLS_TWO)))})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "PASS", c
+
+
+def test_skip_invasive_skips_the_clipboard_check(tmp_path):
+    """The opt-out exists so nobody mid-copy-paste loses their clipboard. It is
+    a flag, not a profile: destructiveness and applicability are separate."""
+    r = run("--json", "--profile", "full", "--skip-invasive",
+            "--only", "clipboard-image-roundtrip", env=_clip_env(tmp_path))
+    c = checks_of(r)["clipboard-image-roundtrip"]
+    assert c["status"] == "SKIP", c
+    assert "invasive" in c["detail"]
+
+
+def test_skip_network_skips_the_mcp_check(tmp_path):
+    r = run("--json", "--profile", "full", "--skip-network",
+            "--only", "mcp-chrome-devtools",
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_OK, TOOLS_TWO)))})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "SKIP", c
+    assert "network" in c["detail"]
+
+
+def test_skip_invasive_leaves_the_mcp_check_running(tmp_path):
+    """Each flag is narrow: opting out of clipboard destruction must not also
+    silently drop the MCP check."""
+    r = run("--json", "--profile", "portable", "--skip-invasive",
+            "--only", "mcp-chrome-devtools",
+            env={"HOME": str(fake_home(tmp_path, _mcp_ps(INIT_OK, TOOLS_TWO)))})
+    c = checks_of(r)["mcp-chrome-devtools"]
+    assert c["status"] == "PASS", c
 
 
 # --- cuda -----------------------------------------------------------------

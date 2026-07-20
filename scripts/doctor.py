@@ -22,14 +22,27 @@ DESIGN RULE — assert ROUND-TRIPS, never presence.
 
 READ-ONLY, with one documented exception: `clipboard-image-roundtrip` must set
 the clipboard to prove the round trip, which destroys whatever the user had
-copied. It is tagged `invasive` and therefore runs only under `--profile full`.
+copied. It is tagged `invasive`, and `--skip-invasive` opts out of it.
 
-Profiles:
-    full      every check
-    portable  skips hardware-, network- and clipboard-destroying checks, so the
-              same doctor reports meaningfully on a machine where they do not
-              apply. Inapplicable checks SKIP; they never FAIL — a tool that
-              cries wolf trains people to ignore it.
+TWO INDEPENDENT AXES — do not conflate them:
+
+    APPLICABILITY (`--profile`)
+        full      every check
+        portable  skips only checks tagged `hardware`: host/hardware-specific
+                  ones that cannot meaningfully run elsewhere. Inapplicable
+                  checks SKIP; they never FAIL — a tool that cries wolf trains
+                  people to ignore it.
+
+    COST / DESTRUCTIVENESS (`--skip-invasive`, `--skip-network`)
+        Opt-out flags, off by default, orthogonal to the profile.
+
+    The profile must NOT gate the clipboard or MCP checks. `portable` is the
+    profile someone reaches for on the second machine, and the clipboard round
+    trip and the chrome-devtools MCP are two of the three capabilities that
+    silently died there — the exact failures this script was written to catch.
+    Skipping them under `portable` would hand that machine a clean report while
+    both were still dead. Destructiveness is a separate concern with a separate
+    flag, so anyone mid-copy-paste opts out explicitly and knowingly.
 
 Every subprocess call goes through sh(), which refuses an unbounded timeout: a
 doctor that hangs is worse than one that fails.
@@ -68,11 +81,19 @@ def sh(cmd, timeout=30, input=None, **kw):
     """The only subprocess entry point. An unbounded timeout is a bug, not a default."""
     if timeout is None:
         raise ValueError("sh() requires a bounded timeout")
-    cwd = kw.pop("cwd", None)
-    if cwd is None and os.path.isdir("/mnt/c"):
-        cwd = "/mnt/c"          # keep the Windows side off a UNC working dir
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                          input=input, cwd=cwd, **kw)
+                          input=input, **kw)
+
+
+def win_cwd():
+    """Working directory for WINDOWS-side subprocesses only.
+
+    PowerShell warns and misbehaves when launched from a UNC working directory
+    (which is what WSL paths look like from the Windows side), so interop calls
+    run from /mnt/c. Pure-Linux subprocesses — ldconfig, a version manager's
+    --version — have no such problem and keep the caller's cwd; relocating them
+    would be an unexplained global side effect."""
+    return "/mnt/c" if os.path.isdir("/mnt/c") else None
 
 
 def is_wsl():
@@ -82,6 +103,42 @@ def is_wsl():
 
 def ps_shim():
     return Path.home() / PS_SHIM
+
+
+# Locating node.exe on the Windows side is the slowest thing the doctor does
+# (a 90s worst case), and two checks need it: `windows-node` and
+# `mcp-chrome-devtools`. The result is memoised per shim path so a full run
+# pays for it once.
+#
+# This does NOT couple the two checks. The cache is only ever a shortcut:
+# windows_node_source() probes on its own whenever the cache is cold, so the MCP
+# check still establishes what it needs when `windows-node` was skipped, was
+# excluded by --only, or never ran at all.
+_WIN_NODE_SOURCE: dict[str, str] = {}
+
+
+def windows_node_source(ps, timeout=90):
+    """(path_to_node.exe, None) or (None, reason). Memoised; probes if cold."""
+    key = str(ps)
+    if key in _WIN_NODE_SOURCE:
+        return _WIN_NODE_SOURCE[key], None
+    try:
+        r = sh([str(ps), "-NoProfile", "-Command",
+                '$s=(Get-Command node.exe -EA SilentlyContinue).Source; '
+                'if(-not $s){ exit 4 }; Write-Output ("PATH=" + $s)'],
+               timeout=timeout, cwd=win_cwd())
+    except subprocess.TimeoutExpired:
+        return None, f"Windows-side node probe timed out after {timeout}s"
+    if "PATH=" not in (r.stdout or ""):
+        return None, "no Windows-side node found"
+    return remember_windows_node(ps, r.stdout), None
+
+
+def remember_windows_node(ps, stdout):
+    """Cache the node.exe path out of any probe output carrying `PATH=`."""
+    src = stdout.split("PATH=", 1)[1].splitlines()[0].strip()
+    _WIN_NODE_SOURCE[str(ps)] = src
+    return src
 
 
 # --- tiny stdlib PNG codec (no Pillow; stdlib-only is a hard constraint) ---
@@ -119,7 +176,8 @@ def _interop():
         return "FAIL", f"missing shim {ps} — Tier 0 must provision it"
     nonce = "khenrix-doctor-" + secrets.token_hex(8)
     try:
-        r = sh([str(ps), "-NoProfile", "-Command", f"Write-Output {nonce}"], timeout=60)
+        r = sh([str(ps), "-NoProfile", "-Command", f"Write-Output {nonce}"],
+               timeout=60, cwd=win_cwd())
     except subprocess.TimeoutExpired:
         return "FAIL", "powershell.exe shim did not respond within 60s"
     if r.returncode != 0:
@@ -147,7 +205,7 @@ def _win_node():
               'Write-Output ("PATH=" + $s); '
               '& $s -e "process.stdout.write(\'EVAL=\'+String(6*7)+\' \'+process.version)"')
     try:
-        r = sh([str(ps), "-NoProfile", "-Command", script], timeout=90)
+        r = sh([str(ps), "-NoProfile", "-Command", script], timeout=90, cwd=win_cwd())
     except subprocess.TimeoutExpired:
         return "FAIL", "Windows-side node probe timed out after 90s"
     out = r.stdout or ""
@@ -156,7 +214,9 @@ def _win_node():
                         "(winget install OpenJS.NodeJS.LTS) — WSL's node does NOT "
                         "satisfy this; the chrome-devtools MCP spawns npx on the "
                         "Windows side.")
-    src = out.split("PATH=", 1)[1].splitlines()[0].strip()
+    # Locating and evaluating happen in one PowerShell round trip; hand the
+    # located path to the shared cache so the MCP check need not re-probe.
+    src = remember_windows_node(ps, out)
     if "EVAL=42 " not in out:
         return "FAIL", (f"node.exe found at {src} but did not execute "
                         f"(rc={r.returncode}) — it is on PATH yet not runnable: "
@@ -184,7 +244,7 @@ def _win_chrome():
         'if(-not $c){ exit 4 }; '
         'Write-Output ("CHROME={0}|{1}" -f $c,(Get-Item $c).VersionInfo.ProductVersion)')
     try:
-        r = sh([str(ps), "-NoProfile", "-Command", script], timeout=90)
+        r = sh([str(ps), "-NoProfile", "-Command", script], timeout=90, cwd=win_cwd())
     except subprocess.TimeoutExpired:
         return "FAIL", "Windows-side chrome probe timed out after 90s"
     out = r.stdout or ""
@@ -209,7 +269,10 @@ def _clipboard():
     check goes green while the write path is dead.
 
     DESTRUCTIVE: this overwrites whatever the user had copied. That is why the
-    check is tagged `invasive` and runs only under --profile full.
+    check is tagged `invasive` and why --skip-invasive exists. It runs by
+    default under EVERY profile: image paste is one of the capabilities that
+    silently died on the second machine, so the profile people run there must
+    exercise it. Opting out is a deliberate act, not a side effect.
     """
     ps = ps_shim()
     if not ps.exists():
@@ -241,11 +304,13 @@ def _clipboard():
                       "$i.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); "
                       "Write-Output ([Convert]::ToBase64String($ms.ToArray()))")
         try:
-            set_r = sh([str(ps), "-NoProfile", "-Sta", "-Command", set_script], timeout=90)
+            set_r = sh([str(ps), "-NoProfile", "-Sta", "-Command", set_script],
+                       timeout=90, cwd=win_cwd())
             if set_r.returncode != 0:
                 return "FAIL", (f"could not put an image on the clipboard "
                                 f"(rc={set_r.returncode}): {(set_r.stderr or '').strip()[:150]}")
-            get_r = sh([str(ps), "-NoProfile", "-Sta", "-Command", get_script], timeout=90)
+            get_r = sh([str(ps), "-NoProfile", "-Sta", "-Command", get_script],
+                       timeout=90, cwd=win_cwd())
         except subprocess.TimeoutExpired:
             return "FAIL", "clipboard round trip timed out after 90s"
     finally:
@@ -323,26 +388,22 @@ def _mcp_chrome():
     Note the trap this avoids: the `initialize` reply advertises
     `"capabilities":{"tools":{"listChanged":true}}`, so a substring search for
     '"tools"' passes even when tools/list never answered. The response is parsed
-    and matched on the request id."""
-    npx_override = os.environ.get("DOCTOR_NPX")
-    if npx_override:
-        cmd = [npx_override]
-    else:
-        ps = ps_shim()
-        if not ps.exists():
-            return "SKIP", "no interop shim; the MCP runs on the Windows side"
-        try:
-            probe = sh([str(ps), "-NoProfile", "-Command",
-                        '$s=(Get-Command node.exe -EA SilentlyContinue).Source; '
-                        'if(-not $s){ exit 4 }; Write-Output ("PATH=" + $s)'], timeout=90)
-        except subprocess.TimeoutExpired:
-            return "FAIL", "could not locate Windows node within 90s"
-        if "PATH=" not in (probe.stdout or ""):
-            return "FAIL", ("no Windows-side node, so npx cannot run the MCP "
-                            "(see the windows-node check)")
-        node_dir = probe.stdout.split("PATH=", 1)[1].splitlines()[0].strip().rsplit("\\", 1)[0]
-        cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-               f'& "{node_dir}\\npx.cmd" -y chrome-devtools-mcp@latest']
+    and matched on the request id.
+
+    There is deliberately NO environment override for the command. A hook that
+    let $SOMETHING replace the MCP invocation would make this check trivially
+    passable, which is a hole in the one tool whose entire job is honest
+    verification. The tests drive it through a fake powershell.exe instead."""
+    ps = ps_shim()
+    if not ps.exists():
+        return "SKIP", "no interop shim; the MCP runs on the Windows side"
+    src, err = windows_node_source(ps)
+    if src is None:
+        return "FAIL", (f"{err}, so npx cannot run the MCP "
+                        "(see the windows-node check)")
+    node_dir = src.rsplit("\\", 1)[0]
+    cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+           f'& "{node_dir}\\npx.cmd" -y chrome-devtools-mcp@latest']
 
     payload = "\n".join([
         json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
@@ -351,7 +412,7 @@ def _mcp_chrome():
         json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     ]) + "\n"
     try:
-        r = sh(cmd, input=payload, timeout=180)
+        r = sh(cmd, input=payload, timeout=180, cwd=win_cwd())
     except subprocess.TimeoutExpired:
         return "FAIL", "chrome-devtools MCP did not respond within 180s"
 
@@ -452,8 +513,14 @@ def _dual():
 
 # --- runner ---------------------------------------------------------------
 
-def run_checks(profile="full", only=None, wsl=None):
-    """Return (results, failed_count). `only` restricts to named checks."""
+def run_checks(profile="full", only=None, wsl=None, skip_invasive=False,
+               skip_network=False):
+    """Return (results, failed_count). `only` restricts to named checks.
+
+    The gates are independent by design: `profile` answers "does this check
+    APPLY to this machine?", while skip_invasive/skip_network answer "do I want
+    to pay this check's cost right now?". Only `hardware` is profile-gated —
+    see the module docstring for why `invasive` and `network` must not be."""
     if wsl is None:
         wsl = is_wsl()
     selected = [c for c in CHECKS if only is None or c["name"] in only]
@@ -462,12 +529,11 @@ def run_checks(profile="full", only=None, wsl=None):
         if c["wsl_only"] and not wsl:
             status, detail = "SKIP", "not running under WSL"
         elif profile == "portable" and c["hardware"]:
-            status, detail = "SKIP", "hardware check skipped in portable profile"
-        elif profile == "portable" and c["network"]:
-            status, detail = "SKIP", "network check skipped in portable profile"
-        elif profile == "portable" and c["invasive"]:
-            status, detail = "SKIP", ("clipboard-destroying check skipped in portable "
-                                      "profile; run --profile full to exercise it")
+            status, detail = "SKIP", "hardware-specific check skipped in portable profile"
+        elif skip_invasive and c["invasive"]:
+            status, detail = "SKIP", "invasive check skipped by --skip-invasive"
+        elif skip_network and c["network"]:
+            status, detail = "SKIP", "network check skipped by --skip-network"
         else:
             try:
                 status, detail = c["fn"]()
@@ -483,15 +549,31 @@ def run_checks(profile="full", only=None, wsl=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Behavioural capability checks (round trips, not presence).")
+        description="Behavioural capability checks (round trips, not presence).",
+        epilog="--profile controls APPLICABILITY (does this check make sense on this "
+               "machine?). --skip-invasive/--skip-network control COST (do I want to "
+               "pay for it right now?). They are independent: the clipboard and MCP "
+               "checks run under every profile, because those are exactly the "
+               "capabilities that silently break on a second machine.")
     ap.add_argument("--profile", choices=["full", "portable"], default="full",
-                    help="portable skips hardware, network and clipboard-destroying checks")
+                    help="portable skips host/hardware-specific checks that cannot "
+                         "meaningfully run elsewhere; it does NOT skip invasive or "
+                         "networked ones (default: full)")
+    ap.add_argument("--skip-invasive", action="store_true",
+                    help="skip checks that mutate user state — currently the clipboard "
+                         "round trip, which overwrites whatever you had copied")
+    ap.add_argument("--skip-network", action="store_true",
+                    help="skip checks that need the network — the chrome-devtools MCP "
+                         "check fetches the server from npm")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--only", help="comma-separated check names to run")
     ap.add_argument("--list", action="store_true", help="list check names and exit")
     args = ap.parse_args(argv)
 
     if args.list:
+        print("tags: hardware -> skipped by --profile portable; "
+              "invasive -> skipped by --skip-invasive; "
+              "network -> skipped by --skip-network\n")
         for c in CHECKS:
             tags = ",".join(t for t in ("hardware", "network", "invasive", "wsl_only")
                             if c[t]) or "-"
@@ -507,10 +589,14 @@ def main(argv=None):
             print(f"unknown check(s): {', '.join(unknown)}", file=sys.stderr)
             return 2
 
-    results, failed = run_checks(profile=args.profile, only=only)
+    results, failed = run_checks(profile=args.profile, only=only,
+                                 skip_invasive=args.skip_invasive,
+                                 skip_network=args.skip_network)
 
     if args.json:
         print(json.dumps({"profile": args.profile, "wsl": is_wsl(),
+                          "skip_invasive": args.skip_invasive,
+                          "skip_network": args.skip_network,
                           "checks": results}, indent=2))
     else:
         for r in results:

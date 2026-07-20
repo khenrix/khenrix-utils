@@ -10,10 +10,11 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test smoke-llm-council eval eval-test status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test doctor-test smoke-llm-council eval eval-test status clean
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
+DOCTOR_TESTS := tests/test_doctor.py
 
 help: ## Show this help
 	@echo "khenrix-utils — install targets (skills do the real setup):"
@@ -45,7 +46,7 @@ khenrix-refresh: ## Re-render + push the latest plugin/skill/engine into all ins
 
 refresh: khenrix-refresh ## Alias for khenrix-refresh
 
-verify: render ## Validate manifests and skills without touching any CLI
+verify: render doctor-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -57,6 +58,21 @@ precommit: verify ## Commit-boundary gate: render in sync + every changed skill 
 
 test: ## Run the deterministic llm-council engine self-test (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
+
+# Wired into `verify` (and so into `precommit`) on purpose. A verifier whose own
+# tests nothing ever runs decays into exactly the "claims a capability, never
+# checks it" state doctor.py exists to prevent. Hermetic: fake $HOME/$PATH
+# fixtures only — it never touches the real clipboard or the network.
+doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
+	@if $(PY) -c "import pytest" >/dev/null 2>&1; then \
+		$(PY) -m pytest -q $(DOCTOR_TESTS); \
+	elif command -v uvx >/dev/null 2>&1; then \
+		uvx --with pytest pytest -q $(DOCTOR_TESTS); \
+	else \
+		echo "  ⚠ doctor-test SKIPPED — $(DOCTOR_TESTS) needs pytest, which is not"; \
+		echo "    importable by '$(PY)', and 'uvx' is not on PATH either."; \
+		echo "    Install uv (https://docs.astral.sh/uv/) or 'pip install pytest'."; \
+	fi
 
 smoke-llm-council: ## Live smoke test of the council vs one real provider (costs tokens, needs auth)
 	$(PY) $(LLM_COUNCIL) --smoke --providers claude --timeout 60
