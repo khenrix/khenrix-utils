@@ -30,15 +30,11 @@ args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
 [mcp_servers.vercel.env]
 BROWSER = "${HOME}/.local/bin/windows-chrome"
 
-[mcp_servers.google-drive]
-transport = "stdio"
-# node path may differ per machine; the skill falls back to `node` on PATH.
-command = "${HOME}/.asdf/installs/nodejs/26.2.0/bin/node"
-args = ["${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
-[mcp_servers.google-drive.env]
-GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
-GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
 
+# google-drive was REMOVED 2026-07-20: redundant with the native claude.ai Drive
+# MCP, and its command hardcoded an asdf node path that the mise migration deletes.
+# Removing the declaration alone is a NO-OP -- reconcile.py is additive-only and
+# prints `EXTRA ... left untouched`. The live config needed explicit removal too.
 [mcp_servers.chrome-devtools]
 platform = "windows"   # PowerShell launcher — also eligible on WSL (interop)
 transport = "stdio"
