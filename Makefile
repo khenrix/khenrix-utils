@@ -10,11 +10,28 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test doctor-test smoke-llm-council eval eval-test status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test smoke-llm-council eval eval-test status clean
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
+COUNCIL_TESTS := tests/test_council_seat_validity.py
+
+# Run a pytest file via whichever runner exists. Failing loudly when neither does is
+# deliberate: a green gate must never mean "the suite was skipped" — that is the exact
+# defect doctor.py exists to catch, and silently exiting 0 would hide it in our own gate.
+define RUN_PYTEST
+	@if $(PY) -c "import pytest" >/dev/null 2>&1; then \
+		$(PY) -m pytest -q $(1); \
+	elif command -v uvx >/dev/null 2>&1; then \
+		uvx --with pytest pytest -q $(1); \
+	else \
+		echo "  ✗ CANNOT RUN $(1) — it needs pytest, which is not importable by"; \
+		echo "    '$(PY)', and 'uvx' is not on PATH either."; \
+		echo "    Install uv (https://docs.astral.sh/uv/) or 'pip install pytest'."; \
+		exit 1; \
+	fi
+endef
 
 help: ## Show this help
 	@echo "khenrix-utils — install targets (skills do the real setup):"
@@ -56,27 +73,18 @@ precommit: verify ## Commit-boundary gate: render in sync + every changed skill 
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
 	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
 
-test: ## Run the deterministic llm-council engine self-test (no token cost)
+test: council-test ## Run the deterministic llm-council engine self-test (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
+
+council-test: ## Seat-validity unit tests for the council engine (no token cost)
+	$(call RUN_PYTEST,$(COUNCIL_TESTS))
 
 # Wired into `verify` (and so into `precommit`) on purpose. A verifier whose own
 # tests nothing ever runs decays into exactly the "claims a capability, never
 # checks it" state doctor.py exists to prevent. Hermetic: fake $HOME/$PATH
 # fixtures only — it never touches the real clipboard or the network.
 doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
-	@if $(PY) -c "import pytest" >/dev/null 2>&1; then \
-		$(PY) -m pytest -q $(DOCTOR_TESTS); \
-	elif command -v uvx >/dev/null 2>&1; then \
-		uvx --with pytest pytest -q $(DOCTOR_TESTS); \
-	else \
-		echo "  ✗ doctor-test CANNOT RUN — $(DOCTOR_TESTS) needs pytest, which is not"; \
-		echo "    importable by '$(PY)', and 'uvx' is not on PATH either."; \
-		echo "    Install uv (https://docs.astral.sh/uv/) or 'pip install pytest'."; \
-		echo "    Failing rather than exiting 0: a green 'verify' must never mean"; \
-		echo "    'the suite was skipped' — that is the exact defect doctor.py exists"; \
-		echo "    to catch, and it would hide it in our own gate."; \
-		exit 1; \
-	fi
+	$(call RUN_PYTEST,$(DOCTOR_TESTS))
 
 smoke-llm-council: ## Live smoke test of the council vs one real provider (costs tokens, needs auth)
 	$(PY) $(LLM_COUNCIL) --smoke --providers claude --timeout 60

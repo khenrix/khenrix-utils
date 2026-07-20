@@ -26,7 +26,10 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > **Read-only by default.** All three members are now **mechanically constrained**:
 > Claude (plan mode, plan-file writes suppressed), Codex (read-only sandbox), and agy
 > (`--mode plan`, available since agy 1.1.1 — probed 2026-07-11: it mechanically blocked
-> a write the model claimed to have made). Two soft layers remain on top: a read-only
+> a write the model claimed to have made). agy keeps `--dangerously-skip-permissions`
+> *alongside* `--mode plan`: the two are orthogonal per `agy --help` (auto-approve is a
+> prompting policy, plan mode is the write barrier), and dropping it left agy unable to
+> approve its own reads headlessly. Two soft layers remain on top: a read-only
 > posture line prepended to every member's prompt (identical conditions preserved) and a
 > throwaway git-worktree cwd for agy — both added after the 2026-07-11 breakout incident,
 > kept as defense in depth. This suits the council's job (a second opinion / synthesis,
@@ -120,9 +123,16 @@ fan-outs in the background, or make sure any outer command cap exceeds
 (unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
 
 **The engine handles the "valid result or retry" contract for you.** Each provider
-is validated (exit 0, non-empty answer, no auth/rate-limit error) and retried with
-backoff on failure; a missing binary fails fast without burning retries. You just
+is validated and retried with backoff on failure; a missing binary, an auth/quota wall
+and a tool-permission denial all fail fast without burning retries. You just
 consume the manifest — never paper over a failure by re-running a provider yourself.
+
+**Non-empty is not a pass.** A seat scores `valid` only if it cleared a length floor
+*and* quoted the per-run `SENTINEL-…` token the engine injected into its prompt —
+proof it actually opened the material rather than answering from the question alone.
+This exists because a seat once soft-denied its own file read, replied with one
+sentence, and was scored `ok`: a 3-seat verdict silently became a 2-seat one and the
+synthesis reported it as three. Do **not** re-admit a seat the engine failed.
 
 ## 3. Read the answers
 
@@ -140,8 +150,24 @@ obvious log lines.
 
 ## 4. Synthesize the best answer
 
-Write the single best answer to the user's question. **It should read like one
-expert's answer — not a report about a council.** The three runs are your *input*;
+**Open with the seat count — always, verbatim, before anything else.** The engine
+composes it for you at `summary.header`; emit that exact line as the first line of your
+reply, then a blank line, then the answer:
+
+```
+**Council: 3 of 3 seats responded.**
+```
+```
+**Council: 2 of 3 seats responded — DEGRADED.**  Failed: agy (tool_permission — …)
+```
+
+This is not optional and not process narration — it is the provenance of the answer.
+A reader must never be able to mistake a 2-seat verdict for a 3-seat one, which is
+exactly what happened when a silently-failed seat was scored `ok`. Never restate the
+count as anything other than what `summary.header` says, and never round it up.
+
+Write the single best answer to the user's question. **Below that header it should read
+like one expert's answer — not a report about a council.** The three runs are your *input*;
 the user wants the conclusion, not a tour of how three models voted. A leaner,
 decisive answer beats a longer one that shows its work — so use the council to make
 your answer more *correct and confident*, not longer.
@@ -171,10 +197,11 @@ The discipline that makes this good:
 - **Stay neutral.** Don't privilege this CLI's own provider; all three ran under the
   same headless conditions — weigh them on merit.
 
-If `summary.degraded` is true, add a brief one-line note of which provider failed and
-its `reason`, and that the answer rests on the N that succeeded — then give the answer
-as usual. If fewer than two providers are valid, tell the user the council was
-inconclusive and offer to answer directly or retry with a longer `--timeout`.
+If `summary.degraded` is true the header already names every failed seat and its cause;
+add at most one further line if a `hint` suggests a concrete next step (e.g. a
+`tool_permission` failure is a fixable invocation bug worth reporting as such), then
+give the answer as usual. If fewer than two providers are valid, say plainly that the
+council was inconclusive and offer to answer directly or retry with a longer `--timeout`.
 
 ## Failure handling
 
@@ -183,6 +210,9 @@ inconclusive and offer to answer directly or retry with a longer `--timeout`.
 | `ok` | valid answer | use it |
 | `not_installed` | that CLI isn't on PATH | "provider X isn't installed here"; proceed with the rest |
 | `auth_or_quota` | not logged in, or a quota/usage wall — **not retried**, since it won't clear on a retry | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest |
+| `tool_permission` | the seat could not get its OWN tool call approved — headless mode has no one to prompt, so it soft-denied its read and answered blind. **Not retried**: this is our invocation defect, not an outage | name the provider and say the invocation needs its auto-approve flag; the manifest `hint` says which. Worth reporting as a bug, not a flake |
+| `non_substantive` | exit 0 and non-empty, but shorter than the substantive floor — a stub answer, not an answer | drop it from synthesis; note the seat returned a non-answer |
+| `did_not_read_input` | long enough, but never quoted the run's `SENTINEL-…` token, so it cannot be shown to have read the material | drop it from synthesis; treat its content as unfounded even though it reads confidently |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
 | `nonzero_exit` | crashed with no recognized cause | name the provider, quote the stderr tail; proceed if possible |
 | `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy**: pre-1.1.1 CLIs reliably rode the whole window on substantive prompts (fixed upstream — see the HISTORY note in `build_real_spec`; 1.1.1 completed 54–97s reviews on 2026-07-11). If it recurs, retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
@@ -203,9 +233,11 @@ To change which models sit on the council or how hard they think, edit the `MODE
 table at the top of `scripts/fanout.py` (one cell per model/tier); the per-provider
 flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives in
 `build_real_spec`. When a real headless run surfaces a new failure string or an
-output-parsing quirk, the fix also lives in `scripts/fanout.py`: `PERSISTENT_SENTINELS`
-(fatal — auth/quota, not
+output-parsing quirk, the fix also lives in `scripts/fanout.py`: `TOOL_PERMISSION_SENTINELS`
+(our invocation defect — a seat denied its own tool call; not retried, and carries a
+`REASON_HINTS` fix) vs `PERSISTENT_SENTINELS` (fatal — auth/quota, not
 retried) vs `TRANSIENT_SENTINELS` (retryable — rate-limit, overloaded),
+`score_seat` / `MIN_SUBSTANTIVE_CHARS` (what makes a seat's answer count at all),
 `extract_claude_json` / `extract_raw` (how each CLI's answer is pulled out), and the
 `build_real_spec` argv builders (the exact headless flags — kept in sync with
 `headless-invocation.md` at the plugin root; note agy's Go-style flag parser needs every
