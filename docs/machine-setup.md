@@ -16,7 +16,8 @@ tooling) is re-created per machine — `khenrix-setup` does most of that for you
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
 | Claude baseline settings + Stop hook + statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + `/khenrix-setup` installs/registers them (add-when-absent, never overrides your tuning) |
 | MCP secrets / OAuth tokens | machine-local (`~/.config/...`, env) | **not git** — re-auth per machine |
-| Tooling (asdf/node, uv, jq, WSL bridges) | machine-local | **not git** — install per machine |
+| WSL Windows bridges (`powershell.exe`, `windows-chrome` shims) | machine-local `~/.local/bin` | **not git, but not manual either** — `scripts/bootstrap-tier0.sh` provisions them from this repo |
+| Tooling (asdf/node, uv, the `claude` CLI) | machine-local | **not git** — install per machine |
 
 Rule of thumb: **git-synced = shared knowledge + config source-of-truth;
 per-machine = anything with a secret, a path, or an OS-specific shim.**
@@ -71,13 +72,41 @@ life unable to launch anything — an AV refuses `FromBase64String` next to
 reported PASS throughout, because Chrome did exist. Values now cross the
 boundary through `WSLENV`, never on the command line.
 
-Then, per machine:
+Then, per machine (Tier 0 already covers `git curl jq unzip ca-certificates`):
 
 - **asdf** → Node (currently `v26.2.0`) — npx/node resolve through it
 - **uv / uvx** (`~/.local/bin`) — for `uvx`-launched MCPs + Python
-- **jq**, and the **`claude`** CLI (`~/.local/bin`)
+- the **`claude`** CLI (`~/.local/bin`)
 - On native Linux/macOS: Tier 0 skips the Windows bridges; drop `chrome-devtools`
   and point `vercel`'s `BROWSER` at your real browser.
+
+### Clipboard — do NOT install `wl-clipboard`
+
+Image paste is one of the capabilities that silently died on the second machine,
+and the fix is a thing *not* to install. Claude Code dispatches image paste down
+a fallback chain:
+
+```
+wl-paste  ||  xclip  ||  powershell
+```
+
+`||` short-circuits on the **first success**, so anything named `wl-paste` or
+`xclip` — a package *or* a hand-written shim — preempts the maintained
+PowerShell path before it is ever reached. Two consequences:
+
+- **Do not install `wl-clipboard`.** Under WSLg `wl-paste` succeeds, so the chain
+  stops there — and WSLg hands back only a **BI_BITFIELDS** BMP, which the
+  bundled decoder frequently cannot read. It fails *silently*: the paste appears
+  to work and no image arrives.
+- **Do not shim these names.** A `#!` script called `xclip` satisfies
+  `command -v` whether or not the real package exists, which is exactly how this
+  machine once certified a clipboard that was dead. `python3 scripts/doctor.py
+  --only clipboard-no-shim-intercept` fails on any such shim, and
+  `--only clipboard-image-roundtrip` proves the real path end to end.
+
+The **real `xclip` package is fine** — and is the right tool — for the *text*
+clipboard. The rule is about the image chain: leave `wl-clipboard` off WSL, and
+never fake either name.
 
 ## 2. Clone the remaining git-synced repos
 
@@ -90,6 +119,22 @@ git clone <hunter remote> ~/git/hunter               # brings its .claude/skills
 ```
 
 ## 3. Install the Claude plugins
+
+> **Or let Tier 1 do sections 3–4 for you.** `scripts/bootstrap-machine.sh` is the
+> authenticated tier: marketplaces, plugins, skill porting, `reconcile.py --apply
+> --all`, and a closing `doctor.py --profile full` so the run *proves* what it
+> built. It **runs Tier 0 first and aborts if anything is missing**, then fails
+> hard if `claude codex agy uv gh node git` are not all present — by that point
+> their absence is a real error, not a bare-distro state. `--dry-run` propagates
+> into Tier 0 and mutates nothing, so start there:
+>
+> ```bash
+> ./scripts/bootstrap-machine.sh --dry-run
+> ./scripts/bootstrap-machine.sh
+> ```
+>
+> The manual steps below remain the reference for what it does, and for anyone
+> who wants to go one step at a time.
 
 ```bash
 cd ~/git/khenrix-utils && make setup-claude          # khenrix marketplace + plugin
@@ -186,6 +231,8 @@ After pulling khenrix-utils changes that touch skills/MCP/settings, re-run
 ### What does NOT sync (re-apply per machine)
 
 Only the things that *can't* safely travel through git: **MCP secrets/tokens** (re-auth,
-section 4) and the **tooling/WSL bridges** (install, Prerequisites). Everything else —
-including Claude settings, the Stop hook, and the statusline — is now declared in this repo
-and applied by `/khenrix-setup`, so it no longer needs hand-copying.
+section 5) and the **machine-local toolchain** (asdf/node, uv, the `claude` CLI — install,
+Prerequisites). The **WSL bridges are no longer in this list**: they are provisioned from
+this repo by `scripts/bootstrap-tier0.sh`, so re-running Tier 0 is how a second machine
+gets them, not hand-copying. Everything else — Claude settings, the Stop hook, the
+statusline — is declared in this repo and applied by `/khenrix-setup`.
