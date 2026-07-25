@@ -108,13 +108,15 @@ Two modes, **same models**, differ only in how hard they think:
   when the user says "deep", "think hard", or "maximum confidence".
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
-`scripts/fanout.py` (currently Claude Opus 4.8, GPT-5.6 Sol, Gemini 3.5 Flash). To change
-a model or tier, edit one cell there; nothing else needs to change. Since agy 1.1.1 the
+`scripts/fanout.py` (currently Claude Opus 5, GPT-5.6 Sol, Gemini 3.6 Flash). To change
+a tier, edit one cell there. A *new* model id must also be registered in
+`capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
 string — `agy models` lists valid values), so the agy cell's MODEL is enforced like the
 others; its tier tops out at "(High)" (no Flash Max tier exists), so deep mode deepens
 the claude and codex seats only.
-Deep-mode members need 650–800s each at max reasoning (measured 2026-07-11): launch deep
+Deep-mode members need up to ~800s each at max reasoning (measured on the current
+panel 2026-07-25: opus-5 565s, sol 374s; up to 796s on 2026-07-11): launch deep
 fan-outs in the background, or make sure any outer command cap exceeds
 `--timeout × (retries+1)` — a killed fan-out loses its results, and a SIGKILL
 (unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
@@ -182,7 +184,7 @@ inconclusive and offer to answer directly or retry with a longer `--timeout`.
 |----------------------|---------------|-----------------------|
 | `ok` | valid answer | use it |
 | `not_installed` | that CLI isn't on PATH | "provider X isn't installed here"; proceed with the rest |
-| `auth_or_quota` | not logged in, or a quota/usage wall — **not retried**, since it won't clear on a retry | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest |
+| `auth_or_quota` | not logged in, a quota/usage wall, **or (codex only) a CLI too old for the model pinned in `MODES`** — **not retried**, since none of these clear on a retry | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest. If codex's stderr says the model needs a newer Codex, the fix is `codex update`, not re-auth — 0.143.0 rejected `gpt-5.6-sol` that way on 2026-07-25. Only codex's phrasing is recognised; the same wall on another CLI lands in `nonzero_exit` until its string joins `PERSISTENT_SENTINELS` |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
 | `nonzero_exit` | crashed with no recognized cause | name the provider, quote the stderr tail; proceed if possible |
 | `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy**: pre-1.1.1 CLIs reliably rode the whole window on substantive prompts (fixed upstream — see the HISTORY note in `build_real_spec`; 1.1.1 completed 54–97s reviews on 2026-07-11). If it recurs, retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |

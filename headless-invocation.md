@@ -58,7 +58,12 @@ agy --mode plan -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
   prompts complete headless now; earlier versions reliably rode the timeout.)
 - `--print-timeout <dur>` bounds the wait (default `5m`).
 - `--model "<name>"` pins the model per-run (since 1.1.1; `agy models` lists values —
-  the thinking tier is encoded in the name, e.g. "Gemini 3.5 Flash (High)").
+  the thinking tier is encoded in the name, e.g. "Gemini 3.6 Flash (High)"). Since 1.1.2
+  an unresolvable name hard-fails non-zero and lists the valid ones, rather than silently
+  falling back to the default model.
+- `--effort <low|medium|high>` sets reasoning effort separately (since 1.1.5). Note it
+  caps at `high` — there is no Max tier for Flash by either route. The council leaves
+  this unset and carries the tier in the model label instead, keeping one source of truth.
 - `--mode plan` is a mechanical read-only mode that works headless (unlike `--sandbox`,
   which hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since); use it for
   review-only invocations.

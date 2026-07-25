@@ -41,36 +41,48 @@ DEFAULT_PROVIDERS = ["claude", "codex", "agy"]
 RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on disk
 
 # --------------------------------------------------------------------------- #
-# Council models + thinking modes — THE single place to change who sits on the
-# council and how hard they think. Edit a cell to swap a model or thinking tier.
+# Council models + thinking modes — the runtime source for who sits on the council and
+# how hard they think. A tier change is this cell alone; a NEW model id must also be
+# registered in capabilities.toml [models], which scripts/lib/checks.py enforces.
 #   normal — the default; all members at high thinking.
 #   deep   — same models, maximum reasoning (and a longer default timeout) for
 #            high-stakes / maximum-confidence questions.
-# The claude seat is claude-opus-4-8 (2026-07-12): a TEMPORARY default while Claude
-# Fable 5 is credit-walled — restore "claude-fable-5" here (both modes) when it returns.
+# The claude seat is claude-opus-5 (2026-07-25). The plain id is deliberate: typical
+# council prompts (a diff, a findings list) sit far inside the standard window, so the
+# claude-opus-5[1m] long-context variant would price headroom these runs don't use.
+# Prompt size is caller-controlled, though — for an unusually large one, override per run
+# with `--model-claude "claude-opus-5[1m]"` rather than repinning the seat.
 # `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
-# applied at run time — `agy models` lists the valid strings.
+# applied at run time — `agy models` lists the valid strings. agy 1.1.5 also added a
+# separate `--effort` flag; the engine deliberately does NOT pass it, because
+# build_real_spec derives the recorded tier by regexing the label — a second knob
+# could disagree with the provenance it reports.
 # --------------------------------------------------------------------------- #
 MODES = {
     "normal": {
-        "claude": {"model": "claude-opus-4-8",         "thinking": "high"},
+        "claude": {"model": "claude-opus-5",           "thinking": "high"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
-        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
+        "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        "claude": {"model": "claude-opus-4-8",         "thinking": "max"},
+        "claude": {"model": "claude-opus-5",           "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
-        # Flash tops out at "(High)" — no Max tier exists per `agy models` (2026-07-11),
-        # so agy's deep seat runs identically to normal; "high" keeps provenance truthful.
-        "agy":    {"model": "Gemini 3.5 Flash (High)", "thinking": "high"},
+        # Flash tops out at "(High)": no Max tier exists per `agy models`, and 1.1.5's
+        # `--effort` caps at high too (both re-probed 2026-07-25 on agy 1.1.7) — two
+        # independent confirmations. agy's deep seat therefore runs identically to
+        # normal; "high" keeps provenance truthful.
+        "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
     },
 }
 DEFAULT_MODE = "normal"
 # Deep raised 600->1200 (2026-07-11): fable-5@max measured 649s and sol@max 796s on a
-# substantive review — 600 killed both. For big deep prompts prefer --retries 0/1: a
-# member that rode the window once will ride it again, and retries multiply the wait.
+# substantive review — 600 killed both. Re-measured on the current panel (2026-07-25,
+# one real diff review each): opus-5@max 565s, opus-4-8@max 529-623s, sol@max 374s — so
+# 1200 still clears the slowest seat by a wide margin. For big deep prompts prefer
+# --retries 0/1: a member that rode the window once will ride it again, and retries
+# multiply the wait.
 MODE_TIMEOUT = {"normal": 300, "deep": 1200}  # per-attempt seconds used when --timeout is unset
 
 # Map the abstract thinking tier to each provider's own flag value.
@@ -111,6 +123,14 @@ TRANSIENT_SENTINELS = [
 # Real-world failure strings observed across the three CLIs (extend in place so the
 # additions read as list growth, not string concatenation). All lowercase — input is lowered.
 PERSISTENT_SENTINELS.extend(["unauthenticated", "permission denied"])
+# A server-side model/CLI version gate: codex 0.143.0 rejected `-m gpt-5.6-sol` with an
+# HTTP 400 telling us to upgrade (observed 2026-07-25 — on stderr, stdout was empty, so
+# `evaluate`'s stderr scan does reach it) and the seat burned both retries on it. No retry
+# clears a version gate; only upgrading the CLI does. Kept deliberately NARROW: sentinels
+# are plain substrings, and a member reviewing this repo echoes these very files into
+# stderr — the wider the phrase, the likelier an unrelated transient failure gets
+# misclassified as permanent and loses its retry. Name the CLI to keep that window small.
+PERSISTENT_SENTINELS.append("requires a newer version of codex")
 TRANSIENT_SENTINELS.extend(["heap out of memory", "econnreset", "503"])
 NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota"}
 
@@ -224,16 +244,20 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
         # Since agy 1.1.1, `--model` pins the model per-run (thinking tier is encoded in
-        # the model string, e.g. "Gemini 3.5 Flash (High)"; `agy models` lists them) —
-        # the settings.json read remains only as manifest-provenance fallback.
+        # the model string, e.g. "Gemini 3.6 Flash (High)"; `agy models` lists them) —
+        # the settings.json read remains only as manifest-provenance fallback. Since 1.1.2
+        # an unresolvable --model hard-fails non-zero instead of silently downgrading to
+        # the default, so a stale label here surfaces as a dead seat, never as a wrong
+        # model reported under the right name.
         # --log-file captures agy's real failure reason: on a 429 it prints nothing to
         # stdout/stderr and only logs e.g. "RESOURCE_EXHAUSTED ... Individual quota
         # reached" — run_provider scans this file to turn an opaque `empty` into a clear
         # `auth_or_quota`. print-timeout self-terminates agy on a CLEAN idle wait (e.g. a
         # quota wall) just inside the engine timeout; capped at 120s so a quota-walled agy
-        # fails FAST. The 120s cap was calibrated on pre-1.1.1 clean-idle semantics; all
-        # observed 1.1.1 completions run 54-100s (under it) — if agy answers ever truncate
-        # near 120s, re-probe whether 1.1.1 made print-timeout a hard wall and raise it.
+        # fails FAST. The 120s cap was calibrated on pre-1.1.1 clean-idle semantics and has
+        # held since: 1.1.1 completions ran 54-100s, and on 1.1.7 a long deep review
+        # returned in 42s (2026-07-25) — all well under it. If agy answers ever truncate
+        # near 120s, re-probe whether print-timeout became a hard wall and raise it.
         # HISTORY: pre-1.1.1 (verified 2026-06-26), agy's headless `-p` mode
         # churned without emitting on non-trivial prompts and rode the window to `timeout`;
         # agy 1.1.1's release notes fixed `-p` hanging in subprocesses, and on 2026-07-11
@@ -647,7 +671,10 @@ MEMBER_SKILLS_NOTE = ("COUNCIL MEMBER NOTE: use any skills/plugins available in 
                       "environment when they materially help with this task — EXCEPT any "
                       "council/fan-out skill (e.g. llm-council). You are already answering "
                       "as a council member: never convene another council or delegate this "
-                      "question to other CLIs.")
+                      "question to other CLIs. Your FINAL message is the only thing read: "
+                      "it must carry your complete answer. If you use a tool after drafting "
+                      "it, repeat the whole answer afterwards — never close with a remark "
+                      "that refers back to it (\"my review above stands\").")
 
 
 def apply_member_note(prompt: str) -> str:
@@ -873,6 +900,16 @@ def self_test() -> int:
     check("sentinel: unauthenticated → persistent", classify_sentinel("UNAUTHENTICATED") == "auth_or_quota")
     check("sentinel: heap OOM → transient", classify_sentinel("heap out of memory") == "error_sentinel")
     check("sentinel: clean text → None", classify_sentinel("here is your answer") is None)
+    # The verbatim codex 0.143.0 rejection (2026-07-25) must fast-fail: retrying a version
+    # gate only burns the budget. The narrow phrasing is load-bearing — the two cases below
+    # pin that a member merely DISCUSSING CLI versions keeps its retry.
+    check("sentinel: codex version gate → persistent",
+          classify_sentinel("ERROR: {\"message\":\"The 'gpt-5.6-sol' model requires a "
+                            "newer version of Codex. Please upgrade to the latest app or "
+                            "CLI and try again.\"}") == "auth_or_quota")
+    check("sentinel: prose about needing a newer version stays retryable",
+          classify_sentinel("this feature requires a newer version of the agy CLI; "
+                            "the request also hit a 503") == "error_sentinel")
 
     # S14 — make_readonly argv contracts (plan-file suppression is mechanical + prompt).
     cl = build_real_spec("claude", "q", 30, {"claude": {"model": "m", "thinking": "high"}}, wd("ro"))
