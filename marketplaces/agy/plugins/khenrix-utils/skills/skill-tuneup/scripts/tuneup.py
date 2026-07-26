@@ -383,6 +383,147 @@ def log_target_key(repo: Path, skill: str) -> str:
     return f"{repo.resolve().name}@{h}:{skill}"
 
 
+# Severity decides when a run STOPS, so the bar has to be objective enough that a tiring
+# operator can't quietly relabel a defect to end the loop. Tests, not adjectives:
+SEVERITIES = ("blocking", "serious", "minor")
+SEVERITY_TESTS = {
+    "blocking": "produces a wrong result, makes a gate pass/fail incorrectly, loses data, "
+                "exposes a secret, or documents behaviour the code does not have",
+    "serious":  "a real edge case that CAN fire in normal use, or an eval gap that would "
+                "hide a genuine regression — bounded, but a correctness defect",
+    "minor":    "polish, naming, hardening for a condition never observed, preference",
+}
+STALL_LIMIT = 2  # consecutive non-decreasing cycles => the loop is not converging
+
+
+CYCLE_END = "cycle-end"      # one per CYCLE, written after that cycle's council review
+RUN_START = "run-start"      # one per RUN, written at Step 1
+RUN_END = "run-convergence"  # one per RUN — the run's outcome, NOT a cycle boundary
+
+
+def cycle_severity_counts(entries: list) -> tuple[list[int], bool, list[str]]:
+    """(per-cycle blocking+serious counts for the CURRENT run, tail_open, warnings).
+
+    Scoped to the newest `run-start`: a previous run's history must not let a fresh run
+    inherit its convergence or stall state. Cycles are delimited by `cycle-end` — NOT by
+    `run-convergence`, which is written once per run (every historical entry carries
+    `cycles: 3`), so counting on it silently measured runs and called them cycles.
+
+    `tail_open` is True when applied findings sit after the last `cycle-end`: the cycle is
+    still in flight and MUST NOT be read as a completed zero-serious cycle. An unsevered
+    applied finding counts as serious so an omitted tag can never end the run.
+    """
+    start = max((i for i, e in enumerate(entries)
+                 if e.get("finding_id") == RUN_START), default=None)
+    if start is None:
+        # FAIL CLOSED. Falling back to the whole log would scope a fresh run to every prior
+        # run's history — exactly what this scoping exists to prevent — and it was the one
+        # path in this engine that failed open.
+        raise ValueError(
+            f"no {RUN_START!r} marker in the log — write it at Step 1, before any finding. "
+            "Without it the run's cycles cannot be isolated from earlier runs.")
+    # Findings before the newest run-start are ADVISORY, not fatal. A backfilled marker
+    # looks identical to two legitimate states — closing out a deferred finding between
+    # runs (this log's established practice) and a run that died before writing its
+    # run-convergence — so raising permanently locked the target for every later run, and
+    # misdiagnosed it as "you wrote run-start late" when the operator had not. The hard
+    # guarantees that DO hold are elsewhere: a missing run-start refuses, an unnumbered or
+    # duplicate cycle-end refuses, and an open tail can never converge.
+    prev_end = max((i for i, e in enumerate(entries[:start])
+                    if e.get("finding_id") == RUN_END), default=-1)
+    warnings = []
+    orphans = [e.get("finding_id") for e in entries[prev_end + 1:start]
+               if e.get("decision") == "applied"
+               and e.get("finding_id") not in (RUN_END, RUN_START, CYCLE_END)]
+    # Only ambiguous when the PREVIOUS run never closed. After a run-convergence the
+    # boundary is unambiguous, so bookkeeping there (closing a deferred finding — this
+    # log's established practice) is plainly inter-run and must not warn, or every run
+    # that tidies up would be unable to converge.
+    if orphans and prev_end == -1:
+        warnings.append(
+            f"{len(orphans)} applied finding(s) sit between the last {RUN_END!r} and this "
+            f"{RUN_START!r} ({orphans[:3]}…). Expected if they are inter-run bookkeeping or "
+            "a run that ended without its marker; if they belong to THIS run, run-start was "
+            "written late and they are not being counted.")
+    cycles, cur, seen_cycles = [], [], []
+    for i, e in enumerate(entries[start + 1:]):
+        fid = e.get("finding_id")
+        if fid == RUN_END:
+            # Terminal: this run is complete. Anything after belongs to no run, so stop
+            # rather than letting a later run that forgot its own run-start silently
+            # inherit this run's cycle history and stall state. But do NOT drop it
+            # silently: real work appended after a completed run means the log describes
+            # two things at once, and reporting the finished run's verdict would report a
+            # stale "converged" over unaccounted findings.
+            rest = [x.get("finding_id") for x in entries[start + 1:][i + 1:]
+                    if x.get("decision") == "applied"
+                    and x.get("finding_id") not in (RUN_END, RUN_START)]
+            if rest:
+                warnings.append(
+                    f"{len(rest)} record(s) follow this run's {RUN_END!r} with no newer "
+                    f"{RUN_START!r} ({rest[:3]}…) — they belong to no run and are NOT "
+                    "counted. Start the next run with run-start.")
+            break
+        if fid == CYCLE_END:
+            # `cycle` is REQUIRED, not optional. Without it a duplicate marker is
+            # indistinguishable from a legitimate zero-finding cycle — and a zero-finding
+            # cycle IS the convergence condition, so any heuristic strict enough to catch
+            # the duplicate also makes converging impossible. A monotonic number separates
+            # them exactly.
+            n = e.get("cycle")
+            if not isinstance(n, int):
+                raise ValueError(
+                    f"{CYCLE_END} is missing an integer `cycle` number. It is required: "
+                    "without it a duplicate marker looks identical to a clean cycle.")
+            if seen_cycles and n <= seen_cycles[-1]:
+                raise ValueError(
+                    f"{CYCLE_END} cycle={n} is not greater than the previous "
+                    f"({seen_cycles[-1]}) — duplicate or out-of-order marker")
+            seen_cycles.append(n)
+            cycles.append(cur)
+            cur = []
+        elif fid not in (RUN_END, RUN_START) and e.get("decision") == "applied":
+            cur.append(e)
+    # Everything that is not an explicit, valid "minor" counts as serious. Whitelisting the
+    # only value that can END a run means a null, a typo or an absent key all fail CLOSED.
+    counts = [sum(1 for e in c if e.get("severity") != "minor") for c in cycles]
+    return counts, bool(cur), warnings
+
+
+def convergence_status(entries: list) -> dict:
+    """Severity-gated stop rule, replacing the old fixed cycle cap.
+
+    - converged: the newest COMPLETED cycle applied nothing blocking or serious. Positive
+      evidence there is nothing left worth finding, which a counter never gave.
+    - stalled: the best (minimum) count has not improved for STALL_LIMIT cycles. Testing
+      "did not decrease" was insufficient — an oscillation like [2,1,2,1,...] never
+      converges and never stalls, i.e. the termination guarantee had an infinite loop in
+      exactly the shape it existed to prevent. Improvement-of-best terminates because the
+      minimum is a non-negative integer that must strictly fall to keep the loop alive.
+    """
+    counts, tail_open, warnings = cycle_severity_counts(entries)
+    if not counts:
+        return {"cycles": 0, "counts": [], "tail_open": tail_open, "warnings": warnings,
+                "verdict": "cycle in flight" if tail_open else "no-cycles-yet",
+                "converged": False}
+    base = {"cycles": len(counts), "counts": counts, "tail_open": tail_open,
+            "warnings": warnings}
+    if tail_open:  # never converge on an unclosed cycle
+        return {**base, "converged": False, "verdict": "cycle in flight — close it first"}
+    if counts[-1] == 0:
+        if warnings:
+            # Advisory diagnostics must not lock the target — but converging ON an
+            # ambiguous log would report a clean run over records the parse dropped.
+            return {**base, "converged": False,
+                    "verdict": "clean cycle, but the log is ambiguous — resolve the "
+                               "warning(s) before declaring convergence"}
+        return {**base, "converged": True, "verdict": "converged"}
+    best_at = min(range(len(counts)), key=lambda i: (counts[i], i))  # first index of the min
+    stalled = (len(counts) - 1 - best_at) >= STALL_LIMIT
+    return {**base, "converged": False,
+            "verdict": "stalled — hand over" if stalled else "keep-iterating"}
+
+
 def _check_log_key(repo: Path, target: str) -> None:
     """Refuse an unqualified key for a foreign target rather than silently merging repos.
 
@@ -402,6 +543,13 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
         raise ValueError(f"log entry missing keys: {sorted(missing)}")
     if entry["decision"] not in DECISIONS:
         raise ValueError(f"decision must be one of {sorted(DECISIONS)}")
+    # An explicit null is NOT the same as an absent key: `.get(k, default)` returns None
+    # for an explicit null, so a null-severity finding counted as 0 and converged a cycle
+    # that had applied work. Absent is allowed (defaults to serious); null is not.
+    if "severity" in entry and entry["severity"] not in SEVERITIES:
+        raise ValueError(
+            f"severity must be one of {sorted(SEVERITIES)} (got {entry['severity']!r}); "
+            "omit the key entirely to default to 'serious'")
     if entry["target"] != target:
         raise ValueError(f"entry target {entry['target']!r} != --target {target!r}")
     entry.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -410,6 +558,20 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
     with open(p, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, sort_keys=True) + "\n")
     return entry
+
+
+def log_entries(repo: Path, target: str) -> list[dict]:
+    """EVERY entry in write order — the raw history.
+
+    Distinct from log_list(), which collapses to the latest decision per finding_id: cycle
+    accounting needs each cycle's own applied findings, and a deduped view would drop a
+    finding that was applied in one cycle and superseded in a later one.
+    """
+    _check_log_key(repo, target)
+    p = log_path(repo, target)
+    if not p.is_file():
+        return []
+    return [json.loads(ln) for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
 def log_list(repo: Path, target: str) -> list[dict]:
@@ -427,6 +589,9 @@ def log_list(repo: Path, target: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+_MISSING = object()
+
+
 def _raises(fn, exc) -> bool:
     try:
         fn()
@@ -536,6 +701,147 @@ def _self_test() -> int:
                        {"providers": ["claude"], "provenance": "eval", "self_test": True})))
         ok.append(("missing receipt is reported",
                    "no receipt" in " ".join(verify_final_receipt(r, "zeta", ["claude"]))))
+    # severity-gated convergence: the rule that replaced the fixed cycle cap
+    def _hist(counts, tail=0):
+        e = [{"finding_id": RUN_START, "decision": "applied"}]
+        for c in counts:
+            e += [{"finding_id": f"f{i}", "decision": "applied", "severity": "serious"}
+                  for i in range(c)]
+            e.append({"finding_id": CYCLE_END, "decision": "applied",
+                      "cycle": len([x for x in e if x["finding_id"] == CYCLE_END]) + 1})
+        e += [{"finding_id": f"t{i}", "decision": "applied", "severity": "serious"}
+              for i in range(tail)]
+        return e
+    ok.append(("work appended after a completed run WARNS and blocks convergence",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": "f", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 2}]
+               )["converged"] is False))
+    ok.append(("a properly closed run followed by a new one still converges",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["converged"] is True))
+    ok.append(("a clean final cycle converges",
+               convergence_status(_hist([3, 1, 0]))["verdict"] == "converged"))
+    ok.append(("a declining rate keeps iterating",
+               convergence_status(_hist([6, 3, 1]))["verdict"] == "keep-iterating"))
+    ok.append(("a flat/rising rate stalls and hands over",
+               convergence_status(_hist([2, 2, 3]))["verdict"].startswith("stalled")))
+    ok.append(("minor findings do not block convergence",
+               convergence_status(
+                   _hist([2]) + [{"finding_id": "m", "decision": "applied", "severity": "minor"},
+                                 {"finding_id": CYCLE_END, "decision": "applied", "cycle": 2}]
+               )["verdict"] == "converged"))
+    ok.append(("an unsevered applied finding counts as serious (fail closed)",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "x", "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["verdict"] == "keep-iterating"))
+    ok.append(("deferred findings never block convergence",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "d", "decision": "deferred", "severity": "blocking"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["verdict"] == "converged"))
+    ok.append(("an oscillating rate stalls (the infinite loop the old rule allowed)",
+               convergence_status(_hist([2, 1, 2, 1, 2, 1]))["verdict"].startswith("stalled")))
+    ok.append(("a strictly declining rate keeps iterating however long",
+               convergence_status(_hist([9, 8, 7, 6, 5]))["verdict"] == "keep-iterating"))
+    ok.append(("an OPEN cycle never converges",
+               convergence_status(_hist([3, 0], tail=1))["converged"] is False))
+    ok.append(("a run that ends mid-cycle leaves the cycle OPEN, never converged",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "a", "decision": "applied", "severity": "serious"},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["converged"] is False))
+    ok.append(("a fresh run does not inherit the prior run's history",
+               convergence_status(
+                   _hist([5, 5, 5]) + [{"finding_id": RUN_END, "decision": "applied"}]
+                   + _hist([0]))["verdict"] == "converged"))
+    ok.append(("findings before run-start WARN but do not lock the target",
+               bool(convergence_status(
+                   [{"finding_id": "f", "decision": "applied", "severity": "blocking"},
+                    {"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["warnings"])))
+    ok.append(("legitimate inter-run bookkeeping does not lock the target",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "f", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": "closed-old", "decision": "applied", "severity": "minor"},
+                    {"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["verdict"] == "converged"))
+    ok.append(("run-convergence is TERMINAL — a later run without run-start cannot inherit",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "a", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": "b", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 4}]
+               )["counts"] == [1]))
+    ok.append(("a missing run-start is REFUSED (would inherit all history)",
+               _raises(lambda: convergence_status(
+                   [{"finding_id": "f", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]), ValueError)))
+    ok.append(("a duplicate cycle-end is REFUSED (would fake a clean cycle)",
+               _raises(lambda: convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "f", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]), ValueError)))
+    ok.append(("non-monotonic numbered cycle-end is REFUSED",
+               _raises(lambda: convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "f", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 2},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 2}]), ValueError)))
+    ok.append(("a prior COMPLETED run before run-start is fine",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "old", "decision": "applied", "severity": "serious"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                    {"finding_id": RUN_END, "decision": "applied"},
+                    {"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["verdict"] == "converged"))
+    with tempfile.TemporaryDirectory() as td:  # khenrix-shaped, or the LOG-KEY check raises
+        kr = Path(td)                          # first and the assertion passes vacuously
+        (kr / "shared" / "skills").mkdir(parents=True)
+        (kr / "capabilities.toml").write_text("[models]\n")
+        def _sev(v):
+            e = {"target": "x", "finding_id": "y", "decision": "applied"}
+            if v is not _MISSING:
+                e["severity"] = v
+            try:
+                log_append(kr, "x", e)
+                return None
+            except ValueError as ex:
+                return str(ex)
+        ok.append(("a bad severity is rejected at write time — for the RIGHT reason",
+                   "severity must be one of" in (_sev("P0") or "")))
+        ok.append(("an explicit null severity is rejected (absent != null)",
+                   "severity must be one of" in (_sev(None) or "")))
+        ok.append(("an omitted severity is accepted", _sev(_MISSING) is None))
+    ok.append(("a null severity counts as serious, not zero",
+               convergence_status(
+                   [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": "f", "decision": "applied", "severity": None},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["verdict"] == "keep-iterating"))
     # lock: the token is what makes a steal detectable — touch -c could not
     _saved = globals()["LOCK_DIR"]
     with tempfile.TemporaryDirectory() as td:
@@ -648,6 +954,10 @@ def main(argv=None) -> int:
     kp = sub.add_parser("lock")
     kp.add_argument("action", choices=["acquire", "refresh", "release"])
     kp.add_argument("--owner", default="")
+    cp = sub.add_parser("convergence-status")
+    cp.add_argument("--repo", required=True)
+    cp.add_argument("--target", required=True)
+    cp.add_argument("--json", action="store_true")
     tp = sub.add_parser("target-info")
     tp.add_argument("--repo", required=True)
     tp.add_argument("--skill", required=True)
@@ -694,6 +1004,19 @@ def main(argv=None) -> int:
         print(json.dumps(b, indent=2) if args.json else
               f"baseline {b['sha'][:9]}  {b['date']}  {b['subject']}"
               f"  ({b['skipped_as_chore']} newer chore/docs commit(s) skipped)")
+    elif args.cmd == "convergence-status":
+        st = convergence_status(log_entries(repo, args.target))
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            print(f"cycles:   {st['cycles']}   serious-per-cycle: {st['counts']}")
+            print(f"verdict:  {st['verdict']}")
+            for w in st.get("warnings", []):
+                print(f"  ⚠ {w}")
+            if st["verdict"] == "stalled — hand over":
+                print("  the serious-finding rate stopped falling — another cycle buys "
+                      "another defect, not convergence. Hand the remainder to the user.")
+        return 0 if st["converged"] else 1
     elif args.cmd == "target-info":
         info = target_info(repo, args.skill)
         if args.json:

@@ -15,6 +15,6 @@ Line schema (written via `tuneup.py log append`; later lines for the same `findi
  "decision": "applied|rejected|deferred", "reason": "…", "sources": ["…"]}
 ```
 
-Required keys: `target`, `finding_id`, `decision` (the engine enforces these; `ts` is
+Required keys: `target`, `finding_id`, `decision` · `severity` — OPTIONAL (`blocking`|`serious`|`minor`); omit it to default to serious, but an explicit null is rejected. Marker entries (`run-start`, `cycle-end`, `run-convergence`) carry no severity. (the engine enforces these; `ts` is
 stamped automatically). Read it back with `tuneup.py log list --target <t>` — it reports
 the latest decision per finding.

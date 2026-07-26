@@ -7,7 +7,7 @@ description: >-
   delegated engines, model IDs — live probes + deep research), have the llm-council
   review the findings, audit the target, checkpoint with the user, apply proportionate
   fixes, run the repo eval harness to a fresh receipt, council-review the diff, iterate
-  to convergence (cap 3 cycles), then commit + refresh. Also has a cheap read-only triage mode that ranks ALL skills by
+  to convergence (stop when a cycle finds nothing serious), then commit + refresh. Also has a cheap read-only triage mode that ranks ALL skills by
   staleness into a worklist. Use when the user wants to tune up, improve, modernize,
   refresh, or audit an EXISTING khenrix skill — "tune up markitdown", "is chunk-map
   stale", "skill maintenance", "triage the skills", "which skill needs work". One deep
@@ -22,7 +22,7 @@ allowed-tools: Bash, Read, Grep, Edit, Write, WebSearch, WebFetch, Skill
 Maintain ONE existing skill per deep run — in khenrix-utils, or in any other repo:
 **baseline → research upstream deltas → council review #1 (findings) → audit →
 CHECKPOINT → apply → evals to green → council review #2 (diff) → record →
-converge (≤3 cycles) → commit + refresh.**
+converge (until a cycle finds nothing serious) → commit + refresh.**
 A read-only **triage** mode ranks all skills by staleness instead (no edits, then stop).
 
 This skill is an orchestrator: the deterministic parts live in the bundled
@@ -81,7 +81,7 @@ python3 "$TUNEUP" target-info --repo "$REPO" --skill <target>
 - **Proportionality is a hard rule**: over-engineering is a finding, not a goal; risky
   changes need explicit sign-off; never edit `marketplaces/**` (generated).
 - **A run ends converged or handed over.** Improvement cycles repeat until a full cycle
-  applies nothing new (Step 10), cap 3 — never "ran once, might have found more".
+  applies nothing blocking or serious (Step 10) — never "ran once, might have found more".
 
 ## Step 1 — Scope gate + lock
 
@@ -94,7 +94,16 @@ Acquire it with an **ownership token**, so a steal is detectable rather than sil
 
 ```bash
 python3 "$TUNEUP" lock acquire     # prints OWNER=<token>; nonzero if another run holds it
+printf '%s' '{"target":"<log_target>","finding_id":"run-start","decision":"applied","title":"run start"}' | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
 ```
+
+**Write `run-start` here, before any finding.** `convergence-status` scopes to the newest
+one, so a marker written late drops this run's earlier findings from the count. A MISSING
+marker is refused outright. Findings stranded between the previous run's `run-convergence`
+and this `run-start` raise a WARNING rather than an error — they are equally consistent with
+inter-run bookkeeping or a run that died before its marker, so refusing would lock the target
+for every later run. A warning does block *convergence* though: you cannot declare a run
+clean on a log the parser could not read unambiguously.
 
 Then **before each long step** (fan-out, eval run, checkpoint wait) re-assert ownership:
 
@@ -247,7 +256,7 @@ frozen decisions and returns inadmissible polish at deep-mode prices.
 4. Record every finding's outcome in the run log:
 
 ```bash
-printf '%s' '{"target":"<target>","finding_id":"<slug>","decision":"applied|rejected|deferred","title":"...","reason":"..."}' \
+printf '%s' '{"target":"<target>","finding_id":"<slug>","decision":"applied|rejected|deferred","severity":"blocking|serious|minor","title":"...","reason":"..."}' \
   | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
 ```
 
@@ -258,9 +267,10 @@ to say "iterate until you cannot improve further". Repeat **audit → apply → 
 council diff-review → record** (Steps 7–9 minus the checkpoint) until converged:
 
 - **Convergence is detected at the END of a cycle**: if that cycle's audit + council
-  diff-review triage applied NOTHING new — the candidate is byte-identical to the one
-  those reviews examined — that candidate IS the fixed point; no further cycle runs on
-  it. Converged additionally requires: every residual explicitly `rejected` or
+  diff-review triage applied nothing `blocking` or `serious` — a `minor`-only cycle still
+  converges — that candidate IS the fixed point; no further cycle runs on it. The candidate
+  must be the one those reviews actually examined, so a `minor` fix applied after the review
+  starts a new cycle rather than shipping unreviewed. Converged additionally requires: every residual explicitly `rejected` or
   `deferred`-with-trigger, nothing risky awaiting sign-off, and (**full-gate targets only**)
   a green full-panel eval on exactly that candidate — if its last green eval wasn't
   full-panel, run the full panel ONCE on the unchanged candidate (that is the gate, not a
@@ -278,19 +288,60 @@ python3 "$TUNEUP" verify-final-receipt --repo "$REPO" --skill <target>   # exit 
   requirement because their receipts come from a test suite. It applies to the TARGET —
   cross-target receipts re-earned for a shared-file edit keep their own skill's gate.
 - **Frozen decisions.** A decided finding_id may not be re-opened or reversed by a later
-  cycle — reversal urges become disagreement notes for the commit message. (The CAP, not
-  the freeze, guarantees termination; the freeze prevents relitigation and apply→revert
-  oscillation.) A regression of an applied fix, or genuinely new evidence, is a NEW
+  cycle — reversal urges become disagreement notes for the commit message. (The STALL rule, not the freeze, guarantees
+  termination; the freeze prevents relitigation and apply→revert oscillation.) A regression of an applied fix, or genuinely new evidence, is a NEW
   finding id that references the old one — those are always admissible.
 - **Cycles ≥2 raise the bar**: new findings from any defect category (Bug /
   Inconsistency / Stale / Missing-edge-case / Eval-gap / Over-engineering) — but no
   Best-practice-update or polish. A clean pass stated plainly beats a manufactured
   caveat; never invent findings to keep the loop alive.
-- **Cap: 3 total cycles** (the first post-checkpoint pass IS cycle 1); the eval-fix cap
-  of 5 stays RUN-GLOBAL across cycles. On cap without convergence: record
-  `converged:false`, do NOT ship, hand the remainder to the user. The CHECKPOINT stays
-  cycle-1-only; later cycles auto-proceed within approved scope, but anything newly
-  `risky` still halts for sign-off.
+- **No cycle cap — stop on SEVERITY, not on a counter.** A count-based cap stops at an
+  arbitrary number; what you actually want to know is whether anything worth finding is
+  left. Tag every applied finding with `severity`, and let the engine decide:
+
+```bash
+python3 "$TUNEUP" convergence-status --repo "$REPO" --target <log_target>   # 0 = converged
+```
+
+  | severity | the test (not an adjective) |
+  |---|---|
+  | `blocking` | wrong result · a gate passing/failing incorrectly · data loss · secret exposure · **documented behaviour the code does not have** |
+  | `serious` | a real edge case that CAN fire in normal use, or an eval gap that would hide a genuine regression |
+  | `minor` | polish, naming, hardening for a condition never observed, preference |
+
+  - **converged** — the newest cycle applied nothing `blocking` or `serious`. `minor`
+    findings are logged `deferred` and do NOT block; fixing them would just start another
+    cycle. This is positive evidence, which a counter never gave you.
+  - **stalled** — the BEST (lowest) serious-count has not improved for two cycles. Stop and
+    hand over: the loop is not approaching zero, so the next cycle buys another defect
+    rather than convergence. (Observed 2026-07-26: three consecutive cycles each found a P0
+    *in the previous cycle's own fixes*.) Improvement-of-best — not merely "did not
+    increase" — is what makes this a real termination guarantee: the minimum is a
+    non-negative integer that must strictly fall to keep the loop alive, so an oscillation
+    like `2,1,2,1,…` halts instead of running forever.
+  - **keep-iterating** — otherwise. The eval-fix cap of 5 stays RUN-GLOBAL.
+  - Severity is assigned when the finding is RECORDED, before you know whether fixing it
+    ends the run — don't relabel a defect `minor` to stop iterating. If you are tempted,
+    that is the signal to hand over instead. An applied finding with no `severity` counts
+    as serious, so forgetting the tag can never end a run early.
+  - **The rule needs two markers, or it measures the wrong thing.** Write `run-start` once
+    at Step 1, and `cycle-end` after EACH cycle's council review. `run-convergence` is the
+    run's outcome, not a cycle boundary — it is written once per run, so counting cycles on
+    it silently measures runs instead. `convergence-status` scopes to the newest
+    `run-start` (a fresh run must not inherit a previous run's stall state) and refuses to
+    converge while findings sit after the last `cycle-end` — an in-flight cycle is not a
+    clean one. `cycle-end` carries a REQUIRED monotonic `cycle` number: without it a
+    duplicate marker is indistinguishable from a legitimate zero-finding cycle, and a
+    zero-finding cycle IS convergence — so any check strict enough to catch the duplicate
+    would also make converging impossible.
+
+```bash
+printf '%s' '{"target":"<log_target>","finding_id":"cycle-end","decision":"applied","cycle":<N>,"title":"cycle <N> reviewed"}' | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
+```
+
+  The CHECKPOINT stays cycle-1-only; later cycles auto-proceed within approved scope, but
+  anything newly `risky` still halts for sign-off. Report the cycle count and the
+  serious-per-cycle series in the final summary so the spend is visible.
 - Refresh the lock at each cycle boundary too (Step 1). If `lock refresh` exits nonzero the
   lock was stolen or removed — **stop**; do not keep working unlocked.
 - **Cross-target edits re-arm that skill's receipt too**: an approved edit to another
@@ -311,10 +362,10 @@ Record the outcome in the run log EVERY run (extra keys are accepted; `log list`
 the latest entry per id, so the next run can see the skill already sits at a fixed point):
 
 ```bash
-printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"applied","converged":true,"cycles":2,"title":"run converged — cycle 2 applied nothing new"}' \
+printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"applied","converged":true,"cycles":2,"title":"run converged — cycle 2 applied nothing blocking or serious"}' \
   | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
-# on cap without convergence (run NOT shipped):
-printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"deferred","converged":false,"cycles":3,"title":"cap reached — remainder handed to user"}' \
+# on STALL without convergence (run NOT shipped):
+printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"deferred","converged":false,"cycles":<n>,"title":"stalled — best serious-count stopped improving; remainder handed to user"}' \
   | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
 ```
 
