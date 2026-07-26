@@ -19,6 +19,14 @@ modified `shared/skills/llm-council/**`, the under-test engine must NOT be its o
    (see `headless-invocation.md` at the plugin root) and treat it as a 1-member panel.
 3. Either way, **tell the user the reviewer was substituted and why.**
 
+**Consequence for a panel change.** `MODES` lives in `fanout.py`, so extracting HEAD's engine
+also extracts the OLD panel — a model bump is necessarily reviewed by the models it replaces,
+and the new panel never reviews its own diff. That is the intended independence, not a bug.
+The compensating control is integration evidence: smoke **every changed seat** with the
+working-tree engine (`--smoke` defaults to claude only — pass `--providers` or check the
+manifest's per-seat `model`/`thinking` provenance) and probe any timing claim the change
+alters. The smoke proves the seats resolve and answer; it is not a review of their judgment.
+
 The eval gate for llm-council is also special: `fanout.py --self-test` + a live
 `--smoke` (its receipt is self-test-gated — see `references/eval-rules.md`), never the
 with-skill/baseline judge harness.
@@ -39,5 +47,7 @@ do not "fix" that guard away.
 
 Normal rules, plus: edits go to `shared/skill-templates/<t>/SKILL.md.tmpl` and the
 `[skill_facts.<t>.<cli>]` tables — and `capabilities.toml` is in BOTH templated skills'
-receipt closures, so a facts edit for one stales the other's receipt too. Budget for
-re-evaling (or re-seeding, with the user's sign-off) both.
+receipt closures, so a facts edit for one stales the other's receipt too. Budget a real
+eval for **both**. Re-seeding is no longer an option even with sign-off:
+`verify-final-receipt` rejects any receipt whose `provenance` isn't `"eval"`, so a seeded
+receipt now fails the convergence gate it was meant to satisfy.

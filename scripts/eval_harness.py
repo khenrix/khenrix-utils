@@ -304,9 +304,33 @@ def grade(answer: str, ev: dict, condition: str, judge: str, cfg: dict, workdir:
           *, timeout: int) -> dict:
     prompt = GRADE_TMPL.format(prompt=ev["prompt"], assertions=_numbered(ev["assertions"]),
                                answer=answer or "(no answer produced)")
-    text, _ = run_text(judge, prompt, cfg, workdir / "judge", timeout=timeout, retries=2,
-                       readonly=False)  # retries=2: a transient empty judge call → false 0/4 ("no verdict")
-    return parse_grading(text, ev["assertions"], f"eval-{ev['id']}-{ev['name']}", condition)
+    text, jrec = run_text(judge, prompt, cfg, workdir / "judge", timeout=timeout, retries=2,
+                          readonly=False)  # retries=2: a transient empty judge call → false 0/4 ("no verdict")
+    g = parse_grading(text, ev["assertions"], f"eval-{ev['id']}-{ev['name']}", condition)
+    # A dead judge fails EVERY assertion with "no verdict returned" — a 0/N that is averaged
+    # into this condition's mean exactly like a dead executor, and biases the delta the same
+    # way. retries=2 only lowers the odds; the whole point of failing closed is that a
+    # BIASING failure can't be managed by probability. Surface it so the caller can veto.
+    # Require a verdict PER assertion, not merely well-formed JSON: `{}` parses fine while
+    # parse_grading scores every assertion "no verdict returned" — the exact 0/N artifact
+    # this signal exists to reject.
+    # Require a real verdict per assertion. Length alone is not enough:
+    # {"expectations":[{},{},{}]} is well-formed and correctly-sized, yet parse_grading
+    # scores every assertion "no verdict returned" — the exact 0/N artifact this rejects.
+    obj = extract_json(text)
+    exps = obj.get("expectations") if isinstance(obj, dict) else None
+    g["judge_ok"] = (bool(jrec.get("valid")) and isinstance(exps, list)
+                     and len(exps) >= len(ev["assertions"])
+                     and all(isinstance(e, dict) and isinstance(e.get("passed"), bool)
+                             for e in exps[:len(ev["assertions"])]))
+    # Keep the judge's own failure cause when it has one — "no verdict" would send the
+    # reader to the wrong remedy for a judge that actually timed out.
+    # Keep the transport cause only when the transport actually failed — a valid record
+    # carries reason "ok", which would otherwise label a malformed verdict as fine.
+    g["judge_reason"] = (None if g["judge_ok"]
+                         else (jrec.get("reason") if not jrec.get("valid")
+                               else "judge returned no verdict"))
+    return g
 
 
 def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
@@ -365,8 +389,12 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
                 "pass_rate": round(g["passed"] / g["total"], 4) if g["total"] else 0.0,
                 "passed": g["passed"], "failed": g["total"] - g["passed"], "total": g["total"],
                 "time_seconds": rec.get("duration_sec"), "tokens": None,
-                "tool_calls": 0, "errors": 0 if rec.get("valid") else 1,
-                "reason": rec.get("reason"),
+                "tool_calls": 0,
+                # Invalid = the executor OR the judge failed. Either way this condition's
+                # score is an artifact, not a measurement.
+                "errors": 0 if (rec.get("valid") and g.get("judge_ok")) else 1,
+                "reason": (rec.get("reason") if not rec.get("valid")
+                           else g.get("judge_reason")),
             },
             "expectations": g["expectations"],
         })
@@ -473,7 +501,17 @@ def run(args) -> int:
     # don't gate on it. `d is not None` guards the degenerate case (empty eval set / empty
     # providers → no runs → no delta) so a receipt is never earned with zero evidence;
     # the llm-council + DETERMINISTIC_GATED overrides below set gate_ok=True regardless.
-    gate_ok = (d is not None and d >= 0)
+    # An executor that timed out or died is graded 0/4 on an empty answer, then averaged
+    # into its side's mean — so an invalid run doesn't just add noise, it BIASES the delta:
+    # a with_skill error sinks it (looks like a regression), a baseline error inflates it
+    # (looks like a pass and earns a receipt). Observed 2026-07-25 on khenrix-upgrade: the
+    # with_skill side timed out for -0.29, the serial re-run's BASELINE timed out for
+    # +0.375, and the second one silently wrote a receipt. Where the delta IS the gate, an
+    # invalid run means there is no measurement — fail closed rather than bless it. The two
+    # overrides below gate on a self-test/unit suite instead, so a flaky executor there
+    # costs an advisory number, not the gate; they deliberately stay unaffected.
+    invalid = [r for r in all_runs if r["result"].get("errors")]
+    gate_ok = (d is not None and d >= 0 and not invalid)
     if args.skill == "llm-council":
         # Orchestrator exception (docs/skill-eval-process.md): harness executors run
         # under LLM_COUNCIL_DEPTH=1, so an injected llm-council body can never convene
@@ -521,6 +559,14 @@ def _print_summary(benchmark: dict, itdir: Path) -> None:
     b = s["without_skill"].get("pass_rate", {}).get("mean")
     print(f"\n  with_skill pass_rate mean: {w}   baseline: {b}   "
           f"delta: {s['delta'].get('pass_rate')}")
+    # An errored condition is graded 0/4 ("No answer was produced") and averaged in like
+    # any other score, so it moves the delta in whichever direction it lands on — down if
+    # with_skill errored, UP if the baseline did. Print it: without this line a contended
+    # run and a real regression are indistinguishable at the console.
+    for r in benchmark.get("runs", []):
+        if r["result"].get("errors"):
+            print(f"  ⚠ INVALID RUN  {r['eval_name']} / {r['configuration']}  "
+                  f"reason={r['result'].get('reason')} — scored 0 and folded into the delta")
     print(f"  artifacts: {itdir}")
 
 
@@ -632,7 +678,7 @@ def parse_args(argv=None):
     ap.add_argument("--timeout", type=int, default=None, help="per-attempt seconds (per-mode default)")
     sb = ap.add_mutually_exclusive_group()
     sb.add_argument("--readonly", dest="readonly", action="store_true", default=True,
-                    help="run executors read-only / plan-only (claude/codex mechanically, agy best-effort) so an eval can't mutate config (default: on)")
+                    help="run executors read-only / plan-only (all three mechanically: claude plan mode, codex sandbox, agy --mode plan) so an eval can't mutate config (default: on)")
     sb.add_argument("--no-readonly", dest="readonly", action="store_false",
                     help="run executors with full permissions (only for skills that must write)")
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")

@@ -62,5 +62,12 @@ beats completeness.
 ## What makes a finding `risky` (requires explicit sign-off)
 
 Behavior change to what the skill delivers · any model-ID change · a new dependency ·
-rewriting the eval set · touching another skill's files · anything touching
-`scripts/lib/*` or `scripts/render.py` (stales EVERY skill's receipt — say so).
+rewriting the eval set · touching another skill's files · `scripts/lib/reconcile.py`,
+`scripts/lib/inventory.py`, or `scripts/render.py` (bundled into EVERY skill — stales every
+receipt; say so) · `capabilities.toml` (in BOTH templated skills' closures, so it owes a
+`khenrix-setup` AND a `khenrix-upgrade` eval no matter which skill you are tuning — and a
+new model id *requires* a `[models]` entry, enforced by `scripts/lib/checks.py`).
+
+Derive the checkpoint's cost note from the paths you intend to touch, checked against
+`checks.py`'s closures — not from the target's name. Other `scripts/lib/*` files and
+`scripts/eval_harness.py` are in no closure and cost zero eval runs.

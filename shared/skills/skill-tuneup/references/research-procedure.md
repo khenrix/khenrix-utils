@@ -43,14 +43,19 @@ on the hot path before flagging them.
 
 Per-CLI research paths (this skill ships to all three CLIs — degrade gracefully):
 
-- **Claude Code**: drive the synthesis with the `deep-research` skill — fold every
+- **If a `deep-research` skill is installed** (Claude Code only, and not guaranteed — it is
+  an authorable skill, not a bundled one): drive the synthesis with it — fold every
   dependency's open question (CLI-flag drift, new model IDs, deprecations, convention
   shifts) into ONE refined question; it fans out searches and adversarially verifies
   claims, returning a cited delta list. Your live probes remain authoritative for what is
   *installed*; deep-research covers what *shipped*.
-- **Codex / agy** (no deep-research skill): WebSearch/WebFetch the release notes and
+- **Otherwise — and always on Codex / agy**: WebSearch/WebFetch the release notes and
   changelogs directly, per dependency, date-bounded from the baseline — plus the same
   live CLI probes. Say in the output that research ran in the degraded (direct-search) path.
+
+If a probe or search cannot be completed (network, rate limit, an unreachable changelog),
+say which check failed and treat it as UNKNOWN — never infer "no change" from a failed
+lookup, and get explicit approval before proceeding on probe-only research.
 
 ## 4. Model currency
 

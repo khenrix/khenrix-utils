@@ -71,15 +71,30 @@ make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
 provider's bypass flag — claude `--permission-mode plan` plus plan-file suppression
 (`--disallowedTools ExitPlanMode` + an appended system prompt), codex `--sandbox read-only`;
-agy gets two SOFT layers — a READONLY_POSTURE line prepended to every executor's prompt
-and a throwaway git-worktree cwd, since its sandbox hangs headless (see `make_readonly`'s
-docstring); cwd-relative writes are discarded but absolute-path writes remain possible —
+agy `--mode plan` — a mechanical read-only mode since agy 1.1.1, since its `--sandbox` hangs
+headless (see `make_readonly`'s docstring) — plus two SOFT layers as defense in depth: a
+READONLY_POSTURE line prepended to every executor's prompt and a throwaway git-worktree cwd,
+so cwd-relative writes are discarded —
 so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
-mechanically constrained on claude/codex during an eval, while the real HOME is kept so auth still resolves
+mechanically constrained on all three during an eval, while the real HOME is kept so auth still resolves
 (sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
 three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
 iteration and the full panel for the final gate. `--no-readonly` opts out when a skill
-genuinely must write. agy's containment is posture + worktree, not a sandbox — lower-risk, not sealed.
+genuinely must write. agy's plan mode is a mechanical write barrier but not an OS sandbox —
+still less sealed than codex's, so lower-risk rather than sealed.
+
+**Invalid runs.** Each entry in `benchmark.json`'s `runs[]` carries `result.errors` (1 when
+the executor timed out or died, **or the judge returned no verdict** — `result.reason`
+distinguishes them) and `result.reason`. An invalid run is graded 0/N — on an empty answer
+when the executor died, on a missing verdict when the judge did — and averaged into its own
+side's mean, so it BIASES the delta — a `with_skill` error
+sinks it, a `without_skill` error inflates it and would otherwise earn a receipt off a
+baseline that never answered. The gate therefore fails closed whenever any run is invalid,
+for every skill whose gate IS the delta; `llm-council` and the `DETERMINISTIC_GATED` wiki
+skills are exempt because their receipts are earned by a self-test / unit suite instead. The
+run summary prints a `⚠ INVALID RUN` line per occurrence. If one recurs with nothing else in
+flight, the eval is under-timed — raise the per-attempt cap with `make eval … TIMEOUT=<secs>`
+rather than `MODE=deep`, which would also change reasoning depth.
 
 ## Per-provider tooling (accelerators, not the gate)
 

@@ -15,7 +15,7 @@ references/ — this script only reports facts. Run memory lives in
 docs/tuneups/log/<target>.jsonl (committed; outside every eval-receipt closure).
 """
 from __future__ import annotations
-import argparse, json, re, subprocess, sys
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, time, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,10 +40,63 @@ def _git(repo: Path, *args: str) -> str:
                           capture_output=True, text=True, check=True).stdout
 
 
+# Where a skill's source can live. khenrix-utils layouts first (a khenrix skill must never
+# be matched by a generic layout), then the two conventions foreign repos use. This is the
+# ONLY place layout is encoded — baseline/stale-models resolve through it, so teaching it a
+# new layout teaches the whole engine.
+KHENRIX_LAYOUTS = ("shared/skills/{s}", "shared/skill-templates/{s}")
+FOREIGN_LAYOUTS = (".claude/skills/{s}", "skills/{s}")
+
+
 def skill_paths(repo: Path, skill: str) -> list[Path]:
-    """Source-of-truth dirs for a skill: shared/skills/<s> and/or shared/skill-templates/<s>."""
-    return [p for p in (repo / "shared" / "skills" / skill,
-                        repo / "shared" / "skill-templates" / skill) if p.is_dir()]
+    """Source-of-truth dirs for a skill.
+
+    Layouts are selected by REPO KIND, not tried in order: a khenrix checkout uses only
+    khenrix layouts, any other repo only the foreign ones. Mixing them would let a stray
+    `.claude/skills/<n>` copy inside khenrix-utils be resolved and edited alongside the real
+    source. A skill matching two layouts in the same tier is ambiguous — return both so the
+    caller can refuse rather than silently pick one.
+    """
+    pats = KHENRIX_LAYOUTS if is_khenrix_repo(repo) else FOREIGN_LAYOUTS
+    return [p for p in (repo / pat.format(s=skill) for pat in pats) if p.is_dir()]
+
+
+def is_khenrix_repo(repo: Path) -> bool:
+    """The full gate (evals, receipts, render.py, precommit) only exists here."""
+    return (repo / "capabilities.toml").is_file() and (repo / "shared" / "skills").is_dir()
+
+
+def target_info(repo: Path, skill: str) -> dict:
+    """Resolve a target and say which gate tier applies — the two-tier contract in one place.
+
+    A foreign repo has no evals/, no receipt, no render.py and no `make precommit`, so the
+    receipt gate simply does not exist there. Rather than pretend otherwise, report the tier
+    so the run can state plainly that it ran ungated.
+    """
+    paths = skill_paths(repo, skill)
+    khenrix = is_khenrix_repo(repo)
+    full_gate = bool(khenrix and any(
+        str(p.relative_to(repo)).startswith(("shared/skills", "shared/skill-templates"))
+        for p in paths))
+    # Two same-tier matches (e.g. .claude/skills/x AND skills/x) is ambiguous: baseline,
+    # scanning and editing would each silently pick one. Refuse centrally rather than
+    # letting the run act on the wrong source.
+    ambiguous = len(paths) > 1
+    return {
+        "ambiguous": ambiguous,
+        "repo": str(repo),
+        "repo_name": repo.name,
+        "skill": skill,
+        "paths": [str(p.relative_to(repo)) for p in paths],
+        "found": bool(paths),
+        "khenrix_repo": khenrix,
+        "tier": "full-gate" if full_gate else "council-only",
+        "gate": ("evals + receipt + make precommit"
+                 if full_gate else
+                 "research + both council reviews + audit + convergence — NO receipt; "
+                 "say so plainly in the run's output"),
+        "log_target": log_target_key(repo, skill),
+    }
 
 
 def pick_baseline(commits: list[dict]) -> dict | None:
@@ -58,7 +111,8 @@ def pick_baseline(commits: list[dict]) -> dict | None:
 def baseline(repo: Path, skill: str) -> dict | None:
     paths = skill_paths(repo, skill)
     if not paths:
-        raise FileNotFoundError(f"no such skill: {skill} (looked in shared/skills, shared/skill-templates)")
+        looked = ", ".join(p.format(s=skill) for p in KHENRIX_LAYOUTS + FOREIGN_LAYOUTS)
+        raise FileNotFoundError(f"no such skill: {skill} (looked in {looked})")
     fmt = "--format=%H%x00%aI%x00%s"
     lines = []
     lines += _git(repo, "log", "--no-merges", fmt, "--",
@@ -87,12 +141,36 @@ def _slug(label: str) -> str:
     return re.sub(r"\s+", "-", re.sub(r"\s*\(.*?\)", "", label).strip().lower())
 
 
+def registry_repo(repo: Path) -> Path:
+    """The khenrix-utils checkout: model registry + run-log home, whichever repo is TARGET.
+
+    Derived from where THIS FILE lives rather than $HOME/git/khenrix-utils — the engine is
+    always run out of the checkout, so this is correct on any machine and can't silently
+    bind to a second, stale clone at the conventional path.
+
+    Raises rather than falling back to the target repo: a foreign repo has no
+    capabilities.toml, so `approved_models` would come back empty and `tag_model` would
+    degrade every hit to "found" — silently disabling the staleness check in exactly the
+    situation nobody is watching it.
+    """
+    if is_khenrix_repo(repo):
+        return repo
+    here = Path(__file__).resolve()
+    for cand in here.parents:  # .../shared/skills/skill-tuneup/scripts/tuneup.py
+        if is_khenrix_repo(cand):
+            return cand
+    raise FileNotFoundError(
+        "cannot locate the khenrix-utils checkout from "
+        f"{here} — it holds the approved-model registry and the run log. "
+        "Run tuneup.py from the checkout (not a copied file).")
+
+
 def approved_models(repo: Path, extra_csv: str = "") -> set[str]:
     """Approved set = every string in capabilities.toml [models] lists + --approved extras.
     Entries are also slugged, since agy's entry is a display label, not an id."""
     import tomllib
     ids: set[str] = set()
-    caps_path = repo / "capabilities.toml"
+    caps_path = registry_repo(repo) / "capabilities.toml"
     if caps_path.is_file():
         with open(caps_path, "rb") as f:
             caps = tomllib.load(f)
@@ -225,11 +303,100 @@ REQUIRED_LOG_KEYS = {"target", "finding_id", "decision"}
 DECISIONS = {"applied", "rejected", "deferred"}
 
 
+# Machine-global and OUT OF TREE. Not TMPDIR (per-process on many setups, so two runs would
+# each make their own "mutex" and never see each other), and not beside the engine either:
+# `_skill_source_files` rglobs the skill dir and pathlib's rglob matches dotfiles, so an
+# in-tree lock puts a random per-run token into skill-tuneup's own source_hash — `make
+# precommit` would then fail the receipt check on every run, at the ship step, while the
+# lock is held. It is also untracked, so `git add -A` would commit it and render.py would
+# copy it into all three marketplaces.
+LOCK_DIR = Path.home() / ".cache" / "khenrix-utils" / "skill-tuneup.lock.d"
+LOCK_STALE_MIN = 30
+
+
+def lock_acquire(stale_min: int = LOCK_STALE_MIN) -> tuple[bool, str]:
+    """mkdir-based mutex carrying an ownership token.
+
+    The token is what makes a steal *detectable*: `touch -c` on a lock another run already
+    removed silently succeeds, so the previous heartbeat could not distinguish "still mine"
+    from "gone and re-taken". refresh() compares the token before bumping the mtime.
+    """
+    tok = LOCK_DIR / "owner"
+    if LOCK_DIR.is_dir():
+        age_min = (time.time() - LOCK_DIR.stat().st_mtime) / 60
+        if age_min <= stale_min:
+            held = tok.read_text().strip() if tok.is_file() else "unknown"
+            return False, f"held by {held} ({age_min:.0f} min old)"
+        shutil.rmtree(LOCK_DIR, ignore_errors=True)  # stale: a crashed run
+    try:
+        LOCK_DIR.parent.mkdir(parents=True, exist_ok=True)
+        LOCK_DIR.mkdir(parents=False, exist_ok=False)
+    except FileExistsError:
+        return False, "raced with another run"
+    owner = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    tok.write_text(owner + "\n")
+    return True, owner
+
+
+def lock_refresh(owner: str) -> tuple[bool, str]:
+    tok = LOCK_DIR / "owner"
+    if not tok.is_file():
+        return False, "lock is GONE — another run removed it"
+    cur = tok.read_text().strip()
+    if cur != owner:
+        return False, f"lock was STOLEN — now held by {cur}"
+    os.utime(LOCK_DIR, None)
+    return True, owner
+
+
+def lock_release(owner: str) -> tuple[bool, str]:
+    tok = LOCK_DIR / "owner"
+    if tok.is_file() and tok.read_text().strip() != owner:
+        return False, "not the owner — refusing to release someone else's lock"
+    shutil.rmtree(LOCK_DIR, ignore_errors=True)
+    return True, "released"
+
+
 def log_path(repo: Path, target: str) -> Path:
-    return repo / "docs" / "tuneups" / "log" / f"{target}.jsonl"
+    """Run memory always lands in the khenrix-utils checkout, never the target repo.
+
+    `repo` is the TARGET's repo; resolving through registry_repo() is what makes that true.
+    Writing under the target instead would create docs/tuneups/log/ inside a foreign repo,
+    where `git add -A` would sweep it into that project's commit — and the next run, reading
+    from khenrix-utils, would see no history and re-propose everything already decided.
+    """
+    return registry_repo(repo) / "docs" / "tuneups" / "log" / f"{target}.jsonl"
+
+
+def log_target_key(repo: Path, skill: str) -> str:
+    """Foreign targets are keyed <repo-name>@<hash>:<skill>.
+
+    The basename alone collides (~/git/foo and ~/work/foo are different repos with the same
+    name, and a run log that merges them would silently apply one project's decisions to
+    another). The short hash of the canonical repo root disambiguates; the readable name is
+    kept so the file is still greppable by a human.
+    """
+    if is_khenrix_repo(repo):
+        return skill
+    root = str(repo.resolve())
+    h = hashlib.sha256(root.encode()).hexdigest()[:8]
+    return f"{repo.resolve().name}@{h}:{skill}"
+
+
+def _check_log_key(repo: Path, target: str) -> None:
+    """Refuse an unqualified key for a foreign target rather than silently merging repos.
+
+    Fails closed: an unqualified `demo` from two different projects would share one log, and
+    the second run would inherit the first's decisions as if they were its own.
+    """
+    if not is_khenrix_repo(repo) and not re.match(r".+@[0-9a-f]{8}:", target):
+        raise ValueError(
+            f"target {target!r} is unqualified but {repo} is not the khenrix-utils checkout — "
+            f"use the log_target from `target-info` (expected {log_target_key(repo, target)!r})")
 
 
 def log_append(repo: Path, target: str, entry: dict) -> dict:
+    _check_log_key(repo, target)
     missing = REQUIRED_LOG_KEYS - entry.keys()
     if missing:
         raise ValueError(f"log entry missing keys: {sorted(missing)}")
@@ -247,6 +414,7 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
 
 def log_list(repo: Path, target: str) -> list[dict]:
     """Latest decision per finding_id (later lines win)."""
+    _check_log_key(repo, target)  # reading the WRONG repo's log imports its frozen decisions
     p = log_path(repo, target)
     if not p.is_file():
         return []
@@ -259,6 +427,14 @@ def log_list(repo: Path, target: str) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+def _raises(fn, exc) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    return False
+
+
 def _self_test() -> int:
     import tempfile
     ok = []
@@ -304,9 +480,83 @@ def _self_test() -> int:
     lines = _facts_lines(caps, "khenrix-setup")
     ok.append(("facts slice finds own section", any("claude-opus-4-8" in ln for _, ln in lines)))
     ok.append(("facts slice excludes other sections", not any("gpt-5.5" in ln for _, ln in lines)))
+    # Two-tier targeting + the receipt gate. These branches shipped untested once and one of
+    # them was DEAD (`provenance == "seed"` vs a producer writing "seeded: …"), so assert the
+    # actual strings rather than trusting the shape.
+    with tempfile.TemporaryDirectory() as td:
+        r = Path(td)
+        (r / "shared" / "skills" / "alpha").mkdir(parents=True)
+        (r / "capabilities.toml").write_text("[models]\nclaude = []\n")
+        (r / ".claude" / "skills" / "beta").mkdir(parents=True)
+        ti_a = target_info(r, "alpha")
+        ok.append(("khenrix layout resolves to full-gate", ti_a["tier"] == "full-gate"))
+        ok.append(("full-gate log target is unqualified", ti_a["log_target"] == "alpha"))
+        # a stray .claude/skills copy INSIDE khenrix-utils must not resolve — layouts are
+        # chosen by repo kind, so the real source can never be shadowed by a generic one
+        ok.append(("foreign layout is ignored inside a khenrix repo",
+                   target_info(r, "beta")["found"] is False))
+        # same basename, different roots — the collision an unhashed key would merge
+        c1, c2 = Path(td) / "a" / "dup", Path(td) / "b" / "dup"
+        (c1 / "skills" / "x").mkdir(parents=True)
+        (c2 / "skills" / "x").mkdir(parents=True)
+        ok.append(("same-basename repos get distinct log keys",
+                   log_target_key(c1, "x") != log_target_key(c2, "x")))
+        ok.append(("unqualified key for a foreign repo is refused",
+                   _raises(lambda: _check_log_key(c1, "x"), ValueError)))
+        ok.append(("qualified key for a foreign repo is accepted",
+                   _check_log_key(c1, log_target_key(c1, "x")) is None))
+        ok.append(("run log resolves into the khenrix checkout, not the target repo",
+                   is_khenrix_repo(log_path(c1, log_target_key(c1, "x")).parents[3])))
+        ok.append(("missing skill reports not-found", target_info(r, "nope")["found"] is False))
+        f = Path(td) / "foreign"
+        (f / "skills" / "gamma").mkdir(parents=True)
+        (f / ".claude" / "skills" / "delta").mkdir(parents=True)
+        ti_g, ti_d = target_info(f, "gamma"), target_info(f, "delta")
+        ok.append(("skills/<n> in a non-khenrix repo is council-only",
+                   ti_g["tier"] == "council-only"))
+        ok.append((".claude/skills/<n> in a non-khenrix repo also resolves",
+                   ti_d["found"] and ti_d["tier"] == "council-only"))
+        ok.append(("foreign log target is repo-qualified",
+                   bool(re.match(rf"foreign@[0-9a-f]{{8}}:gamma$", ti_g["log_target"]))))
+        # verify_final_receipt: assert on the REAL producer strings
+        ev = r / "evals" / "alpha"
+        ev.mkdir(parents=True)
+        ev.joinpath("evals.json").write_text("{}")
+        def _probs(rec):
+            ev.joinpath("receipt.json").write_text(json.dumps(rec))
+            return " ".join(verify_final_receipt(r, "alpha", ["claude", "codex", "agy"]))
+        ok.append(("seeded receipt is rejected",
+                   "seeded, not earned" in _probs(
+                       {"providers": ["claude", "codex", "agy"],
+                        "provenance": "seeded: blessed current committed state"})))
+        ok.append(("single-provider receipt is rejected",
+                   "FULL-PANEL" in _probs({"providers": ["claude"], "provenance": "eval"})))
+        ok.append(("self-test-gated receipt skips the panel requirement",
+                   "FULL-PANEL" not in _probs(
+                       {"providers": ["claude"], "provenance": "eval", "self_test": True})))
+        ok.append(("missing receipt is reported",
+                   "no receipt" in " ".join(verify_final_receipt(r, "zeta", ["claude"]))))
+    # lock: the token is what makes a steal detectable — touch -c could not
+    _saved = globals()["LOCK_DIR"]
+    with tempfile.TemporaryDirectory() as td:
+        globals()["LOCK_DIR"] = Path(td) / "lock.d"
+        got, owner = lock_acquire()
+        ok.append(("lock acquires", got))
+        ok.append(("second acquire is refused", lock_acquire()[0] is False))
+        ok.append(("refresh with the owner token succeeds", lock_refresh(owner)[0]))
+        ok.append(("refresh with a wrong token reports a steal",
+                   lock_refresh("bogus")[0] is False))
+        ok.append(("non-owner cannot release", lock_release("bogus")[0] is False))
+        ok.append(("owner releases", lock_release(owner)[0]))
+        ok.append(("refresh after release reports it gone", lock_refresh(owner)[0] is False))
+    globals()["LOCK_DIR"] = _saved
     # log round-trip in a tempdir; latest decision per finding wins
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
+        # khenrix-shaped so registry_repo() resolves to THIS tempdir — otherwise the log
+        # would route to the real checkout and the test would write into the repo.
+        (repo / "shared" / "skills").mkdir(parents=True)
+        (repo / "capabilities.toml").write_text("[models]\n")
         e1 = {"target": "markitdown", "finding_id": "stale-flag", "decision": "deferred"}
         e2 = {"target": "markitdown", "finding_id": "stale-flag", "decision": "applied"}
         log_append(repo, "markitdown", dict(e1))
@@ -330,6 +580,59 @@ def _self_test() -> int:
     return 0 if all(p for _, p in ok) else 1
 
 
+def verify_final_receipt(repo: Path, skill: str, panel: list) -> list:
+    """Prove Step 10's full-panel requirement instead of asserting it in prose.
+
+    `make precommit` only compares hashes, so a receipt earned on a single provider
+    satisfies it — which is correct for mid-run iteration but NOT for the convergence
+    gate, which requires a green full-panel eval on the exact candidate. Nothing checked
+    that, and in practice every receipt stayed single-provider. Returns problems; empty
+    means proven. llm-council and the deterministic-gated skills are exempt from the
+    provider requirement: their receipts are earned by a self-test / unit suite, so a
+    full panel proves nothing extra about them.
+    """
+    rp = repo / "evals" / skill / "receipt.json"
+    if not rp.is_file():
+        return [f"no receipt at {rp.relative_to(repo)} — run `make eval SKILL={skill}`"]
+    try:
+        rec = json.loads(rp.read_text())
+    except Exception as e:  # noqa: BLE001
+        return [f"receipt is unreadable: {e}"]
+    problems = []
+    sys.path.insert(0, str(repo / "scripts"))
+    try:
+        from lib import checks as _checks
+        if rec.get("source_hash") != _checks.source_hash(repo, skill):
+            problems.append("receipt source_hash != current source — it predates the "
+                            "candidate; re-run the eval on exactly this tree")
+        # receipt_gate checks this too; without it `verify-final-receipt` can say "proven"
+        # while `make precommit` fails on a rewritten eval set (a `risky` finding).
+        if rec.get("eval_set_hash") != _checks.eval_set_hash(repo, skill):
+            problems.append("receipt eval_set_hash != current eval set — the cases changed "
+                            "since it was earned; re-run the eval")
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"cannot recompute hashes: {e}")
+    self_test_gated = rec.get("self_test") is True or str(
+        rec.get("blind_winner", "")).startswith("n/a-")
+    # Whitelist the earned value rather than blacklisting a seeded one: the producer writes
+    # "seeded: blessed current committed state", so an equality test against "seed" was dead
+    # code — and that made `--seed-receipt --providers claude,codex,agy` a one-flag way to
+    # make this very command print "proven", blessing the exact action SKILL.md forbids in
+    # caps. Whitelisting fails closed if the producer string ever changes again. Self-test-
+    # gated skills are exempt: _write_receipt runs their suite even when seeding, so a
+    # seeded receipt there really was earned by the gate that governs it.
+    if not self_test_gated and rec.get("provenance") != "eval":
+        problems.append(f"receipt provenance is {rec.get('provenance')!r}, not 'eval' — "
+                        "it was seeded, not earned; no eval actually ran")
+    if not self_test_gated:
+        got = set(rec.get("providers") or [])
+        missing = [p for p in panel if p not in got]
+        if missing:
+            problems.append(f"receipt providers {sorted(got) or '[]'} missing {missing} — "
+                            f"Step 10 requires a green FULL-PANEL eval on the candidate")
+    return problems
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="skill-tuneup deterministic helpers")
     ap.add_argument("--self-test", action="store_true")
@@ -342,6 +645,18 @@ def main(argv=None) -> int:
         if name == "stale-models":
             sp.add_argument("--approved", default="", help="extra approved ids, comma-separated")
         sp.add_argument("--json", action="store_true")
+    kp = sub.add_parser("lock")
+    kp.add_argument("action", choices=["acquire", "refresh", "release"])
+    kp.add_argument("--owner", default="")
+    tp = sub.add_parser("target-info")
+    tp.add_argument("--repo", required=True)
+    tp.add_argument("--skill", required=True)
+    tp.add_argument("--json", action="store_true")
+    fp = sub.add_parser("verify-final-receipt")
+    fp.add_argument("--repo", required=True)
+    fp.add_argument("--skill", required=True)
+    fp.add_argument("--panel", default="claude,codex,agy")
+    fp.add_argument("--json", action="store_true")
     lp = sub.add_parser("log")
     lp.add_argument("action", choices=["append", "list"])
     lp.add_argument("--repo", required=True)
@@ -355,6 +670,20 @@ def main(argv=None) -> int:
     if not args.cmd:
         ap.print_help()
         return 2
+    if args.cmd == "lock":  # the only command with no --repo
+        if args.action == "acquire":
+            ok, info = lock_acquire()
+            print(f"OWNER={info}" if ok else f"  ✗ lock not acquired: {info}")
+        elif args.action == "refresh":
+            if not args.owner:
+                print("  ✗ --owner is required (the token from `lock acquire`)")
+                return 2
+            ok, info = lock_refresh(args.owner)
+            print("lock refreshed" if ok else f"  ✗ {info} — STOP, do not keep working")
+        else:
+            ok, info = lock_release(args.owner)
+            print(f"lock {info}" if ok else f"  ✗ {info}")
+        return 0 if ok else 1
     repo = Path(args.repo).resolve()
 
     if args.cmd == "baseline":
@@ -365,6 +694,37 @@ def main(argv=None) -> int:
         print(json.dumps(b, indent=2) if args.json else
               f"baseline {b['sha'][:9]}  {b['date']}  {b['subject']}"
               f"  ({b['skipped_as_chore']} newer chore/docs commit(s) skipped)")
+    elif args.cmd == "target-info":
+        info = target_info(repo, args.skill)
+        if args.json:
+            print(json.dumps(info, indent=2))
+        else:
+            if not info["found"]:
+                looked = ", ".join(p.format(s=args.skill)
+                                   for p in KHENRIX_LAYOUTS + FOREIGN_LAYOUTS)
+                print(f"  ✗ no skill {args.skill!r} in {repo} (looked in {looked})")
+            elif info["ambiguous"]:
+                print(f"  ✗ {args.skill!r} matches MORE THAN ONE layout in {repo}: "
+                      f"{', '.join(info['paths'])} — refusing; there is no single source "
+                      f"of truth to tune. Remove or rename the duplicate.")
+            else:
+                print(f"skill:  {args.skill}  in  {info['repo']}")
+                print(f"paths:  {', '.join(info['paths'])}")
+                print(f"tier:   {info['tier']}")
+                print(f"gate:   {info['gate']}")
+                print(f"log:    docs/tuneups/log/{info['log_target']}.jsonl (in khenrix-utils)")
+        return 0 if (info["found"] and not info["ambiguous"]) else 1
+    elif args.cmd == "verify-final-receipt":
+        problems = verify_final_receipt(repo, args.skill, args.panel.split(","))
+        if args.json:
+            print(json.dumps({"skill": args.skill, "problems": problems}, indent=2))
+        elif problems:
+            for p in problems:
+                print(f"  ✗ {p}")
+            print("FINAL GATE NOT PROVEN — do not record convergence")
+        else:
+            print(f"final gate proven: {args.skill} receipt is full-panel and matches source")
+        return 1 if problems else 0
     elif args.cmd == "stale-models":
         approved = approved_models(repo, args.approved)
         hits = scan_stale_models(repo, getattr(args, "skill", None), approved)

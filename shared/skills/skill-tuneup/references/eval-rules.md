@@ -3,10 +3,12 @@
 The repo's eval harness IS the benchmark (`docs/skill-eval-process.md` is the authority;
 read it before scaffolding). Key invariants:
 
-- Executors run **read-only by default** — mechanical on claude (plan mode, plan-file
-  writes suppressed) and codex (read-only sandbox); agy gets two soft layers (a
-  READONLY_POSTURE line prepended to every executor's prompt + a throwaway git-worktree
-  cwd; absolute-path writes remain possible) — lower-risk to run mid-tuneup, not sealed.
+- Executors run **read-only by default** — the harness calls `fanout.make_readonly`, so all
+  three are mechanically constrained: claude (plan mode, plan-file writes suppressed), codex
+  (read-only sandbox), agy (`--mode plan`, since 1.1.1). agy additionally gets two soft
+  layers (a READONLY_POSTURE line + a throwaway git-worktree cwd) as defense in depth.
+  Plan mode is a mechanical write barrier, not an OS sandbox — still less sealed than
+  codex's, so lower-risk to run mid-tuneup rather than sealed.
 - **Baseline caveat**: `without_skill` is the executor's ambient env; if the old skill
   version is installed (a prior `make khenrix-refresh`), the comparison is new-vs-old,
   not with-vs-without. Iterate BEFORE refreshing for the cleanest signal.
@@ -37,13 +39,28 @@ make eval SKILL=<t> PROVIDERS=claude     # iterate here (cheap)
 make eval SKILL=<t> PROVIDERS=claude,codex,agy   # final gate (~3-4x tokens)
 ```
 
+**Run it in the background and with no other token-heavy agent work in flight.** An eval is
+strictly serial — every case × condition × judge call in sequence — so it routinely outlives
+a foreground command cap, and a kill loses the whole run. Reading files alongside it is
+fine; a council fan-out is not. Raise the per-attempt cap with `TIMEOUT=` rather than
+`MODE=deep`, which would also change reasoning depth.
+
 Classify every failure before touching anything:
 
 | Class | Signal | Action |
 |---|---|---|
 | Real regression | deterministic fail tied to a specific edit | fix the edit; re-run |
 | Assertion regression | behavior intentionally changed; assertion now wrong | update the assertion; re-run |
+| Invalid run — executor | `errors == 1` with `reason` a timeout/crash (or a `⚠ INVALID RUN` line naming one) — the executor died and was graded on an empty answer | NOT a regression: the delta is unmeasured. Re-run once serially; if it recurs, the eval is under-timed — raise `TIMEOUT=`. Does not consume the 5-iteration fix cap |
+| Invalid run — judge | `errors == 1` with `reason: "judge returned no verdict"` — the *answer* was fine; the grade is the artifact | Also not a regression, and `TIMEOUT=` won't help: the judge already retries twice. Plain re-run, then check the judge model/quota. Same cap exemption |
 | Flaky / judge noise | same input passes sometimes | re-run ONCE; if it passes, accept and note it — do NOT edit the skill to chase a noisy grader |
+
+An invalid run **biases** the delta rather than merely adding noise: it scores 0 and is
+averaged into its own side, so a with_skill error sinks the delta and a **baseline** error
+inflates it. The gate now fails closed on any invalid run (where the delta is the gate), so
+you cannot earn a receipt off one — but read the reason before re-running, because a
+repeated with_skill-only timeout can be a genuine regression (a skill edit that makes the
+executor do far more work).
 
 ## Cap
 

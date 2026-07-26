@@ -56,6 +56,42 @@ def model_crosscheck(root: Path) -> list[str]:
             for m in missing]
 
 
+def pricing_coverage(root: Path) -> list[str]:
+    """Every registered Claude model must have a scripts/pricing.toml entry.
+
+    claude_session_stats.price() matches the longest pricing key that PREFIXES the model
+    id and returns 0.0 when none does — and ids do not nest ("claude-opus-4-8" is not a
+    prefix of "claude-opus-5"), so a missing entry silently reports $0 rather than an
+    approximation or an error. That is invisible until someone reads a cost of zero and
+    believes it, so make it a lint failure at the moment the model is registered.
+    """
+    caps = _load_caps(root)
+    pricing_path = root / "scripts" / "pricing.toml"
+    if not pricing_path.is_file():
+        return ["pricing-coverage: scripts/pricing.toml is missing"]
+    try:
+        table = tomllib.loads(pricing_path.read_text())
+    except Exception as e:  # noqa: BLE001
+        return [f"pricing-coverage: cannot parse pricing.toml: {e}"]
+    keys = set(table)
+    need = ("input", "output", "cache_read", "cache_write")
+    out = []
+    for mid in caps.get("models", {}).get("claude", []):
+        matches = sorted((k for k in keys if mid.startswith(k)), key=len, reverse=True)
+        if not matches:
+            out.append(f"pricing-coverage: '{mid}' is in capabilities [models].claude but "
+                       f"has no scripts/pricing.toml entry — it would price at $0")
+            continue
+        # Presence isn't enough: price() indexes all four rates, so a half-filled table
+        # trades a silent $0 for a KeyError on the statusline path — strictly worse.
+        entry = table.get(matches[0])
+        missing = [f for f in need if not isinstance(entry, dict) or f not in entry]
+        if missing:
+            out.append(f"pricing-coverage: '{matches[0]}' is missing {missing} — "
+                       f"price() would raise rather than price '{mid}'")
+    return out
+
+
 def scan_secrets(root: Path) -> list[str]:
     files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
                            text=True, check=True).stdout.splitlines()  # splitlines: tolerate spaces in paths
@@ -120,7 +156,8 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
 
 def run_all(root: Path = ROOT) -> list[str]:
     caps = _load_caps(root)
-    return model_crosscheck(root) + scan_secrets(root) + structure_checks(root, caps)
+    return (model_crosscheck(root) + pricing_coverage(root)
+            + scan_secrets(root) + structure_checks(root, caps))
 
 
 # --------------------------------------------------------------------------- #
