@@ -166,11 +166,36 @@ REASON_HINTS = {
 }
 
 
+# The `/` is load-bearing: it requires a PATH, which is what rg/grep emit
+# (`shared/skills/.../fanout.py:1299:`). A genuine runtime error names a bare file —
+# agy's real denial is `tool_confirmation_manager.go:183: permission denied` — and must
+# still classify. Matching a bare filename here would silence the true positive this
+# whole sentinel exists to catch.
+_SOURCE_ECHO_LINE = re.compile(
+    r"^\s*\S*/\S*\.(?:py|md|toml|json|jsonl|ya?ml|sh|txt|go|rs|ts|js):\d+[:\-]")
+
+
+def strip_quoted_source(text: str) -> str:
+    """Drop `path:lineno:` lines — grep/rg output, not the CLI's own diagnostics.
+
+    A seat reviewing THIS repo greps it, and agentic CLIs echo every tool result into
+    stderr, so fanout's OWN sentinel lists come back as stderr content and self-match.
+    Observed 2026-07-27: a codex seat returned empty stdout, its 243 KB stderr contained
+    `fanout.py:1299` — a line in this file's own self-test — and classify_sentinel
+    returned `tool_permission`. That reason is NON-RETRYABLE, so the seat lost its retry
+    to a phantom and the panel degraded 2/3 for no real reason. The narrow-sentinel
+    comment above guards the same hazard by keeping phrases specific; this closes the
+    other half, where the phrase is specific and still ours.
+    """
+    return "\n".join(ln for ln in (text or "").splitlines()
+                     if not _SOURCE_ECHO_LINE.match(ln))
+
+
 def classify_sentinel(text: str) -> Optional[str]:
     """Map error text to a reason: tool-permission denial, persistent auth/quota,
     transient, or None. Tool-permission is checked FIRST — it is the most specific
     and the only one of the three we can actually fix on our side."""
-    low = (text or "").lower()
+    low = strip_quoted_source(text).lower()
     if any(s in low for s in TOOL_PERMISSION_SENTINELS):
         return "tool_permission"
     if any(s in low for s in PERSISTENT_SENTINELS):
@@ -1295,6 +1320,22 @@ def self_test() -> int:
     aug = apply_sentinel("original question", SENT)
     check("sentinel: instruction prepended, prompt preserved",
           SENT in aug and "verbatim" in aug.lower() and aug.endswith("original question"))
+    # A seat reviewing THIS repo echoes our own sentinel lists into stderr via rg. The
+    # observed failure (2026-07-27) matched fanout.py's own self-test line and returned a
+    # NON-RETRYABLE tool_permission, costing the seat its retry for no real reason.
+    check("selfmatch: rg-echoed source does not classify",
+          classify_sentinel(
+              "shared/skills/llm-council/scripts/fanout.py:1299:  "
+              'classify_sentinel("tool_confirmation' '_manager.go:183: permission denied")') is None)
+    check("selfmatch: echoed PERSISTENT sentinel does not classify",
+          classify_sentinel(
+              'shared/skills/llm-council/scripts/fanout.py:112:    "authentication failed",') is None)
+    # ...but a GENUINE denial names a bare file, not a path, and must still classify.
+    check("selfmatch: genuine bare-filename denial still classifies",
+          classify_sentinel("tool_confirmation" "_manager.go:183: permission denied")
+          == "tool_permission")
+    check("selfmatch: strip_quoted_source keeps non-path lines",
+          "permission denied" in strip_quoted_source("x\npermission denied\n"))
     check("sentinel: tool-permission text classified ahead of auth_or_quota",
           classify_sentinel("tool_confirmation_manager.go:183: permission denied")
           == "tool_permission")
