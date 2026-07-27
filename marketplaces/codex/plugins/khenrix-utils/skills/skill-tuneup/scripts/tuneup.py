@@ -338,7 +338,21 @@ def lock_acquire(stale_min: int = LOCK_STALE_MIN) -> tuple[bool, str]:
     return True, owner
 
 
+def _norm_owner(owner: str) -> str:
+    """Accept the token in the shape `lock acquire` PRINTS it, not just the internal one.
+
+    acquire emits `OWNER=<token>` — a KEY=VALUE line an operator naturally copies whole,
+    especially since shell state does not survive between the orchestrator's Bash calls.
+    Comparing that literal against the stored bare token made refresh report
+    "lock was STOLEN — STOP" to a run that still held its own lock, and made release
+    refuse, leaking the lock until it aged out. A false steal alarm is worse than a
+    missed one: it aborts correct work.
+    """
+    return owner.strip().removeprefix("OWNER=").strip()
+
+
 def lock_refresh(owner: str) -> tuple[bool, str]:
+    owner = _norm_owner(owner)
     tok = LOCK_DIR / "owner"
     if not tok.is_file():
         return False, "lock is GONE — another run removed it"
@@ -350,6 +364,7 @@ def lock_refresh(owner: str) -> tuple[bool, str]:
 
 
 def lock_release(owner: str) -> tuple[bool, str]:
+    owner = _norm_owner(owner)
     tok = LOCK_DIR / "owner"
     if tok.is_file() and tok.read_text().strip() != owner:
         return False, "not the owner — refusing to release someone else's lock"
@@ -431,15 +446,20 @@ def cycle_severity_counts(entries: list) -> tuple[list[int], bool, list[str]]:
     # duplicate cycle-end refuses, and an open tail can never converge.
     prev_end = max((i for i, e in enumerate(entries[:start])
                     if e.get("finding_id") == RUN_END), default=-1)
+    prev_start = max((i for i, e in enumerate(entries[:start])
+                      if e.get("finding_id") == RUN_START), default=-1)
     warnings = []
     orphans = [e.get("finding_id") for e in entries[prev_end + 1:start]
                if e.get("decision") == "applied"
                and e.get("finding_id") not in (RUN_END, RUN_START, CYCLE_END)]
-    # Only ambiguous when the PREVIOUS run never closed. After a run-convergence the
-    # boundary is unambiguous, so bookkeeping there (closing a deferred finding — this
-    # log's established practice) is plainly inter-run and must not warn, or every run
-    # that tidies up would be unable to converge.
-    if orphans and prev_end == -1:
+    # Ambiguous when the previous run never CLOSED — not merely when no run ever closed.
+    # `prev_end == -1` scoped this to a target's FIRST-EVER run: any target with one
+    # completed run behind it was permanently unguarded, so a SECOND run-start written
+    # inside one run (the natural resume point — Step 1 re-acquires the lock) silently
+    # dropped that run's findings and reported `converged` with zero warnings. Comparing
+    # the two markers keeps legitimate post-run bookkeeping quiet (prev_end > prev_start)
+    # while catching the re-opened run (prev_end <= prev_start).
+    if orphans and prev_end <= prev_start:
         warnings.append(
             f"{len(orphans)} applied finding(s) sit between the last {RUN_END!r} and this "
             f"{RUN_START!r} ({orphans[:3]}…). Expected if they are inter-run bookkeeping or "
@@ -550,6 +570,19 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
         raise ValueError(
             f"severity must be one of {sorted(SEVERITIES)} (got {entry['severity']!r}); "
             "omit the key entirely to default to 'serious'")
+    # `cycle` is the delimiter the whole convergence rule is built on, so validate it at
+    # WRITE time for the same reason as severity — but the stakes are higher: a bad value
+    # is only caught at count time, cannot be superseded (a later cycle-end shares the
+    # finding_id and the bad one is still inside the scan window), and so bricks
+    # convergence-status for the rest of the run. `bool` is excluded explicitly because
+    # isinstance(True, int) is True, which would silently count as cycle 1.
+    if entry["finding_id"] == CYCLE_END:
+        n = entry.get("cycle")
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise ValueError(
+                f"{CYCLE_END!r} requires an integer `cycle` number (got {n!r}) — a bad "
+                "value cannot be superseded by a later append and blocks "
+                "convergence-status for the whole run")
     if entry["target"] != target:
         raise ValueError(f"entry target {entry['target']!r} != --target {target!r}")
     entry.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -753,6 +786,35 @@ def _self_test() -> int:
                )["verdict"] == "converged"))
     ok.append(("an oscillating rate stalls (the infinite loop the old rule allowed)",
                convergence_status(_hist([2, 1, 2, 1, 2, 1]))["verdict"].startswith("stalled")))
+    # A SECOND run-start inside one run (the natural resume point) used to drop that run's
+    # findings and report converged — but only on a target with a completed run behind it,
+    # so every real target was in the unguarded regime and the self-test's first-run
+    # fixtures never saw it. Assert on the shape that actually shipped.
+    _closed_run = [{"finding_id": RUN_START, "decision": "applied"},
+                   {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1},
+                   {"finding_id": RUN_END, "decision": "applied"}]
+    # The run writes its OWN run-start, does blocking work, then re-writes run-start
+    # (Step 1 is the natural resume point after an interruption). The findings are then
+    # before the newest marker and drop out of the count.
+    _reopened = (_closed_run
+                 + [{"finding_id": RUN_START, "decision": "applied"}]
+                 + [{"finding_id": f"bug{i}", "decision": "applied", "severity": "blocking"}
+                    for i in range(2)]
+                 + [{"finding_id": RUN_START, "decision": "applied"},
+                    {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}])
+    ok.append(("a re-opened run cannot converge over its dropped findings",
+               convergence_status(_reopened)["converged"] is False))
+    ok.append(("re-opened run names the dropped findings",
+               any("bug0" in w for w in cycle_severity_counts(_reopened)[2])))
+    # The discriminating half: closing out a deferred finding BETWEEN runs is this log's
+    # established practice and must stay silent, or no run that tidies up could converge.
+    ok.append(("inter-run bookkeeping still converges",
+               convergence_status(
+                   _closed_run
+                   + [{"finding_id": "closeout", "decision": "applied", "severity": "minor"},
+                      {"finding_id": RUN_START, "decision": "applied"},
+                      {"finding_id": CYCLE_END, "decision": "applied", "cycle": 1}]
+               )["converged"] is True))
     ok.append(("a strictly declining rate keeps iterating however long",
                convergence_status(_hist([9, 8, 7, 6, 5]))["verdict"] == "keep-iterating"))
     ok.append(("an OPEN cycle never converges",
@@ -850,9 +912,22 @@ def _self_test() -> int:
         ok.append(("lock acquires", got))
         ok.append(("second acquire is refused", lock_acquire()[0] is False))
         ok.append(("refresh with the owner token succeeds", lock_refresh(owner)[0]))
+        # exercise the token in the shape acquire PRINTS, not just the shape it returns:
+        # the operator only ever sees `OWNER=<token>`, so testing the bare form alone
+        # left the real interface broken while the suite stayed green.
+        ok.append(("refresh accepts the printed OWNER= form",
+                   lock_refresh(f"OWNER={owner}")[0]))
+        ok.append(("refresh accepts a trailing newline",
+                   lock_refresh(f"OWNER={owner}\n")[0]))
         ok.append(("refresh with a wrong token reports a steal",
                    lock_refresh("bogus")[0] is False))
+        ok.append(("OWNER= prefix does not mask a wrong token",
+                   lock_refresh("OWNER=bogus")[0] is False))
         ok.append(("non-owner cannot release", lock_release("bogus")[0] is False))
+        ok.append(("release accepts the printed OWNER= form",
+                   lock_release(f"OWNER={owner}")[0]))
+        got, owner = lock_acquire()  # re-take: the line above released it
+        ok.append(("re-acquire after release succeeds", got))
         ok.append(("owner releases", lock_release(owner)[0]))
         ok.append(("refresh after release reports it gone", lock_refresh(owner)[0] is False))
     globals()["LOCK_DIR"] = _saved
@@ -881,6 +956,23 @@ def _self_test() -> int:
             ok.append(("missing keys rejected", False))
         except ValueError:
             ok.append(("missing keys rejected", True))
+        # cycle is validated at WRITE time: a bad value cannot be superseded (the later
+        # cycle-end shares the finding_id) and bricks convergence-status for the whole run.
+        for label, bad in (("string", "1"), ("null", None), ("float", 2.0),
+                           ("bool", True), ("absent", ...)):
+            entry = {"target": "markitdown", "finding_id": CYCLE_END, "decision": "applied"}
+            if bad is not ...:
+                entry["cycle"] = bad
+            try:
+                log_append(repo, "markitdown", entry)
+                ok.append((f"cycle-end rejects a {label} cycle", False))
+            except ValueError:
+                ok.append((f"cycle-end rejects a {label} cycle", True))
+        log_append(repo, "markitdown",
+                   {"target": "markitdown", "finding_id": CYCLE_END,
+                    "decision": "applied", "cycle": 3})
+        ok.append(("cycle-end accepts an integer cycle",
+                   any(e["finding_id"] == CYCLE_END for e in log_list(repo, "markitdown"))))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

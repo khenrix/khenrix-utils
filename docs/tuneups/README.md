@@ -18,3 +18,9 @@ Line schema (written via `tuneup.py log append`; later lines for the same `findi
 Required keys: `target`, `finding_id`, `decision` · `severity` — OPTIONAL (`blocking`|`serious`|`minor`); omit it to default to serious, but an explicit null is rejected. Marker entries (`run-start`, `cycle-end`, `run-convergence`) carry no severity. (the engine enforces these; `ts` is
 stamped automatically). Read it back with `tuneup.py log list --target <t>` — it reports
 the latest decision per finding.
+
+`cycle-end` additionally requires an integer `"cycle"` — the delimiter the convergence rule
+counts on. It is validated on write because a bad value cannot be superseded (a later
+`cycle-end` shares the `finding_id`, so the bad one stays inside the scan window) and would
+block `convergence-status` for the rest of the run. `true` is rejected explicitly:
+`isinstance(True, int)` is true in Python, so a boolean would otherwise count as cycle 1.

@@ -90,12 +90,23 @@ python3 "$TUNEUP" target-info --repo "$REPO" --skill <target>
 - Anti-recursion / concurrency lock. Env vars don't persist across Bash calls, so keep
   the printed token somewhere you can re-read it.
 
+**Run Step 2 first.** It is read-only, and this step needs both what it defines (`$TUNEUP`,
+`$REPO`) and what it asserts: `run-start` below appends to `docs/tuneups/log/<target>.jsonl`,
+a TRACKED file, so once it is written the tree is no longer clean and Step 2's preflight can
+no longer tell your own marker from a pre-existing edit. Preflight, then lock, then mark.
+
 Acquire it with an **ownership token**, so a steal is detectable rather than silent:
 
 ```bash
-python3 "$TUNEUP" lock acquire     # prints OWNER=<token>; nonzero if another run holds it
+python3 "$TUNEUP" lock acquire > <scratch>/lock-owner || { cat <scratch>/lock-owner; exit 1; }   # prints OWNER=<token>
 printf '%s' '{"target":"<log_target>","finding_id":"run-start","decision":"applied","title":"run start"}' | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
 ```
+
+Persist that line to a **file** — `$OWNER` cannot survive to the next Bash call. Pass it
+back verbatim; `--owner` accepts either the printed `OWNER=<token>` line or the bare token.
+Redirect, never `| tee`: without `set -o pipefail` a pipeline returns *tee's* status, so a
+refused lock would exit 0 and the run would proceed to write `run-start` into a log the
+other run is actively counting.
 
 **Write `run-start` here, before any finding.** `convergence-status` scopes to the newest
 one, so a marker written late drops this run's earlier findings from the count. A MISSING
@@ -108,10 +119,10 @@ clean on a log the parser could not read unambiguously.
 Then **before each long step** (fan-out, eval run, checkpoint wait) re-assert ownership:
 
 ```bash
-python3 "$TUNEUP" lock refresh --owner "$OWNER"   # nonzero = the lock was stolen — STOP
+python3 "$TUNEUP" lock refresh --owner "$(cat <scratch>/lock-owner)"   # nonzero = the lock was stolen — STOP
 ```
 
-Release with `python3 "$TUNEUP" lock release --owner "$OWNER"` at the end of Step 10 **and
+Release with `python3 "$TUNEUP" lock release --owner "$(cat <scratch>/lock-owner)"` at the end of Step 10 **and
 on every early-exit path**. Why a token and not `touch -c`: a long phase is exactly when a
 lock goes stealable (a deep fan-out plus one retry can exceed the 30-min staleness window),
 and `touch -c` is silent by design — on a lock another run already removed it does nothing
@@ -138,6 +149,10 @@ target": shipping stages with `git add -A`, so any unrelated edit or untracked f
 now gets swept into the tune-up commit. If anything is dirty, stop and ask — a tune-up
 must start from a clean, attributable state.
 
+Check this **before** Step 1 writes `run-start` — that append dirties a tracked file, and
+after it there is no clean state left to assert. This step is read-only, so running it
+first costs nothing.
+
 ## Step 3 — Triage mode (then STOP)
 
 When the user wants a sweep, a ranking, or "which skill needs work":
@@ -156,7 +171,7 @@ makes **no edits, no run-log writes, no council calls, no web research**. Then s
 ```bash
 python3 "$TUNEUP" baseline --repo "$REPO" --skill <target>       # last substantive commit
 python3 "$TUNEUP" stale-models --repo "$REPO" --skill <target>   # model-ID hits vs [models]
-python3 "$TUNEUP" log list --repo "$REPO" --target <target>      # prior run decisions
+python3 "$TUNEUP" log list --repo "$REPO" --target <log_target>      # prior run decisions
 ```
 
 Everything from here is framed as "what changed since the baseline". Note previously
@@ -256,8 +271,8 @@ frozen decisions and returns inadmissible polish at deep-mode prices.
 4. Record every finding's outcome in the run log:
 
 ```bash
-printf '%s' '{"target":"<target>","finding_id":"<slug>","decision":"applied|rejected|deferred","severity":"blocking|serious|minor","title":"...","reason":"..."}' \
-  | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
+printf '%s' '{"target":"<log_target>","finding_id":"<slug>","decision":"applied|rejected|deferred","severity":"blocking|serious|minor","title":"...","reason":"..."}' \
+  | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
 ```
 
 ## Step 10 — Converge, then ship
@@ -362,11 +377,11 @@ Record the outcome in the run log EVERY run (extra keys are accepted; `log list`
 the latest entry per id, so the next run can see the skill already sits at a fixed point):
 
 ```bash
-printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"applied","converged":true,"cycles":2,"title":"run converged — cycle 2 applied nothing blocking or serious"}' \
-  | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
+printf '%s' '{"target":"<log_target>","finding_id":"run-convergence","decision":"applied","converged":true,"cycles":2,"title":"run converged — cycle 2 applied nothing blocking or serious"}' \
+  | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
 # on STALL without convergence (run NOT shipped):
-printf '%s' '{"target":"<target>","finding_id":"run-convergence","decision":"deferred","converged":false,"cycles":<n>,"title":"stalled — best serious-count stopped improving; remainder handed to user"}' \
-  | python3 "$TUNEUP" log append --repo "$REPO" --target <target>
+printf '%s' '{"target":"<log_target>","finding_id":"run-convergence","decision":"deferred","converged":false,"cycles":<n>,"title":"stalled — best serious-count stopped improving; remainder handed to user"}' \
+  | python3 "$TUNEUP" log append --repo "$REPO" --target <log_target>
 ```
 
 Then ship. **Re-check `git status --porcelain` immediately before staging** — Step 2's
@@ -383,7 +398,7 @@ Then ship. **Re-check `git status --porcelain` immediately before staging** — 
    your summary that the run was council-reviewed but **not receipt-gated**. The run log
    still lands in khenrix-utils, so commit that separately.
 
-   Release the lock: `python3 "$TUNEUP" lock release --owner "$OWNER"`.
+   Release the lock: `python3 "$TUNEUP" lock release --owner "$(cat <scratch>/lock-owner)"`.
 
 ## Failure handling
 
