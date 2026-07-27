@@ -11,7 +11,7 @@ description: >-
   the user shares a single link or says "add this to the wiki", "save this recipe/link",
   "file this post", or pastes one URL to keep. For a whole saved list or bookmarks folder use
   khenrix-wiki-sync instead.
-allowed-tools: Bash, Read, WebFetch
+allowed-tools: Bash, Read, WebFetch, WebSearch
 ---
 
 # khenrix-wiki-add — add one item to the wiki

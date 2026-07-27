@@ -1,17 +1,21 @@
 {
   "skill": "chunk-map",
-  "source_hash": "78a2a3c7834851e597dd895f71cb66763a71ecf351acc014d86d8d55ae931ad6",
+  "source_hash": "654d319f13dd1675190cd5a1fd116596aee28c3fb76d8775673be7f14db8e6ff",
   "eval_set_hash": "fefc0d74b2ac3dd3832cca91f1e336534657ec14e67bd3e5e8ede369b9837a03",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0,
+  "delta_pass_rate": 0.1042,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "models": {
-    "claude": "claude-opus-4-8",
-    "judge": "claude-opus-4-8"
+    "claude": "claude-opus-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
+    "judge": "claude-opus-5"
   }
 }

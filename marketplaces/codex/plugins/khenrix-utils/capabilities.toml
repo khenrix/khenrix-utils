@@ -32,17 +32,19 @@ args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
 # shim — there is no Windows Chrome on this host).
 BROWSER = "${HOME}/.local/bin/wsl-chrome"
 
-[mcp_servers.google-drive]
-transport = "stdio"
-# Launched through mise (absolute path so it resolves with a minimal PATH); mise
-# picks the active Node 26 — no hard-coded runtime path to go stale. (Was a dead
-# ~/.asdf/... path after the 2026-07-08 asdf→mise migration.)
-command = "${HOME}/.local/bin/mise"
-args = ["exec", "node@26", "--", "node", "${HOME}/.local/share/google-drive-mcp/node_modules/@piotr-agier/google-drive-mcp/dist/index.js"]
-[mcp_servers.google-drive.env]
-GOOGLE_DRIVE_MCP_TOKEN_PATH = "${HOME}/.config/google-drive-mcp/tokens.json"
-GOOGLE_DRIVE_OAUTH_CREDENTIALS = "${HOME}/.config/google-drive-mcp/gcp-oauth.keys.json"
 
+# google-drive was REMOVED 2026-07-20: redundant with the native claude.ai Drive
+# MCP, and its command hardcoded an asdf node path that the mise migration deletes.
+# Removing the declaration alone is a NO-OP -- reconcile.py is additive-only and
+# prints `EXTRA ... left untouched`. The live config needed explicit removal too.
+
+# NOT the Windows-side bridge (origin/main a4bc554, 2026-07-20): this host drives Chrome
+# inside WSL, so it needs no Windows Node at all and keeps a persistent profile the agent
+# shares. Kept deliberately on 2026-07-27 over the newer bridge. If a host ever has no
+# WSLg, that variant resolves npx via `Get-Command npx.cmd` rather than hardcoding
+# `C:\Program Files\nodejs` — a per-user or winget Node does not land there and the
+# server died at spawn with no diagnosable message. `bootstrap-tier0.sh` provisions the
+# shim and `doctor.py` checks the prerequisite.
 [mcp_servers.chrome-devtools]
 platform = "linux"   # WSL/Linux-native: mise Node + Chrome for Testing, shown via WSLg
 transport = "stdio"
@@ -63,6 +65,15 @@ args = ["exec", "node@26", "--", "npx", "-y", "chrome-devtools-mcp@latest", "--e
 LD_LIBRARY_PATH = "${HOME}/.local/share/chrome-for-testing/extra-libs"
 DISPLAY = ":0"
 CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS = "1"
+
+# 1Password's local MCP is shipped by the Windows desktop app. On WSL, launch it through
+# the existing PowerShell interop shim so every CLI talks to the same user-approved app.
+# This MCP manages Developer Environments; it never returns vault item secrets.
+[mcp_servers.1password]
+platform = "windows"
+transport = "stdio"
+command = "${HOME}/.local/bin/powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''& "$env:LOCALAPPDATA\Microsoft\WindowsApps\1password-mcp.exe"''']
 
 # LinkedIn — portable, no secret in config; auth is an interactive per-machine login via the tool.
 # (Slack is deliberately NOT managed here: its XOXC/XOXD are per-machine, session-scoped, rotating

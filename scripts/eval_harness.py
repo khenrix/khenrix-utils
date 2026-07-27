@@ -171,10 +171,14 @@ def parse_grading(raw: str, assertions: list, eval_name: str, condition: str) ->
             "passed": passed, "total": len(assertions), "expectations": exps}
 
 
-def blind_pair(with_text: str, without_text: str, idx: int):
+def blind_pair(with_text: str, without_text: str, idx):
     """Assign the two outputs to A/B deterministically (no RNG — alternate by eval
-    index so neither condition sits in a fixed slot across the set). Returns
-    (a_text, b_text, key) where key maps each slot back to its condition."""
+    id so neither condition sits in a fixed slot across the set). Returns
+    (a_text, b_text, key) where key maps each slot back to its condition.
+    Eval ids may be ints OR descriptive string slugs — derive a stable parity for
+    both (byte-sum is deterministic; `str % int` on a slug is a TypeError)."""
+    if not isinstance(idx, int):
+        idx = sum(str(idx).encode())
     if idx % 2 == 0:
         return with_text, without_text, {"A": "with_skill", "B": "without_skill"}
     return without_text, with_text, {"A": "without_skill", "B": "with_skill"}
@@ -239,6 +243,12 @@ def run_text(provider: str, prompt: str, cfg: dict, workdir: Path, *,
     if readonly:
         prompt = fanout.apply_readonly_posture(prompt)  # same soft layer as the council
     spec = fanout.build_real_spec(provider, prompt, timeout, cfg, workdir)
+    # The council's substantive-answer floor and proof-of-read sentinel are COUNCIL
+    # policy, not a property of running a provider: an executor's correct answer here
+    # may legitimately be two lines, and no sentinel is injected into eval prompts. Opt
+    # out explicitly so the with-vs-without benchmark keeps its historical semantics —
+    # same reason build_real_spec never bakes in the council member note.
+    spec.min_chars = 0
     agy_wt = None
     if readonly:
         fanout.make_readonly(spec)

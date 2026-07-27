@@ -13,6 +13,9 @@ Modes (--mode):
   timeout         sleep far past the engine's --timeout so it gets killed
   error-sentinel  emit a sentinel string, exit 1   (validity: error_sentinel)
   flaky:K         fail the first K attempts (counter file), then succeed
+  tool-denied     exit 0 with a one-line "my own tool call was denied" answer —
+                  the exact shape of the incident that motivated seat scoring:
+                  non-empty and clean-exit, but the seat never read its input
 
 --as claude wraps the answer in the same JSON shape `claude -p --output-format
 json` emits, so the engine's claude extractor (json.loads(...)["result"]) works.
@@ -101,6 +104,13 @@ def main(argv=None) -> int:
     if mode == "garbage-json":
         # exit 0 with non-JSON stdout — exercises the claude parse_failure path.
         print("this is not json at all")
+        return 0
+    if mode == "tool-denied":
+        # agy's observed round-2 failure: headless mode cannot prompt, so the CLI
+        # soft-denies its own ReadFile and the model answers anyway. Exit 0, non-empty
+        # — under the old "non-empty is valid" rule this scored a pass.
+        emit_answer("I was unable to read the document: ReadFile permission denied "
+                    "(tool_confirmation_manager.go:183).", args.as_)
         return 0
     if mode == "quota-log":
         # Mimic agy's silent 429: nothing on stdout/stderr, exit 0, but the real

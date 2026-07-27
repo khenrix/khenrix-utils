@@ -89,11 +89,27 @@ def _self_test() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--apply", action="store_true",
+                    help="write the merged result back to CONFIG (atomic; "
+                         "aborts on same-name/different-command collision)")
+    ap.add_argument("config", nargs="?", type=Path,
+                    help="path to the CLI's mcp config JSON")
+    ap.add_argument("additions", nargs="?", type=Path,
+                    help="path to a JSON file with mcpServers additions to merge in")
     args = ap.parse_args()
     if args.self_test:
         return _self_test()
-    ap.error("no action given")
-    return 2
+    if not args.config or not args.additions:
+        ap.error("CONFIG and ADDITIONS are required unless --self-test is given")
+    additions = json.loads(args.additions.read_text())
+    if args.apply:
+        write_merged(args.config, additions)
+        print(f"APPLIED: {args.config}")
+    else:
+        existing = json.loads(args.config.read_text()) if args.config.exists() else {}
+        merged = merge(existing, additions)
+        print(json.dumps(merged, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

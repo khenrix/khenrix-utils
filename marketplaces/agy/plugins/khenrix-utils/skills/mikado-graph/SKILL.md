@@ -11,7 +11,7 @@ description: >-
   keeps snowballing, or when a branch has grown unmergeable. Triggers: "plan this refactor", "this
   change is too big", "break this into mergeable steps", "mikado", "what should I do first here",
   "split this branch", "dependency graph for this migration".
-allowed-tools: Bash, Read, Edit
+allowed-tools: Bash, Read, Edit, Write
 ---
 
 # mikado-graph
@@ -65,15 +65,29 @@ MIKADO=""
 for c in \
   "${CLAUDE_PLUGIN_ROOT:-}/skills/mikado-graph/scripts/mikado.py" \
   "${PLUGIN_ROOT:-}/skills/mikado-graph/scripts/mikado.py" \
+  "$HOME/git/khenrix-utils/shared/skills/mikado-graph/scripts/mikado.py" \
   "$HOME/.gemini/config/plugins/khenrix-utils/skills/mikado-graph/scripts/mikado.py"; do
   if [ -f "$c" ]; then MIKADO="$c"; break; fi
 done
+# Codex sets no PLUGIN_ROOT for a skill's Bash calls. If nothing above matched, fall back to the
+# Codex plugin cache — taking the NEWEST version. The sort key is the path AFTER `khenrix-utils/`
+# (i.e. "<version>/skills/…"), so sort -V orders by the version segment itself, not by the
+# cache-parent wildcard that precedes it — deterministic across multiple cache parents.
+# (The repo-dev source-of-truth above already wins on a dev box, so a stale cache can't shadow it.)
+if [ -z "$MIKADO" ]; then
+  MIKADO=$(for f in "$HOME"/.codex/plugins/cache/*/khenrix-utils/*/skills/mikado-graph/scripts/mikado.py; do
+    [ -e "$f" ] && printf '%s\t%s\n' "${f#*/khenrix-utils/}" "$f"
+  done | sort -V | tail -1 | cut -f2-)
+fi
 if [ -z "$MIKADO" ]; then echo "mikado.py not found — is khenrix-utils installed?"; exit 1; fi
 python3 "$MIKADO" .mikado/plan.md
 ```
 
-It prints READY (do these now, in any order — they're independent) and BLOCKED (with the unmet deps),
-and errors on a cycle. Work only READY nodes; never start a node with an unmet prerequisite.
+It prints READY (do these now, in any order — they're independent) and BLOCKED (with the unmet deps).
+It **refuses the plan with a nonzero error** on a malformed graph — a cycle, a dep naming an
+**undefined node** (a dangling reference, almost always a rename typo — not a real prerequisite to go
+do), a duplicate id, or an unknown `status` value. Fix the graph; don't act on the phantom node.
+Work only READY nodes; never start a node with an unmet prerequisite.
 
 ## Proactive vs reactive
 - **Proactive** — before touching code, sketch the goal + prerequisites into the graph, then implement

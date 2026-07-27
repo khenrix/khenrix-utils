@@ -10,7 +10,7 @@ description: >-
   conversation rather than be repeated by hand. Triggers: "make a hook so you stop doing X", "turn this
   correction into a rule", "hookify this", "stop reminding you to Y", "block yourself from running Z",
   "always use rg not grep — enforce it", "don't edit generated files again".
-allowed-tools: Bash, Read, Edit
+allowed-tools: Bash, Read, Edit, Write
 ---
 
 # hookify
@@ -69,7 +69,8 @@ Rules of thumb:
 A hook **command** receives the event as **JSON on stdin** and signals its decision via **exit code**
 and/or **stdout JSON**. Key stdin fields:
 
-- All events: `session_id`, `cwd`, `hook_event_name`, `transcript_path`, `permission_mode`.
+- All events: `session_id`, `cwd`, `hook_event_name`, `transcript_path` — plus `permission_mode`
+  on most (not all) events; check the event's schema before relying on it.
 - Tool events: `tool_name`, `tool_input` (e.g. `tool_input.command` for Bash, `tool_input.file_path`
   for Edit/Write). **`PostToolUse` also gets `tool_response`** — the tool's result (shape is
   tool-specific: Bash gives stdout/exit, Write gives the written path) — read it for a follow-up.
@@ -91,8 +92,15 @@ and/or **stdout JSON**. Key stdin fields:
 }
 ```
 `permissionDecision` can be `"deny"` (block), `"allow"` (auto-approve), `"ask"` (prompt the user),
-or `"defer"` (non-interactive only — pause the tool call for an external UI/SDK to resume; ignored,
-with a warning, in an interactive session).
+or `"defer"` (non-interactive `-p` mode only, **Claude Code ≥ v2.1.89** — older versions don't
+recognize it and fall through to normal permission handling, so pin the version when an approval
+gate depends on it: the process exits with stop_reason `"tool_deferred"` and a preserved
+`deferred_tool_use` payload so an external wrapper can collect approval and resume via
+`claude -p --resume <session-id>`. The resume just RE-RUNS the hook — it must consult the
+wrapper's persisted decision and return `allow`/`deny`; returning `defer` again re-exits deferred.
+Ignored, with a warning, in an interactive session and on batched/parallel tool calls;
+`permissionDecisionReason`/`updatedInput`/`additionalContext` have no effect on a defer.
+Precedence across hooks: deny > defer > ask > allow).
 
 Exit-code meaning: **0** = success (stdout JSON parsed; for `UserPromptSubmit`/`SessionStart`, stdout
 is added to context); **2** = blocking error (stderr shown to the agent, action prevented); **any
@@ -101,8 +109,9 @@ prompt with the stderr message. For **`Stop`**, block with stdout JSON `{"decisi
 (or exit 2 + stderr) to force more work before finishing.
 
 **Warn without blocking (exit 0):** to flag but let the action proceed, exit 0 and emit either
-`systemMessage` (a note shown to the **user**) or `hookSpecificOutput.additionalContext` (guidance fed
-to **Claude**). For a "stop repeating the mistake" nudge, `additionalContext` is usually the one you
+`systemMessage` (a note shown to the **user** — a TOP-LEVEL field, NOT inside `hookSpecificOutput`,
+where it would be silently ignored) or `hookSpecificOutput.additionalContext` (guidance fed
+to **Claude** — which conversely MUST be nested inside `hookSpecificOutput`). For a "stop repeating the mistake" nudge, `additionalContext` is usually the one you
 want — it steers the agent, not the human:
 
 ```json
@@ -117,7 +126,10 @@ Hooks live in `settings.json` under `hooks.<EventName>` → an array of groups, 
 "hooks": [ { "type": "command", "command": "…" } ] }`. Keep the command tiny; if it needs more than a
 one-liner, write a small script under `${CLAUDE_PROJECT_DIR}/.claude/hooks/` and call it.
 
-**Example A — block the full test suite, allow a single file (PreToolUse / Bash, block):**
+**Example A — block the full test suite, allow a single file (PreToolUse / Bash, block).** Redirect
+and `tee` targets are stripped so `pytest > full.log` can't masquerade as a single-file run, and the
+predicate is inverted (`| not`, blocking from the `||` branch) so a missing or erroring `jq` blocks
+instead of silently allowing — fail-closed:
 
 ```json
 {
@@ -128,7 +140,7 @@ one-liner, write a small script under `${CLAUDE_PROJECT_DIR}/.claude/hooks/` and
         "hooks": [
           {
             "type": "command",
-            "command": "jq -e '.tool_input.command | test(\"(pytest|npm test|make test)\\\\b(?!.*[/.]\\\\w)\")' >/dev/null && { echo 'Run only the changed test file, not the whole suite.' >&2; exit 2; } || exit 0"
+            "command": "jq -e '.tool_input.command | sub(\">.*\";\"\") | sub(\"\\\\btee\\\\b.*\";\"\") | test(\"(pytest|npm test|make test)\\\\b(?!.*[/.]\\\\w)\") | not' >/dev/null || { echo 'Run only the changed test file, not the whole suite.' >&2; exit 2; }"
           }
         ]
       }
@@ -148,7 +160,7 @@ one-liner, write a small script under `${CLAUDE_PROJECT_DIR}/.claude/hooks/` and
         "hooks": [
           {
             "type": "command",
-            "command": "jq -e '.tool_input.file_path | test(\"marketplaces/\")' >/dev/null && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"marketplaces/ is generated — edit the source of truth instead.\"}}' || true"
+            "command": "jq -e '.tool_input.file_path | test(\"marketplaces/\") | not' >/dev/null || printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"marketplaces/ is generated — edit the source of truth instead.\"}}'"
           }
         ]
       }
@@ -163,10 +175,12 @@ to stdout (or exits 2 with that message on stderr). Guard against loops by honor
 
 Keep matchers narrow (a precise tool/path regex beats a broad one), reasons short and actionable, and
 the predicate cheap. Prefer `jq` to read `tool_input`; interpret exit codes, don't echo-and-grep.
-**Fail closed, not open.** The `jq -e '…' && {block} || exit 0` idiom above blocks only when `jq`
-runs *and* the predicate matches — if `jq` is missing (exit 127) the `&&` short-circuits to the
-`|| exit 0` branch and the guard silently **stops enforcing**. For a guard that must not lapse, gate
-on `command -v jq` first (or invert so the unknown/error path blocks). A slow predicate (e.g. a `Stop`
+**Fail closed, not open.** A naive `jq -e '…' && {block} || exit 0` chain blocks only when `jq`
+runs *and* the predicate matches — if `jq` is missing (exit 127) or the input is malformed, the
+`&&` short-circuits to the `|| exit 0` branch and the guard silently **stops enforcing**. That is
+why both examples above invert the predicate (`| not`) and block from the `||` branch: any jq
+error then blocks instead of allowing. Gating on `command -v jq` first is the other fail-closed
+shape. A slow predicate (e.g. a `Stop`
 hook running `make verify`) can also outrun the hook's default timeout — set `"timeout": <seconds>`
 on that hook entry if so.
 

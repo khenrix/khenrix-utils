@@ -1,11 +1,11 @@
 {
   "skill_name": "mikado-graph",
-  "notes": "Grade the Mikado Method DECISIONS: revert-on-discovery (keep the prerequisite learning, throw away the half-done attempt), leaf-first ordering (only nodes whose prerequisites are all done are actionable), re-implement-don't-cherry-pick (implement a ready node fresh on a clean base, not by salvaging the reverted spike), and reactive splitting of a sprawled branch into independently-mergeable nodes. The naive answer (no skill) tends to: power through the breakage, start at the goal, salvage the spike branch, or keep pushing one giant branch. Inline Q&A; read-only harness.",
+  "notes": "Grade the Mikado Method DECISIONS: revert-on-discovery (keep the prerequisite learning, throw away the half-done attempt), leaf-first ordering (only nodes whose prerequisites are all done are actionable), re-implement-don't-cherry-pick (implement a ready node fresh on a clean base, not by salvaging the reverted spike), and reactive splitting of a sprawled branch into independently-mergeable nodes. The naive answer (no skill) tends to: power through the breakage, start at the goal, salvage the spike branch, or keep pushing one giant branch. Inline Q&A; read-only harness. 2026-07-18: documented the engine's dangling-dep/undefined-node refusal in the skill body (it previously documented only cycle-errors), which is the fact eval-4 grades — closing the eval-gap with a real teach, not a manufactured case. De-leaked the eval-4/eval-5 prompts (dropped the literal .mikado/plan.md path + 'mikado-graph approach' trigger) which reduces explicit cue leakage (ambient auto-trigger of the installed skill can still occur — the delta is candidate-over-installed, and eval-4 discriminates on the newly-documented refusal behavior regardless). Engine now also rejects a typo'd status (was a silent wrong-READY). 6 cases retained: 4 map 1:1 to the documented decisions + 2 engine.",
   "evals": [
     {
       "id": 0,
       "name": "revert-on-discovery",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I started a big refactor; partway in it breaks three call sites that each need their own prep first. Using the Mikado Method, state exactly what to do with my current half-done changes and how to record what I learned.",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I started a big refactor; partway in it breaks three call sites that each need their own prep first. Using the Mikado Method, state exactly what to do with my current half-done changes and how to record what I learned.",
       "files": [],
       "assertions": [
         "Records each newly-discovered prerequisite as a child node of the change being attempted",
@@ -17,7 +17,7 @@
     {
       "id": 1,
       "name": "leaf-first-only-ready",
-      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. My Mikado graph: goal depends on A and B; A depends on C; B and C have no unmet prerequisites. Using the method, state which node(s) I should implement first and why, and whether I can start on the goal now.",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. My Mikado graph: goal depends on A and B; A depends on C; B and C have no unmet prerequisites. Using the method, state which node(s) I should implement first and why, and whether I can start on the goal now.",
       "files": [],
       "assertions": [
         "Says to start with the leaves B and C (nodes whose prerequisites are all done), in any order",
@@ -29,7 +29,7 @@
     {
       "id": 2,
       "name": "reimplement-not-cherrypick",
-      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. A prerequisite node just became ready (all its deps are done). I still have the messy exploratory branch from when I first discovered this prerequisite. Using the Mikado Method, state how I implement the now-ready node.",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. A prerequisite node just became ready (all its deps are done). I still have the messy exploratory branch from when I first discovered this prerequisite. Using the Mikado Method, state how I implement the now-ready node.",
       "files": [],
       "assertions": [
         "Implements the ready node FRESH on a clean/current base",
@@ -41,7 +41,7 @@
     {
       "id": 3,
       "name": "reactive-split-sprawled-branch",
-      "prompt": "Answer inline in prose \u2014 do NOT plan or run tools, just answer. I have a branch that sprawled into 40 files and won't merge cleanly. Using the Mikado Method reactively, state how to turn it into something mergeable.",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I have a branch that sprawled into 40 files and won't merge cleanly. Using the Mikado Method reactively, state how to turn it into something mergeable.",
       "files": [],
       "assertions": [
         "Factors the sprawl into a dependency graph of smaller nodes (what could merge on its own; what blocks what)",
@@ -53,25 +53,25 @@
     {
       "id": 4,
       "name": "dangling-dep-engine-flags-undefined",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. My .mikado/plan.md graph has a node \"add-tests\" whose deps list [\"ci-setup\"], but there is no node with id \"ci-setup\" anywhere in the graph (I think I renamed it). Using the mikado-graph approach, state how you'd find out what's actually going on and whether \"add-tests\" is ready.",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I'm working a big change as a dependency graph of prerequisite steps. One step, \"add-tests\", lists a prerequisite \"ci-setup\", but there is no step called \"ci-setup\" anywhere in my graph (I think I renamed it). How do I determine what's actionable, and what do I do about \"ci-setup\"?",
       "files": [],
       "assertions": [
-        "Reaches for the bundled engine \u2014 running mikado.py on .mikado/plan.md \u2014 as the authority, rather than eyeballing the graph or manually reasoning about readiness (the skill's explicit 'don't eyeball it, ask the engine' rule; a no-skill answer wouldn't know a bundled engine exists)",
+        "Reaches for the bundled engine (running mikado.py on the plan) as the authority for what's actionable (a no-skill answer wouldn't know a bundled engine exists), rather than eyeballing the graph or manually tracing readiness",
         "Identifies ci-setup as an UNDEFINED/nonexistent node (a dangling reference, almost certainly the rename typo), NOT an ordinary unmet prerequisite that just needs doing",
-        "States the engine treats a dependency on an undefined node as invalid input \u2014 it refuses the plan with an explicit error (e.g. 'depends on undefined node \"ci-setup\"') and exits nonzero, rather than silently listing add-tests as blocked-forever",
+        "States the engine treats a dependency on an undefined node as invalid input — it refuses the plan with an explicit error (e.g. 'depends on undefined node \"ci-setup\"') and exits nonzero, rather than silently listing add-tests as blocked-forever",
         "Fix is to correct the dangling reference (repoint the dep id or add the missing ci-setup node), NOT to 'go do ci-setup'"
       ]
     },
     {
       "id": 5,
       "name": "cycle-engine-errors-nothing-ready",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. In my .mikado/plan.md, node A deps on B and node B deps on A (both status todo). Using the mikado-graph approach, state how you determine which nodes are ready and what you do about this graph.",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. In my prerequisite graph, step A depends on step B and step B depends on step A (both unfinished). How do I determine which steps are actionable right now, and what do I do about A and B?",
       "files": [],
       "assertions": [
         "Reaches for the bundled engine (mikado.py on the plan) to classify readiness, per the skill's 'ask the engine, don't eyeball' rule (a no-skill answer wouldn't invoke a bundled engine)",
-        "Identifies A\u2194B as a dependency CYCLE \u2014 neither can ever be ready because each blocks the other",
-        "States the engine specifically DETECTS the cycle and reports it as an error (e.g. a '\u2717 CYCLE' report) exiting nonzero, rather than printing a normal READY/BLOCKED classification",
-        "No node is actionable until the cycle is broken by removing/repointing the mis-modeled edge (a genuine prerequisite relationship is never mutual) \u2014 not by arbitrarily starting one"
+        "Identifies A↔B as a dependency CYCLE — neither can ever be ready because each blocks the other",
+        "States the engine specifically DETECTS the cycle and reports it as an error (e.g. a '✗ CYCLE' report) exiting nonzero, rather than printing a normal READY/BLOCKED classification",
+        "No node is actionable until the cycle is broken by removing/repointing the mis-modeled edge (a genuine prerequisite relationship is never mutual) — not by arbitrarily starting one"
       ]
     }
   ]
