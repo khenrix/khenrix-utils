@@ -109,10 +109,15 @@ def test_tool_permission_is_distinct_from_auth_or_quota():
     assert "headless" in r["hint"].lower()
 
 
-def test_tool_permission_and_auth_are_not_retried_but_transient_is():
+def test_auth_is_not_retried_but_transient_and_scan_derived_reasons_are():
     from fanout import NONRETRYABLE_REASONS
 
-    assert "tool_permission" in NONRETRYABLE_REASONS
+    # tool_permission is derived by substring-scanning a MERGED stderr stream, so a seat
+    # that merely echoed our own sentinel lists classifies here too (observed 2026-07-27:
+    # a codex seat matched fanout.py's own self-test line and lost its retry to a defect
+    # that did not exist). Whether a phrase is the CLI speaking or the CLI quoting is not
+    # recoverable from that stream; whether the failure REPRODUCES is. So it is retryable.
+    assert "tool_permission" not in NONRETRYABLE_REASONS
     assert "auth_or_quota" in NONRETRYABLE_REASONS
     assert "not_installed" in NONRETRYABLE_REASONS
     # A momentary outage is legitimate and recurs — retry is the whole point.

@@ -233,13 +233,12 @@ surface, and this skill has already shipped stale copies twice):
 - **`tool_permission` is OUR invocation defect, not a flaky provider** — the seat
   authenticated fine and was refused permission to read what it was asked to review.
   Report it as a bug and fix the invocation; never accept it as ambient degradation.
-  **Exception, and check it first when the target is in khenrix-utils:** the classifier
-  scans stderr for plain substrings, and a seat that greps THIS repo echoes
-  `fanout.py`'s own sentinel lists back into its stderr — a self-match that reads as
-  `tool_permission` and, being non-retryable, silently costs the seat its retry.
-  Observed 2026-07-27: the matched text was `fanout.py:1299`, a self-test line. Before
-  chasing an invocation bug, grep the seat's stderr for the matched phrase and confirm
-  it is not simply our own source quoted back.
+  **But confirm before you act — the reason is scan-derived.** A seat that merely READ a
+  file containing a sentinel classifies the same way, and no text heuristic separates the
+  two (three were tried; each silenced a real denial). `tool_permission` is therefore
+  RETRYABLE, so a phantom costs an attempt rather than a seat. A phantom also does not mean
+  the seat was fine — it failed for some other reason. Read
+  `references/council-failures.md` before changing any invocation flag.
 
 A seat citing the sentinel proves it opened the prompt, **not** that it examined all of a
 long diff — the token is prepended. Treat it as strong evidence of *not* reading when
@@ -470,7 +469,8 @@ Then ship. **Re-check `git status --porcelain` immediately before staging** — 
 | Situation | Do |
 |---|---|
 | Target doesn't exist | list valid targets (`shared/skills/*` + templated pair), ask |
-| Council degraded (`summary.valid` < 3) | proceed with what's valid; quote `summary.header`, and for each failed seat give its `reason` + `hint`. `tool_permission` is our invocation defect — fix it, don't accept it |
+| Target matches TWO layouts (`.claude/skills/x` AND `skills/x`) | `target-info` refuses with both paths — pick or remove one, never guess. `baseline`/`stale-models` would silently union them |
+| Council degraded (`summary.valid` < 3) | proceed with what's valid; quote `summary.header`, and for each failed seat give its `reason` + `hint`. `tool_permission` is our invocation defect — but CONFIRM it first with the MATCHED-lines check above; a seat that merely read a file containing a sentinel still classifies, and "fixing" that invocation chases a phantom |
 | agy persistently timing out on fan-outs | pre-1.1.1 it reliably rode the whole window; fixed upstream, so treat a recurrence as new (see llm-council's failure table for the current contract). A `--providers claude,codex` panel is an acceptable degraded fallback for the two reviews — say so, don't treat it as a routine shortcut |
 | Council zero-valid | skip that review, say so loudly, ask the user whether to proceed on self-review only |
 | Eval cap reached, not green | stop; record unresolved failures in run log + hand to user |

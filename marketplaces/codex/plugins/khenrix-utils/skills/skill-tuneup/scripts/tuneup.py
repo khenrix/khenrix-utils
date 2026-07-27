@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic substrate for the skill-tuneup skill (stdlib only).
 
-Four subcommands keep the judgment-free parts of a tune-up reproducible:
-
-  baseline     --repo R --skill S      last substantive commit (skips chore/docs/style)
-  stale-models --repo R [--skill S]    model-ID hits tagged current|stale-candidate
-  triage       --repo R                rank ALL skills by staleness (read-only, no network)
-  log          append|list --repo R --target S   per-target run memory (JSONL)
+Subcommands keep the judgment-free parts of a tune-up reproducible. Run `--help` for the
+current list rather than trusting an enumeration here — this header listed four of nine
+for three runs, because a comment cannot fail a test when it goes stale.
 
   tuneup.py --self-test                hermetic logic tests, no repo/git/network needed
 
@@ -15,7 +12,18 @@ references/ — this script only reports facts. Run memory lives in
 docs/tuneups/log/<target>.jsonl (committed; outside every eval-receipt closure).
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, time, uuid
+import argparse
+import contextlib
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,8 +87,11 @@ def target_info(repo: Path, skill: str) -> dict:
         str(p.relative_to(repo)).startswith(("shared/skills", "shared/skill-templates"))
         for p in paths))
     # Two same-tier matches (e.g. .claude/skills/x AND skills/x) is ambiguous: baseline,
-    # scanning and editing would each silently pick one. Refuse centrally rather than
-    # letting the run act on the wrong source.
+    # scanning and editing would each silently pick one. Refused at the resolver the run
+    # consults FIRST — not centrally. ALL FOUR other callers of skill_paths() (baseline,
+    # scan_stale_models, and both triage helpers) still union the matches if invoked
+    # directly, so the guarantee is "the documented flow fails safe", not "the ambiguity
+    # is unrepresentable".
     ambiguous = len(paths) > 1
     return {
         "ambiguous": ambiguous,
@@ -567,9 +578,13 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
     # for an explicit null, so a null-severity finding counted as 0 and converged a cycle
     # that had applied work. Absent is allowed (defaults to serious); null is not.
     if "severity" in entry and entry["severity"] not in SEVERITIES:
+        # Show the TESTS, not just the labels: this is the moment an operator is choosing
+        # a severity, and severity is what decides when the run stops. SEVERITY_TESTS was
+        # dead code duplicating SKILL.md's table until it was wired in here.
         raise ValueError(
             f"severity must be one of {sorted(SEVERITIES)} (got {entry['severity']!r}); "
-            "omit the key entirely to default to 'serious'")
+            "omit the key entirely to default to 'serious'.\n"
+            + "\n".join(f"  {k}: {v}" for k, v in SEVERITY_TESTS.items()))
     # `cycle` is the delimiter the whole convergence rule is built on, so validate it at
     # WRITE time for the same reason as severity — but the stakes are higher: a bad value
     # is only caught at count time, cannot be superseded (a later cycle-end shares the
@@ -895,6 +910,11 @@ def _self_test() -> int:
                 return str(ex)
         ok.append(("a bad severity is rejected at write time — for the RIGHT reason",
                    "severity must be one of" in (_sev("P0") or "")))
+        # "severity must be one of" predates the SEVERITY_TESTS wiring, so asserting only
+        # that would stay green if the tests were deleted again — dead code restored.
+        ok.append(("bad severity prints the objective TESTS, not just the labels",
+                   all(f"  {k}: {v}" in (_sev("P0") or "")
+                       for k, v in SEVERITY_TESTS.items())))
         ok.append(("an explicit null severity is rejected (absent != null)",
                    "severity must be one of" in (_sev(None) or "")))
         ok.append(("an omitted severity is accepted", _sev(_MISSING) is None))
@@ -931,6 +951,23 @@ def _self_test() -> int:
         ok.append(("owner releases", lock_release(owner)[0]))
         ok.append(("refresh after release reports it gone", lock_refresh(owner)[0] is False))
     globals()["LOCK_DIR"] = _saved
+    # ambiguous target: two same-tier layouts must be REFUSED, not silently resolved
+    with tempfile.TemporaryDirectory() as td:
+        fr = Path(td) / "foreign"
+        for layout in (".claude/skills/x", "skills/x"):
+            (fr / layout).mkdir(parents=True)
+            (fr / layout / "SKILL.md").write_text("---\nname: x\n---\n")
+        info = target_info(fr, "x")
+        ok.append(("two same-tier layouts are reported ambiguous", info["ambiguous"] is True))
+        ok.append(("ambiguous target names BOTH paths", len(info["paths"]) == 2))
+        # capture the refusal so the suite's own output stays readable — the message is
+        # expected here, and printing it mid-suite reads like a failure
+        _buf = io.StringIO()
+        with contextlib.redirect_stdout(_buf):   # this refusal goes to STDOUT, not stderr
+            _rc = main(["target-info", "--repo", str(fr), "--skill", "x"])
+        ok.append(("target-info exits nonzero on an ambiguous target", _rc != 0))
+        ok.append(("ambiguous refusal explains itself", "MORE THAN ONE layout" in _buf.getvalue()))
+
     # review-material: every case the shell loop it replaced got wrong, verified live
     with tempfile.TemporaryDirectory() as td:
         r = Path(td) / "repo"; r.mkdir()

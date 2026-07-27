@@ -151,14 +151,30 @@ TOOL_PERMISSION_SENTINELS = [
     "requires approval",
     "user did not approve",
 ]
-NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota", "tool_permission"}
+# `tool_permission` is deliberately NOT here. It is derived by substring-scanning a MERGED
+# stderr stream, and a seat reviewing this repo echoes our own sentinel lists into that
+# stream — observed 2026-07-27: a codex seat matched fanout.py's own self-test line, was
+# classified non-retryable, and lost its retry to a defect that did not exist.
+# Three heuristics were tried and each had a real counterexample: matching `file:line:`
+# silenced agy's genuine bare-filename denial; requiring a `/` silenced every genuine
+# denial reported with an absolute path; and treating quoted text as source silenced
+# codex's version gate, which arrives as a JSON payload. Whether a phrase is the CLI
+# speaking or the CLI quoting is not recoverable from a merged stream.
+# What IS reliable is reproduction: a genuine denial recurs on retry, a phantom does not.
+# So keep the actionable reason, but let the seat have its attempt.
+NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota"}
 
 # Actionable next step per failure cause, carried into the manifest so the
 # synthesizer can tell the user something better than "the seat failed".
 REASON_HINTS = {
-    "tool_permission": ("headless mode cannot prompt for tool approval — pass the seat's "
-                        "auto-approve flag (agy: --dangerously-skip-permissions, kept "
-                        "alongside --mode plan)"),
+    # NOT unconditional: this reason comes from scanning a merged stderr stream, so a seat
+    # that merely READ a file containing a sentinel classifies here too. The seat is now
+    # retried, so a phantom costs nothing — but confirm the match is a real CLI diagnostic
+    # before changing any flags.
+    "tool_permission": ("headless mode cannot prompt for tool approval — IF this is a real "
+                        "denial, pass the seat's auto-approve flag (agy: "
+                        "--dangerously-skip-permissions, kept alongside --mode plan). First "
+                        "confirm: a match that is just source the seat READ is a false hit"),
     "auth_or_quota": "log in or wait out the quota window; this seat is not retried",
     "did_not_read_input": ("the seat answered without opening its input — check that its "
                            "read tools are approved and the prompt fits its context"),
@@ -166,36 +182,11 @@ REASON_HINTS = {
 }
 
 
-# The `/` is load-bearing: it requires a PATH, which is what rg/grep emit
-# (`shared/skills/.../fanout.py:1299:`). A genuine runtime error names a bare file —
-# agy's real denial is `tool_confirmation_manager.go:183: permission denied` — and must
-# still classify. Matching a bare filename here would silence the true positive this
-# whole sentinel exists to catch.
-_SOURCE_ECHO_LINE = re.compile(
-    r"^\s*\S*/\S*\.(?:py|md|toml|json|jsonl|ya?ml|sh|txt|go|rs|ts|js):\d+[:\-]")
-
-
-def strip_quoted_source(text: str) -> str:
-    """Drop `path:lineno:` lines — grep/rg output, not the CLI's own diagnostics.
-
-    A seat reviewing THIS repo greps it, and agentic CLIs echo every tool result into
-    stderr, so fanout's OWN sentinel lists come back as stderr content and self-match.
-    Observed 2026-07-27: a codex seat returned empty stdout, its 243 KB stderr contained
-    `fanout.py:1299` — a line in this file's own self-test — and classify_sentinel
-    returned `tool_permission`. That reason is NON-RETRYABLE, so the seat lost its retry
-    to a phantom and the panel degraded 2/3 for no real reason. The narrow-sentinel
-    comment above guards the same hazard by keeping phrases specific; this closes the
-    other half, where the phrase is specific and still ours.
-    """
-    return "\n".join(ln for ln in (text or "").splitlines()
-                     if not _SOURCE_ECHO_LINE.match(ln))
-
-
 def classify_sentinel(text: str) -> Optional[str]:
     """Map error text to a reason: tool-permission denial, persistent auth/quota,
     transient, or None. Tool-permission is checked FIRST — it is the most specific
     and the only one of the three we can actually fix on our side."""
-    low = strip_quoted_source(text).lower()
+    low = (text or "").lower()
     if any(s in low for s in TOOL_PERMISSION_SENTINELS):
         return "tool_permission"
     if any(s in low for s in PERSISTENT_SENTINELS):
@@ -1280,7 +1271,8 @@ def self_test() -> int:
           ag["reason"] == "tool_permission")
     check("seat: tool_permission carries an actionable hint",
           "auto-approve" in (ag.get("hint") or ""))
-    check("seat: tool_permission is not retried (1 attempt)", ag["attempts"] == 1)
+    check("seat: tool_permission IS retried — the reason is scan-derived and can be a phantom",
+          ag["attempts"] > 1)
     check("seat: panel degrades to 2/3 in the summary",
           m["summary"]["seats_responded"] == 2 and m["summary"]["seats_attempted"] == 3
           and m["summary"]["degraded"])
@@ -1323,23 +1315,13 @@ def self_test() -> int:
     # A seat reviewing THIS repo echoes our own sentinel lists into stderr via rg. The
     # observed failure (2026-07-27) matched fanout.py's own self-test line and returned a
     # NON-RETRYABLE tool_permission, costing the seat its retry for no real reason.
-    check("selfmatch: rg-echoed source does not classify",
-          classify_sentinel(
-              "shared/skills/llm-council/scripts/fanout.py:1299:  "
-              'classify_sentinel("tool_confirmation' '_manager.go:183: permission denied")') is None)
-    check("selfmatch: echoed PERSISTENT sentinel does not classify",
-          classify_sentinel(
-              'shared/skills/llm-council/scripts/fanout.py:112:    "authentication failed",') is None)
-    # ...but a GENUINE denial names a bare file, not a path, and must still classify.
-    check("selfmatch: genuine bare-filename denial still classifies",
-          classify_sentinel("tool_confirmation" "_manager.go:183: permission denied")
-          == "tool_permission")
-    check("selfmatch: strip_quoted_source keeps non-path lines",
-          "permission denied" in strip_quoted_source("x\npermission denied\n"))
+    check("selfmatch: tool_permission is RETRYABLE — a phantom must not cost a seat",
+          "tool_permission" not in NONRETRYABLE_REASONS)
     check("sentinel: tool-permission text classified ahead of auth_or_quota",
           classify_sentinel("tool_confirmation_manager.go:183: permission denied")
           == "tool_permission")
-    check("sentinel: tool_permission is non-retryable", "tool_permission" in NONRETRYABLE_REASONS)
+    check("sentinel: tool_permission is retryable (phantom-safe)",
+          "tool_permission" not in NONRETRYABLE_REASONS)
 
     passed = sum(1 for _, ok, _ in results if ok)
     for label, ok, detail in results:
