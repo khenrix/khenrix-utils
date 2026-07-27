@@ -931,6 +931,61 @@ def _self_test() -> int:
         ok.append(("owner releases", lock_release(owner)[0]))
         ok.append(("refresh after release reports it gone", lock_refresh(owner)[0] is False))
     globals()["LOCK_DIR"] = _saved
+    # review-material: every case the shell loop it replaced got wrong, verified live
+    with tempfile.TemporaryDirectory() as td:
+        r = Path(td) / "repo"; r.mkdir()
+        subprocess.run(["git", "-C", str(r), "init", "-q", "."], check=True)
+        (r / "t.txt").write_text("tracked\n")
+        subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(r), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "i"], check=True)
+        secret = Path(td) / "outside-secret.txt"
+        secret.write_text("SECRET-OUTSIDE-REPO\n")
+        (r / "leak.txt").symlink_to(secret)          # points OUTSIDE the repo
+        (r / "broken.txt").symlink_to(Path(td) / "nope")
+        (r / "newline-only.md").write_text("\n")     # grep -Iq . called this BINARY
+        (r / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00data")
+        (r / "name with spaces.md").write_text("spaced\n")
+        (r / "big.md").write_bytes(b"a" * 65535 + "é".encode() + b"tail")  # split codepoint
+        out = review_material(r)
+        ok.append(("review-material never dereferences a symlink (exfiltration guard)",
+                   "SECRET-OUTSIDE-REPO" not in out))
+        ok.append(("review-material names the skipped symlink", "SYMLINK — not followed" in out))
+        ok.append(("review-material survives a broken symlink", "broken.txt" in out))
+        ok.append(("review-material keeps a newline-only text file",
+                   "newline-only.md" in out and "newline-only.md ===" in out
+                   and "BINARY" not in out.split("newline-only.md")[1][:40]))
+        ok.append(("review-material omits a real binary", "shot.png" in out and "BINARY" in out))
+        ok.append(("review-material handles spaces in a path", "name with spaces.md" in out))
+        # NOT `out.encode().decode() == out` — a tautology for any str. Assert the thing
+        # that actually separates this implementation from the naive ones: a strict decode
+        # would RAISE on the split codepoint, and a latin-1 fallback would surface é or
+        # U+FFFD. Only dropping the partial codepoint passes.
+        ok.append(("review-material drops the partial codepoint rather than splitting it",
+                   "[truncated" in out and "é" not in out and "\ufffd" not in out))
+        (r / "t.txt").write_text("tracked and then MODIFIED\n")
+        ok.append(("review-material includes tracked modifications too",
+                   "diff --git" in review_material(r)))
+        subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
+        ok.append(("review-material sees a STAGED tree (diff HEAD, not bare diff)",
+                   "diff --git" in review_material(r)))
+        # a failed git must RAISE, not return "" — an empty result is what tells Step 9
+        # there is nothing to review, and a skipped review reads as a converged cycle
+        try:
+            review_material(Path(td) / "not-a-repo-at-all")
+            ok.append(("review-material fails CLOSED on a broken repo", False))
+        except RuntimeError:
+            ok.append(("review-material fails CLOSED on a broken repo", True))
+        for i in range(6):
+            (r / f"scratch{i}.md").write_text("x" * 4000)
+        capped = review_material(r, cap=2000, total_cap=6000)
+        ok.append(("review-material enforces an AGGREGATE cap, not just per-file",
+                   "total cap reached" in capped))
+        # Bound the UNTRACKED contribution, not len(capped): by now the fixture has staged
+        # files, so the diff itself legitimately carries them and would mask the check.
+        ok.append(("aggregate cap bounds the untracked contribution",
+                   capped.count("total cap reached") == 3
+                   and sum(len(s) for s in capped.split("=== NEW FILE")[1:]) < 20000))
     # log round-trip in a tempdir; latest decision per finding wins
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
@@ -1031,6 +1086,84 @@ def verify_final_receipt(repo: Path, skill: str, panel: list) -> list:
     return problems
 
 
+REVIEW_BYTE_CAP = 65536
+REVIEW_TOTAL_CAP = 512 * 1024
+
+
+def review_material(repo: Path, cap: int = REVIEW_BYTE_CAP,
+                    total_cap: int = REVIEW_TOTAL_CAP) -> str:
+    """Assemble exactly what council review #2 must see: the diff PLUS untracked files.
+
+    This was a shell loop in SKILL.md and shell was the wrong tool — three cycles of
+    review found four ways it silently mis-served the reviewer, each verified live:
+
+    - `cat`/`wc`/`head` FOLLOW SYMLINKS, so an untracked symlink pointing outside the
+      repo would send its referent to three external CLIs. That is an exfiltration path,
+      not a formatting bug; symlinks are skipped outright and named in the output.
+    - `head -c` cuts by BYTE, so truncating mid-codepoint yields invalid UTF-8 and
+      crashes fanout's `read_text()` before any seat spawns — reintroducing the exact
+      crash the cap was added to prevent. Truncation is decoded with errors='ignore'.
+    - `grep -Iq .` calls a newline-only file BINARY (`.` matches no character on an
+      empty line), silently dropping a legitimate text file from the review.
+    - `wc -c` on a broken symlink emits nothing, so `[ "$sz" -gt 0 ]` raises.
+
+    Binary detection is a NUL scan of the first 8 KiB — what git itself uses.
+    """
+    def git(*a: str, binary: bool = False):
+        """A FAILED git is not an empty diff.
+
+        Capturing stderr to decide "is there anything to review" removed the only signal
+        the shell version still had: git's `fatal:` reached the terminal there. Silently
+        returning "" here makes a broken repo indistinguishable from a clean one, so
+        Step 9 skips the mandatory review and `convergence-status` reads the resulting
+        zero-finding cycle as CONVERGED — over a candidate no council ever saw. Realistic
+        triggers: dubious ownership on a /mnt/c checkout, an unborn HEAD, a mistyped $REPO.
+        """
+        # bytes always, decoded explicitly: `text=True` decodes with the locale codec and
+        # RAISES on tracked content that is not valid UTF-8, which would abort the review.
+        p = subprocess.run(["git", "-C", str(repo), *a], capture_output=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"git {' '.join(a)} failed in {repo}: "
+                               f"{p.stderr.decode('utf-8', 'replace').strip()}")
+        return p.stdout if binary else p.stdout.decode("utf-8", "replace")
+
+    parts = [git("diff", "HEAD", "--", ":(exclude)marketplaces")]
+    raw = git("ls-files", "--others", "--exclude-standard", "-z",
+              "--", ":(exclude)marketplaces", binary=True)
+    # The per-file cap bounds what each file EMITS; without a total the review can still
+    # blow the prompt out — a foreign repo with a few hundred not-yet-ignored scratch files
+    # ships megabytes to three seats at deep-mode prices and fails them all on context,
+    # landing back in "review skipped". Read only what can be emitted, never the whole file.
+    budget = total_cap
+    for name in filter(None, raw.split(b"\0")):
+        rel = name.decode("utf-8", "replace")
+        p = repo / rel
+        if p.is_symlink():          # never dereference — the referent may be outside the repo
+            parts.append(f"\n\n=== NEW FILE (untracked, SYMLINK — not followed): {rel} ===\n")
+            continue
+        if budget <= 0:
+            parts.append(f"\n\n=== NEW FILE (untracked, OMITTED — total cap reached): {rel} ===\n")
+            continue
+        try:
+            size = p.stat().st_size
+            with open(p, "rb") as fh:
+                data = fh.read(min(cap, budget) + 1)
+        except OSError as e:
+            parts.append(f"\n\n=== NEW FILE (untracked, UNREADABLE: {e.strerror}): {rel} ===\n")
+            continue
+        if b"\0" in data[:8192]:
+            parts.append(f"\n\n=== NEW FILE (untracked, {size} bytes, BINARY — omitted): {rel} ===\n")
+            continue
+        keep = data[:min(cap, budget)]
+        budget -= len(keep)
+        head = f"\n\n=== NEW FILE (untracked, {size} bytes): {rel} ===\n"
+        body = keep.decode("utf-8", "ignore")
+        if len(keep) < size:
+            body += f"\n…[truncated {size - len(keep)} bytes]\n"
+        parts.append(head + body)
+    return "".join(parts)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="skill-tuneup deterministic helpers")
     ap.add_argument("--self-test", action="store_true")
@@ -1059,6 +1192,8 @@ def main(argv=None) -> int:
     fp.add_argument("--skill", required=True)
     fp.add_argument("--panel", default="claude,codex,agy")
     fp.add_argument("--json", action="store_true")
+    rp = sub.add_parser("review-material")
+    rp.add_argument("--repo", required=True)
     lp = sub.add_parser("log")
     lp.add_argument("action", choices=["append", "list"])
     lp.add_argument("--repo", required=True)
@@ -1096,6 +1231,13 @@ def main(argv=None) -> int:
         print(json.dumps(b, indent=2) if args.json else
               f"baseline {b['sha'][:9]}  {b['date']}  {b['subject']}"
               f"  ({b['skipped_as_chore']} newer chore/docs commit(s) skipped)")
+    if args.cmd == "review-material":
+        try:
+            sys.stdout.write(review_material(Path(args.repo)))
+        except RuntimeError as e:   # never let a git failure read as "nothing to review"
+            print(f"  ✗ {e}", file=sys.stderr)
+            return 2
+        return 0
     elif args.cmd == "convergence-status":
         st = convergence_status(log_entries(repo, args.target))
         if args.json:

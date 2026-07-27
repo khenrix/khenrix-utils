@@ -27,9 +27,11 @@ working-tree engine (`--smoke` defaults to claude only — pass `--providers` or
 manifest's per-seat `model`/`thinking` provenance) and probe any timing claim the change
 alters. The smoke proves the seats resolve and answer; it is not a review of their judgment.
 
-The eval gate for llm-council is also special: `fanout.py --self-test` + a live
-`--smoke` (its receipt is self-test-gated — see `references/eval-rules.md`), never the
-with-skill/baseline judge harness.
+The eval gate for llm-council is also special. The receipt is WRITTEN by
+`make eval SKILL=llm-council`, which gates on `fanout.py --self-test` alone — never the
+with-skill/baseline judge harness. A live `--smoke` and `make council-test` are additional
+REQUIRED checks, not what earns the receipt (`council-test` runs inside `verify`/
+`precommit`). See `references/eval-rules.md`.
 
 Note `LLM_COUNCIL_DEPTH` already blocks a council spawning inside a council member —
 do not "fix" that guard away.

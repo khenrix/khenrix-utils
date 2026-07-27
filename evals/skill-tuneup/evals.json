@@ -33,7 +33,7 @@
         "Refuses to let the modified working-tree fanout.py review its own diff",
         "Substitutes the last committed engine (git show HEAD:shared/skills/llm-council/scripts/fanout.py to a temp file, or an installed known-good copy) or falls back to a single-provider headless review of the diff",
         "Explicitly warns the user that the reviewer was substituted and why",
-        "Notes llm-council's eval gate is special: fanout.py --self-test (plus a live --smoke), not the with-skill/baseline judge harness"
+        "Notes llm-council's eval gate is special: the receipt is written by make eval SKILL=llm-council, which gates on fanout.py --self-test alone, not the with-skill/baseline judge harness (a live --smoke and make council-test are additional required checks, not what earns the receipt)"
       ]
     },
     {
@@ -44,7 +44,9 @@
       "assertions": [
         "Refuses to commit yet: scaffolds evals/<target>/evals.json first (2-5 discriminating cases per docs/skill-eval-process.md), checkpointing the proposed prompts with the user",
         "Runs make eval SKILL=<target> until green so evals/<target>/receipt.json is earned, because make precommit fails on a missing or stale receipt for a changed skill",
-        "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user"
+        "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user",
+        "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of council review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
+        "Uses git diff HEAD (or equivalent) when building the review material, so an already-staged tree does not read as an empty diff and skip the mandatory review"
       ]
     },
     {

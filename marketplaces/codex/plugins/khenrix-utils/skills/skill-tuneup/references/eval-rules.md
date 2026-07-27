@@ -20,9 +20,11 @@ read it before scaffolding). Key invariants:
   assertion delta yet a blind loss to the tighter baseline). Read it when triaging a weak
   delta; never fail a non-negative-delta run on it. The assertion delta is the "does it
   help" signal.
-- **llm-council is special**: its receipt is gated by `fanout.py --self-test` (+ a live
-  `--smoke`), not the judge harness — executors run under `LLM_COUNCIL_DEPTH=1`, so the
-  judged delta never exercises a real council and is advisory only.
+- **llm-council is special**: its receipt is WRITTEN by `make eval SKILL=llm-council`,
+  which gates on `fanout.py --self-test` alone, not the judge harness — executors run under
+  `LLM_COUNCIL_DEPTH=1`, so the judged delta never exercises a real council and is advisory
+  only. A live `--smoke` and `make council-test` are additional REQUIRED checks, not what
+  earns the receipt; `council-test` runs inside `verify`/`precommit`.
 
 ## Scaffolding a missing eval set
 
