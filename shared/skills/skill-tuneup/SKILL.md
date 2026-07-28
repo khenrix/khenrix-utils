@@ -233,11 +233,13 @@ surface, and this skill has already shipped stale copies twice):
 - **`tool_permission` is OUR invocation defect, not a flaky provider** — the seat
   authenticated fine and was refused permission to read what it was asked to review.
   Report it as a bug and fix the invocation; never accept it as ambient degradation.
-  **But confirm before you act — the reason is scan-derived.** A seat that merely READ a
-  file containing a sentinel classifies the same way, and no text heuristic separates the
-  two (three were tried; each silenced a real denial). `tool_permission` is therefore
-  RETRYABLE, so a phantom costs an attempt rather than a seat. A phantom also does not mean
-  the seat was fine — it failed for some other reason. Read
+  **Check `structured` in the manifest first.** A structured reason came from the
+  provider's own error field and needs no confirmation. A SCANNED one does: a seat that
+  merely READ a file containing a sentinel classifies the same way, and no text heuristic
+  separates the two (three were tried; each silenced a real denial — which is why the
+  engine now reads structured output instead). `tool_permission` is retryable on either
+  path, so a phantom costs an attempt rather than a seat — and a phantom does not mean the
+  seat was fine, it failed for some other reason. Read
   `references/council-failures.md` before changing any invocation flag.
 
 A seat citing the sentinel proves it opened the prompt, **not** that it examined all of a
@@ -470,7 +472,7 @@ Then ship. **Re-check `git status --porcelain` immediately before staging** — 
 |---|---|
 | Target doesn't exist | list valid targets (`shared/skills/*` + templated pair), ask |
 | Target matches TWO layouts (`.claude/skills/x` AND `skills/x`) | `target-info` refuses with both paths — pick or remove one, never guess. `baseline`/`stale-models` would silently union them |
-| Council degraded (`summary.valid` < 3) | proceed with what's valid; quote `summary.header`, and for each failed seat give its `reason` + `hint`. `tool_permission` is our invocation defect — but CONFIRM it first with the MATCHED-lines check above; a seat that merely read a file containing a sentinel still classifies, and "fixing" that invocation chases a phantom |
+| Council degraded (`summary.valid` < 3) | proceed with what's valid; quote `summary.header`, and for each failed seat give its `reason` + `hint`. `tool_permission` is our invocation defect — but CONFIRM it first — check the manifest `structured` flag, then the MATCHED-lines procedure in `references/council-failures.md`; a seat that merely read a file containing a sentinel still classifies, and "fixing" that invocation chases a phantom |
 | agy persistently timing out on fan-outs | pre-1.1.1 it reliably rode the whole window; fixed upstream, so treat a recurrence as new (see llm-council's failure table for the current contract). A `--providers claude,codex` panel is an acceptable degraded fallback for the two reviews — say so, don't treat it as a routine shortcut |
 | Council zero-valid | skip that review, say so loudly, ask the user whether to proceed on self-review only |
 | Eval cap reached, not green | stop; record unresolved failures in run log + hand to user |

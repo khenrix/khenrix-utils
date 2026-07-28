@@ -1,9 +1,18 @@
 # Council failure modes — diagnosing a `tool_permission` seat
 
-llm-council marks a seat `tool_permission` when a tool-denial phrase appears in its stderr
-(or, for agy, its log tail). **That reason is retryable** — see below for why — so a false
-hit no longer costs the seat its attempt. It can still send you chasing a defect that does
-not exist.
+llm-council classifies a failed seat through **two** channels, and which one produced the
+reason is the first thing to establish:
+
+- **Structured** — the provider's own error field (claude `is_error`, agy `status`/`error`,
+  codex `turn.failed`). The manifest carries `structured` for this. It is the CLI speaking
+  about itself, so there is no phantom to rule out, and a RECOGNISED structured reason may
+  be terminal (`STRUCTURED_TERMINAL_REASONS`).
+- **Scanned** — a substring found in a merged stderr stream or agy's log tail. Always
+  retried, because a seat that merely READ a file naming the phrase lands here too.
+
+`tool_permission` is not in the terminal set, so it retries on either path — a false hit
+costs an attempt, not a seat. It can still send you chasing a defect that does not exist,
+and everything below is about the scanned channel only.
 
 ## The phantom
 
@@ -23,11 +32,17 @@ file that says it". Each had a real counterexample:**
 | require a `/` in the path | silenced every genuine denial reported with an ABSOLUTE path, which is what a real install emits |
 | treat quoted text as source | silenced codex's version gate, which arrives as a JSON payload (`{"message":"…"}`) |
 
-The conclusion is structural: **whether a phrase is the CLI speaking or the CLI quoting is
-not recoverable from a merged stream.** What *is* reliable is reproduction — a genuine
-denial recurs on retry, a phantom does not. So the heuristic was removed and
-`tool_permission` was made retryable instead. A phantom now costs one extra attempt, not a
-seat.
+The conclusion was structural: **whether a phrase is the CLI speaking or the CLI quoting is
+not recoverable from a merged stream.** That is still true *of a merged stream* — so the
+heuristic was removed and the reason made retryable, and a phantom costs one attempt rather
+than a seat.
+
+**The engine then stopped relying on a merged stream.** All three seats now run a structured
+output mode and classify from the provider's own error field, which carries the provenance
+no amount of text matching could recover. Scanning survives only as the fallback when there
+is no structured error — so the window this page covers has shrunk to that fallback, and
+the first question about any `tool_permission` is no longer "phantom or real" but "was it
+structured".
 
 ## Deciding whether a `tool_permission` is real
 
@@ -53,8 +68,11 @@ EOF
 done
 ```
 
-`run_provider` classifies agy's **log tail** and OVERWRITES the stderr-derived reason, so
-reading stderr alone can print `None` and look like an acquittal. Check both.
+`run_provider` classifies agy's **log tail** and can overwrite a stderr-derived reason, so
+reading stderr alone can print `None` and look like an acquittal — check both. It is
+skipped entirely when a STRUCTURED reason already exists (`not structured` guards it): the
+provider's own error field outranks a scan of its log, or the structured path would stop
+being authoritative exactly when agy also logged a matching phrase.
 
 **Decision rule.** If every `MATCHED` line is the seat echoing a file it read — a list
 entry, a numbered gutter, a quoted argument — it is the phantom. **This does not mean the
