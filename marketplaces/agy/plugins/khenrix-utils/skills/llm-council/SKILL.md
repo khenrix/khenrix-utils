@@ -213,7 +213,8 @@ The discipline that makes this good:
 If `summary.degraded` is true the header already names every failed seat and its cause;
 add at most one further line if a `hint` suggests a concrete next step (e.g. a
 `tool_permission` failure is *often* a fixable invocation bug — but confirm it is a real
-CLI diagnostic and not a file the seat read, since the reason is scan-derived), then
+CLI diagnostic and not a file the seat read — check `structured` in the manifest first: a
+structured reason came from the provider's own error field and needs no such confirmation), then
 give the answer as usual. If fewer than two providers are valid, say plainly that the
 council was inconclusive and offer to answer directly or retry with a longer `--timeout`.
 
@@ -224,7 +225,9 @@ council was inconclusive and offer to answer directly or retry with a longer `--
 | `ok` | valid answer | use it |
 | `not_installed` | that CLI isn't on PATH | "provider X isn't installed here"; proceed with the rest |
 | `auth_or_quota` | not logged in, a quota/usage wall, **or (codex only) a CLI too old for the model pinned in `MODES`**. **Retried** — same reason as `tool_permission`: scan-derived, and *this file itself* classifies as `auth_or_quota` because its own table names those strings. Retrying a genuine wall costs up to `retries`+1 attempts plus backoff; a phantom cost a third of the panel, silently | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest. If codex's stderr says the model needs a newer Codex, the fix is `codex update`, not re-auth — 0.143.0 rejected `gpt-5.6-sol` that way on 2026-07-25. Only codex's phrasing is recognised; the same wall on another CLI lands in `nonzero_exit` until its string joins `PERSISTENT_SENTINELS` |
-| `tool_permission` | the seat could not get its OWN tool call approved — headless mode has no one to prompt, so it soft-denied its read and answered blind. **Retried**: the reason comes from scanning a merged stderr stream, so a seat that merely READ a file containing one of these phrases lands here too (this repo's own docs do). A phantom must cost an attempt, not a seat | confirm the match is a real CLI diagnostic before acting — see `TOOL_PERMISSION_SENTINELS` below. If real, the invocation needs its auto-approve flag and the manifest `hint` says which; report it as a bug, not a flake |
+| `tool_permission` | the seat could not get its OWN tool call approved — headless mode has no one to prompt, so it soft-denied its read and answered blind. **Retried** when SCANNED — a seat that merely READ a file containing one of these phrases lands here too (this repo's own docs do), and a phantom must cost an attempt, not a seat. `tool_permission` is not in `STRUCTURED_TERMINAL_REASONS`, so it retries on either path | confirm the match is a real CLI diagnostic before acting — see `TOOL_PERMISSION_SENTINELS` below. If real, the invocation needs its auto-approve flag and the manifest `hint` says which; report it as a bug, not a flake |
+| `claude_error` / `codex_error` / `agy_error` | the provider reported a failure in its OWN structured field (claude `is_error`, codex `turn.failed`, agy `status != SUCCESS`) but the message matched no known cause. STRUCTURED, so it is trustworthy about *that a failure happened*; unrecognised, so it is **retried** | quote the provider's own wording from `result_text` — it is the CLI speaking, not a phrase scanned out of a transcript. No flag change is implied |
+| `parse_failure` | the structured stream was malformed, or (in JSON mode) never started | the seat produced no usable answer; treat as a failed attempt, not as an empty one |
 | `non_substantive` | exit 0 and non-empty, but shorter than the substantive floor — a stub answer, not an answer | drop it from synthesis; note the seat returned a non-answer |
 | `did_not_read_input` | long enough, but never quoted the run's `SENTINEL-…` token, so it cannot be shown to have read the material | drop it from synthesis; treat its content as unfounded even though it reads confidently |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
@@ -250,7 +253,9 @@ flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives i
 output-parsing quirk, the fix also lives in `scripts/fanout.py`: `TOOL_PERMISSION_SENTINELS`
 (our invocation defect — a seat denied its own tool call; carries a `REASON_HINTS` fix)
 vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded).
-**All three are retried** — only `not_installed` is terminal. Keep every phrase NARROW: a
+These lists feed the SCANNED path, which is always retried; a reason taken from a
+provider's own structured error field may be terminal when recognised
+(`STRUCTURED_TERMINAL_REASONS`). Keep every phrase NARROW: a
 seat reviewing this repo echoes these lists into its own stderr, and a match there is
 indistinguishable from the CLI actually saying it,
 `score_seat` / `MIN_SUBSTANTIVE_CHARS` (what makes a seat's answer count at all),

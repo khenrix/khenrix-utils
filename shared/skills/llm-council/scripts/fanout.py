@@ -204,6 +204,15 @@ REASON_HINTS = {
     # naming these strings lands here. Retried now, so a phantom costs an attempt.
     "auth_or_quota": ("log in or wait out the quota window — but first confirm the match "
                       "is a real CLI diagnostic, not a file the seat read"),
+    # The three structured catch-alls: the provider reported an error in its OWN field but
+    # the text matched no sentinel. Unrecognised, therefore RETRYABLE — and the hint has to
+    # say so, or an operator reads a bare token with no next step (which is what shipped).
+    "claude_error": ("claude reported an error in its own JSON (`is_error`) that matched no "
+                     "known cause — read `result_text` for the provider's wording; retried"),
+    "codex_error": ("codex reported turn.failed / an error event that matched no known "
+                    "cause — read `result_text` for the provider's wording; retried"),
+    "agy_error": ("agy returned status != SUCCESS with an error that matched no known cause "
+                  "— read `result_text` for the provider's wording; retried"),
     "did_not_read_input": ("the seat answered without opening its input — check that its "
                            "read tools are approved and the prompt fits its context"),
     "non_substantive": "the seat returned a stub answer rather than a real one",
@@ -1585,6 +1594,11 @@ def self_test() -> int:
                                                         None, None))[3] is False)
     make_readonly(_cspec)
     check("codex-json: --json survives the read-only rewrite", "--json" in _cspec.argv)
+    # Every reason the engine can EMIT must carry a hint. The three structured catch-alls
+    # shipped with hint=None, so an operator got a bare token and skill-tuneup's pointer at
+    # "llm-council has the per-reason semantics" dangled.
+    for _r in ("claude_error", "codex_error", "agy_error"):
+        check(f"hints: {_r} carries an actionable hint", bool(REASON_HINTS.get(_r)))
     # E1/E2: the unit tests above exercise the parser directly, which leaves the WIRING
     # unasserted — reverting the seat to extract_raw, or deleting evaluate's branch, both
     # passed the whole suite. Assert the seat actually uses it, and that evaluate routes a
