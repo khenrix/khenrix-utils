@@ -126,12 +126,18 @@ fan-outs in the background, or make sure any outer command cap exceeds
 (unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
 
 **The engine handles the "valid result or retry" contract for you.** Each provider
-is validated and retried with backoff on failure. Only a **missing binary** fails fast —
-it cannot appear between attempts. Every other cause, including auth/quota and
-tool-permission, is RETRIED: both are derived by scanning a merged stderr stream, so a
-seat that merely echoed a file naming those strings would otherwise lose its seat to a
-wall that does not exist. You just consume the manifest — never paper over a failure by
-re-running a provider yourself.
+is validated and retried with backoff on failure. What decides whether a failure is
+terminal is **where the reason came from**, not the phrase:
+
+- **Scan-derived** (a substring found in a merged stderr stream) — always RETRIED. A seat
+  that merely echoed a file naming those strings must not lose its seat to a wall that
+  does not exist.
+- **Structured** (the provider's OWN error field — claude's `is_error`, agy's `status`/
+  `error`, codex's `turn.failed`) — may be terminal, but only for a reason we RECOGNISE.
+  An unrecognised structured error still retries.
+- **A missing binary** is terminal either way; it cannot appear between attempts.
+
+You just consume the manifest — never paper over a failure by re-running a provider yourself.
 
 **Non-empty is not a pass.** A seat scores `valid` only if it cleared a length floor
 *and* quoted the per-run `SENTINEL-…` token the engine injected into its prompt —
@@ -149,10 +155,11 @@ for display — always read the file for synthesis). For a `failed` provider who
 useful — glance at its `raw_stdout_file` before discarding it, but treat it as
 low-confidence.
 
-`codex` and `agy` print their answer as plain text that can include CLI log chrome.
-The engine keeps their stdout verbatim rather than risk trimming real content — so
-when you read those files, extract the substantive answer yourself and ignore
-obvious log lines.
+All three seats now run in a structured output mode — claude and agy return one JSON
+object, codex an NDJSON event stream — so the engine extracts the answer field and the
+`result_file` holds the answer, not CLI chrome. The parsers fail CLOSED on a malformed
+stream (`parse_failure`) rather than silently handing you a log dump. The raw stream is
+still saved alongside if you need to audit what the seat actually printed.
 
 ## 4. Synthesize the best answer
 
@@ -247,7 +254,8 @@ vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, ove
 seat reviewing this repo echoes these lists into its own stderr, and a match there is
 indistinguishable from the CLI actually saying it,
 `score_seat` / `MIN_SUBSTANTIVE_CHARS` (what makes a seat's answer count at all),
-`extract_claude_json` / `extract_raw` (how each CLI's answer is pulled out), and the
+`extract_claude_json` / `extract_agy_json` / `extract_codex_json` / `extract_raw`
+(how each CLI's answer is pulled out, and which of them carry structured provenance), and the
 `build_real_spec` argv builders (the exact headless flags — kept in sync with
 `headless-invocation.md` at the plugin root; note agy's Go-style flag parser needs every
 flag *before* the positional prompt, and its real error lands in `--log-file`). Add a

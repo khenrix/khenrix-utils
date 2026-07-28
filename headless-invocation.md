@@ -81,9 +81,10 @@ agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag ris
   around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an
   auth/quota error (it prints nothing to stdout on a 429 and logs `RESOURCE_EXHAUSTED` /
   `Individual quota reached`), this is the likely cause; the council classifies it
-  `auth_or_quota`. It still RETRIES: the classification comes from scanning a merged
-  stderr stream, so a seat that merely echoed a file naming those strings would otherwise
-  lose its seat to a wall that does not exist. Only a missing binary fails fast.
+  `auth_or_quota`. Whether it retries depends on PROVENANCE: a reason scanned out of a
+  merged stderr stream always retries (a seat that merely echoed a file naming those
+  strings must not lose its seat), while a reason taken from the provider's own structured
+  error field may be terminal if we recognise it. A missing binary is terminal either way.
 
 ## Cross-review example
 

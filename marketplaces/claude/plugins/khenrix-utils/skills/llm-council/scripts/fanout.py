@@ -362,10 +362,17 @@ def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
     both 2026-07 phantom incidents. A structured error is authoritative, so a reason taken
     from here may be terminal where a scanned one may not.
 
-    `status` is the discriminator, NOT the exit code: agy exits **0** on a hard
-    model-resolution failure (verified 2026-07-28), so an exit-code reading would hand the
-    JSON blob to score_seat, clear the 400-char floor, miss the sentinel and report
-    `did_not_read_input` — a confidently wrong reason.
+    `status` is the discriminator rather than the exit code — as DEFENCE IN DEPTH, not
+    because the exit code lies. A previous version of this docstring claimed agy exits 0 on
+    a hard model-resolution failure "verified 2026-07-28"; that was WRONG. It came from
+    reading `$?` after a pipeline (`... | head`), which reports head's status. Measured off
+    the process, agy and codex both exit 1. Retracted 2026-07-28.
+
+    The real reason to run `--output-format json` is that it EVACUATES the session
+    transcript from stderr — measured on codex, 311 bytes of transcript to 0. That
+    transcript is the phantom generator: it echoes whatever files the seat read, including
+    this repo's own sentinel lists. Reading `status` is then simply the correct way to
+    consume the mode, and it costs nothing if the exit code agrees.
     """
     s = (stdout or "").strip()
     if not s:
@@ -385,17 +392,88 @@ def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
     if not isinstance(obj, dict):
         return "", "parse_failure"
     status = obj.get("status")
-    if status is not None and status != "SUCCESS":
-        # Fail CLOSED on anything that is not an explicit success. Testing `== "ERROR"`
-        # let CANCELLED / TIMEOUT / any future status fall through as a valid seat with an
-        # empty answer — a new status string should degrade to "something went wrong",
-        # never to "fine".
+    if status != "SUCCESS":
+        # Fail CLOSED on anything that is not an explicit SUCCESS — including a MISSING or
+        # null status. Two earlier versions leaked here: `== "ERROR"` let CANCELLED/TIMEOUT
+        # through, and `is not None and != "SUCCESS"` then let a payload with no status at
+        # all through, which is the shape a schema change would actually produce. Anything
+        # that is not positively a success must degrade to "something went wrong".
         err = obj.get("error") or f"agy status={status}"
         return (err if isinstance(err, str) else json.dumps(err)), "agy_structured_error"
     res = obj.get("response")
     if isinstance(res, str):
         return res, None
     return ("" if res is None else json.dumps(res)), None
+
+
+def extract_codex_json(stdout: str) -> tuple[str, Optional[str]]:
+    """codex exec --json -> NDJSON lifecycle events (codex-cli >= 0.145).
+
+    Deliberately a SMALL state machine over documented event kinds:
+      turn.completed              -> the turn succeeded
+      turn.failed / top-level     -> structured failure, carrying the provider's own message
+        {"type":"error"}
+      item.completed              -> IGNORED for outcomes. It also carries non-fatal
+                                     warnings (e.g. "Defaulting to fallback metadata"), and
+                                     enumerating which item errors are fatal is the
+                                     fail-open shape this engine has already been bitten by.
+                                     Only its agent_message text is collected.
+
+    Unknown well-formed events are ignored, so a schema ADDITION is harmless. Failing
+    closed is scoped narrowly on purpose: only when there is neither answer text NOR a
+    terminal event. If text was extracted and nothing declared failure, the answer goes to
+    score_seat exactly as before — so a RENAMED terminal event degrades to today's
+    behaviour rather than killing every seat.
+
+    Why bother at all: `--json` evacuates codex's session transcript from stderr (measured
+    2026-07-28: 311 bytes to 0). That transcript is what echoes back the files a seat read —
+    including this repo's own sentinel lists — and is the phantom generator. NOT because
+    the exit code lies; it does not (both CLIs exit 1 on a hard error).
+    """
+    text_parts: list = []
+    err_msg = None
+    saw_terminal = False
+    saw_any_json = False
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue          # stdin/banner chrome is on stderr, but never trust that
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            return "", "parse_failure"
+        if not isinstance(ev, dict):
+            return "", "parse_failure"
+        saw_any_json = True
+        kind = ev.get("type")
+        if kind == "item.completed":
+            item = ev.get("item") or {}
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    text_parts.append(txt)
+        elif kind == "turn.completed":
+            saw_terminal = True
+        elif kind in ("turn.failed", "error"):
+            saw_terminal = True
+            raw = ev.get("error") if kind == "turn.failed" else ev
+            if isinstance(raw, dict):
+                msg = raw.get("message")
+            else:
+                msg = raw
+            err_msg = msg if isinstance(msg, str) else json.dumps(raw)
+    if err_msg is not None:
+        return err_msg, "codex_structured_error"
+    joined = "\n".join(text_parts)
+    if not saw_any_json:
+        # We asked for --json. Non-empty output that contains no events means the stream
+        # never started (a crash, a usage error), so accepting it as an ANSWER would let
+        # arbitrary text clear score_seat and bypass every error signal. Empty output falls
+        # through to the normal `empty` path instead.
+        return ("", "parse_failure") if (stdout or "").strip() else ("", None)
+    if not joined and not saw_terminal:
+        return "", "parse_failure"         # no text AND no outcome: fail closed
+    return joined, None
 
 
 def extract_raw(stdout: str) -> tuple[str, Optional[str]]:
@@ -458,13 +536,14 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         return ProviderSpec("claude", argv, None, extract_claude_json, model, thinking)
     if name == "codex":
         # prompt via stdin (codex exec -) so it never enters a shell-escaped argv.
-        argv = ["codex", "exec", "-", "--dangerously-bypass-approvals-and-sandbox"]
+        argv = ["codex", "exec", "-", "--json",
+                "--dangerously-bypass-approvals-and-sandbox"]
         if model:
             argv += ["-m", model]
         if thinking:
             # codex -c parses the value as TOML, so quote the string explicitly.
             argv += ["-c", f'model_reasoning_effort="{CODEX_EFFORT.get(thinking, thinking)}"']
-        return ProviderSpec("codex", argv, prompt, extract_raw, model, thinking)
+        return ProviderSpec("codex", argv, prompt, extract_codex_json, model, thinking)
     if name == "agy":
         # agy uses Go-style flag parsing: -p/--print is a boolean and the prompt is a
         # positional arg. Go's flag package STOPS at the first positional, so every flag
@@ -820,8 +899,14 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
     if extract_err == "parse_failure":
         return False, "parse_failure", result_text, False
     if extract_err == "claude_error":
-        blob = f"{result_text}\n{stderr or ''}"
-        return False, classify_sentinel(blob) or "error_sentinel", result_text, False
+        # STRUCTURED: this text is claude's own `is_error`/`result` field. Merging stderr in
+        # used to hand it the same phantom surface the structured path exists to remove —
+        # a phrase in the transcript could decide the reason. Scan only the provider's field.
+        return False, classify_sentinel(result_text) or "claude_error", result_text, True
+    if extract_err == "codex_structured_error":
+        # Scan ONLY the provider's own error message, never the NDJSON stream — that
+        # stream carries every file the seat read.
+        return False, classify_sentinel(result_text) or "codex_error", result_text, True
     if extract_err == "agy_structured_error":
         # AUTHORITATIVE: this text came out of agy's own `error` field, so it is the CLI
         # speaking about itself — not a file it happened to read. Scan ONLY that field,
@@ -893,7 +978,12 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
             # A provider with a log file may hide its real failure there: agy prints
             # nothing on a 429 but logs the quota error. Promote an opaque `empty`/
             # `timeout` to a precise `auth_or_quota`/`error_sentinel` from the log.
-            if not valid and spec.log_file:
+            # SKIPPED when we already have a STRUCTURED reason: the provider's own error
+            # field outranks a scan of its log. Promoting over it would replace an
+            # authoritative reason with a scanned one and clear `structured`, so the
+            # structured path would stop being authoritative the moment agy also logged a
+            # matching phrase — which is exactly when it matters most.
+            if not valid and spec.log_file and not structured:
                 try:
                     logtail = Path(spec.log_file).read_text()[-8000:]
                 except OSError:
@@ -1437,6 +1527,82 @@ def self_test() -> int:
           isolate_agy_worktree(ag16b, wd("wt_wd2"), repo_dir=str(wd("wt_norepo"))) is None
           and ag16b.cwd is None)
 
+    # D7 — codex NDJSON. The design's whole claim is graceful degradation, so test the
+    # DRIFT shapes, not just the happy path.
+    _ok = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "t"}),
+        json.dumps({"type": "turn.started"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"id": "i0", "type": "agent_message", "text": "pong"}}),
+        json.dumps({"type": "turn.completed", "usage": {"output_tokens": 5}})])
+    check("codex-json: agent_message text is extracted", extract_codex_json(_ok) == ("pong", None))
+    _failed = _ok.replace(json.dumps({"type": "turn.completed", "usage": {"output_tokens": 5}}),
+                          json.dumps({"type": "turn.failed",
+                                      "error": {"message": "quota reached"}}))
+    check("codex-json: turn.failed is a structured error",
+          extract_codex_json(_failed)[1] == "codex_structured_error"
+          and "quota" in extract_codex_json(_failed)[0])
+    check("codex-json: a top-level error event is structured too",
+          extract_codex_json(json.dumps({"type": "error", "message": "boom"}))[1]
+          == "codex_structured_error")
+    # item-level errors are NOT outcomes: this warning appeared in a run that then completed
+    _warn = "\n".join([
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "error", "message": "Defaulting to fallback metadata"}}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "pong"}}),
+        json.dumps({"type": "turn.completed"})])
+    check("codex-json: an item-level error is not a turn outcome",
+          extract_codex_json(_warn) == ("pong", None))
+    check("codex-json: a malformed event line is a parse_failure",
+          extract_codex_json('{"type":"turn.started"}\n{not json}')[1] == "parse_failure")
+    check("codex-json: no text AND no outcome fails closed",
+          extract_codex_json(json.dumps({"type": "turn.started"}))[1] == "parse_failure")
+    # ...but a completed turn with an EMPTY answer is not a parse failure — it is an empty
+    # answer, and score_seat owns that judgement. Widening the guard to "no text" would
+    # relabel every terse-but-real seat.
+    check("codex-json: a completed turn with empty text is NOT a parse_failure",
+          extract_codex_json(json.dumps({"type": "turn.completed"})) == ("", None))
+    # DRIFT: a renamed terminal event must degrade to today's behaviour, never kill the seat
+    _renamed = "\n".join([
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "a real answer"}}),
+        json.dumps({"type": "turn.finished_v2"})])
+    check("codex-json: a RENAMED terminal event degrades to score_seat, not a dead seat",
+          extract_codex_json(_renamed) == ("a real answer", None))
+    check("codex-json: codex_error is NOT terminal (unrecognised => retry)",
+          "codex_error" not in STRUCTURED_TERMINAL_REASONS)
+    _cspec = build_real_spec("codex", "hi", 60, {"model": None, "thinking": "high"}, Path("/tmp"))
+    check("codex-json: --json is on the argv", "--json" in _cspec.argv)
+    # claude's is_error field is the provider speaking, so it must carry provenance too —
+    # it was being merged with stderr and flattened to structured=False.
+    _clspec = ProviderSpec("claude", ["x"], None, extract_claude_json, None, None)
+    _cl = evaluate(0, json.dumps({"is_error": True, "result": "quota reached"}), "", _clspec)
+    check("claude-json: an is_error result carries STRUCTURED provenance",
+          _cl[1] == "auth_or_quota" and _cl[3] is True)
+    check("claude-json: stderr cannot confer structured terminality",
+          evaluate(1, "", "quota reached", ProviderSpec("codex", ["x"], None, extract_raw,
+                                                        None, None))[3] is False)
+    make_readonly(_cspec)
+    check("codex-json: --json survives the read-only rewrite", "--json" in _cspec.argv)
+    # E1/E2: the unit tests above exercise the parser directly, which leaves the WIRING
+    # unasserted — reverting the seat to extract_raw, or deleting evaluate's branch, both
+    # passed the whole suite. Assert the seat actually uses it, and that evaluate routes a
+    # codex structured error WITH provenance, end to end.
+    check("codex-json: the codex seat is wired to extract_codex_json",
+          _cspec.extract is extract_codex_json)
+    _cx_fail = json.dumps({"type": "turn.failed",
+                           "error": {"message": "RESOURCE_EXHAUSTED: quota reached"}})
+    _cv, _cr, _ct, _cs = evaluate(1, _cx_fail, "", _cspec)
+    check("codex-json: evaluate routes a structured codex error with provenance",
+          _cv is False and _cr == "auth_or_quota" and _cs is True)
+    _cx_unknown = json.dumps({"type": "turn.failed", "error": {"message": "something odd"}})
+    check("codex-json: an unrecognised codex error is structured but NOT terminal",
+          evaluate(1, _cx_unknown, "", _cspec)[1] == "codex_error"
+          and "codex_error" not in STRUCTURED_TERMINAL_REASONS)
+    check("codex-json: non-JSON stdout in --json mode is a parse_failure, not an answer",
+          extract_codex_json("plain crash text")[1] == "parse_failure")
+
     # D6 — agy structured errors (1.1.8). Provenance, not the phrase, decides terminality.
     _ok_json = json.dumps({"conversation_id": "x", "status": "SUCCESS",
                            "response": "pong\n", "usage": {"total_tokens": 5}})
@@ -1450,10 +1616,11 @@ def self_test() -> int:
     check("agy-json: malformed output is a parse_failure, not a silent empty answer",
           extract_agy_json("not json at all")[1] == "parse_failure")
     _agy_spec = ProviderSpec("agy", ["x"], None, extract_agy_json, None, None)
-    # THE TRAP: agy exits 0 on a hard error, so an exit-code reading would call this a
-    # success, hand the blob to score_seat and report did_not_read_input.
+    # `status` decides independently of the exit code. (An earlier comment here claimed agy
+    # exits 0 on a hard error "verified"; that was measured off a PIPELINE and is retracted
+    # — both CLIs exit 1. Reading status is defence in depth, not a fix for a lying rc.)
     _v, _r, _txt, _structured = evaluate(0, _err_json, "", _agy_spec)
-    check("agy-json: status=ERROR beats exit 0 (the rc=0 trap)",
+    check("agy-json: status is the discriminator, independent of exit code",
           _v is False and _r == "auth_or_quota" and _structured is True)
     check("agy-json: a structured reason is eligible to be terminal",
           _r in STRUCTURED_TERMINAL_REASONS)
@@ -1468,6 +1635,12 @@ def self_test() -> int:
     check("agy-json: a non-SUCCESS status fails CLOSED, not through as a valid seat",
           all(extract_agy_json(json.dumps({"status": s, "response": "ok"}))[1]
               == "agy_structured_error" for s in ("CANCELLED", "TIMEOUT", "WEIRD")))
+    # The shape a schema change actually produces: no status at all, plus a long answer
+    # that would sail through score_seat. `is not None and != SUCCESS` let this through.
+    check("agy-json: a MISSING or null status fails closed too",
+          extract_agy_json(json.dumps({"response": "x" * 500}))[1] == "agy_structured_error"
+          and extract_agy_json(json.dumps({"status": None, "response": "x" * 500}))[1]
+              == "agy_structured_error")
     check("agy-json: the catch-all agy_error is NOT terminal (unrecognised => retry)",
           "agy_error" not in STRUCTURED_TERMINAL_REASONS)
     # A log-tail reason is SCANNED. If it inherited structured=True it could go terminal —
@@ -1484,8 +1657,14 @@ def self_test() -> int:
         _m = run_council([_qs], retries=1, timeout=10, backoff=0.05,
                          workdir=Path(_td) / "wd", prompt="hi")
         _p0 = _m["providers"][0]
-        check("agy-json: a LOG-TAIL reason never inherits structured terminality",
-              _p0["reason"] == "auth_or_quota" and _p0["attempts"] > 1)
+        # The provider's OWN error field outranks a scan of its log. The structured
+        # catch-all survives (it is not replaced by the scanned auth_or_quota) and, being
+        # unrecognised, still retries. Previously the log tail overwrote it, which made the
+        # structured path stop being authoritative exactly when agy also logged a match.
+        check("agy-json: a log tail does not override a STRUCTURED reason",
+              _p0["reason"] == "agy_error")
+        check("agy-json: an unrecognised structured reason still retries",
+              _p0["attempts"] > 1)
 
     # D5 — process groups: subprocess.run's timeout reaps only the direct child, so an
     # agent CLI's helpers outlived the council. Prove the GRANDCHILD dies, not just the
