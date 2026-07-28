@@ -955,7 +955,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
     """Run one provider through its bounded attempt loop and return its record."""
     attempt_log: list = []
     final = {"stdout": "", "stderr": "", "exit_code": None,
-             "reason": "unknown", "result_text": "", "valid": False,
+             "reason": "unknown", "result_text": "", "valid": False, "structured": False,
              "duration_sec": 0.0, "status": "failed"}
 
     for attempt in range(retries + 1):
@@ -1010,6 +1010,13 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                                 "exit_code": exit_code, "duration_sec": dur})
             final.update(stdout=stdout, stderr=stderr, exit_code=exit_code,
                          reason=reason, result_text=result_text, valid=valid,
+                         # SERIALIZED: a consumer cannot otherwise tell a reason that came
+                         # from the provider's own error field from one scanned out of a
+                         # merged stream — and that distinction is the whole basis for
+                         # trusting it. It drove the retry decision internally while being
+                         # invisible in the manifest, so every doc telling an operator to
+                         # "check structured" was describing a field that did not exist.
+                         structured=structured,
                          duration_sec=dur, status="ok" if valid else "failed")
             if valid:
                 break
@@ -1042,6 +1049,10 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "duration_sec": final["duration_sec"],
         "valid": final["valid"],
         "reason": final["reason"],
+        # PROVENANCE. Without this a consumer cannot tell a reason taken from the
+        # provider's own error field from one scanned out of a merged stream — which is
+        # the entire basis for trusting it, and what decides whether it may be terminal.
+        "structured": final["structured"],
         "hint": REASON_HINTS.get(final["reason"]),
         "result_text": _truncate(final["result_text"]),
         "result_file": str(result_file),
@@ -1599,6 +1610,15 @@ def self_test() -> int:
     # "llm-council has the per-reason semantics" dangled.
     for _r in ("claude_error", "codex_error", "agy_error"):
         check(f"hints: {_r} carries an actionable hint", bool(REASON_HINTS.get(_r)))
+    # The provenance flag must reach the MANIFEST, not just the retry decision — consumers
+    # are told to read it, and it was internal-only.
+    with tempfile.TemporaryDirectory() as _td:
+        _ms = run_council([_stub_spec("claude", "ok", as_="claude")], retries=0, timeout=10,
+                          backoff=0.05, workdir=Path(_td) / "m", prompt="hi")
+        check("manifest: every provider record carries `structured`",
+              all("structured" in p for p in _ms["providers"]))
+        check("manifest: a scanned/ok reason reports structured=False",
+              _ms["providers"][0]["structured"] is False)
     # E1/E2: the unit tests above exercise the parser directly, which leaves the WIRING
     # unasserted — reverting the seat to extract_raw, or deleting evaluate's branch, both
     # passed the whole suite. Assert the seat actually uses it, and that evaluate routes a
