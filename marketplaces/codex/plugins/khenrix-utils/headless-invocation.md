@@ -57,7 +57,8 @@ agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag ris
   (agy 1.1.1 fixed `-p` hanging when run from scripts/subprocesses — substantive
   prompts complete headless now; earlier versions reliably rode the timeout.)
 - `--print-timeout <dur>` bounds the wait (default `5m`).
-- `--model "<name>"` pins the model per-run (since 1.1.1; `agy models` lists values —
+- `--model "<name>"` pins the model per-run (since 1.1.1; `agy models` prints slugs like
+  `gemini-3.6-flash-high`, and the display label `"Gemini 3.6 Flash (High)"` resolves too —
   the thinking tier is encoded in the name, e.g. "Gemini 3.6 Flash (High)"). Since 1.1.2
   an unresolvable name hard-fails non-zero and lists the valid ones, rather than silently
   falling back to the default model.

@@ -56,7 +56,9 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
-# applied at run time — `agy models` lists the valid strings. agy 1.1.5 also added a
+# applied at run time. `agy models` prints SLUGS (gemini-3.6-flash-high) since 1.1.5;
+# the display label we pin is equally valid — agy's own model-resolution error lists
+# the labels, and both forms were verified live on 1.1.8. agy 1.1.5 also added a
 # separate `--effort` flag; the engine deliberately does NOT pass it, because
 # build_real_spec derives the recorded tier by regexing the label — a second knob
 # could disagree with the provenance it reports.
@@ -70,7 +72,8 @@ MODES = {
     "deep": {
         "claude": {"model": "claude-opus-5",           "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
-        # Flash tops out at "(High)": no Max tier exists per `agy models`, and 1.1.5's
+        # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug,
+        # and `--effort` caps at high — re-probed on 1.1.8), and 1.1.5's
         # `--effort` caps at high too (both re-probed 2026-07-25 on agy 1.1.7) — two
         # independent confirmations. agy's deep seat therefore runs identically to
         # normal; "high" keeps provenance truthful.
@@ -175,6 +178,16 @@ TOOL_PERMISSION_SENTINELS = [
 # to a phantom costs a third of the panel, silently. The trade still favours the retry. Only `not_installed` is terminal — a binary absent from PATH cannot appear
 # between attempts.
 NONRETRYABLE_REASONS = {"not_installed"}
+
+# Reasons that ARE terminal when they came from a provider's own structured error field
+# rather than a stderr scan. `run_provider` consults this only on the structured path, so
+# the same string arriving via classify_sentinel(stderr) stays retryable — the whole point
+# is that provenance, not the phrase, decides.
+# `agy_error` is deliberately ABSENT: it is the catch-all for a structured error whose
+# text matched no sentinel, and an UNRECOGNISED failure is precisely the one worth
+# retrying. Only reasons we actually recognise — and therefore know will not clear —
+# belong here.
+STRUCTURED_TERMINAL_REASONS = {"auth_or_quota"}
 
 # Actionable next step per failure cause, carried into the manifest so the
 # synthesizer can tell the user something better than "the seat failed".
@@ -340,13 +353,60 @@ def extract_claude_json(stdout: str) -> tuple[str, Optional[str]]:
     return json.dumps(res), None
 
 
-def extract_raw(stdout: str) -> tuple[str, Optional[str]]:
-    """Keep stdout verbatim: no structured extractor is wired for these seats.
+def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
+    """agy -p --output-format json -> {status, response, error, usage} (agy >= 1.1.8).
 
-    NOT "no such mode exists" — probed 2026-07-28 on codex-cli 0.145.0, `codex exec`
-    offers `--json`, `-o/--output-last-message` and `--ephemeral`. Wiring one is a real
-    change (a new event schema to parse, and a failure mode when it drifts), so it is
-    deferred rather than assumed impossible. The synthesizer receives the raw file as
+    Why this matters beyond parsing: `status`/`error` are **the CLI speaking**, not the CLI
+    quoting a file it read. Every other reason this engine derives comes from
+    substring-scanning a MERGED stderr stream, which cannot tell those apart — the root of
+    both 2026-07 phantom incidents. A structured error is authoritative, so a reason taken
+    from here may be terminal where a scanned one may not.
+
+    `status` is the discriminator, NOT the exit code: agy exits **0** on a hard
+    model-resolution failure (verified 2026-07-28), so an exit-code reading would hand the
+    JSON blob to score_seat, clear the 400-char floor, miss the sentinel and report
+    `did_not_read_input` — a confidently wrong reason.
+    """
+    s = (stdout or "").strip()
+    if not s:
+        return "", None
+    obj = None
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        lo, hi = s.find("{"), s.rfind("}")   # tolerate a stray log line either side
+        if lo != -1 and hi > lo:
+            try:
+                obj = json.loads(s[lo:hi + 1])
+            except json.JSONDecodeError:
+                return "", "parse_failure"
+        else:
+            return "", "parse_failure"
+    if not isinstance(obj, dict):
+        return "", "parse_failure"
+    status = obj.get("status")
+    if status is not None and status != "SUCCESS":
+        # Fail CLOSED on anything that is not an explicit success. Testing `== "ERROR"`
+        # let CANCELLED / TIMEOUT / any future status fall through as a valid seat with an
+        # empty answer — a new status string should degrade to "something went wrong",
+        # never to "fine".
+        err = obj.get("error") or f"agy status={status}"
+        return (err if isinstance(err, str) else json.dumps(err)), "agy_structured_error"
+    res = obj.get("response")
+    if isinstance(res, str):
+        return res, None
+    return ("" if res is None else json.dumps(res)), None
+
+
+def extract_raw(stdout: str) -> tuple[str, Optional[str]]:
+    """Keep stdout verbatim: the codex seat has no structured extractor wired.
+
+    NOT "no such mode exists" — probed 2026-07-28: `codex exec` offers `--json`,
+    `-o/--output-last-message` and `--ephemeral`. agy's equivalent (1.1.8
+    `--output-format json`) IS now wired, in `extract_agy_json`, because its `status`/
+    `error` fields give error PROVENANCE the stderr scan cannot. codex's `--json` earns
+    its wiring only if it offers the same; parsing it purely for extraction would add an
+    event schema to track for no classification gain. The synthesizer receives the raw file as
     ground truth and strips any CLI log chrome itself, so a weak extractor degrades
     synthesis but never loses data."""
     return stdout.strip(), None
@@ -411,7 +471,8 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
         # Since agy 1.1.1, `--model` pins the model per-run (thinking tier is encoded in
-        # the model string, e.g. "Gemini 3.6 Flash (High)"; `agy models` lists them) —
+        # the model string, e.g. "Gemini 3.6 Flash (High)"; `agy models` prints the slug
+        # form of the same set, and both resolve) —
         # the settings.json read remains only as manifest-provenance fallback. Since 1.1.2
         # an unresolvable --model hard-fails non-zero instead of silently downgrading to
         # the default, so a stale label here surfaces as a dead seat, never as a wrong
@@ -433,7 +494,7 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         pt = max(5, min(int(timeout) - 5, 120))
         logf = str(Path(workdir) / "agy.cli.log")
         argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", f"{pt}s",
-                "--log-file", logf]
+                "--output-format", "json", "--log-file", logf]
         if model:
             argv += ["--model", model]
         argv += ["-p", prompt]
@@ -441,7 +502,7 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # FINAL string so a cross-tier --model-agy override can't leave stale provenance.
         final_model = model or agy_configured_model()
         m = re.search(r"\((Low|Medium|High)\)", final_model or "")
-        return ProviderSpec("agy", argv, None, extract_raw,
+        return ProviderSpec("agy", argv, None, extract_agy_json,
                             final_model, m.group(1).lower() if m else None, log_file=logf)
     raise ValueError(f"unknown provider: {name}")
 
@@ -585,6 +646,25 @@ def run_member(argv, *, stdin, timeout, env, cwd):
             # "" — a timed-out seat's partial answer is the only evidence of what it was
             # doing, and the log-tail promotion downstream reads it.
             out, err = _coerce_text(first.output), _coerce_text(first.stderr)
+            # DOUBLE TIMEOUT: a pipe holder escaped the group (e.g. it called setsid), so
+            # the drain gave up with the fds still open and the child unreaped. Close our
+            # ends and reap what we can.
+            # DELIBERATELY UNTESTED: an fd-count assertion was written and then REMOVED
+            # after in-place mutation testing showed it passes with this loop disabled —
+            # CPython's GC closes the handles once `proc` falls out of scope, so the count
+            # recovers either way and the check would have claimed coverage it lacks. This
+            # is deterministic hygiene (release at a known point, not at GC's convenience),
+            # not a defect fix, and it is recorded as such rather than dressed in a test.
+            for _p in (proc.stdout, proc.stderr, proc.stdin):
+                try:
+                    if _p is not None:
+                        _p.close()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass          # truly wedged; the group already got SIGKILL
         raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
     except BaseException:
         # KeyboardInterrupt/SystemExit land here. Without this the `finally` would
@@ -717,8 +797,12 @@ def remove_agy_worktree(handle: Optional[tuple]) -> None:
 # Validation.
 # --------------------------------------------------------------------------- #
 def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
-             spec: ProviderSpec) -> tuple[bool, str, str]:
-    """Return (valid, reason, result_text).
+             spec: ProviderSpec) -> tuple[bool, str, str, bool]:
+    """Return (valid, reason, result_text, structured).
+
+    `structured` is True only when the reason came from a provider's OWN error field
+    rather than a stderr scan. Provenance — not the phrase — is what decides whether a
+    reason may be terminal, because a scanned phrase can be a file the seat merely read.
 
     A clean exit is necessary but NOT sufficient: the answer must also clear
     score_seat (substantive length + the per-run sentinel proving the seat read its
@@ -734,17 +818,23 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
     via the exit code, so that path is checked explicitly."""
     result_text, extract_err = spec.extract(stdout)
     if extract_err == "parse_failure":
-        return False, "parse_failure", result_text
+        return False, "parse_failure", result_text, False
     if extract_err == "claude_error":
         blob = f"{result_text}\n{stderr or ''}"
-        return False, classify_sentinel(blob) or "error_sentinel", result_text
+        return False, classify_sentinel(blob) or "error_sentinel", result_text, False
+    if extract_err == "agy_structured_error":
+        # AUTHORITATIVE: this text came out of agy's own `error` field, so it is the CLI
+        # speaking about itself — not a file it happened to read. Scan ONLY that field,
+        # never the merged stderr, or the provenance advantage is thrown away and the
+        # phantom is back. A reason derived here is eligible to be terminal.
+        return False, classify_sentinel(result_text) or "agy_error", result_text, True
     if exit_code == 0:
         seat = score_seat(result_text, spec.sentinel, spec.min_chars)
         if seat["status"] == "ok":
-            return True, "ok", result_text
+            return True, "ok", result_text, False
         # `empty` keeps its historical name; the richer causes are new.
-        return False, seat["cause"], result_text
-    return False, classify_sentinel(stderr) or "nonzero_exit", result_text
+        return False, seat["cause"], result_text, False
+    return False, classify_sentinel(stderr) or "nonzero_exit", result_text, False
 
 
 # --------------------------------------------------------------------------- #
@@ -792,12 +882,12 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         except subprocess.TimeoutExpired as e:
             dur = round(time.monotonic() - t0, 2)
             stdout, stderr = _coerce_text(e.stdout), _coerce_text(e.stderr)
-            valid, reason, result_text = False, "timeout", stdout.strip()
+            valid, reason, result_text, structured = False, "timeout", stdout.strip(), False
             exit_code = None
         else:
             dur = round(time.monotonic() - t0, 2)
             stdout, stderr, exit_code = cp.stdout or "", cp.stderr or "", cp.returncode
-            valid, reason, result_text = evaluate(exit_code, stdout, stderr, spec)
+            valid, reason, result_text, structured = evaluate(exit_code, stdout, stderr, spec)
 
         if final["status"] != "not_installed":
             # A provider with a log file may hide its real failure there: agy prints
@@ -811,6 +901,11 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                 sent_log = classify_sentinel(logtail)
                 if sent_log:
                     reason = sent_log
+                    # The log tail is SCANNED text, so this reason has no structured
+                    # provenance no matter what evaluate() concluded. Leaving `structured`
+                    # True here would let a phrase the seat merely logged become terminal —
+                    # exactly the phantom class the structured path exists to escape.
+                    structured = False
             _write_attempt(workdir, spec.name, n, stdout, stderr)
             attempt_log.append({"attempt": n, "reason": reason,
                                 "exit_code": exit_code, "duration_sec": dur})
@@ -818,6 +913,10 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                          reason=reason, result_text=result_text, valid=valid,
                          duration_sec=dur, status="ok" if valid else "failed")
             if valid:
+                break
+            if structured and reason in STRUCTURED_TERMINAL_REASONS:
+                # The provider said so itself, in its own error field — retrying cannot
+                # change it, and unlike a scanned phrase this cannot be a file it read.
                 break
             if reason in NONRETRYABLE_REASONS:
                 # Currently unreachable: the sole member, `not_installed`, short-circuits
@@ -1337,6 +1436,56 @@ def self_test() -> int:
     check("worktree: no-op outside a git repo",
           isolate_agy_worktree(ag16b, wd("wt_wd2"), repo_dir=str(wd("wt_norepo"))) is None
           and ag16b.cwd is None)
+
+    # D6 — agy structured errors (1.1.8). Provenance, not the phrase, decides terminality.
+    _ok_json = json.dumps({"conversation_id": "x", "status": "SUCCESS",
+                           "response": "pong\n", "usage": {"total_tokens": 5}})
+    _err_json = json.dumps({"conversation_id": "", "status": "ERROR", "response": "",
+                            "error": "RESOURCE_EXHAUSTED: Individual quota reached"})
+    check("agy-json: SUCCESS yields the response text",
+          extract_agy_json(_ok_json) == ("pong\n", None))
+    check("agy-json: ERROR is flagged structured, carrying the error field",
+          extract_agy_json(_err_json)[1] == "agy_structured_error"
+          and "quota reached" in extract_agy_json(_err_json)[0].lower())
+    check("agy-json: malformed output is a parse_failure, not a silent empty answer",
+          extract_agy_json("not json at all")[1] == "parse_failure")
+    _agy_spec = ProviderSpec("agy", ["x"], None, extract_agy_json, None, None)
+    # THE TRAP: agy exits 0 on a hard error, so an exit-code reading would call this a
+    # success, hand the blob to score_seat and report did_not_read_input.
+    _v, _r, _txt, _structured = evaluate(0, _err_json, "", _agy_spec)
+    check("agy-json: status=ERROR beats exit 0 (the rc=0 trap)",
+          _v is False and _r == "auth_or_quota" and _structured is True)
+    check("agy-json: a structured reason is eligible to be terminal",
+          _r in STRUCTURED_TERMINAL_REASONS)
+    # ...and the SAME phrase arriving by stderr scan must stay RETRYABLE. This is the
+    # whole design: a seat that merely READ a file naming the phrase must not lose its seat.
+    _raw_spec = ProviderSpec("codex", ["x"], None, extract_raw, None, None)
+    _v2, _r2, _t2, _structured2 = evaluate(1, "", "RESOURCE_EXHAUSTED: Individual quota reached", _raw_spec)
+    check("agy-json: the same phrase via STDERR SCAN is not structured",
+          _r2 == "auth_or_quota" and _structured2 is False)
+    check("agy-json: provenance decides — scanned auth stays retryable",
+          "auth_or_quota" not in NONRETRYABLE_REASONS)
+    check("agy-json: a non-SUCCESS status fails CLOSED, not through as a valid seat",
+          all(extract_agy_json(json.dumps({"status": s, "response": "ok"}))[1]
+              == "agy_structured_error" for s in ("CANCELLED", "TIMEOUT", "WEIRD")))
+    check("agy-json: the catch-all agy_error is NOT terminal (unrecognised => retry)",
+          "agy_error" not in STRUCTURED_TERMINAL_REASONS)
+    # A log-tail reason is SCANNED. If it inherited structured=True it could go terminal —
+    # the phantom class, reintroduced. Assert the seat still retries in that shape.
+    with tempfile.TemporaryDirectory() as _td:
+        # stdout = a STRUCTURED agy error matching no sentinel (agy_error, structured,
+        # non-terminal); log tail = a sentinel match. If the overwrite kept structured
+        # True, auth_or_quota would go terminal and attempts would stay 1.
+        _qlog = Path(_td) / "agy.cli.log"
+        _qs = _stub_spec("agy", "agy-structured-plus-log", as_="raw",
+                         extract=extract_agy_json)
+        _qs.argv = _qs.argv + ["--log-file", str(_qlog)]
+        _qs.log_file = str(_qlog)
+        _m = run_council([_qs], retries=1, timeout=10, backoff=0.05,
+                         workdir=Path(_td) / "wd", prompt="hi")
+        _p0 = _m["providers"][0]
+        check("agy-json: a LOG-TAIL reason never inherits structured terminality",
+              _p0["reason"] == "auth_or_quota" and _p0["attempts"] > 1)
 
     # D5 — process groups: subprocess.run's timeout reaps only the direct child, so an
     # agent CLI's helpers outlived the council. Prove the GRANDCHILD dies, not just the

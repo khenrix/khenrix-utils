@@ -121,6 +121,20 @@ def main(argv=None) -> int:
                         "Individual quota reached. Resets in 160h.\n")
         return 0
 
+    if mode == "agy-structured-plus-log":
+        # The discriminating shape for the log-tail provenance leak: stdout is a STRUCTURED
+        # agy error whose text matches NO sentinel (so it classifies agy_error, structured
+        # and non-terminal), while the log tail DOES match. If the log-tail overwrite kept
+        # `structured` True, the scanned reason would go terminal and the seat would not
+        # be retried — the phantom class, reintroduced.
+        if args.log_file:
+            with open(args.log_file, "w") as f:
+                f.write("E agent executor error: RESOURCE_EXHAUSTED (code 429): "
+                        "Individual quota reached.\n")
+        print(json.dumps({"conversation_id": "", "status": "ERROR", "response": "",
+                          "error": "some unrecognised internal failure"}))
+        return 0
+
     sys.stderr.write(f"unknown stub mode: {mode}\n")
     return 2
 
