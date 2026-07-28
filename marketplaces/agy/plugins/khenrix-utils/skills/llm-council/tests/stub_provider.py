@@ -114,7 +114,7 @@ def main(argv=None) -> int:
         return 0
     if mode == "quota-log":
         # Mimic agy's silent 429: nothing on stdout/stderr, exit 0, but the real
-        # reason is only in the log file. Exercises the log-scan + non-retry path.
+        # reason is only in the log file. Exercises the log-scan path (retried since 2026-07-28).
         if args.log_file:
             with open(args.log_file, "w") as f:
                 f.write("E agent executor error: RESOURCE_EXHAUSTED (code 429): "

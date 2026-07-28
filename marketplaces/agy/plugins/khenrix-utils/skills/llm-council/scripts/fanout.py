@@ -98,7 +98,9 @@ CODEX_EFFORT = {"high": "high", "max": "max"}
 # when the exit code is nonzero (so an exit-0 answer that legitimately discusses
 # "rate limits" isn't rejected). Split by whether a retry could plausibly help:
 #   PERSISTENT — auth missing or a quota wall; retrying only burns the budget, so
-#                these fast-fail. (e.g. agy emits nothing to stdout on a 429 and logs
+#                these are CLASSIFICATION, not retry policy — they still consume retries,
+#                because the classification is scan-derived and can be a phantom.
+#                (e.g. agy emits nothing to stdout on a 429 and logs
 #                "RESOURCE_EXHAUSTED ... Individual quota reached" to its --log-file.)
 #   TRANSIENT  — momentary; worth a bounded retry.
 PERSISTENT_SENTINELS = [
@@ -162,7 +164,17 @@ TOOL_PERMISSION_SENTINELS = [
 # speaking or the CLI quoting is not recoverable from a merged stream.
 # What IS reliable is reproduction: a genuine denial recurs on retry, a phantom does not.
 # So keep the actionable reason, but let the seat have its attempt.
-NONRETRYABLE_REASONS = {"not_installed", "auth_or_quota"}
+#
+# `auth_or_quota` is out for the SAME reason, verified 2026-07-28: this skill's own
+# SKILL.md documents the strings `not logged in`, `resource_exhausted`, `individual quota`
+# and `quota reached` in its failure table, so `classify_sentinel(<that file>)` returns
+# `auth_or_quota` — and it carries NO tool-permission phrase, so nothing rescues it onto
+# the retryable branch. A seat that echoed the doc it was reviewing then lost its seat to
+# a wall that did not exist. Retrying a genuine quota wall costs up to `retries` extra
+# attempts (3 total at the default) plus backoff — bounded, but not "one"; losing a seat
+# to a phantom costs a third of the panel, silently. The trade still favours the retry. Only `not_installed` is terminal — a binary absent from PATH cannot appear
+# between attempts.
+NONRETRYABLE_REASONS = {"not_installed"}
 
 # Actionable next step per failure cause, carried into the manifest so the
 # synthesizer can tell the user something better than "the seat failed".
@@ -175,7 +187,10 @@ REASON_HINTS = {
                         "denial, pass the seat's auto-approve flag (agy: "
                         "--dangerously-skip-permissions, kept alongside --mode plan). First "
                         "confirm: a match that is just source the seat READ is a false hit"),
-    "auth_or_quota": "log in or wait out the quota window; this seat is not retried",
+    # Same caveat as tool_permission: scan-derived, so a seat that merely READ a file
+    # naming these strings lands here. Retried now, so a phantom costs an attempt.
+    "auth_or_quota": ("log in or wait out the quota window — but first confirm the match "
+                      "is a real CLI diagnostic, not a file the seat read"),
     "did_not_read_input": ("the seat answered without opening its input — check that its "
                            "read tools are approved and the prompt fits its context"),
     "non_substantive": "the seat returned a stub answer rather than a real one",
@@ -326,10 +341,14 @@ def extract_claude_json(stdout: str) -> tuple[str, Optional[str]]:
 
 
 def extract_raw(stdout: str) -> tuple[str, Optional[str]]:
-    """codex/agy have no confirmed machine-readable mode; keep stdout verbatim.
+    """Keep stdout verbatim: no structured extractor is wired for these seats.
 
-    The synthesizer receives the raw file as ground truth and strips any CLI log
-    chrome itself, so a weak extractor degrades synthesis but never loses data."""
+    NOT "no such mode exists" — probed 2026-07-28 on codex-cli 0.145.0, `codex exec`
+    offers `--json`, `-o/--output-last-message` and `--ephemeral`. Wiring one is a real
+    change (a new event schema to parse, and a failure mode when it drifts), so it is
+    deferred rather than assumed impossible. The synthesizer receives the raw file as
+    ground truth and strips any CLI log chrome itself, so a weak extractor degrades
+    synthesis but never loses data."""
     return stdout.strip(), None
 
 
@@ -484,6 +503,101 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     return spec
 
 
+def _pid_alive(pid: int) -> bool:
+    """Test-only oracle. EPERM means the pid EXISTS but is not ours, so it must read as
+    alive — returning False there would let D5's orphan check pass on a live orphan."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+_LIVE_PGIDS: set = set()   # process groups of in-flight members; drained by the signal handler
+
+
+def _kill_group(proc: "subprocess.Popen", pgid) -> None:
+    """SIGTERM the whole group, then ALWAYS SIGKILL it after the grace period.
+
+    The SIGKILL is unconditional on purpose. Gating it on `proc.wait()` asks whether the
+    DIRECT CHILD died, which is the wrong question: a well-behaved CLI exits promptly on
+    SIGTERM, so the escalation would be skipped in exactly the common case, leaving any
+    helper that ignores SIGTERM alive — holding the inherited stdout/stderr write ends
+    open, which is what made the post-timeout drain hang forever.
+    """
+    if pgid is None:
+        proc.kill()
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        proc.wait(timeout=3.0)          # grace for a clean exit; the sweep runs regardless
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def run_member(argv, *, stdin, timeout, env, cwd):
+    """`subprocess.run`, except the child leads its own PROCESS GROUP.
+
+    subprocess.run's timeout kills only the direct child. An agent CLI is not a leaf: it
+    spawns language servers, MCP servers and node workers, and those survive the parent —
+    holding their share of the machine and, for agy, the worktree we are trying to remove.
+    The same gap exists on SIGTERM, where `_signal_cleanup` hard-exits via os._exit and
+    nothing reaps the members at all. Leading a group makes the whole subtree addressable.
+
+    Contract is deliberately identical to subprocess.run: FileNotFoundError from the
+    constructor, TimeoutExpired carrying partial output, CompletedProcess otherwise.
+    """
+    new_session = hasattr(os, "killpg") and hasattr(os, "setsid")
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
+                            start_new_session=new_session)
+    pgid = None
+    if new_session:
+        try:
+            pgid = os.getpgid(proc.pid)
+            _LIVE_PGIDS.add(pgid)
+        except OSError:      # already exited; nothing to track
+            pgid = None
+    try:
+        out, err = proc.communicate(input=stdin, timeout=timeout)
+    except subprocess.TimeoutExpired as first:
+        _kill_group(proc, pgid)
+        # BOUNDED drain. communicate() returns only at EOF on BOTH pipes — i.e. when every
+        # descendant holding the inherited write ends has exited — so an unbounded call
+        # here turns `--timeout` into "no bound at all" whenever one helper survives, and
+        # the hang sits inside a pool worker so the council yields no manifest at all.
+        # Worse than the orphan it was added to fix. CPython's own subprocess.run skips
+        # this second drain on POSIX for the same reason; the partial output is already
+        # attached by the first _communicate.
+        try:
+            out, err = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            # Fall back to whatever the FIRST communicate already buffered rather than
+            # "" — a timed-out seat's partial answer is the only evidence of what it was
+            # doing, and the log-tail promotion downstream reads it.
+            out, err = _coerce_text(first.output), _coerce_text(first.stderr)
+        raise subprocess.TimeoutExpired(argv, timeout, output=out, stderr=err)
+    except BaseException:
+        # KeyboardInterrupt/SystemExit land here. Without this the `finally` would
+        # DEREGISTER the pgid while the group was still running, so neither this handler
+        # nor _signal_cleanup would ever reap it — Ctrl-C would leak the whole subtree.
+        _kill_group(proc, pgid)
+        raise
+    finally:
+        if pgid is not None:
+            _LIVE_PGIDS.discard(pgid)
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 _LIVE_WORKTREES: set = set()   # (repo, wt) handles; registered the moment `worktree add` succeeds
 _HANDLER_FIRED = False
 
@@ -496,6 +610,11 @@ def _signal_cleanup(signum, frame):
     global _HANDLER_FIRED
     if not _HANDLER_FIRED:            # re-entry guard: a second signal skips straight to exit
         _HANDLER_FIRED = True
+        for pgid in list(_LIVE_PGIDS):   # members first: agy's group holds the worktree open
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         for handle in list(_LIVE_WORKTREES):
             remove_agy_worktree(handle)
     os._exit(128 + signum)
@@ -659,9 +778,8 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         n = attempt + 1
         t0 = time.monotonic()
         try:
-            cp = subprocess.run(spec.argv, input=spec.stdin, capture_output=True,
-                                text=True, timeout=timeout, env=child_env(),
-                                cwd=spec.cwd)
+            cp = run_member(spec.argv, stdin=spec.stdin, timeout=timeout,
+                            env=child_env(), cwd=spec.cwd)
         except FileNotFoundError:
             dur = round(time.monotonic() - t0, 2)
             attempt_log.append({"attempt": n, "reason": "not_installed",
@@ -702,7 +820,11 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
             if valid:
                 break
             if reason in NONRETRYABLE_REASONS:
-                break  # auth/quota won't clear on a retry — don't burn the budget
+                # Currently unreachable: the sole member, `not_installed`, short-circuits
+                # in its own FileNotFoundError handler above. Kept as the declared policy
+                # both test suites assert on, and as the hook any FUTURE terminal reason
+                # attaches to — not as a claim that it fires today.
+                break
             if attempt < retries:
                 time.sleep(backoff * (2 ** attempt))
 
@@ -742,6 +864,15 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                 read_only: Optional[bool] = None) -> dict:
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
+    # Install at the CHOKE POINT, not in the callers. Members now lead their own session,
+    # so a terminal Ctrl-C no longer reaches them and this handler is their only reaper.
+    # It used to be installed only under `if args.read_only:` — correct when its sole job
+    # was removing the agy worktree (read-only mode only), but the handler's
+    # responsibilities grew and its installation condition did not. That left
+    # `--allow-writes` runs, which carry the bypass flags and NO worktree isolation, and
+    # every eval_harness run (it calls run_council directly, never main) with no teardown
+    # at all: abort, and three detached members keep editing for up to timeout x attempts.
+    install_cleanup_handler()
     started = _now_iso()
     with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
         futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir)
@@ -876,7 +1007,6 @@ def smoke(args) -> int:
         s.min_chars = 0   # the correct smoke answer is the single word "pong"
     agy_wt = None
     if args.read_only:
-        install_cleanup_handler()   # BEFORE any worktree exists — SIGTERM skips finally
         for s in specs:
             make_readonly(s)
         agy_spec = next((s for s in specs if s.name == "agy"), None)
@@ -1062,7 +1192,10 @@ def self_test() -> int:
     m = run_council([qspec], retries=2, timeout=5, backoff=0.05, workdir=qdir, prompt="hi")
     ag = m["providers"][0]
     check("quota: reason=auth_or_quota (from log)", ag["reason"] == "auth_or_quota")
-    check("quota: not retried (1 attempt)", ag["attempts"] == 1)
+    # RETRIED now: the reason is scan-derived, and this repo's own docs classify as
+    # auth_or_quota, so a phantom must not cost the seat (verified 2026-07-28).
+    check("quota: IS retried — scan-derived reasons must not cost a seat",
+          ag["attempts"] > 1)
 
     # S12 — regression (found by a real eval): a valid exit-0 answer whose stderr is
     # full of session noise containing sentinel phrases (codex echoing files it read)
@@ -1077,7 +1210,8 @@ def self_test() -> int:
     check("sentinel: unauthenticated → persistent", classify_sentinel("UNAUTHENTICATED") == "auth_or_quota")
     check("sentinel: heap OOM → transient", classify_sentinel("heap out of memory") == "error_sentinel")
     check("sentinel: clean text → None", classify_sentinel("here is your answer") is None)
-    # The verbatim codex 0.143.0 rejection (2026-07-25) must fast-fail: retrying a version
+    # The verbatim codex 0.143.0 rejection (2026-07-25) must CLASSIFY as auth_or_quota.
+    # It still consumes retries (scan-derived, so it can be a phantom); retrying a version
     # gate only burns the budget. The narrow phrasing is load-bearing — the two cases below
     # pin that a member merely DISCUSSING CLI versions keeps its retry.
     check("sentinel: codex version gate → persistent",
@@ -1204,6 +1338,68 @@ def self_test() -> int:
           isolate_agy_worktree(ag16b, wd("wt_wd2"), repo_dir=str(wd("wt_norepo"))) is None
           and ag16b.cwd is None)
 
+    # D5 — process groups: subprocess.run's timeout reaps only the direct child, so an
+    # agent CLI's helpers outlived the council. Prove the GRANDCHILD dies, not just the
+    # child — that is the whole point, and the previous suite passed without it.
+    if hasattr(os, "killpg"):
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as _td:
+            _marker = Path(_td) / "grandchild.pid"
+            # child writes its grandchild's pid, then both outlive the timeout
+            _script = f"sh -c 'sleep 60 & echo $! > {_marker}; sleep 60'"
+            try:
+                run_member(["sh", "-c", _script], stdin=None, timeout=1.5,
+                           env=os.environ.copy(), cwd=None)
+                check("pgroup: timed-out member raises TimeoutExpired", False)
+            except subprocess.TimeoutExpired:
+                check("pgroup: timed-out member raises TimeoutExpired", True)
+            time.sleep(0.4)
+            _gpid = int(_marker.read_text().strip()) if _marker.exists() else 0
+            check("pgroup: the member's GRANDCHILD is reaped, not orphaned",
+                  _gpid > 0 and not _pid_alive(_gpid))
+            check("pgroup: the group is deregistered after the attempt", not _LIVE_PGIDS)
+            # F1 regression: a helper that IGNORES SIGTERM keeps the inherited stdout/
+            # stderr write ends open. The first version drained unbounded here, so the
+            # timeout stopped bounding anything and the pool worker hung with no manifest.
+            # Assert the ESCALATION directly. A pure elapsed-time bound does not: with the
+            # SIGKILL gated on the direct child (the exact cycle-1 bug), the ignorer
+            # survives, the drain burns its 5s cap and elapsed is ~6s — under any loose
+            # threshold. Measured, not assumed.
+            _ign_marker = Path(_td) / "ignorer.pid"
+            _ign = (f"{sys.executable} -c \"import signal,time,os; "
+                    f"signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    f"open('{_ign_marker}','w').write(str(os.getpid())); time.sleep(30)\" "
+                    f"& sleep 30")
+            _t0 = time.monotonic()
+            try:
+                run_member(["sh", "-c", _ign], stdin=None, timeout=1.0,
+                           env=os.environ.copy(), cwd=None)
+                _elapsed = time.monotonic() - _t0
+                check("pgroup: SIGTERM-ignoring helper still raises TimeoutExpired", False)
+            except subprocess.TimeoutExpired:
+                _elapsed = time.monotonic() - _t0
+                check("pgroup: SIGTERM-ignoring helper still raises TimeoutExpired", True)
+            time.sleep(0.3)
+            _ipid = int(_ign_marker.read_text().strip()) if _ign_marker.exists() else 0
+            check("pgroup: a SIGTERM-IGNORING helper is still SIGKILLed (F1 regression)",
+                  _ipid > 0 and not _pid_alive(_ipid))
+            # below timeout + drain cap, so the gated-SIGKILL regression trips this too
+            check("pgroup: the post-timeout drain is BOUNDED (F1 regression)", _elapsed < 4)
+            # The 5s drain CAP needs its own witness: the checks above kill their helper,
+            # so the pipes hit EOF instantly and an unbounded drain would still look fine.
+            # A `setsid` grandchild leaves the process group — surviving the killpg — while
+            # still holding the inherited stdout/stderr. Only the cap ends this one.
+            _t1 = time.monotonic()
+            try:
+                run_member(["sh", "-c", "setsid sleep 25 & sleep 25"], stdin=None,
+                           timeout=1.0, env=os.environ.copy(), cwd=None)
+                check("pgroup: an out-of-group pipe holder still times out", False)
+            except subprocess.TimeoutExpired:
+                check("pgroup: an out-of-group pipe holder still times out", True)
+            _escaped = time.monotonic() - _t1
+            check("pgroup: the 5s drain CAP bounds an unkillable pipe holder",
+                  _escaped < 10)
+
     # S17 — signal cleanup: a default-disposition SIGTERM skips `finally` (observed leak
     # 2026-07-11); the handler must remove registered worktrees and hard-exit 128+signum.
     # Direct handler test with os._exit stubbed — a subprocess signal test would be
@@ -1315,6 +1511,12 @@ def self_test() -> int:
     # A seat reviewing THIS repo echoes our own sentinel lists into stderr via rg. The
     # observed failure (2026-07-27) matched fanout.py's own self-test line and returned a
     # NON-RETRYABLE tool_permission, costing the seat its retry for no real reason.
+    # F1 regression: members lead their own session, so a terminal Ctrl-C cannot reach
+    # them — this handler is their only reaper. It used to be installed only under
+    # `if args.read_only:`, leaving --allow-writes and every eval_harness run (which calls
+    # run_council directly) with no teardown. Assert the choke point, not the callers.
+    check("teardown: run_council installs the signal handler on EVERY path",
+          signal.getsignal(signal.SIGTERM) is _signal_cleanup)
     check("selfmatch: tool_permission is RETRYABLE — a phantom must not cost a seat",
           "tool_permission" not in NONRETRYABLE_REASONS)
     check("sentinel: tool-permission text classified ahead of auth_or_quota",
@@ -1423,7 +1625,6 @@ def main(argv=None) -> int:
     # only, so the bypass flag make_readonly swaps is always present).
     agy_wt = None
     if args.read_only:
-        install_cleanup_handler()   # BEFORE any worktree exists — SIGTERM skips finally
         for s in specs:
             make_readonly(s)
         agy_spec = by_name.get("agy")  # plan-mode-constrained; worktree adds defense in depth

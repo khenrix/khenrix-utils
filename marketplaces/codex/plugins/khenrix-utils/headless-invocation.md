@@ -48,7 +48,7 @@ cat plan.md | codex exec --dangerously-bypass-approvals-and-sandbox \
 ### Antigravity (agy)
 
 ```bash
-agy --mode plan -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
+agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
 # flags MUST precede -p (Go flag parsing stops at the first positional) — a flag placed
 # after the prompt is silently dropped; use --mode plan for review-only invocations
 ```
@@ -80,7 +80,9 @@ agy --mode plan -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
   around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an
   auth/quota error (it prints nothing to stdout on a 429 and logs `RESOURCE_EXHAUSTED` /
   `Individual quota reached`), this is the likely cause; the council classifies it
-  `auth_or_quota` and does not retry.
+  `auth_or_quota`. It still RETRIES: the classification comes from scanning a merged
+  stderr stream, so a seat that merely echoed a file naming those strings would otherwise
+  lose its seat to a wall that does not exist. Only a missing binary fails fast.
 
 ## Cross-review example
 
@@ -95,5 +97,8 @@ missing steps, and anything that won't work." \
 
 Swap the CLI and full-perms flag from the table above to route the review to whichever
 model you want — but for agy put every flag BEFORE `-p` (Go flag parsing stops at the
-first positional), and prefer `--mode plan` over the bypass flag for review-only asks
-(e.g. `agy --mode plan -p "..."`).
+first positional), and for review-only asks pair `--mode plan` WITH
+`--dangerously-skip-permissions` rather than substituting one for the other
+(e.g. `agy --mode plan --dangerously-skip-permissions -p "..."`). Plan mode is the write
+barrier; auto-approve only removes a prompt nobody can answer headlessly. Dropping it is
+what made agy soft-deny its own `ReadFile` and answer from an empty context.

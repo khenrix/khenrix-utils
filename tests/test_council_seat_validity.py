@@ -109,7 +109,7 @@ def test_tool_permission_is_distinct_from_auth_or_quota():
     assert "headless" in r["hint"].lower()
 
 
-def test_auth_is_not_retried_but_transient_and_scan_derived_reasons_are():
+def test_only_missing_binary_is_terminal_all_scan_derived_reasons_retry():
     from fanout import NONRETRYABLE_REASONS
 
     # tool_permission is derived by substring-scanning a MERGED stderr stream, so a seat
@@ -118,7 +118,12 @@ def test_auth_is_not_retried_but_transient_and_scan_derived_reasons_are():
     # that did not exist). Whether a phrase is the CLI speaking or the CLI quoting is not
     # recoverable from that stream; whether the failure REPRODUCES is. So it is retryable.
     assert "tool_permission" not in NONRETRYABLE_REASONS
-    assert "auth_or_quota" in NONRETRYABLE_REASONS
+    # auth_or_quota is scan-derived too: llm-council's own SKILL.md documents "not logged
+    # in" / "resource_exhausted" / "individual quota" / "quota reached" in its failure
+    # table, so a seat that echoed that file classified as a quota wall and lost its seat.
+    # Retrying a real wall costs up to retries+1 attempts; a phantom cost a third of the panel.
+    assert "auth_or_quota" not in NONRETRYABLE_REASONS
+    assert NONRETRYABLE_REASONS == {"not_installed"}
     assert "not_installed" in NONRETRYABLE_REASONS
     # A momentary outage is legitimate and recurs — retry is the whole point.
     assert "error_sentinel" not in NONRETRYABLE_REASONS
