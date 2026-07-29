@@ -6,7 +6,7 @@ them; render.check() prints + fails on any. Self-test (`--self-test`) covers the
 logic with no repo/network dependency.
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, tomllib
+import hashlib, json, re, subprocess, sys, tempfile, tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -86,6 +86,19 @@ def pricing_coverage(root: Path) -> list[str]:
         # trades a silent $0 for a KeyError on the statusline path — strictly worse.
         entry = table.get(matches[0])
         missing = [f for f in need if not isinstance(entry, dict) or f not in entry]
+        # Presence is not enough. This lint exists because a MISSING key silently reported
+        # $0; a negative, non-numeric or NaN rate reaches the statusline by the same route
+        # and is just as invisible. `bool` is excluded explicitly — isinstance(True, int)
+        # is True in Python, so `input = true` would otherwise pass as the number 1.
+        if isinstance(entry, dict) and not missing:
+            for f in need:
+                v = entry[f]
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    out.append(f"pricing-coverage: {mid}.{f} is not a number ({v!r})")
+                elif v != v or v in (float("inf"), float("-inf")):     # NaN / inf
+                    out.append(f"pricing-coverage: {mid}.{f} is not finite ({v!r})")
+                elif v < 0:
+                    out.append(f"pricing-coverage: {mid}.{f} is negative ({v!r})")
         if missing:
             out.append(f"pricing-coverage: '{matches[0]}' is missing {missing} — "
                        f"price() would raise rather than price '{mid}'")
@@ -275,6 +288,42 @@ def _self_test() -> int:
     ok.append(("secret regex detects slack", any(rx.search("xoxp-1234567890abcde") for rx in SECRET_FAIL)))
     ok.append(("secret regex ignores prose", not any(rx.search("the quick brown fox jumps") for rx in SECRET_FAIL)))
     ok.append(("secret regex detects AKIA", any(rx.search("AKIAIOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
+    # pricing_coverage value shapes. A one-time probe proves the edit; these stop a revert.
+    # Driven through a temp root because the function reads both files from disk. Each
+    # table is COMPLETE (all four rates present) so only the value test can reject it —
+    # a missing-key diagnostic would otherwise mask a deleted value check and pass anyway.
+    with tempfile.TemporaryDirectory() as _td:
+        _root = Path(_td)
+        (_root / "scripts").mkdir()
+        (_root / "capabilities.toml").write_text('[models]\nclaude = ["m"]\n')
+        _need = ("input", "output", "cache_read", "cache_write")
+
+        def _price(literal: str) -> list[str]:
+            (_root / "scripts" / "pricing.toml").write_text(
+                f"[m]\ninput = {literal}\noutput = 0.0\n"
+                "cache_read = 0.0\ncache_write = 0.0\n")
+            return pricing_coverage(_root)
+
+        for _label, _lit, _diag in (("negative", "-1.0", "is negative"),
+                                    ("string", '"1.0"', "is not a number"),
+                                    ("bool", "true", "is not a number"),
+                                    ("NaN", "nan", "is not finite"),
+                                    ("inf", "inf", "is not finite")):
+            _p = _price(_lit)
+            ok.append((f"pricing_coverage rejects a {_label} rate",
+                       any(f"m.input {_diag}" in x for x in _p)))
+        # Every one of the four fields, not just `input`: an implementation that validated
+        # only the first would otherwise pass all five shape cases above.
+        def _price_field(field: str, literal: str) -> list[str]:
+            (_root / "scripts" / "pricing.toml").write_text(
+                "[m]\n" + "".join(
+                    f"{k} = {literal if k == field else '0.0'}\n" for k in _need))
+            return pricing_coverage(_root)
+        for _f in _need:
+            ok.append((f"pricing_coverage validates the {_f} field too",
+                       any(f"m.{_f} is negative" in x for x in _price_field(_f, "-1.0"))))
+        ok.append(("pricing_coverage accepts a valid zero rate", _price("0.0") == []))
+        ok.append(("pricing_coverage accepts a valid positive rate", _price("2.5") == []))
     # hash stability + closure membership (mutating any listed file WILL change source_hash)
     ok.append(("source_hash stable", source_hash(ROOT, "llm-council") == source_hash(ROOT, "llm-council")))
     ok.append(("llm-council closure includes fanout.py",
@@ -295,7 +344,6 @@ def _self_test() -> int:
     # scan_path: file-scoped shim for gitignored artifacts. Build a slack-shaped token from
     # fragments at RUNTIME so no contiguous token literal lives in this file — otherwise the
     # synthetic test value itself trips push-protection / secret scanners.
-    import tempfile
     _planted = "xox" + "b-" + ("2" * 12) + "-" + ("3" * 12) + "-" + ("abcd" * 6)
     _d = Path(tempfile.mkdtemp())
     _p = _d / "leak.txt"

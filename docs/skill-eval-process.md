@@ -16,7 +16,8 @@ covers agy, which has no native skill tooling at all.
    templated per-CLI skills, edit `shared/skill-templates/<skill>/SKILL.md.tmpl` (shared
    prose) and/or the `[skill_facts.<skill>.<cli>]` facts in `capabilities.toml`. Then
    `python3 scripts/render.py` so the rendered bodies the harness runs are current.
-2. **Write/refresh evals.** `evals/<skill>/evals.json` — 2-5 cases, each with `prompt`,
+2. **Write/refresh evals.** `evals/<skill>/evals.json` — 2-7 cases (prefer 2-5; go higher only for a genuinely
+   separate contract, never to pad), each with `prompt`,
    optional `files`, and `assertions`. Make assertions **discriminating**: things a
    no-skill baseline would structurally fail (that gap is the skill's measured value).
    Objective and answer-only — "runs the engine read-only first", not "is well written".

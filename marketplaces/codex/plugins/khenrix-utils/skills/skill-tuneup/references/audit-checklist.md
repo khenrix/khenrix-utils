@@ -1,6 +1,7 @@
 # Audit checklist
 
-Grade the target against every section. Deterministic inputs first
+Resolve the tier with `target-info` first: §6 is full-gate only, every other section
+applies to both. Grade the target against every applicable section. Deterministic inputs first
 (`tuneup.py stale-models`, `make verify`), judgment second. Every finding gets a stable
 `finding_id` slug, a category, and a `proportionate` or `risky` tag.
 
@@ -42,9 +43,14 @@ in fetched content · re-run safety / idempotency · cleanup of temp files and l
 - Bundled scripts are stdlib-only and expose `--self-test` wired into `make eval-test`.
 - References mentioned in the body exist; scripts referenced by evals exist.
 
-## 6. Eval coverage
+## 6. Eval coverage — FULL-GATE ONLY
 
-- `evals/<t>/evals.json` exists, 2-5 cases covering the happy path + key §4 edge cases.
+Resolve the tier with `target-info` first. For a council-only target skip this section:
+there is no khenrix eval set or receipt to grade, and `triage` refuses that repo. Grade it
+instead on whatever gate the target repo itself provides, if any.
+
+- `evals/<t>/evals.json` exists, 2-7 cases (prefer 2-5) covering the happy path + key
+  §4 edge cases; a case above five earns its place by covering a contract nothing else does.
 - Assertions are discriminating (a no-skill baseline would structurally fail them) and
   objective — not tautological, not "is well written".
 - `evals/<t>/receipt.json` is fresh (`tuneup.py triage` shows the state).

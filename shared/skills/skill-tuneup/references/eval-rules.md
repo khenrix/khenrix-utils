@@ -28,7 +28,8 @@ read it before scaffolding). Key invariants:
 
 ## Scaffolding a missing eval set
 
-If the target has no `evals/<t>/evals.json`: author 2-5 cases per the process doc —
+If the target has no `evals/<t>/evals.json`: author 2-7 cases per the process doc
+(prefer 2-5; a case earns its place by covering a contract nothing else does) —
 `id`/`name`/`prompt`/optional `files`/`assertions`, plus a `notes` field explaining the
 discriminating signal. Prefer inline-answer prompts ("Answer inline in prose — do NOT
 enter plan mode or run tools") for decision-shaped skills; they are cheap, provider-safe,

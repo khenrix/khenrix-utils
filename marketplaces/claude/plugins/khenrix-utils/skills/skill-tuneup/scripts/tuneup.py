@@ -70,16 +70,19 @@ def skill_paths(repo: Path, skill: str) -> list[Path]:
 
 
 def is_khenrix_repo(repo: Path) -> bool:
-    """The full gate (evals, receipts, render.py, precommit) only exists here."""
+    """The KHENRIX gate (evals, receipts, render.py, precommit) only exists here."""
     return (repo / "capabilities.toml").is_file() and (repo / "shared" / "skills").is_dir()
 
 
 def target_info(repo: Path, skill: str) -> dict:
     """Resolve a target and say which gate tier applies — the two-tier contract in one place.
 
-    A foreign repo has no evals/, no receipt, no render.py and no `make precommit`, so the
-    receipt gate simply does not exist there. Rather than pretend otherwise, report the tier
-    so the run can state plainly that it ran ungated.
+    The tier follows the LAYOUT, not a probe for gate files: outside khenrix-utils the
+    khenrix receipt gate is inapplicable by construction, since a receipt is only meaningful
+    against this repo's eval harness. That is a claim about the khenrix gate and NOT about
+    the target repo, which may well have tests or a precommit hook of its own — run those,
+    they simply cannot produce a receipt. Report the tier so the run states plainly that it
+    shipped without one.
     """
     paths = skill_paths(repo, skill)
     khenrix = is_khenrix_repo(repo)
@@ -104,8 +107,9 @@ def target_info(repo: Path, skill: str) -> dict:
         "tier": "full-gate" if full_gate else "council-only",
         "gate": ("evals + receipt + make precommit"
                  if full_gate else
-                 "research + both council reviews + audit + convergence — NO receipt; "
-                 "say so plainly in the run's output"),
+                 "research + both council reviews + audit + convergence — NO khenrix "
+                 "receipt (run any gate the target repo has of its own, and report it "
+                 "separately); say so plainly in the run's output"),
         "log_target": log_target_key(repo, skill),
     }
 
@@ -276,14 +280,53 @@ def triage_score(receipt: str, age_days: float | None, stale_hits: int, md_lines
     score += min(stale_hits * 10, 30)
     if age_days is not None:
         score += min(int(age_days / 30) * 2, 24)   # ~2 pts per month unmaintained, cap 24
+    # An UNKNOWN age deliberately scores NOTHING. It is missing evidence, not staleness:
+    # awarding points made a git failure outrank 70 days of real neglect and, because every
+    # row got the same bonus, turned the board into an alphabetical tiebreak that
+    # triage_recommendation then reported as a winner. The all-unknown case is a DIAGNOSIS,
+    # not a ranking — triage_recommendation says so instead.
     if md_lines > 450:
         score += 10                                # near the 500-line hard cap
     return score
 
 
+def triage_recommendation(rows: list[dict]) -> str:
+    """The one-line verdict under the triage table.
+
+    A recommendation needs a SIGNAL, not just a first row. Rows sort by (-score, skill),
+    so once every score is 0 the top is whichever skill sorts first ALPHABETICALLY — and a
+    tool whose entire product is "which skill needs work" would recommend a multi-hour run
+    on the exact evidence that nothing needs work. Reachable as soon as the last scoring
+    skill drops off the board.
+    """
+    if not rows:
+        return "no skills found."
+    # `"age_days" in r`, not `.get(...) is None`: an ABSENT key is a caller that did not
+    # report an age, not a checkout whose age is unknown. triage() always sets the key, so
+    # the diagnosis fires on real evidence and never on a partially-built row.
+    if all("age_days" in r and r["age_days"] is None for r in rows):
+        return ("baseline age is UNKNOWN for every skill — git failed or this is not a "
+                "checkout with history. The ranking is unreliable; fix that before "
+                "choosing a target.")
+    if rows[0]["score"] > 0:
+        return f"recommend: deep tune-up of '{rows[0]['skill']}' first"
+    return "no skill shows a staleness signal — nothing to tune up."
+
+
 def triage(repo: Path) -> list[dict]:
-    skills = sorted(p.name for p in (repo / "shared" / "skills").glob("*/") if p.is_dir())
-    skills += sorted(p.name for p in (repo / "shared" / "skill-templates").glob("*/") if p.is_dir())
+    # Step 3 documents triage for "a target repo", but the ranking only knows khenrix
+    # layouts — on a foreign repo it produced an EMPTY table, which reads as "nothing to
+    # tune" rather than "I cannot rank this". Refuse instead of answering wrongly.
+    if not is_khenrix_repo(repo):
+        raise ValueError(
+            f"triage ranks khenrix-utils skills only; {repo} is not that checkout. "
+            "For a skill in another repo use `target-info --skill <name>` to resolve its "
+            "tier, then run the deep pass directly.")
+    # A set, not concatenation: a name present in BOTH source dirs is one skill with two
+    # layouts (skill_paths already treats that as ambiguous), not two rows on the board.
+    names = {p.name for p in (repo / "shared" / "skills").glob("*/") if p.is_dir()}
+    names |= {p.name for p in (repo / "shared" / "skill-templates").glob("*/") if p.is_dir()}
+    skills = sorted(names)
     approved = approved_models(repo)
     now = datetime.now(timezone.utc)
     rows = []
@@ -322,7 +365,16 @@ DECISIONS = {"applied", "rejected", "deferred"}
 # lock is held. It is also untracked, so `git add -A` would commit it and render.py would
 # copy it into all three marketplaces.
 LOCK_DIR = Path.home() / ".cache" / "khenrix-utils" / "skill-tuneup.lock.d"
-LOCK_STALE_MIN = 30
+# Must strictly exceed the longest UNATTENDED step, or a LIVE run's lock becomes stealable. MODE_TIMEOUT["deep"] is 1200s and --retries defaults to 2, so one fan-out is
+# up to 3 x 1200 = 60 min; Step 6's own "deep + retries 1" guidance for tuning this
+# machinery is 40. The eval run is LONGER than this window — eval_harness iterates cases
+# serially across providers and both conditions — and is deliberately not covered by it:
+# Step 6 mandates backgrounding the run and Step 1 mandates a `lock refresh` between polls,
+# so an eval is an attended step whose lock never goes 90 min untouched. Kept a constant rather than derived: lock_acquire runs in a DIFFERENT
+# process with no knowledge of the holder's --timeout/--retries, so deriving it would mean
+# writing a deadline into the lock — a new refresh contract, and a crashed deep run
+# blocking the next for an hour. The two stay linked by reading this comment.
+LOCK_STALE_MIN = 90
 
 
 def lock_acquire(stale_min: int = LOCK_STALE_MIN) -> tuple[bool, str]:
@@ -951,6 +1003,94 @@ def _self_test() -> int:
         ok.append(("owner releases", lock_release(owner)[0]))
         ok.append(("refresh after release reports it gone", lock_refresh(owner)[0] is False))
     globals()["LOCK_DIR"] = _saved
+    # triage must not recommend work on zero evidence — the sort is (-score, skill), so an
+    # all-zero board would otherwise crown whichever skill sorts first alphabetically.
+    # The union, not concatenation: a name under BOTH source dirs is one skill. Reverting
+    # to `sorted(a) + sorted(b)` leaves every other triage assertion green, so this is the
+    # only thing standing between that revert and a duplicated board.
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        (_r / "shared" / "skills" / "dup").mkdir(parents=True)
+        (_r / "shared" / "skill-templates" / "dup").mkdir(parents=True)
+        (_r / "capabilities.toml").write_text("[models]\nclaude = []\n")
+        try:
+            _rows = triage(_r)
+            ok.append(("triage: a name in BOTH source dirs yields ONE row",
+                       [r["skill"] for r in _rows].count("dup") == 1))
+        except Exception as _e:  # noqa: BLE001
+            ok.append((f"triage: a name in BOTH source dirs yields ONE row ({_e})", False))
+    ok.append(("triage: a signal-free board scores 0 for every row",
+               triage_score("fresh", 0, 0, 100) == 0))
+    ok.append(("triage: the line-budget rule is what lifts a fresh skill off 0",
+               triage_score("fresh", 0, 0, 480) == 10))
+    ok.append(("triage: a stale receipt still outranks a line budget",
+               triage_score("stale-source", 0, 0, 100) > triage_score("fresh", 0, 0, 480)))
+    # An UNKNOWN baseline age must not read as a fresh one. triage() swallows git errors,
+    # so without this a checkout where git fails for every skill scores an all-zero board
+    # and triage_recommendation reports "nothing to tune up" — a confident wrong all-clear.
+    # Missing evidence must not become staleness points, and must not become a winner.
+    ok.append(("triage: an unknown age scores the SAME as a known-fresh one (no points)",
+               triage_score("fresh", None, 0, 100) == triage_score("fresh", 0, 0, 100)))
+    ok.append(("triage: 70 days of real neglect still outranks an unknown age",
+               triage_score("fresh", 70, 0, 100) > triage_score("fresh", None, 0, 100)))
+    _unk = [{"skill": "aaa", "score": 0, "age_days": None},
+            {"skill": "zzz", "score": 0, "age_days": None}]
+    ok.append(("triage: an all-unknown board reports the DIAGNOSIS, not a winner",
+               "recommend" not in triage_recommendation(_unk)
+               and "UNKNOWN for every skill" in triage_recommendation(_unk)))
+    ok.append(("triage: an all-unknown board is not reported as a clean all-clear",
+               "nothing to tune up" not in triage_recommendation(_unk)))
+    # A MIXED board must still rank. `all(...)` -> `any(...)` survives every assertion
+    # above, and under `any` a single skill with no history would suppress a valid
+    # recommendation for the whole board.
+    _mixed = [{"skill": "hot", "score": 40, "age_days": None},
+              {"skill": "cold", "score": 2, "age_days": 12.0}]
+    ok.append(("triage: a MIXED board still recommends, not diagnoses",
+               "recommend" in triage_recommendation(_mixed)
+               and "UNKNOWN for every skill" not in triage_recommendation(_mixed)))
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            triage(Path(td))
+            ok.append(("triage: refuses a non-khenrix repo instead of reporting nothing", False))
+        except ValueError:
+            ok.append(("triage: refuses a non-khenrix repo instead of reporting nothing", True))
+    # Assert the DECISION, not the score: a score assertion still passes with the
+    # threshold removed, which is exactly how this first shipped insensitive.
+    _zero = [{"skill": "aaa-first", "score": 0}, {"skill": "zzz-last", "score": 0}]
+    ok.append(("triage: an all-zero board recommends NOTHING",
+               "recommend" not in triage_recommendation(_zero)))
+    ok.append(("triage: an all-zero board says so explicitly",
+               "nothing to tune up" in triage_recommendation(_zero)))
+    ok.append(("triage: a real signal still produces a recommendation",
+               "recommend: deep tune-up of 'x'" in
+               triage_recommendation([{"skill": "x", "score": 10}])))
+    # the staleness window must exceed the longest step this skill's own guidance produces:
+    # deep timeout 1200s x (retries 1 + 1) = 40 min for a self-tuneup, 60 at the default.
+    # Assert the DOCUMENTED 90, not a weaker bound. A default deep fan-out is already
+    # 3 x 1200s plus backoff = 60 min 15 s before teardown and worktree setup, so `> 60`
+    # still admitted values a single legal fan-out can exhaust. The number in the failure
+    # table and the number here have to be the same number.
+    ok.append(("lock: the staleness window is the documented 90 min", LOCK_STALE_MIN == 90))
+    # Exercise the boundary through lock_acquire's DEFAULT, so the failure-table's "older
+    # than 90 min" and the constant cannot drift apart, and so a change to the default
+    # argument is caught too. 89 -> still held; 91 -> stolen.
+    with tempfile.TemporaryDirectory() as _ltd:
+        _saved = LOCK_DIR
+        try:
+            globals()["LOCK_DIR"] = Path(_ltd) / "lock.d"
+            for _age, _want_held in ((89, True), (91, False)):
+                shutil.rmtree(LOCK_DIR, ignore_errors=True)
+                lock_acquire()
+                _old = time.time() - _age * 60
+                os.utime(LOCK_DIR, (_old, _old))
+                _got, _ = lock_acquire()          # default stale_min, not an override
+                ok.append((f"lock: a {_age}-min-old lock is "
+                           f"{'still held' if _want_held else 'stealable'}",
+                           _got is not _want_held))
+        finally:
+            shutil.rmtree(LOCK_DIR, ignore_errors=True)
+            globals()["LOCK_DIR"] = _saved
+
     # ambiguous target: two same-tier layouts must be REFUSED, not silently resolved
     with tempfile.TemporaryDirectory() as td:
         fr = Path(td) / "foreign"
@@ -1144,7 +1284,20 @@ def review_material(repo: Path, cap: int = REVIEW_BYTE_CAP,
       empty line), silently dropping a legitimate text file from the review.
     - `wc -c` on a broken symlink emits nothing, so `[ "$sz" -gt 0 ]` raises.
 
-    Binary detection is a NUL scan of the first 8 KiB — what git itself uses.
+    Binary detection is a NUL scan of the first 8 KiB — what git itself uses. The per-file
+    and aggregate byte caps exist because the whole result becomes ONE prompt sent to three
+    CLIs: an unbounded diff either blows a context window or silently truncates inside the
+    provider, and a review of a truncated diff still reports as a review.
+
+    The two non-obvious choices, kept here so a later 'simplification' meets them at the
+    code rather than only in SKILL.md:
+
+    - `diff HEAD`, never bare `git diff`. Bare diff is blind to the INDEX, so a fully
+      staged tree returns empty — and an empty result is exactly what tells Step 9 there
+      is nothing to review, silently skipping a mandatory council review.
+    - untracked files are appended explicitly. `git diff` in any form cannot see them, so
+      a file created during the run (an `evals.json` scaffolded in Step 8.2 is the live
+      case) would never reach the reviewer while `git add -A` still ships it.
     """
     def git(*a: str, binary: bool = False):
         """A FAILED git is not an empty diff.
@@ -1331,7 +1484,11 @@ def main(argv=None) -> int:
             print(f"SUMMARY {len(hits)} hits, {len(stale)} stale-candidate, "
                   f"{len({h['id'] for h in hits})} distinct ids")
     elif args.cmd == "triage":
-        rows = triage(repo)
+        try:
+            rows = triage(repo)
+        except ValueError as e:   # a refusal is a RESULT, not a crash — every other
+            print(f"  \u2717 {e}")   # refusal in this file prints and returns a code
+            return 2
         if args.json:
             print(json.dumps(rows, indent=2))
         else:
@@ -1341,8 +1498,7 @@ def main(argv=None) -> int:
                 print(f"{r['score']:>5}  {r['skill']:<16} {r['receipt']:<13} "
                       f"{r['age_days'] if r['age_days'] is not None else '-':>6} "
                       f"{r['stale_model_hits']:>9} {r['skill_md_lines']:>8}")
-            if rows:
-                print(f"\nrecommend: deep tune-up of '{rows[0]['skill']}' first")
+            print("\n" + triage_recommendation(rows))
     elif args.cmd == "log":
         if args.action == "append":
             raw = args.entry or sys.stdin.read()

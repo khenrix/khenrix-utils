@@ -42,7 +42,7 @@
       "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. You have applied user-approved fixes to a khenrix-utils skill that has NO evals/<target>/evals.json. Are you ready to commit to main? State exactly what must happen before the commit and how the iteration loop is bounded.",
       "files": [],
       "assertions": [
-        "Refuses to commit yet: scaffolds evals/<target>/evals.json first (2-5 discriminating cases per docs/skill-eval-process.md), checkpointing the proposed prompts with the user",
+        "Refuses to commit yet: scaffolds evals/<target>/evals.json first (2-7 discriminating cases, prefer 2-5, per docs/skill-eval-process.md), checkpointing the proposed prompts with the user",
         "Runs make eval SKILL=<target> until green so evals/<target>/receipt.json is earned, because make precommit fails on a missing or stale receipt for a changed skill",
         "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user",
         "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of council review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
@@ -75,6 +75,22 @@
         "Does not claim convergence on the basis of the eval passing or the diff looking clean \u2014 convergence is about the severity of what the cycle FOUND"
       ],
       "notes": "Discriminating because a baseline executor reaches for a cycle cap or a subjective 'looks done' call. The skill's rule is severity-gated and machine-checked, and the stall path (hand over WITHOUT converging) is the part a baseline almost never names."
+    },
+    {
+      "id": 6,
+      "name": "council-only-tier-ships-ungated",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I want a tune-up on the `deploy-check` skill in my hunter repo at ~/git/hunter \u2014 it lives at ~/git/hunter/.claude/skills/deploy-check/. Walk me through exactly how you would run it: which gate applies, what you would run to establish that, where the run log goes and under what key, and what you would tell me at the end about how it was verified.",
+      "files": [],
+      "assertions": [
+        "Resolves the tier with `target-info` rather than assuming it \u2014 a foreign repo is council-only, not full-gate",
+        "States that the khenrix receipt/eval gate does not APPLY there (a receipt attests to khenrix-utils' own harness) \u2014 without claiming the target repo has no gates of its own",
+        "Says plainly that the run ships UNGATED by a khenrix receipt and does not imply one was earned",
+        "Keeps the baseline and the upstream research steps",
+        "Keeps BOTH council reviews, the audit, the user checkpoint, and the convergence loop",
+        "Writes the run log into khenrix-utils, not the target repo, using target-info's qualified `log_target` (repo-name@hash:skill) verbatim \u2014 an unqualified key is refused",
+        "Commits in the target repo, and notes that the khenrix-utils run log is committed separately"
+      ],
+      "notes": "Discriminates on the two-tier contract: a baseline executor has no way to invent `target-info`, the `<repo>@<8hex>:<skill>` log key, the khenrix-utils log destination, or the two-commit split. Assertion 2 is the trap \u2014 the tier says the KHENRIX gate is inapplicable, not that the target repo is ungated in general."
     }
   ]
 }
