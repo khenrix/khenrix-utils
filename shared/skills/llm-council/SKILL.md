@@ -252,18 +252,18 @@ flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives i
 `build_real_spec`. When a real headless run surfaces a new failure string or an
 output-parsing quirk, the fix also lives in `scripts/fanout.py`: `TOOL_PERMISSION_SENTINELS`
 (our invocation defect — a seat denied its own tool call; carries a `REASON_HINTS` fix)
-vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded).
-These lists feed the SCANNED path, which is always retried; a reason taken from a
-provider's own structured error field may be terminal when recognised
-(`STRUCTURED_TERMINAL_REASONS`). Keep every phrase NARROW: a
-seat reviewing this repo echoes these lists into its own stderr, and a match there is
-indistinguishable from the CLI actually saying it,
+vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded),
 `score_seat` / `MIN_SUBSTANTIVE_CHARS` (what makes a seat's answer count at all),
 `extract_claude_json` / `extract_agy_json` / `extract_codex_json` / `extract_raw`
 (how each CLI's answer is pulled out, and which of them carry structured provenance), and the
 `build_real_spec` argv builders (the exact headless flags — kept in sync with
 `headless-invocation.md` at the plugin root; note agy's Go-style flag parser needs every
-flag *before* the positional prompt, and its real error lands in `--log-file`). Add a
-matching case to `tests/stub_provider.py` and confirm
+flag *before* the positional prompt, and its real error lands in `--log-file`).
+
+Those three sentinel lists feed the SCANNED path, which is always retried; a reason taken
+from a provider's own structured error field may be terminal when recognised
+(`STRUCTURED_TERMINAL_REASONS`). Keep every phrase NARROW — a seat reviewing this repo
+echoes these lists into its own stderr, and a match there is indistinguishable from the CLI
+actually saying it. Add a matching case to `tests/stub_provider.py` and confirm
 `python3 scripts/fanout.py --self-test` stays green. Validate live binaries cheaply with
 `--smoke` before a full council.
