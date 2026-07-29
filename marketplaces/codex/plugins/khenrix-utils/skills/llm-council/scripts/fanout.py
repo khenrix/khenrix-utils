@@ -387,13 +387,19 @@ def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
     if not s:
         return "", None
     obj = None
+    # strict=False: Python REJECTS a raw control character inside a JSON string, and agy
+    # has been observed emitting a literal newline inside "response" (antigravity-for-
+    # claude-code, 0.21.0, reported upstream). Our own 1.1.8 escaped correctly in two
+    # probes, so this is defence rather than a reproduction — but a strict parse turns one
+    # stray byte into `parse_failure`, i.e. a whole seat lost for a payload we can read.
+    # Verified free: a well-formed envelope parses identically under both settings.
     try:
-        obj = json.loads(s)
+        obj = json.loads(s, strict=False)
     except json.JSONDecodeError:
         lo, hi = s.find("{"), s.rfind("}")   # tolerate a stray log line either side
         if lo != -1 and hi > lo:
             try:
-                obj = json.loads(s[lo:hi + 1])
+                obj = json.loads(s[lo:hi + 1], strict=False)
             except json.JSONDecodeError:
                 return "", "parse_failure"
         else:
@@ -413,6 +419,82 @@ def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
     if isinstance(res, str):
         return res, None
     return ("" if res is None else json.dumps(res)), None
+
+
+def extract_usage(name: str, stdout: str) -> Optional[dict]:
+    """Per-seat token accounting taken from the CLI's OWN envelope, never estimated.
+
+    Field names are read off upstream source, not guessed:
+      * codex - `TurnCompletedEvent { usage: Usage }` in codex-rs/exec/src/exec_events.rs
+        (input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens).
+      * agy   - the `usage` object in its --output-format json envelope
+        (input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens),
+        confirmed by running agy 1.1.8 rather than by reading a doc.
+
+      * claude - the `usage` object in its --output-format json result, declared in the
+        LICENSED package's own `sdk-tools.d.ts` (input_tokens, output_tokens,
+        cache_creation_input_tokens, cache_read_input_tokens) and confirmed by probing
+        2.1.220. It also reports `total_cost_usd`, which the CLI computes itself — so for
+        this seat the cost is measured upstream rather than derived from pricing.toml.
+
+    Returns None when a CLI reports nothing usable. Absent beats invented — a wrong cost is
+    worse than no cost, and every field above was read off source or a live probe, never a
+    doc or an inference.
+    """
+    def norm(u: dict) -> Optional[dict]:
+        if not isinstance(u, dict):
+            return None
+        out = {}
+        for key, srcs in (("input", ("input_tokens",)),
+                          ("output", ("output_tokens",)),
+                          ("thinking", ("thinking_tokens",)),
+                          ("cache_read", ("cache_read_tokens", "cached_input_tokens",
+                                          "cache_read_input_tokens")),
+                          ("cache_write", ("cache_write_input_tokens",
+                                           "cache_creation_input_tokens")),
+                          ("total", ("total_tokens",))):
+            for sk in srcs:
+                v = u.get(sk)
+                # bool is an int in Python; a JSON `true` here is malformed, not a count.
+                if isinstance(v, int) and not isinstance(v, bool):
+                    out[key] = v
+                    break
+        return out or None
+
+    s = (stdout or "").strip()
+    if not s:
+        return None
+    if name in ("agy", "claude"):
+        try:
+            obj = json.loads(s, strict=False)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        u = norm(obj.get("usage"))
+        # claude prices its own turn; prefer that over anything we could derive.
+        cost = obj.get("total_cost_usd")
+        if u is not None and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            u["cost_usd"] = float(cost)
+        return u
+    if name == "codex":
+        # LAST turn.completed wins: a resumed or multi-turn stream carries several, and the
+        # final one is the accounting for the run we actually made.
+        found = None
+        for line in s.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line, strict=False)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "turn.completed":
+                u = norm(ev.get("usage"))
+                if u:
+                    found = u
+        return found
+    return None
 
 
 def extract_codex_json(stdout: str) -> tuple[str, Optional[str]]:
@@ -1053,6 +1135,9 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         # provider's own error field from one scanned out of a merged stream — which is
         # the entire basis for trusting it, and what decides whether it may be terminal.
         "structured": final["structured"],
+        # Measured, not estimated — None when this engine has not verified a usage field
+        # for that CLI (claude today). See extract_usage.
+        "usage": extract_usage(spec.name, final["stdout"]),
         "hint": REASON_HINTS.get(final["reason"]),
         "result_text": _truncate(final["result_text"]),
         "result_file": str(result_file),
@@ -1649,6 +1734,56 @@ def self_test() -> int:
           and "quota reached" in extract_agy_json(_err_json)[0].lower())
     check("agy-json: malformed output is a parse_failure, not a silent empty answer",
           extract_agy_json("not json at all")[1] == "parse_failure")
+
+    # A RAW control char inside "response" must not cost the seat its answer. Python's
+    # strict parser rejects it; agy has been observed emitting one. The escaped form must
+    # keep parsing identically — that is what makes strict=False free rather than lax.
+    _raw_nl = '{"status":"SUCCESS","response":"line one\nline two"}'      # literal 0x0A
+    _esc_nl = '{"status":"SUCCESS","response":"line one\\nline two"}'    # proper escape
+    check("agy-json: a RAW newline inside response still yields the answer",
+          extract_agy_json(_raw_nl) == ("line one\nline two", None))
+    check("agy-json: the escaped form parses to the same thing",
+          extract_agy_json(_esc_nl) == extract_agy_json(_raw_nl))
+    check("agy-json: a raw control char survives the stray-log-line fallback too",
+          extract_agy_json("INFO up\n" + _raw_nl + "\nINFO done")[0] == "line one\nline two")
+
+    # --- token accounting: read from each CLI's own envelope, never invented ---
+    check("usage: agy envelope fields are normalized",
+          extract_usage("agy", json.dumps({
+              "status": "SUCCESS", "response": "x",
+              "usage": {"input_tokens": 11, "output_tokens": 22, "thinking_tokens": 3,
+                        "cache_read_tokens": 4, "total_tokens": 40}}))
+          == {"input": 11, "output": 22, "thinking": 3, "cache_read": 4, "total": 40})
+    check("usage: codex reads turn.completed, and the LAST one wins",
+          extract_usage("codex", "\n".join([
+              json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}),
+              json.dumps({"type": "item.completed", "usage": {"input_tokens": 999}}),
+              json.dumps({"type": "turn.completed",
+                          "usage": {"input_tokens": 7, "cached_input_tokens": 5,
+                                    "cache_write_input_tokens": 2, "output_tokens": 9}})]))
+          == {"input": 7, "output": 9, "cache_read": 5, "cache_write": 2})
+    check("usage: codex ignores item.completed as an accounting source",
+          extract_usage("codex", json.dumps(
+              {"type": "item.completed", "usage": {"input_tokens": 999}})) is None)
+    check("usage: claude maps its cache_* field names and keeps the CLI's own cost",
+          extract_usage("claude", json.dumps({
+              "usage": {"input_tokens": 2, "output_tokens": 4,
+                        "cache_creation_input_tokens": 17202,
+                        "cache_read_input_tokens": 15273},
+              "total_cost_usd": 0.0123}))
+          == {"input": 2, "output": 4, "cache_write": 17202,
+              "cache_read": 15273, "cost_usd": 0.0123})
+    check("usage: a seat that reports nothing usable yields None, never a zero-filled guess",
+          extract_usage("claude", json.dumps({"result": "hi"})) is None)
+    check("usage: a JSON `true` cost is not a cost (bool is an int in Python)",
+          "cost_usd" not in (extract_usage("claude", json.dumps(
+              {"usage": {"input_tokens": 1}, "total_cost_usd": True})) or {}))
+    check("usage: a JSON `true` is not a token count",
+          extract_usage("agy", json.dumps({"usage": {"input_tokens": True}})) is None)
+    check("usage: garbage in, None out — never a partial guess",
+          extract_usage("agy", "not json") is None
+          and extract_usage("codex", "not json") is None
+          and extract_usage("agy", "") is None)
     _agy_spec = ProviderSpec("agy", ["x"], None, extract_agy_json, None, None)
     # `status` decides independently of the exit code. (An earlier comment here claimed agy
     # exits 0 on a hard error "verified"; that was measured off a PIPELINE and is retracted

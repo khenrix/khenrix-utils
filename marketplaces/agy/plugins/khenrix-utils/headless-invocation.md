@@ -104,3 +104,34 @@ first positional), and for review-only asks pair `--mode plan` WITH
 (e.g. `agy --mode plan --dangerously-skip-permissions -p "..."`). Plan mode is the write
 barrier; auto-approve only removes a prompt nobody can answer headlessly. Dropping it is
 what made agy soft-deny its own `ReadFile` and answer from an empty context.
+
+## Where the answers actually live (verify, don't infer)
+
+Run `make cli-sources` to sync these, then read them. Pulling is part of the ritual: a
+stale checkout gives a confident wrong answer with a plausible citation.
+
+| Question | Authoritative source | Status |
+|---|---|---|
+| What JSONL events does `codex exec --json` emit, and which are terminal? | `codex-rs/exec/src/exec_events.rs` (full Rust source, Apache-2.0) | **read** — validates `extract_codex_json`, including that `item.completed` is terminal for the ITEM ("either success or failure") and so must NOT decide the turn |
+| What changed in claude between versions? | `anthropics/claude-code` CHANGELOG | **read** — the repo has no CLI source; the binary is compiled |
+| What does claude's JSON result contain? | the licensed install's `sdk-tools.d.ts` + a live probe | **verified 2026-07-29 on 2.1.220** |
+| What does agy emit headlessly? | no public source — live probe, plus `yuting0624/antigravity-for-claude-code` as a dated written record | **verified 2026-07-29 on 1.1.8** |
+
+Measured on 2026-07-29, not inferred:
+
+- **agy `--output-format json` writes ZERO bytes to stderr** (two probes). The diagnostic
+  moves into the envelope, so for that seat there is nothing on stderr to sentinel-scan —
+  `--log-file` is the only other channel. This is the good outcome: stderr was the phantom
+  generator, because it echoed whatever files the seat read.
+- **All three CLIs report real token usage**, so council cost is measured, never estimated:
+  agy `usage{input,output,thinking,cache_read,total}_tokens`; codex
+  `TurnCompletedEvent{usage}` with `cached_input_tokens`/`cache_write_input_tokens`; claude
+  `usage{input,output,cache_creation_input,cache_read_input}_tokens` **plus its own
+  `total_cost_usd`** — for claude, prefer the CLI's cost over anything derived locally.
+- **agy can emit a raw newline inside its JSON `"response"` string** (reported by the
+  wrapper above; not reproduced on our 1.1.8 in two probes). Python's strict parser rejects
+  a raw control character, turning one stray byte into a lost seat — so `extract_agy_json`
+  parses with `strict=False`. A well-formed envelope parses identically either way.
+
+Leaked or mirrored copies of a proprietary CLI are out of bounds for any vendor. When
+something is closed, the licensed install on this machine plus a live probe IS the source.

@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-upgrade",
-  "source_hash": "a5756af3abc64b14d89c1195d04a08b48f5335a84778d085286bb0cf650afa2f",
+  "source_hash": "214d864a05a613dab28e0d316a88539d6698d3b1b4b9735e30772257eafaa1f3",
   "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
   "providers": [
     "claude",
@@ -9,7 +9,7 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1945,
+  "delta_pass_rate": 0.1805,
   "blind_winner": "tie",
   "provenance": "eval",
   "models": {

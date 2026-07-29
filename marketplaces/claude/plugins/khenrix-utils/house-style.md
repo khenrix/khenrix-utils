@@ -41,6 +41,18 @@ that CLI's own config, not here.
   observe the output yourself before claiming completion — well-formed and correct are
   different claims. One clean observation is enough; re-verify only after changing something.
 - Never claim a verification that was not actually observed in a tool result.
+- **Read the source; don't infer the behaviour.** When a question is about what a tool,
+  CLI, or library actually does — its flags, exit codes, output shape, error strings — and
+  the source is public, go read it. An inference that sounds right is the failure mode that
+  survives a green test suite, because nothing executes prose. **Pull latest first**: a
+  stale checkout gives a confident wrong answer with a plausible citation, which is worse
+  than admitting you don't know. In khenrix-utils, `make cli-sources` syncs the upstreams
+  worth reading and prints what each one is authoritative for.
+- Use canonical upstreams only. Leaked or mirrored copies of proprietary source are out of
+  bounds for any vendor, however convenient. When something is closed, the LICENSED install
+  on this machine is the primary source — its `--help`, its shipped type declarations, its
+  changelog — corroborated by a live probe of the actual binary. A measured observation
+  outranks any document, including the vendor's own.
 - The bar cuts both ways: an unverified warning is itself an error — absence of evidence is
   not a finding, and a clean pass stated plainly beats a manufactured caveat.
 - Debugging: reproduce the failure and read the actual output before hypothesizing; for

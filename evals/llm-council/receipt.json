@@ -1,13 +1,13 @@
 {
   "skill": "llm-council",
-  "source_hash": "77b1e7064d2cebe078bba47b6a61d8db1948e949fc5ee9f2b8365f0ffdc52bbe",
+  "source_hash": "0b6b84c485d260f5a2e40b048743ea62277dbc6b093cd9750827fd124a4e15d8",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0,
+  "delta_pass_rate": 0.05,
   "blind_winner": "n/a-orchestrator",
   "provenance": "eval",
   "models": {

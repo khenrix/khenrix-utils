@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test bats-test smoke-llm-council eval eval-test status clean
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -137,6 +137,7 @@ smoke-llm-council: ## Live smoke test of the council vs one real provider (costs
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test
 	$(PY) scripts/lib/checks.py --self-test
+	$(PY) scripts/cli_sources.py --self-test
 	$(PY) scripts/lib/reconcile_test.py
 	$(PY) scripts/claude_session_stats.py --self-test
 	$(PY) scripts/session_report.py --self-test
@@ -159,3 +160,11 @@ status: ## Show what each CLI currently has vs the source of truth (read-only)
 
 clean: ## Remove rendered skill copies (keeps per-CLI khenrix-setup)
 	$(PY) scripts/render.py --clean
+
+# Upstream sources we reason about, pulled fresh. Reading beats inferring; a STALE
+# checkout is a confident wrong answer with a plausible citation, so this always fetches.
+cli-sources:
+	python3 scripts/cli_sources.py
+
+cli-sources-status:
+	python3 scripts/cli_sources.py --status
