@@ -133,6 +133,77 @@ def run(args) -> int:
     return 0 if result["accuracy"] >= 0.8 else 1
 
 
+ARENA_TMPL = """A coding agent has these skills available (name + description):
+
+{roster}
+
+The user sends this message:
+<<<BEGIN
+{prompt}
+END>>>
+
+Judging ONLY from the names + descriptions, which ONE skill (if any) should
+activate? Output ONLY JSON, no prose:
+{{"winner": "<exact skill name, or none>", "why": "<one short sentence>"}}"""
+
+
+def parse_arena_verdict(raw: str, competitors: list) -> str:
+    s = (raw or "").strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+    if fence:
+        s = fence.group(1)
+    cand = s[s.find("{"): s.rfind("}") + 1] if "{" in s and "}" in s else s
+    try:
+        w = str(json.loads(cand).get("winner", "none")).strip()
+    except (json.JSONDecodeError, AttributeError):
+        return "none"
+    return w if w in competitors else "none"
+
+
+def score_arena(cases: list) -> dict:
+    confusion: dict = {}
+    correct = 0
+    for c in cases:
+        confusion.setdefault(c["expected"], {})
+        confusion[c["expected"]][c["got"]] = confusion[c["expected"]].get(c["got"], 0) + 1
+        correct += c["expected"] == c["got"]
+    return {"accuracy": round(correct / len(cases), 4) if cases else 0.0,
+            "confusion": confusion}
+
+
+def run_arena(args) -> int:
+    skills = [s.strip() for s in args.arena.split(",") if s.strip()]
+    path = EVALS_ROOT / skills[0] / "arena.json"
+    if not path.exists():
+        sys.exit(f"no arena prompts at {path.relative_to(ROOT)} — create it "
+                 '({"prompts": [{"prompt": "...", "expected": "<name-or-none>"}]})')
+    spec = json.loads(path.read_text())
+    roster = "\n".join(f"- NAME: {n}\n  DESCRIPTION: {d}"
+                       for n, d in (load_skill_meta(s, args.judge) for s in skills))
+    cfg = fanout.resolve_mode_config(argparse.Namespace(
+        mode=args.mode, timeout=args.timeout, model_claude=None, model_codex=None, model_agy=None))
+    timeout = fanout.effective_timeout(argparse.Namespace(mode=args.mode, timeout=args.timeout))
+    workdir = EVALS_ROOT / skills[0] / "workspace" / "arena"
+    workdir.mkdir(parents=True, exist_ok=True)
+    names = [load_skill_meta(s, args.judge)[0] for s in skills]
+    cases = []
+    for i, case in enumerate(spec["prompts"]):
+        jp = ARENA_TMPL.format(roster=roster, prompt=case["prompt"])
+        spec_ = fanout.build_real_spec(args.judge, jp, timeout, cfg, workdir)
+        m = fanout.run_council([spec_], retries=1, timeout=timeout, backoff=2.0,
+                               workdir=workdir / f"p-{i}", prompt=jp)
+        rec = m["providers"][0]
+        raw = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
+        got = parse_arena_verdict(raw, names + ["none"])
+        cases.append({"prompt": case["prompt"], "expected": case["expected"], "got": got})
+        print(f"  {'✓' if got == case['expected'] else '✗'} {case['prompt'][:60]} → {got}")
+    result = score_arena(cases)
+    (workdir / "arena-result.json").write_text(json.dumps(
+        {"skills": skills, "result": result, "cases": cases}, indent=2))
+    print(f"\n  arena accuracy: {result['accuracy']}")
+    return 0 if result["accuracy"] >= 0.8 else 1
+
+
 def _self_test() -> int:
     ok = []
     fm = '---\nname: x\ndescription: >-\n  line one\n  line two\nallowed-tools: Bash\n---\nbody'
@@ -146,6 +217,16 @@ def _self_test() -> int:
                {"kind": "near_miss", "expected": False, "got": False}])
     ok.append(("score accuracy 2/3", r["accuracy"] == round(2 / 3, 4)))
     ok.append(("score splits", r["should_trigger"]["correct"] == 1 and r["near_miss"]["correct"] == 1))
+    # --- arena mode (Task 14) ---
+    ok.append(("arena verdict picks named winner",
+               parse_arena_verdict('{"winner": "khenrix-wiki-add"}',
+                                   ["khenrix-wiki-add", "save"]) == "khenrix-wiki-add"))
+    ok.append(("arena verdict unknown → none",
+               parse_arena_verdict('{"winner": "bogus"}', ["a", "b"]) == "none"))
+    ar = score_arena([{"expected": "a", "got": "a"}, {"expected": "a", "got": "b"},
+                      {"expected": "none", "got": "none"}])
+    ok.append(("arena accuracy 2/3", ar["accuracy"] == round(2 / 3, 4)))
+    ok.append(("arena confusion", ar["confusion"]["a"]["b"] == 1))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1
@@ -158,9 +239,13 @@ def main(argv=None) -> int:
     ap.add_argument("--mode", choices=list(fanout.MODES), default="normal")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--arena", default=None,
+                    help="comma-separated skill names — pairwise routing eval")
     args = ap.parse_args(argv)
     if args.self_test:
         return _self_test()
+    if args.arena:
+        return run_arena(args)
     if not args.skill:
         sys.exit("--skill is required (or use --self-test)")
     return run(args)
