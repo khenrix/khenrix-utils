@@ -390,3 +390,37 @@ def test_b3_flags_same_endpoint_two_scopes():
     hits = sa.check_b3_endpoint_dupes(inv, {})
     assert len(hits) == 1 and hits[0]["kind"] == "mcp"
     assert hits[0]["justification"] == "correctness"
+
+
+def test_b2_composite_matcher_still_flags_bare_reference():
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "plugin:cdt:cdt", "/m", "loaded", endpoint_hash="e1"),
+        sa.item("claude", "user", "hook", "<settings.json>:PreToolUse", "/s", "loaded",
+                event="PreToolUse", matcher="mcp__plugin_pw_pw__click|mcp__cdt__navigate",
+                owner="<settings.json>", body_hash="h")])
+    hits = sa.check_b2_bare_key_refs(inv, {})
+    assert len(hits) == 1, "bare cdt ref must fire even beside an unrelated namespaced ref"
+
+
+def test_b2_correctly_namespaced_reference_does_not_fire():
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "plugin:pw:pw", "/m", "loaded", endpoint_hash="e1"),
+        sa.item("claude", "user", "permission-rule", "mcp__plugin_pw_pw__click", "/s", "loaded")])
+    assert sa.check_b2_bare_key_refs(inv, {}) == []
+
+
+def test_b1_provenance_filter_is_load_bearing():
+    # same CLI, same bare name, one loaded + one catalog — must NOT collide
+    inv = _mk_inv([
+        sa.item("codex", "user", "skill", "pa:save", "/a", "loaded"),
+        sa.item("codex", "user", "skill", "zoom:save", "/b", "catalog")])
+    assert sa.check_b1_name_collisions(inv, {}) == []
+
+
+def test_b3_none_endpoint_hash_does_not_crash():
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "a", "/u", "loaded", endpoint_hash=None),
+        sa.item("claude", "user", "mcp", "b", "/p", "loaded", endpoint_hash="same"),
+        sa.item("claude", "project:x", "mcp", "c", "/p2", "loaded", endpoint_hash="same")])
+    hits = sa.check_b3_endpoint_dupes(inv, {})
+    assert len(hits) == 1

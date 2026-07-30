@@ -448,9 +448,10 @@ def check_b2_bare_key_refs(inv, ctx) -> list:
         for r in refs:
             probe = r["meta"].get("matcher", "") if r["kind"] == "hook" else r["name"]
             for bare in sorted(bare_names):
-                # bare mcp__<server>__ style reference without the plugin_ prefix
-                if re.search(rf"mcp__{re.escape(bare)}(__|\b)", probe) and \
-                        f"mcp__plugin_" not in probe:
+                # bare mcp__<server>__ style reference without the plugin_ prefix.
+                # Per-match, not whole-string: an unrelated namespaced reference
+                # elsewhere in the same probe must not suppress a genuine bare hit.
+                if re.search(rf"mcp__(?!plugin_){re.escape(bare)}(__|\b)", probe):
                     out.append(finding("B2", 1, cli, r["scope"], r["kind"],
                                        [r["name"], f"server:{bare}"],
                                        "silent-capability-loss", "high", "correctness",
@@ -467,7 +468,7 @@ def check_b3_endpoint_dupes(inv, ctx) -> list:
     by_ep: dict = {}
     for m in _loaded(inv, "mcp"):
         by_ep.setdefault((m["cli"], m["meta"].get("endpoint_hash")), []).append(m)
-    for (cli, ep), group in sorted(by_ep.items()):
+    for (cli, ep), group in sorted(by_ep.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
         if ep and len(group) > 1:
             out.append(finding("B3", 1, cli, "multi", "mcp",
                                sorted(f'{g["scope"]}/{g["name"]}' for g in group),
