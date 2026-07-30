@@ -162,3 +162,52 @@ def test_walk_agy(tmp_path):
     items = sa.walk_agy(h, None, None)
     assert any(i["kind"] == "skill" and "gamma" in i["name"] for i in items)
     assert any(i["kind"] == "mcp" and i["name"] == "ctx" for i in items)
+
+
+MANAGED_BEGIN = "<!-- khenrix-managed:begin -->"
+
+
+def make_git_root(tmp_path):
+    g = tmp_path / "git"
+    ku = g / "khenrix-utils"
+    (ku / ".git").mkdir(parents=True)
+    (ku / "shared/skills/alpha").mkdir(parents=True)
+    (ku / "shared/skills/alpha/SKILL.md").write_text("---\nname: alpha\ndescription: a\n---\n")
+    r = ku / "marketplaces/claude/plugins/khenrix-utils/skills/alpha"
+    r.mkdir(parents=True)
+    (r / "SKILL.md").write_text("---\nname: alpha\ndescription: a\n---\n")
+    (ku / "capabilities.toml").write_text("version = 1\n")
+    (ku / "CLAUDE.md").write_text("x\n" + MANAGED_BEGIN + "\nstyle\n<!-- khenrix-managed:end -->\n")
+    other = g / "app"
+    (other / ".claude/skills/local1").mkdir(parents=True)
+    (other / ".claude/skills/local1/SKILL.md").write_text("---\nname: local1\ndescription: l\n---\n")
+    (other / ".mcp.json").write_text(json.dumps({"mcpServers": {"p1": {"command": "x"}}}))
+    return g
+
+
+def test_walk_projects_provenance_split(tmp_path):
+    items = sa.walk_projects(tmp_path / "home", None, make_git_root(tmp_path))
+    prov = {i["name"]: i["provenance"] for i in items if i["kind"] == "skill"}
+    # same skill name, three provenances — only project-local one is "loaded"
+    assert prov["khenrix-utils:shared:alpha"] == "source"
+    assert prov["khenrix-utils:rendered:claude:alpha"] == "rendered-artifact"
+    assert prov["app:local1"] == "loaded"
+    # regression: the canonical checkout must never re-surface its own rendered
+    # copies as "loaded" — that's the flood this provenance split exists to prevent.
+    loaded_alpha = [i for i in items if i["kind"] == "skill"
+                    and i["provenance"] == "loaded" and "alpha" in i["name"]]
+    assert loaded_alpha == []
+
+
+def test_walk_projects_finds_project_mcp_and_instruction_files(tmp_path):
+    items = sa.walk_projects(tmp_path / "home", None, make_git_root(tmp_path))
+    assert any(i["kind"] == "mcp" and i["scope"] == "project:app" for i in items)
+    inst = [i for i in items if i["kind"] == "instruction-file"]
+    assert any(i["meta"].get("managed_block_hash") for i in inst)
+
+
+def test_resolve_repo_root(tmp_path):
+    g = make_git_root(tmp_path)
+    assert sa.resolve_repo_root(g / "khenrix-utils") == g / "khenrix-utils"
+    assert sa.resolve_repo_root(g / "app") is None
+    assert sa.resolve_repo_root(None) is None

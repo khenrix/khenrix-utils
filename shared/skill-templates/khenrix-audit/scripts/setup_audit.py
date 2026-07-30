@@ -307,6 +307,72 @@ WALKERS.append(walk_codex)
 WALKERS.append(walk_agy)
 
 
+# --- walkers: projects + canonical repo -----------------------------------
+MANAGED_BLOCK = re.compile(r"<!-- khenrix-managed:begin -->(.*?)<!-- khenrix-managed:end -->",
+                           re.S)
+INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md")
+
+
+def resolve_repo_root(candidate) -> Path | None:
+    """A repo write target must be the CANONICAL checkout — never a rendered or
+    installed copy (render.py copies capabilities.toml into every plugin)."""
+    if candidate is None:
+        return None
+    c = Path(candidate)
+    if all((c / m).exists() for m in (".git", "capabilities.toml", "shared/skills")):
+        return c
+    return None
+
+
+def walk_projects(home: Path, repo, git_root) -> list:
+    items: list = []
+    groot = Path(git_root) if git_root else home / "git"
+    if not groot.exists():
+        return items
+    for proj in sorted(p for p in groot.iterdir() if p.is_dir() and not p.is_symlink()):
+        scope = f"project:{proj.name}"
+        is_ku = resolve_repo_root(proj) is not None
+        if is_ku:  # canonical checkout: sources + rendered copies, tagged, never "loaded"
+            for smd in sorted((proj / "shared/skills").rglob("SKILL.md")):
+                fm = read_frontmatter(smd)
+                items.append(item("all", scope, "skill",
+                                  f"{proj.name}:shared:{fm['name']}", str(smd), "source", **{
+                                      k: v for k, v in fm.items() if k != "name"}))
+            for smd in sorted((proj / "marketplaces").rglob("SKILL.md")):
+                fm = read_frontmatter(smd)
+                cli = smd.relative_to(proj / "marketplaces").parts[0]
+                items.append(item("all", scope, "skill",
+                                  f"{proj.name}:rendered:{cli}:{fm['name']}", str(smd),
+                                  "rendered-artifact"))
+        mcp_p = proj / ".mcp.json"
+        if mcp_p.exists():
+            cfg = json.loads(mcp_p.read_text())
+            for n, e in (cfg.get("mcpServers") or {}).items():
+                mi = _mcp_item("claude", scope, n, e, str(mcp_p))
+                items.append(mi)
+        cdir = proj / ".claude"
+        if cdir.exists() and not is_ku:
+            skills_dir = cdir / "skills"
+            if skills_dir.exists():
+                for smd in sorted(skills_dir.rglob("SKILL.md")):
+                    fm = read_frontmatter(smd)
+                    items.append(item("claude", scope, "skill", f"{proj.name}:{fm['name']}",
+                                      str(smd), "loaded",
+                                      **{k: v for k, v in fm.items() if k != "name"}))
+        for name in INSTRUCTION_FILES:
+            f = proj / name
+            if f.exists():
+                text = f.read_text(errors="replace")
+                m = MANAGED_BLOCK.search(text)
+                items.append(item("all", scope, "instruction-file", f"{proj.name}:{name}",
+                                  str(f), "loaded", chars=len(text),
+                                  managed_block_hash=vhash(m.group(1)) if m else None))
+    return items
+
+
+WALKERS.append(walk_projects)
+
+
 def cmd_inventory(args) -> int:
     home = Path(args.home_root)
     repo = Path(args.repo_root) if args.repo_root else None
