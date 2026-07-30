@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""setup_audit.py — khenrix-audit engine: cross-CLI setup inventory + mechanical checks.
+
+Read-only EXCEPT the ledger-* subcommands (atomic writes, sole ledger writer).
+Stdlib only. Hermetic: every walk roots at --home-root / --repo-root; the clock
+is injected via --now so checks are pure functions of their inputs.
+
+Spec: docs/superpowers/specs/2026-07-30-khenrix-audit-design.md
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA_VERSION = 1
+CLIS = ("claude", "codex", "agy")
+PROVENANCE = ("loaded", "catalog", "source", "rendered-artifact")
+# Verified harness semantics per CLI. A check that depends on an unverified
+# axis emits informational findings only for that CLI (fail closed, spec §4.1).
+SEMANTICS = {
+    "claude": {"precedence_verified": True, "namespacing": True, "dedupe_rule": True,
+               "source_ref": "code.claude.com/docs (deep-research 2026-07-30, 16 claims)"},
+    "codex":  {"precedence_verified": False, "namespacing": False, "dedupe_rule": False,
+               "source_ref": "unverified — establish from ~/.cache/khenrix-utils/cli-sources/codex"},
+    "agy":    {"precedence_verified": False, "namespacing": False, "dedupe_rule": False,
+               "source_ref": "unverified — establish via live probes"},
+}
+
+
+def canonical_json(obj) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def sid(*parts: str) -> str:
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:12]
+
+
+def item(cli: str, scope: str, kind: str, name: str, source_path: str,
+         provenance: str, effective_state: str = "enabled", **meta) -> dict:
+    assert provenance in PROVENANCE, provenance
+    return {"id": sid(cli, scope, kind, name), "cli": cli, "scope": scope,
+            "kind": kind, "name": name, "source_path": source_path,
+            "provenance": provenance, "effective_state": effective_state,
+            "meta": meta}
+
+
+def build_inventory(home: Path, repo: Path | None, git_root: Path | None) -> dict:
+    """Walk every surface. Walkers are added by later tasks; each is wrapped so a
+    crash records a discovery error instead of silently returning nothing."""
+    items: list[dict] = []
+    errors: list[str] = []
+    for walker in WALKERS:
+        try:
+            items.extend(walker(home, repo, git_root))
+        except Exception as e:  # noqa: BLE001 — a silent empty list is the worse bug
+            errors.append(f"{walker.__name__}: {type(e).__name__}: {e}")
+    return {"schema_version": SCHEMA_VERSION, "items": items, "errors": errors}
+
+
+WALKERS: list = []  # populated by walker tasks
+
+
+def cmd_inventory(args) -> int:
+    home = Path(args.home_root)
+    repo = Path(args.repo_root) if args.repo_root else None
+    inv = build_inventory(home, repo, Path(args.git_root) if args.git_root else None)
+    out = json.dumps(inv, indent=1, sort_keys=True)
+    if args.out:
+        Path(args.out).write_text(out)
+    else:
+        print(out)
+    return 0
+
+
+def add_common(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--home-root", default=str(Path.home()))
+    ap.add_argument("--repo-root", default=None,
+                    help="canonical khenrix-utils checkout (validated before any repo write)")
+    ap.add_argument("--git-root", default=None, help="projects root (default <home>/git)")
+    ap.add_argument("--now", default=None, help="ISO8601 audit time (injected clock)")
+    ap.add_argument("--out", default=None)
+
+
+def now_utc(args) -> str:
+    return args.now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="khenrix-audit engine")
+    ap.add_argument("--self-test", action="store_true")
+    sub = ap.add_subparsers(dest="cmd")
+    for name in ("inventory", "findings", "ledger-add", "ledger-expire"):
+        add_common(sub.add_parser(name))
+    args = ap.parse_args(argv)
+    if args.self_test:
+        return _self_test()
+    if args.cmd == "inventory":
+        return cmd_inventory(args)
+    if args.cmd is None:
+        ap.print_help()
+        return 2
+    print(f"{args.cmd}: implemented in a later task", file=sys.stderr)
+    return 2
+
+
+def _self_test() -> int:
+    ok = [("sid stable", sid("a", "b") == sid("a", "b")),
+          ("canonical sorted", canonical_json({"b": 1, "a": 2}).startswith('{"a"'))]
+    for label, passed in ok:
+        print(f"  {'PASS' if passed else 'FAIL'}  {label}")
+    return 0 if all(p for _, p in ok) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

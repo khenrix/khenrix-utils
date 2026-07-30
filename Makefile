@@ -10,11 +10,12 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test audit-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
+AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
@@ -71,7 +72,7 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 # collision guard -- i.e. a change that silently overwrites the user's existing
 # MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
 # suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
+verify: render doctor-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -93,6 +94,11 @@ council-test: ## Seat-validity unit tests for the council engine (no token cost)
 # fixtures only — it never touches the real clipboard or the network.
 doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
 	$(call RUN_PYTEST,$(DOCTOR_TESTS))
+
+# Hermetic engine tests for the khenrix-audit skill — same stance as doctor-test:
+# a verifier whose own tests never run decays into a false assurance.
+audit-test: ## Hermetic tests for the khenrix-audit engine (no token cost)
+	$(call RUN_PYTEST,$(AUDIT_TESTS))
 
 # Wired into `verify` for the same reason doctor-test is: four suites (84 tests)
 # that no target runs are suites that rot, exactly as tests/test_doctor.py
