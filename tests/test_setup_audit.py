@@ -292,7 +292,7 @@ def test_run_checks_isolates_crashing_check_and_sorts():
                            "hygiene", "low", "correctness", {}, [])]
 
     saved = sa.CHECKS[:]
-    sa.CHECKS[:] = [bad_check, low_check]
+    sa.CHECKS[:] = [low_check, bad_check]
     try:
         out = sa.run_checks(_mk_inv([]), {})
     finally:
@@ -326,3 +326,28 @@ def test_write_findings_secret_refusal_leaves_no_file(tmp_path):
         sa.write_findings([bad], {"items": [], "errors": []}, out,
                           {"now": "2026-07-30T00:00:00Z"})
     assert not out.exists()
+
+
+def test_cmd_findings_end_to_end_writes_doc(tmp_path):
+    def one_check(inv, ctx):
+        return [sa.finding("B9", 1, "claude", "user", "plugin", ["p1"],
+                           "hygiene", "low", "correctness", {"issue": "x"}, [])]
+
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "findings.json"
+    saved = sa.CHECKS[:]
+    sa.CHECKS[:] = [one_check]
+    try:
+        rc = sa.main(["findings", "--home-root", str(home),
+                      "--now", "2026-07-30T00:00:00Z", "--out", str(out)])
+    finally:
+        sa.CHECKS[:] = saved
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    assert doc["schema_version"] == 1
+    assert doc["generated"] == "2026-07-30T00:00:00Z"
+    assert doc["counts"]["findings"] == 1
+    assert doc["findings"][0]["rule"] == "B9"
+    assert set(doc["capabilities"]) == {"can_probe", "can_token_count",
+                                        "semantics_verified_for", "writable_ledger"}
