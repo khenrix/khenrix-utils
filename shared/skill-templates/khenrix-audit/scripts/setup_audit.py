@@ -537,13 +537,11 @@ def check_b5_cross_cli(inv, ctx) -> list:
     decl = load_declared(ctx.get("repo_root"))
     if not decl:
         return []
-    # Unlike B4, no "CLI absent on this machine" guard: a declared server live on
-    # some CLIs but never surfaced on another is exactly the cross-CLI drift this
-    # check exists to report, whether or not that CLI has any other inventory yet.
+    present_clis = [c for c in CLIS if any(i["cli"] == c for i in inv["items"])]
     for name in sorted(decl["mcp"]):
-        have = {c for c in CLIS
+        have = {c for c in present_clis
                 if any(m["name"] == name for m in _loaded(inv, "mcp", c))}
-        missing = set(CLIS) - have
+        missing = set(present_clis) - have
         if have and missing:
             for cli in sorted(missing):
                 out.append(finding("B5", 1, cli, "user", "mcp", [f"{cli}/{name}"],

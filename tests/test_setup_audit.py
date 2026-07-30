@@ -467,6 +467,14 @@ def test_b4_live_unknown_is_info_only(tmp_path):
 def test_b5_cross_cli_missing_server(tmp_path):
     repo = _repo_with_caps(tmp_path, CAPS)
     inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
-                   sa.item("codex", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+                   sa.item("codex", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("agy", "user", "plugin", "khenrix-utils", "/g", "loaded")])
     hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
     assert any("agy" in h["cli"] and "ctx" in h["subjects"][0] for h in hits)
+
+
+def test_b5_ignores_cli_absent_from_machine(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+    hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
+    assert not any(h["cli"] == "agy" for h in hits), "absent CLI must not be flagged"
