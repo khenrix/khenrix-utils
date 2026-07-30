@@ -1001,6 +1001,8 @@ def cmd_ledger_expire(args) -> int:
     ctx = {"repo_root": resolve_repo_root(args.repo_root), "home": Path(args.home_root)}
     repo_l, local_l = ledger_paths(ctx)
     target = local_l if args.local else repo_l
+    if target is None:
+        sys.exit("ledger-expire needs --repo-root (canonical checkout) or --local")
     doc = _read_ledger(target)
     e = doc.get("entries", {}).get(args.id)
     if not e:

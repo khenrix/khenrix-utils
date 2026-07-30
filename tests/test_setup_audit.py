@@ -818,6 +818,31 @@ def test_expired_waiver_reraises(tmp_path):
     assert kept and "waiver expired" in kept[0]["note"]
 
 
+def test_wontfix_mismatched_fingerprint_reraises(tmp_path):
+    # Regression: the fingerprint check must apply to wontfix too, not just
+    # waived — adjudicated semantics are fingerprint-guarded regardless of
+    # disposition. A mutation that scopes this check to waived-only must fail
+    # this test (bug-injection proof recorded in task-12-report.md).
+    f = _wf()
+    ctx = _ledger_ctx(tmp_path, entries={f["id"]: {
+        "disposition": "wontfix", "fingerprint": "outdated0", "reason": "will not fix"}})
+    ctx.update(sa.load_ledger(ctx))
+    kept = sa.apply_ledger([f], ctx)
+    assert kept and "situation changed" in kept[0]["note"]
+
+
+def test_wontfix_ignores_expiry(tmp_path):
+    # wontfix has no time expiry: an "until" in the past must NOT reraise it —
+    # only a fingerprint mismatch can.
+    f = _wf()
+    ctx = _ledger_ctx(tmp_path, entries={f["id"]: {
+        "disposition": "wontfix", "fingerprint": f["fingerprint"],
+        "until": "2020-01-01T00:00:00Z", "reason": "will not fix"}})
+    ctx.update(sa.load_ledger(ctx))
+    kept = sa.apply_ledger([f], ctx)
+    assert kept == [] and ctx["waived"][0]["id"] == f["id"]
+
+
 def test_ledger_add_is_atomic_and_loadable(tmp_path):
     ctx = _ledger_ctx(tmp_path)
     rc = sa.main(["ledger-add", "--home-root", str(ctx["home"]),
