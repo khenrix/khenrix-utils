@@ -110,11 +110,12 @@ agy    = ["Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"]
 
 # ---------------------------------------------------------------------------
 # Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
-# each plugin by scripts/render.py. `khenrix-setup` and `khenrix-upgrade` are
-# per-CLI: their shared body lives in shared/skill-templates/<name>/SKILL.md.tmpl
-# and render.py fills the provider-specific facts from [skill_facts.<name>.<cli>]
-# at the bottom of this file. Edit the template (shared prose) or the facts
-# (provider-specific values) — never the rendered marketplaces/.../SKILL.md.
+# each plugin by scripts/render.py. `khenrix-setup`, `khenrix-upgrade`, and
+# `khenrix-audit` are per-CLI: their shared body lives in
+# shared/skill-templates/<name>/SKILL.md.tmpl and render.py fills the provider-specific
+# facts from [skill_facts.<name>.<cli>] at the bottom of this file. Edit the template
+# (shared prose) or the facts (provider-specific values) — never the rendered
+# marketplaces/.../SKILL.md.
 # ---------------------------------------------------------------------------
 [[skills]]
 name = "khenrix-setup"
@@ -427,11 +428,11 @@ description = "Cross-CLI setup conflict finder: maps every installed plugin, ski
 display_name = "Codex"
 cli = "codex"
 engine_path = "$PLUGIN_ROOT/skills/khenrix-audit/scripts/setup_audit.py"
-phases_note = "Probes and token counts are unavailable on this CLI: the engine reports NOT EVALUATED for B7. Phases C, E, F, and G are fully available."
+phases_note = "Trigger probes (Phase D tier 2) and `claude plugin details` token counts require the claude binary on PATH — trust the `capabilities` block in findings.json rather than assuming; when absent, B7 reports NOT EVALUATED and Phase D stops at tier 1."
 
 [skill_facts.khenrix-audit.agy]
 description = "Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), declared-vs-live drift, shadowed or endpoint-deduped MCP servers, conflicting hooks, and skill-listing budget overflow — with a guided per-finding apply and a synced decision ledger. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit."
 display_name = "Antigravity"
 cli = "agy"
 engine_path = "${HOME}/.gemini/config/plugins/khenrix-utils/skills/khenrix-audit/scripts/setup_audit.py"
-phases_note = "Probes and token counts are unavailable on this CLI: the engine reports NOT EVALUATED for B7. Phases C, E, F, and G are fully available."
+phases_note = "Trigger probes (Phase D tier 2) and `claude plugin details` token counts require the claude binary on PATH — trust the `capabilities` block in findings.json rather than assuming; when absent, B7 reports NOT EVALUATED and Phase D stops at tier 1."

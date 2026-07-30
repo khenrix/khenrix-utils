@@ -1,8 +1,10 @@
 # Check catalog — B1–B16
 
-Field names below are read straight from `setup_audit.py` (`scripts/khenrix-audit/scripts/setup_audit.py`
-in this checkout) — if the engine changes an `evidence={...}` dict, update this file in the same
-change; this doc is the sync contract, not a paraphrase.
+Field names below are read straight from `setup_audit.py`
+(`shared/skill-templates/khenrix-audit/scripts/setup_audit.py` in this checkout;
+`skills/khenrix-audit/scripts/setup_audit.py` in a rendered plugin) — if the engine
+changes an `evidence={...}` dict, update this file in the same change; this doc is the
+sync contract, not a paraphrase.
 
 Checks gated by an unverified `SEMANTICS` axis (`RULE_NEEDS`: B1→`precedence_verified`,
 B2→`namespacing`, B3→`dedupe_rule`) come back `informational` for any CLI where that axis is

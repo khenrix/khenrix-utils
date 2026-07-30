@@ -11,7 +11,7 @@ One run: deterministic engine → model adjudication → evidence → report →
 apply. The engine is read-only except its ledger subcommands. Full check
 catalog: `references/checks.md`. Spec: docs/superpowers/specs/2026-07-30-khenrix-audit-design.md.
 
-Probes and token counts are unavailable on this CLI: the engine reports NOT EVALUATED for B7. Phases C, E, F, and G are fully available.
+Trigger probes (Phase D tier 2) and `claude plugin details` token counts require the claude binary on PATH — trust the `capabilities` block in findings.json rather than assuming; when absent, B7 reports NOT EVALUATED and Phase D stops at tier 1.
 
 ## 1. Run the engine
 
