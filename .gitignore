@@ -26,3 +26,6 @@ evals/*/workspace/
 
 # env_inventory.py observed-state report (local host state — never committed)
 docs/environment/observed-state.json
+
+# SDD scratch (session ledger + briefs)
+.superpowers/

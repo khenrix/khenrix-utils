@@ -124,6 +124,10 @@ per_cli = true
 name = "khenrix-upgrade"
 per_cli = true
 
+[[skills]]
+name = "khenrix-audit"
+per_cli = true
+
 # Shared skill — one body in shared/skills/llm-council/, auto-rendered byte-identical
 # into all three plugins (no per_cli). Listed here for discoverability; render.py
 # discovers it by globbing shared/skills/, not from this entry.
