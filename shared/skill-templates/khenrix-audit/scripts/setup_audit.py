@@ -554,6 +554,88 @@ def check_b5_cross_cli(inv, ctx) -> list:
 CHECKS.extend([check_b4_drift, check_b5_cross_cli])
 
 
+# --- check: B6 trigger-surface overlap ------------------------------------
+_STOP = set("""a an the and or of to in for on with when use used using this that it its is are
+be as by from at into if then than you your we our not do does doing what which who how why can
+could should may might will would about over under before after each per any all more most other
+some such only own same so also very just too s t skill skills claude code user users want wants
+asks ask repo file files codebase check tool tools""".split())
+
+
+def trigger_surface(desc: str) -> str:
+    out = []
+    m = re.search(r"triggers?\s*(?:on)?\s*:(.*)$", desc, re.I | re.S)
+    if m:
+        out.append(m.group(1))
+    out += re.findall(r'"([^"]{3,60})"', desc)
+    out += re.findall(r"[Uu]se (?:this )?(?:skill )?when ([^.]{5,160})", desc)
+    return " ".join(out)
+
+
+def _toks(s: str) -> list:
+    return [w for w in re.findall(r"[a-z][a-z0-9-]{2,}", s.lower()) if w not in _STOP]
+
+
+def overlap_pairs(skills: list, top_k: int = 15) -> list:
+    import itertools
+    import math
+    from collections import Counter
+    docs = {}
+    phrases = {}
+    for s in skills:
+        ts = trigger_surface(s["meta"].get("description", ""))
+        if ts.strip():
+            docs[s["name"]] = Counter(_toks(ts))
+            phrases[s["name"]] = set(re.findall(r'"([^"]{3,60})"',
+                                                s["meta"].get("description", "")))
+    docs = {k: v for k, v in docs.items() if v}
+    n = len(docs)
+    if n < 2:
+        return []
+    df = Counter()
+    for c in docs.values():
+        df.update(c.keys())
+    idf = {w: math.log(n / (1 + d)) + 1 for w, d in df.items()}
+    vec = {}
+    for k, c in docs.items():
+        v = {w: (1 + math.log(cnt)) * idf[w] for w, cnt in c.items()}
+        norm = math.sqrt(sum(x * x for x in v.values())) or 1.0
+        vec[k] = {w: x / norm for w, x in v.items()}
+    pairs = []
+    for x, y in itertools.combinations(sorted(vec), 2):
+        shared = set(vec[x]) & set(vec[y])
+        if len(shared) < 2:      # require ≥2 distinct non-stopword tokens
+            continue
+        cos = sum(vec[x][w] * vec[y][w] for w in shared)
+        exact = sorted(phrases.get(x, set()) & phrases.get(y, set()))
+        if exact:                # exact shared quoted phrase: high-precision boost
+            cos += 0.25
+        top_shared = sorted(shared, key=lambda w: -(vec[x][w] * vec[y][w]))[:6]
+        pairs.append((round(cos, 3), x, y, top_shared, exact))
+    pairs.sort(reverse=True)
+    return pairs[:top_k]
+
+
+def check_b6_trigger_overlap(inv, ctx) -> list:
+    skills = [s for s in _loaded(inv, "skill") if s["meta"].get("description")]
+    out = []
+    pairs = overlap_pairs(skills)
+    for cos, x, y, shared, exact in pairs:
+        same_plugin = x.split(":")[0] == y.split(":")[0]
+        out.append(finding("B6", 1, "claude", "user", "skill", [x, y],
+                           "wrong-tool-fires", "low", "correctness",
+                           {"cosine": cos, "shared_tokens": shared,
+                            "shared_phrases": exact, "same_plugin": same_plugin,
+                            "corpus_size": len(skills), "nominated": len(pairs)},
+                           ["Phase C adjudication → Phase D arena/probes",
+                            "rung 1 if DUPLICATE and one side is ours"],
+                           note="heuristic nomination — adjudicate before acting"))
+    return out
+
+
+CHECKS.append(check_b6_trigger_overlap)
+
+
 def run_checks(inv: dict, ctx: dict) -> list:
     out: list = []
     for check in CHECKS:

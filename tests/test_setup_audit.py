@@ -478,3 +478,35 @@ def test_b5_ignores_cli_absent_from_machine(tmp_path):
     inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
     hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
     assert not any(h["cli"] == "agy" for h in hits), "absent CLI must not be flagged"
+
+
+def test_trigger_surface_extracts_quotes_triggers_usewhen():
+    d = ('Does X. Use when the user wants to file a link. '
+         'Triggers: "add this to the wiki", "save this link".')
+    ts = sa.trigger_surface(d)
+    assert "add this to the wiki" in ts and "file a link" in ts
+    assert "Does X" not in ts
+
+
+def test_overlap_pairs_ranks_shared_trigger_vocab_first():
+    skills = [
+        {"name": "a:save", "meta": {"description": 'Triggers: "save this", "add this to the wiki", "keep this".'}},
+        {"name": "b:wiki-add", "meta": {"description": 'Triggers: "add this to the wiki", "save this link".'}},
+        {"name": "c:chart", "meta": {"description": 'Triggers: "plot a chart", "visualize data".'}},
+    ]
+    pairs = sa.overlap_pairs(skills, top_k=3)
+    assert pairs, "must nominate at least one pair"
+    top = pairs[0]
+    assert {top[1], top[2]} == {"a:save", "b:wiki-add"}
+    assert "add this to the wiki" in top[4]  # exact shared quoted phrase
+
+
+def test_b6_emits_low_confidence_nominations():
+    inv = _mk_inv([
+        sa.item("claude", "user", "skill", "a:save", "/a", "loaded",
+                description='Triggers: "add this to the wiki".'),
+        sa.item("claude", "user", "skill", "b:wiki-add", "/b", "loaded",
+                description='Triggers: "add this to the wiki".')])
+    hits = sa.check_b6_trigger_overlap(inv, {})
+    assert hits and hits[0]["confidence"] == "low"
+    assert hits[0]["evidence"]["shared_phrases"] == ["add this to the wiki"]
