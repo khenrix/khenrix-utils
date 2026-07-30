@@ -246,6 +246,67 @@ def walk_claude(home: Path, repo, git_root) -> list:
 WALKERS.append(walk_claude)
 
 
+# --- walkers: codex + agy -------------------------------------------------
+def _skill_items_under(cli: str, root: Path, provenance: str, name_prefix: str = "") -> list:
+    out = []
+    for smd in sorted(root.rglob("SKILL.md")):
+        fm = read_frontmatter(smd)
+        out.append(item(cli, "user", "skill", name_prefix + fm["name"], str(smd),
+                        provenance, **{k: v for k, v in fm.items() if k != "name"}))
+    return out
+
+
+def walk_codex(home: Path, repo, git_root) -> list:
+    import tomllib
+    items: list = []
+    cdir = home / ".codex"
+    if not cdir.exists():
+        return items
+    # curated CATALOG (available, never loaded) — startup_sync.rs CURATED_PLUGINS_RELATIVE_DIR
+    cat = cdir / ".tmp" / "plugins"
+    if cat.exists():
+        items.extend(_skill_items_under("codex", cat, "catalog"))
+    # installed plugin cache + user/system skills = loaded surface
+    cache = cdir / "plugins" / "cache"
+    if cache.exists():
+        items.extend(_skill_items_under("codex", cache, "loaded"))
+    skills = cdir / "skills"
+    if skills.exists():
+        items.extend(_skill_items_under("codex", skills, "loaded"))
+    cfg_p = cdir / "config.toml"
+    if cfg_p.exists():
+        cfg = tomllib.loads(cfg_p.read_text())
+        for n, e in (cfg.get("mcp_servers") or {}).items():
+            items.append(_mcp_item("codex", "user", n, e, str(cfg_p)))
+        for key in (cfg.get("plugins") or {}):
+            items.append(item("codex", "user", "plugin", key.split("@", 1)[0],
+                              str(cfg_p), "loaded"))
+    return items
+
+
+def walk_agy(home: Path, repo, git_root) -> list:
+    items: list = []
+    gdir = home / ".gemini" / "config"
+    if not gdir.exists():
+        return items
+    plugs = gdir / "plugins"
+    if plugs.exists():
+        for pdir in sorted(p for p in plugs.iterdir() if p.is_dir()):
+            items.append(item("agy", "user", "plugin", pdir.name, str(pdir), "loaded"))
+            items.extend(_skill_items_under("agy", pdir, "loaded", f"{pdir.name}:"))
+    mcp_p = gdir / "mcp_config.json"
+    if mcp_p.exists():
+        cfg = json.loads(mcp_p.read_text())
+        for n, e in (cfg.get("mcpServers", cfg) or {}).items():
+            if isinstance(e, dict):
+                items.append(_mcp_item("agy", "user", n, e, str(mcp_p)))
+    return items
+
+
+WALKERS.append(walk_codex)
+WALKERS.append(walk_agy)
+
+
 def cmd_inventory(args) -> int:
     home = Path(args.home_root)
     repo = Path(args.repo_root) if args.repo_root else None

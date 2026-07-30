@@ -119,3 +119,46 @@ def test_walk_claude_skill_carries_description(tmp_path):
     h = make_claude_home(tmp_path)
     skill = next(i for i in sa.walk_claude(h, None, None) if i["kind"] == "skill")
     assert "Does alpha things" in skill["meta"]["description"]
+
+
+def make_codex_home(tmp_path):
+    h = tmp_path / "home"
+    (h / ".codex/skills/.system/sys1").mkdir(parents=True)
+    (h / ".codex/skills/.system/sys1/SKILL.md").write_text("---\nname: sys1\ndescription: s\n---\n")
+    inst = h / ".codex/plugins/cache/mkt/plug/skills/beta"
+    inst.mkdir(parents=True)
+    (inst / "SKILL.md").write_text("---\nname: beta\ndescription: b\n---\n")
+    cat = h / ".codex/.tmp/plugins/plugins/zoom/skills/z1"
+    cat.mkdir(parents=True)
+    (cat / "SKILL.md").write_text("---\nname: z1\ndescription: catalog only\n---\n")
+    (h / ".codex/config.toml").write_text(
+        '[mcp_servers.ctx]\ncommand = "npx"\nargs = ["-y", "ctx"]\n')
+    return h
+
+
+def test_walk_codex_separates_catalog_from_loaded(tmp_path):
+    items = sa.walk_codex(make_codex_home(tmp_path), None, None)
+    by_prov = {}
+    for i in items:
+        by_prov.setdefault(i["provenance"], set()).add(i["name"])
+    assert any("z1" in n for n in by_prov.get("catalog", set()))
+    loaded = by_prov.get("loaded", set())
+    assert any("beta" in n for n in loaded) and any("sys1" in n for n in loaded)
+    assert not any("z1" in n for n in loaded)
+
+
+def test_walk_codex_reads_mcp_from_toml(tmp_path):
+    items = sa.walk_codex(make_codex_home(tmp_path), None, None)
+    assert any(i["kind"] == "mcp" and i["name"] == "ctx" for i in items)
+
+
+def test_walk_agy(tmp_path):
+    h = tmp_path / "home"
+    sk = h / ".gemini/config/plugins/khenrix-utils/skills/gamma"
+    sk.mkdir(parents=True)
+    (sk / "SKILL.md").write_text("---\nname: gamma\ndescription: g\n---\n")
+    (h / ".gemini/config/mcp_config.json").write_text(json.dumps(
+        {"mcpServers": {"ctx": {"command": "npx", "args": ["-y", "ctx"]}}}))
+    items = sa.walk_agy(h, None, None)
+    assert any(i["kind"] == "skill" and "gamma" in i["name"] for i in items)
+    assert any(i["kind"] == "mcp" and i["name"] == "ctx" for i in items)
