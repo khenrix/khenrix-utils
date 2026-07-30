@@ -482,6 +482,80 @@ def check_b3_endpoint_dupes(inv, ctx) -> list:
 CHECKS.extend([check_b1_name_collisions, check_b2_bare_key_refs, check_b3_endpoint_dupes])
 
 
+# --- checks: B4-B5 (drift) ------------------------------------------------
+def load_declared(repo_root) -> dict:
+    """Declared capabilities from the CANONICAL capabilities.toml. Vocabulary kept
+    aligned with reconcile.py's status output (EXTRA / missing)."""
+    import tomllib
+    if not repo_root:
+        return {}
+    with open(Path(repo_root) / "capabilities.toml", "rb") as f:
+        caps = tomllib.load(f)
+    return {"mcp": {n: {"platform": e.get("platform")}
+                    for n, e in (caps.get("mcp_servers") or {}).items()},
+            "docs_mcp": {cli: list(v) if isinstance(v, dict) else v
+                         for cli, v in (caps.get("docs_mcp") or {}).items()}}
+
+
+def check_b4_drift(inv, ctx) -> list:
+    out = []
+    decl = load_declared(ctx.get("repo_root"))
+    if not decl:
+        return [finding("B4", 1, "all", "repo", "check-error", ["capabilities.toml"],
+                        "state-divergence", "low", "drift",
+                        {"error": "no canonical repo root"}, [],
+                        note="NOT EVALUATED — pass --repo-root")]
+    for cli in CLIS:
+        live = {m["name"]: m for m in _loaded(inv, "mcp", cli) if m["scope"] == "user"}
+        if not live and not any(i["cli"] == cli for i in inv["items"]):
+            continue  # CLI absent on this machine — not drift
+        for name in sorted(decl["mcp"]):
+            if name not in live:
+                out.append(finding("B4", 1, cli, "user", "mcp", [f"{cli}/{name}"],
+                                   "state-divergence", "medium", "drift",
+                                   {"direction": "declared-not-live"},
+                                   ["run khenrix-setup to add it"]))
+        for name in sorted(set(live) - set(decl["mcp"])):
+            pol = ctx.get("policies", {}).get(f"mcp:{name}")
+            if pol and pol.get("desired_state") == "managed-absent":
+                out.append(finding("B4", 2, cli, "user", "mcp", [f"{cli}/{name}"],
+                                   "state-divergence", "high", "drift",
+                                   {"direction": "managed-absent-but-live",
+                                    "reason": pol.get("reason", "")},
+                                   ["remove from live config (confirmed, restore bundle first)"]))
+            else:
+                out.append(finding("B4", 1, cli, "user", "mcp", [f"{cli}/{name}"],
+                                   "state-divergence", "low", "drift",
+                                   {"direction": "unmanaged"},
+                                   ["declare it in capabilities.toml, or leave as machine-specific"],
+                                   note="unmanaged extra — reported once, deliberately preserved"))
+    return out
+
+
+def check_b5_cross_cli(inv, ctx) -> list:
+    out = []
+    decl = load_declared(ctx.get("repo_root"))
+    if not decl:
+        return []
+    # Unlike B4, no "CLI absent on this machine" guard: a declared server live on
+    # some CLIs but never surfaced on another is exactly the cross-CLI drift this
+    # check exists to report, whether or not that CLI has any other inventory yet.
+    for name in sorted(decl["mcp"]):
+        have = {c for c in CLIS
+                if any(m["name"] == name for m in _loaded(inv, "mcp", c))}
+        missing = set(CLIS) - have
+        if have and missing:
+            for cli in sorted(missing):
+                out.append(finding("B5", 1, cli, "user", "mcp", [f"{cli}/{name}"],
+                                   "state-divergence", "medium", "drift",
+                                   {"present_on": sorted(have)},
+                                   [f"add {name} on {cli} via khenrix-setup"]))
+    return out
+
+
+CHECKS.extend([check_b4_drift, check_b5_cross_cli])
+
+
 def run_checks(inv: dict, ctx: dict) -> list:
     out: list = []
     for check in CHECKS:

@@ -424,3 +424,49 @@ def test_b3_none_endpoint_hash_does_not_crash():
         sa.item("claude", "project:x", "mcp", "c", "/p2", "loaded", endpoint_hash="same")])
     hits = sa.check_b3_endpoint_dupes(inv, {})
     assert len(hits) == 1
+
+
+def _repo_with_caps(tmp_path, caps_text):
+    ku = tmp_path / "ku"
+    (ku / ".git").mkdir(parents=True)
+    (ku / "shared/skills").mkdir(parents=True)
+    (ku / "capabilities.toml").write_text(caps_text)
+    return ku
+
+
+CAPS = 'version = 1\n[mcp_servers.ctx]\ncommand = "npx"\n[mcp_servers.vercel]\nurl = "https://v"\n'
+
+
+def test_b4_declared_but_not_live_is_drift(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}})
+    drift = [h for h in hits if h["evidence"]["direction"] == "declared-not-live"]
+    assert any("vercel" in h["subjects"][0] for h in drift)
+
+
+def test_b4_live_managed_absent_keeps_firing(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "gdrive", "/c", "loaded", endpoint_hash="e")])
+    pol = {"mcp:gdrive": {"desired_state": "managed-absent", "reason": "native connector"}}
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": pol})
+    gone = [h for h in hits if "gdrive" in h["subjects"][0]]
+    assert gone and gone[0]["consequence"] == "state-divergence"
+    assert gone[0]["confidence"] == "high"
+
+
+def test_b4_live_unknown_is_info_only(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "personal", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e2")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}})
+    um = [h for h in hits if "personal" in h["subjects"][0]]
+    assert um and um[0]["confidence"] == "low" and um[0]["evidence"]["direction"] == "unmanaged"
+
+
+def test_b5_cross_cli_missing_server(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("codex", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+    hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
+    assert any("agy" in h["cli"] and "ctx" in h["subjects"][0] for h in hits)
