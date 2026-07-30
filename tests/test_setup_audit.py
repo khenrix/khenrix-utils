@@ -277,3 +277,52 @@ def test_write_findings_fails_closed_on_secret(tmp_path):
     with pytest.raises(SystemExit):
         sa.write_findings([bad], {"items": [], "errors": []},
                           tmp_path / "f.json", {"now": "2026-07-30T00:00:00Z"})
+
+
+def _mk_inv(items):
+    return {"schema_version": 1, "items": items, "errors": []}
+
+
+def test_run_checks_isolates_crashing_check_and_sorts():
+    def bad_check(inv, ctx):
+        raise RuntimeError("boom")
+
+    def low_check(inv, ctx):
+        return [sa.finding("B9", 1, "claude", "user", "plugin", ["p"],
+                           "hygiene", "low", "correctness", {}, [])]
+
+    saved = sa.CHECKS[:]
+    sa.CHECKS[:] = [bad_check, low_check]
+    try:
+        out = sa.run_checks(_mk_inv([]), {})
+    finally:
+        sa.CHECKS[:] = saved
+    assert len(out) == 2
+    engine = [f for f in out if f["rule"] == "ENGINE"]
+    assert engine and "NOT EVALUATED" in engine[0]["note"]
+    assert "boom" in json.dumps(engine[0]["evidence"])
+    # ENGINE finding is silent-capability-loss/high → must sort before the hygiene/low one
+    assert out[0]["rule"] == "ENGINE" and out[1]["rule"] == "B9"
+    assert out[0]["severity"] > out[1]["severity"]
+
+
+def test_engine_capabilities_reflects_repo_root():
+    caps_none = sa.engine_capabilities({"repo_root": None})
+    caps_some = sa.engine_capabilities({"repo_root": Path("/x")})
+    assert caps_none["writable_ledger"] is False
+    assert caps_some["writable_ledger"] is True
+    assert set(caps_none) == {"can_probe", "can_token_count",
+                              "semantics_verified_for", "writable_ledger"}
+    assert caps_none["semantics_verified_for"] == ["claude"]
+
+
+def test_write_findings_secret_refusal_leaves_no_file(tmp_path):
+    import pytest
+    bad = sa.finding("B2", 1, "claude", "user", "hook", ["h"],
+                     "silent-capability-loss", "high", "correctness",
+                     {"cmd": "ghp_" + "d" * 36}, [])
+    out = tmp_path / "f.json"
+    with pytest.raises(SystemExit):
+        sa.write_findings([bad], {"items": [], "errors": []}, out,
+                          {"now": "2026-07-30T00:00:00Z"})
+    assert not out.exists()
