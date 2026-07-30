@@ -126,6 +126,126 @@ def build_inventory(home: Path, repo: Path | None, git_root: Path | None) -> dic
 WALKERS: list = []  # populated by walker tasks
 
 
+# --- walkers: claude ------------------------------------------------------
+_FM_NAME = re.compile(r"^name:\s*(.+)$", re.M)
+_FM_DESC = re.compile(r"^description:\s*(?:>-|>|\|)?\s*\n?((?:.|\n)*?)(?=\n[a-z][a-z-]*:|\Z)", re.M)
+
+
+def read_frontmatter(p: Path) -> dict:
+    try:
+        t = p.read_text(errors="replace")
+    except OSError:
+        return {}
+    if not t.startswith("---"):
+        return {}
+    head = t[3:t.find("\n---", 3)]
+    name = _FM_NAME.search(head)
+    desc = _FM_DESC.search(head)
+    return {"name": name.group(1).strip() if name else p.parent.name,
+            "description": re.sub(r"\s+", " ", desc.group(1)).strip() if desc else "",
+            "body_lines": t.count("\n")}
+
+
+def _endpoint_hash(entry: dict) -> str:
+    if entry.get("url"):
+        return vhash(redact_url(entry["url"]))
+    return vhash(canonical_json([entry.get("command", "")] + [str(a) for a in entry.get("args", [])]))
+
+
+def _mcp_item(cli: str, scope: str, name: str, entry: dict, path: str) -> dict:
+    return item(cli, scope, "mcp", name, path, "loaded",
+                endpoint_hash=_endpoint_hash(entry),
+                transport=entry.get("type", "stdio" if entry.get("command") else "http"),
+                env_keys=sorted((entry.get("env") or {}).keys()),
+                argv=redact_argv([entry.get("command", "")] + list(entry.get("args", []))))
+
+
+def _hook_items(cli: str, scope: str, owner: str, hooks_cfg: dict, path: str) -> list:
+    out = []
+    for event, arr in (hooks_cfg or {}).items():
+        if not isinstance(arr, list):
+            continue
+        for e in arr:
+            for h in e.get("hooks", []):
+                cmd = h.get("command", "")
+                out.append(item(cli, scope, "hook", f"{owner}:{event}", path, "loaded",
+                                event=event, matcher=e.get("matcher", "*"),
+                                owner=owner, body_hash=vhash(cmd),
+                                command_head=redact_argv(cmd.split())[:4]))
+    return out
+
+
+def walk_claude(home: Path, repo, git_root) -> list:
+    items: list = []
+    cdir = home / ".claude"
+    if not cdir.exists():
+        return items
+    # plugins + their components (installed registry is the authority, not the cache)
+    reg = cdir / "plugins" / "installed_plugins.json"
+    if reg.exists():
+        plugins = json.loads(reg.read_text()).get("plugins", {})
+        for key, installs in plugins.items():
+            pname = key.split("@", 1)[0]
+            for inst in installs:
+                ipath = Path(inst.get("installPath", ""))
+                st = "enabled" if ipath.exists() else "load_failed"
+                items.append(item("claude", inst.get("scope", "user"), "plugin", pname,
+                                  str(ipath), "loaded", effective_state=st,
+                                  version=inst.get("version", "unknown")))
+                if not ipath.exists():
+                    continue
+                for smd in sorted(ipath.rglob("SKILL.md")):
+                    fm = read_frontmatter(smd)
+                    items.append(item("claude", "user", "skill", f"{pname}:{fm['name']}",
+                                      str(smd), "loaded", plugin=pname,
+                                      **({k: v for k, v in fm.items() if k != "name"})))
+                for sub, kind in (("agents", "agent"), ("commands", "command")):
+                    d = ipath / sub
+                    if d.exists():
+                        for f in sorted(d.rglob("*.md")):
+                            items.append(item("claude", "user", kind,
+                                              f"{pname}:{f.stem}", str(f), "loaded", plugin=pname))
+                hj = ipath / "hooks" / "hooks.json"
+                if hj.exists():
+                    cfg = json.loads(hj.read_text())
+                    items.extend(_hook_items("claude", "user", pname,
+                                             cfg.get("hooks", cfg), str(hj)))
+    # user-level dirs
+    for sub, kind in (("skills", "skill"), ("agents", "agent"), ("commands", "command")):
+        d = cdir / sub
+        if d.exists():
+            for f in sorted(d.rglob("SKILL.md" if kind == "skill" else "*.md")):
+                fm = read_frontmatter(f) if kind == "skill" else {"name": f.stem}
+                items.append(item("claude", "user", kind, fm["name"], str(f), "loaded",
+                                  **({k: v for k, v in fm.items() if k != "name"})))
+    # settings: hooks + permissions + skillOverrides
+    for sfile in ("settings.json", "settings.local.json"):
+        sp = cdir / sfile
+        if not sp.exists():
+            continue
+        cfg = json.loads(sp.read_text())
+        items.extend(_hook_items("claude", "user", f"<{sfile}>", cfg.get("hooks", {}), str(sp)))
+        for rule in (cfg.get("permissions", {}) or {}).get("allow", []) + \
+                    (cfg.get("permissions", {}) or {}).get("deny", []):
+            items.append(item("claude", "user", "permission-rule", str(rule), str(sp), "loaded"))
+        for skill, state in (cfg.get("skillOverrides") or {}).items():
+            items.append(item("claude", "user", "setting-skilloverride", skill, str(sp),
+                              "loaded", state=state))
+    # MCP: global + per-project (~/.claude.json)
+    cj = home / ".claude.json"
+    if cj.exists():
+        cfg = json.loads(cj.read_text())
+        for n, e in (cfg.get("mcpServers") or {}).items():
+            items.append(_mcp_item("claude", "user", n, e, str(cj)))
+        for proj, pv in (cfg.get("projects") or {}).items():
+            for n, e in ((pv or {}).get("mcpServers") or {}).items():
+                items.append(_mcp_item("claude", f"project:{proj}", n, e, str(cj)))
+    return items
+
+
+WALKERS.append(walk_claude)
+
+
 def cmd_inventory(args) -> int:
     home = Path(args.home_root)
     repo = Path(args.repo_root) if args.repo_root else None

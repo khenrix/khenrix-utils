@@ -67,3 +67,55 @@ def test_scan_artifact_text_fails_closed_on_fake_token():
     hits = sa.scan_artifact_text("cmd ghp_" + "b" * 36 + " end")
     assert hits, "artifact scan must flag a token-shaped string"
     assert sa.scan_artifact_text("plain text, no secrets") == []
+
+
+def make_claude_home(tmp_path):
+    h = tmp_path / "home"
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / "skills/alpha").mkdir(parents=True)
+    (cache / "skills/alpha" / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: >-\n  Does alpha things. "
+        'Triggers: "run alpha".\n---\nbody\n')
+    (cache / "hooks").mkdir()
+    (cache / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {
+        "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo hi"}]}]}}))
+    (h / ".claude/plugins").mkdir(parents=True, exist_ok=True)
+    (h / ".claude/plugins/installed_plugins.json").write_text(json.dumps({
+        "version": 2, "plugins": {"plug@mkt": [{
+            "scope": "user", "installPath": str(cache), "version": "1.0.0"}]}}))
+    (h / ".claude").mkdir(exist_ok=True)
+    (h / ".claude/settings.json").write_text(json.dumps({
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": "echo hi"}]}]}}))
+    (h / ".claude.json").write_text(json.dumps({
+        "mcpServers": {"ctx": {"type": "stdio", "command": "npx",
+                               "args": ["-y", "ctx"], "env": {"CTX_TOKEN": "ghp_" + "c" * 36}}},
+        "projects": {}}))
+    return h
+
+
+def test_walk_claude_inventories_plugin_skill_hook_mcp(tmp_path):
+    h = make_claude_home(tmp_path)
+    items = sa.walk_claude(h, None, None)
+    kinds = {(i["kind"], i["name"]) for i in items}
+    assert ("plugin", "plug") in kinds
+    assert ("skill", "plug:alpha") in kinds
+    assert ("mcp", "ctx") in kinds
+    hooks = [i for i in items if i["kind"] == "hook"]
+    assert len(hooks) == 2  # plugin Stop hook + user settings Stop hook
+    assert hooks[0]["meta"]["body_hash"] == hooks[1]["meta"]["body_hash"]
+
+
+def test_walk_claude_redacts_mcp_env(tmp_path):
+    h = make_claude_home(tmp_path)
+    blob = json.dumps(sa.walk_claude(h, None, None))
+    assert "ghp_" not in blob
+    mcp = next(i for i in json.loads(blob) if i["kind"] == "mcp")
+    assert mcp["meta"]["env_keys"] == ["CTX_TOKEN"]
+    assert "endpoint_hash" in mcp["meta"]
+
+
+def test_walk_claude_skill_carries_description(tmp_path):
+    h = make_claude_home(tmp_path)
+    skill = next(i for i in sa.walk_claude(h, None, None) if i["kind"] == "skill")
+    assert "Does alpha things" in skill["meta"]["description"]
