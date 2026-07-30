@@ -122,6 +122,87 @@ def test_walk_claude_skill_carries_description(tmp_path):
     assert "Does alpha things" in skill["meta"]["description"]
 
 
+# --- Gap 1: plugin-provided MCP servers ------------------------------------
+# Real-machine shape confirmed via ~/.claude/plugins/cache/claude-plugins-official/
+# playwright/unknown/.mcp.json: a FLAT {name: entry} map at the plugin root, not
+# wrapped in "mcpServers" (that wrapper is only used by project-level .mcp.json
+# and by .claude-plugin/plugin.json's "mcpServers" key). The walker must accept
+# both so it doesn't go dead the next time a plugin picks the other shape.
+def test_walk_claude_plugin_mcp_from_dotmcpjson_flat_shape_and_redacted(tmp_path):
+    h = make_claude_home(tmp_path)
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / ".mcp.json").write_text(json.dumps({
+        "pw": {"command": "npx", "args": ["@playwright/mcp@latest"],
+               "env": {"PW_TOKEN": "ghp_" + "e" * 36}}}))
+    items = sa.walk_claude(h, None, None)
+    mcp = next(i for i in items if i["kind"] == "mcp" and i["name"] == "plugin:plug:pw")
+    assert "endpoint_hash" in mcp["meta"]
+    assert mcp["meta"]["env_keys"] == ["PW_TOKEN"]
+    assert "ghp_" not in json.dumps(items)
+
+
+def test_walk_claude_plugin_mcp_from_plugin_json_location(tmp_path):
+    h = make_claude_home(tmp_path)
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / ".claude-plugin").mkdir(exist_ok=True)
+    (cache / ".claude-plugin" / "plugin.json").write_text(json.dumps({
+        "name": "plug", "mcpServers": {"aux": {"command": "aux-server"}}}))
+    items = sa.walk_claude(h, None, None)
+    assert any(i["kind"] == "mcp" and i["name"] == "plugin:plug:aux" for i in items)
+
+
+def test_walk_claude_plugin_mcp_checks_both_locations_together(tmp_path):
+    h = make_claude_home(tmp_path)
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / ".mcp.json").write_text(json.dumps({"pw": {"command": "npx"}}))
+    (cache / ".claude-plugin").mkdir(exist_ok=True)
+    (cache / ".claude-plugin" / "plugin.json").write_text(json.dumps(
+        {"mcpServers": {"aux": {"command": "aux-server"}}}))
+    names = {i["name"] for i in sa.walk_claude(h, None, None) if i["kind"] == "mcp"}
+    assert {"plugin:plug:pw", "plugin:plug:aux"}.issubset(names)
+
+
+# --- Gap 3: enabledPlugins gate --------------------------------------------
+def test_walk_claude_disabled_plugin_state_and_skips_children(tmp_path):
+    h = make_claude_home(tmp_path)
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / ".mcp.json").write_text(json.dumps({"pw": {"command": "npx"}}))
+    (h / ".claude/settings.json").write_text(json.dumps({
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": "echo hi"}]}]},
+        "enabledPlugins": {"plug@mkt": False}}))
+    items = sa.walk_claude(h, None, None)
+    plugin_items = [i for i in items if i["kind"] == "plugin" and i["name"] == "plug"]
+    assert len(plugin_items) == 1
+    assert plugin_items[0]["effective_state"] == "disabled"
+    # a disabled plugin contributes NOTHING to the loaded surface: no skill,
+    # agent, command, hook, or mcp item traceable back to it.
+    assert not any(i["kind"] == "skill" and i["name"].startswith("plug:") for i in items)
+    assert not any(i["kind"] == "mcp" and i["name"].startswith("plugin:plug:") for i in items)
+    hooks = [i for i in items if i["kind"] == "hook"]
+    assert len(hooks) == 1  # only the user settings.json Stop hook survives
+    assert hooks[0]["meta"]["owner"] == "<settings.json>"
+
+
+def test_walk_claude_enabled_plugins_absent_keeps_existing_behavior(tmp_path):
+    h = make_claude_home(tmp_path)
+    items = sa.walk_claude(h, None, None)
+    plugin_items = [i for i in items if i["kind"] == "plugin" and i["name"] == "plug"]
+    assert plugin_items[0]["effective_state"] == "enabled"
+    assert any(i["kind"] == "skill" and i["name"] == "plug:alpha" for i in items)
+
+
+def test_walk_claude_settings_local_wins_enabled_plugins_per_key(tmp_path):
+    h = make_claude_home(tmp_path)
+    (h / ".claude/settings.json").write_text(json.dumps({
+        "enabledPlugins": {"plug@mkt": True}}))
+    (h / ".claude/settings.local.json").write_text(json.dumps({
+        "enabledPlugins": {"plug@mkt": False}}))
+    items = sa.walk_claude(h, None, None)
+    plugin_items = [i for i in items if i["kind"] == "plugin" and i["name"] == "plug"]
+    assert plugin_items[0]["effective_state"] == "disabled"
+
+
 def make_codex_home(tmp_path):
     h = tmp_path / "home"
     (h / ".codex/skills/.system/sys1").mkdir(parents=True)
@@ -478,6 +559,49 @@ def test_b5_ignores_cli_absent_from_machine(tmp_path):
     inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
     hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
     assert not any(h["cli"] == "agy" for h in hits), "absent CLI must not be flagged"
+
+
+# --- Gap 2: platform gates on declared servers ------------------------------
+# Real false positive this closes: [mcp_servers.1password] platform="windows" in
+# capabilities.toml was flagged as declared-not-live on this (Linux) machine.
+CAPS_PLATFORM = ('version = 1\n[mcp_servers.ctx]\ncommand = "npx"\n'
+                  '[mcp_servers.winonly]\ncommand = "op"\nplatform = "windows"\n')
+
+
+def test_b4_platform_gate_suppresses_declared_not_live_on_wrong_platform(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_PLATFORM)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert not any(h["evidence"].get("direction") == "declared-not-live"
+                   and "winonly" in h["subjects"][0] for h in hits)
+
+
+def test_b4_platform_gate_fires_when_platform_matches(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_PLATFORM)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}, "platform": "windows"})
+    assert any(h["evidence"].get("direction") == "declared-not-live"
+               and "winonly" in h["subjects"][0] for h in hits)
+
+
+def test_b4_managed_absent_live_fires_regardless_of_platform_gate(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_PLATFORM)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "gdrive", "/c", "loaded", endpoint_hash="e")])
+    pol = {"mcp:gdrive": {"desired_state": "managed-absent", "reason": "native connector"}}
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": pol, "platform": "linux"})
+    gone = [h for h in hits if "gdrive" in h["subjects"][0]]
+    assert gone and gone[0]["evidence"]["direction"] == "managed-absent-but-live"
+
+
+def test_b5_platform_gate_suppresses_and_fires(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_PLATFORM)
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "winonly", "/c", "loaded", endpoint_hash="e"),
+        sa.item("agy", "user", "plugin", "khenrix-utils", "/g", "loaded")])
+    hits_linux = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert not any("winonly" in h["subjects"][0] for h in hits_linux)
+    hits_win = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}, "platform": "windows"})
+    assert any("winonly" in h["subjects"][0] for h in hits_win)
 
 
 def test_trigger_surface_extracts_quotes_triggers_usewhen():

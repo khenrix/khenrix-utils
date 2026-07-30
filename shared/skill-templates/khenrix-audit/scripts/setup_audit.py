@@ -19,6 +19,10 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 CLIS = ("claude", "codex", "agy")
+# Declared-server platform gate (capabilities.toml `platform =`) vs the machine
+# actually running the audit — e.g. [mcp_servers.1password] platform="windows"
+# must not be flagged declared-not-live on Linux. ctx["platform"] overrides for tests.
+_PLATFORM = {"linux": "linux", "darwin": "darwin", "win32": "windows"}.get(sys.platform, sys.platform)
 PROVENANCE = ("loaded", "catalog", "source", "rendered-artifact")
 # Verified harness semantics per CLI. A check that depends on an unverified
 # axis emits informational findings only for that CLI (fail closed, spec §4.1).
@@ -180,19 +184,28 @@ def walk_claude(home: Path, repo, git_root) -> list:
     cdir = home / ".claude"
     if not cdir.exists():
         return items
+    # enabledPlugins gate: settings.local.json wins over settings.json per-key.
+    # Read once, before the plugin loop, so a disabled plugin's install entry
+    # still surfaces (for B9 hygiene) but contributes nothing else.
+    enabled_plugins: dict = {}
+    for sfile in ("settings.json", "settings.local.json"):
+        sp = cdir / sfile
+        if sp.exists():
+            enabled_plugins.update(json.loads(sp.read_text()).get("enabledPlugins") or {})
     # plugins + their components (installed registry is the authority, not the cache)
     reg = cdir / "plugins" / "installed_plugins.json"
     if reg.exists():
         plugins = json.loads(reg.read_text()).get("plugins", {})
         for key, installs in plugins.items():
             pname = key.split("@", 1)[0]
+            disabled = enabled_plugins.get(key) is False
             for inst in installs:
                 ipath = Path(inst.get("installPath", ""))
-                st = "enabled" if ipath.exists() else "load_failed"
+                st = "disabled" if disabled else ("enabled" if ipath.exists() else "load_failed")
                 items.append(item("claude", inst.get("scope", "user"), "plugin", pname,
                                   str(ipath), "loaded", effective_state=st,
                                   version=inst.get("version", "unknown")))
-                if not ipath.exists():
+                if disabled or not ipath.exists():
                     continue
                 for smd in sorted(ipath.rglob("SKILL.md")):
                     fm = read_frontmatter(smd)
@@ -210,6 +223,29 @@ def walk_claude(home: Path, repo, git_root) -> list:
                     cfg = json.loads(hj.read_text())
                     items.extend(_hook_items("claude", "user", pname,
                                              cfg.get("hooks", cfg), str(hj)))
+                # Plugin-bundled MCP servers register as plugin:<plugin>:<server>
+                # (verified via `claude mcp list` + live plugin cache, 2026-07-30).
+                # Two declaration sites, checked BOTH: .mcp.json at the plugin root
+                # — real shape observed on this machine is a FLAT {name: entry} map
+                # (no "mcpServers" wrapper), so accept that and the wrapped form —
+                # and an "mcpServers" key in .claude-plugin/plugin.json / plugin.json.
+                mcp_p = ipath / ".mcp.json"
+                if mcp_p.exists():
+                    cfg = json.loads(mcp_p.read_text())
+                    servers = cfg["mcpServers"] if isinstance(cfg.get("mcpServers"), dict) else cfg
+                    for sname, entry in servers.items():
+                        if isinstance(entry, dict):
+                            items.append(_mcp_item("claude", "user", f"plugin:{pname}:{sname}",
+                                                   entry, str(mcp_p)))
+                for pj_rel in (".claude-plugin/plugin.json", "plugin.json"):
+                    pj = ipath / pj_rel
+                    if pj.exists():
+                        cfg = json.loads(pj.read_text())
+                        for sname, entry in (cfg.get("mcpServers") or {}).items():
+                            if isinstance(entry, dict):
+                                items.append(_mcp_item("claude", "user",
+                                                       f"plugin:{pname}:{sname}",
+                                                       entry, str(pj)))
     # user-level dirs
     for sub, kind in (("skills", "skill"), ("agents", "agent"), ("commands", "command")):
         d = cdir / sub
@@ -505,12 +541,20 @@ def check_b4_drift(inv, ctx) -> list:
                         "state-divergence", "low", "drift",
                         {"error": "no canonical repo root"}, [],
                         note="NOT EVALUATED — pass --repo-root")]
+    platform = ctx.get("platform", _PLATFORM)
     for cli in CLIS:
         live = {m["name"]: m for m in _loaded(inv, "mcp", cli) if m["scope"] == "user"}
         if not live and not any(i["cli"] == cli for i in inv["items"]):
             continue  # CLI absent on this machine — not drift
         for name in sorted(decl["mcp"]):
             if name not in live:
+                # Platform gate applies ONLY to the declared-not-live direction: a
+                # windows-only server absent on Linux isn't drift. A live server
+                # that is undeclared/managed-absent is still reportable regardless
+                # of any gate (see the loop below, which never consults `decl`).
+                gate = decl["mcp"][name].get("platform")
+                if gate and gate != platform:
+                    continue
                 out.append(finding("B4", 1, cli, "user", "mcp", [f"{cli}/{name}"],
                                    "state-divergence", "medium", "drift",
                                    {"direction": "declared-not-live"},
@@ -537,8 +581,12 @@ def check_b5_cross_cli(inv, ctx) -> list:
     decl = load_declared(ctx.get("repo_root"))
     if not decl:
         return []
+    platform = ctx.get("platform", _PLATFORM)
     present_clis = [c for c in CLIS if any(i["cli"] == c for i in inv["items"])]
     for name in sorted(decl["mcp"]):
+        gate = decl["mcp"][name].get("platform")
+        if gate and gate != platform:
+            continue
         have = {c for c in present_clis
                 if any(m["name"] == name for m in _loaded(inv, "mcp", c))}
         missing = set(present_clis) - have
