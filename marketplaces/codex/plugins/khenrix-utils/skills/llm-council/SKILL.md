@@ -253,6 +253,9 @@ flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives i
 output-parsing quirk, the fix also lives in `scripts/fanout.py`: `TOOL_PERMISSION_SENTINELS`
 (our invocation defect — a seat denied its own tool call; carries a `REASON_HINTS` fix)
 vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded),
+`AGY_STRUCTURED_TOOL_PERMISSION` (agy's own soft-deny wording — STRUCTURED-ONLY, matched
+against agy's `error` field and NEVER added to the scanned lists, since `permissions.allow`
+is a config key and `--dangerously-skip-permissions` is a flag we pass ourselves),
 `score_seat` / `MIN_SUBSTANTIVE_CHARS` (what makes a seat's answer count at all),
 `extract_claude_json` / `extract_agy_json` / `extract_codex_json` / `extract_raw`
 (how each CLI's answer is pulled out, and which of them carry structured provenance), and the
@@ -260,7 +263,7 @@ vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, ove
 `headless-invocation.md` at the plugin root; note agy's Go-style flag parser needs every
 flag *before* the positional prompt, and its real error lands in `--log-file`).
 
-Those three sentinel lists feed the SCANNED path, which is always retried; a reason taken
+Those first three sentinel lists feed the SCANNED path, which is always retried; a reason taken
 from a provider's own structured error field may be terminal when recognised
 (`STRUCTURED_TERMINAL_REASONS`). Keep every phrase NARROW — a seat reviewing this repo
 echoes these lists into its own stderr, and a match there is indistinguishable from the CLI

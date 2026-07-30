@@ -45,8 +45,13 @@ def bump_counter(path: str | None) -> int:
 
 def emit_answer(answer: str, as_: str) -> None:
     if as_ == "claude":
+        # Real claude reports `usage` and `total_cost_usd` on EVERY turn, including turns
+        # the engine then rejects — which is why a retried seat's accounting must sum all
+        # attempts rather than keep the survivor's.
         print(json.dumps({"type": "result", "subtype": "success",
-                          "is_error": False, "result": answer}))
+                          "is_error": False, "result": answer,
+                          "usage": {"input_tokens": 10, "output_tokens": 5},
+                          "total_cost_usd": 0.25}))
     else:
         print(answer)
 

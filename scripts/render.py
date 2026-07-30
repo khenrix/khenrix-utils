@@ -47,16 +47,72 @@ def plugin_dir(cli: str) -> Path:
 
 
 def parse_frontmatter(text: str) -> dict:
+    """Minimal YAML front-matter reader — including FOLDED/LITERAL block scalars.
+
+    Block scalars are not a nicety here: every skill writes its `description` as
+    `description: >-` plus indented continuation lines, because the descriptions are long
+    prose. The original reader kept only the text after the colon and skipped every
+    indented line, so it stored the literal ">-" and `validate_skill` then measured
+    len(">-") == 2. The documented "description <=1024 chars, enforced by render.py
+    --check" was therefore inert for every skill that used a block scalar — 7 of 8 — while
+    appearing to pass. A check that cannot fail is worse than no check: it is a false
+    assurance someone will rely on.
+
+    Implements the block-scalar subset YAML actually specifies, because a "close enough"
+    fold silently changes the number this gate measures:
+      `|` literal - lines joined with newlines.
+      `>` folded  - lines joined with spaces, but a BLANK line is a paragraph break and
+                    becomes a newline. Collapsing it to a space (the first version of this
+                    function) shortens the value, which is the wrong direction for a limit.
+      chomp `-` strip the trailing newline; `+` keep all; absent (clip) keep exactly one.
+    Anything else after `|`/`>` (an explicit indentation indicator) is unsupported and
+    raises rather than being silently mis-parsed.
+    """
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
     if end == -1:
         return {}
     fm = {}
-    for line in text[3:end].splitlines():
-        if ":" in line and not line.startswith(" "):
-            k, v = line.split(":", 1)
-            fm[k.strip()] = v.strip().strip('"').strip("'")
+    lines = text[3:end].splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if ":" not in line or line.startswith((" ", "\t", "-", "#")):
+            continue
+        k, v = line.split(":", 1)
+        k, v = k.strip(), v.strip()
+        if v and v[0] in "|>":
+            literal, chomp = v[0] == "|", v[1:].strip()
+            if chomp not in ("", "-", "+"):
+                raise ValueError(f"unsupported block scalar '{k}: {v}' — only |, >, "
+                                 f"and the -/+ chomp suffixes are handled")
+            raw = []
+            while i < len(lines) and (not lines[i].strip() or lines[i].startswith((" ", "\t"))):
+                raw.append(lines[i].strip())
+                i += 1
+            while raw and not raw[-1]:
+                raw.pop()
+            if literal:
+                v = "\n".join(raw)
+            else:
+                # n blank lines fold to n newlines (NOT n+1): the blank is the separator
+                # itself, so it must not also trigger a newline for the line following it.
+                out, blanks, started = "", 0, False
+                for ln in raw:
+                    if not ln:
+                        blanks += 1
+                        continue
+                    if not started:
+                        out, started = ln, True
+                    else:
+                        out += ("\n" * blanks) if blanks else " "
+                        out += ln
+                    blanks = 0
+                v = out
+            v = v + ("" if chomp == "-" else "\n")
+        fm[k] = v.strip('"').strip("'")
     return fm
 
 

@@ -189,6 +189,20 @@ NONRETRYABLE_REASONS = {"not_installed"}
 # belong here.
 STRUCTURED_TERMINAL_REASONS = {"auth_or_quota"}
 
+# agy's own words for "I soft-denied a tool that needs permission" (agy >= 1.1.3, per
+# yuting0624/antigravity-for-claude-code, which wraps the same headless mode). These are
+# STRUCTURED-ONLY on purpose and must never join TOOL_PERMISSION_SENTINELS: that list is
+# scanned against a MERGED stderr stream, and `permissions.allow` is a literal config key
+# while `--dangerously-skip-permissions` is a flag WE pass in argv — either would match a
+# seat that merely read a config file or an echoed command line, which is the phantom this
+# engine already lost a seat to. Read out of agy's own `error` field they cannot be
+# anything but the CLI speaking about itself.
+AGY_STRUCTURED_TOOL_PERMISSION = [
+    "auto-denied",
+    "permissions.allow",
+    "permission that headless",
+]
+
 # Actionable next step per failure cause, carried into the manifest so the
 # synthesizer can tell the user something better than "the seat failed".
 REASON_HINTS = {
@@ -303,6 +317,50 @@ def score_seat(output: str, prompt_token: Optional[str] = None,
     return {"status": "failed", "cause": "did_not_read_input",
             "detail": f"response never cites sentinel {prompt_token!r}",
             "hint": REASON_HINTS["did_not_read_input"]}
+
+
+def sum_usage(entries) -> Optional[dict]:
+    """Total a seat's accounting across ALL attempts. None if nothing was ever measured.
+
+    Absent stays absent: summing a reported 12k with an unreported attempt yields 12k and
+    an `attempts_measured` count, never a silent claim that the rest were free.
+    """
+    entries = [e for e in entries if e]
+    if not entries:
+        return None
+    out: dict = {}
+    for e in entries:
+        for k, v in e.items():
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = out.get(k, 0) + v
+    if out and len(entries) > 1:
+        out["attempts_measured"] = len(entries)
+    return out or None
+
+
+def usage_tag(u: Optional[dict]) -> str:
+    """Compact per-seat accounting for the summary line, or "" when nothing was reported.
+
+    Deliberately silent rather than zero-filled: a seat whose CLI reports no usage must not
+    render as "0 tok", which reads as a measurement. Cost is shown ONLY when the CLI priced
+    the turn itself (claude's total_cost_usd) — deriving one here from pricing.toml would
+    put an estimate next to two measurements in the same column, and nothing on the line
+    would say which was which.
+    """
+    if not u:
+        return ""
+    parts = []
+    tot = u.get("total")
+    if tot is None:
+        known = [u.get(k) for k in ("input", "output") if u.get(k) is not None]
+        tot = sum(known) if known else None
+    if tot is not None:
+        parts.append(f"{tot / 1000:.1f}k tok" if tot >= 1000 else f"{tot} tok")
+    if u.get("cache_read"):
+        parts.append(f"{u['cache_read'] / 1000:.0f}k cached")
+    if u.get("cost_usd") is not None:
+        parts.append(f"${u['cost_usd']:.4f}")
+    return "  " + " · ".join(parts) if parts else ""
 
 
 def council_header(manifest: dict) -> str:
@@ -651,17 +709,27 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # stdout/stderr and only logs e.g. "RESOURCE_EXHAUSTED ... Individual quota
         # reached" — run_provider scans this file to turn an opaque `empty` into a clear
         # `auth_or_quota`. print-timeout self-terminates agy on a CLEAN idle wait (e.g. a
-        # quota wall) just inside the engine timeout; capped at 120s so a quota-walled agy
-        # fails FAST. The 120s cap was calibrated on pre-1.1.1 clean-idle semantics and has
-        # held since: 1.1.1 completions ran 54-100s, and on 1.1.7 a long deep review
-        # returned in 42s (2026-07-25) — all well under it. If agy answers ever truncate
-        # near 120s, re-probe whether print-timeout became a hard wall and raise it.
+        # quota wall) just inside the engine timeout.
+        #
+        # RECALIBRATED 2026-07-30 — the fixed 120s cap is GONE. It was calibrated when
+        # completions ran 42-100s (1.1.1 / 1.1.7) and the comment here named its own
+        # trigger: "if agy answers ever truncate near 120s, re-probe and raise it". That
+        # trigger fired. On 1.1.8 EVERY agy attempt in a 10-skill eval sweep died at ~124s
+        # with agy's own structured `timeout waiting for response`, costing three skills
+        # their receipts. Re-probed directly: a SIMPLE 400-word prompt took **608 seconds**
+        # and returned SUCCESS with 2941 chars. agy is not hanging, it is ~6-10x slower
+        # than when the cap was set, so any fixed sub-engine cap now converts a slow
+        # SUCCESS into a manufactured failure — and an invalid run does not merely add
+        # noise, it fails the receipt gate closed.
+        # The fail-fast-on-a-quota-wall property is deliberately traded away: it saved
+        # ~13 minutes on a wall that the ENGINE timeout bounds anyway, at the cost of
+        # killing every legitimate answer. Re-probe before reinstating any fixed cap.
         # HISTORY: pre-1.1.1 (verified 2026-06-26), agy's headless `-p` mode
         # churned without emitting on non-trivial prompts and rode the window to `timeout`;
         # agy 1.1.1's release notes fixed `-p` hanging in subprocesses, and on 2026-07-11
         # agy completed multiple substantive council reviews in 54–97s. Timeouts can still
         # happen — treat them per the failure table, not as a certainty.
-        pt = max(5, min(int(timeout) - 5, 120))
+        pt = max(5, int(timeout) - 5)   # bounded by the ENGINE timeout, nothing tighter
         logf = str(Path(workdir) / "agy.cli.log")
         argv = ["agy", "--dangerously-skip-permissions", "--print-timeout", f"{pt}s",
                 "--output-format", "json", "--log-file", logf]
@@ -1003,6 +1071,12 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
         # speaking about itself — not a file it happened to read. Scan ONLY that field,
         # never the merged stderr, or the provenance advantage is thrown away and the
         # phantom is back. A reason derived here is eligible to be terminal.
+        low = (result_text or "").lower()
+        if any(p in low for p in AGY_STRUCTURED_TOOL_PERMISSION):
+            # Our invocation defect, not agy's wall: the seat authenticated fine and was
+            # simply never granted a tool. RETRYABLE like every other tool_permission —
+            # reproduction is the signal, and a wrong `--mode`/flag combination recurs.
+            return False, "tool_permission", result_text, True
         return False, classify_sentinel(result_text) or "agy_error", result_text, True
     if exit_code == 0:
         seat = score_seat(result_text, spec.sentinel, spec.min_chars)
@@ -1089,6 +1163,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                     structured = False
             _write_attempt(workdir, spec.name, n, stdout, stderr)
             attempt_log.append({"attempt": n, "reason": reason,
+                                "usage": extract_usage(spec.name, stdout),
                                 "exit_code": exit_code, "duration_sec": dur})
             final.update(stdout=stdout, stderr=stderr, exit_code=exit_code,
                          reason=reason, result_text=result_text, valid=valid,
@@ -1135,9 +1210,14 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         # provider's own error field from one scanned out of a merged stream — which is
         # the entire basis for trusting it, and what decides whether it may be terminal.
         "structured": final["structured"],
-        # Measured, not estimated — None when this engine has not verified a usage field
-        # for that CLI (claude today). See extract_usage.
-        "usage": extract_usage(spec.name, final["stdout"]),
+        # Measured, not estimated — None when a CLI's envelope carries no usage object,
+        # or when the seat's stdout did not parse. All three seats are handled today.
+        # Summed over EVERY attempt: a retried seat really did spend its earlier attempts,
+        # and reporting only the survivor put an undercount on the same line as "3x" and
+        # called it a total. This function refuses to derive cost from pricing.toml
+        # precisely so a measurement is never mixed with an estimate — an undercount
+        # presented as a total is the same lie by a shorter route.
+        "usage": sum_usage(a.get("usage") for a in attempt_log),
         "hint": REASON_HINTS.get(final["reason"]),
         "result_text": _truncate(final["result_text"]),
         "result_file": str(result_file),
@@ -1229,7 +1309,16 @@ def _render_text(manifest: dict) -> str:
         mark = "✓" if p["valid"] else "✗"
         meta = f"{p.get('model') or '-'}/{p.get('thinking') or '-'}"
         lines.append(f"  {mark} {p['name']:<7} {p['reason']:<14} {p['attempts']}x  "
-                     f"{p['duration_sec']}s  {meta}  → {p['result_file']}")
+                     f"{p['duration_sec']}s  {meta}{usage_tag(p.get('usage'))}"
+                     f"  → {p['result_file']}")
+    # Council total, but ONLY over seats that actually priced themselves — a sum that
+    # silently omitted the unpriced seats would understate the run while looking complete.
+    priced = [p for p in manifest["providers"] if (p.get("usage") or {}).get("cost_usd") is not None]
+    if priced:
+        tot = sum(p["usage"]["cost_usd"] for p in priced)
+        n, all_n = len(priced), len(manifest["providers"])
+        scope = "all seats" if n == all_n else f"{n} of {all_n} seats — the rest do not report cost"
+        lines.append(f"  cost: ${tot:.4f} ({scope})")
     return "\n".join(lines)
 
 
@@ -1436,6 +1525,19 @@ def self_test() -> int:
     check("flaky: recovers to valid", ag["valid"])
     check("flaky: took 3 attempts", ag["attempts"] == 3)
 
+    # S6b — a RETRIED seat's accounting must cover every attempt. Guards the WIRING, not
+    # just sum_usage: reverting the record to the survivor's usage alone must fail here.
+    m = run_council([_stub_spec("claude", "ok", as_="claude", answer="short",
+                                min_chars=400)],
+                    retries=2, timeout=5, backoff=0.05, workdir=wd("usagesum"),
+                    prompt="hi")
+    _u = m["providers"][0].get("usage") or {}
+    check("usage: a retried seat's record sums ALL attempts, not just the last",
+          m["providers"][0]["attempts"] == 3 and _u.get("cost_usd") == 0.75
+          and _u.get("input") == 30)
+    check("usage: and it discloses how many attempts were measured",
+          _u.get("attempts_measured") == 3)
+
     # S7 — not installed: fast-fail, no retry.
     m = run_council([ProviderSpec("agy", ["/nonexistent/xyz-not-a-binary"], None, extract_raw)],
                     retries=2, timeout=5, backoff=0.05, workdir=wd("not_installed"),
@@ -1546,6 +1648,19 @@ def self_test() -> int:
     ag14m = build_real_spec("agy", "q", 30,
                             {"agy": {"model": "Gemini 3.5 Flash (High)", "thinking": "high"}},
                             wd("ro"))
+    # print-timeout must track the ENGINE timeout, not a fixed ceiling. The old 120s cap
+    # killed every agy attempt in a real sweep (measured 2026-07-30: agy needs ~608s on a
+    # simple prompt), and an invalid run fails the receipt gate closed rather than just
+    # adding noise.
+    for _t in (300, 900, 1200):
+        _sp = build_real_spec("agy", "p", _t, {}, "/tmp")
+        _pt = _sp.argv[_sp.argv.index("--print-timeout") + 1]
+        check(f"agy: print-timeout tracks the engine timeout ({_t}s -> {_pt})",
+              _pt == f"{_t - 5}s")
+    check("agy: print-timeout is never below a usable floor",
+          build_real_spec("agy", "p", 3, {}, "/tmp").argv[
+              build_real_spec("agy", "p", 3, {}, "/tmp").argv.index("--print-timeout") + 1] == "5s")
+
     check("agy: per-run --model passed and precedes the prompt (1.1.1)",
           "--model" in ag14m.argv and "Gemini 3.5 Flash (High)" in ag14m.argv
           and ag14m.argv.index("--model") < ag14m.argv.index("-p")
@@ -1785,6 +1900,24 @@ def self_test() -> int:
           and extract_usage("codex", "not json") is None
           and extract_usage("agy", "") is None)
     _agy_spec = ProviderSpec("agy", ["x"], None, extract_agy_json, None, None)
+    # agy soft-deny, read from its STRUCTURED error field (agy >= 1.1.3).
+    _deny = json.dumps({"status": "ERROR",
+                        "error": "Tool ReadFile was auto-denied: add it to permissions.allow"})
+    check("agy: a structured soft-deny classifies as tool_permission, not a generic error",
+          evaluate(1, _deny, "", _agy_spec)[1] == "tool_permission")
+    check("agy: that classification is marked STRUCTURED (it came from agy's own field)",
+          evaluate(1, _deny, "", _agy_spec)[3] is True)
+    check("agy: tool_permission stays RETRYABLE — reproduction is the signal",
+          "tool_permission" not in STRUCTURED_TERMINAL_REASONS
+          and "tool_permission" not in NONRETRYABLE_REASONS)
+    # The phrases must NOT leak into the stderr-scanned path: `permissions.allow` is a
+    # config key and the skip-permissions flag is in our own argv.
+    check("agy: soft-deny phrases are structured-only, never merged-stderr sentinels",
+          not any(p in [x.lower() for x in TOOL_PERMISSION_SENTINELS]
+                  for p in AGY_STRUCTURED_TOOL_PERMISSION))
+    check("agy: a seat that merely PRINTS the phrase on stderr is not classified by it",
+          classify_sentinel("I read a config containing permissions.allow") is None)
+
     # `status` decides independently of the exit code. (An earlier comment here claimed agy
     # exits 0 on a hard error "verified"; that was measured off a PIPELINE and is retracted
     # — both CLIs exit 1. Reading status is defence in depth, not a fix for a lying rc.)
@@ -1989,6 +2122,44 @@ def self_test() -> int:
                           for n in ("claude", "codex", "agy")]}
     check("seat: full panel header says 3 of 3 with no degraded note",
           council_header(full) == "**Council: 3 of 3 seats responded.**")
+
+    # --- usage_tag: silent when unmeasured, never zero-filled ---
+    check("usage-sum: a retried seat totals EVERY attempt, not just the survivor",
+          sum_usage([{"input": 10, "cost_usd": 1.0}, {"input": 5, "cost_usd": 0.5}])
+          == {"input": 15, "cost_usd": 1.5, "attempts_measured": 2})
+    check("usage-sum: an unmeasured attempt is skipped, never counted as zero",
+          sum_usage([None, {"input": 7}]) == {"input": 7})
+    check("usage-sum: nothing measured at all stays None",
+          sum_usage([None, None]) is None and sum_usage([]) is None)
+    check("usage-sum: a single attempt carries no misleading attempts_measured tag",
+          sum_usage([{"input": 3}]) == {"input": 3})
+    check("usage-tag: nothing reported renders NOTHING, not '0 tok'",
+          usage_tag(None) == "" and usage_tag({}) == "")
+    check("usage-tag: prefers the CLI's own total over summing parts",
+          "9.0k tok" in usage_tag({"input": 1, "output": 1, "total": 9000}))
+    check("usage-tag: falls back to input+output when no total is given",
+          "1.5k tok" in usage_tag({"input": 1000, "output": 500}))
+    check("usage-tag: shows cost only when the CLI priced the turn itself",
+          "$0.1234" in usage_tag({"total": 10, "cost_usd": 0.1234})
+          and "$" not in usage_tag({"total": 10}))
+    # A council total that quietly omitted unpriced seats would understate the run.
+    _mixed = {"summary": {"valid": 2, "requested": 2, "header": "H"},
+              "config": {},
+              "providers": [
+                  {"name": "claude", "valid": True, "reason": "ok", "attempts": 1,
+                   "duration_sec": 1.0, "result_file": "/x",
+                   "usage": {"total": 10, "cost_usd": 0.5}},
+                  {"name": "agy", "valid": True, "reason": "ok", "attempts": 1,
+                   "duration_sec": 1.0, "result_file": "/y", "usage": {"total": 99}}]}
+    _out = _render_text(_mixed)
+    check("usage: the council total says how many seats it actually covers",
+          "$0.5000" in _out and "1 of 2 seats" in _out)
+    check("usage: an all-unpriced panel prints no cost line at all",
+          "cost:" not in _render_text(
+              {"summary": {"valid": 1, "requested": 1, "header": "H"}, "config": {},
+               "providers": [{"name": "agy", "valid": True, "reason": "ok", "attempts": 1,
+                              "duration_sec": 1.0, "result_file": "/y",
+                              "usage": {"total": 99}}]}))
 
     # S18c — sentinel plumbing: default floor is real, main() injects a unique token,
     # and the instruction reaches every seat's argv while preserving the prompt.

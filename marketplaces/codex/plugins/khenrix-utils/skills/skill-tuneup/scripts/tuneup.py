@@ -301,15 +301,30 @@ def triage_recommendation(rows: list[dict]) -> str:
     """
     if not rows:
         return "no skills found."
+    # Missing AGE is not missing EVIDENCE. Most of the score (receipt state, stale model
+    # ids, the line budget) never touches git, so a board whose ages all failed to resolve
+    # can still hold a decisive signal — suppressing the recommendation there withheld an
+    # answer the tool had good grounds for. The age gap becomes a NOTE on the answer, and
+    # only an all-unknown board with nothing else to say degrades to the bare diagnosis.
     # `"age_days" in r`, not `.get(...) is None`: an ABSENT key is a caller that did not
-    # report an age, not a checkout whose age is unknown. triage() always sets the key, so
-    # the diagnosis fires on real evidence and never on a partially-built row.
-    if all("age_days" in r and r["age_days"] is None for r in rows):
-        return ("baseline age is UNKNOWN for every skill — git failed or this is not a "
-                "checkout with history. The ranking is unreliable; fix that before "
-                "choosing a target.")
+    # report an age, not a checkout whose age is unknown. triage() always sets the key.
+    unknown = [r for r in rows if "age_days" in r and r["age_days"] is None]
     if rows[0]["score"] > 0:
-        return f"recommend: deep tune-up of '{rows[0]['skill']}' first"
+        note = ""
+        if len(unknown) == len(rows):
+            note = ("  (note: baseline age is UNKNOWN for every skill — git failed, so the "
+                    "age component of the ranking is missing; the rest of the score stands)")
+        elif unknown:
+            note = f"  (note: baseline age is unknown for {len(unknown)} of {len(rows)} skills)"
+        return f"recommend: deep tune-up of '{rows[0]['skill']}' first{note}"
+    if len(unknown) == len(rows):
+        return ("baseline age is UNKNOWN for every skill — git failed or this is not a "
+                "checkout with history. No other signal fired either, but the ranking is "
+                "incomplete: fix that before concluding there is nothing to do.")
+    if unknown:
+        # No signal fired, but some evidence never arrived — an all-clear would overclaim.
+        return (f"no staleness signal fired, but baseline age is unknown for "
+                f"{len(unknown)} of {len(rows)} skills — the all-clear is INCOMPLETE.")
     return "no skill shows a staleness signal — nothing to tune up."
 
 
@@ -365,7 +380,11 @@ DECISIONS = {"applied", "rejected", "deferred"}
 # lock is held. It is also untracked, so `git add -A` would commit it and render.py would
 # copy it into all three marketplaces.
 LOCK_DIR = Path.home() / ".cache" / "khenrix-utils" / "skill-tuneup.lock.d"
-# Must strictly exceed the longest UNATTENDED step, or a LIVE run's lock becomes stealable. MODE_TIMEOUT["deep"] is 1200s and --retries defaults to 2, so one fan-out is
+# Must strictly exceed the longest step a run can take BETWEEN REFRESHES, or a LIVE run's
+# lock becomes stealable. It does NOT cover Step 7's CHECKPOINT: that is a human wait, so
+# it is unbounded and no window can. Step 7 therefore refreshes immediately before
+# presenting the checkpoint AND immediately on resume, which is what turns an unbounded
+# wait back into a bounded gap. `lock status` samples the age without acquiring. MODE_TIMEOUT["deep"] is 1200s and --retries defaults to 2, so one fan-out is
 # up to 3 x 1200 = 60 min; Step 6's own "deep + retries 1" guidance for tuning this
 # machinery is 40. The eval run is LONGER than this window — eval_harness iterates cases
 # serially across providers and both conditions — and is deliberately not covered by it:
@@ -424,6 +443,25 @@ def lock_refresh(owner: str) -> tuple[bool, str]:
         return False, f"lock was STOLEN — now held by {cur}"
     os.utime(LOCK_DIR, None)
     return True, owner
+
+
+def lock_status() -> dict:
+    """Read-only view of the lock. NEVER acquires, never steals, never writes.
+
+    It exists because sampling the age used to require `lock acquire` — the one command
+    that REMOVES a lock older than the stale window. So the documented way to diagnose
+    "is the holder alive?" was also the way to destroy it, and past 90 minutes the
+    diagnostic *was* the theft. A question must not be answerable only by an action.
+    """
+    if not LOCK_DIR.is_dir():
+        return {"held": False}
+    tok = LOCK_DIR / "owner"
+    return {
+        "held": True,
+        "owner": tok.read_text().strip() if tok.is_file() else None,
+        "age_min": round((time.time() - LOCK_DIR.stat().st_mtime) / 60, 1),
+        "stale_after_min": LOCK_STALE_MIN,
+    }
 
 
 def lock_release(owner: str) -> tuple[bool, str]:
@@ -1048,6 +1086,30 @@ def _self_test() -> int:
     ok.append(("triage: a MIXED board still recommends, not diagnoses",
                "recommend" in triage_recommendation(_mixed)
                and "UNKNOWN for every skill" not in triage_recommendation(_mixed)))
+    # A real signal must survive a TOTAL age blackout: score 55 comes from receipt state,
+    # stale model ids and the line budget, none of which touch git. Suppressing the
+    # recommendation there withheld an answer the tool had good grounds for.
+    _blackout = [{"skill": "stale-one", "score": 55, "age_days": None},
+                 {"skill": "other", "score": 10, "age_days": None}]
+    ok.append(("triage: a decisive signal SURVIVES an all-unknown age board",
+               "recommend" in triage_recommendation(_blackout)
+               and "stale-one" in triage_recommendation(_blackout)))
+    ok.append(("triage: and it discloses that the age component is missing",
+               "age component" in triage_recommendation(_blackout)))
+    ok.append(("triage: an all-unknown board with NO signal is still the bare diagnosis",
+               "recommend" not in triage_recommendation(
+                   [{"skill": "a", "score": 0, "age_days": None}])))
+    ok.append(("triage: a partial blackout with no signal refuses a clean all-clear",
+               "INCOMPLETE" in triage_recommendation(
+                   [{"skill": "a", "score": 0, "age_days": None},
+                    {"skill": "b", "score": 0, "age_days": 3.0}])))
+    ok.append(("triage: a fully-known board with no signal IS a clean all-clear",
+               triage_recommendation([{"skill": "a", "score": 0, "age_days": 3.0}])
+               == "no skill shows a staleness signal — nothing to tune up."))
+    ok.append(("triage: a partial blackout WITH a signal names how many are unknown",
+               "1 of 2" in triage_recommendation(
+                   [{"skill": "a", "score": 40, "age_days": None},
+                    {"skill": "b", "score": 0, "age_days": 3.0}])))
     with tempfile.TemporaryDirectory() as td:
         try:
             triage(Path(td))
@@ -1071,6 +1133,26 @@ def _self_test() -> int:
     # still admitted values a single legal fan-out can exhaust. The number in the failure
     # table and the number here have to be the same number.
     ok.append(("lock: the staleness window is the documented 90 min", LOCK_STALE_MIN == 90))
+    # lock status must be a QUESTION, never an action: it is the answer to "is the holder
+    # alive?", and the old answer (`lock acquire`) destroyed the lock past the window.
+    with tempfile.TemporaryDirectory() as _std:
+        _saved = LOCK_DIR
+        try:
+            globals()["LOCK_DIR"] = Path(_std) / "lock.d"
+            ok.append(("lock status: reports not-held without creating anything",
+                       lock_status() == {"held": False} and not LOCK_DIR.exists()))
+            _got, _tok = lock_acquire()
+            _st = lock_status()
+            ok.append(("lock status: reports the holder and an age",
+                       _st["held"] and _st["owner"] == _tok and _st["age_min"] >= 0))
+            _old = time.time() - 999 * 60
+            os.utime(LOCK_DIR, (_old, _old))
+            ok.append(("lock status: does NOT steal a lock far past the stale window",
+                       lock_status()["held"] and LOCK_DIR.is_dir()
+                       and (LOCK_DIR / "owner").read_text().strip() == _tok))
+        finally:
+            shutil.rmtree(LOCK_DIR, ignore_errors=True)
+            globals()["LOCK_DIR"] = _saved
     # Exercise the boundary through lock_acquire's DEFAULT, so the failure-table's "older
     # than 90 min" and the constant cannot drift apart, and so a change to the default
     # argument is caught too. 89 -> still held; 91 -> stolen.
@@ -1367,7 +1449,7 @@ def main(argv=None) -> int:
             sp.add_argument("--approved", default="", help="extra approved ids, comma-separated")
         sp.add_argument("--json", action="store_true")
     kp = sub.add_parser("lock")
-    kp.add_argument("action", choices=["acquire", "refresh", "release"])
+    kp.add_argument("action", choices=["acquire", "refresh", "release", "status"])
     kp.add_argument("--owner", default="")
     cp = sub.add_parser("convergence-status")
     cp.add_argument("--repo", required=True)
@@ -1398,6 +1480,14 @@ def main(argv=None) -> int:
         ap.print_help()
         return 2
     if args.cmd == "lock":  # the only command with no --repo
+        if args.action == "status":
+            st = lock_status()
+            if not st["held"]:
+                print("no lock held")
+                return 0
+            print(f"held by {st['owner'] or 'unknown'} ({st['age_min']} min old; "
+                  f"the next acquire steals it above {st['stale_after_min']} min)")
+            return 0
         if args.action == "acquire":
             ok, info = lock_acquire()
             print(f"OWNER={info}" if ok else f"  ✗ lock not acquired: {info}")

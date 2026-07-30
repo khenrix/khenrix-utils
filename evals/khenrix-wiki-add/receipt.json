@@ -1,17 +1,21 @@
 {
   "skill": "khenrix-wiki-add",
-  "source_hash": "5f5ac244a35160b3a65909d386e0d48e1b7dee84d24f99ade0feae0e0a6e935b",
+  "source_hash": "e80b6d4e21e9a3dd5f6a6ee185ce68694a127c98f3c1dd489e73ea8dd683d12d",
   "eval_set_hash": "aed9f752fefb80217ee70a83ac3018f6773829b8035782402a6e1fd18a265ef5",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1111,
+  "delta_pass_rate": 0.0741,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "models": {
     "claude": "claude-opus-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
     "judge": "claude-opus-5"
   },
   "deterministic_gate": "wikisync-unittests",

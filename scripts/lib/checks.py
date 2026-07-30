@@ -283,11 +283,51 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
     return ["(advisory) " + m for m in out] if advisory else out
 
 
+def _raises(fn, exc) -> bool:
+    try:
+        fn()
+    except exc:
+        return True
+    except Exception:  # noqa: BLE001 - a DIFFERENT error is not the contract either
+        return False
+    return False
+
+
 def _self_test() -> int:
     ok = []
     ok.append(("secret regex detects slack", any(rx.search("xoxp-1234567890abcde") for rx in SECRET_FAIL)))
     ok.append(("secret regex ignores prose", not any(rx.search("the quick brown fox jumps") for rx in SECRET_FAIL)))
     ok.append(("secret regex detects AKIA", any(rx.search("AKIAIOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
+    # render.parse_frontmatter must FOLD block scalars. It did not, so `description: >-`
+    # measured as len(">-") == 2 and the documented 1024-char limit was inert for 7 of 8
+    # skills while appearing to pass. A check that cannot fail is a false assurance.
+    # These assert REAL YAML semantics: the first version of this test asserted the
+    # implementation's own (wrong) output for `|` and `>`, which made the regression test
+    # authoritative for the bug it was meant to prevent.
+    import importlib.util as _ilu
+    _sp = _ilu.spec_from_file_location("_render", ROOT / "scripts" / "render.py")
+    _rn = _ilu.module_from_spec(_sp); sys.modules["_render"] = _rn; _sp.loader.exec_module(_rn)
+
+    def _fm(ind: str, body: str = "  one\n  two\n") -> str:
+        return _rn.parse_frontmatter(f"---\nd: {ind}\n{body}---\n")["d"]
+
+    for _ind, _want in (("|", "one\ntwo\n"), ("|-", "one\ntwo"),
+                        (">", "one two\n"), (">-", "one two")):
+        ok.append((f"frontmatter: `{_ind}` folds and chomps per YAML ({_want!r})",
+                   _fm(_ind) == _want))
+    ok.append(("frontmatter: a blank line in a folded scalar is ONE newline, not two",
+               _fm(">-", "  one\n\n  two\n") == "one\ntwo"))
+    ok.append(("frontmatter: two blank lines fold to two newlines",
+               _fm(">-", "  one\n\n\n  two\n") == "one\n\ntwo"))
+    ok.append(("frontmatter: a plain scalar is untouched",
+               _rn.parse_frontmatter("---\nd: plain text\n---\n")["d"] == "plain text"))
+    ok.append(("frontmatter: an unsupported block form RAISES rather than mis-parsing",
+               _raises(lambda: _rn.parse_frontmatter("---\nd: >2\n  x\n---\n"), ValueError)))
+    # The regression guard proper: a block scalar must measure at its REAL length, not 2.
+    ok.append(("frontmatter: a block scalar is measured at full length, not 2",
+               len(_rn.parse_frontmatter(
+                   "---\ndescription: >-\n" + "  word word word\n" * 100 + "---\n"
+               )["description"]) > 1024))
     # pricing_coverage value shapes. A one-time probe proves the edit; these stop a revert.
     # Driven through a temp root because the function reads both files from disk. Each
     # table is COMPLETE (all four rates present) so only the value test can reject it —

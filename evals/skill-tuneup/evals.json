@@ -46,8 +46,9 @@
         "Runs make eval SKILL=<target> until green so evals/<target>/receipt.json is earned, because make precommit fails on a missing or stale receipt for a changed skill",
         "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user",
         "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of council review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
-        "Uses git diff HEAD (or equivalent) when building the review material, so an already-staged tree does not read as an empty diff and skip the mandatory review"
-      ]
+        "Builds the review material with the engine's `review-material` subcommand (or, equivalently, `git diff HEAD` plus untracked files) rather than bare `git diff` \u2014 and names the hazard: a fully staged tree reads as an EMPTY diff, which is exactly what tells Step 9 there is nothing to review, silently skipping a mandatory review"
+      ],
+      "notes": "Assertion 5 accepts the delegation the skill actually mandates; the discriminating part is naming the staged-tree hazard, which a baseline executor has no reason to know. Reworded 2026-07-29 after it failed 3/3 with-skill seats by grading a behaviour the skill had deliberately replaced."
     },
     {
       "id": 4,
