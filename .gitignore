@@ -29,3 +29,6 @@ docs/environment/observed-state.json
 
 # SDD scratch (session ledger + briefs)
 .superpowers/
+
+# khenrix-audit per-run artifacts (machine state; ledger.json IS committed)
+docs/setup-audit/runs/

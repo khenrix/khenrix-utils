@@ -764,3 +764,124 @@ def test_b15_flags_same_skill_two_paths():
         sa.item("claude", "user", "skill", "pa:dup", "/a", "loaded", description="same text"),
         sa.item("claude", "user", "skill", "dup", "/b", "loaded", description="same text")])
     assert len(sa.check_b15_dual_path(inv, {})) == 1
+
+
+# --- ledger: sole writer, fingerprint waivers, suppression ----------------
+def _ledger_ctx(tmp_path, entries=None, policies=None):
+    repo = tmp_path / "ku"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "shared/skills").mkdir(parents=True)
+    (repo / "capabilities.toml").write_text("version = 1\n")
+    (repo / "docs/setup-audit").mkdir(parents=True)
+    (repo / "docs/setup-audit/ledger.json").write_text(json.dumps(
+        {"schema_version": 1, "entries": entries or {}, "policies": policies or {}}))
+    home = tmp_path / "home"
+    home.mkdir()
+    return {"repo_root": repo, "home": home, "now": "2026-08-01T00:00:00Z"}
+
+
+def _wf(**kw):
+    base = dict(rule="B6", rule_version=1, cli="claude", scope="user", kind="skill",
+                subjects=["a", "b"], consequence="wrong-tool-fires", confidence="low",
+                justification="correctness", evidence={"cosine": 0.4}, remediation=[])
+    base.update(kw)
+    return sa.finding(**base)
+
+
+def test_waiver_suppresses_matching_fingerprint(tmp_path):
+    f = _wf()
+    ctx = _ledger_ctx(tmp_path, entries={f["id"]: {
+        "disposition": "waived", "fingerprint": f["fingerprint"],
+        "until": "2026-12-31T00:00:00Z", "reason": "deliberate"}})
+    ctx.update(sa.load_ledger(ctx))
+    kept = sa.apply_ledger([f], ctx)
+    assert kept == [] and ctx["waived"][0]["id"] == f["id"]
+
+
+def test_stale_fingerprint_reraises(tmp_path):
+    f = _wf(evidence={"cosine": 0.9})
+    ctx = _ledger_ctx(tmp_path, entries={f["id"]: {
+        "disposition": "waived", "fingerprint": "outdated0", "until": "2026-12-31T00:00:00Z",
+        "reason": "old"}})
+    ctx.update(sa.load_ledger(ctx))
+    kept = sa.apply_ledger([f], ctx)
+    assert kept and "situation changed" in kept[0]["note"]
+
+
+def test_expired_waiver_reraises(tmp_path):
+    f = _wf()
+    ctx = _ledger_ctx(tmp_path, entries={f["id"]: {
+        "disposition": "waived", "fingerprint": f["fingerprint"],
+        "until": "2026-07-01T00:00:00Z", "reason": "was deferred"}})
+    ctx.update(sa.load_ledger(ctx))
+    kept = sa.apply_ledger([f], ctx)
+    assert kept and "waiver expired" in kept[0]["note"]
+
+
+def test_ledger_add_is_atomic_and_loadable(tmp_path):
+    ctx = _ledger_ctx(tmp_path)
+    rc = sa.main(["ledger-add", "--home-root", str(ctx["home"]),
+                  "--repo-root", str(ctx["repo_root"]), "--id", "abc123def456",
+                  "--state", "waived", "--reason", "test", "--fingerprint", "ff00ff00",
+                  "--until", "2026-12-31T00:00:00Z"])
+    assert rc == 0
+    led = json.loads((ctx["repo_root"] / "docs/setup-audit/ledger.json").read_text())
+    assert led["entries"]["abc123def456"]["reason"] == "test"
+
+
+def test_policies_flow_from_ledger(tmp_path):
+    ctx = _ledger_ctx(tmp_path, policies={
+        "mcp:gdrive": {"desired_state": "managed-absent", "reason": "native connector"}})
+    loaded = sa.load_ledger(ctx)
+    assert loaded["policies"]["mcp:gdrive"]["desired_state"] == "managed-absent"
+
+
+def test_ledger_expire_never_deletes_but_updates_until(tmp_path):
+    ctx = _ledger_ctx(tmp_path, entries={"abc123def456": {
+        "disposition": "waived", "fingerprint": "ff00ff00", "reason": "test",
+        "until": "2026-12-31T00:00:00Z", "created": "2026-07-01T00:00:00Z", "machine": ""}})
+    rc = sa.main(["ledger-expire", "--home-root", str(ctx["home"]),
+                  "--repo-root", str(ctx["repo_root"]), "--id", "abc123def456",
+                  "--now", "2026-08-15T00:00:00Z"])
+    assert rc == 0
+    led = json.loads((ctx["repo_root"] / "docs/setup-audit/ledger.json").read_text())
+    entry = led["entries"]["abc123def456"]
+    assert entry["until"] == "2026-08-15T00:00:00Z"
+    assert entry["reason"] == "test"  # history preserved — never deleted
+
+
+def test_cmd_findings_end_to_end_suppresses_waived_finding_into_waived_list(tmp_path):
+    """Pins apply_ledger's placement in cmd_findings: a waived finding must be
+    absent from the written doc's findings AND present in its waived list."""
+    def one_check(inv, ctx):
+        return [sa.finding("B9", 1, "claude", "user", "plugin", ["p1"],
+                           "hygiene", "low", "correctness", {"issue": "x"}, [])]
+
+    probe = sa.finding("B9", 1, "claude", "user", "plugin", ["p1"],
+                       "hygiene", "low", "correctness", {"issue": "x"}, [])
+    repo = tmp_path / "ku"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "shared/skills").mkdir(parents=True)
+    (repo / "capabilities.toml").write_text("version = 1\n")
+    (repo / "docs/setup-audit").mkdir(parents=True)
+    (repo / "docs/setup-audit/ledger.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entries": {probe["id"]: {"disposition": "waived", "fingerprint": probe["fingerprint"],
+                                   "until": "2026-12-31T00:00:00Z", "reason": "deliberate"}},
+        "policies": {}}))
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "findings.json"
+    saved = sa.CHECKS[:]
+    sa.CHECKS[:] = [one_check]
+    try:
+        rc = sa.main(["findings", "--home-root", str(home), "--repo-root", str(repo),
+                      "--now", "2026-07-30T00:00:00Z", "--out", str(out)])
+    finally:
+        sa.CHECKS[:] = saved
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    assert doc["findings"] == []
+    assert doc["counts"]["findings"] == 0
+    assert doc["waived"] and doc["waived"][0]["id"] == probe["id"]
+    assert doc["local_waivers"] == 0

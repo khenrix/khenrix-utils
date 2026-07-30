@@ -1,0 +1,11 @@
+{
+ "schema_version": 1,
+ "entries": {},
+ "policies": {
+  "mcp:google-drive": {
+   "desired_state": "managed-absent",
+   "reason": "Removed from capabilities.toml 2026-07-20: redundant with the native claude.ai Drive connector. Still live in ~/.claude.json and ~/.codex/config.toml — must keep firing until removed there.",
+   "created": "2026-07-30T00:00:00Z"
+  }
+ }
+}

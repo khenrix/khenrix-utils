@@ -898,13 +898,117 @@ def write_findings(findings, inv, path, ctx) -> None:
            "inventory_hash": vhash(canonical_json(inv["items"])),
            "counts": {"items": len(inv["items"]), "findings": len(findings),
                       "errors": len(inv["errors"])},
-           "errors": inv["errors"], "findings": findings}
+           "errors": inv["errors"], "findings": findings,
+           "waived": ctx.get("waived", []), "local_waivers": ctx.get("local_waivers", 0)}
     text = json.dumps(doc, indent=1, sort_keys=True)
     leaked = scan_artifact_text(text)
     if leaked:
         sys.exit(f"REFUSING to write {path}: secret-shaped strings survived "
                  f"sanitization: {leaked}")
     Path(path).write_text(text)
+
+
+# --- ledger -----------------------------------------------------------------
+def ledger_paths(ctx):
+    repo = ctx.get("repo_root")
+    repo_l = Path(repo) / "docs" / "setup-audit" / "ledger.json" if repo else None
+    local_l = Path(ctx["home"]) / ".local" / "state" / "khenrix" / "ledger.local.json"
+    return repo_l, local_l
+
+
+def _read_ledger(p: Path | None) -> dict:
+    if p and p.exists():
+        return json.loads(p.read_text())
+    return {"schema_version": SCHEMA_VERSION, "entries": {}, "policies": {}}
+
+
+def load_ledger(ctx) -> dict:
+    repo_l, local_l = ledger_paths(ctx)
+    merged = {"entries": {}, "policies": {}}
+    n_local = 0
+    for p in (repo_l, local_l):
+        d = _read_ledger(p)
+        merged["entries"].update(d.get("entries", {}))
+        merged["policies"].update(d.get("policies", {}))
+        if p == local_l:
+            n_local = len(d.get("entries", {}))
+    merged["local_waivers"] = n_local
+    merged["waived"] = []
+    return merged
+
+
+def apply_ledger(findings, ctx):
+    entries = ctx.get("entries", {})
+    now = ctx.get("now", "")
+    kept = []
+    for f in findings:
+        e = entries.get(f["id"])
+        if not e or e.get("disposition") not in ("waived", "wontfix"):
+            kept.append(f)
+            continue
+        if e.get("fingerprint") != f["fingerprint"]:
+            f["note"] = (f["note"] + " " if f["note"] else "") + \
+                "waiver stale — situation changed"
+            kept.append(f)
+        elif e["disposition"] == "waived" and e.get("until") and e["until"] <= now:
+            f["note"] = (f["note"] + " " if f["note"] else "") + \
+                f"waiver expired {e['until']}"
+            kept.append(f)
+        else:
+            ctx.setdefault("waived", []).append(
+                {"id": f["id"], "slug": f["slug"], "reason": e.get("reason", "")})
+    return kept
+
+
+def ledger_write(path: Path, doc: dict) -> None:
+    """Atomic, lock-guarded: the engine is the ONLY ledger writer across all CLIs."""
+    import os
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_suffix(".lock")
+    if lock.exists():
+        sys.exit(f"ledger locked by another writer: {lock} (remove if stale)")
+    lock.write_text(str(os.getpid()))
+    try:
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(doc, indent=1, sort_keys=True))
+        os.replace(tmp, path)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def cmd_ledger_add(args) -> int:
+    ctx = {"repo_root": resolve_repo_root(args.repo_root), "home": Path(args.home_root)}
+    repo_l, local_l = ledger_paths(ctx)
+    target = local_l if args.local else repo_l
+    if target is None:
+        sys.exit("ledger-add needs --repo-root (canonical checkout) or --local")
+    doc = _read_ledger(target)
+    if args.subject:  # a desired-state policy, keyed kind:name
+        doc.setdefault("policies", {})[args.subject] = {
+            "desired_state": args.desired_state, "reason": args.reason,
+            "created": now_utc(args)}
+    else:
+        doc.setdefault("entries", {})[args.id] = {
+            "disposition": args.state, "fingerprint": args.fingerprint,
+            "reason": args.reason, "until": args.until,
+            "created": now_utc(args), "machine": args.machine}
+    ledger_write(target, doc)
+    print(f"ledger: recorded in {target}")
+    return 0
+
+
+def cmd_ledger_expire(args) -> int:
+    ctx = {"repo_root": resolve_repo_root(args.repo_root), "home": Path(args.home_root)}
+    repo_l, local_l = ledger_paths(ctx)
+    target = local_l if args.local else repo_l
+    doc = _read_ledger(target)
+    e = doc.get("entries", {}).get(args.id)
+    if not e:
+        sys.exit(f"no ledger entry {args.id}")
+    e["until"] = now_utc(args)   # never delete — history is the audit trail
+    ledger_write(target, doc)
+    print(f"ledger: {args.id} expired")
+    return 0
 
 
 def cmd_findings(args) -> int:
@@ -915,15 +1019,12 @@ def cmd_findings(args) -> int:
            "context_window": args.context_window}
     if args.tokens_file:
         ctx["tokens"] = json.loads(Path(args.tokens_file).read_text())
+    ctx.update(load_ledger(ctx))
     fnd = run_checks(inv, ctx)
-    fnd = apply_ledger(fnd, ctx)   # Task 12; define a pass-through until then:
+    fnd = apply_ledger(fnd, ctx)
     write_findings(fnd, inv, args.out or "findings.json", ctx)
     print(f"{len(fnd)} finding(s) → {args.out or 'findings.json'}")
     return 0
-
-
-def apply_ledger(findings, ctx):  # replaced in Task 12
-    return findings
 
 
 def cmd_inventory(args) -> int:
@@ -954,12 +1055,28 @@ def now_utc(args) -> str:
     return args.now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def add_ledger_flags(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--id", default=None, help="finding id (ledger entries)")
+    ap.add_argument("--state", default=None, help="disposition: waived | wontfix")
+    ap.add_argument("--reason", default=None)
+    ap.add_argument("--fingerprint", default=None)
+    ap.add_argument("--until", default=None, help="ISO8601 waiver expiry")
+    ap.add_argument("--subject", default=None, help="kind:name for a desired-state policy")
+    ap.add_argument("--desired-state", default=None)
+    ap.add_argument("--machine", default="")
+    ap.add_argument("--local", action="store_true",
+                    help="write to the per-machine ledger instead of the repo one")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="khenrix-audit engine")
     ap.add_argument("--self-test", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     for name in ("inventory", "findings", "ledger-add", "ledger-expire"):
-        add_common(sub.add_parser(name))
+        p = sub.add_parser(name)
+        add_common(p)
+        if name in ("ledger-add", "ledger-expire"):
+            add_ledger_flags(p)
     args = ap.parse_args(argv)
     if args.self_test:
         return _self_test()
@@ -967,6 +1084,10 @@ def main(argv=None) -> int:
         return cmd_inventory(args)
     if args.cmd == "findings":
         return cmd_findings(args)
+    if args.cmd == "ledger-add":
+        return cmd_ledger_add(args)
+    if args.cmd == "ledger-expire":
+        return cmd_ledger_expire(args)
     if args.cmd is None:
         ap.print_help()
         return 2
