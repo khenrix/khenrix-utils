@@ -350,6 +350,26 @@ def test_finding_unverified_cli_is_informational():
     assert f["informational"] is True and "semantics unverified" in f["note"]
 
 
+def test_finding_not_evaluated_flag_forces_informational_regardless_of_note_text():
+    # The flag is what matters, not the note string — a note that doesn't even
+    # mention "NOT EVALUATED" must still be informational when the flag is set.
+    f = sa.finding("B14", 1, "claude", "user", "config", ["x"],
+                   "hygiene", "low", "correctness", {}, [],
+                   note="totally unrelated note text", not_evaluated=True)
+    assert f["informational"] is True
+
+
+def test_finding_note_containing_not_evaluated_without_flag_is_not_informational():
+    # Regression guard for the removed prefix-check: a note that merely CONTAINS
+    # "NOT EVALUATED" mid-string (like run_checks' crash note) — with the flag
+    # left at its default False — must NOT be treated as informational, so a
+    # crashed check still gates --check.
+    f = sa.finding("ENGINE", 1, "all", "engine", "check-error", ["x"],
+                   "silent-capability-loss", "high", "correctness", {}, [],
+                   note="check crashed — NOT EVALUATED")
+    assert f["informational"] is False
+
+
 def test_write_findings_fails_closed_on_secret(tmp_path):
     import pytest
     bad = sa.finding("B2", 1, "claude", "user", "hook", ["h"],
@@ -923,6 +943,38 @@ def test_render_report_contains_skeleton_and_skips(tmp_path):
     assert "probes: skipped — claude not on PATH" in md
     assert "2 local waiver(s) active" in md
     assert f["slug"] in md
+
+
+def test_render_report_evidence_backtick_is_sanitized():
+    f = sa.finding("B6", 1, "claude", "user", "skill", ["a", "b"],
+                   "wrong-tool-fires", "low", "correctness",
+                   {"cmd": "echo `whoami`"}, [])
+    doc = {"generated": "2026-07-30T00:00:00Z", "capabilities": {},
+           "inventory_hash": "abc", "counts": {"items": 1, "findings": 1, "errors": 0},
+           "errors": [], "findings": [f], "waived": [], "local_waivers": 0}
+    md = sa.render_report(doc, phases={})
+    evidence_line = next(l for l in md.splitlines() if l.startswith("- evidence:"))
+    assert evidence_line.count("`") == 2, evidence_line
+
+
+def test_write_report_same_stamp_collision_writes_distinct_files_latest_is_second(tmp_path):
+    f1 = sa.finding("B6", 1, "claude", "user", "skill", ["a", "b"],
+                    "wrong-tool-fires", "low", "correctness", {"cosine": 0.4}, [])
+    f2 = sa.finding("B9", 1, "claude", "user", "plugin", ["p"],
+                    "hygiene", "low", "correctness", {"issue": "x"}, [])
+    base = {"generated": "2026-07-30T00:00:00Z", "capabilities": {},
+            "inventory_hash": "abc", "counts": {"items": 1, "findings": 1, "errors": 0},
+            "errors": [], "waived": [], "local_waivers": 0}
+    report_dir = tmp_path / "reports"
+    sa.write_report({**base, "findings": [f1]}, {}, report_dir, "mach")
+    sa.write_report({**base, "findings": [f2]}, {}, report_dir, "mach")
+    runs = report_dir / "runs" / "mach"
+    md_names = sorted(p.name for p in runs.glob("*.md"))
+    json_names = sorted(p.name for p in runs.glob("*.json"))
+    assert len(md_names) == 2 and len(set(md_names)) == 2, md_names
+    assert len(json_names) == 2 and len(set(json_names)) == 2, json_names
+    latest = (report_dir / "latest.md").read_text()
+    assert f2["slug"] in latest and f1["slug"] not in latest
 
 
 def test_check_mode_exit_codes(tmp_path):

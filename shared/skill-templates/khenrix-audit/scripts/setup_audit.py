@@ -418,17 +418,19 @@ RULE_NEEDS = {"B1": "precedence_verified", "B2": "namespacing", "B3": "dedupe_ru
 
 
 def finding(rule, rule_version, cli, scope, kind, subjects, consequence,
-            confidence, justification, evidence, remediation, note="") -> dict:
+            confidence, justification, evidence, remediation, note="",
+            not_evaluated: bool = False) -> dict:
     if kind == "mcp" and justification == "cost":
         raise ValueError("MCP findings may never be cost-justified (spec constraint 1)")
     subjects = sorted(subjects)
     ident = canonical_json({"rule": rule, "rule_version": rule_version, "cli": cli,
                             "scope": scope, "kind": kind, "subjects": subjects})
-    # A "NOT EVALUATED" note means the engine had no input to judge this axis
-    # (missing --repo-root / --tokens-file / a crashed check) — not a confirmed
-    # problem, so --check must not gate a build on it any more than it gates on
-    # unverified-semantics findings below.
-    informational = note.startswith("NOT EVALUATED")
+    # not_evaluated=True means the engine had no input to judge this axis
+    # (missing --repo-root / --tokens-file) — not a confirmed problem, so --check
+    # must not gate a build on it any more than it gates on unverified-semantics
+    # findings below. Explicit flag, not a note-text sniff: a crashed check's note
+    # also mentions "NOT EVALUATED" but must still gate --check (see run_checks).
+    informational = not_evaluated
     need = RULE_NEEDS.get(rule)
     if need and cli in SEMANTICS and not SEMANTICS[cli][need]:
         informational = True
@@ -544,7 +546,7 @@ def check_b4_drift(inv, ctx) -> list:
         return [finding("B4", 1, "all", "repo", "check-error", ["capabilities.toml"],
                         "state-divergence", "low", "drift",
                         {"error": "no canonical repo root"}, [],
-                        note="NOT EVALUATED — pass --repo-root")]
+                        note="NOT EVALUATED — pass --repo-root", not_evaluated=True)]
     platform = ctx.get("platform", _PLATFORM)
     for cli in CLIS:
         live = {m["name"]: m for m in _loaded(inv, "mcp", cli) if m["scope"] == "user"}
@@ -703,7 +705,7 @@ def check_b7_budget(inv, ctx) -> list:
         return [finding("B7", 1, "claude", "user", "skill", ["<listing-budget>"],
                         "silent-capability-loss", "low", "correctness", {"budget": budget},
                         ["produce tokens.json via `claude plugin details` and re-run"],
-                        note="NOT EVALUATED — no --tokens-file")]
+                        note="NOT EVALUATED — no --tokens-file", not_evaluated=True)]
     total = sum(tokens.values())
     instr = {i["name"]: i["meta"].get("chars", 0) // 4
              for i in inv["items"] if i["kind"] == "instruction-file"}
@@ -929,7 +931,12 @@ def render_report(doc: dict, phases: dict) -> str:
                  f"· confidence {f['confidence']} · id `{f['id']}` fp `{f['fingerprint']}`")
         if f.get("note"):
             L.append(f"- note: {f['note']}")
-        L.append(f"- evidence: `{canonical_json(f['evidence'])[:400]}`")
+        # A backtick inside evidence (e.g. a shell command finding) would close
+        # the code span early and corrupt the rest of the line — swap it for a
+        # single quote before embedding, since evidence is diagnostic text, not
+        # something a reader needs byte-exact.
+        evidence_str = canonical_json(f["evidence"])[:400].replace("`", "'")
+        L.append(f"- evidence: `{evidence_str}`")
         for r in f["remediation"]:
             L.append(f"- rung: {r}")
         L.append("")
@@ -949,6 +956,15 @@ def write_report(doc: dict, phases: dict, report_dir: Path, machine: str) -> Non
     runs = report_dir / "runs" / re.sub(r"[^A-Za-z0-9._-]", "-", machine)
     runs.mkdir(parents=True, exist_ok=True)
     stamp = doc["generated"].replace(":", "") + "-" + doc["inventory_hash"]
+    # Never overwrite history: same generated+inventory_hash within one second
+    # collides on `stamp` (e.g. two runs from a scripted loop) — walk suffixes
+    # -2, -3, ... to the first free name instead of silently clobbering the
+    # earlier run's .md/.json.
+    if (runs / f"{stamp}.md").exists():
+        n = 2
+        while (runs / f"{stamp}-{n}.md").exists():
+            n += 1
+        stamp = f"{stamp}-{n}"
     (runs / f"{stamp}.md").write_text(md)
     (runs / f"{stamp}.json").write_text(json.dumps(doc, indent=1, sort_keys=True))
     history = sorted(runs.glob("*.md"))
