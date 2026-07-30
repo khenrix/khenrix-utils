@@ -407,6 +407,80 @@ def finding(rule, rule_version, cli, scope, kind, subjects, consequence,
 CHECKS: list = []  # populated by check tasks
 
 
+# --- checks: B1-B3 --------------------------------------------------------
+def _loaded(inv, kind=None, cli=None):
+    return [i for i in inv["items"] if i["provenance"] == "loaded"
+            and (kind is None or i["kind"] == kind)
+            and (cli is None or i["cli"] == cli)]
+
+
+def check_b1_name_collisions(inv, ctx) -> list:
+    """Same bare skill name reachable from two owners (plugin skills are reachable
+    at their bare name too — verified Claude semantics)."""
+    out = []
+    by_bare: dict = {}
+    for s in _loaded(inv, "skill"):
+        bare = s["name"].split(":")[-1]
+        by_bare.setdefault((s["cli"], bare), []).append(s)
+    for (cli, bare), group in sorted(by_bare.items()):
+        owners = sorted({g["name"] for g in group})
+        if len(owners) > 1:
+            out.append(finding("B1", 1, cli, "user", "skill", owners,
+                               "wrong-tool-fires", "high", "correctness",
+                               {"bare_name": bare,
+                                "paths": sorted(g["source_path"] for g in group)},
+                               ["narrow one description (rung 1)",
+                                "disable one plugin (rung 2)"]))
+    return out
+
+
+def check_b2_bare_key_refs(inv, ctx) -> list:
+    """A permission rule / hook matcher naming a plugin-namespaced MCP server by its
+    BARE key silently never matches (verified Claude semantics)."""
+    out = []
+    for cli in CLIS:
+        plugin_servers = [m for m in _loaded(inv, "mcp", cli)
+                          if m["name"].startswith("plugin:")]
+        if not plugin_servers:
+            continue
+        bare_names = {m["name"].split(":")[-1] for m in plugin_servers}
+        refs = _loaded(inv, "permission-rule", cli) + _loaded(inv, "hook", cli)
+        for r in refs:
+            probe = r["meta"].get("matcher", "") if r["kind"] == "hook" else r["name"]
+            for bare in sorted(bare_names):
+                # bare mcp__<server>__ style reference without the plugin_ prefix
+                if re.search(rf"mcp__{re.escape(bare)}(__|\b)", probe) and \
+                        f"mcp__plugin_" not in probe:
+                    out.append(finding("B2", 1, cli, r["scope"], r["kind"],
+                                       [r["name"], f"server:{bare}"],
+                                       "silent-capability-loss", "high", "correctness",
+                                       {"reference": probe, "config": r["source_path"],
+                                        "expected_prefix": "mcp__plugin_<plugin>_<server>__"},
+                                       ["rewrite the matcher to the namespaced form"]))
+    return out
+
+
+def check_b3_endpoint_dupes(inv, ctx) -> list:
+    """Same normalized endpoint reachable at two scopes — the lower-precedence copy
+    is silently dropped (plugin servers dedupe BY ENDPOINT)."""
+    out = []
+    by_ep: dict = {}
+    for m in _loaded(inv, "mcp"):
+        by_ep.setdefault((m["cli"], m["meta"].get("endpoint_hash")), []).append(m)
+    for (cli, ep), group in sorted(by_ep.items()):
+        if ep and len(group) > 1:
+            out.append(finding("B3", 1, cli, "multi", "mcp",
+                               sorted(f'{g["scope"]}/{g["name"]}' for g in group),
+                               "silent-capability-loss", "medium", "correctness",
+                               {"endpoint_hash": ep,
+                                "configs": sorted(g["source_path"] for g in group)},
+                               ["remove the lower-precedence duplicate (confirmed)"]))
+    return out
+
+
+CHECKS.extend([check_b1_name_collisions, check_b2_bare_key_refs, check_b3_endpoint_dupes])
+
+
 def run_checks(inv: dict, ctx: dict) -> list:
     out: list = []
     for check in CHECKS:

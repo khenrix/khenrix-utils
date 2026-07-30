@@ -351,3 +351,42 @@ def test_cmd_findings_end_to_end_writes_doc(tmp_path):
     assert doc["findings"][0]["rule"] == "B9"
     assert set(doc["capabilities"]) == {"can_probe", "can_token_count",
                                         "semantics_verified_for", "writable_ledger"}
+
+
+def test_b1_flags_same_bare_skill_name_two_plugins():
+    inv = _mk_inv([
+        sa.item("claude", "user", "skill", "pa:save", "/a", "loaded", description="x"),
+        sa.item("claude", "user", "skill", "pb:save", "/b", "loaded", description="y"),
+        sa.item("claude", "user", "skill", "pa:other", "/c", "loaded", description="z")])
+    hits = sa.check_b1_name_collisions(inv, {})
+    assert len(hits) == 1 and hits[0]["rule"] == "B1"
+    assert set(hits[0]["subjects"]) == {"pa:save", "pb:save"}
+
+
+def test_b1_ignores_catalog_and_rendered():
+    inv = _mk_inv([
+        sa.item("claude", "user", "skill", "pa:save", "/a", "loaded"),
+        sa.item("codex", "user", "skill", "zoom:save", "/b", "catalog")])
+    assert sa.check_b1_name_collisions(inv, {}) == []
+
+
+def test_b2_flags_bare_key_reference_to_namespaced_plugin_server():
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "plugin:pw:pw", "/m", "loaded", endpoint_hash="e1"),
+        sa.item("claude", "user", "permission-rule", "mcp__pw__click", "/s", "loaded"),
+        sa.item("claude", "user", "hook", "<settings.json>:PostToolUse", "/s", "loaded",
+                event="PostToolUse", matcher="mcp__pw__.*", owner="<settings.json>",
+                body_hash="h")])
+    hits = sa.check_b2_bare_key_refs(inv, {})
+    assert len(hits) == 2
+    assert all(h["consequence"] == "silent-capability-loss" for h in hits)
+
+
+def test_b3_flags_same_endpoint_two_scopes():
+    inv = _mk_inv([
+        sa.item("claude", "user", "mcp", "cdt", "/u", "loaded", endpoint_hash="same"),
+        sa.item("claude", "project:app", "mcp", "cdt2", "/p", "loaded", endpoint_hash="same"),
+        sa.item("claude", "user", "mcp", "other", "/u", "loaded", endpoint_hash="diff")])
+    hits = sa.check_b3_endpoint_dupes(inv, {})
+    assert len(hits) == 1 and hits[0]["kind"] == "mcp"
+    assert hits[0]["justification"] == "correctness"
