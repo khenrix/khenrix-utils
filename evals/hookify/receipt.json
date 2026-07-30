@@ -1,21 +1,13 @@
 {
   "skill": "hookify",
-  "source_hash": "a60eead3ef3abf1675b2cfd8e98d6fa9c7d5c850cd88f7fc314399fd753c2225",
+  "source_hash": "239ee6563ecbf5532c5e612b56221d922d0956cb3ef34a39cb48e50eb49d13dd",
   "eval_set_hash": "25a319aff709f2cf09f67d31ae46b092cefe0196fc4fa1b5989358dc6f999422",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.25,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.6 Flash (High)",
-    "judge": "claude-opus-5"
-  }
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }

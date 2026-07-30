@@ -1,23 +1,15 @@
 {
   "skill": "llm-council",
-  "source_hash": "449f624080a9b2a3844d5ae54ac39909963d6edf6fc475b99ac14ea7d2479588",
+  "source_hash": "5b51a2becf31668ec93493e7abd9a5ac3ae0ddbee0f9bb2bdb0ef05ab2743b1f",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0666,
-  "blind_winner": "n/a-orchestrator",
-  "provenance": "eval",
-  "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.6 Flash (High)",
-    "judge": "claude-opus-5"
-  },
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state",
   "self_test": true,
   "synthesis_review": "manual-attested"
 }

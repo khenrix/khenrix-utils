@@ -255,7 +255,7 @@ claude = "overlays/claude.md"
 # ===========================================================================
 
 [skill_facts.khenrix-setup.claude]
-description = "Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+description = "Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
 allowed_tools_line = "\nallowed-tools: Bash, Read"
 display_name = "Claude Code"
 cli = "claude"
@@ -276,7 +276,7 @@ settings_note = """- Baseline settings (model, effort, tui, theme, voice, skip-p
 """
 
 [skill_facts.khenrix-setup.codex]
-description = "Reconciles this Codex installation with the shared khenrix source of truth — reviews the live MCP servers in config.toml, the approval/sandbox/trust settings, shell aliases, and AGENTS.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Codex environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+description = "Reconciles this Codex installation with the shared khenrix source of truth — reviews the live MCP servers in config.toml, the approval/sandbox/trust settings, shell aliases, and AGENTS.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, or update their Codex environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
 allowed_tools_line = ""
 display_name = "Codex"
 cli = "codex"
@@ -294,7 +294,7 @@ verify_step = """Show the relevant `[mcp_servers.*]` sections of
 settings_note = ""
 
 [skill_facts.khenrix-setup.agy]
-description = "Reconciles this Antigravity (agy) installation with the shared khenrix source of truth — reviews the live MCP servers in ~/.gemini/config/mcp_config.json, the trusted workspaces, shell aliases, and GEMINI.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their agy environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
+description = "Reconciles this Antigravity (agy) installation with the shared khenrix source of truth — reviews the live MCP servers in ~/.gemini/config/mcp_config.json, the trusted workspaces, shell aliases, and GEMINI.md, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, or update their agy environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style."
 allowed_tools_line = ""
 display_name = "Antigravity / agy"
 cli = "agy"
@@ -414,3 +414,24 @@ refresh_note = "; for agy this re-installs the plugin"
 setup_ref = "the `khenrix-setup` skill"
 notes_block = """- agy lacks bundled skill/plugin creation tooling, so this variant leans more on
   research + `agy plugin validate` than on a native skill reviewer."""
+
+[skill_facts.khenrix-audit.claude]
+description = "Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), declared-vs-live drift, shadowed or endpoint-deduped MCP servers, conflicting hooks, and skill-listing budget overflow — with a guided per-finding apply and a synced decision ledger. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit."
+display_name = "Claude Code"
+cli = "claude"
+engine_path = "${CLAUDE_PLUGIN_ROOT}/skills/khenrix-audit/scripts/setup_audit.py"
+phases_note = "All phases available: this CLI can run trigger probes (Phase D tier 2) and produce token counts via `claude plugin details`."
+
+[skill_facts.khenrix-audit.codex]
+description = "Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), declared-vs-live drift, shadowed or endpoint-deduped MCP servers, conflicting hooks, and skill-listing budget overflow — with a guided per-finding apply and a synced decision ledger. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit."
+display_name = "Codex"
+cli = "codex"
+engine_path = "$PLUGIN_ROOT/skills/khenrix-audit/scripts/setup_audit.py"
+phases_note = "Probes and token counts are unavailable on this CLI: the engine reports NOT EVALUATED for B7. Phases C, E, F, and G are fully available."
+
+[skill_facts.khenrix-audit.agy]
+description = "Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), declared-vs-live drift, shadowed or endpoint-deduped MCP servers, conflicting hooks, and skill-listing budget overflow — with a guided per-finding apply and a synced decision ledger. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit."
+display_name = "Antigravity"
+cli = "agy"
+engine_path = "${HOME}/.gemini/config/plugins/khenrix-utils/skills/khenrix-audit/scripts/setup_audit.py"
+phases_note = "Probes and token counts are unavailable on this CLI: the engine reports NOT EVALUATED for B7. Phases C, E, F, and G are fully available."

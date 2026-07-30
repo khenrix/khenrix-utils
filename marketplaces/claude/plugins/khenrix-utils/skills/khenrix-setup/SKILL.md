@@ -1,6 +1,6 @@
 ---
 name: khenrix-setup
-description: Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, audit, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
+description: Reconciles this Claude Code installation with the shared khenrix source of truth — reviews the live MCP servers, settings, shell aliases and base instructions, shows what differs, and additively adds only what is missing without removing anything machine-specific. Use when the user wants to set up, sync, or update their Claude Code environment to match the khenrix-utils capabilities, or asks to install the shared MCP servers / house style.
 allowed-tools: Bash, Read
 ---
 

@@ -38,7 +38,7 @@ SHARED_LIBS = ["wikisync"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
-TEMPLATED_SKILLS = ("khenrix-setup", "khenrix-upgrade")
+TEMPLATED_SKILLS = ("khenrix-setup", "khenrix-upgrade", "khenrix-audit")
 TMPL_ROOT = ROOT / "shared" / "skill-templates"
 
 
@@ -183,6 +183,15 @@ def render():
                 dst = pdir / "skills" / skill
                 dst.mkdir(parents=True, exist_ok=True)
                 (dst / "SKILL.md").write_text(body)
+                # templated skills may ship engine/reference dirs next to the template
+                for sub in ("scripts", "references"):
+                    src_dir = TMPL_ROOT / skill / sub
+                    if src_dir.is_dir():
+                        sub_dst = dst / sub
+                        if sub_dst.exists():
+                            shutil.rmtree(sub_dst)
+                        shutil.copytree(src_dir, sub_dst,
+                                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         # 1. bundle the source of truth
         for f in BUNDLED:
             shutil.copy2(ROOT / f, pdir / f)
@@ -242,6 +251,8 @@ def clean():
         # generated templated skill bodies are regenerable — drop them too
         for skill in TEMPLATED_SKILLS:
             (pdir / "skills" / skill / "SKILL.md").unlink(missing_ok=True)
+            for sub in ("scripts", "references"):
+                shutil.rmtree(pdir / "skills" / skill / sub, ignore_errors=True)
     print(f"cleaned rendered copies ({removed} files targeted)")
 
 

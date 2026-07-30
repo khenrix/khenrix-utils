@@ -1,21 +1,13 @@
 {
   "skill": "skill-tuneup",
-  "source_hash": "959a6cb9b1aa07c8a0ee1c0024f76b907865ae4ada421fbf9e4d86789f27673e",
-  "eval_set_hash": "7c47898e5838bc315de2bd9212d3fd75752e2f13864e8d3bf2f71aa90b7e1e06",
+  "source_hash": "ab16a32fd33d55c5cb6c0a9df4eed4b209ec8806f4b57b33b3ff24985bf61f83",
+  "eval_set_hash": "4a736984af849d43dfc9106463783696b79392a312648f8f192e23e97327403b",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.4148,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.6 Flash (High)",
-    "judge": "claude-opus-5"
-  }
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }
