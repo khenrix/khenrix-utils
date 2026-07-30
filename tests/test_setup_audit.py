@@ -1,6 +1,7 @@
 """Hermetic tests for the khenrix-audit engine. No real HOME, no network."""
 import importlib.util
 import json
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -178,6 +179,9 @@ def make_git_root(tmp_path):
     (r / "SKILL.md").write_text("---\nname: alpha\ndescription: a\n---\n")
     (ku / "capabilities.toml").write_text("version = 1\n")
     (ku / "CLAUDE.md").write_text("x\n" + MANAGED_BEGIN + "\nstyle\n<!-- khenrix-managed:end -->\n")
+    # test coverage: verify not is_ku guard suppresses .claude/skills inside ku checkout
+    (ku / ".claude/skills/kulocal").mkdir(parents=True)
+    (ku / ".claude/skills/kulocal/SKILL.md").write_text("---\nname: kulocal\ndescription: k\n---\n")
     other = g / "app"
     (other / ".claude/skills/local1").mkdir(parents=True)
     (other / ".claude/skills/local1/SKILL.md").write_text("---\nname: local1\ndescription: l\n---\n")
@@ -197,6 +201,11 @@ def test_walk_projects_provenance_split(tmp_path):
     loaded_alpha = [i for i in items if i["kind"] == "skill"
                     and i["provenance"] == "loaded" and "alpha" in i["name"]]
     assert loaded_alpha == []
+    # verify the not is_ku guard is load-bearing: .claude/skills inside ku checkout
+    # must not be surfaced as "loaded" items (the guard at walk_projects:354 blocks them)
+    loaded_items = [i for i in items if i["provenance"] == "loaded"]
+    assert not any("kulocal" in i["name"] for i in loaded_items), \
+        f"kulocal should be suppressed by not is_ku guard, but found in: {[i['name'] for i in loaded_items if 'kulocal' in i['name']]}"
 
 
 def test_walk_projects_finds_project_mcp_and_instruction_files(tmp_path):
@@ -204,6 +213,23 @@ def test_walk_projects_finds_project_mcp_and_instruction_files(tmp_path):
     assert any(i["kind"] == "mcp" and i["scope"] == "project:app" for i in items)
     inst = [i for i in items if i["kind"] == "instruction-file"]
     assert any(i["meta"].get("managed_block_hash") for i in inst)
+
+
+def test_walk_projects_skips_symlinked_project_dirs(tmp_path):
+    g = make_git_root(tmp_path)
+    # create a symlink to the app project
+    try:
+        (g / "linked").symlink_to(g / "app")
+    except OSError:
+        pytest.skip("no symlink support on this platform")
+
+    items = sa.walk_projects(tmp_path / "home", None, g)
+    # verify no item has scope "project:linked"
+    assert not any(i["scope"] == "project:linked" for i in items), \
+        f"symlinked project dirs should be skipped, but found items: {[i for i in items if i['scope'] == 'project:linked']}"
+    # verify the real app project is still walked
+    assert any(i["scope"] == "project:app" for i in items), \
+        "app project should be walked when accessed directly"
 
 
 def test_resolve_repo_root(tmp_path):
