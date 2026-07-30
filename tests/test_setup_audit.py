@@ -595,3 +595,48 @@ def test_b9_flags_unknown_version_and_load_failed():
                 effective_state="load_failed", version="1.0")])
     hits = sa.check_b9_hygiene(inv, {})
     assert len(hits) == 2 and all(h["consequence"] == "hygiene" for h in hits)
+
+
+def test_b10_converts_walker_errors_to_findings():
+    inv = {"schema_version": 1, "items": [], "errors": ["walk_claude: ValueError: bad json"]}
+    hits = sa.check_b10_parse_validity(inv, {})
+    assert hits and hits[0]["consequence"] == "silent-capability-loss"
+
+
+def test_b11_flags_missing_hook_executable(tmp_path):
+    inv = _mk_inv([sa.item("claude", "user", "hook", "o:Stop", "/s", "loaded",
+                           event="Stop", matcher="*", owner="o", body_hash="h",
+                           command_head=[str(tmp_path / "gone.sh")])])
+    hits = sa.check_b11_dangling_refs(inv, {})
+    assert len(hits) == 1
+
+
+def test_b12_flags_oversized_description():
+    inv = _mk_inv([sa.item("claude", "user", "skill", "p:big", "/x", "loaded",
+                           description="d" * 1100, body_lines=10)])
+    assert len(sa.check_b12_frontmatter(inv, {})) == 1
+
+
+def test_b13_flags_diverged_managed_blocks():
+    inv = _mk_inv([
+        sa.item("all", "project:p", "instruction-file", "p:CLAUDE.md", "/1", "loaded",
+                chars=10, managed_block_hash="aaa"),
+        sa.item("all", "project:p", "instruction-file", "p:AGENTS.md", "/2", "loaded",
+                chars=10, managed_block_hash="bbb")])
+    assert len(sa.check_b13_managed_block_divergence(inv, {})) == 1
+
+
+def test_b14_flags_stale_project_entries(tmp_path):
+    h = tmp_path / "home"
+    h.mkdir()
+    (h / ".claude.json").write_text(json.dumps(
+        {"mcpServers": {}, "projects": {str(tmp_path / "gone-dir"): {}}}))
+    hits = sa.check_b14_claude_json_health(_mk_inv([]), {"home": h})
+    assert hits and "gone-dir" in json.dumps(hits[0]["evidence"])
+
+
+def test_b15_flags_same_skill_two_paths():
+    inv = _mk_inv([
+        sa.item("claude", "user", "skill", "pa:dup", "/a", "loaded", description="same text"),
+        sa.item("claude", "user", "skill", "dup", "/b", "loaded", description="same text")])
+    assert len(sa.check_b15_dual_path(inv, {})) == 1

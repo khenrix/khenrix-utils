@@ -717,6 +717,112 @@ def check_b9_hygiene(inv, ctx) -> list:
 CHECKS.extend([check_b7_budget, check_b8_hook_collisions, check_b9_hygiene])
 
 
+# --- checks: B10-B16 (cheap file checks) ----------------------------------
+def check_b10_parse_validity(inv, ctx) -> list:
+    return [finding("B10", 1, "all", "engine", "config", [err.split(":")[0]],
+                    "silent-capability-loss", "high", "correctness", {"error": err},
+                    ["fix or quarantine the malformed file"])
+            for err in inv["errors"]]
+
+
+def check_b11_dangling_refs(inv, ctx) -> list:
+    out = []
+    for h in _loaded(inv, "hook"):
+        head = h["meta"].get("command_head") or []
+        exe = head[0] if head and isinstance(head[0], str) else ""
+        if exe.startswith("/") and not Path(exe).exists():
+            out.append(finding("B11", 1, h["cli"], h["scope"], "hook", [h["name"]],
+                               "silent-capability-loss", "high", "correctness",
+                               {"missing": exe, "config": h["source_path"]},
+                               ["fix the path or remove the hook"]))
+    return out
+
+
+def check_b12_frontmatter(inv, ctx) -> list:
+    out = []
+    for s in _loaded(inv, "skill"):
+        desc = s["meta"].get("description", "")
+        issues = []
+        if not desc:
+            issues.append("missing description")
+        elif len(desc) > 1024:
+            issues.append(f"description {len(desc)} chars (>1024)")
+        if s["meta"].get("body_lines", 0) >= 500:
+            issues.append(f"body {s['meta']['body_lines']} lines (>=500)")
+        if issues:
+            out.append(finding("B12", 1, s["cli"], s["scope"], "skill", [s["name"]],
+                               "hygiene", "medium", "correctness", {"issues": issues},
+                               ["fix frontmatter (repo constraint)"]))
+    return out
+
+
+def check_b13_managed_block_divergence(inv, ctx) -> list:
+    out = []
+    by_proj: dict = {}
+    for i in inv["items"]:
+        if i["kind"] == "instruction-file" and i["meta"].get("managed_block_hash"):
+            by_proj.setdefault(i["scope"], {})[i["name"]] = i["meta"]["managed_block_hash"]
+    for scope, files in sorted(by_proj.items()):
+        if len(set(files.values())) > 1:
+            out.append(finding("B13", 1, "all", scope, "instruction-file",
+                               sorted(files), "state-divergence", "medium", "drift",
+                               {"hashes": files},
+                               ["re-run khenrix-setup to re-sync managed blocks"]))
+    return out
+
+
+def check_b14_claude_json_health(inv, ctx) -> list:
+    out = []
+    cj = (ctx.get("home") or Path("/nonexistent")) / ".claude.json"
+    if not cj.exists():
+        return out
+    size = cj.stat().st_size
+    stale = [p for p in (json.loads(cj.read_text()).get("projects") or {})
+             if not Path(p).exists()]
+    if size > 1_048_576 or stale:
+        out.append(finding("B14", 1, "claude", "user", "config", ["~/.claude.json"],
+                           "hygiene", "low", "correctness",
+                           {"bytes": size, "stale_projects": stale[:10]},
+                           ["prune stale project entries (confirmed)"]))
+    return out
+
+
+def check_b15_dual_path(inv, ctx) -> list:
+    out = []
+    by_key: dict = {}
+    for s in _loaded(inv, "skill"):
+        key = (s["cli"], s["name"].split(":")[-1], vhash(s["meta"].get("description", "")))
+        by_key.setdefault(key, []).append(s)
+    for (cli, bare, _), group in sorted(by_key.items()):
+        paths = sorted({g["source_path"] for g in group})
+        if len(paths) > 1:
+            out.append(finding("B15", 1, cli, "user", "skill",
+                               sorted(g["name"] for g in group),
+                               "cost", "medium", "correctness",
+                               {"paths": paths},
+                               ["remove one path (double-counts the listing budget)"]))
+    return out
+
+
+def check_b16_vendored_source_enabled(inv, ctx) -> list:
+    out = []
+    plugins = {p["name"] for p in _loaded(inv, "plugin")
+               if p["effective_state"] == "enabled"}
+    for s in _loaded(inv, "skill"):
+        src = s["meta"].get("vendored_from")
+        if src and src in plugins:
+            out.append(finding("B16", 1, s["cli"], s["scope"], "skill", [s["name"]],
+                               "wrong-tool-fires", "high", "correctness",
+                               {"vendored_from": src},
+                               [f"disable {src} or drop the vendored copy"]))
+    return out
+
+
+CHECKS.extend([check_b10_parse_validity, check_b11_dangling_refs, check_b12_frontmatter,
+               check_b13_managed_block_divergence, check_b14_claude_json_health,
+               check_b15_dual_path, check_b16_vendored_source_enabled])
+
+
 def run_checks(inv: dict, ctx: dict) -> list:
     out: list = []
     for check in CHECKS:
