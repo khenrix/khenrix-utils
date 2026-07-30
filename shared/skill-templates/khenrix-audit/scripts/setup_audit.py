@@ -642,6 +642,81 @@ def check_b6_trigger_overlap(inv, ctx) -> list:
 CHECKS.append(check_b6_trigger_overlap)
 
 
+# --- checks: B7-B9 --------------------------------------------------------
+def check_b7_budget(inv, ctx) -> list:
+    tokens = ctx.get("tokens")
+    window = ctx.get("context_window", 200_000)
+    budget = int(window * 0.01)
+    if tokens is None:
+        return [finding("B7", 1, "claude", "user", "skill", ["<listing-budget>"],
+                        "silent-capability-loss", "low", "correctness", {"budget": budget},
+                        ["produce tokens.json via `claude plugin details` and re-run"],
+                        note="NOT EVALUATED — no --tokens-file")]
+    total = sum(tokens.values())
+    instr = {i["name"]: i["meta"].get("chars", 0) // 4
+             for i in inv["items"] if i["kind"] == "instruction-file"}
+    if total <= budget:
+        return []
+    payers = sorted(tokens.items(), key=lambda kv: -kv[1])
+    return [finding("B7", 1, "claude", "user", "skill", ["<listing-budget>"],
+                    "silent-capability-loss", "high", "correctness",
+                    {"total_always_on": total, "budget": budget,
+                     "over_by_pct": round(100 * (total - budget) / budget),
+                     "estimator": "claude plugin details (count_tokens)",
+                     "biggest_payers": payers[:5],
+                     "instruction_file_estimates_chars4": instr,
+                     "note": "drop order is least-invoked-first and unobservable — "
+                             "reduce the total; do not predict victims"},
+                    ["disable the biggest-payer plugin you use least (rung 2)",
+                     "shorten khenrix-utils descriptions (rung 1, arena-gated)"])]
+
+
+def check_b8_hook_collisions(inv, ctx) -> list:
+    out = []
+    hooks = _loaded(inv, "hook")
+    by_body: dict = {}
+    for h in hooks:
+        by_body.setdefault((h["cli"], h["meta"]["body_hash"]), []).append(h)
+    for (cli, bh), group in sorted(by_body.items()):
+        owners = sorted({g["meta"]["owner"] for g in group})
+        if len(owners) > 1:
+            out.append(finding("B8", 1, cli, "user", "hook",
+                               [f'{o}:{group[0]["meta"]["event"]}' for o in owners],
+                               "state-divergence", "high", "correctness",
+                               {"duplicate_body": True, "event": group[0]["meta"]["event"],
+                                "configs": sorted(g["source_path"] for g in group)},
+                               ["remove one copy (same command registered twice fires twice)"]))
+    by_slot: dict = {}
+    for h in hooks:
+        by_slot.setdefault((h["cli"], h["meta"]["event"], h["meta"]["matcher"]), set()).add(
+            h["meta"]["owner"])
+    for (cli, event, matcher), owners in sorted(by_slot.items()):
+        if len(owners) > 1:
+            out.append(finding("B8", 1, cli, "user", "hook",
+                               sorted(f"{o}:{event}" for o in owners),
+                               "hygiene", "low", "correctness",
+                               {"duplicate_body": False, "event": event, "matcher": matcher},
+                               [], note="shared event slot — usually intentional composition"))
+    return out
+
+
+def check_b9_hygiene(inv, ctx) -> list:
+    out = []
+    for p in _loaded(inv, "plugin"):
+        if p["meta"].get("version") == "unknown":
+            out.append(finding("B9", 1, p["cli"], p["scope"], "plugin", [p["name"]],
+                               "hygiene", "low", "correctness",
+                               {"issue": "version unknown"}, ["reinstall pinned"]))
+        if p["effective_state"] == "load_failed":
+            out.append(finding("B9", 1, p["cli"], p["scope"], "plugin", [p["name"]],
+                               "hygiene", "medium", "correctness",
+                               {"issue": "installPath missing"}, ["reinstall or remove entry"]))
+    return out
+
+
+CHECKS.extend([check_b7_budget, check_b8_hook_collisions, check_b9_hygiene])
+
+
 def run_checks(inv: dict, ctx: dict) -> list:
     out: list = []
     for check in CHECKS:
@@ -682,7 +757,10 @@ def cmd_findings(args) -> int:
     home = Path(args.home_root)
     repo = resolve_repo_root(args.repo_root)
     inv = build_inventory(home, repo, Path(args.git_root) if args.git_root else None)
-    ctx = {"now": now_utc(args), "repo_root": repo, "home": home}
+    ctx = {"now": now_utc(args), "repo_root": repo, "home": home,
+           "context_window": args.context_window}
+    if args.tokens_file:
+        ctx["tokens"] = json.loads(Path(args.tokens_file).read_text())
     fnd = run_checks(inv, ctx)
     fnd = apply_ledger(fnd, ctx)   # Task 12; define a pass-through until then:
     write_findings(fnd, inv, args.out or "findings.json", ctx)
@@ -713,6 +791,9 @@ def add_common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--git-root", default=None, help="projects root (default <home>/git)")
     ap.add_argument("--now", default=None, help="ISO8601 audit time (injected clock)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--tokens-file", default=None,
+                    help="JSON {plugin: always_on_tokens} from `claude plugin details`")
+    ap.add_argument("--context-window", type=int, default=200_000)
 
 
 def now_utc(args) -> str:

@@ -559,3 +559,39 @@ def test_b6_requires_two_shared_tokens():
     # shared non-stopword tokens: only "think" ("about" is in _STOP; "hard"/"zebras"
     # vs "fast"/"act"/"now" don't overlap) -> below the >=2 floor -> no nomination
     assert sa.overlap_pairs(skills) == []
+
+
+def test_b7_over_budget_flags_silent_capability_loss():
+    inv = _mk_inv([])
+    ctx = {"tokens": {"claude-obsidian": 3678, "khenrix-utils": 2918},
+           "context_window": 200_000}
+    hits = sa.check_b7_budget(inv, ctx)
+    assert hits and hits[0]["consequence"] == "silent-capability-loss"
+    assert hits[0]["evidence"]["total_always_on"] == 6596
+    assert hits[0]["evidence"]["budget"] == 2000
+    assert hits[0]["justification"] == "correctness"  # NOT "cost" — overflow drops descriptions
+
+
+def test_b7_without_tokens_file_is_not_evaluated():
+    hits = sa.check_b7_budget(_mk_inv([]), {"context_window": 200_000})
+    assert hits and "NOT EVALUATED" in hits[0]["note"]
+
+
+def test_b8_duplicate_hook_bodies_flagged():
+    inv = _mk_inv([
+        sa.item("claude", "user", "hook", "<settings.json>:Stop", "/s", "loaded",
+                event="Stop", matcher="*", owner="<settings.json>", body_hash="same"),
+        sa.item("claude", "user", "hook", "plug:Stop", "/p", "loaded",
+                event="Stop", matcher="*", owner="plug", body_hash="same")])
+    hits = sa.check_b8_hook_collisions(inv, {})
+    dup = [h for h in hits if h["evidence"].get("duplicate_body")]
+    assert len(dup) == 1
+
+
+def test_b9_flags_unknown_version_and_load_failed():
+    inv = _mk_inv([
+        sa.item("claude", "user", "plugin", "p1", "/x", "loaded", version="unknown"),
+        sa.item("claude", "user", "plugin", "p2", "/y", "loaded",
+                effective_state="load_failed", version="1.0")])
+    hits = sa.check_b9_hygiene(inv, {})
+    assert len(hits) == 2 and all(h["consequence"] == "hygiene" for h in hits)
