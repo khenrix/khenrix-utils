@@ -49,6 +49,67 @@ def item(cli: str, scope: str, kind: str, name: str, source_path: str,
             "meta": meta}
 
 
+# --- redaction ------------------------------------------------------------
+# Values never leave the process unredacted; vhash() keeps equality comparable.
+_SECRET_KEY = re.compile(r"(token|secret|key|cred|password|passwd|cookie|auth|session|bearer)", re.I)
+_SECRET_VALUE = [  # shapes mirrored from scripts/lib/checks.py SECRET_FAIL
+    re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"ghp_[0-9A-Za-z]{36}"),
+    re.compile(r"glpat-[0-9A-Za-z_-]{20,}"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+    re.compile(r"\beyJ[0-9A-Za-z_-]{20,}"),          # JWT-ish
+    re.compile(r"\bsk-[0-9A-Za-z_-]{20,}"),
+]
+
+
+def vhash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()[:8]
+
+
+def looks_secret(value: str) -> bool:
+    if any(p.search(value) for p in _SECRET_VALUE):
+        return True
+    # long single-token high-entropy-ish strings (no spaces, mixed classes)
+    return (len(value) >= 24 and " " not in value
+            and re.search(r"[0-9]", value) and re.search(r"[A-Za-z]", value)
+            and re.search(r"[^A-Za-z0-9]|[A-Z].*[a-z]|[a-z].*[A-Z]", value) is not None)
+
+
+def redact_map(d: dict) -> dict:
+    return {k: {"redacted": True, "vhash": vhash(str(v))} for k, v in d.items()}
+
+
+def redact_url(u: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+    try:
+        p = urlsplit(u)
+    except ValueError:
+        return "<redacted-url>"
+    netloc = ("<redacted>@" + p.netloc.split("@", 1)[1]) if "@" in p.netloc else p.netloc
+    return urlunsplit((p.scheme, netloc, p.path, "<redacted>" if p.query else "", ""))
+
+
+def redact_argv(args: list) -> list:
+    out = []
+    for i, a in enumerate(args):
+        a = str(a)
+        prev = str(args[i - 1]) if i else ""
+        if looks_secret(a) or (_SECRET_KEY.search(prev) and prev.startswith("-")):
+            out.append({"redacted": True, "vhash": vhash(a)})
+        elif "://" in a:
+            out.append(redact_url(a))
+        else:
+            out.append(a)
+    return out
+
+
+def scan_artifact_text(text: str) -> list:
+    """Final gate before any artifact write: token-shaped strings that survived
+    sanitization. Non-empty ⇒ the writer must fail closed."""
+    return sorted({m.group(0)[:12] + "…" for p in _SECRET_VALUE for m in p.finditer(text)})
+
+
 def build_inventory(home: Path, repo: Path | None, git_root: Path | None) -> dict:
     """Walk every surface. Walkers are added by later tasks; each is wrapped so a
     crash records a discovery error instead of silently returning nothing."""

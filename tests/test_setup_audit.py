@@ -40,3 +40,30 @@ def test_cli_inventory_runs_on_empty_home(tmp_path, capsys):
     assert inv["schema_version"] == 1
     assert inv["items"] == []
     assert isinstance(inv["errors"], list)
+
+
+def test_redact_map_keeps_names_drops_values():
+    r = sa.redact_map({"GITHUB_TOKEN": "ghp_" + "a" * 36, "PORT": "8080"})
+    assert set(r) == {"GITHUB_TOKEN", "PORT"}
+    assert r["GITHUB_TOKEN"]["redacted"] is True
+    assert "ghp_" not in json.dumps(r)
+    # vhash supports equality comparison without the value
+    assert r["GITHUB_TOKEN"]["vhash"] == sa.vhash("ghp_" + "a" * 36)
+
+
+def test_redact_url_strips_userinfo_and_query():
+    u = sa.redact_url("https://user:pw@h.example/p?token=abc")
+    assert "pw" not in u and "abc" not in u and "h.example/p" in u
+
+
+def test_redact_argv_masks_secret_shaped_values():
+    argv = ["serve", "--token", "xoxb-123456789012-abcdefghij", "--port", "80"]
+    red = sa.redact_argv(argv)
+    assert "xoxb-123456789012-abcdefghij" not in json.dumps(red)
+    assert "--port" in red and "80" in red
+
+
+def test_scan_artifact_text_fails_closed_on_fake_token():
+    hits = sa.scan_artifact_text("cmd ghp_" + "b" * 36 + " end")
+    assert hits, "artifact scan must flag a token-shaped string"
+    assert sa.scan_artifact_text("plain text, no secrets") == []
