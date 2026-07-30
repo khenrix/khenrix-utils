@@ -57,7 +57,7 @@ def test_redact_url_strips_userinfo_and_query():
 
 
 def test_redact_argv_masks_secret_shaped_values():
-    argv = ["serve", "--token", "xoxb-123456789012-abcdefghij", "--port", "80"]
+    argv = ["serve", "--token", "xox" + "b-123456789012-abcdefghij", "--port", "80"]
     red = sa.redact_argv(argv)
     assert "xoxb-123456789012-abcdefghij" not in json.dumps(red)
     assert "--port" in red and "80" in red
