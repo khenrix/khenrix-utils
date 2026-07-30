@@ -617,19 +617,25 @@ def overlap_pairs(skills: list, top_k: int = 15) -> list:
 
 
 def check_b6_trigger_overlap(inv, ctx) -> list:
-    skills = [s for s in _loaded(inv, "skill") if s["meta"].get("description")]
+    """Nominate overlapping skill trigger surfaces WITHIN each CLI's own loaded
+    corpus. Pooling all CLIs into one name-keyed corpus (the original bug) lets a
+    same-named skill on a different CLI silently overwrite a genuine pair via dict
+    collision in overlap_pairs — partitioning first makes overlap_pairs' name-keyed
+    dicts safe."""
     out = []
-    pairs = overlap_pairs(skills)
-    for cos, x, y, shared, exact in pairs:
-        same_plugin = x.split(":")[0] == y.split(":")[0]
-        out.append(finding("B6", 1, "claude", "user", "skill", [x, y],
-                           "wrong-tool-fires", "low", "correctness",
-                           {"cosine": cos, "shared_tokens": shared,
-                            "shared_phrases": exact, "same_plugin": same_plugin,
-                            "corpus_size": len(skills), "nominated": len(pairs)},
-                           ["Phase C adjudication → Phase D arena/probes",
-                            "rung 1 if DUPLICATE and one side is ours"],
-                           note="heuristic nomination — adjudicate before acting"))
+    for cli in CLIS:
+        skills = [s for s in _loaded(inv, "skill", cli) if s["meta"].get("description")]
+        pairs = overlap_pairs(skills)
+        for cos, x, y, shared, exact in pairs:
+            same_plugin = x.split(":")[0] == y.split(":")[0]
+            out.append(finding("B6", 1, cli, "user", "skill", [x, y],
+                               "wrong-tool-fires", "low", "correctness",
+                               {"cosine": cos, "shared_tokens": shared,
+                                "shared_phrases": exact, "same_plugin": same_plugin,
+                                "corpus_size": len(skills), "nominated": len(pairs)},
+                               ["Phase C adjudication → Phase D arena/probes",
+                                "rung 1 if DUPLICATE and one side is ours"],
+                               note="heuristic nomination — adjudicate before acting"))
     return out
 
 

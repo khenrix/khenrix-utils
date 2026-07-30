@@ -510,3 +510,52 @@ def test_b6_emits_low_confidence_nominations():
     hits = sa.check_b6_trigger_overlap(inv, {})
     assert hits and hits[0]["confidence"] == "low"
     assert hits[0]["evidence"]["shared_phrases"] == ["add this to the wiki"]
+
+
+def test_b6_cross_cli_corpora_are_partitioned():
+    # same-named skill on codex must not shadow the claude pair (regression: name-keyed dict collision)
+    inv = _mk_inv([
+        sa.item("claude", "user", "skill", "a:save", "/a", "loaded",
+                description='Triggers: "add this to the wiki", "save this".'),
+        sa.item("codex", "user", "skill", "a:save", "/cx", "loaded",
+                description='Triggers: "unrelated codex thing", "totally different".'),
+        sa.item("claude", "user", "skill", "b:wiki-add", "/b", "loaded",
+                description='Triggers: "add this to the wiki", "save this link".')])
+    hits = sa.check_b6_trigger_overlap(inv, {})
+    claude_pairs = [h for h in hits if h["cli"] == "claude"]
+    assert any(set(h["subjects"]) == {"a:save", "b:wiki-add"} for h in claude_pairs), \
+        "claude pair must survive a same-named codex skill"
+    assert all(h["cli"] != "claude" or "codex" not in str(h["evidence"]) for h in hits)
+
+
+def test_b6_exact_phrase_boost_is_load_bearing():
+    # Isolate the +0.25 exact-quoted-phrase boost from the token-based cosine: the
+    # comma inside "alpha, beta, gamma" doesn't change what _toks extracts, so the
+    # shared-token set and term frequencies are identical between the two runs —
+    # only whether the quoted phrase text matches EXACTLY differs. (Adjusted from
+    # the reviewer's proposed `cosine > 1.0` assertion: measured cosine here tops
+    # out at 0.596, since two non-identical unit TF-IDF vectors can't exceed 1.0 —
+    # asserting the boosted-vs-unboosted delta pins the same +0.25 contract without
+    # relying on a threshold the real function never reaches.)
+    boosted = sa.overlap_pairs([
+        {"name": "x", "meta": {"description": 'Triggers: "alpha beta gamma", "delta run".'}},
+        {"name": "y", "meta": {"description": 'Triggers: "alpha beta gamma", "epsilon jump".'}},
+    ])
+    unboosted = sa.overlap_pairs([
+        {"name": "x", "meta": {"description": 'Triggers: "alpha, beta, gamma", "delta run".'}},
+        {"name": "y", "meta": {"description": 'Triggers: "alpha beta gamma", "epsilon jump".'}},
+    ])
+    assert boosted and boosted[0][4] == ["alpha beta gamma"]
+    assert unboosted and unboosted[0][4] == [], "comma-altered phrase must not exact-match"
+    assert boosted[0][0] - unboosted[0][0] == pytest.approx(0.25), \
+        "exact shared phrase must add exactly the +0.25 boost above plain cosine"
+
+
+def test_b6_requires_two_shared_tokens():
+    skills = [
+        {"name": "x", "meta": {"description": 'Triggers: "think hard about zebras".'}},
+        {"name": "y", "meta": {"description": 'Triggers: "think fast, act now".'}},
+    ]
+    # shared non-stopword tokens: only "think" ("about" is in _STOP; "hard"/"zebras"
+    # vs "fast"/"act"/"now" don't overlap) -> below the >=2 floor -> no nomination
+    assert sa.overlap_pairs(skills) == []
