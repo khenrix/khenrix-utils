@@ -424,7 +424,11 @@ def finding(rule, rule_version, cli, scope, kind, subjects, consequence,
     subjects = sorted(subjects)
     ident = canonical_json({"rule": rule, "rule_version": rule_version, "cli": cli,
                             "scope": scope, "kind": kind, "subjects": subjects})
-    informational = False
+    # A "NOT EVALUATED" note means the engine had no input to judge this axis
+    # (missing --repo-root / --tokens-file / a crashed check) — not a confirmed
+    # problem, so --check must not gate a build on it any more than it gates on
+    # unverified-semantics findings below.
+    informational = note.startswith("NOT EVALUATED")
     need = RULE_NEEDS.get(rule)
     if need and cli in SEMANTICS and not SEMANTICS[cli][need]:
         informational = True
@@ -892,7 +896,7 @@ def engine_capabilities(ctx: dict) -> dict:
             "writable_ledger": ctx.get("repo_root") is not None}
 
 
-def write_findings(findings, inv, path, ctx) -> None:
+def write_findings(findings, inv, path, ctx) -> dict:
     doc = {"schema_version": SCHEMA_VERSION, "generated": ctx.get("now"),
            "capabilities": engine_capabilities(ctx),
            "inventory_hash": vhash(canonical_json(inv["items"])),
@@ -906,6 +910,51 @@ def write_findings(findings, inv, path, ctx) -> None:
         sys.exit(f"REFUSING to write {path}: secret-shaped strings survived "
                  f"sanitization: {leaked}")
     Path(path).write_text(text)
+    return doc
+
+
+# --- report ---------------------------------------------------------------
+def render_report(doc: dict, phases: dict) -> str:
+    L = [f"# Setup audit — {doc['generated']}", "",
+         f"Inventory {doc['counts']['items']} items (hash {doc['inventory_hash']}), "
+         f"{doc['counts']['findings']} finding(s), {doc['counts']['errors']} discovery error(s).",
+         f"{doc.get('local_waivers', 0)} local waiver(s) active.", "", "## Phase coverage", ""]
+    for phase, status in sorted(phases.items()):
+        L.append(f"- {phase}: {status}")
+    L += ["", "## Findings (by severity)", ""]
+    for f in doc["findings"]:
+        tag = " (informational)" if f.get("informational") else ""
+        L.append(f"### [{f['severity']}] {f['slug']}{tag}")
+        L.append(f"- rule {f['rule']} · {f['cli']}/{f['scope']} · {f['consequence']} "
+                 f"· confidence {f['confidence']} · id `{f['id']}` fp `{f['fingerprint']}`")
+        if f.get("note"):
+            L.append(f"- note: {f['note']}")
+        L.append(f"- evidence: `{canonical_json(f['evidence'])[:400]}`")
+        for r in f["remediation"]:
+            L.append(f"- rung: {r}")
+        L.append("")
+    L += ["## Waived (collapsed)", ""]
+    for w in doc.get("waived", []):
+        L.append(f"- {w['slug']} — {w['reason']}")
+    return "\n".join(L) + "\n"
+
+
+def write_report(doc: dict, phases: dict, report_dir: Path, machine: str) -> None:
+    md = render_report(doc, phases)
+    leaked = scan_artifact_text(md)
+    if leaked:
+        sys.exit(f"REFUSING to write report: secret-shaped strings leaked: {leaked}")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "latest.md").write_text(md)
+    runs = report_dir / "runs" / re.sub(r"[^A-Za-z0-9._-]", "-", machine)
+    runs.mkdir(parents=True, exist_ok=True)
+    stamp = doc["generated"].replace(":", "") + "-" + doc["inventory_hash"]
+    (runs / f"{stamp}.md").write_text(md)
+    (runs / f"{stamp}.json").write_text(json.dumps(doc, indent=1, sort_keys=True))
+    history = sorted(runs.glob("*.md"))
+    if len(history) > 10:
+        print(f"note: {len(history)} run reports in {runs} — prune manually "
+              f"(the engine never deletes history unasked)")
 
 
 # --- ledger -----------------------------------------------------------------
@@ -1024,8 +1073,17 @@ def cmd_findings(args) -> int:
     ctx.update(load_ledger(ctx))
     fnd = run_checks(inv, ctx)
     fnd = apply_ledger(fnd, ctx)
-    write_findings(fnd, inv, args.out or "findings.json", ctx)
+    doc = write_findings(fnd, inv, args.out or "findings.json", ctx)
     print(f"{len(fnd)} finding(s) → {args.out or 'findings.json'}")
+    if args.report_dir:
+        write_report(doc, phases={
+            "inventory": "complete", "checks": "complete",
+            "probes": "engine does not run probes — SKILL.md Phase D",
+            "ecosystem": "engine does not run discovery — SKILL.md Phase E"},
+            report_dir=Path(args.report_dir), machine=args.machine)
+    if args.check is not None and any(
+            f["severity"] >= args.check and not f["informational"] for f in doc["findings"]):
+        return 1
     return 0
 
 
@@ -1042,6 +1100,7 @@ def cmd_inventory(args) -> int:
 
 
 def add_common(ap: argparse.ArgumentParser) -> None:
+    import platform  # local import per this file's idiom (see engine_capabilities, load_declared)
     ap.add_argument("--home-root", default=str(Path.home()))
     ap.add_argument("--repo-root", default=None,
                     help="canonical khenrix-utils checkout (validated before any repo write)")
@@ -1051,6 +1110,12 @@ def add_common(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--tokens-file", default=None,
                     help="JSON {plugin: always_on_tokens} from `claude plugin details`")
     ap.add_argument("--context-window", type=int, default=200_000)
+    ap.add_argument("--report-dir", default=None,
+                    help="also render a markdown report (findings command only)")
+    ap.add_argument("--machine", default=platform.node(),
+                    help="machine label for report history + ledger entries (sanitized)")
+    ap.add_argument("--check", type=int, default=None,
+                    help="exit 1 if any non-informational finding's severity >= N")
 
 
 def now_utc(args) -> str:
@@ -1065,7 +1130,9 @@ def add_ledger_flags(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--until", default=None, help="ISO8601 waiver expiry")
     ap.add_argument("--subject", default=None, help="kind:name for a desired-state policy")
     ap.add_argument("--desired-state", default=None)
-    ap.add_argument("--machine", default="")
+    # --machine is defined by add_common (called for every subcommand, including
+    # ledger-add/ledger-expire, before this function runs) — redefining it here
+    # would raise argparse.ArgumentError: conflicting option string.
     ap.add_argument("--local", action="store_true",
                     help="write to the per-machine ledger instead of the repo one")
 

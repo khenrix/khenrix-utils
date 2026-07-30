@@ -910,3 +910,24 @@ def test_cmd_findings_end_to_end_suppresses_waived_finding_into_waived_list(tmp_
     assert doc["counts"]["findings"] == 0
     assert doc["waived"] and doc["waived"][0]["id"] == probe["id"]
     assert doc["local_waivers"] == 0
+
+
+# --- report renderer + --check mode ----------------------------------------
+def test_render_report_contains_skeleton_and_skips(tmp_path):
+    f = _wf()
+    doc = {"generated": "2026-07-30T00:00:00Z", "capabilities": {"can_probe": False},
+           "inventory_hash": "abc", "counts": {"items": 3, "findings": 1, "errors": 0},
+           "errors": [], "findings": [f], "waived": [], "local_waivers": 2}
+    md = sa.render_report(doc, phases={"probes": "skipped — claude not on PATH",
+                                       "ecosystem": "cache, 12d old"})
+    assert "probes: skipped — claude not on PATH" in md
+    assert "2 local waiver(s) active" in md
+    assert f["slug"] in md
+
+
+def test_check_mode_exit_codes(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    rc_clean = sa.main(["findings", "--home-root", str(home),
+                        "--out", str(tmp_path / "f.json"), "--check", "40"])
+    assert rc_clean == 0  # empty home → no findings ≥ 40
