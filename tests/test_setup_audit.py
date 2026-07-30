@@ -237,3 +237,43 @@ def test_resolve_repo_root(tmp_path):
     assert sa.resolve_repo_root(g / "khenrix-utils") == g / "khenrix-utils"
     assert sa.resolve_repo_root(g / "app") is None
     assert sa.resolve_repo_root(None) is None
+
+
+def test_finding_id_order_insensitive_fingerprint_evidence_sensitive():
+    f1 = sa.finding("B1", 1, "claude", "user", "skill", ["b", "a"],
+                    "wrong-tool-fires", "high", "correctness", {"x": 1}, ["r1"])
+    f2 = sa.finding("B1", 1, "claude", "user", "skill", ["a", "b"],
+                    "wrong-tool-fires", "high", "correctness", {"x": 2}, ["r1"])
+    assert f1["id"] == f2["id"]
+    assert f1["fingerprint"] != f2["fingerprint"]
+
+
+def test_finding_severity_ranks_silent_loss_top():
+    hi = sa.finding("B7", 1, "claude", "user", "skill", ["s"],
+                    "silent-capability-loss", "high", "correctness", {}, [])
+    lo = sa.finding("B9", 1, "claude", "user", "plugin", ["p"],
+                    "hygiene", "high", "correctness", {}, [])
+    assert hi["severity"] > lo["severity"]
+
+
+def test_finding_cost_mcp_forbidden():
+    import pytest
+    with pytest.raises(ValueError):
+        sa.finding("B7", 1, "claude", "user", "mcp", ["m"],
+                   "cost", "high", "cost", {}, [])
+
+
+def test_finding_unverified_cli_is_informational():
+    f = sa.finding("B1", 1, "codex", "user", "skill", ["x"],
+                   "wrong-tool-fires", "high", "correctness", {}, [])
+    assert f["informational"] is True and "semantics unverified" in f["note"]
+
+
+def test_write_findings_fails_closed_on_secret(tmp_path):
+    import pytest
+    bad = sa.finding("B2", 1, "claude", "user", "hook", ["h"],
+                     "silent-capability-loss", "high", "correctness",
+                     {"cmd": "ghp_" + "d" * 36}, [])
+    with pytest.raises(SystemExit):
+        sa.write_findings([bad], {"items": [], "errors": []},
+                          tmp_path / "f.json", {"now": "2026-07-30T00:00:00Z"})

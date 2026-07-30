@@ -373,6 +373,92 @@ def walk_projects(home: Path, repo, git_root) -> list:
 WALKERS.append(walk_projects)
 
 
+# --- findings framework ---------------------------------------------------
+CONSEQUENCE_RANK = {"silent-capability-loss": 5, "wrong-tool-fires": 4,
+                    "state-divergence": 3, "cost": 2, "hygiene": 1}
+CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+# Which SEMANTICS axis each rule leans on; absent = portable (no gating).
+RULE_NEEDS = {"B1": "precedence_verified", "B2": "namespacing", "B3": "dedupe_rule"}
+
+
+def finding(rule, rule_version, cli, scope, kind, subjects, consequence,
+            confidence, justification, evidence, remediation, note="") -> dict:
+    if kind == "mcp" and justification == "cost":
+        raise ValueError("MCP findings may never be cost-justified (spec constraint 1)")
+    subjects = sorted(subjects)
+    ident = canonical_json({"rule": rule, "rule_version": rule_version, "cli": cli,
+                            "scope": scope, "kind": kind, "subjects": subjects})
+    informational = False
+    need = RULE_NEEDS.get(rule)
+    if need and cli in SEMANTICS and not SEMANTICS[cli][need]:
+        informational = True
+        note = (note + " " if note else "") + f"semantics unverified for {cli}"
+    return {"id": sid(ident), "slug": f"{rule.lower()}.{kind}." + "--".join(
+                s.replace(":", "-").lower()[:40] for s in subjects[:2]),
+            "rule": rule, "rule_version": rule_version, "cli": cli, "scope": scope,
+            "kind": kind, "subjects": subjects,
+            "consequence": consequence, "confidence": confidence,
+            "severity": CONSEQUENCE_RANK[consequence] * 10 + CONFIDENCE_RANK[confidence],
+            "justification": justification, "evidence": evidence,
+            "fingerprint": vhash(canonical_json(evidence)),
+            "remediation": remediation, "informational": informational, "note": note}
+
+
+CHECKS: list = []  # populated by check tasks
+
+
+def run_checks(inv: dict, ctx: dict) -> list:
+    out: list = []
+    for check in CHECKS:
+        try:
+            out.extend(check(inv, ctx))
+        except Exception as e:  # noqa: BLE001
+            out.append(finding("ENGINE", 1, "all", "engine", "check-error",
+                               [check.__name__], "silent-capability-loss", "high",
+                               "correctness", {"error": f"{type(e).__name__}: {e}"},
+                               ["fix the engine"], note="check crashed — NOT EVALUATED"))
+    return sorted(out, key=lambda f: -f["severity"])
+
+
+def engine_capabilities(ctx: dict) -> dict:
+    import shutil as _sh
+    return {"can_probe": _sh.which("claude") is not None,
+            "can_token_count": _sh.which("claude") is not None,
+            "semantics_verified_for": [c for c in CLIS if SEMANTICS[c]["precedence_verified"]],
+            "writable_ledger": ctx.get("repo_root") is not None}
+
+
+def write_findings(findings, inv, path, ctx) -> None:
+    doc = {"schema_version": SCHEMA_VERSION, "generated": ctx.get("now"),
+           "capabilities": engine_capabilities(ctx),
+           "inventory_hash": vhash(canonical_json(inv["items"])),
+           "counts": {"items": len(inv["items"]), "findings": len(findings),
+                      "errors": len(inv["errors"])},
+           "errors": inv["errors"], "findings": findings}
+    text = json.dumps(doc, indent=1, sort_keys=True)
+    leaked = scan_artifact_text(text)
+    if leaked:
+        sys.exit(f"REFUSING to write {path}: secret-shaped strings survived "
+                 f"sanitization: {leaked}")
+    Path(path).write_text(text)
+
+
+def cmd_findings(args) -> int:
+    home = Path(args.home_root)
+    repo = resolve_repo_root(args.repo_root)
+    inv = build_inventory(home, repo, Path(args.git_root) if args.git_root else None)
+    ctx = {"now": now_utc(args), "repo_root": repo, "home": home}
+    fnd = run_checks(inv, ctx)
+    fnd = apply_ledger(fnd, ctx)   # Task 12; define a pass-through until then:
+    write_findings(fnd, inv, args.out or "findings.json", ctx)
+    print(f"{len(fnd)} finding(s) → {args.out or 'findings.json'}")
+    return 0
+
+
+def apply_ledger(findings, ctx):  # replaced in Task 12
+    return findings
+
+
 def cmd_inventory(args) -> int:
     home = Path(args.home_root)
     repo = Path(args.repo_root) if args.repo_root else None
@@ -409,6 +495,8 @@ def main(argv=None) -> int:
         return _self_test()
     if args.cmd == "inventory":
         return cmd_inventory(args)
+    if args.cmd == "findings":
+        return cmd_findings(args)
     if args.cmd is None:
         ap.print_help()
         return 2
