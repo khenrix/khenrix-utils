@@ -27,7 +27,7 @@ class FleetError(RuntimeError):
     """A seat could not be built into the state the threat model requires."""
 
 
-class ForgeEnvError(RuntimeError):
+class ForgeEnvError(FleetError):
     """The environment handed to a seat cannot be built."""
 
 

@@ -81,17 +81,25 @@ def _resolve_author(repo, author):
 
 
 def _index_sha(repo) -> str:
-    """sha256 of the index git would use for `repo`, or "" when there is none.
+    """sha256 of the index git would use for `repo`, or "" when there is no index file.
 
     The git dir is ASKED FOR, never joined onto `.git`: in a linked worktree that is a
     FILE, the joined path does not exist, `is_file()` answers False without raising, and
-    this returns "" — at which point the drift guard below, which skips an empty hash,
-    silently stops guarding. `inspect.repo_facts` computes the value being compared the
-    same way, so the two must resolve the location the same way too.
+    this returns "" for a repository that has a perfectly good index. `inspect.repo_facts`
+    computes the value being compared the same way, so the two must resolve the location
+    the same way too — and the guard below compares "" rather than tolerating it, so a slip
+    here fails the run instead of quietly disarming the check.
+
+    `check=False` and a BaselineError, because this module's documented failure mode is
+    BaselineError: a raw GitError out of a helper the caller cannot see is not one.
     """
-    gd = Path(gitcmd.git(repo, "rev-parse", "--absolute-git-dir",
-                         env_extra=gitcmd.READONLY).stdout.strip())
-    idx = gd / "index"
+    r = gitcmd.git(repo, "rev-parse", "--absolute-git-dir",
+                   env_extra=gitcmd.READONLY, check=False)
+    if r.returncode != 0:
+        raise BaselineError(
+            "cannot locate the git directory, so the mid-snapshot drift check cannot run: "
+            f"{r.stderr.strip()}")
+    idx = Path(r.stdout.strip()) / "index"
     return hashlib.sha256(idx.read_bytes()).hexdigest() if idx.is_file() else ""
 
 
@@ -165,11 +173,18 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     # written, not merely that nothing became reachable, for the same reason the identity
     # probe was hoisted above write-tree: a refused run's blobs and tree otherwise sit loose
     # in the user's object store until git's two-week gc grace expires.
+    # STRICT: `is not None` is the only opt-out, and "" compares like any other value.
+    # Tolerating an empty hash on either side would look like defensiveness and be the
+    # opposite — `idx_now == ""` is the exact signature of a git dir resolved wrongly, the
+    # bug this package has shipped twice, so the tolerant form turns a path slip into a
+    # silently unguarded baseline that only a bespoke regression test would ever catch.
+    # None means the caller did not measure; "" means it measured and there was no index.
     idx_now = _index_sha(repo)
-    if facts.index_sha and idx_now and idx_now != facts.index_sha:
+    if facts.index_sha is not None and facts.index_sha != idx_now:
         raise BaselineError(
             "the repository index moved between preflight and baseline construction "
-            f"({facts.index_sha[:12]} -> {idx_now[:12]}); re-run preflight")
+            f"({facts.index_sha[:12] or '<no index>'} -> {idx_now[:12] or '<no index>'}); "
+            "re-run preflight")
 
     base_commit = facts.head
     dirty = bool(facts.staged or facts.unstaged or selected_untracked)

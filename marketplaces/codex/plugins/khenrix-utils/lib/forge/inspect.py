@@ -31,7 +31,12 @@ _ATTR_BATCH = 500
 class RepoFacts:
     root: Path
     head: str
-    index_sha: str
+    # Three-valued on purpose, and read that way by `baseline.materialize`'s drift check:
+    # a hash is "measured, this is it", "" is "measured, and there was no index file", and
+    # None is "not measured" — the only value that disables the check. Collapsing the last
+    # two would make an unmeasurable index indistinguishable from a wrongly-resolved git
+    # dir, which is the failure this package has already shipped twice.
+    index_sha: str | None
     is_shallow: bool = False
     is_partial: bool = False
     has_submodules: bool = False

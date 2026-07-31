@@ -385,3 +385,34 @@ def test_sidecars_is_none_until_a_producer_exists(tmp_path):
     assert clean.dirty is False and dirty.dirty is True, \
         "fixture: the two runs must cover both constructors"
     assert clean.sidecars is None and dirty.sidecars is None
+
+
+def test_an_index_that_appeared_after_preflight_is_drift_not_a_skip(tmp_path):
+    """"" is MEASURED-and-absent, so it must COMPARE rather than disable the check.
+
+    The guard's earlier shape skipped whenever either side was empty. That reads as
+    defensiveness and is the opposite: `idx_now == ""` is the exact signature of a git dir
+    resolved wrongly — the bug this package has shipped twice — so tolerating it turns a
+    path slip into a baseline nobody guarded, detectable only by a bespoke regression test.
+    Strict comparison makes the whole class fail loudly instead.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "d.txt", "d\n")
+    run = tmp_path / "run"; run.mkdir()
+    f = finspect.replace(finspect.repo_facts(repo), index_sha="")
+    with pytest.raises(baseline.BaselineError, match="moved"):
+        baseline.materialize(repo, run, f, ["d.txt"], "r1")
+
+
+def test_index_sha_none_is_the_explicit_opt_out(tmp_path):
+    """None is "not measured" — the one value that disables the check.
+
+    Also the proof that the strict guard did not simply become "always raise": with the
+    check opted out, an ordinary dirty baseline still builds.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "d.txt", "d\n")
+    run = tmp_path / "run"; run.mkdir()
+    f = finspect.replace(finspect.repo_facts(repo), index_sha=None)
+    b = baseline.materialize(repo, run, f, ["d.txt"], "r1")
+    assert b.dirty is True and "d.txt" in _tree_paths(repo, b.tracked_tree_oid)

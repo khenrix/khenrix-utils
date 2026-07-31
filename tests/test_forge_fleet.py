@@ -336,3 +336,8 @@ def test_forge_child_env_raises_a_named_error_on_a_bad_depth(tmp_path):
     repo = make_repo(tmp_path)
     with pytest.raises(fleet.ForgeEnvError, match="LLM_FORGE_DEPTH"):
         fleet.forge_child_env(repo, {"LLM_FORGE_DEPTH": "not-a-number"})
+    # And catchable as a seat-construction failure, which is what it is: a caller that wraps
+    # `clone_seat` + `forge_child_env` in `except FleetError` must not miss half of them
+    # because the two errors from one module happen to be siblings.
+    with pytest.raises(fleet.FleetError):
+        fleet.forge_child_env(repo, {"LLM_FORGE_DEPTH": "not-a-number"})

@@ -102,13 +102,27 @@ def screen_tree(root, rel_paths, quota: Quota = None):
 
     targets, breaches, findings, total = [], [], [], 0
     for rel in rel_paths:
+        # Two ways a "repo-relative" selection is not one, both of which put a host file the
+        # baseline never contained in front of this loop's `open()`.
+        #
         # `root / "/etc/hostname"` IS `/etc/hostname`: an absolute right-hand side REPLACES
-        # the root instead of joining to it, silently. The selection then names a host file
-        # the baseline never contained, this loop opens it, and only `relative_to(root)`
-        # notices — by raising ValueError out of a function whose contract is to return
-        # (findings, breaches). A breach, because the run must fail closed on it either way.
+        # the root instead of joining to it, silently. Downstream only `relative_to(root)`
+        # notices, and it notices by raising ValueError out of a function whose contract is
+        # to return (findings, breaches).
+        #
+        # `../outside.txt` is worse, because NOTHING notices: `relative_to` is purely
+        # LEXICAL, so it accepts the escape without complaint and the file comes back
+        # scanned, with no breach — the clean-verdict-on-an-unread-file outcome inverted.
+        # `a/../b` is refused too though it lands back inside: a selection is a path, not an
+        # expression to evaluate, and normalising one here would be this module deciding
+        # what the baseline contains.
         if os.path.isabs(rel):
-            breaches.append(f"{rel}: not screened — selection must be repo-relative")
+            breaches.append(f"{rel}: not screened — an absolute path is not a repo-relative "
+                            "selection")
+            continue
+        if ".." in Path(rel).parts:
+            breaches.append(f"{rel}: not screened — a '..' component escapes the repository "
+                            "root; selections must be repo-relative")
             continue
         p = root / rel
         # is_dir()/is_file() both follow symlinks, so the link check comes first: a

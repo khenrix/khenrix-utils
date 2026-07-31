@@ -163,10 +163,33 @@ def test_absolute_selected_path_is_a_breach_not_a_crash(tmp_path):
     outside.write_text(f'K = "{TOKEN}"\n')
     findings, breaches = screen.screen_tree(repo, [str(outside)])
     assert findings == [], "an absolute selection must never be opened"
-    assert any("absolute" in b for b in breaches)
+    # Matched WHOLE, not by substring. `any("absolute" in b …)` passed here for a reason
+    # that had nothing to do with the code: pytest derives tmp_path's basename from the test
+    # function's own name, so the word arrived inside the path being reported back. The
+    # breach must state the rule that was broken.
+    assert breaches == [f"{outside}: not screened — an absolute path is not a "
+                        "repo-relative selection"]
 
 
-def test_skipped_count_is_reported_so_coverage_is_not_overstated(tmp_path):
+def test_a_dotdot_selection_cannot_escape_the_root(tmp_path):
+    """The escape nothing downstream notices.
+
+    `../outside.txt` is not absolute, so an isabs-only guard passes it through; `root / rel`
+    then lands outside the tree, the file is opened and scanned, and `relative_to(root)`
+    — purely LEXICAL — accepts it without raising. The result is a host file read, reported
+    with an EMPTY breach list, by the module whose contract is never to scan less than it
+    claimed to. The absolute case at least crashed.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text(f'K = "{TOKEN}"\n')
+    findings, breaches = screen.screen_tree(repo, ["../outside.txt"])
+    assert findings == [], "a selection escaping the root was opened and scanned"
+    assert breaches == ["../outside.txt: not screened — a '..' component escapes the "
+                        "repository root; selections must be repo-relative"]
+
+
+def test_the_skipped_path_is_named_so_coverage_is_not_overstated(tmp_path):
     """A mixed selection must say which half it did not read.
 
     The screened path holds a token and the skipped one is a link, so the two halves are
