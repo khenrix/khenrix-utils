@@ -6,12 +6,13 @@ danger: a tool reviewing its own under-test diff, or unbounded recursion.
 ## Target = llm-council
 
 The council reviews (findings + diff) run through `fanout.py`. If the working tree has
-modified `shared/skills/llm-council/**`, the under-test engine must NOT be its own reviewer:
+modified `shared/skills/llm-council/**` OR `shared/lib/council/**`, the under-test engine
+must NOT be its own reviewer:
 
 1. Extract the last committed engine and run that instead:
    ```bash
-   GOOD=$(mktemp -d)/fanout.py
-   git -C <repo> show HEAD:shared/skills/llm-council/scripts/fanout.py > "$GOOD"
+   GOOD=$(mktemp -d)/engine.py
+   git -C <repo> show HEAD:shared/lib/council/engine.py > "$GOOD"
    python3 "$GOOD" --prompt-file <diff-prompt> --out json
    ```
 2. If that is unusable too (e.g. the fix targets a bug in the committed engine), fall
@@ -19,7 +20,7 @@ modified `shared/skills/llm-council/**`, the under-test engine must NOT be its o
    (see `headless-invocation.md` at the plugin root) and treat it as a 1-member panel.
 3. Either way, **tell the user the reviewer was substituted and why.**
 
-**Consequence for a panel change.** `MODES` lives in `fanout.py`, so extracting HEAD's engine
+**Consequence for a panel change.** `MODES` lives in `engine.py`, so extracting HEAD's engine
 also extracts the OLD panel — a model bump is necessarily reviewed by the models it replaces,
 and the new panel never reviews its own diff. That is the intended independence, not a bug.
 The compensating control is integration evidence: smoke **every changed seat** with the
