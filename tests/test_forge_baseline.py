@@ -25,6 +25,12 @@ def _idx(repo):
     return hashlib.sha256((Path(gd) / "index").read_bytes()).hexdigest()
 
 
+def _loose_objects(repo):
+    out = subprocess.run(["git", "-C", str(repo), "count-objects", "-v"],
+                         capture_output=True, text=True, check=True).stdout
+    return int(dict(line.split(": ") for line in out.splitlines())["count"])
+
+
 def _tree_paths(repo, tree):
     out = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", tree],
                          capture_output=True, text=True, check=True).stdout
@@ -167,17 +173,45 @@ def test_missing_identity_refuses_to_fabricate_an_author(tmp_path, missing):
         _mk(repo, run, selected=["d.txt"])
 
 
-def test_refusing_an_author_leaves_no_ref_behind(tmp_path):
+def test_refusing_an_author_writes_nothing_at_all(tmp_path):
+    # Not merely "nothing reachable". Probing identity after write-tree still leaves the
+    # tree and its blobs loose in the user's object store — unreachable but present until
+    # git's two-week gc grace expires. The object count is what makes fail-closed literal.
     repo = make_repo(tmp_path)
     gitcmd.git(repo, "config", "--unset", "user.name")
     write(repo, "d.txt", "d\n")
     run = tmp_path / "run"; run.mkdir()
-    before = _idx(repo)
+    before_idx, before_objs = _idx(repo), _loose_objects(repo)
     with pytest.raises(baseline.BaselineError):
         _mk(repo, run, selected=["d.txt"])
     assert gitcmd.git(repo, "rev-parse", "--verify", "refs/khenrix-forge/r1/base",
                       check=False).returncode != 0, "a refused run published a ref anyway"
-    assert _idx(repo) == before
+    assert _idx(repo) == before_idx
+    assert _loose_objects(repo) == before_objs, "a refused run left objects in the store"
+    assert not gitcmd.git(repo, "fsck", "--unreachable", "--no-progress").stdout.strip()
+
+
+def test_repo_and_facts_naming_different_repositories_is_refused(tmp_path):
+    # facts.root wins over the argument, so a mismatch would otherwise build A's baseline
+    # from a call that named B and return normally — the loud pathspec error that used to
+    # surface this went away with the root fix.
+    a = make_repo(tmp_path, name="A")
+    b = make_repo(tmp_path, name="B")
+    write(a, "x.txt", "x\n")
+    run = tmp_path / "run"; run.mkdir()
+    with pytest.raises(baseline.BaselineError, match="different repositories"):
+        baseline.materialize(b, run, finspect.repo_facts(a), ["x.txt"], "r1",
+                             author=("U", "u@e.invalid"))
+
+
+def test_a_subdirectory_of_the_same_repository_is_still_accepted(tmp_path):
+    # The guard must not turn the legitimate subdirectory call into an error.
+    repo = make_repo(tmp_path)
+    write(repo, "nest/n.txt", "n\n")
+    subprocess.run(["git", "-C", str(repo), "add", "nest/n.txt"], check=True)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo / "nest", run)
+    assert set(b.filesystem_manifest) == {"nest/n.txt", "seed.txt"}
 
 
 def test_ambient_git_dir_cannot_redirect_b1(monkeypatch, tmp_path):

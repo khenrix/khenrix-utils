@@ -57,6 +57,24 @@ class Baseline:
     filesystem_manifest: dict = field(default_factory=dict)
 
 
+def _resolve_author(repo, author):
+    """(name, email) for B1, or raise. Never guesses — see the module docstring."""
+    if author is not None:
+        return author
+    name = gitcmd.git(repo, "config", "--get", "user.name",
+                      env_extra=gitcmd.READONLY, check=False).stdout.strip()
+    email = gitcmd.git(repo, "config", "--get", "user.email",
+                       env_extra=gitcmd.READONLY, check=False).stdout.strip()
+    if not (name and email):
+        raise BaselineError(
+            "cannot author B1: this repository has no local user.name/user.email, and "
+            "global config is disabled on every call this package makes. Resolve the "
+            "user's identity at the consent gate and pass author=(name, email). "
+            "Refusing to substitute a placeholder — B1 is history the user is asked to "
+            "merge, so a fabricated author would be a permanent false attribution.")
+    return name, email
+
+
 def _sha256_file(p: Path) -> str:
     h = hashlib.sha256()
     with open(p, "rb") as fh:
@@ -69,20 +87,39 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
                 author=None) -> Baseline:
     """Build B. Creates objects and a ref in the user's repo; touches nothing else.
 
+    `facts` is AUTHORITATIVE for location: work happens at `facts.root`, and `repo` only has
+    to name the same repository — a subdirectory of it is fine. Naming a different one
+    raises rather than quietly building A's baseline because the caller passed B.
+
     `author` is the (name, email) recorded on B1. When it is None the repository's own
     user.name/user.email are probed, and `BaselineError` is raised if either is missing —
     see the module docstring for why this refuses to guess.
     """
+    run_dir = Path(run_dir)
     # Every path here is worktree-ROOT-relative, so the root is where commands must run.
     # `ls-files` reports relative to cwd while `add -u -- :/` is root-relative magic: given a
     # SUBDIRECTORY those two disagree, and the result is a root-scoped tree paired with a
     # subdirectory-scoped, wrongly-keyed manifest — returned as success. Since the manifest
-    # is what downstream validates materialization against, that is silent corruption, so the
-    # root that `inspect` already resolved via `--show-toplevel` is authoritative over the
-    # caller's argument rather than merely assumed to equal it.
-    repo, run_dir = Path(facts.root), Path(run_dir)
+    # is what downstream validates materialization against, that is silent corruption, so
+    # `facts.root` wins over the argument. Deferring to it that way would also swallow a
+    # caller who paired the wrong facts with the wrong repo, so the two are checked to agree
+    # first: same repository, any directory within it.
+    top = Path(gitcmd.git(repo, "rev-parse", "--show-toplevel",
+                          env_extra=gitcmd.READONLY).stdout.strip()).resolve()
+    repo = Path(facts.root).resolve()
+    if top != repo:
+        raise BaselineError(
+            f"repo and facts describe different repositories: {top} vs facts.root {repo}. "
+            "B would be built from one and attributed to the other.")
+
     base_commit = facts.head
     dirty = bool(facts.staged or facts.unstaged or selected_untracked)
+
+    # Resolved BEFORE anything is written, though it reads more naturally next to
+    # commit-tree. Probing after write-tree leaves a refused run's tree and blobs loose in
+    # the user's object store, unreachable but present until git's two-week gc grace expires.
+    # Fail-closed has to mean nothing was written, not merely nothing was reachable.
+    name, email = _resolve_author(repo, author) if dirty else (None, None)
 
     manifest = {}
     for rel in gitcmd.git(repo, "ls-files", "-z", env_extra=gitcmd.READONLY).stdout.split("\0"):
@@ -139,20 +176,6 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
 
     tree = gitcmd.git(repo, "write-tree", env_extra=env).stdout.strip()
 
-    if author is None:
-        name = gitcmd.git(repo, "config", "--get", "user.name",
-                          env_extra=gitcmd.READONLY, check=False).stdout.strip()
-        email = gitcmd.git(repo, "config", "--get", "user.email",
-                           env_extra=gitcmd.READONLY, check=False).stdout.strip()
-        if not (name and email):
-            raise BaselineError(
-                "cannot author B1: this repository has no local user.name/user.email, and "
-                "global config is disabled on every call this package makes. Resolve the "
-                "user's identity at the consent gate and pass author=(name, email). "
-                "Refusing to substitute a placeholder — B1 is history the user is asked to "
-                "merge, so a fabricated author would be a permanent false attribution.")
-    else:
-        name, email = author
     msg = ("forge: snapshot of your uncommitted working tree\n\n"
            "This commit is yours, not forge's. It exists so every seat starts from the "
            "same tree you were looking at. Forge's own work stacks on top of it.")
