@@ -111,7 +111,9 @@ Two modes, **same models**, differ only in how hard they think:
   when the user says "deep", "think hard", or "maximum confidence".
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
-`scripts/fanout.py` (currently Claude Opus 5, GPT-5.6 Sol, Gemini 3.6 Flash). To change
+`engine.py` (repo: `shared/lib/council/engine.py`; rendered plugin:
+`<plugin>/lib/council/engine.py` — `scripts/fanout.py` is now a thin façade over it)
+(currently Claude Opus 5, GPT-5.6 Sol, Gemini 3.6 Flash). To change
 a tier, edit one cell there. A *new* model id must also be registered in
 `capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
@@ -247,10 +249,10 @@ died. The only hard stop is zero valid providers.
 ## Tuning (for maintainers)
 
 To change which models sit on the council or how hard they think, edit the `MODES`
-table at the top of `scripts/fanout.py` (one cell per model/tier); the per-provider
+table at the top of `engine.py` (one cell per model/tier); the per-provider
 flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives in
 `build_real_spec`. When a real headless run surfaces a new failure string or an
-output-parsing quirk, the fix also lives in `scripts/fanout.py`: `TOOL_PERMISSION_SENTINELS`
+output-parsing quirk, the fix also lives in `engine.py`: `TOOL_PERMISSION_SENTINELS`
 (our invocation defect — a seat denied its own tool call; carries a `REASON_HINTS` fix)
 vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded),
 `AGY_STRUCTURED_TOOL_PERMISSION` (agy's own soft-deny wording — STRUCTURED-ONLY, matched
