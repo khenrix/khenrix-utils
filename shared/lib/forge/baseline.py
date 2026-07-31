@@ -16,6 +16,23 @@ stale cache-tree extension — and "stale" is precisely the dirty tree forge exi
 every index-touching command here runs under GIT_INDEX_FILE pointing at a private copy.
 `gitcmd.git` applies `env_extra` LAST, after scrubbing the redirecting variables, which is
 what makes that override both possible and safe.
+
+Identity is the ORCHESTRATOR's to resolve, not this module's. `gitcmd` pins
+GIT_CONFIG_GLOBAL to /dev/null, so the probe below sees repo-LOCAL config only and is blind
+to an identity in ~/.gitconfig — the normal place for one. When it comes back empty this
+module RAISES rather than substitute a placeholder: B1 roots the branch the user is asked to
+merge, forge's own commits are authored `llm-forge`, and a fabricated third name is a FALSE
+attribution that outlives the run in `git log`, `git blame` and `--author` filters with no
+signal at the point it was decided. A missing author is recoverable; a wrong one is not.
+
+The caller should resolve identity once at the consent gate — a single deliberate
+`git var GIT_AUTHOR_IDENT` outside this hardened path — and DISPLAY it as part of what the
+user consents to, because its output is possibly-a-guess that must never be trusted
+silently. Measured on git 2.53: with `user.name` set and no `user.email` it returns
+`Configured <khenrix@Surface-Book-2.localdomain>` at rc=0, the email invented from
+user@hostname with nothing marking which half was guessed. It is not infallible in the
+other direction either — with no name and an empty gecos field it exits 128
+(`empty ident name`), so a caller cannot assume the call always yields an answer.
 """
 import hashlib
 import shutil
@@ -23,6 +40,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import gitcmd
+
+
+class BaselineError(RuntimeError):
+    """B cannot be built honestly from what the caller supplied."""
 
 
 @dataclass(frozen=True)
@@ -48,13 +69,18 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
                 author=None) -> Baseline:
     """Build B. Creates objects and a ref in the user's repo; touches nothing else.
 
-    `author` overrides the (name, email) recorded on B1. The default probes the repository's
-    own user.name/user.email, which sees repo-LOCAL config only: `gitcmd.git` pins
-    GIT_CONFIG_GLOBAL to /dev/null, so an identity that lives in ~/.gitconfig does not
-    resolve and B1 falls back to an explicit `unknown` sentinel. A caller that knows who the
-    user is should pass `author=` rather than rely on the probe.
+    `author` is the (name, email) recorded on B1. When it is None the repository's own
+    user.name/user.email are probed, and `BaselineError` is raised if either is missing —
+    see the module docstring for why this refuses to guess.
     """
-    repo, run_dir = Path(repo), Path(run_dir)
+    # Every path here is worktree-ROOT-relative, so the root is where commands must run.
+    # `ls-files` reports relative to cwd while `add -u -- :/` is root-relative magic: given a
+    # SUBDIRECTORY those two disagree, and the result is a root-scoped tree paired with a
+    # subdirectory-scoped, wrongly-keyed manifest — returned as success. Since the manifest
+    # is what downstream validates materialization against, that is silent corruption, so the
+    # root that `inspect` already resolved via `--show-toplevel` is authoritative over the
+    # caller's argument rather than merely assumed to equal it.
+    repo, run_dir = Path(facts.root), Path(run_dir)
     base_commit = facts.head
     dirty = bool(facts.staged or facts.unstaged or selected_untracked)
 
@@ -91,7 +117,10 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     src_idx = git_dir / "index"
     if src_idx.is_file():
         shutil.copy2(src_idx, idx)
-    env = {**gitcmd.READONLY, "GIT_INDEX_FILE": str(idx)}
+    # GIT_LITERAL_PATHSPECS is pinned OFF, not merely left unset: an ambient `1` (a caller
+    # already defending its own pathspecs) turns `:/` below from magic into a directory name
+    # and `add -u` dies with a pathspec error that names the symptom, not the cause.
+    env = {**gitcmd.READONLY, "GIT_INDEX_FILE": str(idx), "GIT_LITERAL_PATHSPECS": "0"}
 
     # `:/` is pathspec MAGIC (repo-root-relative) — it must not fall inside the literal
     # scope below, or `add -u` would look for a directory named ":/".
@@ -104,17 +133,24 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
         # that also matches `weird1.txt`, sweeping an UNSELECTED file into the baseline.
         spec = run_dir / "selected.pathspec"
         spec.write_bytes(b"\0".join(p.encode() for p in selected_untracked) + b"\0")
-        gitcmd.git(repo, "add", "-f", f"--pathspec-from-file={spec}", "--pathspec-file-nul",
+        gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "add", "-f",
+                   f"--pathspec-from-file={spec}", "--pathspec-file-nul",
                    env_extra={**env, "GIT_LITERAL_PATHSPECS": "1"})
 
     tree = gitcmd.git(repo, "write-tree", env_extra=env).stdout.strip()
 
     if author is None:
         name = gitcmd.git(repo, "config", "--get", "user.name",
-                          env_extra=gitcmd.READONLY, check=False).stdout.strip() or "unknown"
+                          env_extra=gitcmd.READONLY, check=False).stdout.strip()
         email = gitcmd.git(repo, "config", "--get", "user.email",
-                           env_extra=gitcmd.READONLY,
-                           check=False).stdout.strip() or "unknown@invalid"
+                           env_extra=gitcmd.READONLY, check=False).stdout.strip()
+        if not (name and email):
+            raise BaselineError(
+                "cannot author B1: this repository has no local user.name/user.email, and "
+                "global config is disabled on every call this package makes. Resolve the "
+                "user's identity at the consent gate and pass author=(name, email). "
+                "Refusing to substitute a placeholder — B1 is history the user is asked to "
+                "merge, so a fabricated author would be a permanent false attribution.")
     else:
         name, email = author
     msg = ("forge: snapshot of your uncommitted working tree\n\n"

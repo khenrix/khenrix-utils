@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
@@ -12,7 +14,15 @@ from forge_fixtures import make_repo, write  # noqa: E402
 
 
 def _idx(repo):
-    return hashlib.sha256((Path(repo) / ".git" / "index").read_bytes()).hexdigest()
+    """sha256 of the index git itself would use for `repo`.
+
+    The git dir is asked for rather than assumed to be `<repo>/.git`, so this works in a
+    linked worktree too — but via a plain subprocess, so the guard stays independent of the
+    resolution the module under test performs.
+    """
+    gd = subprocess.run(["git", "-C", str(repo), "rev-parse", "--absolute-git-dir"],
+                        capture_output=True, text=True, check=True).stdout.strip()
+    return hashlib.sha256((Path(gd) / "index").read_bytes()).hexdigest()
 
 
 def _tree_paths(repo, tree):
@@ -32,6 +42,9 @@ def test_clean_tree_creates_no_commit(tmp_path):
     b = _mk(repo, run)
     assert b.dirty is False
     assert b.commit == b.base_commit, "a clean baseline must not invent history"
+    got = subprocess.run(["git", "-C", str(repo), "rev-parse", b.ref],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    assert got == b.base_commit, "the clean path must still publish a reachable ref"
 
 
 def test_dirty_tree_captures_staged_unstaged_and_selected_untracked(tmp_path):
@@ -79,10 +92,15 @@ def test_b1_carries_user_authorship(tmp_path):
     write(repo, "d.txt", "d\n")
     run = tmp_path / "run"; run.mkdir()
     b = _mk(repo, run, selected=["d.txt"])
-    who = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%an <%ae>%n%s",
+    who = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%s",
                           b.commit], capture_output=True, text=True, check=True).stdout
     assert "Fixture <fixture@example.invalid>" in who
     assert "uncommitted working tree" in who
+    # The split is the point of §2.1: the work is the user's, the act of committing is
+    # forge's. Asserting only the author passes even with the committer left unset.
+    author, committer, _subject = who.splitlines()
+    assert author == "Fixture <fixture@example.invalid>"
+    assert committer == "llm-forge <forge@khenrix.invalid>"
 
 
 def test_path_with_glob_characters_survives_literally(tmp_path):
@@ -100,6 +118,19 @@ def test_path_with_glob_characters_survives_literally(tmp_path):
     assert "weird1.txt" not in paths, "the pathspec was globbed instead of taken literally"
 
 
+def test_ambient_literal_pathspecs_does_not_break_the_repo_wide_add(monkeypatch, tmp_path):
+    # `:/` is magic, so a caller that hardened its own pathspecs by exporting
+    # GIT_LITERAL_PATHSPECS=1 would turn it into a directory name and kill `add -u`. The
+    # engine pins the variable OFF for that call rather than relying on it being unset.
+    repo = make_repo(tmp_path)
+    write(repo, "seed.txt", "modified\n")
+    write(repo, "chosen.txt", "picked\n")
+    run = tmp_path / "run"; run.mkdir()
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    b = _mk(repo, run, selected=["chosen.txt"])
+    assert _tree_paths(repo, b.tracked_tree_oid) == {"seed.txt", "chosen.txt"}
+
+
 def test_alternate_index_is_seeded_from_the_real_git_dir_in_a_linked_worktree(tmp_path):
     # A linked worktree's `.git` is a FILE, so `<repo>/.git/index` does not exist and the
     # alternate index would start EMPTY — `add -u` then has no tracked entry to update and
@@ -110,29 +141,43 @@ def test_alternate_index_is_seeded_from_the_real_git_dir_in_a_linked_worktree(tm
     assert (wt / ".git").is_file(), "fixture precondition: a linked worktree uses a .git file"
     write(wt, "seed.txt", "modified\n")
     run = tmp_path / "run"; run.mkdir()
+    before = _idx(wt)
     b = _mk(wt, run)
     assert b.dirty is True
     assert "seed.txt" in _tree_paths(wt, b.tracked_tree_oid), "tracked content lost"
     blob = subprocess.run(["git", "-C", str(wt), "show", f"{b.tracked_tree_oid}:seed.txt"],
                           capture_output=True, text=True, check=True).stdout
     assert blob == "modified\n"
+    # The guarantee has to hold on the one path where the index location is newly computed:
+    # a wrong git dir could just as easily resolve to a real index that is not this one.
+    assert _idx(wt) == before, "the worktree's own index was written"
 
 
-def test_missing_identity_falls_back_to_an_explicit_sentinel(tmp_path):
-    # Documents a LIMITATION, not a desired outcome. gitcmd pins GIT_CONFIG_GLOBAL to
-    # /dev/null on every call, so `config --get user.name` sees repo-local config only; a
-    # user whose identity lives in ~/.gitconfig (the common case) authors B1 as this
-    # sentinel. Callers that know the user's identity must pass `author=`. If a later task
-    # resolves identity properly, this test SHOULD fail and be updated deliberately.
+@pytest.mark.parametrize("missing", ["user.name", "user.email"])
+def test_missing_identity_refuses_to_fabricate_an_author(tmp_path, missing):
+    # B1 is history the user is asked to merge, and forge's own commits are authored
+    # `llm-forge` — so a placeholder author reads as a real third party in `git log`,
+    # `git blame` and `--author` filters, permanently and with no signal at the point it was
+    # chosen. Half an identity is no better than none: either half missing must refuse.
     repo = make_repo(tmp_path)
-    gitcmd.git(repo, "config", "--unset", "user.name")
-    gitcmd.git(repo, "config", "--unset", "user.email")
+    gitcmd.git(repo, "config", "--unset", missing)
     write(repo, "d.txt", "d\n")
     run = tmp_path / "run"; run.mkdir()
-    b = _mk(repo, run, selected=["d.txt"])
-    who = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%an <%ae>", b.commit],
-                         capture_output=True, text=True, check=True).stdout.strip()
-    assert who == "unknown <unknown@invalid>"
+    with pytest.raises(baseline.BaselineError, match="author="):
+        _mk(repo, run, selected=["d.txt"])
+
+
+def test_refusing_an_author_leaves_no_ref_behind(tmp_path):
+    repo = make_repo(tmp_path)
+    gitcmd.git(repo, "config", "--unset", "user.name")
+    write(repo, "d.txt", "d\n")
+    run = tmp_path / "run"; run.mkdir()
+    before = _idx(repo)
+    with pytest.raises(baseline.BaselineError):
+        _mk(repo, run, selected=["d.txt"])
+    assert gitcmd.git(repo, "rev-parse", "--verify", "refs/khenrix-forge/r1/base",
+                      check=False).returncode != 0, "a refused run published a ref anyway"
+    assert _idx(repo) == before
 
 
 def test_ambient_git_dir_cannot_redirect_b1(monkeypatch, tmp_path):
@@ -141,12 +186,33 @@ def test_ambient_git_dir_cannot_redirect_b1(monkeypatch, tmp_path):
     # an inherited GIT_DIR (a hook, `rebase --exec`, `bisect run`) wins and B1 is written
     # into a different repository, leaving materialize returning an OID this repo lacks.
     repo = make_repo(tmp_path)
-    decoy = make_repo(tmp_path, name="decoy")
     write(repo, "d.txt", "d\n")
     run = tmp_path / "run"; run.mkdir()
+    # The decoy is a CLONE, then given B1's exact tree, so under the bug commit-tree
+    # SUCCEEDS there and the assertions below are what fires. A decoy lacking the parent or
+    # the tree only ever produces `fatal: not a valid object`, which would let the test pass
+    # for a reason its own assertion text does not describe.
+    decoy = tmp_path / "decoy"
+    gitcmd.git(repo, "clone", "-q", "--no-hardlinks", str(repo), str(decoy))
+    write(decoy, "d.txt", "d\n")
+    gitcmd.git(decoy, "add", "d.txt")
+    decoy_tree = gitcmd.git(decoy, "write-tree").stdout.strip()
+    base = finspect.repo_facts(repo).head
+    # By construction decoy_tree IS the tree materialize will build, and the clone carries
+    # its parent — so the decoy holds both objects commit-tree needs and genuinely accepts
+    # B1 under the bug, instead of erroring on a missing object for an unrelated reason.
+    assert gitcmd.git(decoy, "cat-file", "-e", decoy_tree, check=False).returncode == 0
+    assert gitcmd.git(decoy, "cat-file", "-e", base, check=False).returncode == 0
+
     monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
-    b = _mk(repo, run, selected=["d.txt"])
+    try:
+        b = _mk(repo, run, selected=["d.txt"])
+    except gitcmd.GitError as exc:
+        # Same violation, seen one step later: B1 went elsewhere, so update-ref cannot find
+        # the object it was handed. Named here so the failure reads as the invariant it is.
+        pytest.fail(f"B1 was not written into the user's repository: {exc}")
+    assert b.tracked_tree_oid == decoy_tree, "fixture drifted: decoy no longer holds B1's tree"
     assert gitcmd.git(repo, "cat-file", "-e", b.commit, check=False).returncode == 0, \
         "B1 was not written into the user's repository"
     assert gitcmd.git(decoy, "cat-file", "-e", b.commit, check=False).returncode != 0, \
@@ -163,6 +229,24 @@ def test_explicit_author_overrides_the_config_probe(tmp_path):
     who = subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%an <%ae>", b.commit],
                          capture_output=True, text=True, check=True).stdout.strip()
     assert who == "Real User <real@example.invalid>"
+
+
+def test_manifest_is_root_relative_when_invoked_from_a_subdirectory(tmp_path):
+    # `ls-files` reports relative to cwd; `add -u -- :/` is root-relative magic. Run from a
+    # subdirectory those two disagree and the tree is root-scoped while the manifest is
+    # keyed on subdirectory-relative names — returned as success. Downstream validates
+    # materialization against the manifest, so a wrongly-keyed one is silent corruption.
+    # No selected_untracked here on purpose: that is the branch that fails SILENTLY, since a
+    # literal pathspec would otherwise resolve against cwd and die loudly first.
+    repo = make_repo(tmp_path)
+    write(repo, "nest/n.txt", "n\n")
+    subprocess.run(["git", "-C", str(repo), "add", "nest/n.txt"], check=True)
+    write(repo, "seed.txt", "modified\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo / "nest", run)
+    assert _tree_paths(repo, b.tracked_tree_oid) == {"nest/n.txt", "seed.txt"}
+    assert set(b.filesystem_manifest) == {"nest/n.txt", "seed.txt"}, \
+        "manifest keys must match the tree the baseline actually captured"
 
 
 def test_filesystem_manifest_covers_selected_and_tracked(tmp_path):
