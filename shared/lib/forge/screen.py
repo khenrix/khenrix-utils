@@ -12,6 +12,7 @@ a 400 MB build log into memory.
 """
 import hashlib
 import importlib.util
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,33 @@ def _is_high_risk_name(rel: str) -> bool:
     return any(base == n or base.startswith(n + ".") for n in BLOCKED_NAMES)
 
 
+def _walk(base: Path, root: Path, skip_prefixes) -> list[Path]:
+    """Enumerate regular files under `base`, PRUNING rather than post-filtering.
+
+    `.git` is the object store the baseline was built from, so scanning it is pure cost —
+    and on a repo with a large loose-object store, merely enumerating it is too. Pruning
+    dirnames in place stops os.walk descending; filtering a completed rglob would still
+    have stat'd every object, and those objects would count against `max_files` and turn a
+    normal repo-root selection into a confusing quota breach.
+
+    os.walk does not descend into symlinked directories by default, so links only have to
+    be dropped where they appear as leaves. Names are sorted so the scan order — and any
+    running-total breach that depends on it — is deterministic.
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        d = Path(dirpath)
+        dirnames[:] = sorted(n for n in dirnames if n != ".git")
+        for n in sorted(filenames):
+            q = d / n
+            if q.is_symlink():
+                continue
+            if any(q.relative_to(root).as_posix().startswith(s) for s in skip_prefixes):
+                continue
+            out.append(q)
+    return out
+
+
 def screen_tree(root, rel_paths, quota: Quota = None):
     """Scan the given repo-relative paths (files or directories).
 
@@ -71,25 +99,29 @@ def screen_tree(root, rel_paths, quota: Quota = None):
     quota = quota or Quota.default()
     root = Path(root)
 
-    targets = []
+    targets, breaches, findings, total = [], [], [], 0
     for rel in rel_paths:
         p = root / rel
         # is_dir()/is_file() both follow symlinks, so the link check comes first: a
         # selected `linkdir -> /home/user/.ssh` would otherwise be walked as a directory
-        # and pull host files the baseline never contained into the report.
+        # and pull host files the baseline never contained into the report. Not following
+        # it is right; dropping it silently is not — a selected `.env -> creds` would then
+        # come back clean having never been opened, which is exactly the verdict this
+        # module exists to prevent. "We did not read through the link" is a breach.
         if p.is_symlink():
-            continue
-        if p.is_dir():
-            # rglob does not descend into symlinked subdirectories (3.11+, and explicit
-            # since recurse_symlinks landed in 3.13), so this only has to drop links
-            # that appear as leaves.
-            targets += [q for q in sorted(p.rglob("*")) if q.is_file() and not q.is_symlink()]
+            breaches.append(f"{rel}: not screened — symlink; links are never followed")
+        elif p.is_dir():
+            targets += _walk(p, root, c.SCAN_SKIP_DIRS)
         elif p.is_file():
             targets.append(p)
+        elif not p.exists():
+            breaches.append(f"{rel}: not screened — selected path does not exist")
+        else:
+            breaches.append(f"{rel}: not screened — not a regular file or directory")
 
-    breaches, findings, total = [], [], 0
     if (b := quota.breach(files=len(targets), file_bytes=0, total_bytes=0)):
-        return [], [b]
+        breaches.append(b)
+        return [], breaches
 
     for p in targets:
         rel = str(p.relative_to(root))
@@ -109,8 +141,11 @@ def screen_tree(root, rel_paths, quota: Quota = None):
             raw = head + fh.read()
         for i, line in enumerate(raw.decode("utf-8", "replace").splitlines(), 1):
             for rx in c.SECRET_FAIL:
-                m = rx.search(line)
-                if m and hashlib.sha256(m.group(0).encode()).hexdigest() not in c.SECRET_ALLOW_SHA:
+                # Every match on the line, not just the first: with `search`, an
+                # allowlisted decoy earlier on the line consumes the only look this
+                # pattern gets and a live token after it is never seen.
+                if any(hashlib.sha256(m.group(0).encode()).hexdigest() not in c.SECRET_ALLOW_SHA
+                       for m in rx.finditer(line)):
                     findings.append(Finding(rel, i, rx.pattern))
                     break
     return findings, breaches
