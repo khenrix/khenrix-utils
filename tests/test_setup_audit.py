@@ -957,6 +957,27 @@ def test_render_report_evidence_backtick_is_sanitized():
     assert evidence_line.count("`") == 2, evidence_line
 
 
+def test_render_report_evidence_orders_short_scalars_before_long_prose():
+    # Regression: canonical_json sorts keys alphabetically, so a long "note"
+    # (alphabetically before the "o"/"t" scalars) pushed over_by_pct and
+    # total_always_on past the [:400] truncation cut — the report's top
+    # finding lost its two actionable numbers. render_report must put short
+    # values first so both scalar names survive truncation.
+    long_note = "x" * 320
+    f = sa.finding("B7", 1, "claude", "user", "skill", ["<listing-budget>"],
+                   "silent-capability-loss", "high", "correctness",
+                   {"total_always_on": 123456, "budget": 2000, "over_by_pct": 6072,
+                    "estimator": "claude plugin details (count_tokens)",
+                    "note": long_note}, [])
+    doc = {"generated": "2026-07-30T00:00:00Z", "capabilities": {},
+           "inventory_hash": "abc", "counts": {"items": 1, "findings": 1, "errors": 0},
+           "errors": [], "findings": [f], "waived": [], "local_waivers": 0}
+    md = sa.render_report(doc, phases={})
+    evidence_line = next(l for l in md.splitlines() if l.startswith("- evidence:"))
+    assert "total_always_on" in evidence_line
+    assert "over_by_pct" in evidence_line
+
+
 def test_write_report_same_stamp_collision_writes_distinct_files_latest_is_second(tmp_path):
     f1 = sa.finding("B6", 1, "claude", "user", "skill", ["a", "b"],
                     "wrong-tool-fires", "low", "correctness", {"cosine": 0.4}, [])

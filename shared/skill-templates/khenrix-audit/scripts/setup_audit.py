@@ -935,7 +935,16 @@ def render_report(doc: dict, phases: dict) -> str:
         # the code span early and corrupt the rest of the line — swap it for a
         # single quote before embedding, since evidence is diagnostic text, not
         # something a reader needs byte-exact.
-        evidence_str = canonical_json(f["evidence"])[:400].replace("`", "'")
+        # Short scalars first, long prose last, THEN truncate — canonical_json's
+        # alphabetical key order let a long "note" push actionable scalars (e.g.
+        # B7's over_by_pct/total_always_on) past the [:400] cut.
+        # Short scalars first, long prose last, THEN truncate — canonical_json's
+        # alphabetical key order let a long "note" push actionable scalars (e.g.
+        # B7's over_by_pct/total_always_on) past the [:400] cut.
+        ev = f["evidence"]
+        ordered = dict(sorted(ev.items(),
+                              key=lambda kv: (len(str(kv[1])) > 80, kv[0])))
+        evidence_str = json.dumps(ordered, ensure_ascii=False)[:400].replace("`", "'")
         L.append(f"- evidence: `{evidence_str}`")
         for r in f["remediation"]:
             L.append(f"- rung: {r}")
