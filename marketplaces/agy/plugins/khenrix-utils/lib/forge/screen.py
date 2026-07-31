@@ -36,9 +36,10 @@ def _checks():
         return sys.modules["khenrix_checks"]
     here = Path(__file__).resolve()
     # parents[3] is the repo root: forge -> shared/lib -> shared -> <root>. The second
-    # candidate is this package's own lib/ dir (<plugin>/lib/checks.py), which is where a
-    # rendered plugin would have to carry checks.py — render.py does not put it there
-    # today, hence the raise below rather than a silent empty pattern set.
+    # candidate is this package's own lib/ dir (<plugin>/lib/checks.py), where render.py's
+    # SHARED_LIB_FILES bundles it — and the only candidate still reachable once a
+    # marketplace copies the plugin out of this repo. The raise stays because an empty
+    # pattern set would screen nothing while reporting a clean scan.
     for cand in (here.parents[3] / "scripts" / "lib" / "checks.py",     # repo layout
                  here.parents[2] / "lib" / "checks.py"):                # bundled plugin
         if cand.is_file():

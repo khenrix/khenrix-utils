@@ -23,6 +23,15 @@ SECRET_FAIL = [
 ]
 SCAN_SKIP_SUFFIX = (".png", ".jpg", ".jpeg", ".gif", ".zip", ".pyc", ".ico")
 SCAN_SKIP_DIRS = ("evals/_fixtures/secrets/",)  # fixtures hold real-shaped fakes
+# This module's own source, plus render.py's byte-identical copies of it in every plugin
+# (SHARED_LIB_FILES). The copies need the same exemption for the same reason the original
+# does — the pattern regexes and the allowlist's example tokens live here — and a copy of
+# an exempted file can only ever yield a false positive, never a finding the original
+# would not already carry. Exempting by exact path, not by basename: an unrelated
+# checks.py elsewhere in the tree must still be scanned.
+SCAN_SKIP_PATHS = {"scripts/lib/checks.py"} | {
+    f"marketplaces/{cli}/plugins/khenrix-utils/lib/checks.py"
+    for cli in ("claude", "codex", "agy")}
 # Allowlist of KNOWN-benign matches, keyed by sha256(matched_string) so the
 # allowlist file can never itself be the next false positive.
 SECRET_ALLOW_SHA: set[str] = {
@@ -113,7 +122,7 @@ def scan_secrets(root: Path) -> list[str]:
     for rel in files:
         if rel.endswith(SCAN_SKIP_SUFFIX) or any(rel.startswith(d) for d in SCAN_SKIP_DIRS):
             continue
-        if rel == "scripts/lib/checks.py":
+        if rel in SCAN_SKIP_PATHS:
             continue
         try:
             text = (root / rel).read_text(errors="ignore")
@@ -204,6 +213,11 @@ SKILL_EXTRA = {
     "khenrix-setup":   ["capabilities.toml", "house-style.md"],
     "khenrix-upgrade": ["capabilities.toml", "house-style.md"],
     "llm-council":     ["headless-invocation.md"],
+    # forge/screen.py reads SECRET_FAIL + SECRET_ALLOW_SHA out of this module, so editing
+    # the patterns changes what forge screens before launching a fleet — behaviour-
+    # affecting by this closure's own definition, and reachable from no other entry here
+    # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
+    "llm-forge":       ["scripts/lib/checks.py"],
 }
 # Extra behavior-affecting DIRECTORIES per skill (rglob'd into the closure). The wiki
 # skills' SKILL.md drives a shared stdlib engine — editing it must stale both receipts.
