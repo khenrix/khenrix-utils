@@ -300,3 +300,97 @@ def test_gitattributes_filter_is_detected_and_rejected(tmp_path):
     f = finspect.repo_facts(repo)
     assert f.filtered_paths == ["nl\nname.bin"]
     assert any("filter" in r for r in finspect.rejections(f, []))
+
+
+def test_rejects_a_worktree_whose_line_endings_a_checkout_would_rewrite(tmp_path):
+    """The gap that produced a `SeatError` three stages after preflight said `[]`.
+
+    `baseline`'s manifest hashes raw worktree bytes while the seat's checkout re-runs the
+    smudge, so they disagree whenever the worktree is not already in the state a checkout
+    produces. `b.txt` is the measured case: `eol=crlf` demands CRLF, someone edited it in
+    a Linux editor and left LF.
+
+    `a.txt` is the control — attribute-conformant CRLF, which round-trips and must NOT be
+    rejected, or the check would refuse every repository carrying the `*.bat text eol=crlf`
+    boilerplate rather than the broken ones.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, ".gitattributes", "*.txt text eol=crlf\n")
+    (Path(repo) / "a.txt").write_bytes(b"conformant\r\n")
+    (Path(repo) / "b.txt").write_bytes(b"edited on linux\n")
+    # seed.txt is LF and `*.txt` catches it too, so it is a second genuine hit.
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "attrs")
+    f = finspect.repo_facts(repo)
+    assert "b.txt" in f.eol_mismatched_paths
+    assert "a.txt" not in f.eol_mismatched_paths, "a conformant worktree round-trips"
+    assert any("round-trip" in r for r in finspect.rejections(f, []))
+
+
+def test_plain_eol_normalization_is_supported_not_rejected(tmp_path):
+    """Spec §2.3: "Plain EOL normalization *is* supported."
+
+    `* text=auto` is the most common line in any .gitattributes, and measured end to end
+    it produces a correct seat (`verified is True`). Rejecting on the attribute alone
+    would fail nearly every repository for an infrastructure reason — the §4 outcome this
+    check exists to avoid — so the ubiquitous case is pinned as explicitly as the broken
+    one.
+
+    The PNG is the reason this is not a one-line rule: `text=auto` reports `w/-text` for
+    it, exactly as an explicit `text eol=crlf` does, and only the first of the two is
+    byte-identical in the seat (both measured). The next test pins the other side.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, ".gitattributes", "* text=auto\n")
+    (Path(repo) / "c.txt").write_bytes(b"one\ntwo\n")
+    (Path(repo) / "e.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02")
+    (Path(repo) / "oneline.txt").write_bytes(b"no trailing newline")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "attrs")
+    f = finspect.repo_facts(repo)
+    assert f.eol_mismatched_paths == []
+    assert finspect.rejections(f, []) == []
+
+
+def test_an_explicit_text_attribute_on_binary_content_is_still_a_mismatch(tmp_path):
+    """The other side of `w/-text`, and the reason the skip is keyed on the attribute.
+
+    `text=auto` lets git's binary detection suppress conversion; an explicit `text` does
+    not. Measured on the SAME PNG bytes: `text=auto` gave a byte-identical seat, while
+    `*.png text eol=crlf` gave `SeatError: seat content differs from the baseline
+    manifest`. A rule that skipped every `w/-text` row would miss this one.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, ".gitattributes", "*.png text eol=crlf\n")
+    (Path(repo) / "e.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "attrs")
+    f = finspect.repo_facts(repo)
+    assert f.eol_mismatched_paths == ["e.png"]
+    assert any("round-trip" in r for r in finspect.rejections(f, []))
+
+
+def test_rejects_a_tracked_escaping_symlink_without_being_selected(tmp_path):
+    """§2.3 scopes its rejections to "tracked content plus the paths the user selected",
+    and a tracked escaping symlink is the first half — it needs no selection to reach the
+    baseline. `materialize`'s `ls-files` loop guards on `is_file()`, which follows the
+    link, so the manifest ends up carrying a digest of content from OUTSIDE the repository.
+    """
+    repo = make_repo(tmp_path)
+    (Path(repo) / "out").symlink_to("/etc/passwd")
+    _git(repo, "add", "out")
+    _git(repo, "commit", "-q", "-m", "tracked link")
+    f = finspect.repo_facts(repo)
+    assert f.escaping_symlinks == ["out"]
+    assert any("escapes the repository" in r for r in finspect.rejections(f, []))
+
+
+def test_a_tracked_symlink_inside_the_repository_is_not_an_escape(tmp_path):
+    """The rejection must discriminate, or it refuses every repo that uses a symlink."""
+    repo = make_repo(tmp_path)
+    (Path(repo) / "alias.txt").symlink_to("seed.txt")
+    _git(repo, "add", "alias.txt")
+    _git(repo, "commit", "-q", "-m", "inside link")
+    f = finspect.repo_facts(repo)
+    assert f.escaping_symlinks == []
+    assert finspect.rejections(f, []) == []

@@ -126,6 +126,33 @@ def test_clone_refuses_a_seat_whose_remote_survives(tmp_path, monkeypatch):
         fleet.clone_seat(repo, _mk_baseline(repo, run), dest, name="claude",
                          identity=IDENT)
     assert not (dest.parent / f".{dest.name}.tmpl").exists(), "template dir leaked"
+    # The clone itself, for the same reason: `git clone` declines a non-empty target, so a
+    # refused seat left in place breaks the retry as well as outliving the failure.
+    assert not dest.exists(), "the refused seat's clone leaked"
+
+
+def test_clone_seat_refuses_an_empty_identity_instead_of_writing_one(tmp_path):
+    """`git config user.name ""` succeeds, so the seat would clone, check out and verify
+    clean, then fail its first commit — the failure landing on the agent rather than on
+    the caller who passed the empty pair. baseline.py refuses the same input."""
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    dest = tmp_path / "s1"
+    with pytest.raises(fleet.SeatError, match="identity"):
+        fleet.clone_seat(repo, _mk_baseline(repo, run), dest, name="claude",
+                         identity=("", ""))
+    assert not dest.exists(), "a refused seat must not leave a clone behind"
+
+
+def test_clone_seat_refuses_a_name_that_cannot_be_a_branch(tmp_path):
+    """Otherwise the name surfaces as a raw GitError out of `checkout -b`, after the whole
+    clone has been paid for, in neither this module's failure type nor a message naming
+    the argument at fault."""
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    with pytest.raises(fleet.SeatError, match="legal branch"):
+        fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "s1",
+                         name="has space", identity=IDENT)
 
 
 def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
@@ -404,7 +431,7 @@ def test_clone_seat_verifies_the_checkout_against_the_manifest(tmp_path):
     assert seat.verified is True
 
 
-def test_clone_seat_raises_when_the_checkout_does_not_match(tmp_path, monkeypatch):
+def test_clone_seat_raises_when_the_checkout_does_not_match(tmp_path):
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
@@ -463,3 +490,36 @@ def test_clone_seat_raises_when_the_checked_out_oid_is_not_b1(tmp_path):
         filesystem_manifest=b.filesystem_manifest)
     with pytest.raises(fleet.SeatError, match="seat checked out"):
         fleet.clone_seat(repo, stale, tmp_path / "s1", name="claude", identity=IDENT)
+
+
+def test_clone_seat_skips_a_symlink_rather_than_hashing_through_it(tmp_path):
+    """The manifest loop's symlink skip, and the fact that it must come BEFORE the
+    absence check.
+
+    `baseline`'s `ls-files` loop guards on `is_file()`, which FOLLOWS a link, so a tracked
+    symlink enters the manifest carrying its target's digest. Hashing it here would mean
+    `_sha256_file` opening through the link — describing content from outside the tree the
+    manifest claims to describe.
+
+    The seat is placed at a DIFFERENT DEPTH from the repo, which is the real layout (seats
+    live under the run directory, never beside the checkout) and the only arrangement in
+    which this discriminates: measured, `../outside.txt` resolves from a sibling seat and
+    the file compares equal, while from `seats/s1` it is `is_symlink()` True and
+    `exists()` False. So without the skip the absence check would refuse a CORRECT seat.
+    """
+    repo = make_repo(tmp_path)
+    (tmp_path / "outside.txt").write_text("outside the repository\n")
+    os.symlink("../outside.txt", Path(repo) / "link.txt")
+    _git(repo, "add", "link.txt")
+    _git(repo, "commit", "-qm", "link")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    assert "link.txt" in b.filesystem_manifest, \
+        "precondition: baseline hashes through the link, so the loop must meet it"
+
+    seat = fleet.clone_seat(repo, b, tmp_path / "seats" / "s1",
+                            name="claude", identity=IDENT)
+    link = seat.path / "link.txt"
+    assert link.is_symlink() and not link.exists(), \
+        "precondition: from this depth the link is dangling, so absence would fire"
+    assert seat.verified is True

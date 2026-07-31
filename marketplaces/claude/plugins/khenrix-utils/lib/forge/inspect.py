@@ -48,6 +48,11 @@ class RepoFacts:
     unmerged: list = field(default_factory=list)
     intent_to_add: list = field(default_factory=list)
     filtered_paths: list = field(default_factory=list)
+    # Both carry TRACKED paths, so both reject unconditionally: §2.3 scopes its rejections
+    # to "tracked content plus the paths the user selected", and tracked content is always
+    # in the baseline. The per-path scoping below applies to the SELECTED untracked set.
+    eol_mismatched_paths: list = field(default_factory=list)
+    escaping_symlinks: list = field(default_factory=list)
     staged: list = field(default_factory=list)
     unstaged: list = field(default_factory=list)
     untracked: list = field(default_factory=list)
@@ -129,6 +134,80 @@ def _filtered_paths(repo, tracked: list) -> list:
     return hits
 
 
+def _eol_mismatched_paths(repo) -> list:
+    """Tracked paths whose worktree line endings a fresh checkout would REWRITE.
+
+    Spec §2.3 supports plain EOL normalization and rejects only what "does not
+    round-trip", so this cannot reject on the attribute alone. `* text=auto` is the single
+    most common line in any .gitattributes, and measured end to end it produces a correct
+    seat — rejecting it would fail nearly every repository for an infrastructure reason,
+    the outcome §4 warns against.
+
+    What actually breaks is narrower: `baseline`'s manifest hashes the RAW WORKTREE BYTES
+    while the seat's checkout re-runs the smudge, so the two disagree exactly when the
+    worktree is not already in the state a checkout produces. Measured: `*.txt text
+    eol=crlf` with an LF worktree (someone edited it in a Linux editor) yields
+    `SeatError: seat content differs from the baseline manifest` three stages after
+    preflight said `[]`.
+
+    `ls-files --eol` is the probe rather than `check-attr` because git computes the answer:
+    it reports the worktree's ACTUAL line endings next to the attributes in force, so no
+    part of git's conversion rules has to be reimplemented here. Its `-z` records are
+    `i/<eol> SP w/<eol> SP attr/<attrs> TAB <path>`, split on the FIRST tab for the reason
+    `_index_entries` gives — under `-z` the path is raw and may contain one.
+    """
+    out = []
+    for rec in _z(gitcmd.git(repo, "ls-files", "--eol", "-z",
+                             env_extra=gitcmd.READONLY).stdout):
+        meta, tab, path = rec.partition("\t")
+        cols = meta.split()
+        if not tab or len(cols) < 3:
+            continue
+        worktree = cols[1].removeprefix("w/")
+        attrs = " ".join(cols[2:]).removeprefix("attr/").split()
+        # `-text` as an ATTRIBUTE is "never treat this as text" — no conversion at all.
+        if "-text" in attrs:
+            continue
+        # An explicit `eol=` engages conversion on its own, so neither attribute can be the
+        # sole trigger.
+        eol = next((a.split("=", 1)[1] for a in attrs if a.startswith("eol=")), "")
+        if not (eol or any(a == "text" or a.startswith("text=") for a in attrs)):
+            continue
+        # `none` is a file with no line endings at all — nothing to convert either way.
+        if worktree == "none":
+            continue
+        # `w/-text` is git's own content-based binary detection, and the ATTRIBUTE decides
+        # whether git honours it. Measured on the same PNG: under `text=auto` the seat gets
+        # byte-identical content (so flagging it would reject every repository holding
+        # `* text=auto` and an image), while under an explicit `text eol=crlf` git converts
+        # regardless of content and the seat raised SeatError. Same `w/` column, opposite
+        # answers — only `text=auto` may be skipped.
+        if worktree == "-text" and "text=auto" in attrs:
+            continue
+        # No `eol=` means the seat's checkout decides by core.eol, and a seat has no config
+        # to read: global and system are pinned to /dev/null and a clone copies no local
+        # config, so it gets the built-in default — LF.
+        if worktree != (eol or "lf"):
+            out.append(path)
+    return out
+
+
+def _escaping_target(root: Path, p: Path):
+    """The normalized target when `p` is a symlink leaving `root`, else None.
+
+    `os.path.realpath` rather than `Path.resolve(strict=True)`: a symlink that escapes is
+    frequently also broken from here, and the target still has to be reported.
+    """
+    if not p.is_symlink():
+        return None
+    target = Path(os.path.realpath(p))
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        return target
+    return None
+
+
 def repo_facts(repo) -> RepoFacts:
     def g(*args):
         return gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *args,
@@ -201,6 +280,14 @@ def repo_facts(repo) -> RepoFacts:
         sparse=_config(repo, "core.sparseCheckout") == "true" or skip_worktree,
         unmerged=unmerged, intent_to_add=intent_to_add,
         filtered_paths=_filtered_paths(repo, [path for _, _, path in entries]),
+        eol_mismatched_paths=_eol_mismatched_paths(repo),
+        # Mode 120000 is a symlink however the entry was created, read from the same index
+        # pass that answers the gitlink and skip-worktree questions. §2.3 lists escaping
+        # symlinks without restricting them to selected paths, and a TRACKED one reaches
+        # `materialize`, whose manifest hashes through the link — putting a digest of
+        # content from OUTSIDE the repository into the baseline it claims to describe.
+        escaping_symlinks=[path for _, mode, path in entries if mode == "120000"
+                           and _escaping_target(root, root / path) is not None],
         staged=staged, unstaged=unstaged, untracked=untracked)
 
 
@@ -229,6 +316,17 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
     if facts.filtered_paths:
         out.append(f"custom .gitattributes filter on {len(facts.filtered_paths)} path(s): "
                    "the driver lives in .git/config and is not cloned")
+    if facts.eol_mismatched_paths:
+        out.append(
+            f"worktree line endings do not round-trip on "
+            f"{len(facts.eol_mismatched_paths)} path(s), e.g. "
+            f"{facts.eol_mismatched_paths[0]}: a checkout would rewrite them, so a seat "
+            "can never reproduce the bytes the baseline manifest records")
+    if facts.escaping_symlinks:
+        out.append(
+            f"tracked symlink escapes the repository "
+            f"({len(facts.escaping_symlinks)}), e.g. {facts.escaping_symlinks[0]}: the "
+            "baseline manifest would hash content from outside the tree it describes")
 
     root = facts.root
     for rel in selected_untracked:
@@ -236,10 +334,8 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
         if (p / ".git").exists():          # dir OR file — a linked worktree uses a FILE
             out.append(f"nested repository selected: {rel}")
         if p.is_symlink():
-            target = Path(os.path.realpath(p))
-            try:
-                target.relative_to(root.resolve())
-            except ValueError:
+            target = _escaping_target(root, p)
+            if target is not None:
                 out.append(f"symlink escapes the repository: {rel} -> {target}")
         elif p.exists() and not p.is_file() and not p.is_dir():
             out.append(f"special file selected: {rel}")

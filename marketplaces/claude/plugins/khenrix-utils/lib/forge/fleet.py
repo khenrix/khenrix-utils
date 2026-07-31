@@ -75,7 +75,36 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
     default would ship that seat silently.
     """
     repo, dest = Path(repo), Path(dest)
+
+    # Both caller errors are resolved BEFORE anything is created, in baseline.py's order
+    # and for its reason: a refused seat has to leave nothing behind.
+    #
+    # An empty identity is REFUSED rather than written. `git config user.name ""` succeeds,
+    # so the seat would clone, check out and verify clean, then fail its first commit with
+    # the very error this argument exists to prevent — a failure landing on the agent
+    # instead of the caller who passed it. `baseline._resolve_author` refuses the same
+    # input for the same reason.
+    if len(identity) != 2 or not all(str(f).strip() for f in identity):
+        raise SeatError(
+            f"cannot give seat {name!r} an identity: a name AND an email are required, "
+            f"got {identity!r}. Refusing to write an empty one — the seat would look "
+            "healthy and then be unable to commit.")
+    run_id = baseline.ref.split("/")[2]     # refs/khenrix-forge/<run-id>/base
+    branch = f"forge/{run_id}/{name}"
+    # Asked of git rather than pattern-matched here, and asked BEFORE the clone: a name
+    # that cannot be a ref otherwise surfaces as a raw GitError from `checkout -b` after
+    # the whole clone has been paid for, which is neither this module's documented failure
+    # type nor a message naming the argument at fault.
+    if gitcmd.git(repo, "check-ref-format", f"refs/heads/{branch}",
+                  env_extra=gitcmd.READONLY, check=False).returncode != 0:
+        raise SeatError(
+            f"seat name {name!r} does not form a legal branch: {branch!r}")
+
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Only what THIS call creates may be cleaned up on the way out (below). A caller that
+    # points two seats at one path, or names a directory that already holds something, must
+    # not have it deleted by a refusal.
+    dest_preexisted = dest.exists()
 
     # An EMPTY template dir, so an ambient template cannot install hooks into the seat.
     # GIT_TEMPLATE_DIR is the live vector — it is environment, not config, so gitcmd's
@@ -144,11 +173,7 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         # §4 item 6: the seat gets only its own branch. `--revision=` leaves a DETACHED
         # HEAD — measured on git 2.53, `rev-parse --abbrev-ref HEAD` answers the literal
         # string `HEAD` — so without this the seat's work becomes unreachable the moment
-        # anything else moves. The run id is the third component of the baseline ref
-        # (`refs/khenrix-forge/<run-id>/base`); a ref of another shape raises IndexError
-        # here rather than naming the branch after the wrong thing.
-        run_id = baseline.ref.split("/")[2]
-        branch = f"forge/{run_id}/{name}"
+        # anything else moves.
         gitcmd.git(dest, "checkout", "-q", "-b", branch, env_extra=env)
 
         # §4 item 2: identity, written into the clone's LOCAL config. Without it a seat
@@ -183,6 +208,14 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
             if _sha256_file(p) != want:
                 raise SeatError(f"seat content differs from the baseline manifest: {rel}")
         verified = True
+    except Exception:
+        # The same argument the `finally` makes for the template dir, for the seat itself:
+        # a refused seat must not leave a populated clone at `dest`. This function now has
+        # five refusal paths reaching here, and `git clone` declines a non-empty target, so
+        # the leftovers would break the retry as well as outliving the failure.
+        if not dest_preexisted:
+            shutil.rmtree(dest, ignore_errors=True)
+        raise
     finally:
         # Also on the failure paths: a refused seat that leaves a populated template dir
         # behind hands the NEXT seat at this path whatever was in it.
