@@ -24,10 +24,10 @@ NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnu
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
 # Ambient values that decide which repository, index, object store or ref namespace a call
-# resolves against — they win over `-C <repo>` — plus GIT_CONFIG_COUNT, which injects config
-# straight into the process. A hook, `git rebase --exec` or `git bisect run` exports several
-# into everything it invokes, and inheriting one would silently point an engine call at the
-# USER's repository. Dropping each narrows git back to what `-C <repo>` alone says.
+# resolves against — they win over `-C <repo>`. A hook, `git rebase --exec` or `git bisect
+# run` exports several into everything it invokes, and inheriting one would silently point
+# an engine call at the USER's repository. Dropping each narrows git back to what
+# `-C <repo>` alone says.
 #
 # GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM are deliberately NOT here: they are the one pair that
 # runs the other way, since removing them RESTORES ~/.gitconfig and its core.hooksPath. They
@@ -40,9 +40,34 @@ REDIRECTING_ENV = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
-    "GIT_CONFIG_COUNT",
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
+)
+
+# Everything an ambient environment must not carry into a git this package runs, or into a
+# child it builds an environment for. Redirection is one of three mechanisms and the tuple
+# above is named for that one, so the other two are added HERE rather than stretched into a
+# name that would then describe them falsely.
+#
+# Every consumer drops this list, not a subset of it: `git()` below, `fleet.forge_child_env`
+# for a seat, `verify._gate_env` for a gate. A name dropped in one of the three and kept in
+# the other two is a hole, and both additions below were exactly that hole before this
+# commit — the gate stripped GIT_CONFIG_PARAMETERS while every seat inherited it.
+HOSTILE_ENV = (
+    *REDIRECTING_ENV,
+    # The two ways config enters at COMMAND-LINE precedence — above the local file, so above
+    # a clone's own core.hooksPath pin. Measured on git 2.53 in a repo with
+    # `--local core.hooksPath=/dev/null` and both /dev/null pins set:
+    # GIT_CONFIG_PARAMETERS="'core.hooksPath'='<dir>'" ran <dir>/pre-commit and the commit
+    # exited 1. Not exotic either — git EXPORTS that one into every child whenever anything
+    # up the tree ran `git -c …`.
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
+    # What `git init` and `git clone` copy into a NEW repository, hooks included. It is
+    # environment rather than config, so the /dev/null pin below is not what stops it:
+    # measured on git 2.53 with both pins set, `GIT_TEMPLATE_DIR=<dir> git init inner`
+    # installed the template's pre-commit and the next commit in `inner` ran it.
+    "GIT_TEMPLATE_DIR",
 )
 
 
@@ -53,13 +78,13 @@ class GitError(RuntimeError):
 def git(repo, *args, env_extra=None, check=True, binary=False, timeout=60):
     """Run git in `repo` with an argv list and an explicit environment.
 
-    Environment order is a contract later tasks depend on: REDIRECTING_ENV is scrubbed from
-    the inherited environment, then NO_USER_CONFIG is pinned on, then `env_extra` is applied
+    Environment order is a contract later tasks depend on: HOSTILE_ENV is scrubbed from the
+    inherited environment, then NO_USER_CONFIG is pinned on, then `env_extra` is applied
     LAST. So an ambient GIT_DIR cannot redirect the call and the user's global config is
     never read, while a caller that deliberately passes GIT_INDEX_FILE (as baseline
     construction does) or points GIT_CONFIG_GLOBAL at a config of its own still wins.
     """
-    env = {k: v for k, v in os.environ.items() if k not in REDIRECTING_ENV}
+    env = {k: v for k, v in os.environ.items() if k not in HOSTILE_ENV}
     env.update(NO_USER_CONFIG)
     env.update(env_extra or {})
     r = subprocess.run(["git", "-C", str(repo), *args],

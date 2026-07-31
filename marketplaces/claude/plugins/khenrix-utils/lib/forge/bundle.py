@@ -206,8 +206,21 @@ def _escapes(rel: str, target: str) -> bool:
     return joined == ".." or joined.startswith(".." + os.sep)
 
 
+def _is_dotgit(part: str) -> bool:
+    """True when `part` names a git directory to any filesystem that could hold it.
+
+    The spellings are git's own, not invented here. Measured on git 2.53 with default
+    config, `git apply --index` answers `invalid path` for a patch writing under `.GiT`,
+    `.git.`, `.git ` or `git~1` at ANY depth — the case-folded, NTFS-trailing-junk and
+    8.3-shortname forms that all resolve to `.git` somewhere. `rstrip(". ")` covers the
+    trailing forms and `lower()` the case ones.
+    """
+    return part.rstrip(". ").lower() in (".git", "git~1")
+
+
 def _safe_rel(rel: str, what: str) -> str:
-    """A relative path that stays inside the tree it is joined onto, or a refusal.
+    """A relative path that stays inside the tree it is joined onto and is not the tree's
+    own machinery, or a refusal.
 
     `Path(root) / "../../.ssh/id_rsa"` escapes without Path complaining, and it does damage
     in BOTH directions: on the way in it reads a host file into the bundle, and on the way
@@ -216,12 +229,31 @@ def _safe_rel(rel: str, what: str) -> str:
     OTHER caller, since a `CandidateBundle` and an `ArtifactSet` are plain dataclasses a
     later stage may deserialize from a ledger.
 
+    A `.git` COMPONENT is refused for the same reason and by the same argument the module
+    docstring makes about escaping links: a refusal that holds on one channel and not the
+    other is not a refusal. `git apply` will not write under `.git` at any depth (measured
+    — see `_is_dotgit`), so the tracked patch already cannot carry one, while a SIDECAR
+    named `.git/config` was written straight over the destination clone's config — taking
+    its hooks pin, its identity, and admitting `core.fsmonitor` and `core.sshCommand`, both
+    of which name a command git EXECUTES on an ordinary `git status`. Measured: that config
+    was materialized into a verifier and the fsmonitor program ran.
+
+    Depth is not narrowed to the first component even though only the first is the
+    verifier's own config, because the two channels have to agree and git's refusal is at
+    any depth. It costs no legitimate candidate: `snapshot.take(skip_dirs=(".git",))` prunes
+    a directory of that name at EVERY level of its walk (measured — a fixture's
+    `vendor/x/.git/config` does not appear in the inventory), so a nested repository the
+    agent created cannot reach `artifacts.paths` and be refused here for it.
+
     Refused, not normalised, and refused for the WHOLE bundle rather than routed to
     `omitted`: a path that escapes is not a path this module should be reasoning about, and
     `omitted` means "we looked and could not carry it".
     """
     if os.path.isabs(rel) or ".." in Path(rel).parts:
         raise BundleError(f"{what} escapes the tree: {rel!r}")
+    if any(_is_dotgit(p) for p in Path(rel).parts):
+        raise BundleError(
+            f"{what} names git's own directory, which is not a candidate artifact: {rel!r}")
     return rel
 
 

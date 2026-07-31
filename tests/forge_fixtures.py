@@ -7,20 +7,28 @@ inside these throwaway repos; the repository-location variables are cleared beca
 an exported GIT_DIR + GIT_WORK_TREE (a hook, `git rebase --exec`, `git bisect run`)
 `commit_all`'s `git add -A` would commit the developer's REAL working tree.
 
-Both lists are inlined rather than imported from `forge.gitcmd` so the fixture stays
+Disabling the config FILES is not the whole of the first reason, and the last two names
+below are what it was missing — which is why the list is no longer named for locations.
+Both were found by a test that exports them deliberately: `GIT_TEMPLATE_DIR` made
+`make_repo`'s own `git init` install the developer's hook, so the seed commit failed, and
+`GIT_CONFIG_PARAMETERS` enters at command-line precedence, above every file this env pins.
+Git exports that one into any child whenever something up the tree ran `git -c …`.
+
+The list is inlined rather than imported from `forge.gitcmd` so the fixture stays
 independent of the code it is used to test.
 """
 import os
 import subprocess
 from pathlib import Path
 
-_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_COUNT",
-                 "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES")
+_HOSTILE_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_COUNT",
+                "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES",
+                "GIT_CONFIG_PARAMETERS", "GIT_TEMPLATE_DIR")
 
 
 def _env():
-    env = {k: v for k, v in os.environ.items() if k not in _LOCATION_ENV}
+    env = {k: v for k, v in os.environ.items() if k not in _HOSTILE_ENV}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     return env

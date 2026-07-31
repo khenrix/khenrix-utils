@@ -24,6 +24,11 @@ IDENT = ("Forge Seat", "seat@forge.invalid")
 # The nine names `gitcmd.REDIRECTING_ENV` declared when this seam was pinned. Restated
 # here on purpose — see `test_the_seat_environment_admits_no_git_redirector` for why a
 # test that only reads the live list cannot notice the list shrinking.
+#
+# `gitcmd` has since SPLIT that tuple: GIT_CONFIG_COUNT was never a redirector and now sits
+# with the other config injectors, under the `HOSTILE_ENV` union every consumer strips. The
+# literal set below is unchanged, because the property it guards is unchanged — each of
+# these nine must still be stripped from a seat's environment, whichever tuple declares it.
 _KNOWN_REDIRECTORS = frozenset({
     "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_COUNT",
@@ -353,9 +358,15 @@ def test_the_seat_environment_admits_no_git_redirector(tmp_path):
     list; a name REMOVED from it would otherwise shrink this fixture in step with the hole
     it opened, since `fleet` pops exactly what `gitcmd` declares. Nothing else in the
     suite pins this list's contents.
+
+    Note what this seam is NOT: it was never an oracle for whether the declared list is
+    COMPLETE. It did not catch GIT_CONFIG_PARAMETERS or GIT_TEMPLATE_DIR reaching every
+    seat, and could not have — both were absent from the list, so both were absent from the
+    fixture built out of it. Completeness is pinned by effect instead, one variable at a
+    time, in `test_forge_fleet.py` and `test_forge_verify.py`.
     """
     repo = make_repo(tmp_path)
-    names = _KNOWN_REDIRECTORS | set(gitcmd.REDIRECTING_ENV)
+    names = _KNOWN_REDIRECTORS | set(gitcmd.HOSTILE_ENV)
     # Every value is repo-EXTERNAL on purpose. `scrub_env` drops what points INTO the
     # checkout, so a repo-internal value would be removed by the scrub and the assertions
     # below would pass without the redirector strip running at all — which is the very
@@ -364,9 +375,9 @@ def test_the_seat_environment_admits_no_git_redirector(tmp_path):
     out = fleet.forge_child_env(repo, hostile)
     for k in names:
         assert k not in out, f"{k} reached the seat"
-    assert _KNOWN_REDIRECTORS <= set(gitcmd.REDIRECTING_ENV), \
-        "gitcmd stopped declaring a redirector it used to strip; fleet pops what gitcmd " \
-        "declares, so the engine's own calls are no longer narrowed either"
+    assert _KNOWN_REDIRECTORS <= set(gitcmd.HOSTILE_ENV), \
+        "gitcmd stopped declaring a name it used to strip; fleet and verify pop what " \
+        "gitcmd declares, so the engine's own calls are no longer narrowed either"
     # ...and the scrub is not achieving that by emptying the environment. A seat with no
     # PATH fails every candidate for an infrastructure reason (spec §4).
     assert out["PATH"] == "/usr/bin"

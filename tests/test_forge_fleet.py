@@ -176,15 +176,19 @@ def test_clone_seat_refuses_a_name_that_cannot_be_a_branch(tmp_path):
 
 
 def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
-    """No ambient template dir installs hooks into a seat.
+    """No ambient template dir installs hooks into a seat, by either machine-wide form.
 
-    Both machine-wide forms are set here, because only one of them can still fire.
-    Measured on git 2.53: `init.templateDir` read from GIT_CONFIG_GLOBAL never reaches the
-    seat at all — gitcmd pins GIT_CONFIG_GLOBAL to /dev/null on every call — so a test that
-    set only that would pass with `--template=` deleted and prove nothing about the empty
-    template dir. GIT_TEMPLATE_DIR is the form that survives the pin: it is an environment
-    variable rather than config and is not one of gitcmd's REDIRECTING_ENV names, so without
-    `--template=<empty>` the hook is installed into the seat AND executes during checkout.
+    Both are set here because they die to different defences, and neither defence covers
+    the other. `init.templateDir` is config, so gitcmd's /dev/null pin on
+    GIT_CONFIG_GLOBAL/SYSTEM is what stops it. GIT_TEMPLATE_DIR is environment, which that
+    pin does not reach; it is stopped by being one of `gitcmd.HOSTILE_ENV`, which it was
+    NOT until the fix wave — before that, `--template=<empty>` was the only thing between an
+    ambient template and every seat's hooks directory.
+
+    The last assertion is what still pins `--template=` now that the env strip runs first:
+    the flag also excludes git's compiled-in default template, so the seat has no
+    `.git/hooks` at all (measured, git 2.53 — 14 `.sample` hooks appear the moment the flag
+    is deleted). Without it, deleting `--template=` would break no test in this suite.
     """
     repo = make_repo(tmp_path)
     tmpl = tmp_path / "tmpl" / "hooks"; tmpl.mkdir(parents=True)
@@ -200,6 +204,32 @@ def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
                             name="claude", identity=IDENT).path
     assert not (seat / ".git" / "hooks" / "post-checkout").exists()
     assert not ran.exists(), "a template hook executed inside the seat"
+    hooks = seat / ".git" / "hooks"
+    assert not hooks.exists() or list(hooks.iterdir()) == [], \
+        "the seat took a template from somewhere; `--template=` excludes even git's own"
+
+
+def test_no_ambient_hook_runs_inside_the_engines_own_clone(tmp_path, monkeypatch):
+    """The strip in `gitcmd.git` itself, pinned by effect — not the seat's environment or
+    the gate's, but the engine call that BUILDS the seat.
+
+    Measured on git 2.53 with both /dev/null pins and an empty `--template=` in place:
+    `GIT_CONFIG_PARAMETERS="'core.hooksPath'='<dir>'" git clone --no-local src dst` ran
+    <dir>/post-checkout. Command-line precedence beats the pins, and `--template=` governs
+    only what is INSTALLED into the new repository, not where git looks for hooks — so this
+    is a vector no other defence in `clone_seat` covers.
+    """
+    hooks = tmp_path / "ambient-hooks"
+    hooks.mkdir()
+    (hooks / "post-checkout").write_text(f"#!/bin/sh\ntouch {hooks / 'HOOK-RAN'}\n")
+    (hooks / "post-checkout").chmod(0o755)
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath'='{hooks}'")
+    fleet.clone_seat(repo, b, tmp_path / "seat1", name="claude", identity=IDENT)
+    assert not (hooks / "HOOK-RAN").exists(), \
+        "the user's hook ran during the engine's own clone"
 
 
 def test_ignore_semantics_are_replayed_from_a_linked_worktree(tmp_path):
@@ -270,6 +300,66 @@ def test_forge_child_env_strips_gits_redirectors_and_pins_config(tmp_path, monke
         "core.hooksPath was injected into every git the seat runs"
     assert Path(_git_under_child_env("rev-parse", "--absolute-git-dir")).resolve() \
         == (repo / ".git").resolve(), "an ambient GIT_DIR redirected the seat's git"
+
+
+def test_a_seat_does_not_inherit_the_config_injector_that_outranks_a_local_pin(
+        tmp_path, monkeypatch):
+    """GIT_CONFIG_PARAMETERS enters at COMMAND-LINE precedence — above a repository's own
+    local config, so above the pin a verifier writes and above anything a seat could set.
+
+    It was absent from the list `forge_child_env` pops until the fix wave, while its partner
+    GIT_CONFIG_COUNT was present. Not exotic: git exports it into every child whenever
+    anything up the tree ran `git -c …`, so an ordinary engine invocation handed it to all
+    three seats.
+
+    Pinned by EFFECT, in a real seat, because absence is the assertion that cannot fail here
+    — `forge_child_env` builds its result from the dict it is handed, so a name it never
+    received cannot appear in the output either way.
+    """
+    repo = make_repo(tmp_path)
+    hooks = tmp_path / "ambient-hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text(f"#!/bin/sh\ntouch {hooks / 'HOOK-RAN'}\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath'='{hooks}'")
+    run = tmp_path / "run"; run.mkdir()
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                            name="claude", identity=IDENT).path
+    env = fleet.forge_child_env(repo)
+    write(seat, "work.txt", "agent\n")
+    runs = [subprocess.run(["git", "-C", str(seat), *a], capture_output=True, text=True,
+                           env=env)
+            for a in (("add", "work.txt"), ("commit", "-m", "agent"))]
+    # The marker first: a hook that ran is the finding, and the commit's non-zero exit is
+    # only its symptom.
+    assert not (hooks / "HOOK-RAN").exists(), \
+        "an ambient GIT_CONFIG_PARAMETERS re-enabled the user's hooks for the seat's git"
+    assert [r.returncode for r in runs] == [0, 0], \
+        f"the seat could not commit: {runs[-1].stderr.strip()}"
+
+
+def test_a_seat_does_not_inherit_the_users_git_template(tmp_path, monkeypatch):
+    """GIT_TEMPLATE_DIR is environment, not config, so the /dev/null pin does not reach it,
+    and `clone_seat`'s `--template=` covers only the clone it makes — not the repositories
+    an AGENT creates inside its seat.
+
+    Measured on git 2.53 with both /dev/null pins set: `GIT_TEMPLATE_DIR=<dir> git init
+    inner` installed <dir>/hooks/pre-commit into `inner` and the next commit there ran it.
+    """
+    repo = make_repo(tmp_path)
+    tmpl = tmp_path / "tmpl"
+    (tmpl / "hooks").mkdir(parents=True)
+    (tmpl / "hooks" / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (tmpl / "hooks" / "pre-commit").chmod(0o755)
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl))
+    run = tmp_path / "run"; run.mkdir()
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                            name="claude", identity=IDENT).path
+    r = subprocess.run(["git", "-C", str(seat), "init", "-q", "-b", "main", "inner"],
+                       capture_output=True, text=True, env=fleet.forge_child_env(repo))
+    assert r.returncode == 0, r.stderr
+    assert not (seat / "inner" / ".git" / "hooks" / "pre-commit").exists(), \
+        "the user's template installed a hook into a repository the agent created"
 
 
 def test_scrub_env_removes_only_values_pointing_at_the_repo(tmp_path, monkeypatch):

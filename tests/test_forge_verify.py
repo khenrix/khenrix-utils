@@ -62,6 +62,14 @@ def test_parse_refuses_a_program_name_that_is_really_a_command_line():
     with pytest.raises(verify.VerifyError, match="shell"):
         verify.Command.parse([["make", "verify"], ["./run;rm"]])
     assert verify.Command.parse([["grep", "-E", "a|b", "f"]]).steps[0].argv[2] == "a|b"
+    # A LEADING `~` is a shell's expansion, not execve's: `["~/bin/tool"]` parsed clean and
+    # then ENOENTed at gate time, which is exactly what the refusals here exist to prevent.
+    # It is not a membership test, because `~` is an ordinary character everywhere else —
+    # a trailing one is a real filename and stays legal.
+    with pytest.raises(verify.VerifyError, match="only a shell expands"):
+        verify.Command.parse([["~/bin/tool"]])
+    assert verify.Command.parse([["./build.sh~", "~/x"]]).steps[0].argv == \
+        ("./build.sh~", "~/x")
     # A bare string with no metacharacter is still not a step. Accepting `"make"` as a
     # one-token argv would make `"pytest -q"` — no metacharacter, one space — a silent
     # ENOENT instead of a named refusal, so there is exactly one accepted shape.
@@ -78,6 +86,15 @@ def test_parse_refuses_a_program_name_that_is_really_a_command_line():
         verify.Command.parse([["make", 1]])
     with pytest.raises(verify.VerifyError, match="no program"):
         verify.Step(argv=())
+    # `Step` is public and `parse` is not the only way to reach one — the timeout cases in
+    # this file build them directly — so the program-name rule has to live on `Step` too.
+    # Before this, `Step(argv=("make verify",))` was accepted and ENOENTed at gate time,
+    # which is the outcome the bare-string refusal exists to prevent.
+    for bad in (("make verify",), ("./run;rm",), ("~/bin/tool",)):
+        with pytest.raises(verify.VerifyError, match="cannot exist"):
+            verify.Step(argv=bad)
+    with pytest.raises(verify.VerifyError, match="non-string"):
+        verify.Step(argv=("make", 1))
     # A whole spec that is one string iterates as CHARACTERS. It was already refused, but
     # by a message naming "step 0" and the value 'm' — neither of which the caller wrote.
     with pytest.raises(verify.VerifyError, match="LIST of steps"):
@@ -134,6 +151,41 @@ def test_a_step_timeout_is_a_verify_error_not_a_hang(tmp_path):
     d.mkdir()
     c = verify.Command(steps=(verify.Step(argv=("sleep", "30"), timeout=1),))
     with pytest.raises(verify.VerifyError, match="timeout"):
+        verify.run_command(d, c)
+
+
+def test_a_timed_out_step_reports_what_it_had_already_printed(tmp_path):
+    """The output is the only thing that says WHICH test hung, and it is already sitting in
+    the pipe by the time the step is killed. A message carrying the argv alone sends the
+    reader back to reproduce a run that takes `timeout` seconds to fail again.
+
+    Both streams, because a gate is `make` (everything on stdout) as often as it is a test
+    runner (progress on stderr).
+
+    The markers live in a SCRIPT, not in the argv. Written as `sh -c "echo OUT-MARKER; …"`
+    this test passed with `_tail` dropping a whole stream, because the message also carries
+    `list(step.argv)` — so both markers were in it whether or not any output was read.
+    """
+    d = tmp_path / "w"
+    d.mkdir()
+    (d / "noisy.sh").write_text(
+        "#!/bin/sh\necho OUT-MARKER\necho ERR-MARKER >&2\nsleep 30\n")
+    c = verify.Command(steps=(verify.Step(argv=("sh", "noisy.sh"), timeout=1),))
+    with pytest.raises(verify.VerifyError) as e:
+        verify.run_command(d, c)
+    assert "ERR-MARKER" in str(e.value), \
+        f"the timeout discarded the stderr that names the hang: {e.value}"
+    assert "OUT-MARKER" in str(e.value), \
+        f"the timeout discarded the stdout a `make` gate writes everything to: {e.value}"
+
+
+def test_a_silent_timed_out_step_says_so_rather_than_showing_nothing(tmp_path):
+    """An empty tail and a tail nobody could read are different states, and a message that
+    renders both as blank space invites the reader to conclude the step was silent."""
+    d = tmp_path / "w"
+    d.mkdir()
+    c = verify.Command(steps=(verify.Step(argv=("sleep", "30"), timeout=1),))
+    with pytest.raises(verify.VerifyError, match="printed nothing before it was killed"):
         verify.run_command(d, c)
 
 
@@ -222,12 +274,12 @@ def test_a_hook_in_the_verifiers_own_hooks_dir_does_not_run(tmp_path):
 
 
 @pytest.mark.parametrize("injection", [
-    # Not one of `gitcmd.REDIRECTING_ENV`, and it OUTRANKS the clone's local
-    # core.hooksPath pin (measured, git 2.53). Not exotic either: git exports this into
-    # every child whenever anything up the tree ran `git -c …`.
+    # It OUTRANKS the clone's local core.hooksPath pin (measured, git 2.53), and it was
+    # missing from every list this package strips until the fix wave. Not exotic either:
+    # git exports this into every child whenever anything up the tree ran `git -c …`.
     {"GIT_CONFIG_PARAMETERS": "'core.hooksPath'='{hooks}'"},
-    # This one IS in REDIRECTING_ENV. Kept as its own case so the two strips are
-    # mutated apart: one loop covering both names is one loop that can lose either.
+    # Its partner, which was in the list all along. Kept as its own case so the two names
+    # are mutated apart: one loop covering both is one loop that can lose either.
     {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath",
      "GIT_CONFIG_VALUE_0": "{hooks}"},
 ], ids=["git-config-parameters", "git-config-count"])
@@ -255,6 +307,30 @@ def _assert_gate_commit_ran_no_hook(v, step_env=None):
     assert r.exit_code == 0, f"the gate's own commit failed: {r.stderr}"
 
 
+def test_the_gate_does_not_inherit_the_users_git_template(tmp_path, monkeypatch):
+    """GIT_TEMPLATE_DIR is the same class as the injection above, one layer out: it decides
+    what `git init` and `git clone` copy into a NEW repository, hooks included.
+
+    `fleet` spends an explicit `--template=` on it for the seat clone, and nothing covered a
+    gate step that creates a repository of its own — an ordinary thing for a build to do.
+    Measured on git 2.53 with both /dev/null config pins set: `GIT_TEMPLATE_DIR=<dir> git
+    init inner` installed <dir>/hooks/pre-commit and the next commit in `inner` ran it, exit
+    1. So the gate is asserted by EFFECT: the repository the step creates has no hook.
+    """
+    tmpl = tmp_path / "tmpl"
+    (tmpl / "hooks").mkdir(parents=True)
+    (tmpl / "hooks" / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
+    (tmpl / "hooks" / "pre-commit").chmod(0o755)
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl))
+    repo = make_repo(tmp_path)
+    b, _s, cb = _candidate(tmp_path, repo)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    r = verify.run_command(v, verify.Command.parse([["git", "init", "-q", "inner"]]))
+    assert r.exit_code == 0, f"the gate's own git init failed: {r.stderr}"
+    assert not (v / "inner" / ".git" / "hooks" / "pre-commit").exists(), \
+        "the user's template installed a hook into a repository the gate created"
+
+
 def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
     """`Step.env` is merged over the hardened base, so before the merged result was
     re-hardened a step could hand back the very name `_gate_env` had just dropped —
@@ -271,18 +347,14 @@ def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
         v, {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath'='{hooks}'"})
 
 
-def test_a_candidate_that_rewrites_the_clone_config_is_refused(tmp_path):
-    """MEASURED against `bundle.materialize` at 3ac3784: `_safe_rel` refuses an absolute or
-    `..` sidecar path but says nothing about `.git/…`, so a sidecar named `.git/config` is
-    written straight over the clone's config — taking the hooks pin, `core.fsmonitor` and
-    `core.sshCommand` (both of which name a command git EXECUTES) and the clone's identity
-    with it.
+def test_a_bundle_that_would_rewrite_the_clone_config_never_reaches_the_gate(tmp_path):
+    """MEASURED against `bundle.materialize` at 4545bb6: a sidecar named `.git/config` was
+    written straight over the clone's config, taking the hooks pin, the clone's identity and
+    admitting `core.fsmonitor` — a program git EXECUTES on an ordinary `git status`.
 
-    `bundle.build` cannot emit one today (`snapshot.take` skips `.git`), but bundle.py's
-    own guards are written for a bundle DESERIALIZED from a ledger, where sidecars are
-    input. So the pin is read back after materialization and a rewritten config is
-    REFUSED rather than repaired: overwriting just `core.hooksPath` would leave every other
-    builder-chosen key in place.
+    Closed where it lives: `bundle._safe_rel` now refuses a `.git` component, so the refusal
+    arrives as a `BundleError` BEFORE the config is touched. It propagates unwrapped, on the
+    module's stated precedent — the class that knows what failed is the one that names it.
     """
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
@@ -290,34 +362,45 @@ def test_a_candidate_that_rewrites_the_clone_config_is_refused(tmp_path):
         version=cb.version, baseline_ref=cb.baseline_ref, baseline_commit=cb.baseline_commit,
         sidecars=(bundle.SidecarEntry(".git/config", "file", 0o644,
                                       b"[core]\n\thooksPath = /tmp/rigged\n"),))
-    with pytest.raises(verify.VerifyError, match="config"):
-        verify.build_verifier(repo, b, hostile, tmp_path / "verifier", identity=IDENT)
+    dest = tmp_path / "verifier"
+    with pytest.raises(bundle.BundleError, match="git's own directory"):
+        verify.build_verifier(repo, b, hostile, dest, identity=IDENT)
+    assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
+        == os.devnull, "the pin was already gone by the time the refusal landed"
 
 
-def test_an_injected_hooks_path_cannot_answer_for_the_clones_own(tmp_path, monkeypatch):
-    """The canary is read with `--local`, never a bare `--get`.
+def test_the_hooks_pin_is_read_back_after_the_candidate_is_laid_down(
+        tmp_path, monkeypatch):
+    """The canary itself, with `bundle` stubbed out — the only route left to a verifier
+    whose config changed between the pin and the gate, now that `_safe_rel` refuses the
+    sidecar that used to do it. Defence in depth against a bundle assembled some other way,
+    so it is exercised by simulating that materialization rather than by pretending the
+    closed route is still open.
 
-    MEASURED, git 2.53, in a clone whose local file has no core.hooksPath:
+    The ambient GIT_CONFIG_PARAMETERS is what makes this an assertion about the CLONE.
+    Measured, git 2.53, in a clone whose local file has no core.hooksPath:
 
         GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" git config --get  -> /dev/null
         ...the same environment,                             --local --get     -> unset
 
-    `gitcmd` pins GIT_CONFIG_GLOBAL/SYSTEM at /dev/null, so a ~/.gitconfig cannot reach the
-    readback — but GIT_CONFIG_PARAMETERS is not one of its REDIRECTING_ENV names, and it
-    enters at command-line precedence. Under a bare `--get`, a candidate that rewrote
-    `.git/config` (dropping the pin, keeping its own `core.fsmonitor`, which names a command
-    git EXECUTES) would be accepted because the check answered from the environment instead
-    of from the clone.
+    So a readback that answered from the environment would certify a verifier whose pin had
+    been removed. Two latches now stop that — `gitcmd` strips the variable, and the readback
+    passes `--local` — and this test fails if BOTH are lost.
     """
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath'='{os.devnull}'")
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    hostile = bundle.CandidateBundle(
-        version=cb.version, baseline_ref=cb.baseline_ref, baseline_commit=cb.baseline_commit,
-        sidecars=(bundle.SidecarEntry(".git/config", "file", 0o644,
-                                      b"[core]\n\tfsmonitor = /tmp/rigged\n"),))
-    with pytest.raises(verify.VerifyError, match="config"):
-        verify.build_verifier(repo, b, hostile, tmp_path / "verifier", identity=IDENT)
+
+    def _rewrite(_bundle, dest):
+        # What the refused sidecar used to achieve: the pin dropped, a builder-chosen
+        # executable key kept.
+        (Path(dest) / ".git" / "config").write_text(
+            "[core]\n\trepositoryformatversion = 0\n\tfsmonitor = /tmp/rigged\n")
+        return ()
+
+    monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
+    with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
 
 
 def test_a_step_cwd_may_not_leave_the_verifier(tmp_path):

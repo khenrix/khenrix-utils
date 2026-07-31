@@ -25,21 +25,27 @@ the local /dev/null pin that works. It is also the only form that reaches the ga
 invocation's git children), while a gate is `make` or `pytest` — not git — so nothing the
 engine passes on a git command line is in scope by the time the gate runs its own git.
 
-The pin doubles as a CANARY on the clone's config. `bundle.materialize` writes a sidecar
-named `.git/config` without complaint — measured: its `_safe_rel` refuses an absolute or
-`..` path but says nothing about `.git/…` — which would take the pin, `core.fsmonitor` and
-`core.sshCommand` (both of which name a command git EXECUTES) and the clone's identity with
-it. So the pin is written BEFORE the candidate is laid down and read back AFTER, and a
-rewritten config is refused rather than repaired: overwriting only `core.hooksPath` would
+The pin doubles as a CANARY on the clone's config: it is written BEFORE the candidate is
+laid down and read back AFTER, because the candidate is the one thing in between that
+writes. What the readback MEASURES is one key — `core.hooksPath` is still `/dev/null` in
+the clone's LOCAL config. What it does NOT measure is any other key: a rewrite that keeps
+the pin and ADDS `core.fsmonitor` (a program git executes on an ordinary `git status`) or
+its own `[user]` section passes the canary, and that was measured, not reasoned about.
+
+The route that made it a live defence is closed at its source: `bundle._safe_rel` now
+refuses a `.git` COMPONENT, so `materialize` cannot write the clone's config at all. What
+is left here is defence in depth against a bundle assembled some other way, and it is
+deliberately NOT widened into a whole-config comparison — the honest baseline for that would
+have to be captured after `clone_seat` and would then have to encode which keys a legitimate
+materialization may move, which is a policy this module has no way to state truthfully.
+It refuses rather than repairs for the same reason: overwriting just `core.hooksPath` would
 leave every other builder-chosen key in place.
 
-ENVIRONMENT. `run_command` gives the gate `gitcmd`'s own treatment — REDIRECTING_ENV
-stripped, config discovery pinned at /dev/null — because the gate is where git actually
-runs, and none of `gitcmd`'s presets are inherited by a subprocess the engine starts
-directly. GIT_CONFIG_PARAMETERS is stripped IN ADDITION: it is not one of
-`gitcmd.REDIRECTING_ENV`, it OUTRANKS the local pin (measured — the hook ran again), and
-git exports it into every child whenever anything up the tree ran `git -c …`, so it is
-ambient in ordinary use rather than exotic.
+ENVIRONMENT. `run_command` gives the gate `gitcmd`'s own treatment — `HOSTILE_ENV` stripped,
+config discovery pinned at /dev/null — because the gate is where git actually runs, and none
+of `gitcmd`'s presets are inherited by a subprocess the engine starts directly. The list is
+read from `gitcmd` and never extended here: a gate-only strip is how GIT_CONFIG_PARAMETERS
+came to be closed for the gate while every seat still inherited it.
 
 What `run_command` cannot do is scrub values that point back into the USER's checkout: it is
 handed the verifier, not the repository the verifier was cloned from, and scrubbing against
@@ -62,16 +68,16 @@ from . import bundle, fleet, gitcmd
 # for no gain — the clones have no remotes, so two verifiers cannot collide.
 VERIFIER_NAME = "verify"
 
-# Ambient config injectors that are NOT in `gitcmd.REDIRECTING_ENV`. GIT_CONFIG_COUNT is
-# (and is stripped with the rest); GIT_CONFIG_PARAMETERS is the pair that got away.
-_ENV_INJECTORS = ("GIT_CONFIG_PARAMETERS",)
-
 # Characters that mean something only to a SHELL. Applied to a step's PROGRAM NAME, never
 # to its arguments: nothing here runs a shell, so `grep -E 'a|b'` and `find -name '*.py'`
 # are ordinary steps whose metacharacter reaches the program literally, while a program
 # name holding one can only be a command line the author expected a shell to split.
 # `!` and `#` are deliberately absent — interactive-shell-only, and both occur in real
 # filenames — and the whitespace test below catches the command lines they appear in.
+# `~` is absent for a different reason: it is not a membership question at all. It expands
+# only at the START of a token, and it is an ordinary character everywhere else — `foo.py~`
+# is a real filename and a legal program name — so it is tested positionally in `_shellish`
+# rather than added here, where it would refuse the backup file along with the tilde path.
 _SHELL_META = frozenset("&;|<>$`\\\"'()[]{}*?\n\r")
 
 # How long to wait for a killed process group to be reaped before giving up on its output.
@@ -79,6 +85,11 @@ _SHELL_META = frozenset("&;|<>$`\\\"'()[]{}*?\n\r")
 # an unbounded wait there turns a step-level timeout back into the hang it exists to
 # prevent, which is the failure this whole path is named after.
 _REAP_GRACE = 10
+
+# How much of a killed step's output the timeout message carries. Enough for a pytest or
+# `make` tail to name the test that hung, and bounded because the message travels into a
+# report and a judge prompt.
+_TAIL_CHARS = 2000
 
 
 class VerifyError(RuntimeError):
@@ -106,6 +117,18 @@ class Step:
         # rather than only in `parse`.
         if not self.argv:
             raise VerifyError("a verify step names no program: argv is empty")
+        # The SAME argument, applied to the same rule `Command.parse` enforces on argv[0]:
+        # a `Step` built directly used to accept `("make verify",)` and fail at gate time
+        # with an ENOENT naming a program nobody meant to run. Both of parse's preconditions
+        # come with it — `_shellish` iterates its argument, so a non-string argv[0] would
+        # raise a raw TypeError out of the one path whose whole job is a named refusal.
+        if not all(isinstance(t, str) for t in self.argv):
+            raise VerifyError(f"a verify step has a non-string argument: {self.argv!r}")
+        why = _shellish(self.argv[0])
+        if why:
+            raise VerifyError(
+                f"a verify step names a program that cannot exist: {self.argv[0]!r} {why}. "
+                "Nothing here runs a shell, so it would be exec'd under that literal name.")
 
 
 @dataclass(frozen=True)
@@ -193,6 +216,13 @@ def _shellish(token: str) -> str:
         return f"contains the shell metacharacter {found!r}"
     if any(c.isspace() for c in token):
         return "contains whitespace, so it is a command line rather than a program name"
+    if token.startswith("~"):
+        # LEADING only. `~/bin/tool` parses clean and then ENOENTs at gate time — exactly
+        # the outcome the bare-string refusal exists to prevent — because the home directory
+        # is expanded by the shell, not by execve. A trailing `~` is an ordinary filename
+        # (`./build.sh~`) and stays legal.
+        return ("begins with '~', which only a shell expands; write the path out, since "
+                "execve takes the name literally")
     return ""
 
 
@@ -205,9 +235,25 @@ def _text(raw: bytes) -> str:
     return raw.decode("utf-8", "replace")
 
 
+def _tail(out: bytes, err: bytes) -> str:
+    """What a killed step had already printed, for the timeout message.
+
+    A timeout that names only the argv sends the reader back to reproduce a run that takes
+    `timeout` seconds to fail again, when the answer — WHICH test hung — was already sitting
+    in the pipe this function drains. stderr first because that is where a test runner puts
+    its progress; stdout too, because `make` puts everything there.
+
+    Bounded, and from the END: a step that hangs after printing a hundred megabytes would
+    otherwise put all of it in an exception message that a report and a judge both carry.
+    """
+    parts = [f"\n--- last {_TAIL_CHARS} chars of {name} ---\n{_text(raw)[-_TAIL_CHARS:]}"
+             for name, raw in (("stderr", err), ("stdout", out)) if raw.strip()]
+    return "".join(parts) or " (it printed nothing before it was killed)"
+
+
 def _gate_env(env=None) -> dict:
     base = dict(os.environ if env is None else env)
-    for k in (*gitcmd.REDIRECTING_ENV, *_ENV_INJECTORS):
+    for k in gitcmd.HOSTILE_ENV:
         base.pop(k, None)
     # LAST, and set rather than dropped: removing GIT_CONFIG_GLOBAL RESTORES ~/.gitconfig
     # and the core.hooksPath in it. Same argument `gitcmd.git` makes for the same pair.
@@ -287,17 +333,23 @@ def _run_step(step: Step, wd: Path, env: dict, index: int):
         out, err = p.communicate(timeout=step.timeout)
     except subprocess.TimeoutExpired:
         _kill_group(p)
+        drained = True
         try:
             out, err = p.communicate(timeout=_REAP_GRACE)
         except subprocess.TimeoutExpired:
-            # SECOND LATCH, unpinned: the group is already SIGKILLed, so the pipes are
-            # closed and this drains at once. It exists so that a process the kernel will
-            # not reap (uninterruptible I/O) costs `_REAP_GRACE` seconds rather than the
-            # unbounded wait that would turn a step timeout back into the hang it names.
-            out = err = b""
+            # SECOND LATCH, unpinned — and so is the `drained` message below, which only
+            # this arm can produce: the group is already SIGKILLed, so the pipes are closed
+            # and this drains at once. It exists so that a process the kernel will not reap
+            # (uninterruptible I/O) costs `_REAP_GRACE` seconds rather than the unbounded
+            # wait that would turn a step timeout back into the hang it names. The flag is
+            # what stops "nothing arrived" being reported as "the step printed nothing".
+            out, err, drained = b"", b"", False
         raise VerifyError(
             f"verify step {index} exceeded its {step.timeout}s timeout and was killed with "
-            f"its whole process group: {list(step.argv)}") from None
+            f"its whole process group: {list(step.argv)}"
+            + (_tail(out, err) if drained else
+               f"; its output could not be drained within {_REAP_GRACE}s, so nothing it "
+               "printed is available")) from None
     return p.returncode, _text(out), _text(err)
 
 
@@ -336,9 +388,15 @@ def _hooks_pin(path: Path) -> None:
 
 
 def _assert_hooks_pinned(path: Path) -> None:
-    # --local, so a global core.hooksPath cannot satisfy the check the local pin exists to
-    # override. check=False: `--get` exits 1 for a missing key, which is a state to report
-    # in this module's vocabulary, not a GitError.
+    # --local, so nothing outside the clone's own file can satisfy a check that exists to
+    # ask about the clone. SECOND LATCH since GIT_CONFIG_PARAMETERS joined `HOSTILE_ENV`:
+    # `gitcmd.git` now strips the one form that could answer from outside at command-line
+    # precedence, and the global/system files are pinned at /dev/null, so no single mutation
+    # can be pinned to this flag alone (measured, git 2.53: with the local key removed and
+    # GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" set, a bare `--get` answers
+    # /dev/null while `--local --get` exits 1). It is kept for what still holds if the strip
+    # is lost. check=False: `--get` exits 1 for a missing key, which is a state to report in
+    # this module's vocabulary, not a GitError.
     r = gitcmd.git(path, "config", "--local", "--get", "core.hooksPath",
                    env_extra=gitcmd.READONLY, check=False)
     if r.stdout.strip() != os.devnull:

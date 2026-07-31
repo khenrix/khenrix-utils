@@ -476,6 +476,55 @@ def test_a_path_that_escapes_the_tree_is_refused_on_both_sides(tmp_path):
     assert not (tmp_path / "pwned.txt").exists()
 
 
+def test_a_sidecar_may_not_be_gits_own_directory(tmp_path):
+    """MEASURED at 4545bb6: a sidecar named `.git/config` was written straight over the
+    destination clone's config — taking the verifier's hooks pin and its identity, and
+    installing `core.fsmonitor`, a program git EXECUTES on an ordinary `git status`. It ran.
+
+    `_safe_rel` refused an absolute path and `..` and said nothing about this. The tracked
+    channel never could carry it: `git apply --index` answers `invalid path` for a patch
+    writing under `.git` at any depth, and for the case-folded and NTFS spellings too — so
+    until this guard the two channels disagreed about the same path, which is the shape
+    `build`'s escaping-link comment already refuses to ship.
+    """
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    before = (dest / ".git" / "config").read_text()
+
+    for rel in (".git/config", "vendor/x/.git/config", ".GiT/config", ".git./config",
+                ".git /config", "git~1/config"):
+        # The way IN: an ArtifactSet is a plain dataclass a later stage may deserialize.
+        with pytest.raises(bundle.BundleError, match="git's own directory"):
+            bundle.build(s.path, harvest.ArtifactSet(paths=(rel,)), b)
+        # ...and the way OUT, which is where the damage was measured.
+        evil = bundle.CandidateBundle(
+            version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+            sidecars=(bundle.SidecarEntry(rel, "file", 0o644,
+                                          b"[core]\n\tfsmonitor = /tmp/rigged\n"),))
+        with pytest.raises(bundle.BundleError, match="git's own directory"):
+            bundle.materialize(evil, dest)
+    assert (dest / ".git" / "config").read_text() == before, "the clone's config was rewritten"
+
+
+def test_a_name_that_merely_starts_with_git_still_crosses(tmp_path):
+    """The refusal above is a COMPONENT test, not a prefix one. `.gitignore` and `.github/`
+    are ordinary candidate output, and a `foo.py~`-style trailing character has to survive
+    the trailing-junk normalisation that catches `.git.` and `.git `."""
+    repo, b, s = _seat(tmp_path)
+    rels = (".gitignore", ".github/workflows/ci.yml", "docs/git/notes.md",
+            "src/gitlab.py", "old.py~")
+    p = _phases(s.path, lambda: [write(s.path, r, "content\n") for r in rels])
+    a = harvest.artifact_set(p, s.path, b.commit)
+    assert set(a.paths) == set(rels), f"the fixture carries nothing to refuse: {a.paths}"
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert (dest / ".github" / "workflows" / "ci.yml").read_text() == "content\n"
+    assert (dest / ".gitignore").read_text() == "content\n"
+
+
 def test_materialize_refuses_a_sidecar_kind_it_does_not_understand(tmp_path):
     """A kind with no honest materialization must fail closed, not be skipped: a skipped
     sidecar is a missing input the bundle claimed to carry, which is the one thing

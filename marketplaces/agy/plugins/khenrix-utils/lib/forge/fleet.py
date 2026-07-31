@@ -118,11 +118,17 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
     # not have it deleted by a refusal.
     dest_preexisted = dest.exists()
 
-    # An EMPTY template dir, so an ambient template cannot install hooks into the seat.
-    # GIT_TEMPLATE_DIR is the live vector — it is environment, not config, so gitcmd's
-    # /dev/null pin does not reach it — and `--template=` overrides it. The pin is what
-    # closes the config forms, since an empty template does NOT neutralise a global
+    # An EMPTY template dir, so nothing a template carries — hooks above all — is installed
+    # into the seat. Both machine-wide vectors are now closed BEFORE this flag, in two
+    # different places, because they are two different mechanisms: `init.templateDir` is
+    # config and dies on gitcmd's /dev/null pin, while GIT_TEMPLATE_DIR is environment,
+    # which that pin does not reach — it is dropped by being one of `gitcmd.HOSTILE_ENV`.
+    # Neither defence subsumes the other: an empty template does NOT neutralise a global
     # core.hooksPath or url.*.insteadOf.
+    # `--template=` therefore stays as the latch that still holds if either is lost, and it
+    # is not idle even so: it also excludes git's COMPILED-IN default template, so the seat
+    # gets no `.git/hooks` directory at all (measured, git 2.53 — 14 sample hooks with the
+    # flag deleted, no hooks directory with it).
     # One predicate for "the engine owns this directory": under `template_dir=""` a
     # `is None` test would take the default path without pre-cleaning it, silently
     # disabling the defence below.
@@ -346,8 +352,8 @@ def forge_child_env(repo_path, env=None) -> dict:
     guard a seat that reaches for /llm-forge spawns three more write-enabled seats, each
     of which can spawn three more.
 
-    `scrub_env` alone is the WRONG boundary for the git redirectors, and misses them in
-    the direction that matters: it drops values pointing INTO the checkout, while
+    `scrub_env` alone is the WRONG boundary for `gitcmd.HOSTILE_ENV`, and misses those names
+    in the direction that matters: it drops values pointing INTO the checkout, while
     `GIT_CONFIG_COUNT`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and an ambient absolute
     `GIT_DIR` do their damage by pointing somewhere ELSE — at /tmp, at an unrelated
     repository — so every one of them looks repo-external and survives. Two consequences,
@@ -358,12 +364,15 @@ def forge_child_env(repo_path, env=None) -> dict:
     that is not its clone.
 
     So the seat gets the same treatment `gitcmd.git` gives an engine call, in the same
-    order: strip the redirectors, then pin config discovery to /dev/null. Pinning LAST
-    matters — `GIT_CONFIG_GLOBAL` is not a redirector precisely because removing it would
-    RESTORE ~/.gitconfig, so it is set rather than dropped.
+    order: strip HOSTILE_ENV, then pin config discovery to /dev/null. Pinning LAST
+    matters — `GIT_CONFIG_GLOBAL` is not in that list precisely because removing it would
+    RESTORE ~/.gitconfig, so it is set rather than dropped. The list is read from `gitcmd`
+    rather than restated so that a seat and an engine call cannot drift apart; the two names
+    it grew in this commit, `GIT_CONFIG_PARAMETERS` and `GIT_TEMPLATE_DIR`, were reaching
+    every seat for exactly that reason.
     """
     base = dict(env if env is not None else os.environ)
-    for k in gitcmd.REDIRECTING_ENV:
+    for k in gitcmd.HOSTILE_ENV:
         base.pop(k, None)
     out = scrub_env(base, repo_path)
     out.update(gitcmd.NO_USER_CONFIG)
