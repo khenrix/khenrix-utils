@@ -191,6 +191,9 @@ SKILL_EXTRA = {
 SKILL_EXTRA_DIRS = {
     "khenrix-wiki-add":  ["shared/lib/wikisync"],
     "khenrix-wiki-sync": ["shared/lib/wikisync"],
+    # the council engine moved out of the skill dir; without this line, engine edits
+    # no longer move llm-council's source_hash and precommit stops gating them.
+    "llm-council":       ["shared/lib/council"],
 }
 
 
@@ -367,8 +370,9 @@ def _self_test() -> int:
         ok.append(("pricing_coverage accepts a valid positive rate", _price("2.5") == []))
     # hash stability + closure membership (mutating any listed file WILL change source_hash)
     ok.append(("source_hash stable", source_hash(ROOT, "llm-council") == source_hash(ROOT, "llm-council")))
-    ok.append(("llm-council closure includes fanout.py",
-               any("fanout.py" in r for r, _ in source_manifest(ROOT, "llm-council"))))
+    ok.append(("llm-council closure includes the moved engine",
+               any(r == "shared/lib/council/engine.py"
+                   for r, _ in source_manifest(ROOT, "llm-council"))))
     ok.append(("every skill closure includes reconcile.py (LIB_SCRIPTS)",
                any("reconcile.py" in r for r, _ in source_manifest(ROOT, "expense-review"))))
     ok.append(("khenrix-setup closure includes capabilities.toml + render.py",

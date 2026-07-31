@@ -32,3 +32,16 @@ def test_stub_resolves_from_new_engine_location():
         assert Path(e.STUB).is_file(), e.STUB
     finally:
         sys.path.pop(0)
+
+
+def test_closure_includes_engine_at_new_path():
+    sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+    try:
+        import checks
+        rels = [r for r, _ in checks.source_manifest(checks.ROOT, "llm-council")]
+    finally:
+        sys.path.pop(0)
+    assert any(r == "shared/lib/council/engine.py" for r in rels), (
+        "engine left the closure — make precommit would silently stop "
+        "protecting llm-council (spec §17 breakage 1)")
+    assert any(r.endswith("scripts/fanout.py") for r in rels)   # facade still counted
