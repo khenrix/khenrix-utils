@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import baseline, fleet, inspect as finspect  # noqa: E402
+from forge import baseline, fleet, gitcmd, inspect as finspect  # noqa: E402
 # The fixtures' env builder is reused rather than restated: duplicating the nine
 # location variables is the copy most likely to drift out of step with them.
 from forge_fixtures import _env as _hermetic_env, make_repo, write  # noqa: E402
@@ -45,7 +45,7 @@ def test_clone_checks_out_the_dirty_baseline_not_head(tmp_path):
     write(repo, "seed.txt", "modified\n")
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    seat = fleet.clone_seat(repo, b, tmp_path / "seat1")
+    seat = fleet.clone_seat(repo, b, tmp_path / "seat1").path
     assert (seat / "seed.txt").read_text() == "modified\n"
     assert _git(seat, "rev-parse", "HEAD") == b.commit
 
@@ -53,7 +53,7 @@ def test_clone_checks_out_the_dirty_baseline_not_head(tmp_path):
 def test_clone_has_no_origin(tmp_path):
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1")
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
     assert _git(seat, "remote") == "", "git clone always sets origin; it must be removed"
 
 
@@ -61,7 +61,7 @@ def test_clone_is_not_hardlinked_to_the_source_objects(tmp_path):
     """A rogue non-git write through a shared inode corrupts the USER's repository."""
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1")
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
     src = {p.stat().st_ino for p in (Path(repo) / ".git" / "objects").rglob("*") if p.is_file()}
     dst = {p.stat().st_ino for p in (seat / ".git" / "objects").rglob("*") if p.is_file()}
     assert src and dst, "nothing was compared"
@@ -86,7 +86,7 @@ def test_clone_transfers_no_object_unreachable_from_the_baseline_ref(tmp_path):
 
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    seat = fleet.clone_seat(repo, b, tmp_path / "seat1")
+    seat = fleet.clone_seat(repo, b, tmp_path / "seat1").path
 
     present = subprocess.run(["git", "-C", str(seat), "cat-file", "-e", planted],
                              capture_output=True)
@@ -143,9 +143,77 @@ def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl.parent))
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1")
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
     assert not (seat / ".git" / "hooks" / "post-checkout").exists()
     assert not ran.exists(), "a template hook executed inside the seat"
+
+
+def test_ignore_semantics_are_replayed_from_a_linked_worktree(tmp_path):
+    """`<repo>/.git` is a FILE in a linked worktree, so the string-joined path resolves to
+    nothing, `is_file()` answers False without raising, and the seat gets NO excludes —
+    a clean clone at the right ref with a silently missing file. The git dir must be asked
+    for, and specifically the COMMON one: `info/exclude` is shared, not per-worktree, so
+    `--absolute-git-dir` would point at `.git/worktrees/<name>/` and find nothing either.
+    """
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "wt"
+    gitcmd.git(repo, "worktree", "add", "-q", str(wt), "-b", "feat")
+    assert (wt / ".git").is_file(), "fixture precondition: a linked worktree uses a .git file"
+    excl = repo / ".git" / "info" / "exclude"
+    excl.parent.mkdir(parents=True, exist_ok=True)
+    excl.write_text("# forge marker\nbuild-scratch/\n")
+    run = tmp_path / "run"; run.mkdir()
+    s = fleet.clone_seat(wt, _mk_baseline(wt, run), tmp_path / "seat1")
+    assert (s.path / ".git" / "info" / "exclude").read_text() == excl.read_text()
+    assert "info/exclude" in s.replayed
+
+
+def test_the_replay_record_reports_nothing_when_there_was_nothing_to_replay(tmp_path):
+    """The record has to DISCRIMINATE, or it is decoration: a constant `("info/exclude",)`
+    would satisfy the test above while the copy silently did nothing."""
+    repo = make_repo(tmp_path)
+    (repo / ".git" / "info" / "exclude").unlink(missing_ok=True)
+    run = tmp_path / "run"; run.mkdir()
+    s = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1")
+    assert s.replayed == ()
+
+
+def test_forge_child_env_strips_gits_redirectors_and_pins_config(tmp_path, monkeypatch):
+    """scrub_env cannot see these: they do damage by pointing AWAY from the checkout.
+
+    GIT_CONFIG_COUNT re-enables the very hooks clone_seat's empty `--template=` excluded,
+    and an ambient absolute GIT_DIR aims a write-enabled agent at a repository that is not
+    its clone. Both look repo-external, so both survive a scrub that drops only what points
+    inward. The seat gets what gitcmd.git gives an engine call instead.
+    """
+    repo = make_repo(tmp_path)
+    other = make_repo(tmp_path, "other")
+    evil = tmp_path / "evil"
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(evil))
+    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    out = fleet.forge_child_env(repo)
+
+    for k in ("GIT_CONFIG_COUNT", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_DIR"):
+        assert k not in out, k
+    assert out["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert out["GIT_CONFIG_SYSTEM"] == os.devnull
+
+    # GIT_CONFIG_KEY_0/VALUE_0 remain as inert strings — git reads them only under
+    # GIT_CONFIG_COUNT, exactly as in gitcmd.git — so the fourth variable is pinned by
+    # EFFECT rather than by absence: assert the injection is dead, not merely disarmed
+    # in a way this test asserts by restating the implementation.
+    def _git_under_child_env(*a):
+        r = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True,
+                           env=out)
+        return r.stdout.strip()
+
+    assert _git_under_child_env("config", "--get", "core.hooksPath") == "", \
+        "core.hooksPath was injected into every git the seat runs"
+    assert Path(_git_under_child_env("rev-parse", "--absolute-git-dir")).resolve() \
+        == (repo / ".git").resolve(), "an ambient GIT_DIR redirected the seat's git"
 
 
 def test_scrub_env_removes_only_values_pointing_at_the_repo(tmp_path, monkeypatch):
@@ -208,6 +276,19 @@ def test_scrub_env_does_not_treat_a_sibling_prefix_as_inside_the_repo(tmp_path):
     assert out["PATH"] == f"{sibling}{os.pathsep}/usr/bin"
 
 
+def test_scrub_env_normalises_a_value_before_calling_it_outside_the_repo(tmp_path):
+    """`embeds` matches literal text, so a non-normalized spelling of the checkout is not
+    a match for any root. The path-shaped branch got normalisation for free from its
+    per-entry `_inside`; the wholesale branch had no normalising test at all, so these
+    three escaped on that branch only."""
+    repo = tmp_path / "git" / "repo"
+    repo.mkdir(parents=True)
+    env = {"A": f"{tmp_path}/git/./repo/src",
+           "B": f"{tmp_path}/git/other/../repo/s",
+           "C": f"{tmp_path}/git//repo/src"}
+    assert fleet.scrub_env(env, repo) == {}
+
+
 def test_forge_depth_guard_increments(tmp_path):
     repo = make_repo(tmp_path)
     e1 = fleet.forge_child_env(repo, {"PATH": "/usr/bin"})
@@ -232,8 +313,8 @@ def test_seats_are_independent_of_each_other(tmp_path):
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    s1 = fleet.clone_seat(repo, b, tmp_path / "s1")
-    s2 = fleet.clone_seat(repo, b, tmp_path / "s2")
+    s1 = fleet.clone_seat(repo, b, tmp_path / "s1").path
+    s2 = fleet.clone_seat(repo, b, tmp_path / "s2").path
     (s1 / "seed.txt").write_text("seat one only\n")
     # Identity is supplied per-invocation: a clone carries none of the source's LOCAL
     # config, and falling back to the developer's ~/.gitconfig is the non-hermeticity

@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-wiki-sync",
-  "source_hash": "f4f122a23e18c263f3c4da735dad73d3e9cd738e92eb45beead235925179b071",
+  "source_hash": "a9ca61f56c907837fe640bf750783a327843b066e07053cda8a51463267e17e5",
   "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
   "providers": [
     "claude"

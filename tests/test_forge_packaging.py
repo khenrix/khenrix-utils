@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CLIS = ("claude", "codex", "agy")
 
 
 def _plugin(cli: str) -> Path:
@@ -19,6 +18,11 @@ def _checks_mod():
     finally:
         sys.path.pop(0)
     return checks
+
+
+# Borrowed, never restated: a fifth copy of the CLI list is a fifth thing that can be
+# right about the plugins that exist and silent about the one that does not.
+CLIS = _checks_mod().CLIS
 
 
 def test_forge_is_bundled_into_the_claude_plugin():
@@ -141,6 +145,37 @@ def test_run_all_is_silent_for_a_plugin_without_forge(tmp_path):
     lib = root / "marketplaces" / "codex" / "plugins" / "khenrix-utils" / "lib"
     (lib / "wikisync").mkdir(parents=True)
     assert _packaging_diagnostics(root) == []
+
+
+def test_the_gate_covers_a_cli_no_hardcoded_list_has_heard_of(tmp_path):
+    """This was the one restatement of the CLI list that failed OPEN.
+
+    The others fail CLOSED on a fourth CLI — a loud false positive, a structure check that
+    visibly stops running. Here a fourth plugin would bundle lib/forge/ without
+    lib/checks.py, `make verify` would say nothing, and screen.py would raise on the
+    user's first forge run: exactly the failure this gate was added to move forward in
+    time. So it enumerates marketplaces/ from disk rather than iterating CLIS.
+    """
+    root = _fake_root(tmp_path)
+    lib = root / "marketplaces" / "newcli" / "plugins" / "khenrix-utils" / "lib"
+    (lib / "forge").mkdir(parents=True)
+    (lib / "forge" / "screen.py").write_text("# bundled engine\n")
+    assert "newcli" not in _checks_mod().CLIS, "fixture precondition: an UNLISTED cli"
+    problems = _packaging_diagnostics(root)
+    assert problems and "newcli" in problems[0], problems
+    (lib / "checks.py").write_text("SECRET_FAIL = []\n")
+    assert _packaging_diagnostics(root) == []
+
+
+def test_the_cli_list_has_exactly_one_definition():
+    """render.py must BORROW the list, not restate it. render already imports checks, so
+    checks is the only end of the dependency that can own it."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import render
+    finally:
+        sys.path.pop(0)
+    assert render.CLIS is _checks_mod().CLIS
 
 
 def test_run_all_passes_the_packaging_gate_on_the_real_repo():

@@ -24,7 +24,15 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CLIS = ("claude", "codex", "agy")
+
+# checks.py owns the CLI list and this module borrows it, not the reverse: render already
+# imports checks (check(), below), so defining it here and importing it there would be a
+# cycle. Restating it would be worse — the restatements are what let a fourth CLI be
+# rendered while a check quietly skipped it.
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+import checks  # noqa: E402
+
+CLIS = checks.CLIS
 BUNDLED = ["capabilities.toml", "house-style.md", "headless-invocation.md"]
 BUNDLED_DIRS = ["statusline", "overlays", "hooks"]
 # Shared engine/helper scripts bundled into every skill's scripts/ dir so each
@@ -277,8 +285,6 @@ def check() -> int:
         problems.append(f"capabilities.toml: {e}")
     # deterministic source-of-truth checks — skip if capabilities.toml itself failed to parse
     if not any("capabilities.toml" in p for p in problems):
-        sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-        import checks  # noqa: E402
         problems.extend(checks.run_all(ROOT))
     if problems:
         print("VALIDATION FAILED:")

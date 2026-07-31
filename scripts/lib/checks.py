@@ -12,6 +12,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
 
+# The CLIs a plugin is rendered for. Defined HERE and imported by render.py rather than
+# the other way round: render.py already imports this module (render.check), so the
+# reverse direction would be a cycle. Checks that must not silently skip an unlisted
+# plugin enumerate `marketplaces/` from disk instead of iterating this — see
+# forge_packaging.
+CLIS = ("claude", "codex", "agy")
+
 # High-confidence secret shapes (fail). Written as full regex so they never match
 # their own source text here. Loose shapes (bearer) are advisory, reported separately.
 SECRET_FAIL = [
@@ -30,8 +37,7 @@ SCAN_SKIP_DIRS = ("evals/_fixtures/secrets/",)  # fixtures hold real-shaped fake
 # would not already carry. Exempting by exact path, not by basename: an unrelated
 # checks.py elsewhere in the tree must still be scanned.
 SCAN_SKIP_PATHS = {"scripts/lib/checks.py"} | {
-    f"marketplaces/{cli}/plugins/khenrix-utils/lib/checks.py"
-    for cli in ("claude", "codex", "agy")}
+    f"marketplaces/{cli}/plugins/khenrix-utils/lib/checks.py" for cli in CLIS}
 # Allowlist of KNOWN-benign matches, keyed by sha256(matched_string) so the
 # allowlist file can never itself be the next false positive.
 SECRET_ALLOW_SHA: set[str] = {
@@ -168,7 +174,7 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
         if name not in declared:
             problems.append(f"structure: template '{name}' not declared in [[skills]]")
     # duplicate rendered skill dirs within a plugin
-    for cli in ("claude", "codex", "agy"):
+    for cli in CLIS:
         sk = root / "marketplaces" / cli / "plugins" / "khenrix-utils" / "skills"
         if sk.is_dir():
             names = [p.name for p in sk.glob("*/") if (p / "SKILL.md").exists()]
@@ -185,11 +191,17 @@ def forge_packaging(root: Path) -> list[str]:
     copies the plugin elsewhere, leaving <plugin>/lib/checks.py as the only reachable one;
     absent that, screen.py raises on a user's first forge run. This moves the failure to
     `make verify`, where someone is looking.
+
+    Enumerated from DISK, not from CLIS. This is the one restatement of the CLI list that
+    failed OPEN: a fourth plugin bundling lib/forge/ without lib/checks.py is exactly the
+    state the gate exists to catch, and a hardcoded triple would say nothing about it
+    while every other check that iterates CLIS at least fails loudly. The check must cover
+    whatever plugins are actually on disk, so an unlisted one cannot ship past it.
     """
     problems = []
-    for cli in ("claude", "codex", "agy"):
-        lib = root / "marketplaces" / cli / "plugins" / "khenrix-utils" / "lib"
+    for lib in sorted((root / "marketplaces").glob("*/plugins/khenrix-utils/lib")):
         if (lib / "forge").is_dir() and not (lib / "checks.py").is_file():
+            cli = lib.parents[2].name
             problems.append(f"forge-packaging: {cli} plugin bundles lib/forge/ without "
                             f"lib/checks.py — screen.py would raise at runtime")
     return problems

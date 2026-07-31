@@ -1,6 +1,6 @@
 {
   "skill": "hookify",
-  "source_hash": "63e9addb29dbbdc4328ea8b2a4794bf828c6c53962f948216fc39af4a26bb839",
+  "source_hash": "357e9969b3465e051d06a5d3d042213ac8c5caaeae666ce15dd66152523e5985",
   "eval_set_hash": "25a319aff709f2cf09f67d31ae46b092cefe0196fc4fa1b5989358dc6f999422",
   "providers": [
     "claude"

@@ -35,6 +35,7 @@ other direction either — with no name and an empty gecos field it exits 128
 (`empty ident name`), so a caller cannot assume the call always yields an answer.
 """
 import hashlib
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +74,30 @@ def _resolve_author(repo, author):
             "Refusing to substitute a placeholder — B1 is history the user is asked to "
             "merge, so a fabricated author would be a permanent false attribution.")
     return name, email
+
+
+def _walk_selected(base: Path, repo: Path) -> list:
+    """Repo-relative regular files under a selected DIRECTORY, in `screen._walk`'s terms.
+
+    Same three rules, for the same reasons: `.git` is pruned rather than post-filtered
+    (it is the object store the baseline was built from), symlinks are never followed —
+    os.walk does not descend into linked directories, so leaves are all that must be
+    dropped — and names are sorted so the manifest is deterministic.
+
+    A symlink therefore reaches the tree (git commits it as a link) without reaching the
+    manifest. That asymmetry is deliberate: hashing it means `open()` following it, which
+    is a read of whatever it points at, and the manifest must not describe content from
+    outside the tree it claims to describe.
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        d = Path(dirpath)
+        dirnames[:] = sorted(n for n in dirnames if n != ".git")
+        for n in sorted(filenames):
+            q = d / n
+            if not q.is_symlink():
+                out.append(q.relative_to(repo).as_posix())
+    return out
 
 
 def _sha256_file(p: Path) -> str:
@@ -125,9 +150,22 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     for rel in gitcmd.git(repo, "ls-files", "-z", env_extra=gitcmd.READONLY).stdout.split("\0"):
         if rel and (repo / rel).is_file():
             manifest[rel] = _sha256_file(repo / rel)
+    # A selected path may be a DIRECTORY — spec §2.2 contemplates one explicitly, and the
+    # literal pathspec below sweeps its whole contents into the tree. An `is_file()`-only
+    # guard therefore returns a manifest that describes none of that content while the
+    # tree carries all of it, and returns it as success: §2.2's validation of the
+    # materialized tree and §4's full-manifest assertion both pass over it vacuously.
+    # `is_dir()` follows links, so the symlink test comes first — a selected
+    # `linkdir -> ~/.ssh` must not be walked (screen_tree refuses it outright).
     for rel in selected_untracked:
-        if (repo / rel).is_file():
-            manifest[rel] = _sha256_file(repo / rel)
+        p = repo / rel
+        if p.is_symlink():
+            continue
+        if p.is_dir():
+            for sub in _walk_selected(p, repo):
+                manifest[sub] = _sha256_file(repo / sub)
+        elif p.is_file():
+            manifest[rel] = _sha256_file(p)
 
     if not dirty:
         ref = f"refs/khenrix-forge/{run_id}/base"

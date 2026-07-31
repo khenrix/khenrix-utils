@@ -290,3 +290,39 @@ def test_filesystem_manifest_covers_selected_and_tracked(tmp_path):
     b = _mk(repo, run, selected=["chosen.txt"])
     assert "seed.txt" in b.filesystem_manifest and "chosen.txt" in b.filesystem_manifest
     assert len(b.filesystem_manifest["chosen.txt"]) == 64
+
+
+def test_a_selected_directory_reaches_the_manifest_as_well_as_the_tree(tmp_path):
+    """Spec §2.2 contemplates a directory pathspec, so this is supported input.
+
+    The literal pathspec sweeps the directory's whole contents into the tree; an
+    `is_file()`-only manifest guard describes none of it. §2.2 validates the materialized
+    tree AGAINST the manifest and §4 asserts the full manifest before setup, so the
+    disagreement is not caught downstream — both pass vacuously over the missing content,
+    and the run returns success.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/a.txt", "a\n")
+    write(repo, "scratch/sub/b.txt", "b\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo, run, selected=["scratch"])
+    tree = _tree_paths(repo, b.tracked_tree_oid)
+    assert tree == {"seed.txt", "scratch/a.txt", "scratch/sub/b.txt"}
+    assert set(b.filesystem_manifest) == tree, \
+        "the tree and the manifest must describe the same content"
+    assert b.filesystem_manifest["scratch/sub/b.txt"] == hashlib.sha256(b"b\n").hexdigest()
+
+
+def test_a_symlink_inside_a_selected_directory_is_not_hashed_through(tmp_path):
+    """Walking a selection must not read what the tree never contained. git commits a
+    symlink as a link; hashing it means open() FOLLOWING it, which puts content from
+    outside the tree into a manifest that claims to describe the tree."""
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "host-secret.txt"
+    outside.write_text("host secret\n")
+    write(repo, "scratch/a.txt", "a\n")
+    (repo / "scratch" / "link.txt").symlink_to(outside)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo, run, selected=["scratch"])
+    assert "scratch/link.txt" not in b.filesystem_manifest
+    assert hashlib.sha256(b"host secret\n").hexdigest() not in b.filesystem_manifest.values()

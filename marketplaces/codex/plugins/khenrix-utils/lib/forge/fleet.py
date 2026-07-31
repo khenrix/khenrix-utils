@@ -17,6 +17,7 @@ outside git's rules, and a truncate through a shared inode corrupts the user's r
 import os
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import gitcmd
@@ -26,7 +27,20 @@ class FleetError(RuntimeError):
     """A seat could not be built into the state the threat model requires."""
 
 
-def clone_seat(repo, baseline, dest, *, template_dir=None) -> Path:
+@dataclass(frozen=True)
+class Seat:
+    """A built seat, plus the record of what was replayed into it (spec §4 item 4).
+
+    `replayed` exists because the replay is a silent no-op when it fails: nothing in the
+    clone's own state distinguishes "the source had no ignore semantics" from "we looked
+    in the wrong place", and both leave a seat that clones cleanly and checks out B1. The
+    record is what lets a caller — or a test — tell those apart.
+    """
+    path: Path
+    replayed: tuple = field(default_factory=tuple)
+
+
+def clone_seat(repo, baseline, dest, *, template_dir=None) -> Seat:
     """Clone `baseline.ref` into `dest` and hand back a checked-out, remote-less seat."""
     repo, dest = Path(repo), Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -76,17 +90,30 @@ def clone_seat(repo, baseline, dest, *, template_dir=None) -> Path:
                 "aimed at the user's repository")
 
         # Ignore semantics that live in the source repo but are NOT cloned.
-        src_exclude = repo / ".git" / "info" / "exclude"
+        #
+        # ASK git where they are; never string-join `.git`. In a linked worktree
+        # `<repo>/.git` is a FILE, so the joined path simply does not exist, `is_file()`
+        # answers False without raising, and the seat silently gets no excludes at all —
+        # the same trap baseline.py's alternate index already learned to avoid.
+        # `--git-common-dir`, NOT `--absolute-git-dir`: those differ for a linked worktree
+        # (per-worktree dir vs the shared one) and `info/exclude` lives in the COMMON dir.
+        # Its output is relative to git's cwd, which `-C repo` makes `repo`; joining onto
+        # `repo` is a no-op for the absolute form and correct for the relative one.
+        common = repo / gitcmd.git(repo, "rev-parse", "--git-common-dir",
+                                   env_extra=gitcmd.READONLY).stdout.strip()
+        replayed = []
+        src_exclude = common / "info" / "exclude"
         if src_exclude.is_file():
             dst_exclude = dest / ".git" / "info" / "exclude"
             dst_exclude.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_exclude, dst_exclude)
+            replayed.append("info/exclude")
     finally:
         # Also on the failure paths: a refused seat that leaves a populated template dir
         # behind hands the NEXT seat at this path whatever was in it.
         if engine_owned:
             shutil.rmtree(tmpl, ignore_errors=True)
-    return dest
+    return Seat(path=dest, replayed=tuple(replayed))
 
 
 # Variables whose value is an os.pathsep-separated LIST of paths. This is a SHAPE list,
@@ -177,20 +204,44 @@ def scrub_env(env: dict, repo_path) -> dict:
             kept = [e for e in v.split(os.pathsep) if not _inside(e, roots)]
             if kept:
                 out[k] = os.pathsep.join(kept)
-        elif not embeds.search(v):
+        # The whole-value test is `_inside` as well as the substring search, because only
+        # `_inside` normalises: `embeds` matches literal text, so `/git/./repo/src`,
+        # `/git/other/../repo/s` and `/git//repo/src` all name the checkout while matching
+        # none of the root spellings. The path-shaped branch above got that for free from
+        # its per-entry `_inside`; this branch had no normalising test at all.
+        elif not (embeds.search(v) or any(_inside(e, roots) for e in v.split(os.pathsep))):
             out[k] = v
     return out
 
 
 def forge_child_env(repo_path, env=None) -> dict:
-    """Scrubbed environment plus the forge recursion guard.
+    """Scrubbed environment, git's redirectors removed, plus the forge recursion guard.
 
     The council engine's child_env increments LLM_COUNCIL_DEPTH only; without a forge
     guard a seat that reaches for /llm-forge spawns three more write-enabled seats, each
     of which can spawn three more.
+
+    `scrub_env` alone is the WRONG boundary for the git redirectors, and misses them in
+    the direction that matters: it drops values pointing INTO the checkout, while
+    `GIT_CONFIG_COUNT`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and an ambient absolute
+    `GIT_DIR` do their damage by pointing somewhere ELSE — at /tmp, at an unrelated
+    repository — so every one of them looks repo-external and survives. Two consequences,
+    both of which undo work done a few lines earlier: `clone_seat` spends an empty
+    `--template=` keeping hooks out of the seat, and an inherited
+    `GIT_CONFIG_COUNT=1 / KEY_0=core.hooksPath` re-enables them for every git the seat
+    runs; and a write-enabled agent under an ambient `GIT_DIR` operates on a repository
+    that is not its clone.
+
+    So the seat gets the same treatment `gitcmd.git` gives an engine call, in the same
+    order: strip the redirectors, then pin config discovery to /dev/null. Pinning LAST
+    matters — `GIT_CONFIG_GLOBAL` is not a redirector precisely because removing it would
+    RESTORE ~/.gitconfig, so it is set rather than dropped.
     """
     base = dict(env if env is not None else os.environ)
+    for k in gitcmd.REDIRECTING_ENV:
+        base.pop(k, None)
     out = scrub_env(base, repo_path)
+    out.update(gitcmd.NO_USER_CONFIG)
     cur = int(out.get("LLM_FORGE_DEPTH", "0") or "0")
     out["LLM_FORGE_DEPTH"] = str(cur + 1)
     return out
