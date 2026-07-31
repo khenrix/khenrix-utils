@@ -970,7 +970,8 @@ def _warn_isolation(detail: str) -> None:
 
 def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
                          repo_dir: Optional[str] = None, *,
-                         prune: bool = True, branch: Optional[str] = None) -> Optional[tuple]:
+                         prune: bool = True, branch: Optional[str] = None,
+                         register: bool = True) -> Optional[tuple]:
     """Point agy's cwd at a throwaway git worktree so cwd-relative mutations — the
     observed breakout class (2026-07-11: editing files, re-seeding receipts, `git add`)
     — land in a discarded copy instead of the real checkout. Since agy 1.1.1 the primary
@@ -981,6 +982,12 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
     for every member, and if the mirror cannot be reproduced faithfully the isolation
     is ABANDONED with a stderr warning rather than letting agy silently review
     HEAD-only content. Quiet no-op outside a git repo.
+
+    `register=False` withholds the handle from `_LIVE_WORKTREES`, so the SIGTERM handler
+    will not delete it — for a caller (Plan B: forge) that owns its own handle disposition
+    instead of the council's default "kill on signal" behaviour. Default True preserves
+    council behaviour exactly.
+
     Returns (repo_root, worktree_path) for remove_agy_worktree."""
     handle = None
     try:
@@ -1004,7 +1011,8 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
             _warn_isolation(f"worktree add failed: {add.stderr.strip()[:120]}")
             return None
         handle = (repo, wt)
-        _LIVE_WORKTREES.add(handle)   # from this instant a signal can clean it up
+        if register:
+            _LIVE_WORKTREES.add(handle)   # from this instant a signal can clean it up
         # bytes mode end-to-end: text=True would newline-translate CRLF patch content
         # and raise on non-UTF-8 files, silently degrading isolation for such repos.
         diff = subprocess.run(["git", "-C", repo, "diff", "--binary", "--full-index", "HEAD"],

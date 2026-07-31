@@ -219,8 +219,10 @@ git commit -m "test(llm-council): characterization suite ahead of the engine mov
     nothing when a foreign SIGTERM handler exists (unless `force=True`)
   - `run_council(..., install_signal_handler: bool = True)` keyword
   - `isolate_agy_worktree(spec, workdir, repo_dir=None, *, prune: bool = True,
-    branch: str | None = None)` — `prune=False` skips the repo-wide prune;
-    `branch="x"` uses `worktree add -b x` instead of `--detach`
+    branch: str | None = None, register: bool = True)` — `prune=False` skips the
+    repo-wide prune; `branch="x"` uses `worktree add -b x` instead of `--detach`;
+    `register=False` withholds the handle from `_LIVE_WORKTREES` so the SIGTERM
+    handler will not delete it (caller owns disposition)
   - `ProviderSpec.validator: Callable | None = None` — signature
     `(exit_code, stdout, stderr, spec) -> tuple[bool, str, str, bool]`; when set,
     `run_provider` calls it INSTEAD of `evaluate`
@@ -750,7 +752,13 @@ do not mark the task complete on a red smoke.
   validator seams (T2), consumers exercised (T1: import-path, `__main__`, monkeypatch;
   `make verify` in T4 covers `checks.model_crosscheck` end-to-end since the façade
   self-bootstraps its path). §19's `MODE_TIMEOUT["forge"]` and the agy timeout-reason
-  mapping are **deliberately Plan B** — they are forge behaviour, not extraction.
+  mapping are **deliberately Plan B** — they are forge behaviour, not extraction. Breakage
+  6's registration disposition (a caller-owned handle the signal handler won't delete) is
+  the only slice of that breakage this plan covers (T2's `register` kwarg); breakage 6's
+  **fsync-before-exit** and **SIGTERM-grace-for-forge-groups** are explicitly NOT covered
+  here and remain Plan B scope — this plan only ships the seam a forge orchestrator will
+  need to opt a handle out of council's default cleanup, not the durability or grace
+  behaviour forge itself requires around it.
 - **Placeholders:** one soft spot acknowledged in-line — Task 2(b) says "preserve the
   current signal list verbatim"; that is an instruction to read the anchor site, not
   invented code. No TBDs.

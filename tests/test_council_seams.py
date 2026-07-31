@@ -65,6 +65,22 @@ def test_isolate_worktree_branch_and_no_prune(tmp_path):
     f.remove_agy_worktree(handle)
 
 
+def test_isolate_worktree_register_false_skips_live_set(tmp_path):
+    f = import_fanout()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-q", "-m", "seed")
+    spec = f.ProviderSpec("agy", ["true"], None, f.extract_raw)
+    handle = f.isolate_agy_worktree(spec, tmp_path / "wd", repo_dir=str(repo),
+                                    register=False, prune=False, branch="forge/test/keep")
+    assert handle is not None
+    assert handle not in f._LIVE_WORKTREES
+    f.remove_agy_worktree(handle)   # must not raise on an unregistered handle
+    assert handle not in f._LIVE_WORKTREES
+
+
 def test_injectable_validator_replaces_evaluate():
     f = import_fanout()
     with tempfile.TemporaryDirectory() as td:
