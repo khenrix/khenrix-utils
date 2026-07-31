@@ -1,4 +1,5 @@
 """Run-directory layout and quotas (spec §15)."""
+import os
 import stat
 import sys
 from pathlib import Path
@@ -95,6 +96,50 @@ def test_git_env_extra_wins_over_the_scrub(tmp_path):
     alt = tmp_path / "alt.index"
     r = gitcmd.git(repo, "ls-files", env_extra={"GIT_INDEX_FILE": str(alt)})
     assert r.stdout.strip() == ""
+
+
+def test_git_never_reads_the_users_global_config(tmp_path, monkeypatch):
+    # Config discovery may only ever NARROW: scrubbing GIT_CONFIG_GLOBAL would restore
+    # ~/.gitconfig (and its core.hooksPath), so git() pins it to /dev/null instead.
+    repo = make_repo(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[forge]\n\tcanary = leaked\n")
+    monkeypatch.setenv("HOME", str(home))
+
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+    assert gitcmd.git(repo, "config", "--get", "forge.canary", check=False).returncode != 0
+    # and an outer harness that already hardened the variable must not be widened by us
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    assert gitcmd.git(repo, "config", "--get", "forge.canary", check=False).returncode != 0
+    # a caller pointing GIT_CONFIG_GLOBAL somewhere deliberately still wins (env_extra last)
+    r = gitcmd.git(repo, "config", "--get", "forge.canary",
+                   env_extra={"GIT_CONFIG_GLOBAL": str(home / ".gitconfig")})
+    assert r.stdout.strip() == "leaked"
+
+
+def test_fixture_survives_a_hostile_global_config(tmp_path, monkeypatch):
+    # A developer with commit.gpgsign = true could not build a fixture repo at all.
+    hostile = tmp_path / "hostile.gitconfig"
+    hostile.write_text("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/false\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(hostile))
+    repo = make_repo(tmp_path, "hostile")
+    write(repo, "more.txt", "more\n")
+    assert len(commit_all(repo, "more")) in (40, 64)
+
+
+def test_fixture_ignores_an_ambient_git_dir(tmp_path, monkeypatch):
+    # Without the scrub, `git add -A` under an exported GIT_DIR + GIT_WORK_TREE commits the
+    # developer's real working tree — the cardinal invariant breached from a test.
+    victim = make_repo(tmp_path, "victim")
+    monkeypatch.setenv("GIT_DIR", str(victim / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(victim))
+
+    repo = make_repo(tmp_path, "fresh")
+    write(repo, "only-here.txt", "x\n")
+    commit_all(repo, "only-here")
+    assert gitcmd.git(repo, "log", "--format=%s").stdout.split() == ["only-here", "seed"]
+    assert gitcmd.git(victim, "log", "--format=%s").stdout.split() == ["seed"]
 
 
 def test_git_check_raises_on_failure(tmp_path):

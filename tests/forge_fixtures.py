@@ -1,22 +1,34 @@
 """Fixture git repositories for the forge suites.
 
-Local user identity only, and global/system config disabled for every fixture command:
-a developer's `commit.gpgsign = true` would otherwise fail every fixture commit, and a
-global `core.hooksPath` would run their hooks inside these throwaway repos. The two
-variables are inlined rather than imported from `forge.gitcmd.NO_USER_CONFIG` so the
-fixture stays independent of the code it is used to test.
+Every fixture command runs in a hermetic environment, for two independent reasons:
+global/system config is disabled because a developer's `commit.gpgsign = true` would
+otherwise fail every fixture commit and a global `core.hooksPath` would run their hooks
+inside these throwaway repos; the repository-location variables are cleared because under
+an exported GIT_DIR + GIT_WORK_TREE (a hook, `git rebase --exec`, `git bisect run`)
+`commit_all`'s `git add -A` would commit the developer's REAL working tree.
+
+Both lists are inlined rather than imported from `forge.gitcmd` so the fixture stays
+independent of the code it is used to test.
 """
 import os
 import subprocess
 from pathlib import Path
 
+_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_CONFIG_COUNT",
+                 "GIT_NAMESPACE", "GIT_CEILING_DIRECTORIES")
+
+
+def _env():
+    env = {k: v for k, v in os.environ.items() if k not in _LOCATION_ENV}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    return env
+
 
 def _run(repo, *args):
     r = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True, text=True, timeout=30,
-                       env={**os.environ,
-                            "GIT_CONFIG_GLOBAL": os.devnull,
-                            "GIT_CONFIG_SYSTEM": os.devnull})
+                       capture_output=True, text=True, timeout=30, env=_env())
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}")
     return r
