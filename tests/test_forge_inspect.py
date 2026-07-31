@@ -211,6 +211,20 @@ def test_rejects_skip_worktree_entry(tmp_path):
     assert any("skip-worktree" in r for r in finspect.rejections(f, []))
 
 
+def test_rejects_skip_worktree_entry_that_is_also_assume_unchanged(tmp_path):
+    """`ls-files -v` lowercases the tag when the entry is ALSO assume-unchanged, so a
+    skip-worktree path can be reported as `s` rather than `S`. Matching only the uppercase
+    form lets exactly this repository through preflight clean."""
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    _git(repo, "update-index", "--assume-unchanged", "seed.txt")
+    tags = _git(repo, "ls-files", "-v").stdout.split()
+    assert "s" in tags, f"fixture must produce the lowercase tag, got {tags}"
+    f = finspect.repo_facts(repo)
+    assert f.sparse
+    assert any("skip-worktree" in r for r in finspect.rejections(f, []))
+
+
 def test_unborn_head_is_rejected_not_raised(tmp_path):
     """A freshly init-ed repository is an ordinary state; `rev-parse HEAD` exits 128 on it."""
     repo = Path(tmp_path) / "empty"

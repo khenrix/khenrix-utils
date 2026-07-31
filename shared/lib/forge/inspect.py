@@ -35,6 +35,10 @@ class RepoFacts:
     is_shallow: bool = False
     is_partial: bool = False
     has_submodules: bool = False
+    # Both of spec §2.3's "the worktree is not the tracked tree" conditions: a sparse checkout
+    # (config) AND a bare skip-worktree bit on any index entry (no config is written for that
+    # one). Deliberately one field, not two — narrowing it to the config probe reopens a
+    # fail-open on `git update-index --skip-worktree`.
     sparse: bool = False
     unmerged: list = field(default_factory=list)
     intent_to_add: list = field(default_factory=list)
