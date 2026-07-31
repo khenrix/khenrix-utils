@@ -34,7 +34,12 @@ LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
 # Shared stdlib engines under shared/lib/<name>/, bundled once per plugin at lib/<name>/
 # so skills can `PYTHONPATH=<plugin>/lib python3 -m <name>` after a marketplace copy.
 # Runtime code only — tests are excluded to keep the plugin lean.
-SHARED_LIBS = ["wikisync", "council"]
+SHARED_LIBS = ["wikisync", "council", "forge"]
+# Single MODULES (not packages) that land beside those engines at lib/<file>.py, because
+# an engine imports them at runtime. forge/screen.py loads checks.py by path to get the
+# secret patterns rather than forking them; once the marketplace copies a plugin out of
+# this repo, lib/checks.py is the only candidate its resolver can still reach.
+SHARED_LIB_FILES = [ROOT / "scripts" / "lib" / "checks.py"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
@@ -215,6 +220,9 @@ def render():
                 for lib in LIB_SCRIPTS:
                     shutil.copy2(lib, skill / "scripts" / lib.name)
         # 4. bundle shared stdlib engines (runtime only) at the plugin's lib/<name>/
+        (pdir / "lib").mkdir(parents=True, exist_ok=True)
+        for f in SHARED_LIB_FILES:
+            shutil.copy2(f, pdir / "lib" / f.name)
         for name in SHARED_LIBS:
             src = ROOT / "shared" / "lib" / name
             if src.is_dir():

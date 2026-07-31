@@ -18,6 +18,9 @@ DOCTOR_TESTS := tests/test_doctor.py
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py
+FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
+               tests/test_forge_baseline.py tests/test_forge_screen.py \
+               tests/test_forge_fleet.py tests/test_forge_packaging.py
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
@@ -87,8 +90,8 @@ test: council-test ## Run the deterministic llm-council engine self-test + slow 
 	$(PY) $(LLM_COUNCIL) --self-test
 	$(call RUN_PYTEST,-m slow tests/test_council_characterization.py tests/test_council_facade.py)
 
-council-test: ## Seat-validity/characterization/seam/facade tests for the council engine, sans slow (no token cost)
-	$(call RUN_PYTEST,-m "not slow" $(COUNCIL_TESTS))
+council-test: ## Council engine (seat/characterization/seam/facade) + forge substrate suites, sans slow (no token cost)
+	$(call RUN_PYTEST,-m "not slow" $(COUNCIL_TESTS) $(FORGE_TESTS))
 
 # Wired into `verify` (and so into `precommit`) on purpose. A verifier whose own
 # tests nothing ever runs decays into exactly the "claims a capability, never
