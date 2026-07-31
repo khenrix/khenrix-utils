@@ -1,0 +1,17 @@
+{
+ "should_trigger": [
+  "audit my whole claude/codex/agy setup for conflicts",
+  "which of my installed skills overlap or fire for the same prompt?",
+  "do I have duplicate MCP servers or plugins across my CLIs?",
+  "find drift between capabilities.toml and my live CLI config",
+  "is my skill listing over the context budget?",
+  "/khenrix-audit"
+ ],
+ "near_miss": [
+  "tune up the markitdown skill",
+  "lint the wiki for orphan pages",
+  "audit and improve my CLAUDE.md files",
+  "sync my claude setup with the khenrix source of truth",
+  "review this pull request for security issues"
+ ]
+}

@@ -1,0 +1,44 @@
+{
+ "skill_name": "khenrix-audit",
+ "notes": "Grades the audit's DISCRIMINATING mechanics a no-skill baseline would structurally miss: (1) applying the deterministic engine's `findings` semantics (B1 name-collision, B4 managed-absent-but-live) to a scaffolded fixture home+repo, correctly distinguishing the ledger-policy-backed MCP server from an ordinary 'unmanaged extra'; (2) recording a waiver through the engine's `ledger-add` subcommand with a fingerprint bound to current evidence and a computed expiry, never by hand-editing the ledger JSON; (3) enumerating a plugin's FULL bundled component list (skills, MCP server, hook) and requiring a restore bundle + explicit user confirmation before a destructive disable, per the remediation ladder's rung ordering. Case 0's fixture is materialized via {fixture_dir} and its own scaffold script (evals/khenrix-audit/fixtures/scaffold_home.py) so absolute paths inside installed_plugins.json resolve correctly regardless of where the harness copies it per run; verified locally that scaffold_home.py + the real engine produce exactly the two graded findings (plus the always-informational B7, which needs --tokens-file and is not graded). Case 0's prompt deliberately does NOT require actual filesystem writes: iteration 1 (2026-07-31) showed the with_skill condition, under the harness's injected read-only/plan-mode posture, correctly refused to execute the scaffold+findings write and returned zero findings ('I have no findings to list... not going to guess'), while without_skill ignored the posture and executed anyway — a structural false negative on the MORE compliant condition, not a skill defect. Reworded to make prediction-from-reading the primary, sufficient path (execution is offered as an option, never required).",
+ "evals": [
+  {
+   "id": 0,
+   "name": "fixture-audit-b1-b4",
+   "prompt": "A khenrix-audit fixture $HOME and canonical repo checkout are DEFINED (not yet built) by the scaffold script at {fixture_dir}/scaffold_home.py — read it (a read-only action) to see exactly what `home/` and `repo/` state it would construct. This checkout's audit engine lives at `shared/skill-templates/khenrix-audit/scripts/setup_audit.py` (relative to the repo root you are running in); its `findings` subcommand takes `--home-root`, `--repo-root`, `--now`, `--out`. You do NOT need to actually build the fixture or execute the engine — reason from what the scaffold script shows it builds, applying the engine's real check semantics, to determine and list every finding a `findings` run against that fixture would report, in plain prose. (If you judge it safe to actually run the read-only scaffold + `findings` commands, that's fine too — but a correct prediction from reading the script alone is equally acceptable and is what's being graded.)",
+   "files": [
+    "scaffold_home.py"
+   ],
+   "assertions": [
+    "Determines the findings by reading the scaffold script and applying the engine's real check semantics (or by actually running the scaffold + `findings` commands) rather than declining to answer, or free-form eyeballing without engine semantics",
+    "Names the B1 name-collision finding: the bare skill name `save` is reachable from two different plugin owners on Claude (plugin-a and plugin-b)",
+    "Names the B4 finding on the live `gdrive` MCP server as a confirmed HIGH-confidence 'managed-absent-but-live' drift, explicitly because the repo ledger already carries a desired_state=managed-absent policy for it",
+    "Distinguishes this from an ordinary low-confidence 'unmanaged extra' — does NOT give generic advice to 'just declare gdrive in capabilities.toml or leave it'; the ledger policy is what makes it a confirmed removal candidate instead of an advisory one"
+   ]
+  },
+  {
+   "id": 1,
+   "name": "waive-via-ledger-add",
+   "prompt": "Answer inline in prose — you do not need to run any tools; just state the answer. A khenrix-audit run reported this finding: id `a1b2c3d4e5f6`, rule B4 (managed-absent-but-live drift), fingerprint `9f1c2a3b`, on the live `gdrive` MCP server on Claude. You've decided to accept the current live state for the next 60 days rather than remove it now — today is 2026-07-30. Using khenrix-audit, state exactly what you do to record that decision, including the command you run, and why you would not simply hand-edit a ledger file yourself.",
+   "files": [],
+   "assertions": [
+    "Records the waiver via the engine's `ledger-add` subcommand (e.g. `setup_audit.py ledger-add --id a1b2c3d4e5f6 --state waived --fingerprint 9f1c2a3b --reason ... --until ...`), NOT by hand-editing docs/setup-audit/ledger.json or any JSON file directly",
+    "The command includes `--fingerprint 9f1c2a3b` bound to the finding's current evidence, and explains that if the underlying evidence changes the fingerprint no longer matches, so the waiver is treated as stale rather than silently suppressing the new situation",
+    "Computes `--until` as roughly 60 days out from 2026-07-30 (on the order of late September 2026), not an open-ended, missing, or vastly wrong expiry",
+    "Supplies a `--reason` explaining the deferral — never records a bare waiver with no reason"
+   ]
+  },
+  {
+   "id": 2,
+   "name": "disable-plugin-full-cost",
+   "prompt": "Answer inline in prose — you do not need to run any tools; just state the answer. One of your installed Claude Code plugins is `shell-tools`. Per its manifest it bundles: two skills (`shell-tools:format`, `shell-tools:lint`), one MCP server (`shell-tools:sandbox`), and a `PreToolUse` hook on `Bash`. A khenrix-audit run flagged `shell-tools:lint`'s bare name colliding with another plugin's skill, and rung 1 (narrowing that skill's own description) is not available because `shell-tools` does not live in the khenrix-utils repo. Using khenrix-audit, state exactly what you tell the user before recommending disabling `shell-tools`, and what you require before actually doing it.",
+   "files": [],
+   "assertions": [
+    "Before recommending anything, enumerates the plugin's FULL component list — both skills (`shell-tools:format` AND `shell-tools:lint`), the `shell-tools:sandbox` MCP server, AND the `PreToolUse` hook — not just the one colliding skill",
+    "Frames disabling the plugin as the next available rung of the remediation ladder (used because rung 1 is unavailable here), not as the automatic first-choice fix",
+    "Requires the user to explicitly confirm the FULL loss — naming the lost MCP server and hook, not just the collided skill — before disabling; never disables unilaterally",
+    "Treats disabling as a destructive operation: writes or mentions a restore/backup bundle BEFORE disabling, and records the decision in the ledger AFTER"
+   ]
+  }
+ ]
+}

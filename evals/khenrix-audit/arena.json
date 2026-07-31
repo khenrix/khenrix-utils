@@ -1,0 +1,10 @@
+{
+ "prompts": [
+  {"prompt": "audit my setup for conflicting skills", "expected": "khenrix-audit"},
+  {"prompt": "set up my claude environment with the shared MCP servers", "expected": "khenrix-setup"},
+  {"prompt": "is chunk-map stale? give it a maintenance pass", "expected": "skill-tuneup"},
+  {"prompt": "health check the wiki", "expected": "none"},
+  {"prompt": "do my installed plugins duplicate each other?", "expected": "khenrix-audit"},
+  {"prompt": "upgrade how this machine uses claude models", "expected": "none"}
+ ]
+}

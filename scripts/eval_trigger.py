@@ -116,6 +116,12 @@ def run(args) -> int:
         for i, prompt in enumerate(spec.get(kind, [])):
             jp = JUDGE_TMPL.format(name=name, description=desc, prompt=prompt)
             spec_ = fanout.build_real_spec(args.judge, jp, timeout, cfg, workdir)
+            spec_.min_chars = 0   # judge verdicts are intentionally compact JSON (~100-200
+                                  # chars) — fanout's MIN_SUBSTANTIVE_CHARS=400 floor exists
+                                  # for council-seat answers, not judge verdicts; without this
+                                  # every verdict scores invalid ("non_substantive") regardless
+                                  # of correctness and run() reads "" for every case (mirrors
+                                  # fanout.py's own --smoke precedent at s.min_chars = 0)
             m = fanout.run_council([spec_], retries=1, timeout=timeout, backoff=2.0,
                                    workdir=workdir / f"{kind}-{i}", prompt=jp)
             rec = m["providers"][0]
@@ -157,7 +163,17 @@ def parse_arena_verdict(raw: str, competitors: list) -> str:
         w = str(json.loads(cand).get("winner", "none")).strip()
     except (json.JSONDecodeError, AttributeError):
         return "none"
-    return w if w in competitors else "none"
+    if w in competitors:
+        return w
+    # The judge subprocess is a REAL claude CLI session on this machine, so when the
+    # skill under judgment is actually installed here it can answer with its own
+    # environment's plugin-qualified display form (e.g. "khenrix-utils:khenrix-audit")
+    # instead of the roster's bare NAME it was told to use — verified live 2026-07-31:
+    # two genuinely-correct khenrix-audit arena wins were silently scored "none" by an
+    # exact-match miss on exactly this prefix. Accept the bare suffix after the last
+    # ':' as the same skill; an unrelated/hallucinated name still falls through to "none".
+    bare = w.rsplit(":", 1)[-1]
+    return bare if bare in competitors else "none"
 
 
 def score_arena(cases: list) -> dict:
@@ -190,6 +206,7 @@ def run_arena(args) -> int:
     for i, case in enumerate(spec["prompts"]):
         jp = ARENA_TMPL.format(roster=roster, prompt=case["prompt"])
         spec_ = fanout.build_real_spec(args.judge, jp, timeout, cfg, workdir)
+        spec_.min_chars = 0   # see run(): judge verdicts are compact JSON, not council answers
         m = fanout.run_council([spec_], retries=1, timeout=timeout, backoff=2.0,
                                workdir=workdir / f"p-{i}", prompt=jp)
         rec = m["providers"][0]
@@ -223,10 +240,32 @@ def _self_test() -> int:
                                    ["khenrix-wiki-add", "save"]) == "khenrix-wiki-add"))
     ok.append(("arena verdict unknown → none",
                parse_arena_verdict('{"winner": "bogus"}', ["a", "b"]) == "none"))
+    ok.append(("arena verdict accepts plugin-qualified form of a real competitor",
+               parse_arena_verdict('{"winner": "khenrix-utils:khenrix-audit"}',
+                                   ["khenrix-audit", "khenrix-setup"]) == "khenrix-audit"))
+    ok.append(("arena verdict: plugin-qualified but NOT a competitor still → none",
+               parse_arena_verdict('{"winner": "claude-obsidian:wiki-lint"}',
+                                   ["khenrix-audit", "khenrix-setup"]) == "none"))
     ar = score_arena([{"expected": "a", "got": "a"}, {"expected": "a", "got": "b"},
                       {"expected": "none", "got": "none"}])
     ok.append(("arena accuracy 2/3", ar["accuracy"] == round(2 / 3, 4)))
     ok.append(("arena confusion", ar["confusion"]["a"]["b"] == 1))
+    # --- min_chars regression (2026-07-31): a real judge verdict is short compact JSON
+    # (~100-200 chars), well under fanout's council-answer floor. Pins the exact failure
+    # this override fixes — without spec_.min_chars = 0 in run()/run_arena(), fanout scores
+    # every correct verdict "non_substantive" and eval_trigger reads "" for every case
+    # (observed live: accuracy 0.4545, should_trigger 0/6, near_miss 5/5 — every "false"
+    # verdict was spuriously right and every "true" one spuriously wrong).
+    short_verdict = '{"activate": true, "why": "matches the description directly"}'
+    default_spec = fanout.build_real_spec("claude", "prompt", 60, {}, Path("/tmp"))
+    ok.append(("build_real_spec defaults to the council floor (why the override is needed)",
+               default_spec.min_chars == fanout.MIN_SUBSTANTIVE_CHARS
+               and len(short_verdict) < fanout.MIN_SUBSTANTIVE_CHARS))
+    ok.append(("judge verdict scores non_substantive at the default floor",
+               fanout.score_seat(short_verdict, None, fanout.MIN_SUBSTANTIVE_CHARS)["cause"]
+               == "non_substantive"))
+    ok.append(("judge verdict scores ok once min_chars=0 (the fix)",
+               fanout.score_seat(short_verdict, None, 0)["status"] == "ok"))
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

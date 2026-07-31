@@ -1,7 +1,7 @@
 ---
 name: khenrix-audit
 description: >-
-  Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), declared-vs-live drift, shadowed or endpoint-deduped MCP servers, conflicting hooks, and skill-listing budget overflow — with a guided per-finding apply and a synced decision ledger. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit.
+  Cross-CLI setup conflict finder: maps every installed plugin, skill, MCP server, hook and instruction file across Claude Code, Codex and agy, then finds duplicate or overlapping skills (which skill fires for a prompt), shadowed or endpoint-deduped MCP servers, conflicting hooks, and checks whether the skill-listing context budget is over its 1% window (descriptions being dropped). FINDS (never applies) drift between the declared capabilities.toml and each CLI's live config — khenrix-setup applies, khenrix-audit detects — with a guided per-finding apply and a synced decision ledger. Use when the user asks which skill fires, why the wrong skill fired, or whether installed skills/plugins/MCP servers overlap. NOT for one skill's content (use skill-tuneup), NOT for the wiki (use wiki-lint). Invoke as /khenrix-audit.
 allowed-tools: Bash, Read, Grep
 ---
 
