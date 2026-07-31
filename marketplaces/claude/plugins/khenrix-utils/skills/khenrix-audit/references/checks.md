@@ -42,13 +42,18 @@ or `{"direction": "unmanaged"}`. Without `--repo-root` the whole check is
 The platform gate (`capabilities.toml [mcp_servers.*] platform=`) applies ONLY to the
 declared-not-live direction — a Windows-only server absent on Linux is not drift. "unmanaged"
 findings are low-confidence and re-reported every run by design (deliberately not
-self-suppressing) unless a ledger policy exists for that subject.
+self-suppressing) unless a ledger policy exists for that subject. A server name starting with
+`plugin:` (plugin-bundled MCP, e.g. `plugin:pw:pw`) never fires "unmanaged" — capabilities.toml
+only declares top-level servers, so a plugin-provided one is structurally undeclarable there,
+not a drift to fix.
 
 ## B5 — Cross-CLI capability drift
 Detects a declared MCP server present on at least one installed CLI but missing on another,
 respecting the same platform gate as B4 (not naive set equality). Evidence: `present_on`
 (the CLIs that do have it). A CLI-specific server correctly gated by `platform=` never fires
-here for the CLIs it's not meant to run on.
+here for the CLIs it's not meant to run on. Without `--repo-root` the whole check is
+`{"error": "no canonical repo root"}` and marked `not_evaluated` (never a silent empty pass) —
+mirrors B4.
 
 ## B6 — Trigger-surface overlap (nomination only)
 Nominates skill pairs by TF-IDF cosine over each skill's extracted trigger surface (quoted

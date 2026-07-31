@@ -22,8 +22,9 @@ copies — resolve ~/git/khenrix-utils and pass it explicitly):
 python3 "$engine_path" findings --repo-root "$$HOME/git/khenrix-utils" --out /tmp/audit-findings.json --report-dir "$$HOME/git/khenrix-utils/docs/setup-audit"
 ```
 
-On Claude, FIRST produce token counts so B7 runs (skip elsewhere — B7 then
-reports NOT EVALUATED, which is correct):
+If the claude binary is on PATH (`capabilities.can_token_count`), FIRST produce
+token counts so B7 runs — otherwise skip; B7 then reports NOT EVALUATED, which
+is correct:
 
 ```bash
 claude plugin list

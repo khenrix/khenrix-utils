@@ -1,6 +1,8 @@
-# Setup audit — 2026-07-31T01:04:36Z
+# Setup audit — 2026-07-31T01:31:11Z
 
-Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
+Status: complete-with-findings
+
+Inventory 799 items (hash ece86074), 46 finding(s), 0 discovery error(s).
 0 local waiver(s) active.
 
 ## Phase coverage
@@ -40,9 +42,9 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.khenrix-utils-khenrix-upgrade--khenrix-utils-skill-tuneup
-- rule B6 · claude/user · wrong-tool-fires · confidence low · id `200e65a2dd2e` fp `75179993`
+- rule B6 · claude/user · wrong-tool-fires · confidence low · id `200e65a2dd2e` fp `1ba59cf9`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 43, "cosine": 0.252, "nominated": 15, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["tune", "refresh", "modernize", "improve"]}`
+- evidence: `{"corpus_size": 43, "cosine": 0.252, "nominated": 15, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["tune", "modernize", "refresh", "improve"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -117,9 +119,9 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.khenrix-utils-khenrix-audit--khenrix-utils-khenrix-setup
-- rule B6 · claude/user · wrong-tool-fires · confidence low · id `c4d37de09277` fp `0c7e956d`
+- rule B6 · claude/user · wrong-tool-fires · confidence low · id `c4d37de09277` fp `89796613`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 43, "cosine": 0.164, "nominated": 15, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["mcp", "servers"]}`
+- evidence: `{"corpus_size": 43, "cosine": 0.164, "nominated": 15, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["servers", "mcp"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -131,16 +133,16 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-operating-calendar--artifact-template-operating-review
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `21b74ae0a70a` fp `ebcb9496`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `21b74ae0a70a` fp `d37fa1e6`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.601, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["operating", "names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.601, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["operating", "selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-design-report--artifact-template-system-design
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `23996db1453e` fp `c4d9845a`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `23996db1453e` fp `0e658965`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.582, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["design", "names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.582, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["design", "selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -152,9 +154,9 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-legal-memorandum--artifact-template-strategy-memorandum
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `6d0a332217d9` fp `feaa62a9`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `6d0a332217d9` fp `ac697697`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.527, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["memorandum", "names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.527, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["memorandum", "selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -166,72 +168,72 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-design-report--artifact-template-market-trends-report
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `9a3b596a59af` fp `e291028c`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `9a3b596a59af` fp `5bd92e64`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.456, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["report", "names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.456, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["report", "selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.khenrix-upgrade--skill-tuneup
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `fd648348c801` fp `408775d1`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `fd648348c801` fp `974bd959`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.183, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["tune", "refresh", "modernize"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.183, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["tune", "modernize", "refresh"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-operating-review--artifact-template-system-design
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `8ea0dc665859` fp `56c14669`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `8ea0dc665859` fp `879e16f7`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.177, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.177, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-design-report--artifact-template-operating-review
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `527739153d9f` fp `56c14669`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `527739153d9f` fp `879e16f7`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.177, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.177, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-operating-review--artifact-template-strategy-memorandum
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `f16df7f229ec` fp `380f9cef`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `f16df7f229ec` fp `e53ae984`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-operating-review--artifact-template-project-tracker
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `76841757f5c8` fp `380f9cef`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `76841757f5c8` fp `e53ae984`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-operating-review--artifact-template-project-kickoff
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `c441ac034cc5` fp `380f9cef`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `c441ac034cc5` fp `e53ae984`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-legal-memorandum--artifact-template-operating-review
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `e50de3c854ff` fp `380f9cef`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `e50de3c854ff` fp `e53ae984`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.artifact-template-experiment-analysis--artifact-template-operating-review
-- rule B6 · codex/user · wrong-tool-fires · confidence low · id `6b1054fdeed4` fp `380f9cef`
+- rule B6 · codex/user · wrong-tool-fires · confidence low · id `6b1054fdeed4` fp `e53ae984`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["names", "selects"]}`
+- evidence: `{"corpus_size": 37, "cosine": 0.169, "nominated": 15, "same_plugin": false, "shared_phrases": [], "shared_tokens": ["selects", "names"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.khenrix-utils-khenrix-upgrade--khenrix-utils-skill-tuneup
-- rule B6 · agy/user · wrong-tool-fires · confidence low · id `1bea27f1f0ab` fp `d88547b7`
+- rule B6 · agy/user · wrong-tool-fires · confidence low · id `1bea27f1f0ab` fp `349637d3`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 11, "cosine": 0.208, "nominated": 5, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["tune", "refresh", "improve", "modernize"]}`
+- evidence: `{"corpus_size": 11, "cosine": 0.208, "nominated": 5, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["tune", "modernize", "refresh", "improve"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -243,9 +245,9 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rung: rung 1 if DUPLICATE and one side is ours
 
 ### [41] b6.skill.khenrix-utils-khenrix-audit--khenrix-utils-khenrix-setup
-- rule B6 · agy/user · wrong-tool-fires · confidence low · id `c56fc4f4fc84` fp `7bfdb4ab`
+- rule B6 · agy/user · wrong-tool-fires · confidence low · id `c56fc4f4fc84` fp `e426f2e7`
 - note: heuristic nomination — adjudicate before acting
-- evidence: `{"corpus_size": 11, "cosine": 0.136, "nominated": 5, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["mcp", "servers"]}`
+- evidence: `{"corpus_size": 11, "cosine": 0.136, "nominated": 5, "same_plugin": true, "shared_phrases": [], "shared_tokens": ["servers", "mcp"]}`
 - rung: Phase C adjudication → Phase D arena/probes
 - rung: rung 1 if DUPLICATE and one side is ours
 
@@ -277,12 +279,6 @@ Inventory 799 items (hash 82502462), 47 finding(s), 0 discovery error(s).
 - rule B4 · agy/user · state-divergence · confidence high · id `8c6fc4e2223f` fp `843310c2`
 - evidence: `{"direction": "managed-absent-but-live", "reason": "Removed from capabilities.toml 2026-07-20: redundant with the native claude.ai Drive connector. Still live in ~/.claude.json and ~/.codex/config.toml — must keep firing until removed there."}`
 - rung: remove from live config (confirmed, restore bundle first)
-
-### [31] b4.mcp.claude/plugin-playwright-playwright
-- rule B4 · claude/user · state-divergence · confidence low · id `af90c2bb1c35` fp `45750e7f`
-- note: unmanaged extra — reported once, deliberately preserved
-- evidence: `{"direction": "unmanaged"}`
-- rung: declare it in capabilities.toml, or leave as machine-specific
 
 ### [31] b4.mcp.codex/openaideveloperdocs
 - rule B4 · codex/user · state-divergence · confidence low · id `8d305adb9806` fp `45750e7f`

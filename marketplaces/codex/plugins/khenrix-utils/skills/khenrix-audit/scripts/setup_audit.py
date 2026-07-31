@@ -133,21 +133,32 @@ WALKERS: list = []  # populated by walker tasks
 # --- walkers: claude ------------------------------------------------------
 _FM_NAME = re.compile(r"^name:\s*(.+)$", re.M)
 _FM_DESC = re.compile(r"^description:\s*(?:>-|>|\|)?\s*\n?((?:.|\n)*?)(?=\n[a-z][a-z-]*:|\Z)", re.M)
+_FM_VENDORED = re.compile(r"^vendored_from:\s*(.+)$", re.M)
 
 
 def read_frontmatter(p: Path) -> dict:
+    # Total function: every caller does fm["name"] unconditionally, so both
+    # early-return paths (unreadable file, no frontmatter block) must still
+    # supply a usable dict — an empty {} here raises KeyError deep in a
+    # walker's try/except Exception, which swallows it into a discovery error
+    # and silently blanks the whole CLI's inventory while phases report "complete".
+    no_frontmatter = {"name": p.parent.name, "description": "", "body_lines": 0}
     try:
         t = p.read_text(errors="replace")
     except OSError:
-        return {}
+        return no_frontmatter
     if not t.startswith("---"):
-        return {}
+        return no_frontmatter
     head = t[3:t.find("\n---", 3)]
     name = _FM_NAME.search(head)
     desc = _FM_DESC.search(head)
-    return {"name": name.group(1).strip() if name else p.parent.name,
-            "description": re.sub(r"\s+", " ", desc.group(1)).strip() if desc else "",
-            "body_lines": t.count("\n")}
+    vendored = _FM_VENDORED.search(head)
+    out = {"name": name.group(1).strip() if name else p.parent.name,
+           "description": re.sub(r"\s+", " ", desc.group(1)).strip() if desc else "",
+           "body_lines": t.count("\n")}
+    if vendored:
+        out["vendored_from"] = vendored.group(1).strip()
+    return out
 
 
 def _endpoint_hash(entry: dict) -> str:
@@ -161,6 +172,9 @@ def _mcp_item(cli: str, scope: str, name: str, entry: dict, path: str) -> dict:
                 endpoint_hash=_endpoint_hash(entry),
                 transport=entry.get("type", "stdio" if entry.get("command") else "http"),
                 env_keys=sorted((entry.get("env") or {}).keys()),
+                # vhash-only (never the raw value) so two configs can be compared
+                # for equality without either leaking — same contract as env_keys.
+                env=redact_map(entry.get("env") or {}),
                 argv=redact_argv([entry.get("command", "")] + list(entry.get("args", []))))
 
 
@@ -573,7 +587,11 @@ def check_b4_drift(inv, ctx) -> list:
                                    {"direction": "managed-absent-but-live",
                                     "reason": pol.get("reason", "")},
                                    ["remove from live config (confirmed, restore bundle first)"]))
-            else:
+            elif not name.startswith("plugin:"):
+                # A plugin-bundled MCP server ("plugin:<plugin>:<server>") is
+                # structurally undeclarable in capabilities.toml, which only
+                # names top-level servers — flagging it "unmanaged" would be a
+                # permanent false positive, not a drift to fix.
                 out.append(finding("B4", 1, cli, "user", "mcp", [f"{cli}/{name}"],
                                    "state-divergence", "low", "drift",
                                    {"direction": "unmanaged"},
@@ -586,7 +604,10 @@ def check_b5_cross_cli(inv, ctx) -> list:
     out = []
     decl = load_declared(ctx.get("repo_root"))
     if not decl:
-        return []
+        return [finding("B5", 1, "all", "repo", "check-error", ["capabilities.toml"],
+                        "state-divergence", "low", "drift",
+                        {"error": "no canonical repo root"}, [],
+                        note="NOT EVALUATED — pass --repo-root", not_evaluated=True)]
     platform = ctx.get("platform", _PLATFORM)
     present_clis = [c for c in CLIS if any(i["cli"] == c for i in inv["items"])]
     for name in sorted(decl["mcp"]):
@@ -916,8 +937,25 @@ def write_findings(findings, inv, path, ctx) -> dict:
 
 
 # --- report ---------------------------------------------------------------
+def derive_status(doc: dict) -> str:
+    """Overall run status — a single word phases/counts can't lie about. `fatal`
+    beats `incomplete` beats `complete-with-findings` beats `complete`: a run
+    that discovered nothing AND errored is worse than one that merely errored."""
+    items = doc["counts"]["items"]
+    errors = doc["counts"]["errors"]
+    findings = doc["findings"]
+    if items == 0 and errors > 0:
+        return "fatal"
+    if errors > 0 or any(f["rule"] == "ENGINE" for f in findings):
+        return "incomplete"
+    if any(not f.get("informational") for f in findings):
+        return "complete-with-findings"
+    return "complete"
+
+
 def render_report(doc: dict, phases: dict) -> str:
     L = [f"# Setup audit — {doc['generated']}", "",
+         f"Status: {derive_status(doc)}", "",
          f"Inventory {doc['counts']['items']} items (hash {doc['inventory_hash']}), "
          f"{doc['counts']['findings']} finding(s), {doc['counts']['errors']} discovery error(s).",
          f"{doc.get('local_waivers', 0)} local waiver(s) active.", "", "## Phase coverage", ""]
@@ -935,9 +973,6 @@ def render_report(doc: dict, phases: dict) -> str:
         # the code span early and corrupt the rest of the line — swap it for a
         # single quote before embedding, since evidence is diagnostic text, not
         # something a reader needs byte-exact.
-        # Short scalars first, long prose last, THEN truncate — canonical_json's
-        # alphabetical key order let a long "note" push actionable scalars (e.g.
-        # B7's over_by_pct/total_always_on) past the [:400] cut.
         # Short scalars first, long prose last, THEN truncate — canonical_json's
         # alphabetical key order let a long "note" push actionable scalars (e.g.
         # B7's over_by_pct/total_always_on) past the [:400] cut.
@@ -1037,6 +1072,11 @@ def apply_ledger(findings, ctx):
 def ledger_write(path: Path, doc: dict) -> None:
     """Atomic, lock-guarded: the engine is the ONLY ledger writer across all CLIs."""
     import os
+    text = json.dumps(doc, indent=1, sort_keys=True)
+    leaked = scan_artifact_text(text)
+    if leaked:
+        sys.exit(f"REFUSING to write {path}: secret-shaped strings survived "
+                 f"sanitization: {leaked}")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_suffix(".lock")
     if lock.exists():
@@ -1044,7 +1084,7 @@ def ledger_write(path: Path, doc: dict) -> None:
     lock.write_text(str(os.getpid()))
     try:
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(doc, indent=1, sort_keys=True))
+        tmp.write_text(text)
         os.replace(tmp, path)
     finally:
         lock.unlink(missing_ok=True)
@@ -1101,8 +1141,12 @@ def cmd_findings(args) -> int:
     doc = write_findings(fnd, inv, args.out or "findings.json", ctx)
     print(f"{len(fnd)} finding(s) → {args.out or 'findings.json'}")
     if args.report_dir:
+        n_crashed = sum(1 for f in doc["findings"] if f["rule"] == "ENGINE")
         write_report(doc, phases={
-            "inventory": "complete", "checks": "complete",
+            "inventory": (f"incomplete — {len(inv['errors'])} discovery error(s)"
+                          if inv["errors"] else "complete"),
+            "checks": (f"incomplete — {n_crashed} check(s) crashed"
+                      if n_crashed else "complete"),
             "probes": "engine does not run probes — SKILL.md Phase D",
             "ecosystem": "engine does not run discovery — SKILL.md Phase E"},
             report_dir=Path(args.report_dir), machine=args.machine)
@@ -1117,6 +1161,10 @@ def cmd_inventory(args) -> int:
     repo = Path(args.repo_root) if args.repo_root else None
     inv = build_inventory(home, repo, Path(args.git_root) if args.git_root else None)
     out = json.dumps(inv, indent=1, sort_keys=True)
+    leaked = scan_artifact_text(out)
+    if leaked:
+        sys.exit(f"REFUSING to emit inventory: secret-shaped strings survived "
+                 f"sanitization: {leaked}")
     if args.out:
         Path(args.out).write_text(out)
     else:

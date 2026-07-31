@@ -70,6 +70,39 @@ def test_scan_artifact_text_fails_closed_on_fake_token():
     assert sa.scan_artifact_text("plain text, no secrets") == []
 
 
+# --- FIX 1: read_frontmatter must be total (never {}) ----------------------
+# Every caller does fm["name"] unconditionally; an empty {} on either
+# early-return path raises KeyError inside a walker's try/except, which
+# silently blanks that CLI's whole inventory while phases still say "complete".
+def test_read_frontmatter_returns_total_dict_on_missing_frontmatter(tmp_path):
+    p = tmp_path / "noskill" / "SKILL.md"
+    p.parent.mkdir(parents=True)
+    p.write_text("just plain text, no frontmatter block at all\n")
+    assert sa.read_frontmatter(p) == {"name": "noskill", "description": "", "body_lines": 0}
+
+
+def test_read_frontmatter_returns_total_dict_on_oserror(tmp_path):
+    p = tmp_path / "gone" / "SKILL.md"
+    p.parent.mkdir(parents=True)  # parent exists, file does not -> OSError on read_text
+    assert sa.read_frontmatter(p) == {"name": "gone", "description": "", "body_lines": 0}
+
+
+# --- FIX 4: read_frontmatter extracts vendored_from -------------------------
+def test_read_frontmatter_extracts_vendored_from(tmp_path):
+    p = tmp_path / "skills" / "vendored-skill" / "SKILL.md"
+    p.parent.mkdir(parents=True)
+    p.write_text("---\nname: vendored-skill\ndescription: d\nvendored_from: plug\n---\nbody\n")
+    fm = sa.read_frontmatter(p)
+    assert fm["vendored_from"] == "plug"
+
+
+def test_read_frontmatter_omits_vendored_from_when_absent(tmp_path):
+    p = tmp_path / "skills" / "plain" / "SKILL.md"
+    p.parent.mkdir(parents=True)
+    p.write_text("---\nname: plain\ndescription: d\n---\nbody\n")
+    assert "vendored_from" not in sa.read_frontmatter(p)
+
+
 def make_claude_home(tmp_path):
     h = tmp_path / "home"
     cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
@@ -114,12 +147,54 @@ def test_walk_claude_redacts_mcp_env(tmp_path):
     mcp = next(i for i in json.loads(blob) if i["kind"] == "mcp")
     assert mcp["meta"]["env_keys"] == ["CTX_TOKEN"]
     assert "endpoint_hash" in mcp["meta"]
+    # FIX 7: env values carry a vhash for equality comparison, never the raw
+    # value — same contract as env_keys, just value-hashed instead of key-only.
+    assert mcp["meta"]["env"]["CTX_TOKEN"]["redacted"] is True
+    assert mcp["meta"]["env"]["CTX_TOKEN"]["vhash"] == sa.vhash("ghp_" + "c" * 36)
+    assert "ghp_" not in json.dumps(mcp["meta"]["env"])
 
 
 def test_walk_claude_skill_carries_description(tmp_path):
     h = make_claude_home(tmp_path)
     skill = next(i for i in sa.walk_claude(h, None, None) if i["kind"] == "skill")
     assert "Does alpha things" in skill["meta"]["description"]
+
+
+def test_build_inventory_survives_frontmatterless_skill_end_to_end(tmp_path):
+    """FIX 1 end-to-end: before read_frontmatter was made total, this SKILL.md
+    crashed the claude walker with a KeyError on fm['name'], caught by
+    build_inventory's per-walker try/except and recorded as a discovery error —
+    blanking the ENTIRE claude inventory (plugin, mcp, everything), not just
+    the one bad skill. Bug-injection: reverting read_frontmatter's early
+    returns to `return {}` makes this test fail with a KeyError-bearing error
+    string and an empty item list."""
+    h = make_claude_home(tmp_path)
+    plain = h / ".claude/skills/plain"
+    plain.mkdir(parents=True)
+    (plain / "SKILL.md").write_text("no frontmatter here, just prose\n")
+    inv = sa.build_inventory(h, None, None)
+    assert inv["errors"] == []
+    assert not any("KeyError" in e for e in inv["errors"])
+    names = {i["name"] for i in inv["items"]}
+    assert "plain" in names  # frontmatter-less skill surfaces under its dirname
+    # the rest of the claude tree must still be inventoried, not blanked
+    assert "plug:alpha" in names
+    assert any(i["kind"] == "mcp" for i in inv["items"])
+    assert any(i["kind"] == "plugin" for i in inv["items"])
+
+
+def test_walk_claude_skill_carries_vendored_from_and_feeds_b16(tmp_path):
+    h = make_claude_home(tmp_path)
+    cache = h / ".claude/plugins/cache/mkt/plug/1.0.0"
+    (cache / "skills/alpha/SKILL.md").write_text(
+        "---\nname: alpha\ndescription: >-\n  Does alpha things. "
+        'Triggers: "run alpha".\nvendored_from: plug\n---\nbody\n')
+    items = sa.walk_claude(h, None, None)
+    skill = next(i for i in items if i["kind"] == "skill" and i["name"] == "plug:alpha")
+    assert skill["meta"]["vendored_from"] == "plug"
+    inv = {"schema_version": 1, "items": items, "errors": []}
+    hits = sa.check_b16_vendored_source_enabled(inv, {})
+    assert hits and hits[0]["evidence"]["vendored_from"] == "plug"
 
 
 # --- Gap 1: plugin-provided MCP servers ------------------------------------
@@ -201,6 +276,27 @@ def test_walk_claude_settings_local_wins_enabled_plugins_per_key(tmp_path):
     items = sa.walk_claude(h, None, None)
     plugin_items = [i for i in items if i["kind"] == "plugin" and i["name"] == "plug"]
     assert plugin_items[0]["effective_state"] == "disabled"
+
+
+# --- FIX 2: cmd_inventory secret-scans before writing (same as write_findings) ---
+def test_cmd_inventory_refuses_when_permission_rule_smuggles_token(tmp_path):
+    # permission-rule items embed the raw rule string unredacted (item(...,
+    # str(rule), ...)) — a real vector for a token-shaped rule name to survive
+    # all the way to the inventory artifact if the writer isn't scanned.
+    h = make_claude_home(tmp_path)
+    (h / ".claude/settings.json").write_text(json.dumps({
+        "permissions": {"allow": ["Bash(curl ghp_" + "f" * 36 + ")"]}}))
+    out = tmp_path / "inv.json"
+    with pytest.raises(SystemExit):
+        sa.main(["inventory", "--home-root", str(h), "--out", str(out)])
+    assert not out.exists()
+
+
+def test_cmd_inventory_clean_home_writes_normally(tmp_path):
+    h = make_claude_home(tmp_path)
+    out = tmp_path / "inv.json"
+    rc = sa.main(["inventory", "--home-root", str(h), "--out", str(out)])
+    assert rc == 0 and out.exists()
 
 
 def make_codex_home(tmp_path):
@@ -565,6 +661,33 @@ def test_b4_live_unknown_is_info_only(tmp_path):
     assert um and um[0]["confidence"] == "low" and um[0]["evidence"]["direction"] == "unmanaged"
 
 
+# FIX 7: a plugin-bundled MCP server (name "plugin:<plugin>:<server>") can
+# never be declared in capabilities.toml (which only names top-level
+# servers) — flagging it "unmanaged" would be a permanent false positive on
+# every run, not an actionable drift.
+def test_b4_unmanaged_skips_plugin_prefixed_server_names(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("claude", "user", "mcp", "plugin:pw:pw", "/c", "loaded",
+                           endpoint_hash="e3")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}})
+    assert not any("plugin:pw:pw" in h["subjects"][0] for h in hits)
+
+
+def test_b4_managed_absent_still_fires_for_plugin_prefixed_name(tmp_path):
+    # the plugin: skip is scoped to the "unmanaged" direction only — an
+    # explicit ledger policy is a human decision, not a structural mismatch,
+    # so it must still be honored even for a plugin-bundled server name.
+    repo = _repo_with_caps(tmp_path, CAPS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("claude", "user", "mcp", "plugin:pw:pw", "/c", "loaded",
+                           endpoint_hash="e3")])
+    pol = {"mcp:plugin:pw:pw": {"desired_state": "managed-absent", "reason": "retired"}}
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": pol})
+    gone = [h for h in hits if "plugin:pw:pw" in h["subjects"][0]]
+    assert gone and gone[0]["evidence"]["direction"] == "managed-absent-but-live"
+
+
 def test_b5_cross_cli_missing_server(tmp_path):
     repo = _repo_with_caps(tmp_path, CAPS)
     inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e"),
@@ -579,6 +702,16 @@ def test_b5_ignores_cli_absent_from_machine(tmp_path):
     inv = _mk_inv([sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e")])
     hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}})
     assert not any(h["cli"] == "agy" for h in hits), "absent CLI must not be flagged"
+
+
+# FIX 5: no repo root must be a not_evaluated finding, mirroring B4 — a silent
+# [] here would look identical to "checked, found nothing", which is a false
+# clean pass no --check gate would ever catch.
+def test_b5_no_repo_root_is_not_evaluated_not_silent_empty():
+    hits = sa.check_b5_cross_cli(_mk_inv([]), {"repo_root": None, "policies": {}})
+    assert len(hits) == 1
+    assert hits[0]["rule"] == "B5" and hits[0]["informational"] is True
+    assert "NOT EVALUATED" in hits[0]["note"]
 
 
 # --- Gap 2: platform gates on declared servers ------------------------------
@@ -786,6 +919,24 @@ def test_b15_flags_same_skill_two_paths():
     assert len(sa.check_b15_dual_path(inv, {})) == 1
 
 
+def test_b16_flags_vendored_skill_with_source_still_enabled():
+    inv = _mk_inv([
+        sa.item("claude", "user", "plugin", "plug", "/p", "loaded", version="1.0"),
+        sa.item("claude", "user", "skill", "vendored:copy", "/s", "loaded",
+                description="d", vendored_from="plug")])
+    hits = sa.check_b16_vendored_source_enabled(inv, {})
+    assert len(hits) == 1 and hits[0]["evidence"]["vendored_from"] == "plug"
+
+
+def test_b16_ignores_when_source_plugin_disabled():
+    inv = _mk_inv([
+        sa.item("claude", "user", "plugin", "plug", "/p", "loaded",
+                effective_state="disabled", version="1.0"),
+        sa.item("claude", "user", "skill", "vendored:copy", "/s", "loaded",
+                description="d", vendored_from="plug")])
+    assert sa.check_b16_vendored_source_enabled(inv, {}) == []
+
+
 # --- ledger: sole writer, fingerprint waivers, suppression ----------------
 def _ledger_ctx(tmp_path, entries=None, policies=None):
     repo = tmp_path / "ku"
@@ -874,6 +1025,19 @@ def test_ledger_add_is_atomic_and_loadable(tmp_path):
     assert led["entries"]["abc123def456"]["reason"] == "test"
 
 
+# --- FIX 2: ledger_write secret-scans before writing (same gate as write_findings) ---
+def test_ledger_add_refuses_token_shaped_reason(tmp_path):
+    ctx = _ledger_ctx(tmp_path)
+    with pytest.raises(SystemExit):
+        sa.main(["ledger-add", "--home-root", str(ctx["home"]),
+                  "--repo-root", str(ctx["repo_root"]), "--id", "abc123def456",
+                  "--state", "waived", "--reason", "leaked ghp_" + "a" * 36,
+                  "--fingerprint", "ff00ff00", "--until", "2026-12-31T00:00:00Z"])
+    led = json.loads((ctx["repo_root"] / "docs/setup-audit/ledger.json").read_text())
+    assert "abc123def456" not in led.get("entries", {}), \
+        "refusal must fail closed — no partial write of the smuggled reason"
+
+
 def test_policies_flow_from_ledger(tmp_path):
     ctx = _ledger_ctx(tmp_path, policies={
         "mcp:gdrive": {"desired_state": "managed-absent", "reason": "native connector"}})
@@ -932,6 +1096,132 @@ def test_cmd_findings_end_to_end_suppresses_waived_finding_into_waived_list(tmp_
     assert doc["local_waivers"] == 0
 
 
+# --- FIX 3: derive_status — a single honest word the phases dict can't fake ---
+def _status_doc(**kw):
+    base = {"generated": "2026-07-30T00:00:00Z",
+            "counts": {"items": 3, "findings": 0, "errors": 0}, "findings": []}
+    base.update(kw)
+    return base
+
+
+def test_derive_status_incomplete_on_discovery_errors():
+    doc = _status_doc(counts={"items": 3, "findings": 0, "errors": 2})
+    assert sa.derive_status(doc) == "incomplete"
+
+
+def test_derive_status_incomplete_on_engine_finding():
+    f = sa.finding("ENGINE", 1, "all", "engine", "check-error", ["x"],
+                   "silent-capability-loss", "high", "correctness", {}, [])
+    doc = _status_doc(counts={"items": 3, "findings": 1, "errors": 0}, findings=[f])
+    assert sa.derive_status(doc) == "incomplete"
+
+
+def test_derive_status_complete_with_findings():
+    f = sa.finding("B9", 1, "claude", "user", "plugin", ["p"],
+                   "hygiene", "low", "correctness", {}, [])
+    doc = _status_doc(counts={"items": 3, "findings": 1, "errors": 0}, findings=[f])
+    assert sa.derive_status(doc) == "complete-with-findings"
+
+
+def test_derive_status_complete_when_clean():
+    assert sa.derive_status(_status_doc()) == "complete"
+
+
+def test_derive_status_fatal_when_no_items_and_errors():
+    doc = _status_doc(counts={"items": 0, "findings": 0, "errors": 1})
+    assert sa.derive_status(doc) == "fatal"
+
+
+def test_derive_status_informational_only_findings_stay_complete():
+    # unverified-semantics finding (codex/agy) is informational — it must not
+    # by itself demote "complete" to "complete-with-findings".
+    f = sa.finding("B1", 1, "codex", "user", "skill", ["x"],
+                   "wrong-tool-fires", "high", "correctness", {}, [])
+    doc = _status_doc(counts={"items": 3, "findings": 1, "errors": 0}, findings=[f])
+    assert sa.derive_status(doc) == "complete"
+
+
+def test_cmd_findings_report_derives_honest_phase_coverage_and_status(tmp_path):
+    """FIX 3 end-to-end: before this fix, cmd_findings hardcoded inventory/checks
+    'complete' regardless of what actually happened. Force a walker crash and a
+    check crash and confirm the written report says so — including the top-level
+    Status line."""
+    def bad_walker(home, repo, git_root):
+        raise RuntimeError("walker boom")
+
+    def bad_check(inv, ctx):
+        raise RuntimeError("check boom")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "findings.json"
+    report_dir = tmp_path / "reports"
+    saved_walkers, saved_checks = sa.WALKERS[:], sa.CHECKS[:]
+    sa.WALKERS[:] = [bad_walker]
+    sa.CHECKS[:] = [bad_check]
+    try:
+        rc = sa.main(["findings", "--home-root", str(home), "--now", "2026-07-30T00:00:00Z",
+                      "--out", str(out), "--report-dir", str(report_dir)])
+    finally:
+        sa.WALKERS[:] = saved_walkers
+        sa.CHECKS[:] = saved_checks
+    assert rc == 0
+    latest = (report_dir / "latest.md").read_text()
+    assert "- inventory: incomplete — 1 discovery error(s)" in latest
+    assert "- checks: incomplete — 1 check(s) crashed" in latest
+    # the sole walker crashed, so items==0 AND errors>0 — that's the `fatal`
+    # tier (worse than plain `incomplete`), not just a partial run.
+    assert "Status: fatal" in latest
+
+
+def test_cmd_findings_report_partial_walker_crash_is_incomplete_not_fatal(tmp_path):
+    """Same as above but with a real walker alongside the crashing one, so
+    items > 0 — distinguishes plain `incomplete` from `fatal` (items == 0)."""
+    def good_walker(home, repo, git_root):
+        return [sa.item("claude", "user", "plugin", "p1", "/x", "loaded", version="1.0")]
+
+    def bad_walker(home, repo, git_root):
+        raise RuntimeError("walker boom")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "findings.json"
+    report_dir = tmp_path / "reports"
+    saved_walkers, saved_checks = sa.WALKERS[:], sa.CHECKS[:]
+    sa.WALKERS[:] = [good_walker, bad_walker]
+    sa.CHECKS[:] = []
+    try:
+        rc = sa.main(["findings", "--home-root", str(home), "--now", "2026-07-30T00:00:00Z",
+                      "--out", str(out), "--report-dir", str(report_dir)])
+    finally:
+        sa.WALKERS[:] = saved_walkers
+        sa.CHECKS[:] = saved_checks
+    assert rc == 0
+    latest = (report_dir / "latest.md").read_text()
+    assert "- inventory: incomplete — 1 discovery error(s)" in latest
+    assert "- checks: complete" in latest
+    assert "Status: incomplete" in latest and "Status: fatal" not in latest
+
+
+def test_cmd_findings_report_clean_run_is_complete_status(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    out = tmp_path / "findings.json"
+    report_dir = tmp_path / "reports"
+    saved_checks = sa.CHECKS[:]
+    sa.CHECKS[:] = []
+    try:
+        rc = sa.main(["findings", "--home-root", str(home), "--now", "2026-07-30T00:00:00Z",
+                      "--out", str(out), "--report-dir", str(report_dir)])
+    finally:
+        sa.CHECKS[:] = saved_checks
+    assert rc == 0
+    latest = (report_dir / "latest.md").read_text()
+    assert "- inventory: complete" in latest
+    assert "- checks: complete" in latest
+    assert "Status: complete" in latest
+
+
 # --- report renderer + --check mode ----------------------------------------
 def test_render_report_contains_skeleton_and_skips(tmp_path):
     f = _wf()
@@ -943,6 +1233,7 @@ def test_render_report_contains_skeleton_and_skips(tmp_path):
     assert "probes: skipped — claude not on PATH" in md
     assert "2 local waiver(s) active" in md
     assert f["slug"] in md
+    assert "Status: complete-with-findings" in md
 
 
 def test_render_report_evidence_backtick_is_sanitized():

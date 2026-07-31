@@ -1,13 +1,17 @@
 {
   "skill": "khenrix-audit",
-  "source_hash": "7b3ee91046b4144600aeb71a6fa2cfe57ab50b26b931583e436cbfcc0b9a7ab4",
+  "source_hash": "657fc038d78252c0be68ed12f31aa258816dc5a9ce9e55cc054873e9ce778d51",
   "eval_set_hash": "1771c304a53918a3dd1625abbe3e08cf01ea81d0862df028d972df0652e2c850",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.0,
+  "blind_winner": "without_skill",
+  "provenance": "eval",
+  "models": {
+    "claude": "claude-opus-5",
+    "judge": "claude-opus-5"
+  }
 }
