@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
@@ -17,8 +19,14 @@ def _mk_baseline(repo, run, selected=()):
 
 
 def _git(repo, *a):
-    return subprocess.run(["git", "-C", str(repo), *a],
-                          capture_output=True, text=True).stdout.strip()
+    """stdout of a git command that MUST succeed.
+
+    The return code is checked rather than discarded: a failing `git remote` also prints
+    nothing, so a swallowed error would read as "no remotes" and pass vacuously.
+    """
+    r = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+    assert r.returncode == 0, f"git {' '.join(a)} failed: {r.stderr.strip()}"
+    return r.stdout.strip()
 
 
 def test_clone_checks_out_the_dirty_baseline_not_head(tmp_path):
@@ -51,6 +59,60 @@ def test_clone_is_not_hardlinked_to_the_source_objects(tmp_path):
     assert not (src & dst), "clone shares object inodes with the source"
 
 
+def test_clone_transfers_no_object_unreachable_from_the_baseline_ref(tmp_path):
+    """--no-local does work of its own, which the inode test cannot see.
+
+    The local transport copies the WHOLE object store; --no-hardlinks only stops it being
+    copied by LINK. So without --no-local a seat also receives every object the baseline
+    ref does not reach — other branches, stashes, dangling history — none of which the
+    pre-launch secret screen ever looked at, since it screens the baseline.
+    """
+    repo = make_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "unrelated")
+    write(repo, "secret.txt", "token-on-a-branch-the-baseline-never-reaches\n")
+    _git(repo, "add", "secret.txt")
+    _git(repo, "commit", "-qm", "secret")
+    planted = _git(repo, "rev-parse", "HEAD:secret.txt")
+    _git(repo, "checkout", "-q", "main")
+
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    seat = fleet.clone_seat(repo, b, tmp_path / "seat1")
+
+    present = subprocess.run(["git", "-C", str(seat), "cat-file", "-e", planted],
+                             capture_output=True)
+    assert present.returncode != 0, "an object unreachable from B1 was transferred"
+
+    reachable = {ln.split()[0] for ln in
+                 _git(seat, "rev-list", "--objects", b.commit).splitlines() if ln}
+    stored = set(_git(seat, "cat-file", "--batch-all-objects",
+                      "--batch-check=%(objectname)").split())
+    assert stored, "nothing was compared"
+    assert stored <= reachable, f"seat holds {len(stored - reachable)} unreachable object(s)"
+
+
+def test_clone_refuses_a_seat_whose_remote_survives(tmp_path, monkeypatch):
+    """The postcondition is what closes the push vector, not `remote remove`'s exit code.
+
+    Also pins the failure-path cleanup: a refused seat must not leave its template dir
+    behind for the next seat at that path to inherit.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    real = fleet.gitcmd.git
+
+    def remove_is_a_no_op(target, *a, **kw):
+        if a[:2] == ("remote", "remove"):
+            return subprocess.CompletedProcess(a, 0, "", "")
+        return real(target, *a, **kw)
+
+    monkeypatch.setattr(fleet.gitcmd, "git", remove_is_a_no_op)
+    dest = tmp_path / "seat1"
+    with pytest.raises(fleet.FleetError, match="push target"):
+        fleet.clone_seat(repo, _mk_baseline(repo, run), dest)
+    assert not (dest.parent / f".{dest.name}.tmpl").exists(), "template dir leaked"
+
+
 def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
     """No ambient template dir installs hooks into a seat.
 
@@ -77,8 +139,12 @@ def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
     assert not ran.exists(), "a template hook executed inside the seat"
 
 
-def test_scrub_env_removes_only_values_pointing_at_the_repo(tmp_path):
+def test_scrub_env_removes_only_values_pointing_at_the_repo(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
+    # Run FROM the repo: that is what makes `EDITOR=vim` discriminating. Resolving a value
+    # with os.path.realpath expands a relative string against the CWD, so from inside the
+    # checkout every non-path scalar would classify as repo-internal and be deleted.
+    monkeypatch.chdir(repo)
     env = {"VIRTUAL_ENV": f"{repo}/.venv", "PYTHONPATH": f"{repo}/src",
            "PATH": "/usr/bin:/home/u/.local/share/mise/shims", "HOME": "/home/u",
            "EDITOR": "vim"}
@@ -88,11 +154,46 @@ def test_scrub_env_removes_only_values_pointing_at_the_repo(tmp_path):
     assert out["HOME"] == "/home/u" and out["EDITOR"] == "vim"
 
 
+def test_scrub_env_keeps_the_path_entries_that_are_outside_the_repo(tmp_path):
+    """One repo-internal entry must not cost the whole variable.
+
+    On this machine PATH really does contain a repo-internal directory — a plugin `bin`
+    installed by plugin loading — with no venv involved, so dropping PATH wholesale is
+    today's behaviour on forge's own repository, not a hypothetical.
+    """
+    repo = make_repo(tmp_path)
+    out = fleet.scrub_env({"PATH": f"{repo}/.venv/bin{os.pathsep}/usr/bin"}, repo)
+    assert out["PATH"] == "/usr/bin"
+
+
+def test_scrub_env_does_not_treat_a_sibling_prefix_as_inside_the_repo(tmp_path):
+    """`<root>-scratch` starts with `<root>` but is not inside it."""
+    repo = tmp_path / "khenrix-utils"
+    repo.mkdir()
+    sibling = f"{repo}-scratch/bin"
+    out = fleet.scrub_env({"TOOLS": sibling, "PATH": f"{sibling}{os.pathsep}/usr/bin"}, repo)
+    assert out["TOOLS"] == sibling
+    assert out["PATH"] == f"{sibling}{os.pathsep}/usr/bin"
+
+
 def test_forge_depth_guard_increments(tmp_path):
     repo = make_repo(tmp_path)
     e1 = fleet.forge_child_env(repo, {"PATH": "/usr/bin"})
     assert e1["LLM_FORGE_DEPTH"] == "1"
     assert fleet.forge_child_env(repo, e1)["LLM_FORGE_DEPTH"] == "2"
+
+
+def test_forge_child_env_scrubs_the_process_environment_by_default(tmp_path, monkeypatch):
+    """`env=None` is the path a seat actually gets, and the one where a repo-internal PATH
+    entry shows up in practice — so it is the path that must not lose the toolchain."""
+    repo = make_repo(tmp_path)
+    monkeypatch.setenv("PATH", f"{repo}/.venv/bin{os.pathsep}/usr/bin")
+    monkeypatch.setenv("VIRTUAL_ENV", f"{repo}/.venv")
+    monkeypatch.delenv("LLM_FORGE_DEPTH", raising=False)
+    out = fleet.forge_child_env(repo)
+    assert out["PATH"] == "/usr/bin", "a seat must still have a usable toolchain"
+    assert "VIRTUAL_ENV" not in out
+    assert out["LLM_FORGE_DEPTH"] == "1"
 
 
 def test_seats_are_independent_of_each_other(tmp_path):
