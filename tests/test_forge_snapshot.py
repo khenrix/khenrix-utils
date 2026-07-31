@@ -95,6 +95,26 @@ def test_symlinks_are_recorded_but_never_followed(tmp_path):
     assert not any(e.startswith("link/") for e in entries)
 
 
+def test_a_link_target_that_is_not_utf8_is_inventoried_rather_than_raising(tmp_path):
+    """`os.readlink` returns surrogates for a name that is not valid UTF-8, and a plain
+    `.encode()` raises UnicodeEncodeError on them.
+
+    This function runs on EVERY phase of `harvest.record`, so the raise would not cost one
+    entry — it would take the whole inventory of the seat down, in a class that is neither
+    `SnapshotError` nor `HarvestError`. `baseline._sha256_link` and `fleet._sha256_link`
+    carry the identical encode so the three digests stay comparable, which is what Plan D's
+    D-1 spends: the manifest and F0 must agree on a link.
+    """
+    import hashlib
+    d = tmp_path / "t"; d.mkdir()
+    os.symlink(b"caf\xe9.txt", d / "link")
+    entries, breaches = snapshot.take(d)
+    assert breaches == []
+    assert entries["link"].kind == "symlink"
+    assert entries["link"].digest == hashlib.sha256(b"caf\xe9.txt").hexdigest(), \
+        "the digest is over the raw bytes of the name, whatever encoding they are in"
+
+
 def test_git_is_skipped_by_default(tmp_path):
     repo = make_repo(tmp_path)
     entries, _ = snapshot.take(repo)

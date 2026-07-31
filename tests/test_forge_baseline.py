@@ -1,5 +1,6 @@
 """B is composite; construction never touches the user's index (spec §2)."""
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -378,6 +379,28 @@ def test_every_link_the_tree_carries_reaches_the_manifest(tmp_path):
     assert b.filesystem_manifest["dangling.txt"] == \
         hashlib.sha256(b"missing.txt").hexdigest()
     assert b.filesystem_manifest["sel.link"] == hashlib.sha256(b"seed.txt").hexdigest()
+
+
+def test_a_link_target_that_is_not_utf8_does_not_crash_the_baseline(tmp_path):
+    """A link target is a filesystem NAME, and `os.readlink` returns surrogates for one
+    that is not valid UTF-8 — on which a plain `.encode()` raises UnicodeEncodeError.
+
+    That crash arrived with the manifest's link support: while the `ls-files` loop guarded
+    on `is_file()` this function never met a link at all. It surfaced out of
+    `baseline.materialize` as neither `BaselineError` nor anything `harvest` enumerates,
+    which is the class of failure a caller cannot catch on purpose. All three digest
+    functions — here, `fleet` and `snapshot` — take surrogateescape, so they stay
+    comparable; for a valid-UTF-8 target the two encodings are byte-identical.
+    """
+    repo = make_repo(tmp_path)
+    os.symlink(b"caf\xe9.txt", repo / "link.txt")
+    _git(repo, "add", "link.txt")
+    _git(repo, "commit", "-qm", "latin-1 target")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo, run)
+    assert b.filesystem_manifest["link.txt"] == \
+        hashlib.sha256(b"caf\xe9.txt").hexdigest(), \
+        "the digest is over the raw bytes of the name, whatever encoding they are in"
 
 
 def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):

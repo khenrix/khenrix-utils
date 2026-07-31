@@ -312,9 +312,14 @@ def repo_facts(repo) -> RepoFacts:
         eol_mismatched_paths=_eol_mismatched_paths(repo),
         # Mode 120000 is a symlink however the entry was created, read from the same index
         # pass that answers the gitlink and skip-worktree questions. §2.3 lists escaping
-        # symlinks without restricting them to selected paths, and a TRACKED one reaches
-        # `materialize`, whose manifest hashes through the link — putting a digest of
-        # content from OUTSIDE the repository into the baseline it claims to describe.
+        # symlinks without restricting them to selected paths, and a TRACKED one ships to
+        # every seat as a working path OUT of the repository — the clone reproduces the
+        # link, and a permission-bypassed agent reads and writes straight through it.
+        #
+        # That was NOT the reason recorded here until Plan D. It said the manifest "hashes
+        # through the link", which `baseline._entry_digest` no longer does (D-1: a link is
+        # its target text everywhere). Left alone, the refusal would have been standing on
+        # a justification that had become an argument for deleting it.
         escaping_symlinks=[path for _, mode, path in entries if mode == "120000"
                            and _escaping_target(root, root / path) is not None],
         staged=staged, unstaged=unstaged, untracked=untracked)
@@ -354,8 +359,9 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
     if facts.escaping_symlinks:
         out.append(
             f"tracked symlink escapes the repository "
-            f"({len(facts.escaping_symlinks)}), e.g. {facts.escaping_symlinks[0]}: the "
-            "baseline manifest would hash content from outside the tree it describes")
+            f"({len(facts.escaping_symlinks)}), e.g. {facts.escaping_symlinks[0]}: every "
+            "seat would get a working path out of the repository, and the candidate could "
+            "not carry it back")
 
     root = facts.root
     for rel in selected_untracked:

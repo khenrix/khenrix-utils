@@ -66,8 +66,10 @@ def _sha256_file(p: Path) -> str:
 
 
 def _sha256_link(p: Path) -> str:
-    """Mirrors `baseline._sha256_link` and `snapshot._symlink_entry` for the same reason."""
-    return hashlib.sha256(os.readlink(p).encode()).hexdigest()
+    """Mirrors `baseline._sha256_link` and `snapshot._symlink_entry` for the same reason —
+    surrogateescape included, since a link target is a filesystem name and a strict encode
+    raises on a non-UTF-8 one."""
+    return hashlib.sha256(os.readlink(p).encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat:

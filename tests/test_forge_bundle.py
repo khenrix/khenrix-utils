@@ -236,6 +236,103 @@ def test_a_symlink_that_would_escape_the_verifier_is_omitted(tmp_path):
     assert (dest / "fine.txt").read_text() == "carried\n"
 
 
+def test_an_escaping_symlink_the_PATCH_carries_is_refused_too(tmp_path):
+    """The route the sidecar guard never saw: `git add` on a link puts it in the diff.
+
+    A seat is given a branch and an identity precisely so it can stage and commit, so a
+    mode-120000 entry in `tracked_patch` is an ordinary agent action, not an exotic one.
+    Measured before the guard, on this exact fixture: `omitted ()`, `sidecars []`, the
+    verifier carrying `esc -> ../outside`, and a write through it landing outside the clone
+    (`PWNED`). The test above creates only UNTRACKED links, so it exercises the sidecar
+    route exclusively and stayed green over this the whole time.
+
+    The co-changed tracked file is the other half: refusing the link must narrow the patch,
+    not discard the candidate.
+    """
+    repo, b, s = _seat(tmp_path)
+    outside = tmp_path / "outside"; outside.mkdir()
+
+    def work():
+        os.symlink(Path("..") / "outside", s.path / "esc")
+        write(s.path, "seed.txt", "real work\n")
+        git(s.path, "add", "esc", "seed.txt")
+    p = _phases(s.path, work)
+    a = harvest.artifact_set(p, s.path, b.commit)
+    assert "120000" in a.tracked_diff, \
+        "precondition: the link is in the PATCH channel, not the sidecar channel"
+
+    cb = bundle.build(s.path, a, b)
+    assert cb.omitted == ("esc",)
+    assert [e.path for e in cb.sidecars] == []
+    assert "120000" not in cb.tracked_patch.decode("utf-8", "surrogateescape"), \
+        "the refused link must leave the patch, not merely be named beside it"
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert not os.path.lexists(dest / "esc")
+    assert (dest / "seed.txt").read_text() == "real work\n", \
+        "and the rest of the candidate still crossed"
+    assert not (outside / "PWNED.txt").exists()
+
+
+def test_a_rename_preimage_that_still_has_content_crosses_as_a_sidecar(tmp_path):
+    """Move a file and leave a shim at the old name — an ordinary refactor.
+
+    The patch renames `seed.txt -> renamed.txt`, so the preimage appears only in the
+    REVERSED `--numstat` pass, and all the patch does with it is delete it. Unioning the two
+    passes calls that "carried": measured before the fix, `sidecars []`, `omitted ()`, and a
+    verifier with no `seed.txt` at all — the bundle silently missing an input while claiming
+    a clean `omitted`. That is fail-OPEN, and it falsifies `build`'s own stated invariant
+    that `omitted` is a superset of "the verifier will be missing something".
+
+    `test_a_rename_names_both_sides...` passes either way, because `git mv` leaves nothing
+    behind: the discriminating fixture is the one where the old name still has content.
+    """
+    repo, b, s = _seat(tmp_path)
+    f0 = harvest.record(s.path)
+    fsetup = harvest.record(s.path)
+    git(s.path, "mv", "seed.txt", "renamed.txt")
+    write(s.path, "seed.txt", "SHIM: moved to renamed.txt\n")
+    fwork = harvest.record(s.path)
+    a = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
+    assert "rename from" in a.tracked_diff, "precondition: git emitted a rename"
+
+    cb = bundle.build(s.path, a, b)
+    assert [e.path for e in cb.sidecars] == ["seed.txt"], \
+        "the shim is not carried by the patch, so it must be a sidecar"
+    assert cb.omitted == ()
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    # Sidecars are written AFTER the patch, so the rename's delete does not win.
+    assert (dest / "seed.txt").read_text() == "SHIM: moved to renamed.txt\n"
+    assert (dest / "renamed.txt").read_text() == "seed\n"
+
+
+def test_materialize_refuses_a_sidecar_symlink_pointing_out_of_the_tree(tmp_path):
+    """`_safe_rel` guards a sidecar's PATH on both sides; its TARGET was guarded on one.
+
+    Under the deserialize-from-a-ledger model those guards exist for, a link plus a file
+    underneath it writes outside the verifier just as effectively as an `..` in the path —
+    and neither entry below has an `..` in its path.
+    """
+    repo, b, s = _seat(tmp_path)
+    outside = tmp_path / "outside"; outside.mkdir()
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    evil = bundle.CandidateBundle(
+        version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+        sidecars=(bundle.SidecarEntry("esc", "symlink", 0, b"../outside"),
+                  bundle.SidecarEntry("esc/victim.txt", "file", 0o644, b"PWNED\n")))
+    with pytest.raises(bundle.BundleError, match="points out of the tree"):
+        bundle.materialize(evil, dest)
+    assert not (outside / "victim.txt").exists()
+    assert not os.path.lexists(dest / "esc")
+
+
 def test_a_patch_that_is_not_a_patch_is_refused_before_anything_is_written(tmp_path):
     """`_covered` reads the bundle's own bytes to say what the patch carries.
 

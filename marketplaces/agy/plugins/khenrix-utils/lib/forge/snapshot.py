@@ -70,8 +70,18 @@ def _digest(p: Path) -> str:
 
 
 def _symlink_entry(p: Path, rel: str) -> Entry:
-    """Digest the target text, not the target's contents — the link is the artefact."""
-    return Entry(rel, hashlib.sha256(os.readlink(p).encode()).hexdigest(), 0, 0, "symlink")
+    """Digest the target text, not the target's contents — the link is the artefact.
+
+    surrogateescape, matching `baseline._sha256_link`, `fleet._sha256_link` and the payload
+    `bundle` carries for a link: a link target is a filesystem NAME, not text, so a plain
+    `.encode()` raises UnicodeEncodeError on the surrogates `os.readlink` puts there for a
+    non-UTF-8 one. That is not a defensive nicety — it took `baseline.materialize` down
+    with a `UnicodeEncodeError` on an ordinary tracked link to `caf\\xe9.txt`, in a class
+    neither `BaselineError` nor anything `harvest` enumerates. For a valid-UTF-8 target the
+    two encodings are byte-identical, so no digest moves.
+    """
+    target = os.readlink(p).encode("utf-8", "surrogateescape")
+    return Entry(rel, hashlib.sha256(target).hexdigest(), 0, 0, "symlink")
 
 
 def _special_entry(st: os.stat_result, rel: str) -> Entry:

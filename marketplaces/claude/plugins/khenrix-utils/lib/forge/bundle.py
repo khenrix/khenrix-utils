@@ -86,22 +86,27 @@ class CandidateBundle:
     baseline_ref: str
     baseline_commit: str
     tracked_patch: bytes = b""
-    sidecars: tuple = ()
+    sidecars: tuple[SidecarEntry, ...] = ()
     # None, never (). `gate_delta`'s producer is the gate-surface detector, which does not
     # exist yet, and `Baseline.sidecars` is the precedent: an empty tuple says "the
     # candidate changed nothing that defines the gate" when the truth is "nobody looked",
     # which is the fail-OPEN reading. A consumer classifying `GATE_CHANGED` must treat None
     # as UNKNOWN — not as a clean gate.
-    gate_delta: tuple | None = None
+    gate_delta: tuple[str, ...] | None = None
     # "" means the run declared no GeneratorContract, which admits NOTHING as a permitted
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
     # default in a way `gate_delta=()` is not.
     generator_contract_id: str = ""
-    omitted: tuple = ()
+    omitted: tuple[str, ...] = ()
 
 
-def _covered(repo, patch: bytes) -> frozenset:
-    """Every path the patch touches, on BOTH sides, read out of the patch's own bytes.
+def _patch_paths(repo, patch: bytes) -> tuple[frozenset, frozenset]:
+    """`(postimages, preimages)` — the paths the patch WRITES and the ones it consumes.
+
+    KEPT APART, not unioned. They mean different things and only the postimage set is
+    "carried": a preimage that is not also a postimage is a rename source, and all the patch
+    does with it is DELETE it. See `build` for what happens when the seat still has content
+    at that name.
 
     `git apply --numstat -z` is the parse, not a hand-written one: a `diff --git` header
     quotes an unusual path with C escapes, so reading names off the header text means
@@ -109,17 +114,15 @@ def _covered(repo, patch: bytes) -> frozenset:
     reclassified as uncarried. Under `-z` git emits `<added> TAB <deleted> TAB <path> NUL`
     with the name raw.
 
-    Run TWICE, forward and reversed, because forward `--numstat` reports only the POSTIMAGE
-    of a rename. Measured on git 2.53, a `git mv old.txt new.txt` patch:
+    The reversed pass is what surfaces preimages at all. Measured on git 2.53, a
+    `git mv old.txt new.txt` patch:
 
         git apply --numstat -z      ->  `0\\t0\\tnew.txt\\0`
         git apply -R --numstat -z   ->  `0\\t0\\told.txt\\0`
 
-    Forward alone therefore loses `old.txt`, which IS in `artifacts.paths` (snapshot saw it
-    removed) and IS carried by the patch — so it would have been named in `omitted`, and
-    §6.2's `HARVEST_INCOMPLETE` would fire on a candidate with no harvesting gap at all.
-    `git diff` detects renames by default and `gitcmd` does not pin `diff.renames`, so this
-    is the ordinary case, not an exotic one.
+    Without it `old.txt` — which IS in `artifacts.paths` (snapshot saw it removed) and IS
+    deleted by the patch — is invisible here. `git diff` detects renames by default and
+    `gitcmd` does not pin `diff.renames`, so this is the ordinary case, not an exotic one.
 
     Derived from the patch BYTES rather than from a second `git diff` of the seat: this set
     must describe what `materialize` will actually apply, and a seat re-read would answer a
@@ -128,15 +131,15 @@ def _covered(repo, patch: bytes) -> frozenset:
     if not patch:
         # Not an optimisation. `git apply` exits 128 with "No valid patches in input" on an
         # empty one, and — more importantly — an empty patch carries nothing, so answering
-        # from the bytes keeps `_covered` and the apply in `materialize` in agreement by
+        # from the bytes keeps this and the apply in `materialize` in agreement by
         # construction rather than by two commands happening to concur.
-        return frozenset()
+        return frozenset(), frozenset()
     with tempfile.TemporaryDirectory() as td:
         # NOT inside the seat or the verifier: a patch file dropped in either tree is an
         # untracked file the next inventory would report as the agent's work.
         f = Path(td) / "candidate.patch"
         f.write_bytes(patch)
-        out = set()
+        sides = []
         for extra in ((), ("-R",)):
             r = gitcmd.git(repo, "apply", *extra, "--numstat", "-z", str(f),
                            env_extra=gitcmd.READONLY, check=False, binary=True)
@@ -145,12 +148,48 @@ def _covered(repo, patch: bytes) -> frozenset:
                     "cannot determine what the tracked patch carries: "
                     f"git apply --numstat -> {r.returncode}: "
                     f"{r.stderr.decode('utf-8', 'replace').strip()}")
-            for rec in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
-                if rec:
-                    # split(maxsplit=2): a path may itself contain a TAB, the two counts
-                    # never can.
-                    out.add(rec.split("\t", 2)[2])
-    return frozenset(out)
+            # split(maxsplit=2): a path may itself contain a TAB, the two counts never can.
+            sides.append(frozenset(rec.split("\t", 2)[2] for rec
+                                   in r.stdout.decode("utf-8", "surrogateescape").split("\0")
+                                   if rec))
+    return sides[0], sides[1]
+
+
+def _escaping_link(root: Path, rel: str) -> bool:
+    """True when `rel` is a symlink under `root` whose target leaves it."""
+    try:
+        st = (root / rel).lstat()
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) and _escapes(rel, os.readlink(root / rel))
+
+
+def _rediff(seat: Path, base_commit: str, paths) -> bytes:
+    """`git diff --binary <B> -- <paths>` again, over a NARROWED path set.
+
+    Called only when the harvested patch carries a link that must not cross (see `build`).
+    Excising one file from a unified diff by rewriting its bytes is not something to
+    hand-roll, and `git apply --exclude=` takes an fnmatch PATTERN — so a path containing
+    `[`, `*` or `?` would silently exclude its neighbours, which is the same class of bug
+    `harvest._literal` exists to prevent. Asking git for the diff it would have produced is
+    the one route with no parsing and no glob.
+
+    Deliberately mirrors `harvest.artifact_set`'s invocation, flag for flag, and the
+    reasons are all recorded there: `--binary` (a `-diff` file yields no content at exit
+    0), `:(literal)` (a pathspec is a glob with magic), `check=True` (git exits 0 for a
+    pathspec matching nothing, so nonzero is a real failure). Bytes are taken raw rather
+    than decoded and re-encoded — the round trip is exact, but not performing it cannot be
+    wrong.
+
+    The empty guard is load-bearing, not tidiness: `git diff <B> --` with NO pathspec diffs
+    the whole tree, so a candidate whose every path was banned would hand back the seat's
+    entire delta instead of nothing.
+    """
+    if not paths:
+        return b""
+    return gitcmd.git(seat, "diff", "--binary", base_commit, "--",
+                      *(f":(literal){p}" for p in paths),
+                      env_extra=gitcmd.READONLY, binary=True).stdout
 
 
 def _escapes(rel: str, target: str) -> bool:
@@ -213,7 +252,36 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
     # `.encode()` raises UnicodeEncodeError on the surrogates and errors="replace" would
     # produce a patch that no longer applies.
     patch = artifacts.tracked_diff.encode("utf-8", "surrogateescape")
-    covered = _covered(seat, patch)
+    post, pre = _patch_paths(seat, patch)
+
+    # An escaping link is refused on BOTH channels, or it is not refused. A seat is given a
+    # branch and an identity precisely so it can commit, so `ln -s ../outside esc` +
+    # `git add esc` puts a mode-120000 entry straight into the tracked patch — where the
+    # sidecar branch's `_escapes` test never looks. Measured before this guard: `omitted`
+    # empty, `sidecars` empty, the verifier carrying `esc -> ../outside`, and a write
+    # through it landing outside the clone. Testing only the channel that was already
+    # guarded is how the first version of this module passed its own containment test.
+    banned = [rel for rel in sorted(post | pre) if _escaping_link(seat, rel)]
+    if banned:
+        # The narrowed diff is asked of git rather than cut out of the bytes; see `_rediff`.
+        # The banned paths are NOT appended to `omitted` here — they are in
+        # `artifacts.paths`, so the loop below meets them with the patch no longer claiming
+        # them and routes them through the one `_escapes` test that names them.
+        patch = _rediff(seat, baseline.commit,
+                        [p for p in artifacts.paths if p not in set(banned)])
+        post, pre = _patch_paths(seat, patch)
+
+    covered = set(post)
+    for rel in pre - post:
+        # A preimage that is not also a postimage is a rename SOURCE, and all the patch does
+        # with it is delete it. That is the whole carriage only while the seat has nothing
+        # at that name. Move a file and leave a shim or a re-export behind — an ordinary
+        # refactor — and unioning the two sides instead says "carried" about a path the
+        # verifier ends up MISSING, with `omitted` empty: fail-open, and exactly the
+        # confusion between a harvesting gap and a candidate defect this field exists to
+        # prevent. `lexists`, so a dangling link at the name still counts as content.
+        if not os.path.lexists(seat / rel):
+            covered.add(rel)
 
     sidecars, omitted = [], []
     for rel in artifacts.paths:
@@ -263,7 +331,7 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
     )
 
 
-def materialize(bundle, dest) -> tuple:
+def materialize(bundle, dest) -> tuple[str, ...]:
     """Lay the candidate down in `dest`. Returns every path it touched.
 
     `dest` must be a clone sitting at the bundle's own baseline commit. That is checked
@@ -281,7 +349,13 @@ def materialize(bundle, dest) -> tuple:
         raise BundleError(
             f"bundle version {bundle.version} is not {VERSION}; refusing to materialize a "
             "shape this engine does not know — an unknown channel would be dropped silently")
-    head = gitcmd.git(dest, "rev-parse", "HEAD", env_extra=gitcmd.READONLY).stdout.strip()
+    # check=False: a `dest` that is not a repository, or has no HEAD, is a caller error this
+    # function must report in its own vocabulary. A raw GitError out of here is a class the
+    # §6.2 caller has no name for and would read as an engine crash.
+    r = gitcmd.git(dest, "rev-parse", "HEAD", env_extra=gitcmd.READONLY, check=False)
+    if r.returncode != 0:
+        raise BundleError(f"cannot read HEAD of {dest}: {r.stderr.strip()}")
+    head = r.stdout.strip()
     if head != bundle.baseline_commit:
         raise BundleError(
             f"{dest} is at {head[:12]}, but the bundle was built against baseline "
@@ -293,8 +367,20 @@ def materialize(bundle, dest) -> tuple:
         _safe_rel(e.path, "sidecar path")
         if e.kind not in ("file", "symlink"):
             raise BundleError(f"sidecar {e.path!r} has unknown kind {e.kind!r}")
+        # `_escapes` is re-applied here, not trusted from `build`, for the reason
+        # `_safe_rel` is: under the deserialize-from-a-ledger model that guard is written
+        # for, a bundle's sidecars are input. `../x` as a sidecar PATH was already refused
+        # while `../x` as a symlink TARGET was not — and a link plus a file underneath it
+        # writes outside the verifier just as effectively.
+        if e.kind == "symlink" and _escapes(
+                e.path, e.payload.decode("utf-8", "surrogateescape")):
+            raise BundleError(
+                f"sidecar symlink {e.path!r} points out of the tree: {e.payload!r}")
 
-    written = list(_covered(dest, bundle.tracked_patch))
+    post, pre = _patch_paths(dest, bundle.tracked_patch)
+    # Both sides here, unlike in `build`: this list is "what did materializing touch", and a
+    # rename preimage is deleted whether or not a sidecar then puts something back at it.
+    written = sorted(post | pre)
     if bundle.tracked_patch:
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "candidate.patch"

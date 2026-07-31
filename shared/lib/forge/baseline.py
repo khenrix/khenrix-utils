@@ -107,9 +107,13 @@ def _walk_selected(base: Path, repo: Path) -> list:
     """Repo-relative leaves under a selected DIRECTORY, in `screen._walk`'s terms.
 
     Same rules, for the same reasons: `.git` is pruned rather than post-filtered (it is the
-    object store the baseline was built from), symlinks are never FOLLOWED — os.walk under
-    `followlinks=False` does not descend into a linked directory — and names are sorted so
-    the manifest is deterministic.
+    object store the baseline was built from), and symlinks are never FOLLOWED — os.walk
+    under `followlinks=False` does not descend into a linked directory.
+
+    Order is DETERMINISTIC but no longer sorted: each level emits its linked directories
+    (sorted) before its files (sorted), because the two come from different os.walk lists.
+    Determinism is the property that was ever wanted — the caller builds a dict — and a
+    single sorted stream would need the two lists merged for no gain.
 
     A link is reported rather than dropped, and a linked DIRECTORY too: it arrives in
     `dirnames`, never in `filenames`, so both lists are inspected exactly as `screen._walk`
@@ -143,11 +147,13 @@ def _sha256_file(p: Path) -> str:
 def _sha256_link(p: Path) -> str:
     """A symlink's identity: the sha256 of its TARGET TEXT, never of the target's content.
 
-    Byte-for-byte `snapshot._symlink_entry`'s digest — including the strict `.encode()`,
-    which is what makes the two comparable — and mirrored again in `fleet._sha256_link`,
-    which checks this manifest against a seat.
+    Byte-for-byte `snapshot._symlink_entry`'s digest — including the surrogateescape
+    encode, which is what makes the two comparable — and mirrored again in
+    `fleet._sha256_link`, which checks this manifest against a seat. A link target is a
+    filesystem NAME: a plain `.encode()` raises UnicodeEncodeError on a non-UTF-8 one, and
+    since the loop below stopped guarding on `is_file()` this function meets those.
     """
-    return hashlib.sha256(os.readlink(p).encode()).hexdigest()
+    return hashlib.sha256(os.readlink(p).encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def _entry_digest(p: Path) -> str:
