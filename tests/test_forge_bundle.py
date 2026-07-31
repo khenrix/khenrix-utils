@@ -355,20 +355,26 @@ def test_a_patch_that_does_not_apply_is_a_bundle_error(tmp_path):
 
 # --- what materialize refuses ----------------------------------------------------------
 
-def test_materialize_refuses_a_sidecar_path_that_escapes_the_destination(tmp_path):
-    """`dest / "../x"` writes outside the verifier and Path does not object.
+def test_a_path_that_escapes_the_tree_is_refused_on_both_sides(tmp_path):
+    """`root / "../x"` escapes and Path does not object — in BOTH directions.
 
-    `snapshot` keys cannot take this shape, so the guard is for the OTHER caller: a
-    `CandidateBundle` is a plain dataclass a later stage may deserialize from a ledger.
-    Nothing may be written before the refusal, patch included.
+    `snapshot` keys cannot take this shape, so both guards are for the OTHER caller: an
+    `ArtifactSet` and a `CandidateBundle` are plain dataclasses a later stage may
+    deserialize from a ledger. On the way IN the damage is a host file read into the
+    bundle's payload; on the way OUT it is a write outside the verifier. Nothing may be
+    written before the refusal, patch included.
     """
     repo, b, s = _seat(tmp_path)
+    (tmp_path / "host-secret.txt").write_text("HOST-ONLY\n")
+    with pytest.raises(bundle.BundleError, match="artifact path escapes"):
+        bundle.build(s.path, harvest.ArtifactSet(paths=("../host-secret.txt",)), b)
+
     dest = tmp_path / "verifier"
     fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
     evil = bundle.CandidateBundle(
         version=1, baseline_ref=b.ref, baseline_commit=b.commit,
         sidecars=(bundle.SidecarEntry("../pwned.txt", "file", 0o644, b"x\n"),))
-    with pytest.raises(bundle.BundleError, match="escapes the destination"):
+    with pytest.raises(bundle.BundleError, match="sidecar path escapes"):
         bundle.materialize(evil, dest)
     assert not (tmp_path / "pwned.txt").exists()
 

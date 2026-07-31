@@ -167,17 +167,22 @@ def _escapes(rel: str, target: str) -> bool:
     return joined == ".." or joined.startswith(".." + os.sep)
 
 
-def _safe_rel(rel: str) -> str:
-    """A sidecar path, refused unless it lands inside the destination.
+def _safe_rel(rel: str, what: str) -> str:
+    """A relative path that stays inside the tree it is joined onto, or a refusal.
 
-    `artifacts.paths` comes from `snapshot`, whose keys are `relative_to(root)` and cannot
-    escape — so this guards the OTHER caller: a `CandidateBundle` is a plain dataclass a
-    later stage may deserialize from a ledger, and `dest / "../../.ssh/authorized_keys"`
-    writes outside the verifier without Path complaining. Refused, not normalised: a bundle
-    naming such a path is not a bundle whose intent we should guess at.
+    `Path(root) / "../../.ssh/id_rsa"` escapes without Path complaining, and it does damage
+    in BOTH directions: on the way in it reads a host file into the bundle, and on the way
+    out it writes one outside the verifier. `artifacts.paths` comes from `snapshot`, whose
+    keys are `relative_to(root)` and cannot take this shape — so both calls guard the
+    OTHER caller, since a `CandidateBundle` and an `ArtifactSet` are plain dataclasses a
+    later stage may deserialize from a ledger.
+
+    Refused, not normalised, and refused for the WHOLE bundle rather than routed to
+    `omitted`: a path that escapes is not a path this module should be reasoning about, and
+    `omitted` means "we looked and could not carry it".
     """
     if os.path.isabs(rel) or ".." in Path(rel).parts:
-        raise BundleError(f"sidecar path escapes the destination: {rel!r}")
+        raise BundleError(f"{what} escapes the tree: {rel!r}")
     return rel
 
 
@@ -212,6 +217,9 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
 
     sidecars, omitted = [], []
     for rel in artifacts.paths:
+        # BEFORE the read, not only before the write: `seat / "../../.ssh/id_rsa"` would
+        # otherwise be slurped into a sidecar payload and carried wherever this bundle goes.
+        _safe_rel(rel, "artifact path")
         if rel in covered:
             continue
         p = seat / rel
@@ -282,7 +290,7 @@ def materialize(bundle, dest) -> tuple:
     # Every sidecar is validated before the first byte is written, for the same reason the
     # two checks above come first: a refusal must not leave a half-materialized tree.
     for e in bundle.sidecars:
-        _safe_rel(e.path)
+        _safe_rel(e.path, "sidecar path")
         if e.kind not in ("file", "symlink"):
             raise BundleError(f"sidecar {e.path!r} has unknown kind {e.kind!r}")
 
