@@ -78,6 +78,10 @@ def test_parse_refuses_a_program_name_that_is_really_a_command_line():
         verify.Command.parse([["make", 1]])
     with pytest.raises(verify.VerifyError, match="no program"):
         verify.Step(argv=())
+    # A whole spec that is one string iterates as CHARACTERS. It was already refused, but
+    # by a message naming "step 0" and the value 'm' — neither of which the caller wrote.
+    with pytest.raises(verify.VerifyError, match="LIST of steps"):
+        verify.Command.parse("make")
 
 
 def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
@@ -240,10 +244,31 @@ def test_an_ambient_git_config_injection_cannot_re_enable_hooks(
     for k, tmpl in injection.items():
         monkeypatch.setenv(k, tmpl.format(hooks=hooks))
     write(v, "later.txt", "later\n")
-    r = verify.run_command(v, verify.Command.parse(
-        [["git", "add", "later.txt"], ["git", "commit", "-m", "gate"]]))
-    assert not (v / "HOOK-RAN").exists(), "an ambient config injection re-enabled hooks"
+    _assert_gate_commit_ran_no_hook(v)
+
+
+def _assert_gate_commit_ran_no_hook(v, step_env=None):
+    r = verify.run_command(v, verify.Command(steps=tuple(
+        verify.Step(argv=a, env=dict(step_env or {}))
+        for a in (("git", "add", "later.txt"), ("git", "commit", "-m", "gate")))))
+    assert not (v / "HOOK-RAN").exists(), "a hook ran inside the verifier"
     assert r.exit_code == 0, f"the gate's own commit failed: {r.stderr}"
+
+
+def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
+    """`Step.env` is merged over the hardened base, so before the merged result was
+    re-hardened a step could hand back the very name `_gate_env` had just dropped —
+    `run_command(env=…)` guarded and `Step.env` not, which is one rule with two answers."""
+    repo = make_repo(tmp_path)
+    hooks = tmp_path / "step-hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    write(v, "later.txt", "later\n")
+    _assert_gate_commit_ran_no_hook(
+        v, {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath'='{hooks}'"})
 
 
 def test_a_candidate_that_rewrites_the_clone_config_is_refused(tmp_path):

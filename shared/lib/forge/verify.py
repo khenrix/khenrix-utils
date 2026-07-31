@@ -91,7 +91,8 @@ class Step:
 
     `cwd` is RELATIVE to the verifier root and may not leave it — see `_step_cwd`. `env`
     is merged over the hardened base `run_command` builds, so a step can add a variable
-    without a caller having to reconstruct the base.
+    without a caller having to reconstruct the base; the merged result is re-hardened, so
+    a step cannot re-admit a git redirector the base had dropped.
     """
     argv: tuple[str, ...]
     cwd: str = ""
@@ -125,6 +126,14 @@ class Command:
 
     @classmethod
     def parse(cls, spec) -> "Command":
+        if isinstance(spec, (str, bytes)):
+            # A whole spec that is one string, not a LIST of them. Guarded here because
+            # iterating it yields CHARACTERS: without this, `parse("make")` refused with
+            # "verify step 0 must be an argv list, not a string: 'm'" — a refusal, so
+            # fail-closed, but one that names a step and a value the caller never wrote.
+            raise VerifyError(
+                f"a verify command is a LIST of steps, not one string: {spec!r}. Nothing "
+                'here runs a shell — write [["make", "verify"]].')
         steps = []
         for i, raw in enumerate(spec):
             if isinstance(raw, (str, bytes)):
@@ -311,7 +320,11 @@ def run_command(cwd, command: Command, *, env=None) -> Run:
     started = time.monotonic()
     for i, step in enumerate(command.steps):
         wd = _step_cwd(root, step, i)
-        code, out, err = _run_step(step, wd, {**base, **(step.env or {})}, i)
+        # Through `_gate_env` AGAIN, not merged onto its result: `{**base, **step.env}`
+        # let a step's own env re-admit exactly the names the base had just dropped, so
+        # `run_command(env=…)` was hardened and `Step.env` was not — one rule with two
+        # answers. Idempotent over `base`, which is already stripped and pinned.
+        code, out, err = _run_step(step, wd, _gate_env({**base, **(step.env or {})}), i)
         if code != 0:
             break
     return Run(exit_code=code, stdout=out, stderr=err,
