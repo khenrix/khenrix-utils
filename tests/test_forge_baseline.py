@@ -352,12 +352,19 @@ def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):
 
 
 def test_the_drift_check_finds_the_real_index_in_a_linked_worktree(tmp_path):
-    """The guard skips on an empty hash, so a wrong git dir makes it fail OPEN.
+    """Drift is CAUGHT here, and caught by reading the index this worktree actually uses.
 
     A linked worktree's `.git` is a FILE, so a joined `<repo>/.git/index` does not exist,
-    `is_file()` answers False without raising, and the hash comes back "" — at which point
-    the drift guard silently does nothing on the one layout this module has already been
-    caught assuming twice. The location must be asked for, not built.
+    `is_file()` answers False without raising, and the hash comes back "" for a repository
+    with a perfectly good index — the layout this module has already been caught assuming
+    twice. The strict guard turns that into a raise, which is why the two ordinary worktree
+    tests now fail on it too; but a raise alone cannot tell "found the index and it moved"
+    apart from "never found the index", and the second is what this test is named for.
+
+    So the assertion is the index's OWN hash, computed by `_idx` through a plain subprocess
+    that resolves the location independently of the module under test. Matching on the word
+    "moved" passed while the message read `(000000000000 -> <no index>)` — a raise for the
+    wrong reason, the same name-outruns-assertion defect this task exists to close.
     """
     repo = make_repo(tmp_path)
     wt = tmp_path / "wt"
@@ -366,7 +373,7 @@ def test_the_drift_check_finds_the_real_index_in_a_linked_worktree(tmp_path):
     write(wt, "d.txt", "d\n")
     run = tmp_path / "run"; run.mkdir()
     f = finspect.replace(finspect.repo_facts(wt), index_sha="0" * 64)
-    with pytest.raises(baseline.BaselineError, match="moved"):
+    with pytest.raises(baseline.BaselineError, match=_idx(wt)[:12]):
         baseline.materialize(wt, run, f, ["d.txt"], "r1")
 
 
