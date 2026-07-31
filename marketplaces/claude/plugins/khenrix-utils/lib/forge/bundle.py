@@ -218,40 +218,54 @@ def _is_dotgit(part: str) -> bool:
     return part.rstrip(". ").lower() in (".git", "git~1")
 
 
-def _safe_rel(rel: str, what: str) -> str:
-    """A relative path that stays inside the tree it is joined onto and is not the tree's
-    own machinery, or a refusal.
+def _names_dotgit(rel: str) -> bool:
+    """True when any COMPONENT of `rel` is a git directory.
+
+    Any depth, not just the first, even though only the first is a destination clone's own
+    config: `git apply --index` answers `invalid path` for a patch writing under `.git` at
+    any depth (measured — see `_is_dotgit`), so a first-component rule would leave the two
+    channels disagreeing about the same path, which is the shape `build`'s escaping-link
+    comment already refuses to ship.
+    """
+    return any(_is_dotgit(p) for p in Path(rel).parts)
+
+
+def _assert_contained(rel: str, what: str) -> None:
+    """`rel` stays inside the tree it is joined onto, or a refusal.
 
     `Path(root) / "../../.ssh/id_rsa"` escapes without Path complaining, and it does damage
     in BOTH directions: on the way in it reads a host file into the bundle, and on the way
     out it writes one outside the verifier. `artifacts.paths` comes from `snapshot`, whose
-    keys are `relative_to(root)` and cannot take this shape — so both calls guard the
-    OTHER caller, since a `CandidateBundle` and an `ArtifactSet` are plain dataclasses a
-    later stage may deserialize from a ledger.
+    keys are `relative_to(root)` and cannot take this shape — so both callers guard the
+    OTHER one, since a `CandidateBundle` and an `ArtifactSet` are plain dataclasses a later
+    stage may deserialize from a ledger.
 
-    A `.git` COMPONENT is refused for the same reason and by the same argument the module
-    docstring makes about escaping links: a refusal that holds on one channel and not the
-    other is not a refusal. `git apply` will not write under `.git` at any depth (measured
-    — see `_is_dotgit`), so the tracked patch already cannot carry one, while a SIDECAR
-    named `.git/config` was written straight over the destination clone's config — taking
-    its hooks pin, its identity, and admitting `core.fsmonitor` and `core.sshCommand`, both
-    of which name a command git EXECUTES on an ordinary `git status`. Measured: that config
-    was materialized into a verifier and the fsmonitor program ran.
-
-    Depth is not narrowed to the first component even though only the first is the
-    verifier's own config, because the two channels have to agree and git's refusal is at
-    any depth. It costs no legitimate candidate: `snapshot.take(skip_dirs=(".git",))` prunes
-    a directory of that name at EVERY level of its walk (measured — a fixture's
-    `vendor/x/.git/config` does not appear in the inventory), so a nested repository the
-    agent created cannot reach `artifacts.paths` and be refused here for it.
-
-    Refused, not normalised, and refused for the WHOLE bundle rather than routed to
-    `omitted`: a path that escapes is not a path this module should be reasoning about, and
-    `omitted` means "we looked and could not carry it".
+    Refused rather than normalised, and rather than routed to `omitted`: a path that
+    escapes is not a path this module should be reasoning about, while `omitted` means
+    "we looked and could not carry it".
     """
     if os.path.isabs(rel) or ".." in Path(rel).parts:
         raise BundleError(f"{what} escapes the tree: {rel!r}")
-    if any(_is_dotgit(p) for p in Path(rel).parts):
+
+
+def _safe_rel(rel: str, what: str) -> str:
+    """A sidecar path this module is willing to lay down, or a refusal.
+
+    A `.git` COMPONENT is refused here by the same argument the module docstring makes about
+    escaping links: a refusal that holds on one channel and not the other is not a refusal.
+    The tracked patch already cannot carry one (see `_names_dotgit`), while a SIDECAR named
+    `.git/config` was written straight over the destination clone's config — taking its
+    hooks pin, its identity, and admitting `core.fsmonitor` and `core.sshCommand`, both of
+    which name a command git EXECUTES on an ordinary `git status`. Measured: that config was
+    materialized into a verifier and the fsmonitor program ran.
+
+    A raise rather than a skip, because by this point the bundle CLAIMS to carry the path:
+    dropping it silently is the missing-input-read-as-candidate-defect confusion `omitted`
+    exists to prevent, and there is no way to un-claim it from here. `build` meets the same
+    paths one stage earlier, where `omitted` is still reachable, and answers differently.
+    """
+    _assert_contained(rel, what)
+    if _names_dotgit(rel):
         raise BundleError(
             f"{what} names git's own directory, which is not a candidate artifact: {rel!r}")
     return rel
@@ -319,7 +333,23 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
     for rel in artifacts.paths:
         # BEFORE the read, not only before the write: `seat / "../../.ssh/id_rsa"` would
         # otherwise be slurped into a sidecar payload and carried wherever this bundle goes.
-        _safe_rel(rel, "artifact path")
+        _assert_contained(rel, "artifact path")
+        if _names_dotgit(rel):
+            # `snapshot.take(skip_dirs=(".git",))` prunes DIRNAMES, so the `.git` that
+            # `git worktree add` and `git submodule add` leave behind — a FILE holding
+            # `gitdir: <path>` — arrives here. Measured: a seat whose work is
+            # `git worktree add --detach wt` inventories as `('wt/.git', 'wt/seed.txt')`,
+            # and with this branch removed that gitlink materialized into the verifier as
+            # `gitdir: <SEAT>/.git/worktrees/wt`, a live pointer back into the tree the
+            # verifier exists to be independent of.
+            #
+            # `omitted` rather than the raise `materialize` uses, on the escaping-link
+            # precedent below: adding a worktree is an ordinary agent command, so a raise
+            # would discard a whole candidate over one path the bundle merely cannot carry,
+            # and `omitted` is what lets the outcome classifier answer HARVEST_INCOMPLETE
+            # if the gate then fails on the gap.
+            omitted.append(rel)
+            continue
         if rel in covered:
             continue
         p = seat / rel

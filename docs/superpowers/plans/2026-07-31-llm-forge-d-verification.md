@@ -33,7 +33,7 @@ Verify these against the code before relying on them — every plan in this proj
 - `snapshot.Entry.kind` emits only `"file"`, `"symlink"`, `"special"`; `"dir"` is reserved and never produced, so **empty directories are invisible to `diff()`**. Only `"file"` carries a content digest; a symlink's `mode` is a fabricated `0` and its digest hashes the target text. `snapshot.take` raises `SnapshotError`.
 - `fleet.clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat`, with `Seat.path/.branch/.verified/.replayed` and `SeatError`. `Seat.branch` and `.verified` default to the un-launchable state on purpose.
 - `baseline.Baseline(base_commit, tracked_tree_oid, commit, ref, dirty, sidecars, filesystem_manifest)`; `sidecars` is `None` — "nobody looked", not "there are none".
-- `gitcmd.git(repo, *args, env_extra=None, check=True, binary=False, timeout=60)`, `READONLY`, `NO_DAEMON_CACHE`, `REDIRECTING_ENV`, `NO_USER_CONFIG`, `zero_oid`; `GitError`.
+- `gitcmd.git(repo, *args, env_extra=None, check=True, binary=False, timeout=60)`, `READONLY`, `NO_DAEMON_CACHE`, `HOSTILE_ENV`, `REDIRECTING_ENV`, `NO_USER_CONFIG`, `zero_oid`; `GitError`. **`HOSTILE_ENV` is the list any child environment strips** — `REDIRECTING_ENV` is the strictly narrower subset it is built from (redirection only), and reaching for it instead leaves `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` and `GIT_TEMPLATE_DIR` ambient.
 
 ## Two open decisions this plan must settle
 

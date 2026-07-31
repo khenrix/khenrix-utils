@@ -315,13 +315,19 @@ def test_a_seat_does_not_inherit_the_config_injector_that_outranks_a_local_pin(
     Pinned by EFFECT, in a real seat, because absence is the assertion that cannot fail here
     — `forge_child_env` builds its result from the dict it is handed, so a name it never
     received cannot appear in the output either way.
+
+    The variable is exported BEFORE `make_repo`, which is what makes this test cover the
+    fixture's own strip as well. Measured with it exported after: dropping
+    GIT_CONFIG_PARAMETERS from `forge_fixtures._HOSTILE_ENV` on its own left every one of
+    the Makefile's 217 FORGE_TESTS passing, so only the GIT_TEMPLATE_DIR half of that tuple
+    was pinned and a two-name mutant hid it.
     """
-    repo = make_repo(tmp_path)
     hooks = tmp_path / "ambient-hooks"
     hooks.mkdir()
     (hooks / "pre-commit").write_text(f"#!/bin/sh\ntouch {hooks / 'HOOK-RAN'}\nexit 1\n")
     (hooks / "pre-commit").chmod(0o755)
     monkeypatch.setenv("GIT_CONFIG_PARAMETERS", f"'core.hooksPath'='{hooks}'")
+    repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
     seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
                             name="claude", identity=IDENT).path

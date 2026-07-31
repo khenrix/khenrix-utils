@@ -33,6 +33,10 @@ NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=fals
 # runs the other way, since removing them RESTORES ~/.gitconfig and its core.hooksPath. They
 # are pinned to /dev/null in git() instead, so this package can only ever narrow config
 # discovery, never widen a caller's already-hardened environment.
+#
+# NOT the list to strip from a child environment — that is HOSTILE_ENV below, of which this
+# is a strictly narrower part. Redirection is one of three mechanisms, and a child built
+# from this tuple alone still inherits the config injectors and the template dir.
 REDIRECTING_ENV = (
     "GIT_DIR",
     "GIT_WORK_TREE",

@@ -30,7 +30,10 @@ laid down and read back AFTER, because the candidate is the one thing in between
 writes. What the readback MEASURES is one key — `core.hooksPath` is still `/dev/null` in
 the clone's LOCAL config. What it does NOT measure is any other key: a rewrite that keeps
 the pin and ADDS `core.fsmonitor` (a program git executes on an ordinary `git status`) or
-its own `[user]` section passes the canary, and that was measured, not reasoned about.
+its own `[user]` section passes the canary, and that was measured, not reasoned about. Nor
+any other SCOPE: `.git/config.worktree` under `extensions.worktreeConfig` outranks the local
+file from inside the clone, so an untouched local pin plus a worktree-scope `core.hooksPath`
+passes this readback with the hook live (measured, git 2.53).
 
 The route that made it a live defence is closed at its source: `bundle._safe_rel` now
 refuses a `.git` COMPONENT, so `materialize` cannot write the clone's config at all. What
@@ -50,8 +53,9 @@ came to be closed for the gate while every seat still inherited it.
 What `run_command` cannot do is scrub values that point back into the USER's checkout: it is
 handed the verifier, not the repository the verifier was cloned from, and scrubbing against
 the verifier's own path would remove exactly the entries that should stay. A caller holding
-the repo path passes `env=fleet.forge_child_env(repo)`, which composes — this module's
-strip and pin are idempotent over that result and add the name it misses.
+the repo path passes `env=fleet.forge_child_env(repo)`, which composes: that function drops
+the same `HOSTILE_ENV` and pins the same /dev/null pair, so this module's strip and pin are
+idempotent over its result and all it contributes is the checkout scrub.
 """
 import os
 import signal
@@ -388,15 +392,15 @@ def _hooks_pin(path: Path) -> None:
 
 
 def _assert_hooks_pinned(path: Path) -> None:
-    # --local, so nothing outside the clone's own file can satisfy a check that exists to
-    # ask about the clone. SECOND LATCH since GIT_CONFIG_PARAMETERS joined `HOSTILE_ENV`:
-    # `gitcmd.git` now strips the one form that could answer from outside at command-line
-    # precedence, and the global/system files are pinned at /dev/null, so no single mutation
-    # can be pinned to this flag alone (measured, git 2.53: with the local key removed and
-    # GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" set, a bare `--get` answers
-    # /dev/null while `--local --get` exits 1). It is kept for what still holds if the strip
-    # is lost. check=False: `--get` exits 1 for a missing key, which is a state to report in
-    # this module's vocabulary, not a GitError.
+    # --local, so the readback asks the clone's own file rather than whatever would answer.
+    # Two of the scopes that outrank that file are closed elsewhere — the global/system
+    # files are pinned at /dev/null and `gitcmd.git` strips GIT_CONFIG_PARAMETERS — but
+    # `.git/config.worktree`, enabled by `extensions.worktreeConfig`, sits INSIDE the clone
+    # and nothing else here covers it. Measured, git 2.53, with the pin moved to that file
+    # and the local key naming a hooks directory: a bare `--get` answers /dev/null while
+    # `--local --get` answers the hooks directory, so without this flag the party under
+    # suspicion writes the answer. check=False: `--get` exits 1 for a missing key, which is
+    # a state to report in this module's vocabulary, not a GitError.
     r = gitcmd.git(path, "config", "--local", "--get", "core.hooksPath",
                    env_extra=gitcmd.READONLY, check=False)
     if r.stdout.strip() != os.devnull:

@@ -313,7 +313,7 @@ def test_a_rename_preimage_that_still_has_content_crosses_as_a_sidecar(tmp_path)
 
 
 def test_materialize_refuses_a_sidecar_symlink_pointing_out_of_the_tree(tmp_path):
-    """`_safe_rel` guards a sidecar's PATH on both sides; its TARGET was guarded on one.
+    """The containment guard runs on a PATH on both sides; a sidecar's TARGET on one.
 
     Under the deserialize-from-a-ledger model those guards exist for, a link plus a file
     underneath it writes outside the verifier just as effectively as an `..` in the path —
@@ -495,8 +495,10 @@ def test_a_sidecar_may_not_be_gits_own_directory(tmp_path):
     for rel in (".git/config", "vendor/x/.git/config", ".GiT/config", ".git./config",
                 ".git /config", "git~1/config"):
         # The way IN: an ArtifactSet is a plain dataclass a later stage may deserialize.
-        with pytest.raises(bundle.BundleError, match="git's own directory"):
-            bundle.build(s.path, harvest.ArtifactSet(paths=(rel,)), b)
+        # Named rather than raised — see the worktree-gitlink test below for why the two
+        # directions answer differently.
+        carried = bundle.build(s.path, harvest.ArtifactSet(paths=(rel,)), b)
+        assert (carried.omitted, carried.sidecars) == ((rel,), ())
         # ...and the way OUT, which is where the damage was measured.
         evil = bundle.CandidateBundle(
             version=1, baseline_ref=b.ref, baseline_commit=b.commit,
@@ -505,6 +507,42 @@ def test_a_sidecar_may_not_be_gits_own_directory(tmp_path):
         with pytest.raises(bundle.BundleError, match="git's own directory"):
             bundle.materialize(evil, dest)
     assert (dest / ".git" / "config").read_text() == before, "the clone's config was rewritten"
+
+
+def test_a_nested_git_FILE_is_omitted_rather_than_failing_the_whole_bundle(tmp_path):
+    """`snapshot.take(skip_dirs=(".git",))` prunes DIRNAMES, so it never sees the `.git`
+    that `git worktree add` and `git submodule add` leave behind — a FILE holding
+    `gitdir: <path>`. Measured: a seat whose work is `git worktree add --detach wt`
+    inventories as `('wt/.git', 'wt/seed.txt')`.
+
+    It must not cross. Measured with `_is_dotgit` stubbed to False, that sidecar
+    materialized into the verifier as `gitdir: <SEAT>/.git/worktrees/wt` — a live pointer
+    back into the builder's own tree, in the one clone that exists so the builder cannot
+    reach it.
+
+    `omitted`, not a raise, on the escaping-link precedent two channels over: adding a
+    worktree is an ordinary agent command, so failing the whole run on it would discard a
+    candidate over a path the bundle merely cannot carry. `omitted` is what lets the
+    outcome classifier answer HARVEST_INCOMPLETE if the gate then fails on the gap.
+    """
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: git(s.path, "worktree", "add", "--detach", "wt"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    assert "wt/.git" in a.paths, f"the fixture carries no nested .git at all: {a.paths}"
+    assert (s.path / "wt" / ".git").is_file(), \
+        "a .git DIRECTORY is pruned by snapshot; this test is about the file skip_dirs misses"
+
+    cb = bundle.build(s.path, a, b)
+    assert "wt/.git" in cb.omitted
+    assert "wt/.git" not in [e.path for e in cb.sidecars]
+    assert "wt/seed.txt" in [e.path for e in cb.sidecars], \
+        "the rest of the worktree went over the side with the gitlink"
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert not (dest / "wt" / ".git").exists(), "the gitlink reached the verifier"
+    assert (dest / "wt" / "seed.txt").read_text() == "seed\n"
 
 
 def test_a_name_that_merely_starts_with_git_still_crosses(tmp_path):

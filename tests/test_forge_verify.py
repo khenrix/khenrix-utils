@@ -403,6 +403,43 @@ def test_the_hooks_pin_is_read_back_after_the_candidate_is_laid_down(
         verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
 
 
+def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
+        tmp_path, monkeypatch):
+    """`--local` on the readback, pinned by the one config scope that lives INSIDE the
+    clone. `.git/config.worktree` — enabled by `extensions.worktreeConfig` — outranks the
+    local file and is writable by exactly the party the canary exists to ask about, so
+    unlike the global/system files and GIT_CONFIG_PARAMETERS nothing else in this module
+    covers it.
+
+    Measured, git 2.53, in a verifier clone whose LOCAL file names a hooks directory and
+    whose worktree file names /dev/null:
+
+        git config --get         core.hooksPath  -> /dev/null
+        git config --local --get core.hooksPath  -> <the hooks directory>
+
+    So a readback without `--local` certifies a clone whose own config file the candidate
+    rewrote, answering from a file the candidate wrote to say so.
+    """
+    repo = make_repo(tmp_path)
+    b, _s, cb = _candidate(tmp_path, repo)
+    hooks = tmp_path / "rigged-hooks"
+    hooks.mkdir()
+
+    def _rewrite(_bundle, dest):
+        # Not `forge.gitcmd`: this stands in for the candidate, which is not the engine.
+        _git(dest, "config", "--local", "extensions.worktreeConfig", "true")
+        _git(dest, "config", "--worktree", "core.hooksPath", os.devnull)
+        _git(dest, "config", "--local", "core.hooksPath", str(hooks))
+        return ()
+
+    monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
+    dest = tmp_path / "verifier"
+    with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
+        verify.build_verifier(repo, b, cb, dest, identity=IDENT)
+    assert _git(dest, "config", "--get", "core.hooksPath").stdout.strip() == os.devnull, \
+        "the fixture no longer masks the rewrite, so it pins nothing"
+
+
 def test_a_step_cwd_may_not_leave_the_verifier(tmp_path):
     d = tmp_path / "w"
     d.mkdir()
