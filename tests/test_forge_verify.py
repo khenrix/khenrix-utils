@@ -440,6 +440,52 @@ def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
         "the fixture no longer masks the rewrite, so it pins nothing"
 
 
+def test_a_scope_above_the_clones_local_file_cannot_hide_a_live_hook(tmp_path, monkeypatch):
+    """The same scope, the other way round: `--local` alone is blind in BOTH directions.
+
+    `.git/config.worktree` outranks the local file, so a candidate that never touches the
+    pin and names its hooks directory one scope up leaves the readback looking at a value
+    that is no longer the one git obeys.
+
+    Measured, git 2.53, in a clone whose local pin is untouched at /dev/null and whose
+    worktree file names a hooks directory:
+
+        git config --local --get core.hooksPath  -> /dev/null
+        git config --get         core.hooksPath  -> <the hooks directory>
+        ...and the next `git commit` in that clone RAN the hook, exit 1
+
+    So the effective value is read back too, and a canary that can be walked past this way
+    is the overclaim, not the hook.
+    """
+    repo = make_repo(tmp_path)
+    b, _s, cb = _candidate(tmp_path, repo)
+    hooks = tmp_path / "rigged-hooks"
+    hooks.mkdir()
+    (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+
+    def _rewrite(_bundle, dest):
+        # Not `forge.gitcmd`: this stands in for the candidate, which is not the engine.
+        # The local pin is left alone — that is the whole of the case.
+        _git(dest, "config", "--local", "extensions.worktreeConfig", "true")
+        _git(dest, "config", "--worktree", "core.hooksPath", str(hooks))
+        return ()
+
+    monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
+    dest = tmp_path / "verifier"
+    with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
+        verify.build_verifier(repo, b, cb, dest, identity=IDENT)
+    assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
+        == os.devnull, "the fixture disturbed the pin, so a --local readback would catch it"
+    # ...and the override was live, not merely present: the refused clone runs the hook.
+    write(dest, "later.txt", "later\n")
+    _git(dest, "add", "later.txt")
+    with pytest.raises(RuntimeError):
+        _git(dest, "commit", "-m", "gate")
+    assert (dest / "HOOK-RAN").exists(), \
+        "the worktree-scope override did not actually reach git, so it pins nothing"
+
+
 def test_a_step_cwd_may_not_leave_the_verifier(tmp_path):
     d = tmp_path / "w"
     d.mkdir()

@@ -27,13 +27,12 @@ engine passes on a git command line is in scope by the time the gate runs its ow
 
 The pin doubles as a CANARY on the clone's config: it is written BEFORE the candidate is
 laid down and read back AFTER, because the candidate is the one thing in between that
-writes. What the readback MEASURES is one key — `core.hooksPath` is still `/dev/null` in
-the clone's LOCAL config. What it does NOT measure is any other key: a rewrite that keeps
-the pin and ADDS `core.fsmonitor` (a program git executes on an ordinary `git status`) or
-its own `[user]` section passes the canary, and that was measured, not reasoned about. Nor
-any other SCOPE: `.git/config.worktree` under `extensions.worktreeConfig` outranks the local
-file from inside the clone, so an untouched local pin plus a worktree-scope `core.hooksPath`
-passes this readback with the hook live (measured, git 2.53).
+writes. What the readback MEASURES is one key in two scopes — `core.hooksPath` is still
+`/dev/null` both in the clone's LOCAL config and in the value git would obey there, so a
+scope inside the clone that outranks the local file cannot move the pin unseen. What it
+does NOT measure is any other key: a rewrite that keeps the pin and ADDS `core.fsmonitor`
+(a program git executes on an ordinary `git status`) or its own `[user]` section passes the
+canary, and that was measured, not reasoned about.
 
 The route that made it a live defence is closed at its source: `bundle._safe_rel` now
 refuses a `.git` COMPONENT, so `materialize` cannot write the clone's config at all. What
@@ -392,23 +391,29 @@ def _hooks_pin(path: Path) -> None:
 
 
 def _assert_hooks_pinned(path: Path) -> None:
-    # --local, so the readback asks the clone's own file rather than whatever would answer.
-    # Two of the scopes that outrank that file are closed elsewhere — the global/system
-    # files are pinned at /dev/null and `gitcmd.git` strips GIT_CONFIG_PARAMETERS — but
-    # `.git/config.worktree`, enabled by `extensions.worktreeConfig`, sits INSIDE the clone
-    # and nothing else here covers it. Measured, git 2.53, with the pin moved to that file
-    # and the local key naming a hooks directory: a bare `--get` answers /dev/null while
-    # `--local --get` answers the hooks directory, so without this flag the party under
-    # suspicion writes the answer. check=False: `--get` exits 1 for a missing key, which is
-    # a state to report in this module's vocabulary, not a GitError.
-    r = gitcmd.git(path, "config", "--local", "--get", "core.hooksPath",
-                   env_extra=gitcmd.READONLY, check=False)
-    if r.stdout.strip() != os.devnull:
-        raise VerifyError(
-            f"the candidate rewrote the verifier's git config: core.hooksPath is now "
-            f"{r.stdout.strip()!r}, not {os.devnull!r}. A clone whose config the builder "
-            "chose can run builder-supplied hooks — and core.fsmonitor and core.sshCommand "
-            "name commands git executes — so it cannot be used as a verifier.")
+    # BOTH scopes, because either one alone is blind in one direction, and the scope that
+    # makes them differ — `.git/config.worktree`, enabled by `extensions.worktreeConfig` —
+    # sits INSIDE the clone, writable by exactly the party under suspicion. Measured, git
+    # 2.53, both ways round: with the pin moved to that file and the LOCAL key naming a
+    # hooks directory a bare `--get` answers /dev/null, so `--local` is what asks the
+    # clone's own file; with the local pin untouched and the WORKTREE file naming a hooks
+    # directory `--local --get` answers /dev/null while the hook runs, so the effective
+    # value is what says the pin is still the one git obeys. The scopes above the clone are
+    # closed elsewhere — global and system are pinned at /dev/null and `gitcmd.git` strips
+    # GIT_CONFIG_PARAMETERS — so a bare `--get` here cannot answer from outside it.
+    # check=False: `--get` exits 1 for a missing key, which is a state to report in this
+    # module's vocabulary, not a GitError.
+    for where, scope in (("its local config", ("--local",)),
+                         ("the value git would obey", ())):
+        r = gitcmd.git(path, "config", *scope, "--get", "core.hooksPath",
+                       env_extra=gitcmd.READONLY, check=False)
+        if r.stdout.strip() != os.devnull:
+            raise VerifyError(
+                f"the candidate rewrote the verifier's git config: core.hooksPath in "
+                f"{where} is now {r.stdout.strip()!r}, not {os.devnull!r}. A clone whose "
+                "config the builder chose can run builder-supplied hooks — and "
+                "core.fsmonitor and core.sshCommand name commands git executes — so it "
+                "cannot be used as a verifier.")
 
 
 def build_verifier(repo, baseline, candidate, dest, *, identity) -> Path:
