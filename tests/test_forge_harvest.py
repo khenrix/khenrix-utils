@@ -41,18 +41,41 @@ def _phases(seat, setup, work, verify):
     return harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fverify)
 
 
+def _fake_node_modules(seat, packages=52, per_package=100):
+    """A setup output of realistic SHAPE, not a single file standing in for one.
+
+    5,200 files is the point: the docstring above this test says "npm ci / uv sync create
+    thousands of files", and under `Quota.default` (max_files 5000) `record` raised
+    `HarvestError: files: 5001 > 5000` — the inventory that must OBSERVE setup's output
+    failing closed before it could. A one-file `node_modules` asserted the sentence and
+    exercised none of it. Measured cost of the realistic shape: ~1.6s for the fixture plus
+    all four inventories.
+    """
+    nm = Path(seat) / "node_modules"
+    for i in range(packages):
+        d = nm / f"pkg{i}" / "lib"
+        d.mkdir(parents=True)
+        for j in range(per_package):
+            (d / f"m{j}.js").write_text("module.exports = {}\n")
+    return packages * per_package
+
+
 def test_setup_output_is_not_in_the_artifact_set(tmp_path):
     """npm ci / uv sync create thousands of files; they are not the agent's work."""
     seat = make_repo(tmp_path, "seat")
     base = _head(seat)
     p = _phases(seat,
-                setup=lambda: (Path(seat) / "node_modules").mkdir() or
-                              (Path(seat) / "node_modules" / "x.js").write_text("dep\n"),
+                setup=lambda: _fake_node_modules(seat),
                 work=lambda: write(seat, "src.py", "the agent's work\n"),
                 verify=lambda: write(seat, "report.txt", "verify output\n"))
     a = harvest.artifact_set(p, seat, base)
+    # The inventory must have SEEN the dependency tree, or it was differenced out of the
+    # artifact set vacuously. This is the assertion the old one-file fixture could not make
+    # and the reason the default quota was wrong for a seat.
+    assert len(p.fsetup) > 5000, f"setup output was not observed: {len(p.fsetup)} entries"
     assert "src.py" in a.paths
-    assert "node_modules/x.js" not in a.paths
+    assert "node_modules/pkg0/lib/m0.js" not in a.paths
+    assert not any(q.startswith("node_modules/") for q in a.paths)
     assert "report.txt" not in a.paths
     assert a.origin["src.py"] == "builder"
     # §7.1: the flag exists "so the ledger states the churn component instead of absorbing
@@ -258,6 +281,28 @@ def test_record_refuses_a_quota_breach_rather_than_returning_a_partial_inventory
     with pytest.raises(harvest.HarvestError, match="files"):
         harvest.record(seat, quota=storage.Quota(max_files=2, max_file_bytes=1000,
                                                  max_total_bytes=10_000))
+
+
+def test_the_harvest_default_quota_is_a_seats_budget_not_the_screens(tmp_path):
+    """The two callers ask different questions and must not share one answer.
+
+    `Quota.default` bounds what the PRE-LAUNCH SCREEN will decode out of the user's own
+    source; `record` inventories a seat AFTER the engine's setup ran inside it. Sharing
+    `default` made the second fail closed on the first thing it exists to see. Raising
+    `default` itself is the fix that must NOT happen — it would loosen the screen — so the
+    screen's cap is asserted unmoved in the same test as the harvest's.
+
+    The fail-closed property is asserted on the SAME call that gets the larger budget: an
+    explicit quota still refuses, so what changed is the number, not the stance.
+    """
+    assert storage.Quota.default().max_files == 5000, "the screen's decode budget moved"
+    h = storage.Quota.for_harvest()
+    assert h.max_files > 5000 and h.max_file_bytes >= storage.Quota.default().max_file_bytes
+    assert h.breach(files=h.max_files + 1, file_bytes=0, total_bytes=0), \
+        "a harvest quota that cannot breach is not fail-closed"
+    seat = make_repo(tmp_path, "seat")
+    write(seat, "a.txt", "a\n")
+    assert harvest.record(seat), "the default harvest budget must admit an ordinary seat"
 
 
 def test_an_unwalkable_seat_propagates_the_snapshot_error(tmp_path):

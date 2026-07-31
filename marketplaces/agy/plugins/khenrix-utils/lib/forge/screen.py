@@ -13,6 +13,7 @@ a 400 MB build log into memory.
 import hashlib
 import importlib.util
 import os
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,31 +64,82 @@ def _is_high_risk_name(rel: str) -> bool:
     return any(base == n or base.startswith(n + ".") for n in BLOCKED_NAMES)
 
 
-def _walk(base: Path, root: Path, skip_prefixes) -> list[Path]:
+def _unread(rel: str, why: str) -> str:
+    """The one sentence this module says about a path it did not open.
+
+    Every breach goes through here so the rule a nested path breaks reads identically to
+    the rule the same shape breaks at the top level. They diverged once already: the
+    top-level branch refused a selected symlink while `_walk` dropped a nested one in
+    silence, and the two were only comparable by eye.
+    """
+    return f"{rel}: not screened — {why}"
+
+
+_LINK = "symlink; links are never followed"
+_NOT_REGULAR = "not a regular file or directory"
+
+
+def _walk(base: Path, root: Path, skip_prefixes):
     """Enumerate regular files under `base`, PRUNING rather than post-filtering.
 
-    `.git` is the object store the baseline was built from, so scanning it is pure cost —
-    and on a repo with a large loose-object store, merely enumerating it is too. Pruning
-    dirnames in place stops os.walk descending; filtering a completed rglob would still
-    have stat'd every object, and those objects would count against `max_files` and turn a
-    normal repo-root selection into a confusing quota breach.
+    Returns `(paths, breaches)`. `.git` is the object store the baseline was built from, so
+    scanning it is pure cost — and on a repo with a large loose-object store, merely
+    enumerating it is too. Pruning dirnames in place stops os.walk descending; filtering a
+    completed rglob would still have stat'd every object, and those objects would count
+    against `max_files` and turn a normal repo-root selection into a confusing quota breach.
 
-    os.walk does not descend into symlinked directories by default, so links only have to
-    be dropped where they appear as leaves. Names are sorted so the scan order — and any
-    running-total breach that depends on it — is deterministic.
+    Names are sorted so the scan order — and any running-total breach that depends on it —
+    is deterministic.
+
+    Two leaf shapes are REFUSED rather than dropped, for the reason the top-level branch in
+    `screen_tree` gives: "we did not read through it" is a breach, and silence hands back a
+    clean verdict on content a seat can still reach.
+
+    - a SYMLINK. `git add -f` on a selected directory commits a nested link AS A LINK, so
+      it ships to every seat. Measured with a `continue` here: `scratch/creds ->
+      <host>/credentials` under a selected `scratch` produced no preflight rejection, no
+      breach, and a seat that read the host's AWS credentials with `verified=True`.
+      A linked DIRECTORY arrives in `dirnames`, never in `filenames`, so both lists are
+      inspected; os.walk under `followlinks=False` already declines to descend one, and
+      dropping it keeps "do not walk it" and "do report it" in one place.
+    - a FIFO, socket or device node. The `open("rb")` below BLOCKS forever on a FIFO —
+      an unbounded hang with no timeout anywhere in the call path — and raises ENXIO on a
+      socket, out of a function contracted to return `(findings, breaches)`. Measured:
+      `screen_tree` never returned on a FIFO under a selected directory.
+      `snapshot._special_entry` guards the identical hazard by stat'ing first.
+
+    A skipped prefix is tested BEFORE either refusal: a path the caller's own scan config
+    excludes was already going unread, and naming it now would be a new breach for an old,
+    deliberate gap. One `lstat` answers both questions, so this costs no more syscalls than
+    the `is_symlink()` it replaces.
     """
-    out = []
+    def skipped(rel: str) -> bool:
+        return any(rel.startswith(s) for s in skip_prefixes)
+
+    out, breaches = [], []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         d = Path(dirpath)
         dirnames[:] = sorted(n for n in dirnames if n != ".git")
-        for n in sorted(filenames):
+        for n in list(dirnames):
             q = d / n
             if q.is_symlink():
+                dirnames.remove(n)
+                rel = q.relative_to(root).as_posix()
+                if not skipped(rel):
+                    breaches.append(_unread(rel, _LINK))
+        for n in sorted(filenames):
+            q = d / n
+            rel = q.relative_to(root).as_posix()
+            if skipped(rel):
                 continue
-            if any(q.relative_to(root).as_posix().startswith(s) for s in skip_prefixes):
-                continue
-            out.append(q)
-    return out
+            st = q.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                breaches.append(_unread(rel, _LINK))
+            elif not stat.S_ISREG(st.st_mode):
+                breaches.append(_unread(rel, _NOT_REGULAR))
+            else:
+                out.append(q)
+    return out, breaches
 
 
 def screen_tree(root, rel_paths, quota: Quota = None):
@@ -117,12 +169,12 @@ def screen_tree(root, rel_paths, quota: Quota = None):
         # expression to evaluate, and normalising one here would be this module deciding
         # what the baseline contains.
         if os.path.isabs(rel):
-            breaches.append(f"{rel}: not screened — an absolute path is not a repo-relative "
-                            "selection")
+            breaches.append(_unread(rel, "an absolute path is not a repo-relative "
+                                         "selection"))
             continue
         if ".." in Path(rel).parts:
-            breaches.append(f"{rel}: not screened — a '..' component escapes the repository "
-                            "root; selections must be repo-relative")
+            breaches.append(_unread(rel, "a '..' component escapes the repository "
+                                         "root; selections must be repo-relative"))
             continue
         p = root / rel
         # is_dir()/is_file() both follow symlinks, so the link check comes first: a
@@ -132,15 +184,19 @@ def screen_tree(root, rel_paths, quota: Quota = None):
         # come back clean having never been opened, which is exactly the verdict this
         # module exists to prevent. "We did not read through the link" is a breach.
         if p.is_symlink():
-            breaches.append(f"{rel}: not screened — symlink; links are never followed")
+            breaches.append(_unread(rel, _LINK))
         elif p.is_dir():
-            targets += _walk(p, root, c.SCAN_SKIP_DIRS)
+            # Both halves of the walk's answer are kept. Dropping its breaches would
+            # restore the defect the walk exists to report, one level up.
+            found, walked = _walk(p, root, c.SCAN_SKIP_DIRS)
+            targets += found
+            breaches += walked
         elif p.is_file():
             targets.append(p)
         elif not p.exists():
-            breaches.append(f"{rel}: not screened — selected path does not exist")
+            breaches.append(_unread(rel, "selected path does not exist"))
         else:
-            breaches.append(f"{rel}: not screened — not a regular file or directory")
+            breaches.append(_unread(rel, _NOT_REGULAR))
 
     if (b := quota.breach(files=len(targets), file_bytes=0, total_bytes=0)):
         breaches.append(b)

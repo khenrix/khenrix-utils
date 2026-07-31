@@ -84,7 +84,12 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
     # the very error this argument exists to prevent — a failure landing on the agent
     # instead of the caller who passed it. `baseline._resolve_author` refuses the same
     # input for the same reason.
-    if len(identity) != 2 or not all(str(f).strip() for f in identity):
+    #
+    # The test is `isinstance(f, str)`, not `str(f)`: `str(None)` is the four-character
+    # string "None", so `identity=(None, None)` — what an unresolved identity looks like —
+    # passed this guard and died later as a raw TypeError inside `git config user.name`,
+    # out of the one path whose entire purpose is a named refusal.
+    if len(identity) != 2 or not all(isinstance(f, str) and f.strip() for f in identity):
         raise SeatError(
             f"cannot give seat {name!r} an identity: a name AND an email are required, "
             f"got {identity!r}. Refusing to write an empty one — the seat would look "

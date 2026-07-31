@@ -313,10 +313,22 @@ def test_a_selected_directory_reaches_the_manifest_as_well_as_the_tree(tmp_path)
     assert b.filesystem_manifest["scratch/sub/b.txt"] == hashlib.sha256(b"b\n").hexdigest()
 
 
-def test_a_symlink_inside_a_selected_directory_is_not_hashed_through(tmp_path):
+def test_a_symlink_inside_a_selected_directory_is_in_the_tree_but_not_the_manifest(tmp_path):
     """Walking a selection must not read what the tree never contained. git commits a
     symlink as a link; hashing it means open() FOLLOWING it, which puts content from
-    outside the tree into a manifest that claims to describe the tree."""
+    outside the tree into a manifest that claims to describe the tree.
+
+    The TREE half is asserted too, and the name says so, because the old name — "is not
+    hashed through" — read like a containment guarantee it never made. `git add -f` on the
+    selection commits the link, so this module keeps the target's CONTENT out of the
+    manifest while shipping a working path to it in B1. Both halves are true and only one
+    of them is protective; a test asserting the manifest half alone stayed green while an
+    escaping link reached a seat unscreened.
+
+    What actually stops that link is upstream and belongs to other suites:
+    `inspect.rejections` refuses an ESCAPING one and `screen` breaches on ANY one. The
+    joint property is pinned in `test_forge_seams.py`.
+    """
     repo = make_repo(tmp_path)
     outside = tmp_path / "host-secret.txt"
     outside.write_text("host secret\n")
@@ -326,6 +338,10 @@ def test_a_symlink_inside_a_selected_directory_is_not_hashed_through(tmp_path):
     b = _mk(repo, run, selected=["scratch"])
     assert "scratch/link.txt" not in b.filesystem_manifest
     assert hashlib.sha256(b"host secret\n").hexdigest() not in b.filesystem_manifest.values()
+    assert "scratch/link.txt" in _tree_paths(repo, b.tracked_tree_oid), \
+        "the manifest exclusion is not containment — the tree carries the link"
+    assert (repo / "scratch" / "link.txt").is_symlink(), \
+        "and it is still a link, so B1 hands a seat a working path out of the repository"
 
 
 def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):

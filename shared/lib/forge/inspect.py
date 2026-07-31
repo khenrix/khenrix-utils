@@ -208,6 +208,35 @@ def _escaping_target(root: Path, p: Path):
     return None
 
 
+def _escaping_links_under(root: Path, base: Path) -> list:
+    """Rejection lines for escaping symlinks NESTED inside a selected DIRECTORY.
+
+    The selected-path loop below used to test only the top-level path, but the top level is
+    not the boundary the baseline respects: `baseline.materialize` selects a directory with
+    `git add -f`, which sweeps its whole contents into the tree and commits a nested link AS
+    A LINK. Measured, with only the top-level test: `scratch/creds -> <host>/credentials`
+    under a selected `scratch` gave `rejections() == []`, `screen breaches == []`, and a
+    seat that read the host's AWS credentials with `verified=True`. Nothing exotic is
+    required — a selected `.venv` carries `bin/python -> /usr/bin/python3`.
+
+    `.git` is pruned for `screen._walk`'s reason. os.walk under `followlinks=False` does not
+    descend a linked directory and reports it in `dirnames`, never in `filenames`, so both
+    lists are inspected. `_escaping_target` answers None for anything that is not a symlink,
+    so the cost on an ordinary tree is one lstat per entry.
+    """
+    out = []
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        d = Path(dirpath)
+        dirnames[:] = sorted(n for n in dirnames if n != ".git")
+        for n in [*dirnames, *sorted(filenames)]:
+            q = d / n
+            target = _escaping_target(root, q)
+            if target is not None:
+                out.append("symlink escapes the repository: "
+                           f"{q.relative_to(root).as_posix()} -> {target}")
+    return out
+
+
 def repo_facts(repo) -> RepoFacts:
     def g(*args):
         return gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *args,
@@ -337,6 +366,8 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
             target = _escaping_target(root, p)
             if target is not None:
                 out.append(f"symlink escapes the repository: {rel} -> {target}")
-        elif p.exists() and not p.is_file() and not p.is_dir():
+        elif p.is_dir():
+            out += _escaping_links_under(root, p)
+        elif p.exists() and not p.is_file():
             out.append(f"special file selected: {rel}")
     return out

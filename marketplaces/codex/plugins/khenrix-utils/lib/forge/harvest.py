@@ -33,6 +33,7 @@ ledger says the agent changed. Three measured causes, only one of which is close
 from dataclasses import dataclass, field
 
 from . import gitcmd, snapshot
+from .storage import Quota
 
 
 class HarvestError(RuntimeError):
@@ -61,6 +62,19 @@ class ArtifactSet:
 def record(seat_path, *, quota=None) -> dict[str, snapshot.Entry]:
     """One inventory of a seat, .git excluded.
 
+    `Quota.for_harvest`, not `Quota.default`: the default bounds the pre-launch screen's
+    decode of the user's source, and under it this function fails closed on the very thing
+    the phase design exists to observe — measured, `files: 5001 > 5000` on a 5200-file
+    `node_modules`. See that classmethod for the numbers and what they were measured
+    against. An explicit `quota=` still wins, so a caller can tighten it.
+
+    `snapshot.take`'s `skip_dirs` is deliberately NOT forwarded, and raising the cap is not
+    a workaround for the absence of a name list. Skipping `node_modules` by name would hide
+    it from `Fsetup` AND `Fwork` alike, so an agent that edited a file underneath one — a
+    vendored patch, `patch-package` — would have that work silently dropped from `paths`:
+    fail-OPEN, and reintroducing exactly the policy name-list the design rejects. Setup's
+    output is excluded by DIFFERENCING it, which requires seeing it.
+
     The two ways `snapshot.take` can decline are handled differently on purpose:
 
     - a quota breach returns `({}, [breach])`, and that empty dict is exactly what `diff`
@@ -70,7 +84,7 @@ def record(seat_path, *, quota=None) -> dict[str, snapshot.Entry]:
       names the path that could not be read and is already a RuntimeError, so wrapping it
       would only put this module's name in front of the tree's.
     """
-    entries, breaches = snapshot.take(seat_path, quota=quota)
+    entries, breaches = snapshot.take(seat_path, quota=quota or Quota.for_harvest())
     if breaches:
         raise HarvestError("; ".join(breaches))
     return entries

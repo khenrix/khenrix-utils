@@ -41,19 +41,80 @@ def _sha256(p: Path) -> str:
 
 
 def test_everything_in_the_tree_is_in_the_manifest(tmp_path):
-    """SEAM: baseline's tree vs its own manifest. A selected directory broke this."""
+    """SEAM: baseline's tree vs its own manifest. A selected directory broke this.
+
+    The fixture carries a SYMLINK because the original carried none — which is why this
+    test asserted a property it could not violate. A link is the one shape where the two
+    sets legitimately disagree: git commits it into the tree, and the manifest refuses to
+    hash through it. What must not exist is a THIRD outcome — in the tree, out of the
+    manifest, and nothing anywhere saying so — which is exactly what `screen._walk`'s
+    silent `continue` produced for a link pointing at the host.
+
+    So the residue is asserted to be exactly the links, and the screen is asserted to name
+    each one: the seam is closed either by the manifest describing the path or by a breach
+    declaring that nobody read it.
+    """
     repo = make_repo(tmp_path)
     write(repo, "scratch/a.txt", "a\n")
     write(repo, "scratch/sub/b.txt", "b\n")
+    (Path(repo) / "scratch" / "alias.txt").symlink_to("a.txt")
     run = tmp_path / "run"; run.mkdir()
     b = _baseline(repo, run, selected=["scratch"])
     tree = set(gitcmd.git(repo, "ls-tree", "-r", "--name-only", b.tracked_tree_oid,
                           env_extra=gitcmd.READONLY).stdout.split())
     # The tree must actually carry the selected directory, or the set difference below is
     # vacuously empty and the assertion certifies nothing.
-    assert {"scratch/a.txt", "scratch/sub/b.txt"} <= tree
+    assert {"scratch/a.txt", "scratch/sub/b.txt", "scratch/alias.txt"} <= tree
     missing = tree - set(b.filesystem_manifest)
-    assert missing == set(), f"in the tree but not the manifest: {sorted(missing)}"
+    assert missing == {"scratch/alias.txt"}, \
+        f"in the tree but not the manifest, and not a link: {sorted(missing)}"
+    _findings, breaches = screen.screen_tree(repo, ["scratch"])
+    assert breaches == ["scratch/alias.txt: not screened — symlink; links are never "
+                        "followed"], \
+        "the one path the manifest does not describe must be one the screen refuses"
+
+
+def test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat(tmp_path):
+    """SEAM: four modules individually consistent and jointly wrong, measured end to end.
+
+    `inspect.rejections` tested only the top-level selected path; `screen._walk` dropped a
+    nested link in silence; `baseline` kept it out of the manifest while `git add -f` put
+    it in the TREE; `fleet`'s verification skips symlinks. Result, measured on this exact
+    fixture: rejections `[]`, breaches `[]`, `verified=True`, and a seat whose
+    `scratch/creds` read a file outside the repository. Every module's own suite was green.
+
+    BOTH gates are asserted rather than one, because either alone would let a single edit
+    reopen the whole path.
+
+    The last two assertions CHARACTERIZE what the tree still does — the link is committed
+    and a seat can follow it — rather than endorsing it. That behaviour is the tracked-
+    symlink design question routed to Plan D, and it is what makes the two refusals above
+    load-bearing instead of decorative.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "credentials").write_text("HOST-ONLY-CONTENT\n")
+    write(repo, "scratch/a.txt", "a\n")
+    (Path(repo) / "scratch" / "creds").symlink_to(outside / "credentials")
+
+    f = finspect.repo_facts(repo)
+    assert finspect.rejections(f, ["scratch"]) == [
+        f"symlink escapes the repository: scratch/creds -> {outside / 'credentials'}"], \
+        "preflight must refuse the selection before a baseline is ever built"
+    _findings, breaches = screen.screen_tree(repo, ["scratch"])
+    assert breaches == ["scratch/creds: not screened — symlink; links are never followed"], \
+        "and the screen must not certify a selection it did not read through"
+
+    run = tmp_path / "run"; run.mkdir()
+    b = baseline.materialize(repo, run, f, ["scratch"], "r1")
+    tree = set(gitcmd.git(repo, "ls-tree", "-r", "--name-only", b.tracked_tree_oid,
+                          env_extra=gitcmd.READONLY).stdout.split())
+    assert "scratch/creds" in tree and "scratch/creds" not in b.filesystem_manifest
+    seat = fleet.clone_seat(repo, b, tmp_path / "s1", name="claude", identity=IDENT)
+    assert seat.verified is True, "fleet skips symlinks, so nothing downstream objects"
+    assert (seat.path / "scratch" / "creds").read_text() == "HOST-ONLY-CONTENT\n", \
+        "the seat really can read outside the repository — hence the two refusals above"
 
 
 def test_everything_the_manifest_names_is_screenable(tmp_path):

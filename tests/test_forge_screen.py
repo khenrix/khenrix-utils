@@ -1,4 +1,7 @@
 """The screen runs BEFORE any provider starts — a post-harvest scan is too late."""
+import os
+import signal
+import socket
 import sys
 from pathlib import Path
 
@@ -7,6 +10,28 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import screen, storage  # noqa: E402
 from forge_fixtures import make_repo, write  # noqa: E402
+
+
+def _within(seconds, fn, *args, **kwargs):
+    """Run `fn` under a SIGALRM deadline so a blocking bug FAILS the test instead of
+    hanging the suite. A signal, not a worker thread: a thread stuck in a blocking open()
+    cannot be cancelled, and a non-daemon thread would then hang the interpreter at exit
+    rather than the test. The handler raises, so PEP 475's EINTR retry does not resume the
+    blocked call.
+
+    Restated here rather than imported from `test_forge_snapshot`: the two suites test
+    modules that guard this hazard independently, and a shared helper would make one
+    suite's collection failure hide the other's.
+    """
+    def _fire(signum, frame):
+        raise TimeoutError(f"call blocked for more than {seconds}s")
+    prev = signal.signal(signal.SIGALRM, _fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
 
 # Assembled from two fragments so this FILE never holds a literal the repo's own
 # scan_secrets would match. The obvious sample token (`xoxp-1234567890abcde`) cannot be
@@ -101,6 +126,75 @@ def test_a_selected_symlinked_env_file_is_reported_not_silently_skipped(tmp_path
     findings, breaches = screen.screen_tree(repo, [".env"])
     assert findings == [], "the link itself is not read through"
     assert any(".env" in b for b in breaches), "an unread .env must fail the run closed"
+
+
+def test_a_symlink_inside_a_selected_directory_is_a_breach_not_a_silent_skip(tmp_path):
+    """The rule the top-level branch already applies, one level down, where it was absent.
+
+    `_walk` used to `continue` on a link leaf in silence while `screen_tree`'s top-level
+    branch breached on the identical shape. That gap is not academic: `baseline` selects a
+    directory with `git add -f`, which commits a nested link AS A LINK, so it ships to
+    every seat. Measured with the `continue` in place — preflight `[]`, breaches `[]`, and
+    a seat that read the host's credentials through `scratch/creds` with `verified=True`.
+
+    The target carries a token, so `findings == []` is evidence the link was never
+    followed rather than evidence there was nothing behind it.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "credentials").write_text(f'K = "{TOKEN}"\n')
+    write(repo, "scratch/a.py", "ok\n")
+    (Path(repo) / "scratch" / "creds").symlink_to(outside / "credentials")
+    findings, breaches = screen.screen_tree(repo, ["scratch"])
+    assert findings == [], "the link was followed and its target scanned"
+    # Whole-string, and identical to the top-level branch's wording: the point of the fix
+    # is that a nested path breaks the SAME rule, stated the same way.
+    assert breaches == ["scratch/creds: not screened — symlink; links are never followed"]
+
+
+def test_a_symlinked_directory_inside_a_selection_is_reported_too(tmp_path):
+    """A linked DIRECTORY arrives in os.walk's `dirnames`, never in `filenames`, so a
+    leaf-only check leaves it neither walked nor reported — while git still commits it as
+    a link the seat can read straight through. `.venv/lib64 -> lib` is this shape."""
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leak.txt").write_text(f'K = "{TOKEN}"\n')
+    write(repo, "scratch/a.py", "ok\n")
+    (Path(repo) / "scratch" / "linkdir").symlink_to(outside, target_is_directory=True)
+    findings, breaches = screen.screen_tree(repo, ["scratch"])
+    assert findings == [], "must not read through a link out of the tree"
+    assert breaches == ["scratch/linkdir: not screened — symlink; links are never followed"]
+
+
+def test_a_fifo_under_a_selected_directory_breaches_instead_of_blocking_forever(tmp_path):
+    """`open("rb")` on a FIFO blocks until a writer appears, and nothing in this call path
+    has a timeout — so `screen_tree` never returned at all. Measured before the guard: a
+    5s alarm fired inside the call, and without an alarm the suite wedges.
+
+    The deadline is what makes this a FAILING test rather than a hung one. A socket is
+    checked in the same fixture because it fails the other way — `open` raises ENXIO, a
+    class the `(findings, breaches)` contract has no room for — and one `S_ISREG` test
+    closes both. `snapshot._special_entry` already documents the identical hazard.
+
+    The readable sibling carries a token so the walk is proved to have continued past the
+    two refusals rather than aborted at the first.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "run/live.py", f'K = "{TOKEN}"\n')
+    os.mkfifo(Path(repo) / "run" / "pipe")
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        sock.bind(str(Path(repo) / "run" / "app.sock"))
+        findings, breaches = _within(10, screen.screen_tree, repo, ["run"])
+    finally:
+        sock.close()
+    assert [f.path for f in findings] == ["run/live.py"], "the readable file was not screened"
+    assert sorted(breaches) == [
+        "run/app.sock: not screened — not a regular file or directory",
+        "run/pipe: not screened — not a regular file or directory",
+    ]
 
 
 def test_a_selected_path_that_does_not_exist_is_reported(tmp_path):

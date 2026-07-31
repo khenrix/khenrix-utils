@@ -259,6 +259,39 @@ def test_rejects_escaping_symlink_only_when_selected(tmp_path):
     assert any("symlink" in h for h in finspect.rejections(f, ["out"]))
 
 
+def test_rejects_an_escaping_symlink_NESTED_in_a_selected_directory(tmp_path):
+    """The top-level path is not the boundary the baseline respects.
+
+    A selected DIRECTORY is swept into the tree by `git add -f`, which commits a nested
+    link as a link — so it reaches every seat. The loop used to test only the top-level
+    `rel`. Measured before this walk existed: `rejections() == []`, `screen` breaches
+    `[]`, and a seat that read the host's AWS credentials with `verified=True`. A selected
+    `.venv` is enough to produce the shape (`bin/python -> /usr/bin/python3`).
+
+    A linked DIRECTORY is asserted alongside the linked file because os.walk reports it in
+    `dirnames` only — a `filenames`-only check would miss `lib64 -> /usr/lib64` entirely.
+    """
+    repo = make_repo(tmp_path)
+    scratch = Path(repo) / "scratch"
+    (scratch / "sub").mkdir(parents=True)
+    (scratch / "inside.txt").write_text("ordinary\n")
+    (scratch / "creds").symlink_to("/etc/passwd")
+    (scratch / "linkdir").symlink_to("/etc", target_is_directory=True)
+    # Points back INTO the repository, so it must NOT be rejected: a rule that fires on
+    # every link refuses every repo that uses one, which is the failure §4 warns against.
+    (scratch / "sub" / "alias.txt").symlink_to("../inside.txt")
+
+    f = finspect.repo_facts(repo)
+    assert finspect.rejections(f, []) == [], "unselected: nothing to reject"
+    # Whole-list, in walk order (dirnames before filenames, each sorted): a substring
+    # check would pass on the in-tree alias too and certify nothing about the
+    # discrimination.
+    assert finspect.rejections(f, ["scratch"]) == [
+        "symlink escapes the repository: scratch/linkdir -> /etc",
+        "symlink escapes the repository: scratch/creds -> /etc/passwd",
+    ]
+
+
 # The three probes below pin the parsing that had to be adapted to git 2.53's real output
 # (see the comments at each site in inspect.py). Two of them are rejections, and an unproven
 # rejection is a rejection that will not fire.

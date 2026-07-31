@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+ stdlib only. git 2.53. pytest via `uvx pytest` from the repo root.
 
-**Spec:** `docs/superpowers/specs/2026-07-30-llm-forge-design.md` §4 (items 1, 2, 4, 6), §6.1, §7.1, §7.3, §7.4. Plan B (`2026-07-31-llm-forge-b-substrate.md`) shipped the substrate this consumes. **Deliberately out of scope:** verifier clones and the GeneratorContract fixed point (§6.2/§7.2), the journal and state machine (§14), review and ultrareview (§13), handover (§16), the skill and its evals (§18/§20).
+**Spec:** `docs/superpowers/specs/2026-07-30-llm-forge-design.md` §4 (items 1, 2, 4, 6), §7 preamble (the four inventories), §7.1, §7.3, §7.4. Plan B (`2026-07-31-llm-forge-b-substrate.md`) shipped the substrate this consumes. **Deliberately out of scope:** the gate surface and `gate_changed` (§6.1 — Plan D), verifier clones and the GeneratorContract fixed point (§6.2/§7.2), the journal and state machine (§14), review and ultrareview (§13), handover (§16), the skill and its evals (§18/§20).
 
 ## Global Constraints
 
@@ -613,7 +613,7 @@ Expected: `ModuleNotFoundError: No module named 'forge.harvest'`.
 
 ```python
 # shared/lib/forge/harvest.py
-"""The four-phase artifact set (spec §6.1, §7.1).
+"""The four-phase artifact set (spec §7.1, §7.2).
 
 Origin is PROVENANCE, not eligibility. Four inventories are taken — F0 (baseline
 checkout), Fsetup (after the engine's setup), Fwork (after the agent exits), Fverify
@@ -838,9 +838,11 @@ git commit -m "test(forge): assert the properties that live between modules"
 
 ## Self-review
 
-**Spec coverage.** §4 items 1, 2, 4 and 6 → Task 2 (verified checkout, identity, exclude recording from Plan B's fix, own branch), shipped together because a seat missing any one cannot be launched. §7.3 content-keyed change detection → Task 3. §6.1 four inventories and §7.1 path-set-vs-content → Task 4. Carried follow-ups F1, F2, F3, F7 and the screen's skipped-count → Task 1. The structural finding — no cross-seam assertions — → Task 5.
+**Spec coverage.** §4 items 1, 2, 4 and 6 → Task 2 (verified checkout, identity, exclude recording from Plan B's fix, own branch), shipped together because a seat missing any one cannot be launched. §7.3 content-keyed change detection → Task 3. §7's preamble (the four inventories) and §7.1 path-set-vs-content → Task 4. Carried follow-ups F1, F2, F3, F7 and the screen's skipped-count → Task 1. The structural finding — no cross-seam assertions — → Task 5.
 
-**Deliberately out of scope**, each with a later home: verifier clones and the GeneratorContract fixed point (§6.2/§7.2 — Plan D), the journal and state machine (§14 — Plan E), review and ultrareview (§13), handover (§16), the skill and evals (§18/§20). Nothing here launches a provider or spends a token; the "agent" in every harvest test is a lambda that writes a file.
+**§6.1 is NOT in this plan**, and an earlier draft of this document claimed it twice — in the header's spec list and here, both times glossed as "four inventories". §6.1 is **Gate surface**: recording changes to package scripts, test runners, discovered test files and CI helpers, and marking a candidate `gate_changed`. The four inventories are §7's preamble. Nothing in Task 4 records a gate surface and no shipped symbol is named for one, so Plan D must pick §6.1 up as unstarted rather than inherit it as done.
+
+**Deliberately out of scope**, each with a later home: the gate surface and `gate_changed` (§6.1 — Plan D), verifier clones and the GeneratorContract fixed point (§6.2/§7.2 — Plan D), the journal and state machine (§14 — Plan E), review and ultrareview (§13), handover (§16), the skill and evals (§18/§20). Nothing here launches a provider or spends a token; the "agent" in every harvest test is a lambda that writes a file.
 
 **Placeholder scan.** None. Two adaptation points are named explicitly rather than left vague: Task 2's `Seat` field preservation (read the current dataclass before extending it) and Task 5's closure check (verify with `source_manifest`, do not assume).
 

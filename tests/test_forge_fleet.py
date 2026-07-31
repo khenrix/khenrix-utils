@@ -144,6 +144,25 @@ def test_clone_seat_refuses_an_empty_identity_instead_of_writing_one(tmp_path):
     assert not dest.exists(), "a refused seat must not leave a clone behind"
 
 
+def test_clone_seat_refuses_an_unresolved_identity_rather_than_stringifying_it(tmp_path):
+    """`(None, None)` is what an unresolved identity looks like, and it SLIPPED this guard.
+
+    The test was `str(f).strip()`, and `str(None)` is the four-character string "None" —
+    truthy, non-blank, and accepted. The refusal was then reached three calls later as a
+    raw `TypeError` out of `git config user.name`, from the one path whose entire purpose
+    is a named refusal in this module's own error class. `baseline._resolve_author` gets
+    the same shape as a genuine None and raises properly, so the two disagreed on one
+    input.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    dest = tmp_path / "s1"
+    with pytest.raises(fleet.SeatError, match="a name AND an email are required"):
+        fleet.clone_seat(repo, _mk_baseline(repo, run), dest, name="claude",
+                         identity=(None, None))
+    assert not dest.exists(), "a refused seat must not leave a clone behind"
+
+
 def test_clone_seat_refuses_a_name_that_cannot_be_a_branch(tmp_path):
     """Otherwise the name surfaces as a raw GitError out of `checkout -b`, after the whole
     clone has been paid for, in neither this module's failure type nor a message naming

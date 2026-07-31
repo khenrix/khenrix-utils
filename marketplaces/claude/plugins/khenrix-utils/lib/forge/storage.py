@@ -41,8 +41,34 @@ class Quota:
 
     @classmethod
     def default(cls) -> "Quota":
+        """What the PRE-LAUNCH SCREEN is willing to decode out of the user's selected
+        baseline — source the user wrote, before any provider starts. Setup has not run at
+        that point, so no dependency tree is in scope here."""
         return cls(max_files=5000, max_file_bytes=32 * 1024 * 1024,
                    max_total_bytes=512 * 1024 * 1024)
+
+    @classmethod
+    def for_harvest(cls) -> "Quota":
+        """What an inventory of a SEAT may weigh — a different question from `default`.
+
+        `harvest`'s design turns on setup's output (`node_modules`, `.venv`) being PRESENT
+        in `Fsetup`, so that `Fsetup -> Fwork` differences it out of the artifact path set.
+        Under `default` the inventory that must observe it fails closed first: measured,
+        `HarvestError: files: 5001 > 5000` on a 5200-file `node_modules` — and this
+        stdlib-only repository's own worktree is 5654 files with no dependencies at all.
+
+        All three caps move because all three were measured wrong for this question, on
+        this machine's uv package cache: one cached package tree is 6,071 files / 337 MB,
+        and the largest single file inside one is 117.7 MiB — nearly 4x `default`'s
+        per-file cap. Leaving the byte caps alone would only move the same fail-closed
+        refusal one step down the same seat.
+
+        What does NOT move is the fail-closed property: these are hard caps that still make
+        `snapshot.take` return a breach and `harvest.record` raise, never truncate. They are
+        sized to separate a dependency tree from a runaway, not to admit everything.
+        """
+        return cls(max_files=200_000, max_file_bytes=512 * 1024 * 1024,
+                   max_total_bytes=8 * 1024 * 1024 * 1024)
 
     def breach(self, *, files: int, file_bytes: int, total_bytes: int):
         """Return a human-readable breach description, or None when within limits."""
