@@ -143,6 +143,30 @@ def test_rejects_shallow_clone(tmp_path):
     assert any("shallow" in r for r in finspect.rejections(f, []))
 
 
+def test_rejects_partial_clone_and_not_an_ordinary_clone(tmp_path):
+    """A real `--filter=blob:none` clone, because git 2.53 stopped writing the key the
+    original probe reads: the clone gets `remote.origin.promisor`, no `[extensions]` section,
+    and so passed preflight completely clean — objects reachable only via a lazy fetch to a
+    remote a seat would not have.
+
+    The full clone is the other half of the claim: `--get-regexp remote\\..*\\.promisor` must
+    not fire on the ordinary `remote.origin.url` every clone carries.
+    """
+    origin = make_repo(tmp_path, name="origin")
+    _git(origin, "config", "uploadpack.allowFilter", "true")
+    _git(tmp_path, "clone", "-q", "--no-checkout", "--filter=blob:none",
+         f"file://{origin}", "partial")
+    _git(tmp_path, "clone", "-q", f"file://{origin}", "full")
+
+    f = finspect.repo_facts(Path(tmp_path) / "partial")
+    assert f.is_partial
+    assert any("partial" in r for r in finspect.rejections(f, []))
+
+    n = finspect.repo_facts(Path(tmp_path) / "full")
+    assert not n.is_partial, "an ordinary remote must not read as promisor"
+    assert finspect.rejections(n, []) == []
+
+
 def test_unborn_head_is_rejected_not_raised(tmp_path):
     """A freshly init-ed repository is an ordinary state; `rev-parse HEAD` exits 128 on it."""
     repo = Path(tmp_path) / "empty"

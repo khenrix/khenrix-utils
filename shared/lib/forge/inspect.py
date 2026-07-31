@@ -74,6 +74,23 @@ def _config(repo, key: str) -> str:
                       env_extra=gitcmd.READONLY, check=False).stdout.strip()
 
 
+def _has_promisor_remote(repo) -> bool:
+    """True when a remote is marked promisor — git 2.53's marker for a partial clone.
+
+    `extensions.partialClone` alone is not enough: git 2.53 no longer writes it. A
+    `--filter=blob:none` clone gets `core.repositoryformatversion = 1` and
+    `remote.<name>.promisor = true`, with no `[extensions]` section at all, so the older
+    probe reports a partial clone as ordinary — fail-OPEN on a repository whose objects live
+    behind a lazy fetch. Both probes are kept: this one catches current git, the other still
+    catches clones made by older git.
+
+    Presence of the key decides, not its value. `--get-regexp` exits 1 when nothing matches,
+    so this cannot use check=True.
+    """
+    return gitcmd.git(repo, "config", "--get-regexp", r"remote\..*\.promisor",
+                      env_extra=gitcmd.READONLY, check=False).returncode == 0
+
+
 def _filtered_paths(repo, tracked: list) -> list:
     """Tracked paths carrying a custom `.gitattributes` filter.
 
@@ -159,7 +176,7 @@ def repo_facts(repo) -> RepoFacts:
         root=root, head=head,
         index_sha=hashlib.sha256(index.read_bytes()).hexdigest() if index.is_file() else "",
         is_shallow=g("rev-parse", "--is-shallow-repository").strip() == "true",
-        is_partial=bool(_config(repo, "extensions.partialClone")),
+        is_partial=bool(_config(repo, "extensions.partialClone")) or _has_promisor_remote(repo),
         has_submodules=any(mode == "160000" for mode, _ in entries) or
         (root / ".gitmodules").is_file(),
         sparse=_config(repo, "core.sparseCheckout") == "true",
