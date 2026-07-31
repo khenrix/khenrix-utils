@@ -54,7 +54,11 @@ class Baseline:
     commit: str                      # B1; == base_commit when the tree is clean
     ref: str
     dirty: bool
-    sidecars: list = field(default_factory=list)
+    # None, never []. Spec §2's sidecar manifest — declared ignored inputs, empty
+    # directories, special files — has no producer yet, and a later plan consumes this field
+    # as authoritative: an empty list would tell it "there are none" when the truth is
+    # "nobody looked", which is the fail-OPEN reading of the two.
+    sidecars: list | None = None
     filesystem_manifest: dict = field(default_factory=dict)
 
 
@@ -74,6 +78,21 @@ def _resolve_author(repo, author):
             "Refusing to substitute a placeholder — B1 is history the user is asked to "
             "merge, so a fabricated author would be a permanent false attribution.")
     return name, email
+
+
+def _index_sha(repo) -> str:
+    """sha256 of the index git would use for `repo`, or "" when there is none.
+
+    The git dir is ASKED FOR, never joined onto `.git`: in a linked worktree that is a
+    FILE, the joined path does not exist, `is_file()` answers False without raising, and
+    this returns "" — at which point the drift guard below, which skips an empty hash,
+    silently stops guarding. `inspect.repo_facts` computes the value being compared the
+    same way, so the two must resolve the location the same way too.
+    """
+    gd = Path(gitcmd.git(repo, "rev-parse", "--absolute-git-dir",
+                         env_extra=gitcmd.READONLY).stdout.strip())
+    idx = gd / "index"
+    return hashlib.sha256(idx.read_bytes()).hexdigest() if idx.is_file() else ""
 
 
 def _walk_selected(base: Path, repo: Path) -> list:
@@ -136,6 +155,21 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
         raise BaselineError(
             f"repo and facts describe different repositories: {top} vs facts.root {repo}. "
             "B would be built from one and attributed to the other.")
+
+    # §2.2: "abort if the source moved mid-snapshot". The describe pass recorded the index
+    # hash; if it moved between then and now, a concurrent editor or IDE wrote the index and
+    # B would describe a tree nobody asked for. index_sha had a producer and no consumer
+    # until this check.
+    #
+    # FIRST, before the manifest and long before `add` — the abort has to mean nothing was
+    # written, not merely that nothing became reachable, for the same reason the identity
+    # probe was hoisted above write-tree: a refused run's blobs and tree otherwise sit loose
+    # in the user's object store until git's two-week gc grace expires.
+    idx_now = _index_sha(repo)
+    if facts.index_sha and idx_now and idx_now != facts.index_sha:
+        raise BaselineError(
+            "the repository index moved between preflight and baseline construction "
+            f"({facts.index_sha[:12]} -> {idx_now[:12]}); re-run preflight")
 
     base_commit = facts.head
     dirty = bool(facts.staged or facts.unstaged or selected_untracked)
@@ -232,4 +266,4 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     gitcmd.git(repo, "update-ref", ref, commit, gitcmd.zero_oid(repo))
 
     return Baseline(base_commit=base_commit, tracked_tree_oid=tree, commit=commit,
-                    ref=ref, dirty=True, sidecars=[], filesystem_manifest=manifest)
+                    ref=ref, dirty=True, filesystem_manifest=manifest)

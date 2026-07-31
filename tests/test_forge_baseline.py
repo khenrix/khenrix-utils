@@ -326,3 +326,62 @@ def test_a_symlink_inside_a_selected_directory_is_not_hashed_through(tmp_path):
     b = _mk(repo, run, selected=["scratch"])
     assert "scratch/link.txt" not in b.filesystem_manifest
     assert hashlib.sha256(b"host secret\n").hexdigest() not in b.filesystem_manifest.values()
+
+
+def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):
+    """§2.2: "abort if the source moved mid-snapshot". index_sha had no consumer.
+
+    The abort is asserted as WRITES-NOTHING, not merely as an exception: a check placed
+    after `add`/`write-tree` would leave the selected file's blob and the tree loose in the
+    user's object store — unreachable but present until git's two-week gc grace expires,
+    the same defect the identity refusal already fixed. `d.txt` is untracked and selected,
+    so its blob is an object the store does not already hold: if the guard ran late, the
+    count would move.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "d.txt", "d\n")
+    run = tmp_path / "run"; run.mkdir()
+    f = finspect.repo_facts(repo)
+    f = finspect.replace(f, index_sha="0" * 64)      # pretend the index differed at describe time
+    before_objs = _loose_objects(repo)
+    with pytest.raises(baseline.BaselineError, match="moved"):
+        baseline.materialize(repo, run, f, ["d.txt"], "r1")
+    assert _loose_objects(repo) == before_objs, "the abort left objects in the user's store"
+    assert gitcmd.git(repo, "rev-parse", "--verify", "refs/khenrix-forge/r1/base",
+                      check=False).returncode != 0, "the abort published a ref anyway"
+
+
+def test_the_drift_check_finds_the_real_index_in_a_linked_worktree(tmp_path):
+    """The guard skips on an empty hash, so a wrong git dir makes it fail OPEN.
+
+    A linked worktree's `.git` is a FILE, so a joined `<repo>/.git/index` does not exist,
+    `is_file()` answers False without raising, and the hash comes back "" — at which point
+    the drift guard silently does nothing on the one layout this module has already been
+    caught assuming twice. The location must be asked for, not built.
+    """
+    repo = make_repo(tmp_path)
+    wt = tmp_path / "wt"
+    gitcmd.git(repo, "worktree", "add", "-q", str(wt), "-b", "feat")
+    assert (wt / ".git").is_file(), "fixture precondition: a linked worktree uses a .git file"
+    write(wt, "d.txt", "d\n")
+    run = tmp_path / "run"; run.mkdir()
+    f = finspect.replace(finspect.repo_facts(wt), index_sha="0" * 64)
+    with pytest.raises(baseline.BaselineError, match="moved"):
+        baseline.materialize(wt, run, f, ["d.txt"], "r1")
+
+
+def test_sidecars_is_none_until_a_producer_exists(tmp_path):
+    """An empty list reads as "there are none"; None reads as "nobody looked".
+
+    Both construction paths, because only one of them takes the field's default — the
+    dirty path passes it explicitly. Spec §2's sidecar manifest has no producer yet and a
+    later plan consumes this field as authoritative.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    clean = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "clean")
+    write(repo, "d.txt", "d\n")
+    dirty = baseline.materialize(repo, run, finspect.repo_facts(repo), ["d.txt"], "dirty")
+    assert clean.dirty is False and dirty.dirty is True, \
+        "fixture: the two runs must cover both constructors"
+    assert clean.sidecars is None and dirty.sidecars is None

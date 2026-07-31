@@ -27,6 +27,10 @@ class FleetError(RuntimeError):
     """A seat could not be built into the state the threat model requires."""
 
 
+class ForgeEnvError(RuntimeError):
+    """The environment handed to a seat cannot be built."""
+
+
 @dataclass(frozen=True)
 class Seat:
     """A built seat, plus the record of what was replayed into it (spec §4 item 4).
@@ -242,6 +246,14 @@ def forge_child_env(repo_path, env=None) -> dict:
         base.pop(k, None)
     out = scrub_env(base, repo_path)
     out.update(gitcmd.NO_USER_CONFIG)
-    cur = int(out.get("LLM_FORGE_DEPTH", "0") or "0")
+    # A bare ValueError out of `int()` is indistinguishable from any other ValueError raised
+    # beneath a function that otherwise only ever returns a dict, so the guard's own failure
+    # is not something a caller can catch on purpose.
+    raw = out.get("LLM_FORGE_DEPTH", "0") or "0"
+    try:
+        cur = int(raw)
+    except ValueError as e:
+        raise ForgeEnvError(
+            f"ambient LLM_FORGE_DEPTH is not a number: {raw!r}") from e
     out["LLM_FORGE_DEPTH"] = str(cur + 1)
     return out

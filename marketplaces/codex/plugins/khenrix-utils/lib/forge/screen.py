@@ -102,6 +102,14 @@ def screen_tree(root, rel_paths, quota: Quota = None):
 
     targets, breaches, findings, total = [], [], [], 0
     for rel in rel_paths:
+        # `root / "/etc/hostname"` IS `/etc/hostname`: an absolute right-hand side REPLACES
+        # the root instead of joining to it, silently. The selection then names a host file
+        # the baseline never contained, this loop opens it, and only `relative_to(root)`
+        # notices — by raising ValueError out of a function whose contract is to return
+        # (findings, breaches). A breach, because the run must fail closed on it either way.
+        if os.path.isabs(rel):
+            breaches.append(f"{rel}: not screened — selection must be repo-relative")
+            continue
         p = root / rel
         # is_dir()/is_file() both follow symlinks, so the link check comes first: a
         # selected `linkdir -> /home/user/.ssh` would otherwise be walked as a directory

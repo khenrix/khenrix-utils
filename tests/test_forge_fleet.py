@@ -324,3 +324,15 @@ def test_seats_are_independent_of_each_other(tmp_path):
                    check=True, capture_output=True, text=True, env=_hermetic_env())
     assert (s2 / "seed.txt").read_text() == "seed\n"
     assert _git(repo, "rev-parse", "HEAD") == b.base_commit, "user repo HEAD moved"
+
+
+def test_forge_child_env_raises_a_named_error_on_a_bad_depth(tmp_path):
+    """A non-numeric ambient depth is a caller error, not an engine crash.
+
+    `int()` raises a bare ValueError from inside a function that otherwise only ever
+    returns a dict, so the one thing a caller could catch is indistinguishable from any
+    other ValueError raised beneath it.
+    """
+    repo = make_repo(tmp_path)
+    with pytest.raises(fleet.ForgeEnvError, match="LLM_FORGE_DEPTH"):
+        fleet.forge_child_env(repo, {"LLM_FORGE_DEPTH": "not-a-number"})

@@ -146,3 +146,38 @@ def test_the_git_object_store_is_not_walked(tmp_path):
     findings, breaches = screen.screen_tree(repo, ["."])
     assert breaches == []
     assert findings == [], "the object store the baseline came from is not worth decoding"
+
+
+def test_absolute_selected_path_is_a_breach_not_a_crash(tmp_path):
+    """`root / "/etc/hostname"` IS `/etc/hostname`: an absolute right-hand side REPLACES
+    the root rather than joining to it, silently and without raising. The selection then
+    reaches a host file the baseline never contained — which this module opens and scans —
+    and only `relative_to(root)` notices, by raising a bare ValueError out of a function
+    whose whole contract is to return (findings, breaches).
+
+    The target carries a token, so `findings == []` is evidence it was never opened, not
+    merely evidence that nothing interesting was there.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text(f'K = "{TOKEN}"\n')
+    findings, breaches = screen.screen_tree(repo, [str(outside)])
+    assert findings == [], "an absolute selection must never be opened"
+    assert any("absolute" in b for b in breaches)
+
+
+def test_skipped_count_is_reported_so_coverage_is_not_overstated(tmp_path):
+    """A mixed selection must say which half it did not read.
+
+    The screened path holds a token and the skipped one is a link, so the two halves are
+    distinguishable in the result: the findings prove the readable file WAS read, and the
+    breach names the exact path that was not — rather than a bare "some paths were skipped"
+    a caller cannot act on.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "cfg.py", f'K = "{TOKEN}"\n')
+    (Path(repo) / "link").symlink_to("cfg.py")
+    findings, breaches = screen.screen_tree(repo, ["cfg.py", "link"])
+    assert [f.path for f in findings] == ["cfg.py"], "the readable half was not screened"
+    assert [b for b in breaches if b.startswith("link: not screened")] == breaches, \
+        "the skipped path must be named individually"
