@@ -54,17 +54,21 @@ def _z(out: str) -> list:
 
 
 def _index_entries(out: str) -> list:
-    """`(mode, path)` per index entry, parsed from `ls-files -s -z`.
+    """`(tag, mode, path)` per index entry, parsed from `ls-files -s -v -z`.
 
-    The record is `<mode> SP <oid> SP <stage> TAB <path>`, so the split is on the FIRST tab
-    only: under `-z` the path is raw bytes and may itself contain one, while mode, oid and
-    stage never can.
+    The record is `<tag> SP <mode> SP <oid> SP <stage> TAB <path>`, so the split is on the
+    FIRST tab only: under `-z` the path is raw bytes and may itself contain one, while the
+    tag, mode, oid and stage never can.
+
+    One index read answers three questions — gitlinks (mode 160000), skip-worktree state
+    (tag S/s) and the tracked path list for the .gitattributes probe.
     """
     entries = []
     for rec in _z(out):
         meta, tab, path = rec.partition("\t")
-        if tab:
-            entries.append((meta.split(" ", 1)[0], path))
+        cols = meta.split(" ")
+        if tab and len(cols) >= 2:
+            entries.append((cols[0], cols[1], path))
     return entries
 
 
@@ -169,7 +173,13 @@ def repo_facts(repo) -> RepoFacts:
     # which is fail-OPEN on the exact condition this rejects. `ls-files` cannot fail here, and
     # its mode column is 160000 for a gitlink however the entry was created. The .gitmodules
     # probe stays because it catches the opposite direction: a mapping with no index entry.
-    entries = _index_entries(g("ls-files", "-s", "-z"))
+    #
+    # `-v` adds the status tag that carries skip-worktree, which spec §2.3 rejects in its own
+    # right and which no config key reports: `git update-index --skip-worktree` sets the bit
+    # on the entry and writes nothing to config at all. The tag is `S`, or lowercase `s` when
+    # the same entry is also assume-unchanged, so both are matched.
+    entries = _index_entries(g("ls-files", "-s", "-v", "-z"))
+    skip_worktree = any(tag in ("S", "s") for tag, _, _ in entries)
 
     index = git_dir / "index"
     return RepoFacts(
@@ -177,11 +187,11 @@ def repo_facts(repo) -> RepoFacts:
         index_sha=hashlib.sha256(index.read_bytes()).hexdigest() if index.is_file() else "",
         is_shallow=g("rev-parse", "--is-shallow-repository").strip() == "true",
         is_partial=bool(_config(repo, "extensions.partialClone")) or _has_promisor_remote(repo),
-        has_submodules=any(mode == "160000" for mode, _ in entries) or
+        has_submodules=any(mode == "160000" for _, mode, _ in entries) or
         (root / ".gitmodules").is_file(),
-        sparse=_config(repo, "core.sparseCheckout") == "true",
+        sparse=_config(repo, "core.sparseCheckout") == "true" or skip_worktree,
         unmerged=unmerged, intent_to_add=intent_to_add,
-        filtered_paths=_filtered_paths(repo, [path for _, path in entries]),
+        filtered_paths=_filtered_paths(repo, [path for _, _, path in entries]),
         staged=staged, unstaged=unstaged, untracked=untracked)
 
 
@@ -201,7 +211,8 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
     if facts.has_submodules:
         out.append("submodules present: nested remotes reopen the isolation problem")
     if facts.sparse:
-        out.append("sparse checkout: the working tree is not the tracked tree")
+        out.append("sparse checkout or skip-worktree entries: "
+                   "the working tree is not the tracked tree")
     if facts.unmerged:
         out.append(f"unmerged index entries ({len(facts.unmerged)}): resolve the merge first")
     if facts.intent_to_add:

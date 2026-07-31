@@ -167,6 +167,50 @@ def test_rejects_partial_clone_and_not_an_ordinary_clone(tmp_path):
     assert finspect.rejections(n, []) == []
 
 
+def test_rejects_sparse_checkout_cone_and_legacy_config(tmp_path):
+    """Cone mode is the modern default and it puts `core.sparseCheckout` in
+    `.git/config.worktree`, not `.git/config` — `git sparse-checkout` also turns on
+    `extensions.worktreeConfig`. Plain `git config --get` still reads the worktree scope
+    (`--local` does NOT), which is the one fact this probe depends on and the reason it
+    survived git 2.53 where `extensions.partialClone` did not.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "keep/k.txt", "k\n")
+    write(repo, "drop/d.txt", "d\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "dirs")
+    _git(repo, "sparse-checkout", "set", "keep")
+    assert not (Path(repo) / "drop").exists(), "fixture is not actually sparse"
+    f = finspect.repo_facts(repo)
+    assert f.sparse
+    assert any("sparse" in r for r in finspect.rejections(f, []))
+
+    # The legacy shape, and the only thing keeping the config probe non-redundant: config
+    # alone, with no skip-worktree bit set yet. This is how a sparse checkout is armed before
+    # `read-tree` applies it, and what older git wrote.
+    legacy = make_repo(tmp_path, name="legacy")
+    _git(legacy, "config", "core.sparseCheckout", "true")
+    g = finspect.repo_facts(legacy)
+    assert g.sparse
+    assert any("sparse" in r for r in finspect.rejections(g, []))
+
+    plain = make_repo(tmp_path, name="plain")
+    assert not finspect.repo_facts(plain).sparse
+
+
+def test_rejects_skip_worktree_entry(tmp_path):
+    """spec §2.3 rejects skip-worktree state in its own right, and no config key reports it:
+    `git update-index --skip-worktree` sets a bit on the index entry and writes nothing to
+    config, so a config-only probe reads the repo as ordinary."""
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    assert _git(repo, "config", "--get", "core.sparseCheckout",
+                check=False).returncode == 1, "the config probe must not be what fires here"
+    f = finspect.repo_facts(repo)
+    assert f.sparse
+    assert any("skip-worktree" in r for r in finspect.rejections(f, []))
+
+
 def test_unborn_head_is_rejected_not_raised(tmp_path):
     """A freshly init-ed repository is an ordinary state; `rev-parse HEAD` exits 128 on it."""
     repo = Path(tmp_path) / "empty"
