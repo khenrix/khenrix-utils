@@ -14,6 +14,7 @@ Never `--local`/hardlinks: against git's own operations hardlinked objects are s
 (content-addressed, mode 444), but forge's whole premise is a process that may write
 outside git's rules, and a truncate through a shared inode corrupts the user's repository.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -31,6 +32,10 @@ class ForgeEnvError(FleetError):
     """The environment handed to a seat cannot be built."""
 
 
+class SeatError(FleetError):
+    """The checkout does not match the baseline it was supposed to materialize."""
+
+
 @dataclass(frozen=True)
 class Seat:
     """A built seat, plus the record of what was replayed into it (spec §4 item 4).
@@ -39,13 +44,36 @@ class Seat:
     clone's own state distinguishes "the source had no ignore semantics" from "we looked
     in the wrong place", and both leave a seat that clones cleanly and checks out B1. The
     record is what lets a caller — or a test — tell those apart.
+
+    `branch` and `verified` both default to the state a seat CANNOT be launched in — no
+    branch, nothing proved — so a `Seat` built by any route other than `clone_seat` makes
+    the weaker claim rather than inheriting a readiness it never established.
     """
     path: Path
     replayed: tuple = field(default_factory=tuple)
+    branch: str = ""
+    verified: bool = False
 
 
-def clone_seat(repo, baseline, dest, *, template_dir=None) -> Seat:
-    """Clone `baseline.ref` into `dest` and hand back a checked-out, remote-less seat."""
+def _sha256_file(p: Path) -> str:
+    """Mirrors `baseline._sha256_file`. The two must agree byte-for-byte on how a file is
+    digested, since this compares its output against that one's manifest."""
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat:
+    """Clone `baseline.ref` into `dest`; hand back a remote-less seat that can be launched.
+
+    `name` is the seat's name (`claude`/`codex`/`agy`) and gives it its branch; `identity`
+    is the `(author_name, author_email)` written into the clone's local config. Both are
+    required rather than defaulted: a seat missing either cannot do its job — no branch
+    means its work is unreachable, no identity means it cannot commit at all — and a
+    default would ship that seat silently.
+    """
     repo, dest = Path(repo), Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -112,12 +140,55 @@ def clone_seat(repo, baseline, dest, *, template_dir=None) -> Seat:
             dst_exclude.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_exclude, dst_exclude)
             replayed.append("info/exclude")
+
+        # §4 item 6: the seat gets only its own branch. `--revision=` leaves a DETACHED
+        # HEAD — measured on git 2.53, `rev-parse --abbrev-ref HEAD` answers the literal
+        # string `HEAD` — so without this the seat's work becomes unreachable the moment
+        # anything else moves. The run id is the third component of the baseline ref
+        # (`refs/khenrix-forge/<run-id>/base`); a ref of another shape raises IndexError
+        # here rather than naming the branch after the wrong thing.
+        run_id = baseline.ref.split("/")[2]
+        branch = f"forge/{run_id}/{name}"
+        gitcmd.git(dest, "checkout", "-q", "-b", branch, env_extra=env)
+
+        # §4 item 2: identity, written into the clone's LOCAL config. Without it a seat
+        # cannot commit at all: global config is disabled by design (§4.2), so git fails
+        # with "Please tell me who you are". Resolving the identity is the ORCHESTRATOR's
+        # job for the same reason baseline.py refuses to guess an author — a fabricated
+        # name is a permanent false attribution — so it arrives as an argument.
+        gitcmd.git(dest, "config", "user.name", identity[0], env_extra=env)
+        gitcmd.git(dest, "config", "user.email", identity[1], env_extra=env)
+
+        # §4 item 1 + §1: the TRUSTED PARENT recomputes readiness from primary evidence.
+        # Until now the module asserted nothing about what it had built and the TEST
+        # asserted HEAD == B1 — a readiness check living on the wrong side of the boundary,
+        # and one no production caller ever ran.
+        head = gitcmd.git(dest, "rev-parse", "HEAD", env_extra=env).stdout.strip()
+        if head != baseline.commit:
+            raise SeatError(f"seat checked out {head[:12]}, expected {baseline.commit[:12]}")
+        for rel, want in (baseline.filesystem_manifest or {}).items():
+            p = dest / rel
+            # A symlink is SKIPPED rather than hashed: `_sha256_file` opens THROUGH it, so
+            # hashing one describes content from outside the tree the manifest claims to
+            # describe — baseline's `_walk_selected` refuses to walk them for that reason.
+            # This narrows the check without emptying it: measured on a fixture carrying a
+            # tracked symlink, 3 of 4 manifest entries were still ordinary files.
+            if p.is_symlink():
+                continue
+            # Absence is NOT skipped. A seat missing a path B1 contains is exactly the
+            # transport failure this assertion exists to catch, and skipping it would
+            # report `verified is True` for a seat that never received the file.
+            if not p.is_file():
+                raise SeatError(f"seat is missing a path the baseline manifest lists: {rel}")
+            if _sha256_file(p) != want:
+                raise SeatError(f"seat content differs from the baseline manifest: {rel}")
+        verified = True
     finally:
         # Also on the failure paths: a refused seat that leaves a populated template dir
         # behind hands the NEXT seat at this path whatever was in it.
         if engine_owned:
             shutil.rmtree(tmpl, ignore_errors=True)
-    return Seat(path=dest, replayed=tuple(replayed))
+    return Seat(path=dest, replayed=tuple(replayed), branch=branch, verified=verified)
 
 
 # Variables whose value is an os.pathsep-separated LIST of paths. This is a SHAPE list,

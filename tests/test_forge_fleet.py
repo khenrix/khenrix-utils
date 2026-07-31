@@ -15,6 +15,9 @@ from forge import baseline, fleet, gitcmd, inspect as finspect  # noqa: E402
 from forge_fixtures import _env as _hermetic_env, make_repo, write  # noqa: E402
 
 
+IDENT = ("Forge Seat", "seat@forge.invalid")
+
+
 def _mk_baseline(repo, run, selected=()):
     f = finspect.repo_facts(repo)
     return baseline.materialize(repo, run, f, list(selected), "r1")
@@ -45,7 +48,7 @@ def test_clone_checks_out_the_dirty_baseline_not_head(tmp_path):
     write(repo, "seed.txt", "modified\n")
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    seat = fleet.clone_seat(repo, b, tmp_path / "seat1").path
+    seat = fleet.clone_seat(repo, b, tmp_path / "seat1", name="claude", identity=IDENT).path
     assert (seat / "seed.txt").read_text() == "modified\n"
     assert _git(seat, "rev-parse", "HEAD") == b.commit
 
@@ -53,7 +56,8 @@ def test_clone_checks_out_the_dirty_baseline_not_head(tmp_path):
 def test_clone_has_no_origin(tmp_path):
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                            name="claude", identity=IDENT).path
     assert _git(seat, "remote") == "", "git clone always sets origin; it must be removed"
 
 
@@ -61,7 +65,8 @@ def test_clone_is_not_hardlinked_to_the_source_objects(tmp_path):
     """A rogue non-git write through a shared inode corrupts the USER's repository."""
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                            name="claude", identity=IDENT).path
     src = {p.stat().st_ino for p in (Path(repo) / ".git" / "objects").rglob("*") if p.is_file()}
     dst = {p.stat().st_ino for p in (seat / ".git" / "objects").rglob("*") if p.is_file()}
     assert src and dst, "nothing was compared"
@@ -86,7 +91,7 @@ def test_clone_transfers_no_object_unreachable_from_the_baseline_ref(tmp_path):
 
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    seat = fleet.clone_seat(repo, b, tmp_path / "seat1").path
+    seat = fleet.clone_seat(repo, b, tmp_path / "seat1", name="claude", identity=IDENT).path
 
     present = subprocess.run(["git", "-C", str(seat), "cat-file", "-e", planted],
                              capture_output=True)
@@ -118,7 +123,8 @@ def test_clone_refuses_a_seat_whose_remote_survives(tmp_path, monkeypatch):
     monkeypatch.setattr(fleet.gitcmd, "git", remove_is_a_no_op)
     dest = tmp_path / "seat1"
     with pytest.raises(fleet.FleetError, match="push target"):
-        fleet.clone_seat(repo, _mk_baseline(repo, run), dest)
+        fleet.clone_seat(repo, _mk_baseline(repo, run), dest, name="claude",
+                         identity=IDENT)
     assert not (dest.parent / f".{dest.name}.tmpl").exists(), "template dir leaked"
 
 
@@ -143,7 +149,8 @@ def test_clone_carries_no_hooks_from_a_global_template(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
     monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl.parent))
     run = tmp_path / "run"; run.mkdir()
-    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1").path
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                            name="claude", identity=IDENT).path
     assert not (seat / ".git" / "hooks" / "post-checkout").exists()
     assert not ran.exists(), "a template hook executed inside the seat"
 
@@ -163,7 +170,8 @@ def test_ignore_semantics_are_replayed_from_a_linked_worktree(tmp_path):
     excl.parent.mkdir(parents=True, exist_ok=True)
     excl.write_text("# forge marker\nbuild-scratch/\n")
     run = tmp_path / "run"; run.mkdir()
-    s = fleet.clone_seat(wt, _mk_baseline(wt, run), tmp_path / "seat1")
+    s = fleet.clone_seat(wt, _mk_baseline(wt, run), tmp_path / "seat1",
+                         name="claude", identity=IDENT)
     assert (s.path / ".git" / "info" / "exclude").read_text() == excl.read_text()
     assert "info/exclude" in s.replayed
 
@@ -174,7 +182,8 @@ def test_the_replay_record_reports_nothing_when_there_was_nothing_to_replay(tmp_
     repo = make_repo(tmp_path)
     (repo / ".git" / "info" / "exclude").unlink(missing_ok=True)
     run = tmp_path / "run"; run.mkdir()
-    s = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1")
+    s = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "seat1",
+                         name="claude", identity=IDENT)
     assert s.replayed == ()
 
 
@@ -313,8 +322,8 @@ def test_seats_are_independent_of_each_other(tmp_path):
     repo = make_repo(tmp_path)
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    s1 = fleet.clone_seat(repo, b, tmp_path / "s1").path
-    s2 = fleet.clone_seat(repo, b, tmp_path / "s2").path
+    s1 = fleet.clone_seat(repo, b, tmp_path / "s1", name="claude", identity=IDENT).path
+    s2 = fleet.clone_seat(repo, b, tmp_path / "s2", name="codex", identity=IDENT).path
     (s1 / "seed.txt").write_text("seat one only\n")
     # Identity is supplied per-invocation: a clone carries none of the source's LOCAL
     # config, and falling back to the developer's ~/.gitconfig is the non-hermeticity
@@ -341,3 +350,116 @@ def test_forge_child_env_raises_a_named_error_on_a_bad_depth(tmp_path):
     # because the two errors from one module happen to be siblings.
     with pytest.raises(fleet.FleetError):
         fleet.forge_child_env(repo, {"LLM_FORGE_DEPTH": "not-a-number"})
+
+
+def test_seat_is_on_its_own_named_branch(tmp_path):
+    """`--revision=` leaves a DETACHED HEAD (measured: `rev-parse --abbrev-ref HEAD`
+    answered the literal string `HEAD`), so a seat's work is unreachable the moment
+    anything else moves. Spec §4 item 6: the seat gets only its own branch.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    seat = fleet.clone_seat(repo, b, tmp_path / "s1", name="claude", identity=IDENT)
+    assert seat.branch == "forge/r1/claude"
+    assert _git(seat.path, "rev-parse", "--abbrev-ref", "HEAD") == "forge/r1/claude"
+    # The branch must NAME B1, not merely exist: a branch cut at the wrong commit is the
+    # same unreachable-work failure wearing a name.
+    assert _git(seat.path, "rev-parse", "forge/r1/claude") == b.commit
+
+
+def test_seat_can_commit_without_the_users_global_config(tmp_path):
+    """A seat as shipped could not commit: no identity, and global config is disabled.
+
+    The environment is the fixtures' own rather than a locally restated
+    `{**os.environ, GIT_CONFIG_GLOBAL: devnull, ...}`: it pins the same two config
+    variables AND clears the nine repository-LOCATION variables, so an ambient GIT_DIR
+    cannot aim this `commit` at the developer's real repository.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    seat = fleet.clone_seat(repo, _mk_baseline(repo, run), tmp_path / "s1",
+                            name="codex", identity=IDENT)
+    (seat.path / "work.txt").write_text("did work\n")
+    r = subprocess.run(["git", "-C", str(seat.path), "add", "-A"],
+                       capture_output=True, text=True, env=_hermetic_env())
+    assert r.returncode == 0, r.stderr
+    r = subprocess.run(["git", "-C", str(seat.path), "commit", "-qm", "seat work"],
+                       capture_output=True, text=True, env=_hermetic_env())
+    assert r.returncode == 0, r.stderr
+    who = _git(seat.path, "log", "-1", "--format=%an <%ae>")
+    assert who == "Forge Seat <seat@forge.invalid>"
+
+
+def test_clone_seat_verifies_the_checkout_against_the_manifest(tmp_path):
+    """The module must recompute this, not rely on a test doing it (spec §1, §4 item 1)."""
+    repo = make_repo(tmp_path)
+    write(repo, "d.txt", "dirty\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run, selected=["d.txt"])
+    # The claim `verified is True` is only worth anything if the loop had entries to
+    # check — a manifest of nothing but skipped paths would set it vacuously.
+    assert set(b.filesystem_manifest) == {"seed.txt", "d.txt"}
+    seat = fleet.clone_seat(repo, b, tmp_path / "s1", name="agy", identity=IDENT)
+    assert seat.verified is True
+
+
+def test_clone_seat_raises_when_the_checkout_does_not_match(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    bad = baseline.Baseline(
+        base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid,
+        commit=b.commit, ref=b.ref, dirty=b.dirty, sidecars=None,
+        filesystem_manifest={**b.filesystem_manifest, "seed.txt": "0" * 64})
+    with pytest.raises(fleet.SeatError, match="seed.txt"):
+        fleet.clone_seat(repo, bad, tmp_path / "s1", name="claude", identity=IDENT)
+
+
+def test_clone_seat_raises_when_a_manifest_path_is_missing_from_the_seat(tmp_path):
+    """Absence is the failure the manifest assertion exists to CATCH, not a case to skip.
+
+    §4 item 1 asks for the full manifest asserted, and a seat that did not receive a file
+    the baseline says is in B1 is exactly the transport bug — a wrong `--revision`, a
+    checkout that half-ran — that the assertion is there to find. Skipping absent paths
+    fails OPEN on it while still reporting `verified is True`.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    bad = baseline.Baseline(
+        base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid,
+        commit=b.commit, ref=b.ref, dirty=b.dirty, sidecars=None,
+        filesystem_manifest={**b.filesystem_manifest, "never-arrived.txt": "0" * 64})
+    with pytest.raises(fleet.SeatError, match="never-arrived.txt"):
+        fleet.clone_seat(repo, bad, tmp_path / "s1", name="claude", identity=IDENT)
+
+
+def test_clone_seat_raises_when_the_checked_out_oid_is_not_b1(tmp_path):
+    """§4 item 1 asserts the OID *and* the manifest — so both halves need pinning.
+
+    Measured: deleting the OID comparison outright left the other 23 tests green, and a
+    check nothing pins is indistinguishable from one that can never fire — this repo's
+    recurring defect. The manifest half cannot stand in for it: the paths still hash
+    correctly here, so without this the wrong tree passes as verified.
+
+    The ref and the commit agree the instant `materialize` returns and can disagree
+    afterwards — a concurrent run moves `refs/khenrix-forge/<run-id>/base`, or a caller
+    reattaching to an existing run directory pairs a persisted Baseline with a ref that
+    has since moved. The seat then holds one tree while every downstream consumer is told
+    it holds another.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    write(repo, "later.txt", "committed after the baseline was taken\n")
+    _git(repo, "add", "later.txt")
+    _git(repo, "commit", "-qm", "later")
+    moved = _git(repo, "rev-parse", "HEAD")
+    assert moved != b.commit, "fixture precondition: the two OIDs must differ"
+    stale = baseline.Baseline(
+        base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid,
+        commit=moved, ref=b.ref, dirty=b.dirty, sidecars=None,
+        filesystem_manifest=b.filesystem_manifest)
+    with pytest.raises(fleet.SeatError, match="seat checked out"):
+        fleet.clone_seat(repo, stale, tmp_path / "s1", name="claude", identity=IDENT)
