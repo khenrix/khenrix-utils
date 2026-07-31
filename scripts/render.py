@@ -34,7 +34,7 @@ LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
 # Shared stdlib engines under shared/lib/<name>/, bundled once per plugin at lib/<name>/
 # so skills can `PYTHONPATH=<plugin>/lib python3 -m <name>` after a marketplace copy.
 # Runtime code only — tests are excluded to keep the plugin lean.
-SHARED_LIBS = ["wikisync"]
+SHARED_LIBS = ["wikisync", "council"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
