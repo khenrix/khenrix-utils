@@ -11,14 +11,28 @@ descend is the only defence.
 """
 import hashlib
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from .storage import Quota
 
 
+class SnapshotError(RuntimeError):
+    """A precondition of the whole call is violated, so no inventory can be taken."""
+
+
 @dataclass(frozen=True)
 class Entry:
+    """One inventoried path.
+
+    `kind` is "file", "symlink" or "special" (FIFO, socket, device node). "dir" is
+    RESERVED AND NEVER PRODUCED: directories are not inventoried, so an empty directory
+    an agent creates or removes is invisible to `diff` — only its contents are seen.
+
+    `digest`/`mode`/`size` mean different things per kind, and only `_digest` reads
+    content; see the branches in `take`.
+    """
     path: str
     digest: str
     mode: int
@@ -27,6 +41,10 @@ class Entry:
 
 
 def _digest(p: Path) -> str:
+    """Mirrors `baseline._sha256_file` and `fleet._sha256_file`. All three must agree
+    byte-for-byte on how a file is digested: a snapshot digest is compared against a
+    baseline manifest hash of the same file, and a chunk size or mode difference would
+    make identical bytes disagree."""
     h = hashlib.sha256()
     with open(p, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 16), b""):
@@ -39,15 +57,47 @@ def _symlink_entry(p: Path, rel: str) -> Entry:
     return Entry(rel, hashlib.sha256(os.readlink(p).encode()).hexdigest(), 0, 0, "symlink")
 
 
+def _special_entry(st: os.stat_result, rel: str) -> Entry:
+    """A FIFO, socket or device node — recorded WITHOUT being opened.
+
+    Opening one is not merely unhelpful, it is unsafe: a read-open on a FIFO blocks until
+    a writer appears, which for an inventory is an unbounded hang with no timeout anywhere
+    in the call path, and a socket raises ENXIO. Dropping it silently is the other wrong
+    answer (`screen.py` refuses to do that for the same reason), so its existence is
+    recorded and the file TYPE stands in for the content it has none of — which also makes
+    a FIFO replaced by a socket at the same path read as modified.
+    """
+    kind_bits = f"special:{stat.S_IFMT(st.st_mode)}".encode()
+    return Entry(rel, hashlib.sha256(kind_bits).hexdigest(), st.st_mode & 0o777, 0, "special")
+
+
 def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
     """Inventory `root`. Returns (entries, breaches); a breach means FAIL CLOSED — the
-    entries dict is empty rather than a partial inventory reported as complete."""
+    entries dict is empty rather than a partial inventory reported as complete.
+
+    Raises SnapshotError if `root` is not an existing directory, and PermissionError (from
+    `_digest`) on a file it may not read. Both are deliberately unignorable. os.walk's
+    default `onerror=None` SWALLOWS ENOENT/ENOTDIR and yields nothing, so a mistyped path
+    or a torn-down seat would otherwise return a clean `({}, [])` — and an empty inventory
+    that means "I read nothing" is indistinguishable from one that means "nothing is here",
+    so `diff(before, {})` would report every file in the tree as removed and hand the
+    agent the blame for a mass deletion. A breach line would still return that empty dict;
+    raising is what the caller cannot accidentally ignore, and matches how `baseline` and
+    `fleet` reject a violated precondition. PermissionError is left to propagate for the
+    same reason: a file whose content could not be read has no honest digest, and a
+    snapshot that quietly substitutes one would report an agent's edit to it as unchanged.
+    """
     quota = quota or Quota.default()
     root = Path(root)
+    if not root.is_dir():
+        raise SnapshotError(f"snapshot root is not an existing directory: {root}")
     entries, total, count = {}, 0, 0
 
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+        # Sorted for the reason screen.py sorts: the running totals below decide WHICH
+        # breach is reported first, so an unsorted walk makes a tree over two caps report
+        # a different line run to run.
+        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
         here = Path(dirpath)
         # A symlink to a directory arrives in dirnames, so it would otherwise be neither
         # recorded nor counted. Drop it from the walk and record the link itself.
@@ -60,7 +110,7 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
                 if (b := quota.breach(files=count, file_bytes=0, total_bytes=total)):
                     return {}, [b]
                 entries[rel] = _symlink_entry(p, rel)
-        for name in filenames:
+        for name in sorted(filenames):
             p = here / name
             rel = str(p.relative_to(root))
             count += 1
@@ -71,6 +121,10 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
                 entries[rel] = _symlink_entry(p, rel)
                 continue
             st = p.stat()
+            # Before open(): a FIFO here would block the walk forever. stat() does not.
+            if not stat.S_ISREG(st.st_mode):
+                entries[rel] = _special_entry(st, rel)
+                continue
             total += st.st_size
             if (b := quota.breach(files=0, file_bytes=st.st_size, total_bytes=total)):
                 return {}, [f"{rel}: {b}"]
@@ -79,7 +133,13 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
 
 
 def diff(before: dict, after: dict) -> dict:
-    """path -> added | removed | modified. Compares content, mode and size only."""
+    """path -> added | removed | modified. Compares content, mode and size only.
+
+    `kind` is deliberately NOT compared, so a file replaced by a symlink at the same path
+    is caught only incidentally — via the digest, and via the mode 0 / size 0 the symlink
+    branch records. That is reliable in practice but it is a side effect, not a rule: a
+    consumer that needs the type change itself must compare `kind` for itself.
+    """
     out = {}
     for path, e in after.items():
         old = before.get(path)
