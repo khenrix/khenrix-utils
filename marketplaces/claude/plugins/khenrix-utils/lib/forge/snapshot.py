@@ -19,7 +19,17 @@ from .storage import Quota
 
 
 class SnapshotError(RuntimeError):
-    """A precondition of the whole call is violated, so no inventory can be taken."""
+    """Some part of the tree could not be read, so no inventory of it would be honest."""
+
+
+def _walk_error(err: OSError):
+    """os.walk's `onerror`. Its DEFAULT is to swallow the error and yield nothing for that
+    directory, which is fail-open twice over: an unreadable root returns a clean `({}, [])`
+    that `diff` reads as "the agent deleted the tree", and an unreadable subdirectory
+    returns a partial inventory reported as complete. Raising here also covers the
+    mid-walk races — a directory removed between the top-level yield and the descent —
+    which take the same swallowed path."""
+    raise SnapshotError(f"cannot walk {err.filename}: {err.strerror}") from err
 
 
 @dataclass(frozen=True)
@@ -30,8 +40,15 @@ class Entry:
     RESERVED AND NEVER PRODUCED: directories are not inventoried, so an empty directory
     an agent creates or removes is invisible to `diff` — only its contents are seen.
 
-    `digest`/`mode`/`size` mean different things per kind, and only `_digest` reads
-    content; see the branches in `take`.
+    The other three fields are NOT uniform across kinds, and only "file" reads content:
+
+    - file    — `digest` is the sha256 of the bytes; `mode` and `size` are the real ones.
+    - symlink — `digest` is the sha256 of the TARGET TEXT; `mode` and `size` are ALWAYS 0.
+                That 0 mode is fabricated, not read, so a consumer rendering mode changes
+                must not report "000" for every symlink it touches; the size is not the
+                target's length either.
+    - special — `digest` stands for the file TYPE, nothing was opened; `mode` is real,
+                `size` is ALWAYS 0.
     """
     path: str
     digest: str
@@ -75,25 +92,23 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
     """Inventory `root`. Returns (entries, breaches); a breach means FAIL CLOSED — the
     entries dict is empty rather than a partial inventory reported as complete.
 
-    Raises SnapshotError if `root` is not an existing directory, and PermissionError (from
-    `_digest`) on a file it may not read. Both are deliberately unignorable. os.walk's
-    default `onerror=None` SWALLOWS ENOENT/ENOTDIR and yields nothing, so a mistyped path
-    or a torn-down seat would otherwise return a clean `({}, [])` — and an empty inventory
-    that means "I read nothing" is indistinguishable from one that means "nothing is here",
-    so `diff(before, {})` would report every file in the tree as removed and hand the
-    agent the blame for a mass deletion. A breach line would still return that empty dict;
-    raising is what the caller cannot accidentally ignore, and matches how `baseline` and
-    `fleet` reject a violated precondition. PermissionError is left to propagate for the
-    same reason: a file whose content could not be read has no honest digest, and a
-    snapshot that quietly substitutes one would report an agent's edit to it as unchanged.
+    Raises SnapshotError if any directory in the tree cannot be read — missing, not a
+    directory, or unreadable, at the root or below it (see `_walk_error`) — and
+    PermissionError (from `_digest`) on a file it may not read. Both are deliberately
+    unignorable, and for one reason: an inventory nobody can distinguish from a complete
+    one must not be returned. A breach line would still return the empty dict that is
+    itself the ambiguity, so raising is what the caller cannot accidentally ignore, and it
+    matches how `baseline` and `fleet` reject what they cannot vouch for. Silence would be
+    worst for a DIRECTORY, which drops a whole subtree rather than one file.
     """
     quota = quota or Quota.default()
     root = Path(root)
-    if not root.is_dir():
-        raise SnapshotError(f"snapshot root is not an existing directory: {root}")
     entries, total, count = {}, 0, 0
 
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    # onerror subsumes an is_dir() precondition check: every way the root can fail that
+    # check reaches scandir and routes here, and unreadability reaches only here.
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
+                                                onerror=_walk_error):
         # Sorted for the reason screen.py sorts: the running totals below decide WHICH
         # breach is reported first, so an unsorted walk makes a tree over two caps report
         # a different line run to run.

@@ -128,13 +128,41 @@ def test_symlinked_dirs_also_count_against_the_file_quota(tmp_path):
 
 
 def test_a_root_that_cannot_be_walked_is_refused_not_reported_as_clean(tmp_path):
-    """os.walk's default onerror swallows ENOENT/ENOTDIR and yields nothing, so both of
-    these returned a clean ({}, []) — which diff() reads as "the agent deleted the tree"."""
-    with pytest.raises(snapshot.SnapshotError, match="not an existing directory"):
+    """os.walk's default onerror swallows the error and yields nothing, so each of these
+    returned a clean ({}, []) — which diff() reads as "the agent deleted the tree"."""
+    with pytest.raises(snapshot.SnapshotError, match="cannot walk"):
         snapshot.take(tmp_path / "never-created")
     afile = tmp_path / "a.txt"; afile.write_text("x\n")
-    with pytest.raises(snapshot.SnapshotError, match="not an existing directory"):
+    with pytest.raises(snapshot.SnapshotError, match="cannot walk"):
         snapshot.take(afile)
+    # Inline rather than a skipif on the whole test: root reads through mode 000, and the
+    # two cases above are worth keeping under root rather than skipping all three.
+    if os.geteuid() != 0:
+        locked = tmp_path / "locked"; locked.mkdir()
+        (locked / "unseen.txt").write_text("x\n")
+        locked.chmod(0o000)
+        try:
+            with pytest.raises(snapshot.SnapshotError, match="cannot walk"):
+                snapshot.take(locked)
+        finally:
+            locked.chmod(0o755)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads through mode 000")
+def test_an_unreadable_subdirectory_is_refused_not_silently_omitted(tmp_path):
+    """The partial-inventory case: the walk yielded the readable part and dropped the rest
+    with breaches == [], which is exactly what take()'s docstring forbids — and worse than
+    the unreadable-FILE case beside it, since a directory drops a whole subtree."""
+    d = tmp_path / "t"; d.mkdir()
+    (d / "visible.txt").write_text("v\n")
+    locked = d / "locked"; locked.mkdir()
+    (locked / "hidden.txt").write_text("h\n")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(snapshot.SnapshotError, match="cannot walk"):
+            snapshot.take(d)
+    finally:
+        locked.chmod(0o755)
 
 
 def test_a_fifo_or_socket_is_recorded_without_being_opened(tmp_path):
