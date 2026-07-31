@@ -10,7 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import baseline, fleet, inspect as finspect  # noqa: E402
-from forge_fixtures import make_repo, write  # noqa: E402
+# The fixtures' env builder is reused rather than restated: duplicating the nine
+# location variables is the copy most likely to drift out of step with them.
+from forge_fixtures import _env as _hermetic_env, make_repo, write  # noqa: E402
 
 
 def _mk_baseline(repo, run, selected=()):
@@ -19,12 +21,19 @@ def _mk_baseline(repo, run, selected=()):
 
 
 def _git(repo, *a):
-    """stdout of a git command that MUST succeed.
+    """stdout of a git command that MUST succeed, in a hermetic environment.
 
     The return code is checked rather than discarded: a failing `git remote` also prints
     nothing, so a swallowed error would read as "no remotes" and pass vacuously.
+
+    The environment is the fixtures' own, because this helper also WRITES (a branch and a
+    commit, below). Under the developer's real config a global `core.hooksPath` runs their
+    hooks inside these throwaway repos and `commit.gpgsign = true` fails the commit — the
+    hazard forge_fixtures' docstring exists to prevent. It can only manufacture a false
+    RED, never a false green, but this suite is the gate and must not depend on the machine.
     """
-    r = subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", str(repo), *a],
+                       capture_output=True, text=True, env=_hermetic_env())
     assert r.returncode == 0, f"git {' '.join(a)} failed: {r.stderr.strip()}"
     return r.stdout.strip()
 
@@ -166,13 +175,36 @@ def test_scrub_env_keeps_the_path_entries_that_are_outside_the_repo(tmp_path):
     assert out["PATH"] == "/usr/bin"
 
 
+def test_scrub_env_drops_a_value_that_embeds_the_repo_inside_a_larger_token(tmp_path):
+    """The checkout usually arrives inside a flag, not as the whole value.
+
+    A whole-value path test misses this entire class, and misses it incoherently: a
+    colon-delimited embed (`-javaagent:<repo>/a.jar`) is caught by the os.pathsep split
+    while the space- and `=`-delimited forms are not.
+    """
+    repo = make_repo(tmp_path)
+    env = {"CFLAGS": f"-I{repo}/include",
+           "LDFLAGS": f"-L{repo}/build/lib",
+           "RUSTFLAGS": f"-L native={repo}/target/debug",
+           "NODE_OPTIONS": f"--require {repo}/tools/hook.js",
+           "PYTEST_ADDOPTS": f"--rootdir={repo}",
+           "MAKEFLAGS": f"-I{repo}/mk",
+           "JAVA_TOOL_OPTIONS": f"-javaagent:{repo}/a.jar",
+           # ld.so takes spaces as well as colons, and the repo entry is not first — an
+           # os.pathsep-only split cannot see it.
+           "LD_PRELOAD": f"/usr/lib/other.so {repo}/shim.so"}
+    assert fleet.scrub_env(env, repo) == {}, "a repo path survived inside a larger token"
+
+
 def test_scrub_env_does_not_treat_a_sibling_prefix_as_inside_the_repo(tmp_path):
     """`<root>-scratch` starts with `<root>` but is not inside it."""
     repo = tmp_path / "khenrix-utils"
     repo.mkdir()
     sibling = f"{repo}-scratch/bin"
-    out = fleet.scrub_env({"TOOLS": sibling, "PATH": f"{sibling}{os.pathsep}/usr/bin"}, repo)
+    out = fleet.scrub_env({"TOOLS": sibling, "CFLAGS": f"-I{sibling}",
+                           "PATH": f"{sibling}{os.pathsep}/usr/bin"}, repo)
     assert out["TOOLS"] == sibling
+    assert out["CFLAGS"] == f"-I{sibling}", "the right boundary must survive the embed test"
     assert out["PATH"] == f"{sibling}{os.pathsep}/usr/bin"
 
 
@@ -208,8 +240,6 @@ def test_seats_are_independent_of_each_other(tmp_path):
     # forge_fixtures exists to prevent.
     subprocess.run(["git", "-C", str(s1), "-c", "user.name=Seat",
                     "-c", "user.email=seat@example.invalid", "commit", "-aqm", "s1"],
-                   check=True, capture_output=True, text=True,
-                   env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull,
-                        "GIT_CONFIG_SYSTEM": os.devnull})
+                   check=True, capture_output=True, text=True, env=_hermetic_env())
     assert (s2 / "seed.txt").read_text() == "seed\n"
     assert _git(repo, "rev-parse", "HEAD") == b.base_commit, "user repo HEAD moved"

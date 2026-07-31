@@ -15,6 +15,7 @@ Never `--local`/hardlinks: against git's own operations hardlinked objects are s
 outside git's rules, and a truncate through a shared inode corrupts the user's repository.
 """
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -53,6 +54,10 @@ def clone_seat(repo, baseline, dest, *, template_dir=None) -> Path:
         # baseline ref does not reach — other branches, stashes, dangling history — none of
         # which the pre-launch secret screen looked at. --no-hardlinks alone still copies
         # them (measured on git 2.53).
+        # KEEP --no-hardlinks even though deleting it breaks no test: git scopes it to the
+        # local transport, which --no-local already disables, so it is an equivalent mutant
+        # NO test can pin. It is the second latch — the thing that still holds if --no-local
+        # is ever lost — not dead weight.
         # No --no-checkout: the seat needs the working tree, and --revision already pins the
         # checkout to B1 (HEAD detached at the ref, tree populated).
         gitcmd.git(repo, "clone", "--no-local", "--no-hardlinks", "--no-tags",
@@ -90,11 +95,21 @@ def clone_seat(repo, baseline, dest, *, template_dir=None) -> Path:
 # declared rather than sniffed because "contains a colon" would shred LS_COLORS,
 # SSH_AUTH_SOCK and any postgres://user:pass@host. A colon-separated variable that is NOT
 # listed here keeps the wholesale drop, which is the fail-closed direction.
+#
+# LD_PRELOAD is deliberately ABSENT: ld.so accepts spaces as well as colons, so an
+# os.pathsep-only split would leave a space-delimited repo-internal .so in place whenever
+# it is not the first entry. Unlisted, it takes the whole-value test below, which reads
+# both separators.
 _PATH_SHAPED = frozenset({
-    "PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "MANPATH", "INFOPATH",
+    "PATH", "PYTHONPATH", "LD_LIBRARY_PATH", "MANPATH", "INFOPATH",
     "PKG_CONFIG_PATH", "CMAKE_PREFIX_PATH", "CLASSPATH", "NODE_PATH", "GOPATH",
     "PERL5LIB", "RUBYLIB", "XDG_DATA_DIRS", "XDG_CONFIG_DIRS",
 })
+
+# What may follow the checkout path for it to be a real reference rather than a longer,
+# unrelated name: a separator, a delimiter, or end-of-value. `<root>-scratch` is a
+# different directory; `<root>/include` and a bare `<root>` are not.
+_RIGHT_BOUNDARY = r"(?=$|[/\s:;,'\"])"
 
 
 def _repo_roots(repo_path) -> set:
@@ -140,19 +155,29 @@ def scrub_env(env: dict, repo_path) -> dict:
     shims resolve versions through their own config rather than PATH. That residual reach
     is ACCEPTED here and delegated to §5 calibration and the §9 tripwire. This scrub stops
     accidental reuse of the user's checkout; it was never a containment boundary.
+
+    Everything else is matched as a SUBSTRING with a right boundary, because the checkout
+    routinely appears inside a larger token rather than as the whole value —
+    `CFLAGS=-I<repo>/include`, `RUSTFLAGS=-L native=<repo>/target`,
+    `NODE_OPTIONS=--require <repo>/tools/hook.js`, `PYTEST_ADDOPTS=--rootdir=<repo>`. Those
+    variables are dropped whole, never rewritten. The left side is unanchored, so a backup
+    at `/mnt/backup<repo>/…` matches too; that over-scrubs in the fail-closed direction and
+    is confined to variables already taking the wholesale drop.
     """
     roots = _repo_roots(repo_path)
+    embeds = re.compile("(?:" + "|".join(re.escape(r) for r in sorted(roots)) + ")"
+                        + _RIGHT_BOUNDARY)
     out = {}
     for k, v in env.items():
         if not isinstance(v, str):
             out[k] = v
         elif k in _PATH_SHAPED:
+            # Entry-wise, and never the substring test: applied to PATH it would delete the
+            # whole variable again the moment one entry pointed into the checkout.
             kept = [e for e in v.split(os.pathsep) if not _inside(e, roots)]
             if kept:
                 out[k] = os.pathsep.join(kept)
-        elif not any(_inside(e, roots) for e in v.split(os.pathsep)):
-            # Unlisted variables are still segmented for the TEST — an embedded repo path
-            # must be caught — but the whole variable is dropped, never rewritten.
+        elif not embeds.search(v):
             out[k] = v
     return out
 
