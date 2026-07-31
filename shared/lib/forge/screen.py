@@ -147,6 +147,28 @@ def screen_tree(root, rel_paths, quota: Quota = None):
 
     Returns (findings, breaches). A non-empty `breaches` means the caller must FAIL the
     run closed with that message — never silently scan less than it claimed to.
+
+    A BREACH IS "WE DID NOT READ THIS", NOT "THIS IS DANGEROUS", and the difference is the
+    caller's to act on. This module deliberately does NOT discriminate between a symlink
+    that escapes the repository and an ordinary in-tree one such as `docs/latest -> v2`
+    (Plan D, D-2), for two measured reasons:
+
+    - "the normalized target stays under the root" is the obvious rule and it is UNSOUND
+      here. Under a selection of `scratch`, `scratch/creds -> ../.env` stays under the root
+      and is never opened by this pass, so that rule would hand back a clean verdict on an
+      unread `.env` — the exact outcome the symlink refusal exists to prevent. Pinned by
+      `test_an_in_tree_link_to_an_unselected_path_is_still_a_breach`.
+    - the SOUND rule is "the target is itself something this pass screened", which needs
+      the completed target set, the caller's `SCAN_SKIP_DIRS` and the selection semantics —
+      none of which exist until the walk has finished. Deciding it here would mean a second
+      pass whose answer the caller can compute directly from what it already knows.
+
+    So a caller holding a symlink breach may downgrade it once it has established that the
+    link's target was itself screened, or refused for its own stated reason. It must not
+    downgrade one merely because the target looks repo-internal.
+
+    `bundle._escapes` is NOT that predicate and is not reusable here: it answers "can a
+    write through this link leave the tree", a property of the target text alone.
     """
     c = _checks()
     quota = quota or Quota.default()

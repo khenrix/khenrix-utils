@@ -104,26 +104,31 @@ def _index_sha(repo) -> str:
 
 
 def _walk_selected(base: Path, repo: Path) -> list:
-    """Repo-relative regular files under a selected DIRECTORY, in `screen._walk`'s terms.
+    """Repo-relative leaves under a selected DIRECTORY, in `screen._walk`'s terms.
 
-    Same three rules, for the same reasons: `.git` is pruned rather than post-filtered
-    (it is the object store the baseline was built from), symlinks are never followed —
-    os.walk does not descend into linked directories, so leaves are all that must be
-    dropped — and names are sorted so the manifest is deterministic.
+    Same rules, for the same reasons: `.git` is pruned rather than post-filtered (it is the
+    object store the baseline was built from), symlinks are never FOLLOWED — os.walk under
+    `followlinks=False` does not descend into a linked directory — and names are sorted so
+    the manifest is deterministic.
 
-    A symlink therefore reaches the tree (git commits it as a link) without reaching the
-    manifest. That asymmetry is deliberate: hashing it means `open()` following it, which
-    is a read of whatever it points at, and the manifest must not describe content from
-    outside the tree it claims to describe.
+    A link is reported rather than dropped, and a linked DIRECTORY too: it arrives in
+    `dirnames`, never in `filenames`, so both lists are inspected exactly as `screen._walk`
+    and `inspect._escaping_links_under` inspect both. `git add -f` commits either AS A LINK,
+    so a dropped one is in the tree with nothing in the manifest describing it — the
+    third-outcome gap `tests/test_forge_seams.py` exists to rule out. `_entry_digest` reads
+    the link's target TEXT, so reporting it here still never opens what it points at.
     """
     out = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         d = Path(dirpath)
         dirnames[:] = sorted(n for n in dirnames if n != ".git")
-        for n in sorted(filenames):
+        for n in list(dirnames):
             q = d / n
-            if not q.is_symlink():
+            if q.is_symlink():
+                dirnames.remove(n)
                 out.append(q.relative_to(repo).as_posix())
+        for n in sorted(filenames):
+            out.append((d / n).relative_to(repo).as_posix())
     return out
 
 
@@ -133,6 +138,23 @@ def _sha256_file(p: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 16), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _sha256_link(p: Path) -> str:
+    """A symlink's identity: the sha256 of its TARGET TEXT, never of the target's content.
+
+    Byte-for-byte `snapshot._symlink_entry`'s digest — including the strict `.encode()`,
+    which is what makes the two comparable — and mirrored again in `fleet._sha256_link`,
+    which checks this manifest against a seat.
+    """
+    return hashlib.sha256(os.readlink(p).encode()).hexdigest()
+
+
+def _entry_digest(p: Path) -> str:
+    """The manifest value for one path. The link test comes FIRST because `_sha256_file`
+    opens THROUGH a link, which would describe content from outside the tree the manifest
+    claims to describe."""
+    return _sha256_link(p) if p.is_symlink() else _sha256_file(p)
 
 
 def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
@@ -197,8 +219,17 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
 
     manifest = {}
     for rel in gitcmd.git(repo, "ls-files", "-z", env_extra=gitcmd.READONLY).stdout.split("\0"):
-        if rel and (repo / rel).is_file():
-            manifest[rel] = _sha256_file(repo / rel)
+        # `is_file()` FOLLOWS a link, so this loop used to give a tracked symlink the digest
+        # of its target's CONTENT — the one thing `_walk_selected` refuses to do for a
+        # selected directory, in the same manifest, for the reason that it "must not
+        # describe content from outside the tree it claims to describe". `screen` breached
+        # on the entry and `snapshot` digested the target TEXT, so B, F0 and the screen held
+        # three different opinions about one path and `fleet` skipped it rather than choose.
+        # `_entry_digest` settles it: a link is its target text, everywhere (Plan D, D-1).
+        # A DANGLING tracked link now enters the manifest too, where `is_file()` dropped it.
+        p = repo / rel
+        if rel and (p.is_symlink() or p.is_file()):
+            manifest[rel] = _entry_digest(p)
     # A selected path may be a DIRECTORY — spec §2.2 contemplates one explicitly, and the
     # literal pathspec below sweeps its whole contents into the tree. An `is_file()`-only
     # guard therefore returns a manifest that describes none of that content while the
@@ -209,10 +240,14 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     for rel in selected_untracked:
         p = repo / rel
         if p.is_symlink():
-            continue
-        if p.is_dir():
+            # Recorded, not skipped, and by its target text — `git add -f` puts a selected
+            # link in the tree, so dropping it left the tree describing a path the manifest
+            # did not. `_entry_digest` never walks it: `is_dir()` follows links, which is
+            # why this branch still has to come first.
+            manifest[rel] = _sha256_link(p)
+        elif p.is_dir():
             for sub in _walk_selected(p, repo):
-                manifest[sub] = _sha256_file(repo / sub)
+                manifest[sub] = _entry_digest(repo / sub)
         elif p.is_file():
             manifest[rel] = _sha256_file(p)
 

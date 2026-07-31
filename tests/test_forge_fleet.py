@@ -1,4 +1,5 @@
 """Independent clones, not worktrees — and the push vector actually closed (spec §4)."""
+import hashlib
 import os
 import subprocess
 import sys
@@ -511,20 +512,22 @@ def test_clone_seat_raises_when_the_checked_out_oid_is_not_b1(tmp_path):
         fleet.clone_seat(repo, stale, tmp_path / "s1", name="claude", identity=IDENT)
 
 
-def test_clone_seat_skips_a_symlink_rather_than_hashing_through_it(tmp_path):
-    """The manifest loop's symlink skip, and the fact that it must come BEFORE the
+def test_clone_seat_verifies_a_symlink_by_its_target_text(tmp_path):
+    """The manifest loop's symlink branch, and the fact that it must come BEFORE the
     absence check.
 
-    `baseline`'s `ls-files` loop guards on `is_file()`, which FOLLOWS a link, so a tracked
-    symlink enters the manifest carrying its target's digest. Hashing it here would mean
-    `_sha256_file` opening through the link — describing content from outside the tree the
-    manifest claims to describe.
+    The branch used to `continue`: `baseline` hashed a tracked link THROUGH itself, so
+    nothing this side could reproduce the manifest value without opening the target —
+    describing content from outside the tree the manifest claims to describe. Since Plan
+    D's D-1 the manifest holds the target TEXT, so the entry is CHECKED here instead of
+    excused, and `verified` covers a shape it used to step over.
 
     The seat is placed at a DIFFERENT DEPTH from the repo, which is the real layout (seats
     live under the run directory, never beside the checkout) and the only arrangement in
     which this discriminates: measured, `../outside.txt` resolves from a sibling seat and
     the file compares equal, while from `seats/s1` it is `is_symlink()` True and
-    `exists()` False. So without the skip the absence check would refuse a CORRECT seat.
+    `exists()` False. So without the link branch the absence check would refuse a CORRECT
+    seat.
     """
     repo = make_repo(tmp_path)
     (tmp_path / "outside.txt").write_text("outside the repository\n")
@@ -533,8 +536,9 @@ def test_clone_seat_skips_a_symlink_rather_than_hashing_through_it(tmp_path):
     _git(repo, "commit", "-qm", "link")
     run = tmp_path / "run"; run.mkdir()
     b = _mk_baseline(repo, run)
-    assert "link.txt" in b.filesystem_manifest, \
-        "precondition: baseline hashes through the link, so the loop must meet it"
+    assert b.filesystem_manifest["link.txt"] == \
+        hashlib.sha256(b"../outside.txt").hexdigest(), \
+        "precondition: the manifest holds the link's target text, so the loop must meet it"
 
     seat = fleet.clone_seat(repo, b, tmp_path / "seats" / "s1",
                             name="claude", identity=IDENT)
@@ -542,3 +546,26 @@ def test_clone_seat_skips_a_symlink_rather_than_hashing_through_it(tmp_path):
     assert link.is_symlink() and not link.exists(), \
         "precondition: from this depth the link is dangling, so absence would fire"
     assert seat.verified is True
+
+
+def test_clone_seat_refuses_a_seat_whose_symlink_points_somewhere_else(tmp_path):
+    """The other half of the branch above: it must COMPARE, not merely not-crash.
+
+    A link branch that skipped the comparison would pass every test that only builds
+    correct seats, so the manifest is handed a value for a target the seat does not have —
+    the transport failure the loop exists to catch, in the one shape it used to ignore.
+    """
+    repo = make_repo(tmp_path)
+    os.symlink("seed.txt", Path(repo) / "link.txt")
+    _git(repo, "add", "link.txt")
+    _git(repo, "commit", "-qm", "link")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    tampered = baseline.Baseline(
+        base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid, commit=b.commit,
+        ref=b.ref, dirty=b.dirty, sidecars=None,
+        filesystem_manifest={**b.filesystem_manifest,
+                             "link.txt": hashlib.sha256(b"elsewhere.txt").hexdigest()})
+    with pytest.raises(fleet.SeatError, match="symlink points elsewhere"):
+        fleet.clone_seat(repo, tampered, tmp_path / "seats" / "s1",
+                         name="claude", identity=IDENT)

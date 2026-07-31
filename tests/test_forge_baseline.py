@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import baseline, gitcmd, inspect as finspect  # noqa: E402
-from forge_fixtures import make_repo, write  # noqa: E402
+from forge_fixtures import git as _git, make_repo, write  # noqa: E402
 
 
 def _idx(repo):
@@ -313,17 +313,23 @@ def test_a_selected_directory_reaches_the_manifest_as_well_as_the_tree(tmp_path)
     assert b.filesystem_manifest["scratch/sub/b.txt"] == hashlib.sha256(b"b\n").hexdigest()
 
 
-def test_a_symlink_inside_a_selected_directory_is_in_the_tree_but_not_the_manifest(tmp_path):
+def test_a_symlink_in_a_selection_is_manifested_as_its_target_text(tmp_path):
     """Walking a selection must not read what the tree never contained. git commits a
     symlink as a link; hashing it means open() FOLLOWING it, which puts content from
     outside the tree into a manifest that claims to describe the tree.
 
-    The TREE half is asserted too, and the name says so, because the old name — "is not
-    hashed through" — read like a containment guarantee it never made. `git add -f` on the
-    selection commits the link, so this module keeps the target's CONTENT out of the
-    manifest while shipping a working path to it in B1. Both halves are true and only one
-    of them is protective; a test asserting the manifest half alone stayed green while an
-    escaping link reached a seat unscreened.
+    The link is now DESCRIBED rather than dropped (Plan D, D-1): its manifest value is the
+    sha256 of the target TEXT, which is `snapshot`'s and `bundle`'s identity for a link too,
+    and which reads nothing outside the tree. Dropping it was the weaker answer — it left
+    the tree carrying a path the manifest said nothing about, which is the third outcome
+    `test_forge_seams.py` exists to rule out.
+
+    The TREE half is asserted too, and the name used to say so, because "is not hashed
+    through" read like a containment guarantee it never made. `git add -f` on the selection
+    commits the link, so this module keeps the target's CONTENT out of the manifest while
+    shipping a working path to it in B1. Both halves are true and only one of them is
+    protective; a test asserting the manifest half alone stayed green while an escaping link
+    reached a seat unscreened.
 
     What actually stops that link is upstream and belongs to other suites:
     `inspect.rejections` refuses an ESCAPING one and `screen` breaches on ANY one. The
@@ -336,12 +342,42 @@ def test_a_symlink_inside_a_selected_directory_is_in_the_tree_but_not_the_manife
     (repo / "scratch" / "link.txt").symlink_to(outside)
     run = tmp_path / "run"; run.mkdir()
     b = _mk(repo, run, selected=["scratch"])
-    assert "scratch/link.txt" not in b.filesystem_manifest
+    assert b.filesystem_manifest["scratch/link.txt"] == \
+        hashlib.sha256(str(outside).encode()).hexdigest(), \
+        "the link is described by the text it holds, not by what that text reaches"
     assert hashlib.sha256(b"host secret\n").hexdigest() not in b.filesystem_manifest.values()
     assert "scratch/link.txt" in _tree_paths(repo, b.tracked_tree_oid), \
-        "the manifest exclusion is not containment — the tree carries the link"
+        "the manifest entry is not containment — the tree carries the link"
     assert (repo / "scratch" / "link.txt").is_symlink(), \
         "and it is still a link, so B1 hands a seat a working path out of the repository"
+
+
+def test_every_link_the_tree_carries_reaches_the_manifest(tmp_path):
+    """The two arrival routes the `is_file()` / `is_dir()` guards used to lose.
+
+    Both shapes are committed by the same `git add` this function runs, so both are in the
+    tree — and a path in the tree with nothing in the manifest describing it is the third
+    outcome `test_forge_seams.py::test_everything_in_the_tree_is_in_the_manifest` exists to
+    rule out.
+
+    - a TRACKED link that dangles: `is_file()` follows it, finds nothing, and answers
+      False, so the `ls-files` loop skipped it — a link is not required to resolve to
+      anything to be a perfectly good link.
+    - a SELECTED top-level link: the loop below `continue`d on one, because reading it once
+      meant reading THROUGH it. Its target text is not a read of the target.
+    """
+    repo = make_repo(tmp_path)
+    (repo / "dangling.txt").symlink_to("missing.txt")
+    _git(repo, "add", "dangling.txt")
+    _git(repo, "commit", "-qm", "dangling")
+    (repo / "sel.link").symlink_to("seed.txt")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo, run, selected=["sel.link"])
+    assert {"dangling.txt", "sel.link"} <= _tree_paths(repo, b.tracked_tree_oid), \
+        "precondition: git committed both links, so the manifest owes an entry for each"
+    assert b.filesystem_manifest["dangling.txt"] == \
+        hashlib.sha256(b"missing.txt").hexdigest()
+    assert b.filesystem_manifest["sel.link"] == hashlib.sha256(b"seed.txt").hexdigest()
 
 
 def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):

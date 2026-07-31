@@ -153,6 +153,32 @@ def test_a_symlink_inside_a_selected_directory_is_a_breach_not_a_silent_skip(tmp
     assert breaches == ["scratch/creds: not screened — symlink; links are never followed"]
 
 
+def test_an_in_tree_link_to_an_unselected_path_is_still_a_breach(tmp_path):
+    """D-2, pinned: the screen does NOT discriminate escaping links from in-tree ones.
+
+    The tempting rule — "a link whose normalized target stays under the repository root is
+    not a breach" — is unsound in exactly this shape, and this fixture is the counterexample
+    it is unsound for. `scratch/creds -> ../.env` normalizes to `.env`, which IS under the
+    root, so that rule reports no breach; but `.env` is not in the selection, this pass
+    never opens it, and it holds a live token. A clean verdict on an unread `.env` is the
+    single worst thing this module can produce.
+
+    The sound rule is "the target is itself something this pass screened", which needs the
+    completed target set and the caller's skip config — so it lives in the caller, and
+    `screen` stays conservative. This test fails the moment someone implements the tempting
+    rule here.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, ".env", f'K = "{TOKEN}"\n')
+    write(repo, "scratch/a.py", "ok\n")
+    (Path(repo) / "scratch" / "creds").symlink_to(Path("..") / ".env")
+    findings, breaches = screen.screen_tree(repo, ["scratch"])
+    assert findings == [], "the link was followed and an unselected file scanned through it"
+    assert breaches == ["scratch/creds: not screened — symlink; links are never followed"]
+    # The target really is inside the root, or the counterexample is not one.
+    assert (Path(repo) / "scratch" / "creds").resolve() == (Path(repo) / ".env").resolve()
+
+
 def test_a_symlinked_directory_inside_a_selection_is_reported_too(tmp_path):
     """A linked DIRECTORY arrives in os.walk's `dirnames`, never in `filenames`, so a
     leaf-only check leaves it neither walked nor reported — while git still commits it as

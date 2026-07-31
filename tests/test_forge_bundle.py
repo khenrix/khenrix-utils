@@ -1,0 +1,436 @@
+"""What crosses from a seat into a verifier — and what provably does not."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "shared" / "lib"))
+
+import pytest  # noqa: E402
+from forge import baseline, bundle, fleet, harvest, inspect as finspect  # noqa: E402
+from forge_fixtures import make_repo, write, git  # noqa: E402
+
+IDENT = ("Forge Seat", "seat@forge.invalid")
+
+
+def _seat(tmp_path, selected=(), name="claude"):
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    f = finspect.repo_facts(repo)
+    b = baseline.materialize(repo, run, f, list(selected), "r1")
+    s = fleet.clone_seat(repo, b, tmp_path / name, name=name, identity=IDENT)
+    return repo, b, s
+
+
+def _phases(seat, work):
+    f0 = harvest.record(seat)
+    fsetup = harvest.record(seat)
+    work()
+    fwork = harvest.record(seat)
+    return harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=harvest.record(seat))
+
+
+def test_a_tracked_edit_crosses_and_applies(tmp_path):
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "seed.txt", "agent edit\n"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    written = bundle.materialize(cb, dest)
+    assert "seed.txt" in written
+    assert (dest / "seed.txt").read_text() == "agent edit\n"
+
+
+def test_an_untracked_file_crosses_as_a_sidecar_not_a_patch(tmp_path):
+    """`tracked_diff` is a partial view of `paths` — untracked is one of its three holes."""
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "new.py", "print('hi')\n"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    assert "new.py" in [e.path for e in cb.sidecars]
+    assert cb.omitted == ()
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert (dest / "new.py").read_text() == "print('hi')\n"
+
+
+def test_an_executable_bit_survives_the_crossing(tmp_path):
+    repo, b, s = _seat(tmp_path)
+    def work():
+        q = write(s.path, "run.sh", "#!/bin/sh\necho hi\n")
+        q.chmod(0o755)
+    p = _phases(s.path, work)
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert os.access(dest / "run.sh", os.X_OK), "mode dropped; a test runner would not run"
+
+
+def test_a_binary_file_crosses_intact(tmp_path):
+    """`git diff` without --binary drops content at exit 0; harvest passes --binary."""
+    repo, b, s = _seat(tmp_path)
+    blob = bytes(range(256)) * 4
+    p = _phases(s.path, lambda: (s.path / "img.bin").write_bytes(blob))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert (dest / "img.bin").read_bytes() == blob
+
+
+def test_a_deletion_crosses_as_a_deletion(tmp_path):
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: (s.path / "seed.txt").unlink())
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    assert not (dest / "seed.txt").exists()
+
+
+def test_setup_output_does_not_cross(tmp_path):
+    """The bundle carries the AGENT's work. node_modules is not it."""
+    repo, b, s = _seat(tmp_path)
+    f0 = harvest.record(s.path)
+    (s.path / "node_modules").mkdir()
+    write(s.path, "node_modules/dep.js", "dep\n")
+    fsetup = harvest.record(s.path)
+    write(s.path, "src.py", "work\n")
+    fwork = harvest.record(s.path)
+    a = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    carried = set(_carried(cb))
+    assert "src.py" in carried
+    assert not any(c.startswith("node_modules/") for c in carried)
+
+
+def test_a_path_the_bundle_cannot_carry_is_named_in_omitted(tmp_path):
+    """A verifier failure from a missing input must be distinguishable from a defect.
+
+    The FIFO is made INSIDE the work phase, not before it. `paths` is `Fsetup -> Fwork`,
+    and `snapshot` records a special file's TYPE as its digest — so a pipe that already
+    existed at Fsetup is byte-identical at Fwork and never enters `paths` at all. Measured
+    with the mkfifo hoisted above `_phases`: `artifact_set(...).paths == ('src.py',)`, and
+    the assertion below then fails against a perfectly correct bundle.
+    """
+    repo, b, s = _seat(tmp_path)
+
+    def work():
+        os.mkfifo(s.path / "pipe")        # in paths; no honest payload
+        write(s.path, "src.py", "work\n")
+    p = _phases(s.path, work)
+    a = harvest.artifact_set(p, s.path, b.commit)
+    assert set(a.paths) == {"pipe", "src.py"}, "precondition: both reach the bundle"
+    cb = bundle.build(s.path, a, b)
+    assert "pipe" in cb.omitted
+    assert "src.py" not in cb.omitted
+
+
+def test_materialize_refuses_a_bundle_from_a_different_baseline(tmp_path):
+    """Two `make_repo` fixtures are not two baselines.
+
+    `make_repo` commits an identical tree with an identical message, author and committer,
+    and git's timestamps have one-second granularity — so two of them built in the same
+    second are the SAME commit OID. Measured: both baselines came back
+    `3d93025854a6...`, the verifier clone's HEAD matched the bundle's, and a correct
+    `materialize` had nothing to refuse. The extra commit gives `other` a tree of its own,
+    and the precondition below fails loudly rather than vacuously if that ever stops
+    holding.
+    """
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "src.py", "work\n"))
+    cb = bundle.build(s.path, harvest.artifact_set(p, s.path, b.commit), b)
+    other = make_repo(tmp_path, "other")
+    write(other, "elsewhere.txt", "a tree of its own\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "other")
+    run2 = tmp_path / "run2"; run2.mkdir()
+    b2 = baseline.materialize(other, run2, finspect.repo_facts(other), [], "r2")
+    assert b2.commit != b.commit, "precondition: the two baselines must actually differ"
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(other, b2, dest, name="verifier", identity=IDENT)
+    with pytest.raises(bundle.BundleError, match="baseline"):
+        bundle.materialize(cb, dest)
+
+
+def _carried(cb):
+    """Every path the bundle actually carries, from both channels."""
+    out = [e.path for e in cb.sidecars]
+    for line in cb.tracked_patch.decode("utf-8", "surrogateescape").splitlines():
+        if line.startswith("+++ b/"):
+            out.append(line[6:])
+    return out
+
+
+# --- D-1: what a symlink is, and which ones cross -------------------------------------
+
+def test_an_in_tree_symlink_crosses_as_a_link_not_as_its_targets_content(tmp_path):
+    """D-1: a link is its TARGET TEXT, which is `snapshot`'s and `baseline`'s answer too.
+
+    `docs/latest -> v2` is an ordinary artefact, so omitting every link would mutilate
+    ordinary candidates. Carrying its target's CONTENT instead would put a file the
+    candidate never named into the candidate — and would produce a regular file in the
+    verifier where the seat had a link, which is a different tree.
+    """
+    repo, b, s = _seat(tmp_path)
+
+    def work():
+        write(s.path, "docs/v2.md", "second edition\n")
+        (s.path / "docs" / "latest").symlink_to("v2.md")
+    p = _phases(s.path, work)
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    link = [e for e in cb.sidecars if e.path == "docs/latest"]
+    assert link and (link[0].kind, link[0].payload) == ("symlink", b"v2.md")
+    assert cb.omitted == ()
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    out = dest / "docs" / "latest"
+    assert out.is_symlink(), "materialized as a regular file; the verifier tree differs"
+    assert os.readlink(out) == "v2.md"
+    assert out.read_text() == "second edition\n", "and it still resolves inside the clone"
+
+
+def test_a_symlink_that_would_escape_the_verifier_is_omitted(tmp_path):
+    """D-1's containment half: an escaping link never crosses.
+
+    A verifier clone exists so the confirmed command runs where the builder could not reach.
+    Materializing `out -> ../../elsewhere` and then running that command would write through
+    it, straight out of the clone — so the link is refused and NAMED, which is the one
+    outcome that keeps a resulting failure honest.
+
+    Three spellings escape. A `..`-prefixed target and an absolute one — the absolute case
+    matters even when it names a path inside the SEAT, because the verifier is a different
+    directory, so the link would point back at the builder's own tree. And a BARE `..`,
+    which normalizes to exactly `".."` rather than to anything with a separator in it, so a
+    `startswith("../")` test alone lets the parent directory of the whole clone across.
+    """
+    repo, b, s = _seat(tmp_path)
+
+    def work():
+        (s.path / "up").symlink_to(Path("..") / ".." / "elsewhere")
+        (s.path / "abs").symlink_to(s.path / "seed.txt")
+        (s.path / "parent").symlink_to("..")
+        write(s.path, "fine.txt", "carried\n")
+    p = _phases(s.path, work)
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    assert set(cb.omitted) == {"up", "abs", "parent"}
+    assert [e.path for e in cb.sidecars] == ["fine.txt"]
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    bundle.materialize(cb, dest)
+    for gone in ("up", "abs", "parent"):
+        assert not os.path.lexists(dest / gone)
+    assert (dest / "fine.txt").read_text() == "carried\n"
+
+
+def test_a_patch_that_is_not_a_patch_is_refused_before_anything_is_written(tmp_path):
+    """`_covered` reads the bundle's own bytes to say what the patch carries.
+
+    A `git apply --numstat` that fails means the engine cannot say what this bundle would
+    do — so it must not be applied. Ignoring the exit code instead yields an empty
+    `covered` set, which reads as "this patch carries nothing" and would let the apply run
+    anyway on bytes nobody could account for.
+    """
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    cb = bundle.CandidateBundle(version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+                                tracked_patch=b"this is not a unified diff\n")
+    with pytest.raises(bundle.BundleError, match="cannot determine"):
+        bundle.materialize(cb, dest)
+
+
+# --- the three ways a path can fail to be carryable ------------------------------------
+
+def test_a_deleted_untracked_path_is_named_in_omitted(tmp_path):
+    """`paths` carries removals too, and the bundle has no delete-an-untracked channel.
+
+    Inventing one would not help: a verifier runs setup AFTER materialization, so whatever
+    setup created would come back regardless. Naming it is what makes a resulting failure
+    attributable.
+    """
+    repo, b, s = _seat(tmp_path)
+    write(s.path, "stale.txt", "from setup\n")
+    f0 = harvest.record(s.path)
+    fsetup = harvest.record(s.path)
+    (s.path / "stale.txt").unlink()
+    fwork = harvest.record(s.path)
+    a = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
+    assert a.paths == ("stale.txt",), "precondition: a removal is in the path set"
+    cb = bundle.build(s.path, a, b)
+    assert cb.omitted == ("stale.txt",)
+    assert cb.sidecars == ()
+
+
+def test_an_unreadable_file_is_omitted_rather_than_raising(tmp_path):
+    """`build`'s contract is that every path lands in exactly one channel.
+
+    One unreadable file must not take the whole candidate down with it — that is the
+    all-or-nothing failure `harvest`'s surrogateescape decode exists to avoid one layer up.
+    The `ArtifactSet` is built directly because `snapshot._digest` would raise on this file
+    first, so the normal route cannot reach the branch: `build` takes an `ArtifactSet`, and
+    a caller that assembled one another way is exactly who this protects.
+    """
+    repo, b, s = _seat(tmp_path)
+    locked = write(s.path, "locked.txt", "secret\n")
+    locked.chmod(0o000)
+    try:
+        cb = bundle.build(s.path, harvest.ArtifactSet(paths=("locked.txt",)), b)
+    finally:
+        locked.chmod(0o600)
+    assert cb.omitted == ("locked.txt",)
+    assert cb.sidecars == ()
+
+
+# --- the patch channel -----------------------------------------------------------------
+
+def test_a_rename_names_both_sides_so_neither_is_falsely_omitted(tmp_path):
+    """`git apply --numstat` reports only the POSTIMAGE of a rename.
+
+    Measured on git 2.53 for a `git mv old.txt new.txt` patch: forward `--numstat -z` gives
+    `new.txt` and `-R --numstat -z` gives `old.txt`. Forward alone therefore leaves
+    `old.txt` — which IS in `paths`, and IS carried by the patch — named in `omitted`, and
+    §6.2's `HARVEST_INCOMPLETE` would fire on a candidate with no harvesting gap at all.
+    `git diff` detects renames by default, so this is the ordinary case.
+
+    The renamed file must exist AT B, not merely in the seat. Measured with the file
+    created and committed inside the seat: `git diff <B>` sees only `new file mode ...
+    new.txt`, because the preimage never existed at B — there is no rename to detect
+    against the baseline, and the old name is legitimately a path the bundle carries
+    nothing for.
+    """
+    repo, b, s = _seat(tmp_path)
+    f0 = harvest.record(s.path)
+    fsetup = harvest.record(s.path)
+    git(s.path, "mv", "seed.txt", "renamed.txt")
+    fwork = harvest.record(s.path)
+    a = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
+    assert set(a.paths) == {"seed.txt", "renamed.txt"}, "precondition: both sides claimed"
+    assert "rename from" in a.tracked_diff, \
+        "precondition: git emitted a rename, not a delete plus an add"
+
+    cb = bundle.build(s.path, a, b)
+    assert cb.omitted == (), "the preimage is carried by the patch, so it is not a gap"
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    written = bundle.materialize(cb, dest)
+    assert set(written) == {"seed.txt", "renamed.txt"}
+    assert not (dest / "seed.txt").exists() and (dest / "renamed.txt").is_file()
+
+
+def test_a_patch_that_does_not_apply_is_a_bundle_error(tmp_path):
+    """A caller catching `BundleError` must not also have to catch `GitError`.
+
+    Task 4 classifies outcomes; a raw `GitError` out of `materialize` is a failure it has
+    no vocabulary for, and it would look like an engine crash rather than a bundle that
+    cannot be laid down.
+    """
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "seed.txt", "agent edit\n"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    # The verifier is at the right commit, so the check above passes; the patch's context
+    # is what no longer matches.
+    write(dest, "seed.txt", "something else entirely\n")
+    with pytest.raises(bundle.BundleError, match="does not apply"):
+        bundle.materialize(cb, dest)
+
+
+# --- what materialize refuses ----------------------------------------------------------
+
+def test_materialize_refuses_a_sidecar_path_that_escapes_the_destination(tmp_path):
+    """`dest / "../x"` writes outside the verifier and Path does not object.
+
+    `snapshot` keys cannot take this shape, so the guard is for the OTHER caller: a
+    `CandidateBundle` is a plain dataclass a later stage may deserialize from a ledger.
+    Nothing may be written before the refusal, patch included.
+    """
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    evil = bundle.CandidateBundle(
+        version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+        sidecars=(bundle.SidecarEntry("../pwned.txt", "file", 0o644, b"x\n"),))
+    with pytest.raises(bundle.BundleError, match="escapes the destination"):
+        bundle.materialize(evil, dest)
+    assert not (tmp_path / "pwned.txt").exists()
+
+
+def test_materialize_refuses_a_sidecar_kind_it_does_not_understand(tmp_path):
+    """A kind with no honest materialization must fail closed, not be skipped: a skipped
+    sidecar is a missing input the bundle claimed to carry, which is the one thing
+    `omitted` exists to make impossible."""
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    cb = bundle.CandidateBundle(
+        version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+        sidecars=(bundle.SidecarEntry("pipe", "special", 0o644, b""),))
+    with pytest.raises(bundle.BundleError, match="unknown kind"):
+        bundle.materialize(cb, dest)
+    assert not (dest / "pipe").exists()
+
+
+def test_materialize_refuses_a_version_it_was_not_written_for(tmp_path):
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    cb = bundle.CandidateBundle(version=bundle.VERSION + 1, baseline_ref=b.ref,
+                                baseline_commit=b.commit)
+    with pytest.raises(bundle.BundleError, match="version"):
+        bundle.materialize(cb, dest)
+
+
+def test_a_sidecar_replaces_whatever_already_sits_at_its_path(tmp_path):
+    """Writing a link needs the path clear — `os.symlink` raises FileExistsError — and
+    writing a FILE over an existing LINK without clearing it writes THROUGH the link,
+    modifying whatever it names instead of the path the bundle claimed."""
+    repo, b, s = _seat(tmp_path)
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    (dest / "decoy.txt").write_text("decoy target\n")
+    os.symlink("decoy.txt", dest / "seed.txt.bak")
+    cb = bundle.CandidateBundle(
+        version=1, baseline_ref=b.ref, baseline_commit=b.commit,
+        sidecars=(bundle.SidecarEntry("seed.txt.bak", "file", 0o644, b"replaced\n"),
+                  bundle.SidecarEntry("seed.txt", "symlink", 0, b"decoy.txt")))
+    bundle.materialize(cb, dest)
+    assert (dest / "decoy.txt").read_text() == "decoy target\n", "written through the link"
+    assert not (dest / "seed.txt.bak").is_symlink()
+    assert (dest / "seed.txt.bak").read_text() == "replaced\n"
+    assert (dest / "seed.txt").is_symlink()
+
+
+def test_the_gate_delta_is_unknown_rather_than_empty_until_a_detector_exists(tmp_path):
+    """`Baseline.sidecars` is the precedent: `()` would say "the candidate changed nothing
+    that defines the gate" when the truth is "nobody looked".
+
+    There is no gate-surface detector yet, so a consumer classifying `GATE_CHANGED` must
+    read None as UNKNOWN. An empty tuple here would let a candidate that rewrote the
+    Makefile pass as an independent gate. `generator_contract_id` defaults the other way
+    because "" admits NOTHING as permitted verify-origin output, which is fail-closed.
+    """
+    repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "Makefile", "verify:\n\ttrue\n"))
+    cb = bundle.build(s.path, harvest.artifact_set(p, s.path, b.commit), b)
+    assert cb.gate_delta is None, "an empty tuple would be a claim nobody made"
+    assert cb.generator_contract_id == ""
+    assert cb.version == bundle.VERSION
+    assert (cb.baseline_ref, cb.baseline_commit) == (b.ref, b.commit)

@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import (baseline, fleet, gitcmd, harvest,  # noqa: E402
+from forge import (baseline, bundle, fleet, gitcmd, harvest,  # noqa: E402
                    inspect as finspect, screen, snapshot)
 from forge_fixtures import git as _git, make_repo, write  # noqa: E402
 
@@ -44,15 +44,17 @@ def test_everything_in_the_tree_is_in_the_manifest(tmp_path):
     """SEAM: baseline's tree vs its own manifest. A selected directory broke this.
 
     The fixture carries a SYMLINK because the original carried none — which is why this
-    test asserted a property it could not violate. A link is the one shape where the two
-    sets legitimately disagree: git commits it into the tree, and the manifest refuses to
-    hash through it. What must not exist is a THIRD outcome — in the tree, out of the
-    manifest, and nothing anywhere saying so — which is exactly what `screen._walk`'s
+    test asserted a property it could not violate. A link used to be the one shape where
+    the two sets legitimately disagreed: git commits it into the tree, and the manifest
+    refused to hash through it. That left a THIRD outcome available — in the tree, out of
+    the manifest, and nothing anywhere saying so — which is exactly what `screen._walk`'s
     silent `continue` produced for a link pointing at the host.
 
-    So the residue is asserted to be exactly the links, and the screen is asserted to name
-    each one: the seam is closed either by the manifest describing the path or by a breach
-    declaring that nobody read it.
+    Since Plan D's D-1 the residue is EMPTY, which is the stronger closure: the manifest
+    describes a link by its target TEXT, so it describes every path in the tree without
+    ever reading through one. The screen still refuses to read through a link, and that
+    refusal is asserted here too — it is the remaining, deliberate asymmetry between what
+    B records and what the pre-launch screen vouched for.
     """
     repo = make_repo(tmp_path)
     write(repo, "scratch/a.txt", "a\n")
@@ -66,12 +68,14 @@ def test_everything_in_the_tree_is_in_the_manifest(tmp_path):
     # vacuously empty and the assertion certifies nothing.
     assert {"scratch/a.txt", "scratch/sub/b.txt", "scratch/alias.txt"} <= tree
     missing = tree - set(b.filesystem_manifest)
-    assert missing == {"scratch/alias.txt"}, \
-        f"in the tree but not the manifest, and not a link: {sorted(missing)}"
+    assert missing == set(), f"in the tree and nowhere in the manifest: {sorted(missing)}"
+    assert b.filesystem_manifest["scratch/alias.txt"] == \
+        hashlib.sha256(b"a.txt").hexdigest(), \
+        "and described as the link it is, not as the file it names"
     _findings, breaches = screen.screen_tree(repo, ["scratch"])
     assert breaches == ["scratch/alias.txt: not screened — symlink; links are never "
                         "followed"], \
-        "the one path the manifest does not describe must be one the screen refuses"
+        "the screen still declines to read through it; B describing it is not B reading it"
 
 
 def test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat(tmp_path):
@@ -79,9 +83,13 @@ def test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat(tmp_p
 
     `inspect.rejections` tested only the top-level selected path; `screen._walk` dropped a
     nested link in silence; `baseline` kept it out of the manifest while `git add -f` put
-    it in the TREE; `fleet`'s verification skips symlinks. Result, measured on this exact
+    it in the TREE; `fleet`'s verification skipped symlinks. Result, measured on this exact
     fixture: rejections `[]`, breaches `[]`, `verified=True`, and a seat whose
     `scratch/creds` read a file outside the repository. Every module's own suite was green.
+
+    The manifest and `fleet` now describe the link by its target text (Plan D, D-1), which
+    changes nothing about the containment story: describing a link is not refusing one, so
+    the two refusals asserted below remain the whole defence.
 
     BOTH gates are asserted rather than one, because either alone would let a single edit
     reopen the whole path.
@@ -110,9 +118,13 @@ def test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat(tmp_p
     b = baseline.materialize(repo, run, f, ["scratch"], "r1")
     tree = set(gitcmd.git(repo, "ls-tree", "-r", "--name-only", b.tracked_tree_oid,
                           env_extra=gitcmd.READONLY).stdout.split())
-    assert "scratch/creds" in tree and "scratch/creds" not in b.filesystem_manifest
+    assert "scratch/creds" in tree
+    assert b.filesystem_manifest["scratch/creds"] == \
+        hashlib.sha256(str(outside / "credentials").encode()).hexdigest(), \
+        "B describes the link by its target text — which is not a look at the target"
     seat = fleet.clone_seat(repo, b, tmp_path / "s1", name="claude", identity=IDENT)
-    assert seat.verified is True, "fleet skips symlinks, so nothing downstream objects"
+    assert seat.verified is True, \
+        "fleet compares the link's target TEXT, so an escaping link still verifies clean"
     assert (seat.path / "scratch" / "creds").read_text() == "HOST-ONLY-CONTENT\n", \
         "the seat really can read outside the repository — hence the two refusals above"
 
@@ -125,9 +137,11 @@ def test_everything_the_manifest_names_is_screenable(tmp_path):
     screen read LESS than it claimed to, so a manifest key the screen refuses means the
     baseline recorded content that never went past the secret screen.
 
-    Holds for ordinary files and selected directories. It does NOT hold for a tracked
-    symlink — see `test_a_tracked_symlink_is_the_hole_in_two_of_these_seams`, which pins
-    that gap rather than leaving this test to imply the property is universal.
+    Holds for ordinary files and selected directories. It does NOT hold for a symlink —
+    see `test_a_tracked_symlink_is_its_target_text_in_every_module`, which pins that
+    remaining gap rather than leaving this test to imply the property is universal. D-1
+    narrowed the gap but did not close it: B now describes a link honestly, and the screen
+    still declines to read through one.
     """
     repo = make_repo(tmp_path)
     write(repo, "cfg.py", "ok\n")
@@ -170,13 +184,16 @@ def test_the_seats_first_inventory_agrees_with_the_baseline_manifest(tmp_path):
     predicate is the snapshot digest, and it is only meaningful against B if the two
     functions produce the same string for the same bytes.
 
-    Scoped to regular files for the reason the test below states: a tracked symlink is in
-    the manifest as its target's CONTENT and in F0 as its target's TEXT, so the two are
-    unequal there by construction.
+    The fixture carries a SYMLINK, which it could not before D-1: the manifest held a
+    link's target CONTENT while F0 held its target TEXT, so the two were unequal there by
+    construction and this test had to be scoped to regular files to say anything at all.
+    Both now digest the target text, so the promise is spent on every shape the fixture has
+    rather than on the easy ones.
     """
     repo = make_repo(tmp_path)
     write(repo, "d.txt", "dirty\n")
     write(repo, "pkg/mod.py", "content\n")
+    (Path(repo) / "pkg" / "alias.py").symlink_to("mod.py")
     run = tmp_path / "run"; run.mkdir()
     b = _baseline(repo, run, selected=["d.txt", "pkg"])
     seat = fleet.clone_seat(repo, b, tmp_path / "s1", name="claude", identity=IDENT)
@@ -184,30 +201,31 @@ def test_the_seats_first_inventory_agrees_with_the_baseline_manifest(tmp_path):
     assert breaches == []
     # `.git` is skipped by the snapshot and absent from the manifest, so the two path sets
     # are directly comparable — not merely one contained in the other.
-    assert {p for p, e in f0.items() if e.kind == "file"} == set(b.filesystem_manifest)
+    assert set(f0) == set(b.filesystem_manifest)
+    assert f0["pkg/alias.py"].kind == "symlink", "or the link half is vacuous"
     for rel, want in b.filesystem_manifest.items():
         assert f0[rel].digest == want, f"snapshot and baseline disagree on {rel}"
 
 
-def test_a_tracked_symlink_is_the_hole_in_two_of_these_seams(tmp_path):
-    """SEAM GAP, characterized rather than papered over: three modules disagree on one shape.
+def test_a_tracked_symlink_is_its_target_text_in_every_module(tmp_path):
+    """SEAM, closed by Plan D's D-1: four modules now give one shape one identity.
 
-    `baseline`'s `ls-files` loop guards on `is_file()`, which FOLLOWS a link, so a TRACKED
-    symlink enters the manifest carrying the sha256 of its TARGET'S CONTENT — read through
-    the link, which `_walk_selected` refuses to do for a SELECTED directory for exactly the
-    reason that it "must not describe content from outside the tree it claims to describe".
-    That asymmetry is load-bearing elsewhere as of Plan C Task 2:
-    `test_clone_seat_skips_a_symlink_rather_than_hashing_through_it` asserts the manifest
-    entry as its precondition. So it is pinned here, not changed by this task.
+    Until this commit `baseline`'s `ls-files` loop guarded on `is_file()`, which FOLLOWS a
+    link, so a TRACKED symlink entered the manifest carrying the sha256 of its TARGET'S
+    CONTENT — read through the link, which `_walk_selected` refused to do for a SELECTED
+    directory for exactly the reason that it "must not describe content from outside the
+    tree it claims to describe". `snapshot` digested the target TEXT, `fleet` skipped the
+    entry rather than choose between them, and `screen` breached on it. Four modules, three
+    opinions, and a seam that was closed only for a manifest with no tracked symlink.
 
-    Both consequences are asserted so neither side can move in silence:
+    `bundle` is what forced the answer: a candidate's symlink has to cross as SOMETHING, and
+    carrying it as its target's content would put content from outside the candidate into
+    the candidate. So a link is its target text, in `baseline`, `snapshot`, `fleet` and
+    `bundle` alike — and this test is the one place all four are compared on one path.
 
-    - `screen` BREACHES on the entry ("links are never followed"), so B records a digest
-      for a path the pre-launch secret screen refused to open. The manifest-vs-screen seam
-      is therefore closed only for a manifest with no tracked symlink.
-    - `snapshot` records kind "symlink" and digests the target TEXT, so F0's digest and the
-      manifest's digest for the same path are unequal by construction — content-keyed
-      change detection over B cannot use that entry.
+    What remains, deliberately, is `screen`'s refusal: describing a link is not reading
+    through it, so the pre-launch screen still declines to vouch for whatever it names. That
+    is asserted here so it cannot lapse into silence.
 
     A tracked symlink that ESCAPES the repository is already rejected by
     `inspect.rejections`; this one points inside, so preflight passes it.
@@ -220,21 +238,33 @@ def test_a_tracked_symlink_is_the_hole_in_two_of_these_seams(tmp_path):
     f = finspect.repo_facts(repo)
     assert f.escaping_symlinks == [], "precondition: preflight does not reject this one"
     b = baseline.materialize(repo, run, f, [], "r1")
-    assert b.filesystem_manifest["link.txt"] == hashlib.sha256(b"seed\n").hexdigest(), \
-        "precondition: the manifest holds the digest of what the link POINTS AT"
+    target_text = hashlib.sha256(b"seed.txt").hexdigest()
+    assert b.filesystem_manifest["link.txt"] == target_text, \
+        "B holds the digest of the TEXT the link carries, not of what that text reaches"
+    assert b.filesystem_manifest["link.txt"] != hashlib.sha256(b"seed\n").hexdigest(), \
+        "and specifically not the target's content, which is what it used to hold"
 
     _findings, breaches = screen.screen_tree(repo, sorted(b.filesystem_manifest))
     assert breaches == ["link.txt: not screened — symlink; links are never followed"], \
-        "the screen's refusal is the seam gap; a clean list would mean it followed the link"
+        "the screen still refuses; a clean list would mean it followed the link"
 
     seat = fleet.clone_seat(repo, b, tmp_path / "seats" / "s1",
                             name="claude", identity=IDENT)
+    assert seat.verified is True, "and fleet VERIFIES the entry now rather than excusing it"
     f0, snap_breaches = snapshot.take(seat.path)
     assert snap_breaches == []
     assert f0["link.txt"].kind == "symlink"
-    assert f0["link.txt"].digest != b.filesystem_manifest["link.txt"], \
-        "the two digests describe different things; equality would mean one of them moved"
-    assert f0["link.txt"].digest == hashlib.sha256(b"seed.txt").hexdigest()
+    assert f0["link.txt"].digest == b.filesystem_manifest["link.txt"], \
+        "F0 and B agree on the link, so content-keyed change detection covers it too"
+
+    # The fourth module: what a candidate would carry for the same path.
+    entry = bundle.build(
+        seat.path,
+        harvest.ArtifactSet(paths=("link.txt",)),
+        b).sidecars[0]
+    assert (entry.kind, entry.payload) == ("symlink", b"seed.txt"), \
+        "the bundle carries the link as the link, so all four modules say one thing"
+    assert hashlib.sha256(entry.payload).hexdigest() == target_text
 
 
 def test_the_whole_chain_delivers_the_agents_work_to_the_harvest(tmp_path):

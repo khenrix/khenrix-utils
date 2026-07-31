@@ -65,6 +65,11 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_link(p: Path) -> str:
+    """Mirrors `baseline._sha256_link` and `snapshot._symlink_entry` for the same reason."""
+    return hashlib.sha256(os.readlink(p).encode()).hexdigest()
+
+
 def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat:
     """Clone `baseline.ref` into `dest`; hand back a remote-less seat that can be launched.
 
@@ -198,12 +203,17 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
             raise SeatError(f"seat checked out {head[:12]}, expected {baseline.commit[:12]}")
         for rel, want in (baseline.filesystem_manifest or {}).items():
             p = dest / rel
-            # A symlink is SKIPPED rather than hashed: `_sha256_file` opens THROUGH it, so
-            # hashing one describes content from outside the tree the manifest claims to
-            # describe — baseline's `_walk_selected` refuses to walk them for that reason.
-            # This narrows the check without emptying it: measured on a fixture carrying a
-            # tracked symlink, 3 of 4 manifest entries were still ordinary files.
+            # A symlink is checked by its TARGET TEXT, never hashed through: `_sha256_file`
+            # opens THROUGH it, so hashing one describes content from outside the tree the
+            # manifest claims to describe. The branch used to `continue`, because the
+            # manifest held the target's content and nothing this side could reproduce it
+            # without following the link; since Plan D's D-1 the manifest holds the target
+            # text, so the entry is now VERIFIED rather than excused. The link test also has
+            # to come before the absence check below: a correct seat can carry a link that
+            # dangles from the seat's own depth, and `is_file()` answers False for one.
             if p.is_symlink():
+                if _sha256_link(p) != want:
+                    raise SeatError(f"seat symlink points elsewhere than the baseline: {rel}")
                 continue
             # Absence is NOT skipped. A seat missing a path B1 contains is exactly the
             # transport failure this assertion exists to catch, and skipping it would
