@@ -656,6 +656,10 @@ class ProviderSpec:
     # Length floor for a substantive answer. Council seats use the default; callers whose
     # correct answer is legitimately tiny (--smoke expects "pong") set it to 0.
     min_chars: int = MIN_SUBSTANTIVE_CHARS
+    # When set, run_provider calls this INSTEAD of evaluate() — council seat policy
+    # (length floor, sentinel) is not a property of running a provider (spec §8.1).
+    # Signature: (exit_code, stdout, stderr, spec) -> (valid, reason, result_text, structured)
+    validator: Optional[Callable] = None
 
 
 def agy_configured_model() -> Optional[str]:
@@ -917,7 +921,8 @@ def run_member(argv, *, stdin, timeout, env, cwd):
 
 
 _LIVE_WORKTREES: set = set()   # (repo, wt) handles; registered the moment `worktree add` succeeds
-_HANDLER_FIRED = False
+_STATE = {"handler_fired": False}   # mutable container: a facade re-export of a
+                                    # rebindable bool would go permanently stale (spec §17)
 
 
 def _signal_cleanup(signum, frame):
@@ -925,9 +930,8 @@ def _signal_cleanup(signum, frame):
     `finally`, and sys.exit here would unwind into the executor's __exit__, which blocks
     on live member subprocesses for minutes — so remove the registered worktrees
     directly and hard-exit with the conventional 128+signum."""
-    global _HANDLER_FIRED
-    if not _HANDLER_FIRED:            # re-entry guard: a second signal skips straight to exit
-        _HANDLER_FIRED = True
+    if not _STATE["handler_fired"]:   # re-entry guard: a second signal skips straight to exit
+        _STATE["handler_fired"] = True
         for pgid in list(_LIVE_PGIDS):   # members first: agy's group holds the worktree open
             try:
                 os.killpg(pgid, signal.SIGKILL)
@@ -938,15 +942,25 @@ def _signal_cleanup(signum, frame):
     os._exit(128 + signum)
 
 
-def install_cleanup_handler() -> None:
-    """Install in main()/smoke() BEFORE any worktree is created. Main-thread only —
+def install_cleanup_handler(force: bool = False) -> bool:
+    """Install _signal_cleanup for SIGTERM/SIGINT — unless the caller already owns the
+    handler. run_council once installed unconditionally, which silently replaced an
+    embedding orchestrator's own handler (spec §17: 'calling run_council does not
+    replace a pre-existing SIGTERM handler'). Returns True iff installed.
+
+    Install in main()/smoke() BEFORE any worktree is created. Main-thread only —
     off-main-thread callers get ValueError, which is ignored (they also never create
     worktrees without a main-thread orchestrator)."""
+    current = signal.getsignal(signal.SIGTERM)
+    foreign = current not in (signal.SIG_DFL, signal.SIG_IGN, None, _signal_cleanup)
+    if foreign and not force:
+        return False
     try:
         signal.signal(signal.SIGTERM, _signal_cleanup)
         signal.signal(signal.SIGINT, _signal_cleanup)
     except ValueError:  # noqa: PERF203 — not the main thread; nothing to protect here
-        pass
+        return False
+    return True
 
 
 def _warn_isolation(detail: str) -> None:
@@ -955,7 +969,8 @@ def _warn_isolation(detail: str) -> None:
 
 
 def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
-                         repo_dir: Optional[str] = None) -> Optional[tuple]:
+                         repo_dir: Optional[str] = None, *,
+                         prune: bool = True, branch: Optional[str] = None) -> Optional[tuple]:
     """Point agy's cwd at a throwaway git worktree so cwd-relative mutations — the
     observed breakout class (2026-07-11: editing files, re-seeding receipts, `git add`)
     — land in a discarded copy instead of the real checkout. Since agy 1.1.1 the primary
@@ -976,11 +991,15 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
         repo = top.stdout.strip()
         # Unregister worktrees leaked by previously crashed runs (temp dirs vanish but
         # their .git/worktrees/ registrations do not).
-        subprocess.run(["git", "-C", repo, "worktree", "prune"],
-                       capture_output=True, text=True, timeout=10)
+        if prune:
+            subprocess.run(["git", "-C", repo, "worktree", "prune"],
+                           capture_output=True, text=True, timeout=10)
         wt = str(Path(workdir) / "agy-worktree")
-        add = subprocess.run(["git", "-C", repo, "worktree", "add", "--detach", wt, "HEAD"],
-                             capture_output=True, text=True, timeout=30)
+        if branch:
+            add_cmd = ["git", "-C", repo, "worktree", "add", "-b", branch, wt, "HEAD"]
+        else:
+            add_cmd = ["git", "-C", repo, "worktree", "add", "--detach", wt, "HEAD"]
+        add = subprocess.run(add_cmd, capture_output=True, text=True, timeout=30)
         if add.returncode != 0:
             _warn_isolation(f"worktree add failed: {add.stderr.strip()[:120]}")
             return None
@@ -1137,7 +1156,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         else:
             dur = round(time.monotonic() - t0, 2)
             stdout, stderr, exit_code = cp.stdout or "", cp.stderr or "", cp.returncode
-            valid, reason, result_text, structured = evaluate(exit_code, stdout, stderr, spec)
+            valid, reason, result_text, structured = (spec.validator or evaluate)(exit_code, stdout, stderr, spec)
 
         if final["status"] != "not_installed":
             # A provider with a log file may hide its real failure there: agy prints
@@ -1235,7 +1254,8 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                 prompt: Optional[str] = None,
                 requested: Optional[list] = None,
                 mode: Optional[str] = None,
-                read_only: Optional[bool] = None) -> dict:
+                read_only: Optional[bool] = None,
+                install_signal_handler: bool = True) -> dict:
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     # Install at the CHOKE POINT, not in the callers. Members now lead their own session,
@@ -1246,7 +1266,8 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
     # `--allow-writes` runs, which carry the bypass flags and NO worktree isolation, and
     # every eval_harness run (it calls run_council directly, never main) with no teardown
     # at all: abort, and three detached members keep editing for up to timeout x attempts.
-    install_cleanup_handler()
+    if install_signal_handler:
+        install_cleanup_handler()
     started = _now_iso()
     with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
         futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir)
@@ -2046,13 +2067,13 @@ def self_test() -> int:
     exit_codes: list = []
     real_exit = os._exit
     os._exit = exit_codes.append  # type: ignore[assignment] — stub; handler never returns in prod
-    globals()["_HANDLER_FIRED"] = False
+    _STATE["handler_fired"] = False
     _signal_cleanup(signal.SIGTERM, None)
     os._exit = real_exit  # type: ignore[assignment]
     check("signal: handler removed the worktree and deregistered it",
           h17 is not None and h17 not in _LIVE_WORKTREES and not Path(h17[1]).exists())
     check("signal: hard-exits with 128+signum (143)", exit_codes == [143])
-    globals()["_HANDLER_FIRED"] = False  # reset for any later checks
+    _STATE["handler_fired"] = False  # reset for any later checks
 
     # S18 — seat validity end-to-end through the REAL engine. Every case below exits 0
     # with non-empty stdout, i.e. every one of them scored `ok` before this existed.
