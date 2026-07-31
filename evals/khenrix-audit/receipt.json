@@ -1,7 +1,7 @@
 {
   "skill": "khenrix-audit",
   "source_hash": "dd86f4d3d3b49c938c48aa01126afd57b609830be961a18d4d7f62695e9f6c62",
-  "eval_set_hash": "affc83aaee3d07fd815eab3be655aa157e9ec5b56766a09f34bf09457cf8136a",
+  "eval_set_hash": "1771c304a53918a3dd1625abbe3e08cf01ea81d0862df028d972df0652e2c850",
   "providers": [
     "claude"
   ],
