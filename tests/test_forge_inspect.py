@@ -95,6 +95,64 @@ def test_rejects_submodule_and_sparse_and_shallow(tmp_path):
                finspect.rejections(finspect.replace(f, is_partial=True), []))
 
 
+def test_rejects_embedded_gitlink_without_gitmodules(tmp_path):
+    """`git add` on a directory that is itself a repository — git accepts it with a warning
+    and writes a 160000 index entry that no .gitmodules maps. `git submodule status` exits
+    128 on exactly that state, so detecting submodules through it turns the commonest gitlink
+    into a raw GitError instead of the rejection the plan requires."""
+    repo = make_repo(tmp_path)
+    sub = Path(repo) / "sub"
+    sub.mkdir()
+    _git(sub, "init", "-q", "-b", "main")
+    _git(sub, "config", "user.email", "fixture@example.invalid")
+    _git(sub, "config", "user.name", "Fixture")
+    write(sub, "inner.txt", "i\n")
+    _git(sub, "add", "inner.txt")
+    _git(sub, "commit", "-q", "-m", "inner")
+    _git(repo, "add", "sub")
+    assert not (Path(repo) / ".gitmodules").exists(), "fixture must be the unmapped variant"
+    f = finspect.repo_facts(repo)                      # must not raise
+    assert f.has_submodules
+    assert any("submodule" in r for r in finspect.rejections(f, []))
+
+
+def test_rejects_properly_added_submodule(tmp_path):
+    """The mapped variant: .gitmodules present AND a 160000 index entry."""
+    origin = make_repo(tmp_path, name="origin")
+    repo = make_repo(tmp_path, name="host")
+    # protocol.file.allow is set with -c, scoped to this one command: since git 2.38.1 a
+    # submodule clone over `file://` is refused by default. Setting it globally would relax
+    # the developer's own git.
+    _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(origin), "sub")
+    assert (Path(repo) / ".gitmodules").is_file()
+    f = finspect.repo_facts(repo)
+    assert f.has_submodules
+    assert any("submodule" in r for r in finspect.rejections(f, []))
+
+
+def test_rejects_shallow_clone(tmp_path):
+    origin = make_repo(tmp_path, name="origin")
+    write(origin, "second.txt", "2\n")
+    _git(origin, "add", "second.txt")
+    _git(origin, "commit", "-q", "-m", "second")
+    # file:// rather than a plain path: a local-path clone ignores --depth and copies the
+    # whole history, so the fixture would silently not be shallow.
+    _git(tmp_path, "clone", "-q", "--depth", "1", f"file://{origin}", "shallow")
+    f = finspect.repo_facts(Path(tmp_path) / "shallow")
+    assert f.is_shallow
+    assert any("shallow" in r for r in finspect.rejections(f, []))
+
+
+def test_unborn_head_is_rejected_not_raised(tmp_path):
+    """A freshly init-ed repository is an ordinary state; `rev-parse HEAD` exits 128 on it."""
+    repo = Path(tmp_path) / "empty"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    f = finspect.repo_facts(repo)                      # must not raise
+    assert f.head == ""
+    assert any("unborn" in r for r in finspect.rejections(f, []))
+
+
 def test_nested_repo_is_reported_only_when_selected(tmp_path):
     """This repo carries leaked agy worktrees under gitignored eval workspaces; an
     unscoped structural sweep would abort every run on artifacts nobody created."""
@@ -130,7 +188,9 @@ def test_a_rename_does_not_smuggle_a_phantom_path(tmp_path):
     repo = make_repo(tmp_path)
     _git(repo, "mv", "seed.txt", "renamed.txt")
     f = finspect.repo_facts(repo)
-    assert f.staged == ["renamed.txt", "seed.txt"]     # the add and the delete, both whole
+    # sorted(): the claim is that no phantom `d.txt` was carved out of the bare old-path
+    # record, not that git emits the pair in a particular order.
+    assert sorted(f.staged) == ["renamed.txt", "seed.txt"]   # the add and the delete, both whole
     assert f.unstaged == [] and f.untracked == []
 
 

@@ -53,6 +53,21 @@ def _z(out: str) -> list:
     return [p for p in out.split("\0") if p]
 
 
+def _index_entries(out: str) -> list:
+    """`(mode, path)` per index entry, parsed from `ls-files -s -z`.
+
+    The record is `<mode> SP <oid> SP <stage> TAB <path>`, so the split is on the FIRST tab
+    only: under `-z` the path is raw bytes and may itself contain one, while mode, oid and
+    stage never can.
+    """
+    entries = []
+    for rec in _z(out):
+        meta, tab, path = rec.partition("\t")
+        if tab:
+            entries.append((meta.split(" ", 1)[0], path))
+    return entries
+
+
 def _config(repo, key: str) -> str:
     """A config value, or "" when unset. Absent keys exit 1, so this cannot use check=True."""
     return gitcmd.git(repo, "config", "--get", key,
@@ -91,7 +106,14 @@ def repo_facts(repo) -> RepoFacts:
 
     root = Path(g("rev-parse", "--show-toplevel").strip())
     git_dir = Path(g("rev-parse", "--absolute-git-dir").strip())
-    head = g("rev-parse", "HEAD").strip()
+
+    # A freshly `git init`-ed repository is an ordinary state, not an error: HEAD points at a
+    # branch that has no commit, and `rev-parse HEAD` exits 128. A module whose contract is
+    # "return a rejection list" must describe that, not raise through it, so head stays "" and
+    # rejections() speaks.
+    head_r = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "rev-parse", "--verify", "HEAD",
+                        env_extra=gitcmd.READONLY, check=False)
+    head = head_r.stdout.strip() if head_r.returncode == 0 else ""
 
     # --no-renames is required, not tuning. With rename detection on, porcelain -z emits the
     # old path as a bare extra record after every R/C entry, which reads back as a status
@@ -122,17 +144,27 @@ def repo_facts(repo) -> RepoFacts:
         line.split("\t", 1)[1] for line in _z(g("ls-files", "--unmerged", "-z"))
         if "\t" in line))
 
+    # Gitlinks are read straight out of the index rather than from `git submodule status`.
+    # That command exits 128 — `no submodule mapping found in .gitmodules for path 'x'` — on
+    # the commonest way a gitlink appears at all: `git add` on a directory that happens to be
+    # a repository, which git accepts with a warning and no .gitmodules entry. `check=True`
+    # would raise out of preflight; `check=False` would read the crash as "no submodules",
+    # which is fail-OPEN on the exact condition this rejects. `ls-files` cannot fail here, and
+    # its mode column is 160000 for a gitlink however the entry was created. The .gitmodules
+    # probe stays because it catches the opposite direction: a mapping with no index entry.
+    entries = _index_entries(g("ls-files", "-s", "-z"))
+
     index = git_dir / "index"
     return RepoFacts(
         root=root, head=head,
         index_sha=hashlib.sha256(index.read_bytes()).hexdigest() if index.is_file() else "",
         is_shallow=g("rev-parse", "--is-shallow-repository").strip() == "true",
         is_partial=bool(_config(repo, "extensions.partialClone")),
-        has_submodules=bool(g("submodule", "status", "--recursive").strip() or
-                            (root / ".gitmodules").is_file()),
+        has_submodules=any(mode == "160000" for mode, _ in entries) or
+        (root / ".gitmodules").is_file(),
         sparse=_config(repo, "core.sparseCheckout") == "true",
         unmerged=unmerged, intent_to_add=intent_to_add,
-        filtered_paths=_filtered_paths(repo, _z(g("ls-files", "-z"))),
+        filtered_paths=_filtered_paths(repo, [path for _, path in entries]),
         staged=staged, unstaged=unstaged, untracked=untracked)
 
 
@@ -143,6 +175,8 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
     path is SELECTED into the baseline — see the module docstring.
     """
     out = []
+    if not facts.head:
+        out.append("unborn HEAD: the repository has no commits yet")
     if facts.is_shallow:
         out.append("shallow repository: history is incomplete; clone semantics differ")
     if facts.is_partial:
