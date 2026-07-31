@@ -1,14 +1,22 @@
 """Fixture git repositories for the forge suites.
 
-Local user identity only — never touches the developer's global git config.
+Local user identity only, and global/system config disabled for every fixture command:
+a developer's `commit.gpgsign = true` would otherwise fail every fixture commit, and a
+global `core.hooksPath` would run their hooks inside these throwaway repos. The two
+variables are inlined rather than imported from `forge.gitcmd.NO_USER_CONFIG` so the
+fixture stays independent of the code it is used to test.
 """
+import os
 import subprocess
 from pathlib import Path
 
 
 def _run(repo, *args):
     r = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30,
+                       env={**os.environ,
+                            "GIT_CONFIG_GLOBAL": os.devnull,
+                            "GIT_CONFIG_SYSTEM": os.devnull})
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}")
     return r

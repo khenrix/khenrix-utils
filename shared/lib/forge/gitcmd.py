@@ -14,12 +14,28 @@ index.lock unconditionally. Callers must supply GIT_INDEX_FILE instead.
 """
 import os
 import subprocess
-from pathlib import Path
 
 READONLY = {"GIT_OPTIONAL_LOCKS": "0"}
 NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
 # fsmonitor/untracked-cache are daemon state; a baseline must not depend on them.
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
+
+# Each of these overrides `-C <repo>`, and a hook, `git rebase --exec` or `git bisect run`
+# exports several of them into everything it invokes. Inheriting one would silently point
+# an engine call at the USER's repository — the one thing this package must never touch.
+REDIRECTING_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+)
 
 
 class GitError(RuntimeError):
@@ -27,7 +43,14 @@ class GitError(RuntimeError):
 
 
 def git(repo, *args, env_extra=None, check=True, binary=False, timeout=60):
-    env = dict(os.environ)
+    """Run git in `repo` with an argv list and an explicit environment.
+
+    Environment order is a contract later tasks depend on: REDIRECTING_ENV is scrubbed from
+    the inherited environment FIRST, then `env_extra` is applied. So an ambient GIT_DIR
+    cannot redirect the call, while a caller that deliberately passes GIT_INDEX_FILE (as
+    baseline construction does) still wins.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in REDIRECTING_ENV}
     env.update(env_extra or {})
     r = subprocess.run(["git", "-C", str(repo), *args],
                        capture_output=True, text=not binary, timeout=timeout, env=env)

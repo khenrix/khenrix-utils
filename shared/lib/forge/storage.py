@@ -13,15 +13,22 @@ from pathlib import Path
 
 
 def new_run_id() -> str:
-    return secrets.token_hex(3)   # 6 hex chars; collision-checked by the caller's mkdir
+    return secrets.token_hex(3)   # 6 hex chars; run_root() rejects a collision, see below
 
 
-def run_root(repo_path, run_id: str) -> Path:
+def run_root(repo_path, run_id: str, must_be_new: bool = True) -> Path:
+    """Create (or reattach to) the directory holding this run's work.
+
+    `must_be_new` makes the collision real rather than silent: a second run that draws the
+    same run id for the same repo raises FileExistsError instead of sharing a directory
+    with the first. Reattaching to a run that already exists — collecting results the
+    engine wrote earlier — must pass False.
+    """
     state = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
     digest = hashlib.sha256(str(Path(repo_path).resolve()).encode()).hexdigest()[:12]
     p = Path(state) / "khenrix-forge" / f"{digest}-{run_id}"
-    p.mkdir(parents=True, exist_ok=True)
-    p.chmod(0o700)
+    p.mkdir(mode=0o700, parents=True, exist_ok=not must_be_new)
+    p.chmod(0o700)   # mkdir's mode is masked by umask; chmod is not
     return p
 
 
