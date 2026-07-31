@@ -1,4 +1,4 @@
-"""The four-phase artifact set (spec §6.1, §7.1).
+"""The four-phase artifact set (spec §7.1, §7.2).
 
 Origin is PROVENANCE, not eligibility. Four inventories are taken — F0 (baseline
 checkout), Fsetup (after the engine's setup), Fwork (after the agent exits), Fverify
@@ -14,6 +14,21 @@ baseline commit — never the seat's own HEAD, which a seat that commits would l
 
 Empty directories are invisible throughout: `snapshot.Entry` never carries kind "dir", so
 a directory an agent creates or removes reaches none of these sets unless its contents do.
+
+`tracked_diff` IS NOT A COMPLETE VIEW OF `paths`, and §6's CandidateBundle must carry the
+difference by another route or it hands over a candidate that silently drops files the
+ledger says the agent changed. Three measured causes, only one of which is closed here:
+
+- **untracked files** — `git diff <B>` never reports them at all. They are in `paths` and
+  contribute nothing to the diff. Structural; no flag closes it.
+- **submodule contents** — a submodule's `.git` is a FILE, so `snapshot`'s `.git` dirname
+  skip does not apply and it walks the submodule's working tree (`sub/inner.txt`, and
+  `sub/.git` itself). The superproject's diff reports only the gitlink, so a changed file
+  under a submodule enters `paths` and yields ZERO bytes of diff at exit 0. Structural.
+- **files git treats as binary** — closed, but only by the `--binary` flag below. Without
+  it git emits `Binary files a/x and b/x differ` and no content, at exit 0. That covers
+  ordinary binaries AND text files a seat marked `-diff` in its own in-tree
+  `.gitattributes`, which is a routine pattern for lockfiles and generated output.
 """
 from dataclasses import dataclass, field
 
@@ -76,6 +91,15 @@ def _literal(path: str) -> str:
 
 
 def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet:
+    """The path set, its provenance, and the tracked content behind it.
+
+    The error surface is stated because it is NOT closed by this package's three classes,
+    and a Task 5 caller that catches only `HarvestError` / `GitError` / `SnapshotError`
+    misses the last two: a failing git raises `gitcmd.GitError`; a path set long enough to
+    exceed ARG_MAX raises `OSError(E2BIG)` out of subprocess (`git diff` has no
+    `--pathspec-from-file`, measured, so chunking would be the fix); and a wedged git
+    raises `subprocess.TimeoutExpired` at `gitcmd`'s 60s.
+    """
     setup_changes = snapshot.diff(phases.f0, phases.fsetup)
     work_changes = snapshot.diff(phases.fsetup, phases.fwork)
     verify_changes = snapshot.diff(phases.fwork, phases.fverify)
@@ -102,12 +126,29 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
     # churn as the candidate's content.
     diff_text = ""
     if paths:
+        # --binary: without it a file git considers binary — including a TEXT file the
+        # seat marked `-diff` in its own .gitattributes — yields `Binary files … differ`
+        # and no content, at exit 0. The path is in `paths` asserting the agent changed
+        # it while the diff carries nothing to reconstruct it: the same silent, exit-0
+        # content loss the :(literal) fix exists to prevent, in the same call.
+        #
         # check=True: git exits 0 for a pathspec matching nothing tracked (measured), so
         # a nonzero exit is a real failure — most likely a pinned B absent from this
         # clone's object store. Under check=False that failure and a legitimately empty
         # diff are the same empty string, and the candidate hands over empty in silence.
+        #
+        # binary=True + surrogateescape, NOT text=True: git echoes the raw bytes of a
+        # changed file, so ONE latin-1 file made subprocess' strict UTF-8 decode raise
+        # UnicodeDecodeError and take every other path's content down with it — in a
+        # class that is neither HarvestError, GitError nor SnapshotError. surrogateescape
+        # is chosen over errors="replace" because it is REVERSIBLE: a consumer writing
+        # this patch back out for `git apply` must use
+        # `tracked_diff.encode("utf-8", "surrogateescape")`, which reproduces git's bytes
+        # exactly. A plain `.encode()` raises UnicodeEncodeError on the surrogates, and
+        # "replace" would have produced a patch that no longer applies.
         diff_text = gitcmd.git(
-            seat_path, "diff", baseline_commit, "--", *(_literal(p) for p in paths),
-            env_extra=gitcmd.READONLY).stdout
+            seat_path, "diff", "--binary", baseline_commit, "--",
+            *(_literal(p) for p in paths),
+            env_extra=gitcmd.READONLY, binary=True).stdout.decode("utf-8", "surrogateescape")
     return ArtifactSet(paths=paths, origin=origin, setup_overlap=overlap,
                        tracked_diff=diff_text, verify_overlap=verify_overlap)

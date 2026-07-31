@@ -24,7 +24,7 @@ def _head(repo) -> str:
     nothing, and an empty baseline would make `git diff <B>` fail for a second reason.
     """
     r = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                       capture_output=True, text=True, env=_hermetic_env())
+                       capture_output=True, text=True, timeout=30, env=_hermetic_env())
     assert r.returncode == 0, f"rev-parse failed: {r.stderr.strip()}"
     return r.stdout.strip()
 
@@ -55,6 +55,11 @@ def test_setup_output_is_not_in_the_artifact_set(tmp_path):
     assert "node_modules/x.js" not in a.paths
     assert "report.txt" not in a.paths
     assert a.origin["src.py"] == "builder"
+    # §7.1: the flag exists "so the ledger states the churn component instead of absorbing
+    # it silently". A flag raised on every path states nothing and would have a reviewer
+    # discount the whole candidate — so pin that it stays DOWN when nothing overlaps.
+    assert a.setup_overlap == (), "setup touched only node_modules/ here"
+    assert a.verify_overlap == (), "verify touched only report.txt here"
 
 
 def test_a_path_touched_by_setup_and_the_agent_is_flagged_overlap(tmp_path):
@@ -205,6 +210,43 @@ def test_a_file_the_agent_deleted_is_part_of_the_candidate(tmp_path):
     a = harvest.artifact_set(p, seat, base)
     assert a.paths == ("seed.txt",)
     assert "deleted file" in a.tracked_diff
+
+
+def test_a_gitattributes_diff_marker_cannot_empty_the_candidate(tmp_path):
+    """Without `--binary`, git emits `Binary files a/x and b/x differ` and NO content, at
+    exit 0 — for ordinary binaries and for any text file the seat marked `-diff` in its
+    own in-tree .gitattributes, a routine pattern for lockfiles. The path would sit in
+    `paths` asserting the agent changed it with nothing able to reconstruct it."""
+    seat = make_repo(tmp_path, "seat")
+    write(seat, ".gitattributes", "pkg.lock -diff\n")
+    write(seat, "pkg.lock", "v1\n")
+    base = commit_all(seat, "extra")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: write(seat, "pkg.lock", "v2-AGENT-WORK\n"),
+                verify=lambda: None)
+    a = harvest.artifact_set(p, seat, base)
+    assert a.paths == ("pkg.lock",)
+    assert "GIT binary patch" in a.tracked_diff
+    assert "Binary files" not in a.tracked_diff, "content dropped at exit 0"
+
+
+def test_a_non_utf8_file_neither_aborts_the_harvest_nor_corrupts_the_patch(tmp_path):
+    """git echoes the file's raw bytes, so under subprocess' strict UTF-8 decode ONE
+    latin-1 file raised UnicodeDecodeError and took every other path's content with it —
+    in a class that is none of the three this module documents."""
+    seat = make_repo(tmp_path, "seat")
+    legacy = Path(seat) / "legacy.txt"
+    legacy.write_bytes("café naïve\n".encode("latin-1"))
+    base = commit_all(seat, "extra")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: legacy.write_bytes("café CHANGED\n".encode("latin-1")),
+                verify=lambda: None)
+    a = harvest.artifact_set(p, seat, base)
+    assert a.paths == ("legacy.txt",)
+    # Reversibility is the point, not mere survival: a lossy decode yields a patch that
+    # no longer applies, which §6 materialization needs and no exit code would reveal.
+    raw = a.tracked_diff.encode("utf-8", "surrogateescape")
+    assert b"caf\xe9 CHANGED" in raw, "the patch no longer carries the file's real bytes"
 
 
 def test_record_refuses_a_quota_breach_rather_than_returning_a_partial_inventory(tmp_path):
