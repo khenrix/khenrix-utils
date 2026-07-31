@@ -1,0 +1,160 @@
+"""Preflight is describe-only, and its rejections are scoped to the selected baseline."""
+import hashlib
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "shared" / "lib"))
+
+from forge import inspect as finspect  # noqa: E402
+from forge_fixtures import _env, make_repo, write  # noqa: E402
+
+
+def _git(repo, *args, check=True):
+    """Fixture-setup git, run in the same hermetic environment as `forge_fixtures`.
+
+    Not a convenience wrapper: a developer's global `commit.gpgsign` would fail every setup
+    commit below, and a global `rerere.enabled` would silently auto-resolve the merge in
+    `test_rejects_unmerged_index` — turning the one test that proves the unmerged rejection
+    fires into a test that proves nothing.
+    """
+    r = subprocess.run(["git", "-C", str(repo), *args],
+                       capture_output=True, text=True, timeout=30, env=_env())
+    if check and r.returncode != 0:
+        raise AssertionError(f"fixture setup failed: git {' '.join(args)}\n{r.stderr}")
+    return r
+
+
+def _index_sha(repo):
+    return hashlib.sha256((Path(repo) / ".git" / "index").read_bytes()).hexdigest()
+
+
+def test_facts_classify_staged_unstaged_untracked(tmp_path):
+    repo = make_repo(tmp_path)
+    write(repo, "tracked.txt", "v1\n")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-q", "-m", "add")
+    write(repo, "tracked.txt", "v2\n")                 # unstaged modification
+    write(repo, "staged.txt", "s\n")
+    _git(repo, "add", "staged.txt")
+    write(repo, "loose.txt", "u\n")                    # untracked
+    f = finspect.repo_facts(repo)
+    assert "tracked.txt" in f.unstaged
+    assert "staged.txt" in f.staged
+    assert "loose.txt" in f.untracked
+    assert len(f.head) == 40
+
+
+def test_preflight_does_not_touch_the_index(tmp_path):
+    """The whole point of describe-only: the user's index bytes must be unchanged."""
+    repo = make_repo(tmp_path)
+    write(repo, "dirty.txt", "d\n")
+    _git(repo, "add", "dirty.txt")
+    write(repo, "dirty.txt", "d2\n")                   # stale cache-tree, the risky case
+    # A second, different hazard: content that still matches the index but whose stat data
+    # no longer does. Git can record that discovery, and a read-oriented command WILL rewrite
+    # the index to do so unless GIT_OPTIONAL_LOCKS=0 stops it. Without this file the test
+    # passes even if the module forgets gitcmd.READONLY entirely.
+    write(repo, "stat_stale.txt", "s\n")
+    _git(repo, "add", "stat_stale.txt")
+    os.utime(Path(repo) / "stat_stale.txt", (0, 0))
+    before = _index_sha(repo)
+    finspect.repo_facts(repo)
+    assert _index_sha(repo) == before
+
+
+def test_rejects_unmerged_index(tmp_path):
+    repo = make_repo(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "other")
+    write(repo, "conflict.txt", "theirs\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "theirs")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "conflict.txt", "ours\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "ours")
+    _git(repo, "merge", "other", check=False)
+    f = finspect.repo_facts(repo)
+    assert f.unmerged, "fixture did not produce a conflict"
+    assert any("unmerged" in r for r in finspect.rejections(f, []))
+
+
+def test_rejects_submodule_and_sparse_and_shallow(tmp_path):
+    repo = make_repo(tmp_path)
+    f = finspect.repo_facts(repo)
+    assert finspect.rejections(f, []) == []
+    assert any("submodule" in r for r in
+               finspect.rejections(finspect.replace(f, has_submodules=True), []))
+    assert any("sparse" in r for r in
+               finspect.rejections(finspect.replace(f, sparse=True), []))
+    assert any("shallow" in r for r in
+               finspect.rejections(finspect.replace(f, is_shallow=True), []))
+    assert any("partial" in r for r in
+               finspect.rejections(finspect.replace(f, is_partial=True), []))
+
+
+def test_nested_repo_is_reported_only_when_selected(tmp_path):
+    """This repo carries leaked agy worktrees under gitignored eval workspaces; an
+    unscoped structural sweep would abort every run on artifacts nobody created."""
+    repo = make_repo(tmp_path)
+    write(repo, ".gitignore", "workspace/\n")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "-m", "ignore")
+    nested = Path(repo) / "workspace" / "inner"
+    nested.mkdir(parents=True)
+    (nested / ".git").write_text("gitdir: /elsewhere/worktrees/x\n")   # a .git FILE
+    f = finspect.repo_facts(repo)
+    assert finspect.rejections(f, []) == [], "unselected nested repo must not block"
+    hits = finspect.rejections(f, ["workspace/inner"])
+    assert any("nested repository" in h for h in hits)
+
+
+def test_rejects_escaping_symlink_only_when_selected(tmp_path):
+    repo = make_repo(tmp_path)
+    (Path(repo) / "out").symlink_to("/etc/passwd")
+    f = finspect.repo_facts(repo)
+    assert finspect.rejections(f, []) == []
+    assert any("symlink" in h for h in finspect.rejections(f, ["out"]))
+
+
+# The three probes below pin the parsing that had to be adapted to git 2.53's real output
+# (see the comments at each site in inspect.py). Two of them are rejections, and an unproven
+# rejection is a rejection that will not fire.
+
+def test_a_rename_does_not_smuggle_a_phantom_path(tmp_path):
+    """With rename detection on, porcelain -z emits the old path as a bare extra record —
+    no status code, no leading space — so a reader that assumes 'XY path' carves a phantom
+    filename out of it. `--no-renames` removes the special case at the source."""
+    repo = make_repo(tmp_path)
+    _git(repo, "mv", "seed.txt", "renamed.txt")
+    f = finspect.repo_facts(repo)
+    assert f.staged == ["renamed.txt", "seed.txt"]     # the add and the delete, both whole
+    assert f.unstaged == [] and f.untracked == []
+
+
+def test_intent_to_add_is_detected_and_rejected(tmp_path):
+    repo = make_repo(tmp_path)
+    write(repo, "half.txt", "not really staged\n")
+    _git(repo, "add", "-N", "half.txt")
+    f = finspect.repo_facts(repo)
+    assert f.intent_to_add == ["half.txt"]
+    assert "half.txt" not in f.untracked, "an index entry is not an untracked path"
+    assert any("intent-to-add" in r for r in finspect.rejections(f, []))
+
+
+def test_gitattributes_filter_is_detected_and_rejected(tmp_path):
+    repo = make_repo(tmp_path)
+    # check-attr's plain output is one `<path>: <attr>: <value>` line per query, with
+    # core.quotePath escaping — this name comes back double-quoted with a two-character
+    # backslash-n in place of the newline, so a line reader reports a path that does not
+    # exist. The NUL-delimited form emits the raw bytes, so the reported name is the real one.
+    write(repo, "nl\nname.bin", "x\n")
+    write(repo, "plain.txt", "y\n")
+    write(repo, ".gitattributes", "*.bin filter=lfs\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "attrs")
+    f = finspect.repo_facts(repo)
+    assert f.filtered_paths == ["nl\nname.bin"]
+    assert any("filter" in r for r in finspect.rejections(f, []))
