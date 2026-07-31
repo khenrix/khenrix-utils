@@ -26,12 +26,24 @@ def _env():
     return env
 
 
-def _run(repo, *args):
+def git(repo, *args, timeout: int = 60):
+    """Run git in `repo` under the hermetic environment above.
+
+    Public because the suites need it as well as the builders below. A test standing in for
+    a party that is NOT the engine — the agent inside a seat, or a fixture being set up —
+    must not route through `forge.gitcmd`, or it would hide whether the property under test
+    survives an ordinary git. The hermetic environment is still required for both reasons
+    the module docstring gives.
+    """
     r = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True, text=True, timeout=30, env=_env())
+                       capture_output=True, text=True, timeout=timeout, env=_env())
     if r.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {r.stderr}")
     return r
+
+
+def _run(repo, *args):
+    return git(repo, *args, timeout=30)
 
 
 def make_repo(tmp_path, name="repo") -> Path:
