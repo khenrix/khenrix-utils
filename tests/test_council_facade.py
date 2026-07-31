@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 FANOUT = ROOT / "shared" / "skills" / "llm-council" / "scripts" / "fanout.py"
 
@@ -45,3 +47,13 @@ def test_closure_includes_engine_at_new_path():
         "engine left the closure — make precommit would silently stop "
         "protecting llm-council (spec §17 breakage 1)")
     assert any(r.endswith("scripts/fanout.py") for r in rels)   # facade still counted
+
+
+@pytest.mark.slow
+def test_self_test_exits_zero_from_rendered_plugin():
+    plugin_fanout = (ROOT / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
+                     / "skills" / "llm-council" / "scripts" / "fanout.py")
+    assert plugin_fanout.is_file(), "run `make render` first"
+    r = subprocess.run([sys.executable, str(plugin_fanout), "--self-test"],
+                       capture_output=True, text=True, timeout=1200)
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
