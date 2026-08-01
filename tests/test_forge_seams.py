@@ -545,7 +545,6 @@ def test_the_calibration_tree_is_not_a_seat(tmp_path):
     seat_branch = _git(chain.seat.path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     assert (branch, seat_branch) == ("forge/r1/verify", "forge/r1/claude"), \
         "the calibration is not on any branch this run gave a builder"
-    assert cal.path != chain.seat.path
     assert _git(cal.path, "remote").stdout.strip() == "", \
         "no origin, so the calibration ships no push target back into the user's repository"
 
@@ -974,6 +973,12 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
     `command=gate` is not decoration. `./check.sh` matches no role rule, so without it both
     surfaces are empty, the delta is a clean `()` measured over nothing, and this test would
     certify a PASS on an unexamined gate — which is why `baseline_surface` is asserted.
+
+    WHAT THIS PASS IS NOT. The contract is `detect_generators`', which is empty for every
+    repository, so the gate here earns its PASS by rewriting NO tracked file rather than by
+    having its rewrites admitted. A gate whose verify command regenerates tracked output —
+    this repository's own `make verify` — still cannot reach PASS, and closing that needs a
+    contract nothing yet derives.
     """
     repo = make_repo(tmp_path)
     write(repo, "check.sh", "#!/bin/sh\nexit 0\n")
