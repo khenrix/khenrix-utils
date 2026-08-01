@@ -1,4 +1,5 @@
-"""The run directory, its quotas, and the writes that let it survive a crash (§14.1, §15).
+"""The run directory, its layout and quotas, and the writes that let it survive a crash
+(§14.1, §15).
 
 Under XDG_STATE_HOME, not XDG_CACHE_HOME: the run directory holds the only copy of the
 seats' work, and XDG defines the cache as data that can be deleted without loss — it is
@@ -13,6 +14,7 @@ is a different property from surviving power loss.
 """
 import hashlib
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +95,36 @@ def atomic_write(path, data: bytes) -> None:
     _fsync_dir(path.parent)
 
 
+def exclusive_write(path, data: bytes) -> None:
+    """Publish `data` at `path`, or raise FileExistsError because something is already there.
+
+    The same three steps as `atomic_write` with `os.link` in place of `os.replace`, and that
+    one substitution IS the guarantee: `replace` overwrites whatever holds the name and `link`
+    cannot. A caller holding a record that must never be rewritten cannot get this from
+    checking first — the check passes, the process is descheduled, and the write still lands
+    on top of the file the check was protecting. Here the kernel decides, once.
+
+    The staging file is unlinked on both paths, so a refusal leaves the directory exactly as
+    it found it. What a CRASH leaves is the same debris `atomic_write` leaves, for the same
+    `--gc` walk.
+    """
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_exactly(fd, data, tmp)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.link(tmp, path)
+    finally:
+        # Never conditional on success: after the link the inode is reachable by its real
+        # name, so the staging name is debris either way.
+        tmp.unlink(missing_ok=True)
+    _fsync_dir(path.parent)
+
+
 def append_line(path, data: bytes) -> None:
     """Append one newline-terminated record, durably.
 
@@ -112,8 +144,9 @@ def append_line(path, data: bytes) -> None:
     Observing creation does not remove the obligation that goes with it: the sync only ever
     happens on the call that WINS the `O_EXCL`, so a log first brought into existence by a
     route that does not sync the directory itself — a `touch`, a shell redirect, a plain
-    `open(path, "w")` — has a directory entry nothing here will ever sync. `atomic_write` is
-    NOT such a route: syncing the directory is the third of its own three steps.
+    `open(path, "w")` — has a directory entry nothing here will ever sync. `atomic_write` and
+    `exclusive_write` are NOT such routes: syncing the directory is the third of the three
+    steps in each.
     """
     path = Path(path)
     if b"\n" in data:
@@ -158,6 +191,32 @@ def run_root(repo_path, run_id: str, must_be_new: bool = True) -> Path:
     p.mkdir(mode=0o700, parents=True, exist_ok=not must_be_new)
     p.chmod(0o700)   # mkdir's mode is masked by umask; chmod is not
     return p
+
+
+# One place that says where a run's files live, so a resume and a `--gc` walk look for the
+# same names as the writer used. Spelled out here rather than at each call site because the
+# writer and the reader are in different processes and often different sessions.
+def manifest_path(run_dir) -> Path:
+    return Path(run_dir) / "manifest.json"
+
+
+def journal_path(run_dir) -> Path:
+    return Path(run_dir) / "events.jsonl"
+
+
+# Lowercase, digits and internal hyphens. A seat is named for a provider, so this is not a
+# narrowing anyone will notice — and the alternative is that a separator or a `..` in the
+# name silently relocates the file the run's state lives in.
+_SEAT_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*\Z")
+
+
+def seat_state_path(run_dir, name: str) -> Path:
+    if not isinstance(name, str) or not _SEAT_NAME.match(name):
+        raise StorageError(
+            f"a seat name is lowercase letters, digits and internal hyphens: {name!r}. It "
+            "becomes a filename inside the run directory, so anything else can put a run's "
+            "state where nothing accounts for it.")
+    return Path(run_dir) / f"seat-{name}.json"
 
 
 @dataclass(frozen=True)
