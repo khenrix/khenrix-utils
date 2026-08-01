@@ -70,7 +70,7 @@ import subprocess
 import time
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import bundle, fleet, gitcmd, snapshot
 from .storage import Quota
@@ -348,32 +348,51 @@ def _gate_env(env=None) -> dict:
     return base
 
 
-def _escapes(rel: str) -> bool:
-    """Whether `rel`, joined onto the verifier root, could name something outside it.
+def _contained(rel: str) -> str | None:
+    """`rel` as the tree-relative path it names, or None when that could leave the tree.
 
-    Lexical, matching `bundle._assert_contained`: `..` in the parts and any absolute path,
-    tested on the TEXT rather than on a resolved path. A `Path(root) / "/etc"` is `/etc`,
-    silently, so an unguarded absolute component leaves the clone with no error anywhere.
-    `bundle._safe_rel` is the wider rule — it also refuses a `.git` component, which this
-    predicate does not.
+    Returns the VALUE, not a verdict about it, because every caller has to join something
+    onto the root afterwards and the defect this replaces was checking one spelling and
+    joining another: `.//etc` passed a containment predicate, correctly — as a POSIX path
+    it means `etc` — and a leading-`./` strip applied after the check rewrote it to `/etc`.
+    A predicate two callers share is only half a rule; the normalization is the other half,
+    and it belongs here rather than at each caller for the reason that defect demonstrates.
 
-    ONE predicate, because both callers join a caller-supplied string onto the same root:
-    `_step_cwd` refuses, `_command_paths` drops. A restatement is what let `_command_paths`
-    validate its tokens against this rule while prepending an unvalidated `cwd` to them.
+    Normalization is `PurePosixPath`, which collapses `.` components and repeated slashes
+    exactly as the kernel does when it resolves the same string. A textual edit cannot
+    stand in for it: `.//x` is a RELATIVE path meaning `x`, so a rule that strips the `./`
+    off it produces an absolute one. `step.cwd` and the argv tokens are the only inputs,
+    and both are POSIX strings handed to a POSIX gate; this module is POSIX-only regardless
+    (`_kill_group` needs process groups), so the platform `Path` a caller joins the result
+    with re-applies this same parse rather than a second one.
+
+    The refusal is lexical, matching `bundle._assert_contained`: `..` in the parts, and any
+    absolute path. `Path(root) / "/etc"` is `/etc`, silently, so an unguarded absolute
+    component leaves the clone with no error anywhere. `..` is REFUSED rather than
+    collapsed — which is what rules out `os.path.normpath` as the normalization — because
+    collapsing `a/../b` to `b` disagrees with the kernel whenever `a` is a symlink: it
+    follows the link and then leaves the tree, and no text this function ever sees says so.
+    `bundle._safe_rel` is the wider rule — it also refuses a `.git` component.
+
+    "" is the root itself and is not an escape; None is.
     """
-    return bool(rel) and (os.path.isabs(rel) or ".." in Path(rel).parts)
+    if not rel:
+        return ""
+    norm = PurePosixPath(rel)
+    if norm.is_absolute() or ".." in norm.parts:
+        return None
+    text = str(norm)
+    return "" if text == "." else text
 
 
 def _step_cwd(root: Path, step: Step, index: int) -> Path:
     """Where a step runs — inside the verifier, or nowhere."""
-    rel = step.cwd or ""
-    if not rel:
-        return root
-    if _escapes(rel):
+    rel = _contained(step.cwd or "")
+    if rel is None:
         raise VerifyError(
-            f"verify step {index} asks to run in {rel!r}, which leaves the verifier; a "
+            f"verify step {index} asks to run in {step.cwd!r}, which leaves the verifier; a "
             "step's cwd is relative to the clone root and must stay inside it")
-    return root / rel
+    return root / rel if rel else root
 
 
 def _kill_group(p: subprocess.Popen) -> None:
@@ -783,9 +802,9 @@ def _also(reason: str, taints) -> str:
     """`reason` with the gate taints appended as separate facts.
 
     "also" rather than "because". At both call sites the outcome was already decided by
-    something else — `bundle.omitted` at the first, the runs at the second — and the two
-    outcomes a taint DOES decide never arrive, because they leave as `GATE_CHANGED`. So a
-    taint reaching here is a second, independent measurement of the same run, and a causal
+    something else — `bundle.omitted` at the first, the runs at the second — and neither of
+    the two outcomes a taint DOES decide ever reaches this helper carrying one. So a taint
+    arriving here is a second, independent measurement of the same run, and a causal
     connective would be a claim nothing established.
     """
     return f"{reason}; also, {'; '.join(taints)}" if taints else reason
@@ -841,8 +860,8 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
          the most adverse thing that can be said about a candidate, and replacing it with
          "changed, please review" is the verdict reading cleaner than its evidence; FLAKY
          says the run pair cannot answer at all, which a gate mark does not say. Whatever
-         the outcome — including `HARVEST_INCOMPLETE`, which is decided before the runs are
-         read at all — the taints are in the reason, so nothing is lost.
+         the outcome — including `HARVEST_INCOMPLETE`, which is decided without reading the
+         runs — the taints are in the reason, so nothing is lost.
       3. `FLAKY` before `BASELINE_RED_…`: a rerun that disagrees with itself is not evidence
          that no new failure exists, it is evidence that this gate cannot say.
 
@@ -1071,11 +1090,17 @@ def _command_paths(root: Path, command) -> set:
     says so. It is also the only route to a gate file git does not enumerate — the ignored
     `.venv/bin/pytest`.
 
-    Containment is `_escapes`, applied to the step's `cwd` AND to each token, because the
+    Containment is `_contained`, applied to the step's `cwd` AND to each token, because the
     surface name is the two joined: a path outside the tree cannot be a candidate path and
     so cannot be in a delta computed against one. Both halves are needed — with the cwd
     unchecked, a clean token under `cwd="/etc"` produced `/etc/passwd`. A `Step` is public
     and `__post_init__` validates argv only, so `cwd` arrives here unexamined.
+
+    What `_contained` returns is what gets joined, and that is the point rather than a
+    convenience: the name this emits has to be the one the TREE holds, or no `gate_delta`
+    computed against the tree can ever match it. `cwd="."` once produced `./check.sh` and
+    `cwd="././/sub"` produced `.//sub/check.sh` — names for a step that really does define
+    the gate, and so a miss, in the direction the surface fails open in.
 
     An escaping step is DROPPED rather than refused, which is where this parts from
     `_step_cwd`: that function decides whether a gate may run, and `run_command` raises
@@ -1087,18 +1112,14 @@ def _command_paths(root: Path, command) -> set:
     """
     named = set()
     for step in getattr(command, "steps", ()):
-        base = step.cwd or ""
-        if _escapes(base):
+        base = _contained(step.cwd or "")
+        if base is None:
             continue
-        # The leading-`./` strip the tokens get, for the same reason: `cwd="."` joined onto
-        # `check.sh` is `./check.sh`, a name the tree does not hold and no delta can match.
-        base = base[2:] if base.startswith("./") else base
-        base = "" if base == "." else base.rstrip("/")
         for token in step.argv:
-            token = token[2:] if token.startswith("./") else token
-            if not token or _escapes(token):
+            named_path = _contained(token)
+            if not named_path:
                 continue
-            rel = f"{base}/{token}" if base else token
+            rel = f"{base}/{named_path}" if base else named_path
             p = root / rel
             if p.is_file() or p.is_symlink():
                 named.add(rel)

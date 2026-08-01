@@ -1,4 +1,5 @@
 """The gate runs where the builder never was, and the engine runs it (spec §6)."""
+import ast
 import os
 import sys
 import time
@@ -1250,10 +1251,29 @@ def test_a_ci_definition_matched_by_name_is_surface_wherever_it_sits(tmp_path):
 
 def test_outcomes_holds_exactly_what_classify_can_return():
     """`OUTCOMES` exists for a consumer validating a value read back out of a manifest, so
-    a constant missing from it is a value that consumer would reject."""
-    assert set(verify.OUTCOMES) == {
-        verify.PASS, verify.FAIL, verify.FLAKY, verify.HARVEST_INCOMPLETE,
-        verify.GATE_CHANGED, verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE}
+    an outcome missing from it is a value that consumer would reject.
+
+    Read off the module's own `return` statements rather than off a hand-written list: a
+    list written here is a second copy of the vocabulary, and a seventh outcome added to
+    `classify` and forgotten in `OUTCOMES` would satisfy both copies of the mistake.
+
+    What it cannot see is an outcome the module never NAMES at a return. `classify`'s own
+    `return outcome, reason` is one such site and costs nothing, because the value it
+    forwards was named in `_run_verdict`, which the walk does read; an outcome built by an
+    expression instead would be invisible here.
+    """
+    returned = set()
+    for node in ast.walk(ast.parse(Path(verify.__file__).read_text(encoding="utf-8"))):
+        if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple)
+                and node.value.elts):
+            continue
+        head = node.value.elts[0]
+        if isinstance(head, ast.Constant) and isinstance(head.value, str):
+            returned.add(head.value)
+        elif isinstance(head, ast.Name) and isinstance(getattr(verify, head.id, None), str):
+            returned.add(getattr(verify, head.id))
+    assert returned, "the AST walk matched no verdict return, so it pins nothing"
+    assert returned == set(verify.OUTCOMES)
     assert len(verify.OUTCOMES) == len(set(verify.OUTCOMES))
 
 
@@ -1296,6 +1316,13 @@ def test_a_step_cwd_that_leaves_the_tree_contributes_no_surface(tmp_path):
     absolute = verify.Command(steps=(verify.Step(argv=("passwd",), cwd="/etc"),))
     assert verify.gate_surface(repo, finspect.GeneratorContract(), command=absolute) == ()
 
+    # The spelling that got through the first fix: the containment check said `.//etc` is
+    # contained -- it is, it means `etc` -- and a leading-`./` STRIP applied afterwards
+    # rewrote it to `/etc`. Vacuous on a host with no /etc/passwd; the discriminating form
+    # is the tmp_path one in test_the_cwd_rule_is_one_rule_so_both_callers_read_the_same_path.
+    slashed = verify.Command(steps=(verify.Step(argv=("passwd",), cwd=".//etc"),))
+    assert verify.gate_surface(repo, finspect.GeneratorContract(), command=slashed) == ()
+
     # The same rule `_step_cwd` enforces, which is why both refuse the same two values.
     for step in (escaping.steps[0], absolute.steps[0]):
         with pytest.raises(verify.VerifyError):
@@ -1305,6 +1332,58 @@ def test_a_step_cwd_that_leaves_the_tree_contributes_no_surface(tmp_path):
     inside = verify.Command(steps=(verify.Step(argv=("./check.sh",), cwd="."),))
     assert verify.gate_surface(repo, finspect.GeneratorContract(), command=inside) \
         == ("check.sh",)
+
+
+def test_the_cwd_rule_is_one_rule_so_both_callers_read_the_same_path(tmp_path):
+    """`_step_cwd` decides where a step RUNS, `_command_paths` decides which files DEFINE
+    it, and a spelling the two read differently is a hole either way: a laxer surface names
+    files outside the tree, a stricter one omits the files of a step that really runs.
+
+    The first was in the code. Checking `.//etc` -- contained, it means `etc` -- and then
+    STRIPPING the leading `./` off it produced `/etc`, so the surface named `/etc/passwd`
+    while the step ran inside the tree. Moving the strip above the check closes that one
+    and opens the mirror: `.//sub` is then refused by the surface and still run, so a
+    candidate hides `sub/check.sh` from `gate_delta` by writing one extra slash. A
+    leading-`./` strip is not a path normalization at all -- `.//x` is a RELATIVE path
+    meaning `x`, which is where `chdir` goes with it -- so the two share the step that
+    produces the path, not only the predicate that judges it.
+    """
+    repo = _surface_repo(tmp_path, [("sub/check.sh", "#!/bin/sh\nexit 0\n")])
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "check.sh").write_text("#!/bin/sh\nexit 1\n")
+
+    def surface(cwd, argv=("check.sh",)):
+        return verify.gate_surface(repo, finspect.GeneratorContract(), command=verify.Command(
+            steps=(verify.Step(argv=argv, cwd=cwd),)))
+
+    def runs_in(cwd):
+        try:
+            return verify._step_cwd(Path(repo), verify.Step(argv=("true",), cwd=cwd), 0)
+        except verify.VerifyError:
+            return None
+
+    # Seven spellings of one directory. Each must contribute the path under the spelling
+    # the TREE holds it under -- `.//sub/check.sh` names a file no `gate_delta` can match.
+    for cwd in ("sub", "./sub", ".//sub", "sub/", "./sub/", "././/sub", "sub/."):
+        assert surface(cwd) == ("sub/check.sh",), cwd
+        assert runs_in(cwd) == Path(repo) / "sub", cwd
+    for token in ("check.sh", "./check.sh", ".//check.sh", "././check.sh"):
+        assert surface("sub", argv=(token,)) == ("sub/check.sh",), token
+
+    # Refused by both. `a/../b` may well be inside; `..` is refused rather than collapsed,
+    # because collapsing it disagrees with the kernel whenever `a` is a symlink.
+    for cwd in ("/etc", "../outside", "a/../b", "sub/../../outside"):
+        assert surface(cwd) == (), cwd
+        assert runs_in(cwd) is None, cwd
+
+    # `.//<absolute>` is the shape that leaked, and it is not an escape at all: the `.` and
+    # the absolute path's own leading slash spell one RELATIVE path, so both callers must
+    # read it as one -- inside the tree, naming nothing, never the out-of-tree file below.
+    inside_looking_absolute = f"./{outside}"
+    assert surface(inside_looking_absolute) == ()
+    assert runs_in(inside_looking_absolute) == Path(repo) / str(outside).lstrip("/")
+    assert (outside / "check.sh").is_file(), "the fixture stopped discriminating"
 
 
 def test_the_js_test_globs_cover_both_runners_documented_extension_set(tmp_path):
