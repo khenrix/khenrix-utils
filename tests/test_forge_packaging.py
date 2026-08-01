@@ -235,21 +235,42 @@ def test_the_bundled_checks_copies_are_exempt_from_the_secret_scan():
 _CITED_TEST = re.compile(r"\btest_[a-z0-9_]+\b(?!\.py)")
 
 
-def _prose(source: str) -> str:
-    """Every docstring and comment in `source`, and nothing that is code.
+def _prose_blocks(source: str) -> list:
+    """Every docstring and comment in `source` as SEPARATE blocks, and nothing that is code.
 
-    Scanned rather than grepped because a `test_`-prefixed PARAMETER reads identically to a
+    Parsed rather than grepped because a `test_`-prefixed PARAMETER reads identically to a
     citation: `_gate_role(path, test_globs)` is not a reference to a test named `test_globs`,
     and a text search over the whole file says it is.
+
+    Blocked rather than concatenated because a caller that flattens gets a phantom adjacency
+    otherwise: the last docstring in walk order joins the first comment in the file, and a
+    phrase spanning that join matches while existing nowhere a reader can find. Measured on a
+    fixture whose two halves sat 234 lines apart.
+
+    Consecutive comment LINES are one block. `tokenize` emits a token per line, and the
+    referent this exists to catch is wrapped across two of them — one token per block would
+    miss exactly the case that motivated the sweep.
     """
     tree = ast.parse(source)
-    docs = [ast.get_docstring(n) or "" for n in ast.walk(tree)
-            if isinstance(n, (ast.Module, ast.ClassDef,
-                              ast.FunctionDef, ast.AsyncFunctionDef))]
-    comments = [t.string for t in
-                tokenize.generate_tokens(io.StringIO(source).readline)
-                if t.type == tokenize.COMMENT]
-    return "\n".join(docs + comments)
+    blocks = [d for n in ast.walk(tree)
+              if isinstance(n, (ast.Module, ast.ClassDef,
+                                ast.FunctionDef, ast.AsyncFunctionDef))
+              for d in [ast.get_docstring(n)] if d]
+    runs, prev = [], None
+    for t in tokenize.generate_tokens(io.StringIO(source).readline):
+        if t.type != tokenize.COMMENT:
+            continue
+        line = t.start[0]
+        if prev is not None and line == prev + 1:
+            runs[-1].append(t.string)
+        else:
+            runs.append([t.string])
+        prev = line
+    return blocks + [" ".join(r) for r in runs]
+
+
+def _prose(source: str) -> str:
+    return "\n".join(_prose_blocks(source))
 
 
 def _flat(prose: str) -> str:
@@ -296,7 +317,7 @@ def test_every_test_named_in_shipped_forge_prose_still_exists():
 _TEMPORAL = (
     re.compile(r"\bthis (?:same )?commit\b", re.I),
     re.compile(r"\buntil now\b", re.I),
-    re.compile(r"\bin Task \d", re.I),
+    re.compile(r"\bTask \d", re.I),
 )
 
 
@@ -311,19 +332,36 @@ def test_no_shipped_forge_prose_dates_itself_to_a_commit():
     A task NUMBER is the same defect one step out: it resolves against a plan document that
     is not shipped beside the code, so it means nothing to anyone reading the plugin.
 
-    What this cannot catch: a claim that is durably phrased and factually stale. `fleet`'s
-    "this function now has five refusal paths" is true, reads as a constraint, and a sixth
-    path falsifies it silently — that one still needs a reader.
+    WHAT THIS CANNOT CATCH, and the list is not short:
+
+    * The referent that produced it. `bundle.py`'s "the gate-surface detector, which does
+      not exist yet" matches none of these patterns — it dates itself by asserting a
+      NON-EXISTENCE, and the same shape is durably true four modules over
+      (`baseline.py`'s "has no producer yet"). A pattern separating them would have to know
+      which is which, so this gate does not try.
+    * A claim durably phrased and factually stale. `fleet`'s "this function now has five
+      refusal paths" is true, reads as a constraint, and a sixth path falsifies it silently.
+
+    Narrow on purpose either way: "yet", "currently" and "will" occur far more often in
+    prose that is durably true — `baseline.py:58` is the measured example — and a gate whose
+    failures are mostly false is one people learn to edit around.
     """
     forge = sorted((ROOT / "shared" / "lib" / "forge").glob("**/*.py"))
     assert forge, "the forge glob matched nothing"
-    # The flattening is the point — assert it happens, or every wrapped referent (which is
-    # most of them, at this line width) passes and the gate reports a clean sweep.
-    assert _TEMPORAL[0].search(_flat("# fixed in this same\n    # commit"))
+    # Every pattern gets a known positive: one silently mis-written leaves the other two
+    # reporting a clean sweep for it. The first sample also exercises the flattening, which
+    # is what finds a referent split across two comment lines — most of them, at this width.
+    for pat, sample in zip(_TEMPORAL, ("# fixed in this same\n    # commit",
+                                       "# until now it read\n    # otherwise",
+                                       "# routed to Task 5")):
+        assert pat.search(_flat(sample)), pat.pattern
 
-    dated = sorted(f"{p.relative_to(ROOT)}: {m.group(0)}" for p in forge
-                   for pat in _TEMPORAL
-                   for m in pat.finditer(_flat(_prose(p.read_text()))))
+    dated = sorted(
+        f"{p.relative_to(ROOT)}: {m.group(0)!r} in {flat[:90]!r}"
+        for p in forge
+        for flat in map(_flat, _prose_blocks(p.read_text()))
+        for pat in _TEMPORAL
+        for m in [pat.search(flat)] if m)
     assert dated == [], (
         f"{dated} — shipped prose dates itself to a moment a reader cannot resolve; say "
         "what the constraint is instead of when it was written")
