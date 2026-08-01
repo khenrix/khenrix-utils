@@ -854,7 +854,8 @@ def test_the_spine_is_the_single_chain_section_14_draws(tmp_path):
 def test_a_failed_verify_returns_to_synthesizing_and_a_passing_one_goes_to_review(tmp_path):
     """§14's `synthesizing ⇄ verifying`, whose second arrow reachability cannot see — every
     phase is already reachable without it, so a graph that had lost it would leave a run whose
-    verify failed with nowhere to go but a terminal."""
+    verify failed able to reach a fix only by routing through a review of the very candidate
+    that had just failed verification."""
     assert _successors("verifying") == {"synthesizing", "reviewing"}
 
 
@@ -1052,3 +1053,21 @@ def test_a_seat_name_that_cannot_name_a_file_is_refused_at_both_ends(tmp_path):
         runstate.write_seat(run, "../escape", {"status": "building"})
     with pytest.raises(storage.StorageError):
         runstate.read_seat(run, "../escape")
+
+
+def test_seat_state_refuses_a_value_json_can_write_but_no_reader_can_parse(tmp_path):
+    """`Infinity` and `NaN` are what json.dumps emits for non-finite floats by default, and
+    this module's own reader accepts them back — so the round trip closes while the record
+    stops being JSON. A `--collect` written in anything else cannot read it.
+
+    NaN was refused before this guard existed, but by accident: `nan != nan` trips the
+    round-trip comparison, so it surfaced as a shape failure rather than as a value JSON
+    cannot carry. Both are now one refusal with one reason.
+    """
+    run = tmp_path / "run"
+    run.mkdir()
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(runstate.StateError, match="cannot serialize"):
+            runstate.write_seat(run, "claude", {"elapsed": bad})
+    assert runstate.read_seat(run, "claude") is None, \
+        "a refused record must not be what creates the seat's file"

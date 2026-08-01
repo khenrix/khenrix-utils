@@ -91,8 +91,8 @@ for: a SIGTERM landing mid-rewrite of `seat-codex.json` "must not leave truncate
 indistinguishable from a seat that never wrote". Distinguishability is what §14.1 puts in
 place of an exactly-once it opens by conceding is not deliverable, so `read_seat` answers None
 for exactly ONE condition — no such file — and raises for every other way a record can fail to
-be one. Three of those routes reach None without damaging a byte and are the reason the rule
-is written as a whitelist: a JSON `null` parses cleanly and hands back the same object a
+be one. Three routes reach None, or an answer a caller cannot tell from it, without damaging
+a byte — and they are the reason the rule is written as a whitelist: a JSON `null` parses cleanly and hands back the same object a
 missing file would, an unreadable record is an OSError that a blanket `except OSError` would
 answer with the same silence, and an empty record is falsy exactly as None is — so the
 shortest question a caller can ask, `if read_seat(...)`, gets the wrong answer from a seat
@@ -127,6 +127,17 @@ class TransitionError(RuntimeError):
 # `refs/heads/forgery-experiments` is theirs, and dropping it here would leave a moved ref
 # with nothing to compare against — the fail-OPEN direction of the same decision.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
+
+# WHAT THIS GRAPH CANNOT EXPRESS, recorded because the next reader reads the code and not a
+# report. §14's diagram reaches every terminal only from `reviewing`, and two other sections
+# need endings it cannot draw: §5's confirmed calibration-failure policy has an `abort`
+# branch, and calibration runs inside `setting_up`; §9 says a checkout or protected branch
+# moving "during the run" transitions to `source_diverged`, at whatever phase the run is in.
+# The edges are NOT invented here. `advance` refusing an undeclared move names the legal
+# successors and stops at the first caller that tries one, which is the fail-CLOSED
+# direction; a graph quietly wider than the spec is the other one, and no test could tell an
+# invented edge from a declared one. The amendment is a spec question, and it belongs to the
+# whole class rather than to whichever single edge a caller hits first.
 
 
 @dataclass(frozen=True)
@@ -650,7 +661,13 @@ def write_seat(run_dir, name: str, payload: dict) -> None:
         # sort_keys so one seat state has one spelling on disk whatever order the caller built
         # it in; indented because the first reader of this file is usually a human working out
         # what a crashed seat had got to.
-        blob = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+        # allow_nan=False because the default publishes `Infinity`/`NaN`, which THIS reader
+        # accepts and no strict JSON reader does — a record only forge can read is one a
+        # `--collect` in another language cannot. NaN was already refused, but by accident:
+        # `nan != nan` trips the round-trip check, so it was reported as a shape failure
+        # rather than as a value JSON cannot carry.
+        blob = json.dumps(payload, sort_keys=True, indent=2,
+                          allow_nan=False).encode("utf-8") + b"\n"
     except (TypeError, ValueError) as e:
         raise StateError(
             f"{path}: this record carries a value json cannot serialize: {e}") from e
@@ -660,7 +677,8 @@ def write_seat(run_dir, name: str, payload: dict) -> None:
         # sequence type and one key type, so a tuple or an int key is accepted here and comes
         # back as something that compares unequal — with nothing saying so until a resume
         # compares them hours later. Keys are reported through repr() because the mismatched
-        # pair is usually `1` and `"1"`, which sort against each other otherwise.
+        # pair is usually `1` and `"1"`, which do NOT sort against each other — without repr() the
+        # diagnostic path raises TypeError while building the error it was reporting.
         differing = sorted(repr(k) for k in set(payload) | set(restored)
                            if payload.get(k) != restored.get(k))
         raise StateError(
@@ -674,8 +692,9 @@ def read_seat(run_dir, name: str) -> dict | None:
 
     None means ONE thing — no such file. Every other way a record can fail to be one raises,
     because §14.1's requirement is that a damaged seat and a silent one stay different
-    answers; see the module docstring for the three routes that reach None without damaging a
-    byte, which is why the None is written as a whitelist rather than a fallback.
+    answers; see the module docstring for the three routes that reach None — or an answer a
+    caller cannot tell from it — without damaging a byte, which is why this is a whitelist
+    rather than a fallback.
     """
     path = storage.seat_state_path(run_dir, name)
     try:
