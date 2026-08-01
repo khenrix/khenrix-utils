@@ -32,8 +32,9 @@ exactly one joint — `run_setup`'s own call to `validate_materialized` — beca
 stops being makeable once setup has run. Everywhere else the five steps are five public functions a
 caller composes: nothing here stops `fixed_point` running in a tree setup never touched, or
 `classify` reading a run taken before the materialization was checked. `calibrate` is not the
-exception it looks like; it sequences the same calls over §5's UNTOUCHED BASELINE and never
-sees a candidate, so no candidate's §6 run is ordered by anything in this module. Sequencing
+exception it looks like; it sequences the same calls over §5's UNTOUCHED BASELINE and builds
+its own empty bundle rather than receiving a builder's, so no candidate's §6 run is ordered by
+anything in this module. Sequencing
 those is the caller's job, named as such rather than implied by the order they appear in.
 
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
@@ -1386,10 +1387,11 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
 
     if bundle.omitted:
         # The gate facts are measured BEFORE this branch and appended to its reason. They
-        # are independent of the harvesting gap — none of the three taints is a statement
-        # about `omitted` — so a `HARVEST_INCOMPLETE` that dropped them would hide, from the
-        # reviewer who has to decide whether to re-harvest, that the gate surface was never
-        # measured at all. That is the shape of every real bundle today.
+        # are independent of the harvesting gap — no taint `_gate_taints` can append is a
+        # statement about `omitted` — so a `HARVEST_INCOMPLETE` that dropped them would hide,
+        # from the reviewer who has to decide whether to re-harvest, whatever the gate facts
+        # say: that nobody measured the surface, that the candidate moved a file defining the
+        # gate, or that the surface came back empty.
         return HARVEST_INCOMPLETE, _also(_harvest_reason(cand, bundle.omitted), taints)
 
     outcome, reason = _run_verdict(cand, base, again)
