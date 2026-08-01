@@ -252,6 +252,12 @@ def _prose(source: str) -> str:
     return "\n".join(docs + comments)
 
 
+def _flat(prose: str) -> str:
+    """One line, comment markers gone — so a referent wrapped across two comment
+    lines reads as the phrase it is."""
+    return " ".join(prose.replace("#", " ").split())
+
+
 def test_every_test_named_in_shipped_forge_prose_still_exists():
     """A docstring that cites a test by name is a cross-reference nothing resolves.
 
@@ -278,3 +284,46 @@ def test_every_test_named_in_shipped_forge_prose_still_exists():
     assert dangling == [], (
         f"{dangling} — shipped prose names a test that does not exist; rename the citation "
         "with the test, or drop it")
+
+
+# Referents that name a MOMENT rather than a constraint. Matched against prose with its
+# newlines flattened, because two of the three that shipped were wrapped across a line and
+# one was additionally split by a `#` — no line-oriented search finds those.
+#
+# Deliberately narrow. "yet", "currently" and "will" are the same family but occur far more
+# often in prose that is durably true, and a gate whose failures are usually false is one
+# people learn to edit around. These three are the spellings that shipped.
+_TEMPORAL = (
+    re.compile(r"\bthis (?:same )?commit\b", re.I),
+    re.compile(r"\buntil now\b", re.I),
+    re.compile(r"\bin Task \d", re.I),
+)
+
+
+def test_no_shipped_forge_prose_dates_itself_to_a_commit():
+    """A comment that says "this commit" names nothing a reader can resolve.
+
+    Every one was true when written. `bundle.py` has been rewritten six times since its
+    said so; the reader who arrives now has no way to find the change it means. Three
+    shipped into all three plugins and two survived a whole-branch review, which is where a
+    class stops being a review's job.
+
+    A task NUMBER is the same defect one step out: it resolves against a plan document that
+    is not shipped beside the code, so it means nothing to anyone reading the plugin.
+
+    What this cannot catch: a claim that is durably phrased and factually stale. `fleet`'s
+    "this function now has five refusal paths" is true, reads as a constraint, and a sixth
+    path falsifies it silently — that one still needs a reader.
+    """
+    forge = sorted((ROOT / "shared" / "lib" / "forge").glob("**/*.py"))
+    assert forge, "the forge glob matched nothing"
+    # The flattening is the point — assert it happens, or every wrapped referent (which is
+    # most of them, at this line width) passes and the gate reports a clean sweep.
+    assert _TEMPORAL[0].search(_flat("# fixed in this same\n    # commit"))
+
+    dated = sorted(f"{p.relative_to(ROOT)}: {m.group(0)}" for p in forge
+                   for pat in _TEMPORAL
+                   for m in pat.finditer(_flat(_prose(p.read_text()))))
+    assert dated == [], (
+        f"{dated} — shipped prose dates itself to a moment a reader cannot resolve; say "
+        "what the constraint is instead of when it was written")
