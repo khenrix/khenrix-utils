@@ -81,7 +81,9 @@ from .storage import Quota
 # for no gain — the clones have no remotes, so two verifiers cannot collide.
 VERIFIER_NAME = "verify"
 
-# §6.2's outcome vocabulary. Plain `str` constants, not an Enum: these values travel into a
+# The outcome vocabulary: §6.2's five table rows, plus `GATE_CHANGED` for §6.1's
+# `gate_changed`, which §6.2's table does not list and §7.2 also routes through.
+# Plain `str` constants, not an Enum: these values travel into a
 # manifest, a report and a judge prompt as text, and a `str`-mixin Enum gives one value two
 # spellings in exactly those places — measured on 3.14, `f"{X.PASS}"` is "X.PASS" while
 # `json.dumps(X.PASS)` is "PASS". `enum.StrEnum` agrees with itself, but nothing else in
@@ -94,7 +96,8 @@ HARVEST_INCOMPLETE = "HARVEST_INCOMPLETE"
 GATE_CHANGED = "GATE_CHANGED"
 
 # Every value `classify` can return, for a consumer validating one read back out of a
-# manifest. In §6.2's table order, which is NOT the precedence — see `classify` for that.
+# manifest. §6.2's table order with §6.1's outcome last, which is NOT the precedence — see
+# `classify` for that.
 OUTCOMES = (PASS, BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE, FAIL, FLAKY, HARVEST_INCOMPLETE,
             GATE_CHANGED)
 
@@ -345,19 +348,28 @@ def _gate_env(env=None) -> dict:
     return base
 
 
-def _step_cwd(root: Path, step: Step, index: int) -> Path:
-    """Where a step runs — inside the verifier, or nowhere.
+def _escapes(rel: str) -> bool:
+    """Whether `rel`, joined onto the verifier root, could name something outside it.
 
-    Lexical, matching `bundle._assert_contained`: `..` in the parts and any absolute path
-    are refused, and the check is on the TEXT rather than on a resolved path. A `Path(root)
-    / "/etc"` is `/etc`, silently, so an unguarded absolute cwd runs the gate outside the
-    clone the gate exists to be confined to. `bundle._safe_rel` is the wider rule — it also
-    refuses a `.git` component, which has no analogue for a working directory.
+    Lexical, matching `bundle._assert_contained`: `..` in the parts and any absolute path,
+    tested on the TEXT rather than on a resolved path. A `Path(root) / "/etc"` is `/etc`,
+    silently, so an unguarded absolute component leaves the clone with no error anywhere.
+    `bundle._safe_rel` is the wider rule — it also refuses a `.git` component, which this
+    predicate does not.
+
+    ONE predicate, because both callers join a caller-supplied string onto the same root:
+    `_step_cwd` refuses, `_command_paths` drops. A restatement is what let `_command_paths`
+    validate its tokens against this rule while prepending an unvalidated `cwd` to them.
     """
+    return bool(rel) and (os.path.isabs(rel) or ".." in Path(rel).parts)
+
+
+def _step_cwd(root: Path, step: Step, index: int) -> Path:
+    """Where a step runs — inside the verifier, or nowhere."""
     rel = step.cwd or ""
     if not rel:
         return root
-    if os.path.isabs(rel) or ".." in Path(rel).parts:
+    if _escapes(rel):
         raise VerifyError(
             f"verify step {index} asks to run in {rel!r}, which leaves the verifier; a "
             "step's cwd is relative to the clone root and must stay inside it")
@@ -693,14 +705,18 @@ def _as_run(value, what: str) -> Run:
 
     Both shapes are accepted because §6.2's PASS is "exit 0 AND no unexplained tracked
     delta" and only the `FixedPoint` carries the second half. Anything else is refused
-    rather than duck-typed: `.exit_code` off some other object would be a verdict read from
-    a value nobody in this module measured.
+    rather than duck-typed, so a wrong shape is a named refusal here instead of an
+    AttributeError from somewhere inside a verdict.
+
+    THE TYPE IS ALL THIS ESTABLISHES. `Run` is a plain frozen dataclass any caller can
+    build, so passing this check is no evidence that the run came from `run_command`, or
+    from a verifier, or from anywhere in particular. Nothing downstream may say otherwise.
     """
     run = value.run if isinstance(value, FixedPoint) else value
     if not isinstance(run, Run):
         raise VerifyError(
             f"classify's {what} must be a Run or a FixedPoint, not "
-            f"{type(value).__name__}; a verdict has to be read off a run this module made")
+            f"{type(value).__name__}; nothing here reads .exit_code off another shape")
     return run
 
 
@@ -763,6 +779,18 @@ def _gate_taints(candidate_run, cand: Run, cb) -> list:
     return taints
 
 
+def _also(reason: str, taints) -> str:
+    """`reason` with the gate taints appended as separate facts.
+
+    "also" rather than "because". At both call sites the outcome was already decided by
+    something else — `bundle.omitted` at the first, the runs at the second — and the two
+    outcomes a taint DOES decide never arrive, because they leave as `GATE_CHANGED`. So a
+    taint reaching here is a second, independent measurement of the same run, and a causal
+    connective would be a claim nothing established.
+    """
+    return f"{reason}; also, {'; '.join(taints)}" if taints else reason
+
+
 def _run_verdict(cand: Run, base: Run, again) -> tuple[str, str]:
     """What the RUNS alone say, before the bundle is consulted.
 
@@ -776,12 +804,11 @@ def _run_verdict(cand: Run, base: Run, again) -> tuple[str, str]:
         # first.
         return FLAKY, (
             f"the gate exited {cand.exit_code} and then {again.exit_code} on a rerun in the "
-            "same verifier; §6.2 labels a run pair that disagrees with itself indeterminate "
-            "and never converts it to a pass")
+            "same verifier; §6.2 spells this out for fail->pass and never converts such a "
+            "pair to a pass, and this engine reads it in both directions")
     if cand.exit_code == 0:
         agreed = " and again on a rerun" if again is not None else ""
-        return PASS, (f"the gate exited 0{agreed} in a verifier clone built from the "
-                      "baseline, which the builder never had access to")
+        return PASS, f"the gate exited 0{agreed}"
     if base.exit_code != 0:
         return BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE, (
             f"the candidate's gate exited {cand.exit_code} at step {cand.step_index} and "
@@ -814,7 +841,8 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
          the most adverse thing that can be said about a candidate, and replacing it with
          "changed, please review" is the verdict reading cleaner than its evidence; FLAKY
          says the run pair cannot answer at all, which a gate mark does not say. Whatever
-         the outcome, the taints are in the reason, so nothing is lost.
+         the outcome — including `HARVEST_INCOMPLETE`, which is decided before the runs are
+         read at all — the taints are in the reason, so nothing is lost.
       3. `FLAKY` before `BASELINE_RED_…`: a rerun that disagrees with itself is not evidence
          that no new failure exists, it is evidence that this gate cannot say.
 
@@ -826,17 +854,21 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
     cand = _as_run(candidate_run, "candidate_run")
     base = _as_run(baseline_run, "baseline_run")
     again = None if rerun is None else _as_run(rerun, "rerun")
+    taints = _gate_taints(candidate_run, cand, bundle)
 
     if bundle.omitted:
-        return HARVEST_INCOMPLETE, _harvest_reason(cand, bundle.omitted)
+        # The gate facts are measured BEFORE this branch and appended to its reason. They
+        # are independent of the harvesting gap — none of the three taints is a statement
+        # about `omitted` — so a `HARVEST_INCOMPLETE` that dropped them would hide, from the
+        # reviewer who has to decide whether to re-harvest, that the gate surface was never
+        # measured at all. That is the shape of every real bundle today.
+        return HARVEST_INCOMPLETE, _also(_harvest_reason(cand, bundle.omitted), taints)
 
     outcome, reason = _run_verdict(cand, base, again)
-    taints = _gate_taints(candidate_run, cand, bundle)
     if taints and outcome in (PASS, BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE):
         return GATE_CHANGED, (f"{'; '.join(taints)}. On the runs alone this would have been "
                               f"{outcome}: {reason}")
-    if taints:
-        reason = f"{reason}; also, {'; '.join(taints)}"
+    reason = _also(reason, taints)
     if outcome == PASS:
         measured = ("the gate itself rewrote no tracked path outside the generator contract"
                     if isinstance(candidate_run, FixedPoint) else
@@ -892,14 +924,31 @@ _CI_FILES = frozenset({
     "cloudbuild.yaml",
 })
 
+# The NAME half of Jest's and Vitest's defaults, expanded from the patterns themselves
+# rather than approximated. Read from source, 2026-08: vitest's `include` is
+# `**/*.{test,spec}.?(c|m)[jt]s?(x)` and jest's `testMatch` is
+# `**/?(*.)+(spec|test).?([mc])[jt]s?(x)`. fnmatch has no optional group, so each `?()`
+# becomes its own glob: the empty `prefix` is jest's `?(*.)`, which makes a bare `test.ts` a
+# test file, and `mc` is the `.mts`/`.cjs` family both runners collect.
+#
+# The two runners disagree — vitest does NOT collect a bare `test.ts` — and this engine is
+# not told which one owns the tree, so the union is used. That over-reports for one of them,
+# which is the direction `gate_delta` is allowed to be wrong in. The DIRECTORY half of the
+# same defaults (`__tests__/**`) is positional and cannot be expressed here at all; see
+# `gate_surface` for what that leaves uncovered.
+_JS_TEST_GLOBS = tuple(
+    f"{prefix}{kind}.{mc}[jt]s{x}"
+    for prefix in ("*.", "")
+    for kind in ("test", "spec")
+    for mc in ("", "m", "c")
+    for x in ("", "x")
+)
+
 # Files a runner DISCOVERS with nothing naming them, so deleting or weakening one changes
 # the gate silently. Each is a documented default: pytest's `python_files` (`test_*.py`,
 # `*_test.py`), go's `_test.go` suffix, bats' `.bats`, rspec's `_spec.rb`, phpunit's
-# `*Test.php`, surefire's four (`Test*.java`, `*Test.java`, `*Tests.java`, `*TestCase.java`)
-# and the `.test.`/`.spec.` half of Jest's and Vitest's default match. The character classes
-# are fnmatch's: `[jt]s` is js and ts, `[mc]js` is mjs and cjs. The DIRECTORY half of those
-# JS defaults — `__tests__/**` — is a positional rule this cannot express; see
-# `gate_surface` for what that leaves uncovered.
+# `*Test.php`, surefire's four (`Test*.java`, `*Test.java`, `*Tests.java`, `*TestCase.java`).
+# `[jt]s` is fnmatch's character class — js and ts.
 _TEST_GLOBS = (
     "test_*.py", "*_test.py",
     "*_test.go",
@@ -907,9 +956,7 @@ _TEST_GLOBS = (
     "*_spec.rb",
     "*Test.php",
     "Test*.java", "*Test.java", "*Tests.java", "*TestCase.java",
-    "*.test.[jt]s", "*.test.[jt]sx", "*.test.[mc]js",
-    "*.spec.[jt]s", "*.spec.[jt]sx", "*.spec.[mc]js",
-)
+) + _JS_TEST_GLOBS
 
 # The INI-shaped places a pytest run reads `python_files` from, and the section each keeps
 # it in; `pyproject.toml` is the fourth and is read by `tomllib` instead. Both are parsed as
@@ -1024,17 +1071,32 @@ def _command_paths(root: Path, command) -> set:
     says so. It is also the only route to a gate file git does not enumerate — the ignored
     `.venv/bin/pytest`.
 
-    Containment is LEXICAL and matches `_step_cwd`: an absolute token or one with `..` in
-    it names something outside the tree, which cannot be a candidate path and so cannot be
-    in a delta computed against one. Directories are skipped — a delta is over files, and
-    `pytest tests` is already covered by the discovery globs underneath it.
+    Containment is `_escapes`, applied to the step's `cwd` AND to each token, because the
+    surface name is the two joined: a path outside the tree cannot be a candidate path and
+    so cannot be in a delta computed against one. Both halves are needed — with the cwd
+    unchecked, a clean token under `cwd="/etc"` produced `/etc/passwd`. A `Step` is public
+    and `__post_init__` validates argv only, so `cwd` arrives here unexamined.
+
+    An escaping step is DROPPED rather than refused, which is where this parts from
+    `_step_cwd`: that function decides whether a gate may run, and `run_command` raises
+    there. This one answers "which files define the gate", and a step whose paths all lie
+    outside the tree contributes none — the surface is still computable and still honest.
+
+    Directories are skipped — a delta is over files, and `pytest tests` is already covered
+    by the discovery globs underneath it.
     """
     named = set()
     for step in getattr(command, "steps", ()):
-        base = step.cwd.rstrip("/") if step.cwd else ""
+        base = step.cwd or ""
+        if _escapes(base):
+            continue
+        # The leading-`./` strip the tokens get, for the same reason: `cwd="."` joined onto
+        # `check.sh` is `./check.sh`, a name the tree does not hold and no delta can match.
+        base = base[2:] if base.startswith("./") else base
+        base = "" if base == "." else base.rstrip("/")
         for token in step.argv:
             token = token[2:] if token.startswith("./") else token
-            if not token or os.path.isabs(token) or ".." in Path(token).parts:
+            if not token or _escapes(token):
                 continue
             rel = f"{base}/{token}" if base else token
             p = root / rel
@@ -1091,8 +1153,32 @@ def gate_surface(verifier_path, contract, *, command=None) -> tuple[str, ...]:
         runs `scripts/ci.sh`, a Makefile recipe naming a helper: reading those means
         parsing each tool's language, and getting it wrong silently drops a real gate file.
         Only the entry point is covered, and only when a rule or `command` names it.
+        A discovered test's own IMPORTS are the same gap read from the other end — gutting
+        an assertion helper weakens every test that imports it, and a helper whose NAME
+        matches no discovery rule is not surface. That one is not build-tool indirection;
+        it is an accepted cost.
+      * CONTAINER-defined gates. A `Dockerfile` and a `docker-compose.yml` define what
+        `docker compose run test` actually runs, and neither carries a role here: adding
+        one would mark every repository that ships a deployment image, and `command` does
+        not reach them either, since `["docker", "compose", "run", "test"]` names no path.
       * IGNORED paths, per `_enumerate` — `.venv/bin/pytest`, `node_modules/.bin/jest` —
-        except when `command` names one directly.
+        except when `command` names one directly. This gap is not only installed tooling:
+        WHICH paths are ignored is decided by `.gitignore`, which the candidate may write
+        and which carries no gate role here, so the edit that hides a gate file is itself
+        absent from `gate_delta`. Bounded to files the candidate ADDED — `--cached` ignores
+        excludes, so a tracked gate file cannot be hidden this way — which is exactly the
+        class `--others` was added for. Closing it would need the rule "an ignore line that
+        NEWLY covers a path the surface would otherwise hold", and "newly" is a comparison
+        against the baseline's ignore rules, which this one-tree function is not given.
+        Measured for the one-tree approximation that IS derivable — "the tree has an
+        ignored path some role rule would match" — on a tree carrying an installed `.venv`
+        and `node_modules`, 160 of 160 ignored paths matched (a package's own `test_*.py`
+        and `conftest.py`, a module's `index.test.js`), so the condition holds wherever
+        tooling is installed and the rule degenerates to marking `.gitignore` always.
+        Against that, every one of the 7 `.gitignore` edits in this repository's 241
+        commits adds or broadens an ignore over build output, a cache, or machine state,
+        and none of them touches a gate file. A verdict nobody reads is its own fail-open,
+        so this stays a stated gap rather than a role.
       * POSITIONAL test layouts, where membership is a directory rather than a name: Rust's
         `tests/*.rs`, Maven's `src/test/java/**`, Jest's `__tests__/**`, a suite listed only
         inside a CI matrix.

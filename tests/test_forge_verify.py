@@ -1018,7 +1018,10 @@ def test_the_gate_surface_holds_the_build_definition_and_the_discovered_tests_on
     s = verify.gate_surface(repo, finspect.GeneratorContract())
     assert "Makefile" in s and "tests/test_a.py" in s
     assert "src/app.py" not in s and "README.md" not in s and "seed.txt" not in s
-    assert "tests/helpers.py" not in s, "a module no runner discovers is not gate surface"
+    assert "tests/helpers.py" not in s, \
+        ("an ACCEPTED gap, not a design property: no discovery rule matches this name, so a "
+         "test that imports it can be weakened through it without touching the surface. "
+         "Stated in gate_surface's uncovered list under INDIRECTION.")
 
 
 def test_a_conftest_is_gate_surface_even_though_it_is_not_a_test(tmp_path):
@@ -1219,14 +1222,18 @@ def test_a_ci_directory_below_the_root_is_surface_too(tmp_path):
     repo = _surface_repo(tmp_path, [
         ("sub/.github/workflows/ci.yml", "on: push\n"),
         ("docs/workflows/ci.yml", "not ci\n"),
-        # A path that CONTAINS the directory's name without containing the directory. The
-        # match has to be on a path SEGMENT, or a surface can be widened by a filename.
+        # Two paths that contain the directory's NAME without containing the directory,
+        # one on each side. The trailing `/` in the rule rejects the first; only a
+        # SEGMENT-anchored match rejects the second, where the name is the tail of a longer
+        # segment — a naive `d in path` admits it and widens the surface by a filename.
         ("docs/my.github/workflowsx/a.yml", "not ci\n"),
+        ("docs/my.circleci/a.yml", "not ci\n"),
     ])
     s = verify.gate_surface(repo, finspect.GeneratorContract())
     assert "sub/.github/workflows/ci.yml" in s
     assert "docs/workflows/ci.yml" not in s
     assert "docs/my.github/workflowsx/a.yml" not in s
+    assert "docs/my.circleci/a.yml" not in s
 
 
 def test_a_ci_definition_matched_by_name_is_surface_wherever_it_sits(tmp_path):
@@ -1239,3 +1246,110 @@ def test_a_ci_definition_matched_by_name_is_surface_wherever_it_sits(tmp_path):
     ])
     s = verify.gate_surface(repo, finspect.GeneratorContract())
     assert ".gitlab-ci.yml" in s and "ci/Jenkinsfile" in s and "ci/notes.md" not in s
+
+
+def test_outcomes_holds_exactly_what_classify_can_return():
+    """`OUTCOMES` exists for a consumer validating a value read back out of a manifest, so
+    a constant missing from it is a value that consumer would reject."""
+    assert set(verify.OUTCOMES) == {
+        verify.PASS, verify.FAIL, verify.FLAKY, verify.HARVEST_INCOMPLETE,
+        verify.GATE_CHANGED, verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE}
+    assert len(verify.OUTCOMES) == len(set(verify.OUTCOMES))
+
+
+def test_an_incomplete_harvest_still_reports_what_the_gate_surface_says(tmp_path):
+    """`HARVEST_INCOMPLETE` wins the outcome, but it does not consume the gate facts.
+
+    These are independent measurements: the bundle lost a path, AND nobody measured the
+    gate surface (or the candidate moved it). A reviewer deciding whether to re-harvest is
+    the same reviewer who has to decide whether the gate can be trusted afterwards, and
+    dropping the second fact makes the verdict read cleaner than its evidence. `gate_delta
+    is None` is the shape of every real bundle today, so this is not a corner case.
+    """
+    outcome, reason = verify.classify(
+        _run(0), _run(0), _bundle(gate_delta=("Makefile",), omitted=("sub",)))
+    assert outcome == verify.HARVEST_INCOMPLETE
+    assert "sub" in reason and "Makefile" in reason
+
+    outcome, reason = verify.classify(
+        _run(0), _run(0), _bundle(gate_delta=None, omitted=("sub",)))
+    assert outcome == verify.HARVEST_INCOMPLETE
+    assert "nobody measured the gate surface" in reason
+
+
+def test_a_step_cwd_that_leaves_the_tree_contributes_no_surface(tmp_path):
+    """`Step` is public and directly constructible, and `__post_init__` validates argv
+    only — so `cwd` is a caller-supplied path this function must contain itself.
+
+    The token guard alone does not: it is applied to the token and the cwd is prepended
+    afterwards, so a clean token under an escaping cwd produced `../outside/check.sh` and
+    `/etc/passwd` — names no delta computed against this tree can ever match, and an
+    absolute one this module would be handing on to a caller that resolves it.
+    """
+    repo = _surface_repo(tmp_path, [("check.sh", "#!/bin/sh\nexit 0\n")])
+    (tmp_path / "outside").mkdir(exist_ok=True)
+    (tmp_path / "outside" / "check.sh").write_text("#!/bin/sh\nexit 1\n")
+
+    escaping = verify.Command(steps=(verify.Step(argv=("./check.sh",), cwd="../outside"),))
+    assert verify.gate_surface(repo, finspect.GeneratorContract(), command=escaping) == ()
+
+    absolute = verify.Command(steps=(verify.Step(argv=("passwd",), cwd="/etc"),))
+    assert verify.gate_surface(repo, finspect.GeneratorContract(), command=absolute) == ()
+
+    # The same rule `_step_cwd` enforces, which is why both refuse the same two values.
+    for step in (escaping.steps[0], absolute.steps[0]):
+        with pytest.raises(verify.VerifyError):
+            verify._step_cwd(Path(repo), step, 0)
+
+    # A cwd that stays inside still contributes, or the fix would have closed the feature.
+    inside = verify.Command(steps=(verify.Step(argv=("./check.sh",), cwd="."),))
+    assert verify.gate_surface(repo, finspect.GeneratorContract(), command=inside) \
+        == ("check.sh",)
+
+
+def test_the_js_test_globs_cover_both_runners_documented_extension_set(tmp_path):
+    """Vitest's `include` is `**/*.{test,spec}.?(c|m)[jt]s?(x)` and Jest's `testMatch` is
+    `**/?(*.)+(spec|test).?([mc])[jt]s?(x)`, so `.test.mts` is a test file in a TS-ESM repo
+    and a bare `test.js` is one under Jest. A glob set narrower than the runner's is the
+    fail-OPEN direction: the file is collected, the surface does not name it, and deleting
+    it never reaches `gate_delta`.
+    """
+    repo = _surface_repo(tmp_path, [
+        ("a.test.mts", "test('x', () => {});\n"),
+        ("b.spec.cts", "test('x', () => {});\n"),
+        ("c.test.tsx", "test('x', () => {});\n"),
+        ("test.js", "test('x', () => {});\n"),
+        ("spec.ts", "test('x', () => {});\n"),
+        ("latest.ts", "export const x = 1;\n"),
+        ("manifest.json", "{}\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    for name in ("a.test.mts", "b.spec.cts", "c.test.tsx", "test.js", "spec.ts"):
+        assert name in s, name
+    # `*test.*` would sweep these in. Neither runner collects them.
+    assert "latest.ts" not in s and "manifest.json" not in s
+
+
+def test_a_candidate_written_ignore_rule_can_hide_a_gate_file_it_added(tmp_path):
+    """The gap I3 names, pinned rather than left to be rediscovered.
+
+    `.gitignore` carries no gate role, so editing it is not a `gate_delta` entry — while it
+    decides what `_enumerate` can see at all. A candidate arriving as sidecars can ship a
+    `conftest.py` that drops a failing test plus one ignore line, and the surface goes
+    quiet. Bounded to files the candidate ADDED: `--cached` ignores excludes, so the same
+    line over a TRACKED conftest changes nothing, which the second half asserts.
+    """
+    added = _surface_repo(tmp_path / "added", [], commit=False)
+    write(added, "tests/test_a.py", "def test_a(): pass\n")
+    write(added, "tests/conftest.py", "collect_ignore_glob = ['*']\n")
+    assert "tests/conftest.py" in verify.gate_surface(added, finspect.GeneratorContract())
+    write(added, ".gitignore", "tests/conftest.py\n")
+    hidden = verify.gate_surface(added, finspect.GeneratorContract())
+    assert "tests/conftest.py" not in hidden and ".gitignore" not in hidden
+
+    tracked = _surface_repo(tmp_path / "tracked", [
+        ("tests/test_a.py", "def test_a(): pass\n"),
+        ("tests/conftest.py", "x = 1\n"),
+    ])
+    write(tracked, ".gitignore", "tests/conftest.py\n")
+    assert "tests/conftest.py" in verify.gate_surface(tracked, finspect.GeneratorContract())
