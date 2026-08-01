@@ -157,8 +157,8 @@ def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
         setup=[(".venv/bin/pytest", "#!/bin/sh\nexit 0\n")],
         work=[("src.py", "the actual work\n")])
 
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     assert (v / "src.py").exists(), "the agent's work must cross"
     assert not (v / ".venv").exists(), "seat-only state must not cross"
     r = verify.run_command(v, verify.Command.parse([["./check.sh"]]))
@@ -262,8 +262,8 @@ def test_a_gate_with_no_steps_is_refused_rather_than_passed(tmp_path):
 def test_the_verifier_clone_has_no_origin_and_its_own_identity(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     # Asked with an ORDINARY git, never `forge.gitcmd`: the property must survive a git
     # that has none of the engine's presets, which is the git a gate step would use.
     assert _git(v, "remote").stdout.strip() == "", "the verifier ships a push target"
@@ -291,8 +291,8 @@ def test_the_gate_sees_none_of_the_users_global_git_config(tmp_path, monkeypatch
     monkeypatch.setenv("HOME", str(home))
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     r = verify.run_command(v, verify.Command.parse(
         [["git", "config", "--get", "fetch.parallel"]]))
     assert r.stdout.strip() == "", \
@@ -302,8 +302,8 @@ def test_the_gate_sees_none_of_the_users_global_git_config(tmp_path, monkeypatch
 def test_a_hook_in_the_verifiers_own_hooks_dir_does_not_run(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     hook = v / ".git" / "hooks" / "pre-commit"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
@@ -334,8 +334,8 @@ def test_an_ambient_git_config_injection_cannot_re_enable_hooks(
     (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
 
     for k, tmpl in injection.items():
         monkeypatch.setenv(k, tmpl.format(hooks=hooks))
@@ -368,8 +368,8 @@ def test_the_gate_does_not_inherit_the_users_git_template(tmp_path, monkeypatch)
     monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl))
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     r = verify.run_command(v, verify.Command.parse([["git", "init", "-q", "inner"]]))
     assert r.exit_code == 0, f"the gate's own git init failed: {r.stderr}"
     assert not (v / "inner" / ".git" / "hooks" / "pre-commit").exists(), \
@@ -386,8 +386,8 @@ def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
     (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT).path
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None).path
     write(v, "later.txt", "later\n")
     _assert_gate_commit_ran_no_hook(
         v, {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath'='{hooks}'"})
@@ -411,7 +411,7 @@ def test_a_bundle_that_would_rewrite_the_clone_config_never_reaches_the_gate(tmp
     dest = tmp_path / "verifier"
     with pytest.raises(bundle.BundleError, match="git's own directory"):
         verify.build_verifier(repo, b, hostile, dest, identity=IDENT,
-                              contract=NO_CONTRACT)
+                              contract=NO_CONTRACT, command=None)
     assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
         == os.devnull, "the pin was already gone by the time the refusal landed"
 
@@ -447,8 +447,8 @@ def test_the_hooks_pin_is_read_back_after_the_candidate_is_laid_down(
 
     monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
-        verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT, command=None)
 
 
 def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
@@ -484,7 +484,7 @@ def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
     dest = tmp_path / "verifier"
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
         verify.build_verifier(repo, b, cb, dest, identity=IDENT,
-                              contract=NO_CONTRACT)
+                              contract=NO_CONTRACT, command=None)
     assert _git(dest, "config", "--get", "core.hooksPath").stdout.strip() == os.devnull, \
         "the fixture no longer masks the rewrite, so it pins nothing"
 
@@ -524,7 +524,7 @@ def test_a_scope_above_the_clones_local_file_cannot_hide_a_live_hook(tmp_path, m
     dest = tmp_path / "verifier"
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
         verify.build_verifier(repo, b, cb, dest, identity=IDENT,
-                              contract=NO_CONTRACT)
+                              contract=NO_CONTRACT, command=None)
     assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
         == os.devnull, "the fixture disturbed the pin, so a --local readback would catch it"
     # ...and the override was live, not merely present: the refused clone runs the hook.
@@ -548,7 +548,7 @@ def test_a_verifier_refuses_a_bundle_built_under_another_contract(tmp_path):
     other = finspect.GeneratorContract(id="render-v2", relations=(("a/*", "b/*"),))
     with pytest.raises(verify.ContractMismatch) as e:
         verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=other)
+                              identity=IDENT, contract=other, command=None)
     assert "render-v1" in str(e.value) and "render-v2" in str(e.value)
     assert not (tmp_path / "verifier").exists(), \
         "a mismatch that has already cloned the baseline decided nothing before it spent"
@@ -564,14 +564,14 @@ def test_a_verifier_refuses_a_contract_when_the_bundle_recorded_none(tmp_path):
     c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
     with pytest.raises(verify.ContractMismatch):
         verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=c)
+                              identity=IDENT, contract=c, command=None)
 
 
 def test_a_verifier_accepts_the_contract_its_bundle_was_built_under(tmp_path):
     repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id="render-v1")
     c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=c)
+                              identity=IDENT, contract=c, command=None)
     assert (v.path / "src.py").is_file()
     # Identity, not equality: `Verifier.contract` exists so a caller has one place to read
     # the run's contract from, and a fabricated one here is the manifest-records-X-while-
@@ -592,7 +592,44 @@ def test_a_verifier_cannot_be_built_without_naming_the_runs_contract(tmp_path):
     """
     repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id=None)
     with pytest.raises(TypeError, match="contract"):
-        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              command=None)
+
+
+def test_a_verifier_cannot_be_built_without_naming_the_runs_verify_command(tmp_path):
+    """`command` carries no default either, for `contract`'s reason one field over.
+
+    MEASURED, on a repository whose only gate is `./check.sh` and a candidate that guts it:
+    with `command=None` as the DEFAULT, an orchestrator that hands the confirmed command to
+    `fixed_point` and forgets it here reads back `baseline_surface == ()`, `gate_delta == ()`
+    and `PASS`. No value-level check can see that, because the omitted argument and the
+    deliberate `None` are the same value by then — a required keyword is the only form that
+    names it at the call site. Passing `None` explicitly is still legal and still says
+    something weaker; `test_a_pass_over_an_empty_gate_surface_says_it_measured_nothing` is
+    where that half is measured.
+    """
+    repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id=None)
+    with pytest.raises(TypeError, match="command"):
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
+                              contract=NO_CONTRACT)
+
+
+def test_a_verifier_cannot_be_built_without_the_surfaces_it_measured(tmp_path):
+    """The two surfaces carry no defaults, for the reason `CandidateBundle.gate_delta`
+    carries none: `()` is a MEASURED, empty surface, so a default is that measurement
+    supplied on behalf of a caller who took none — the fail-open reading of a distinction
+    the rest of the package enforces structurally.
+
+    Pinned directly because nothing else can pin it. `build_verifier` is the sole
+    constructor and always passes both, so a default reappearing here turns no other test
+    red; what it admits is the next caller, which is how it got in.
+    """
+    with pytest.raises(TypeError) as e:
+        verify.Verifier(path=tmp_path, candidate=_bundle(), contract=NO_CONTRACT)
+    # BOTH names. Measured: with a default restored on `candidate_surface` alone, the
+    # missing `baseline_surface` still raises and a match on "surface" reads the survivor's
+    # message as a pass — the assertion would then pin one field and claim two.
+    assert "baseline_surface" in str(e.value) and "candidate_surface" in str(e.value)
 
 
 def test_a_step_cwd_may_not_leave_the_verifier(tmp_path):
@@ -958,58 +995,45 @@ def _run(code, out=""):
     return verify.Run(exit_code=code, stdout=out, stderr="", duration_sec=0.1, step_index=0)
 
 
+def _bundle(**kw):
+    """A bundle that carries nothing, so a test names only the field it is about.
+
+    `gate_delta` and `gate_surface` are both filled in rather than left to the dataclass,
+    because both default to `None` — "nobody looked" — and a test that meant "clean gate"
+    and got the defaults would be asserting the opposite of what it says. The surface holds
+    one path rather than none because an EMPTY surface is a different measurement, with its
+    own sentence; a case about that one names it.
+    """
+    kw.setdefault("gate_delta", ())
+    kw.setdefault("gate_surface", ("Makefile",))
+    return bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                                  tracked_patch=b"", sidecars=(),
+                                  generator_contract_id="x", **kw)
+
+
 def test_exit_zero_alone_is_not_a_pass_when_the_bundle_omitted_an_input():
-    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                               tracked_patch=b"", sidecars=(), gate_delta=(),
-                               generator_contract_id="x", omitted=("fixtures/data.bin",))
     outcome, reason = verify.classify(_run(1, "FileNotFoundError: fixtures/data.bin"),
-                                      _run(0), b)
+                                      _run(0), _bundle(omitted=("fixtures/data.bin",)))
     assert outcome == verify.HARVEST_INCOMPLETE
     assert "fixtures/data.bin" in reason
 
 
 def test_a_baseline_that_was_already_red_is_not_reported_as_a_pass():
-    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                               tracked_patch=b"", sidecars=(), gate_delta=(),
-                               generator_contract_id="x", omitted=())
-    outcome, _ = verify.classify(_run(1, "1 failed"), _run(1, "1 failed"), b)
+    outcome, _ = verify.classify(_run(1, "1 failed"), _run(1, "1 failed"), _bundle())
     assert outcome == verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE
 
 
 def test_a_fail_then_pass_rerun_is_flaky_not_a_pass():
-    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                               tracked_patch=b"", sidecars=(), gate_delta=(),
-                               generator_contract_id="x", omitted=())
-    outcome, _ = verify.classify(_run(1), _run(0), b, rerun=_run(0))
-    assert outcome == verify.FLAKY
+    assert verify.classify(_run(1), _run(0), _bundle(), rerun=_run(0))[0] == verify.FLAKY
 
 
 def test_a_candidate_that_edited_the_gate_is_marked_not_silently_passed():
-    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                               tracked_patch=b"", sidecars=(), gate_delta=("Makefile",),
-                               generator_contract_id="x", omitted=())
-    outcome, reason = verify.classify(_run(0), _run(0), b)
+    outcome, reason = verify.classify(_run(0), _run(0), _bundle(gate_delta=("Makefile",)))
     assert outcome == verify.GATE_CHANGED and "Makefile" in reason
 
 
 def test_a_clean_pass_is_a_pass():
-    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                               tracked_patch=b"", sidecars=(), gate_delta=(),
-                               generator_contract_id="x", omitted=())
-    assert verify.classify(_run(0), _run(0), b)[0] == verify.PASS
-
-
-def _bundle(**kw):
-    """A bundle that carries nothing, so a test names only the field it is about.
-
-    `gate_delta` is spelled out in every call rather than defaulted, because its default is
-    `None` — "nobody looked" — and a test that meant "clean gate" and got the default would
-    be asserting the opposite of what it says.
-    """
-    kw.setdefault("gate_delta", ())
-    return bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
-                                  tracked_patch=b"", sidecars=(),
-                                  generator_contract_id="x", **kw)
+    assert verify.classify(_run(0), _run(0), _bundle())[0] == verify.PASS
 
 
 def test_a_gate_surface_nobody_measured_is_not_treated_as_a_clean_one():
@@ -1020,16 +1044,37 @@ def test_a_gate_surface_nobody_measured_is_not_treated_as_a_clean_one():
     clean pass on an unmeasured gate surface must come back as GATE_CHANGED, not PASS, or
     the whole gate-surface defence is off for anything that skipped the measurement.
     """
-    outcome, reason = verify.classify(_run(0), _run(0), _bundle(gate_delta=None))
+    outcome, reason = verify.classify(_run(0), _run(0),
+                                      _bundle(gate_delta=None, gate_surface=None))
     assert outcome == verify.GATE_CHANGED
     assert "gate_delta is None" in reason
+    assert "PASS" in reason, "the displaced verdict is not stated"
+
+
+def test_a_clean_delta_with_no_record_of_what_it_measured_is_not_a_pass():
+    """`gate_delta is None`'s defect one field over: a delta that says "measured, and
+    nothing moved" while nothing records what it ranged over.
+
+    An empty delta over two gate files and an empty delta over no gate file at all are the
+    same value, and the PASS sentence has to choose between two claims on the strength of
+    it. With the surface unrecorded there is no third state to choose from, so the honest
+    answer is that this bundle cannot support a PASS.
+
+    Unreachable from `build_verifier`, which writes both fields or neither through
+    `bundle.with_gate_measurement` — and reachable by anything that assembles a bundle from
+    a record, which is what a consumer reading a manifest does.
+    """
+    outcome, reason = verify.classify(_run(0), _run(0), _bundle(gate_surface=None))
+    assert outcome == verify.GATE_CHANGED
+    assert "no record of what it measured" in reason
     assert "PASS" in reason, "the displaced verdict is not stated"
 
 
 def test_the_reason_separates_an_unmeasured_gate_from_an_edited_one():
     """One outcome, two very different facts. A reviewer who cannot tell them apart cannot
     act: one is a missing measurement to go and take, the other is a diff to read."""
-    unmeasured = verify.classify(_run(0), _run(0), _bundle(gate_delta=None))[1]
+    unmeasured = verify.classify(_run(0), _run(0),
+                                 _bundle(gate_delta=None, gate_surface=None))[1]
     edited = verify.classify(_run(0), _run(0), _bundle(gate_delta=("Makefile",)))[1]
     assert "nobody measured" in unmeasured and "Makefile" not in unmeasured
     assert "Makefile" in edited and "nobody measured" not in edited
@@ -1260,8 +1305,13 @@ def test_a_candidate_that_leaves_the_gate_alone_gets_an_empty_delta_not_none(tmp
     assert v.baseline_surface == ("Makefile", "tests/test_a.py"), \
         "an empty delta over an empty surface would pass this test having measured nothing"
     r = verify.run_command(v.path, verify.Command.parse([["true"]]))
-    assert verify.classify(r, r, v.candidate)[0] == verify.PASS, \
-        "a clean gate delta is what makes PASS reachable at all"
+    outcome, reason = verify.classify(r, r, v.candidate)
+    assert outcome == verify.PASS, "a clean gate delta is what makes PASS reachable at all"
+    # The PASS says WHAT it measured over, and this is the half of that discrimination
+    # with something to count — the other half is
+    # `test_a_pass_over_an_empty_gate_surface_says_it_measured_nothing`, whose surface is
+    # empty and whose delta is the same `()`.
+    assert "measured over 2 file(s) and unchanged" in reason, reason
 
 
 def test_a_candidate_that_deletes_a_discovered_test_lands_in_the_delta(tmp_path):
@@ -1270,6 +1320,11 @@ def test_a_candidate_that_deletes_a_discovered_test_lands_in_the_delta(tmp_path)
     assert v.candidate.gate_delta == ("tests/test_a.py",)
     assert not (v.path / "tests" / "test_a.py").exists(), \
         "the deletion never reached the verifier, so the delta is about nothing"
+    # The recorded surface is the UNION of the two, and a deletion is the direction that
+    # says so: the candidate's own surface has lost this path, and a record taken from
+    # that side alone would report a measurement that never named the file it moved.
+    assert v.candidate_surface == ("Makefile",)
+    assert v.candidate.gate_surface == ("Makefile", "tests/test_a.py")
 
 
 def test_a_candidate_that_adds_a_test_file_lands_in_the_delta_too(tmp_path):
@@ -1312,6 +1367,10 @@ def test_the_delta_is_measured_against_the_baseline_and_not_the_candidate(tmp_pa
     assert v.baseline_surface == ("Makefile", "tests/test_a.py")
     assert v.candidate_surface == ("Makefile", "tests/test_a.py", "tests/test_new.py")
     assert v.candidate.gate_delta == ("tests/test_new.py",)
+    # The other side of the union the deletion case pins: an ADDED gate file is in the
+    # candidate's surface and not the baseline's, so a record taken from the baseline alone
+    # would under-count what the delta ranged over.
+    assert v.candidate.gate_surface == v.candidate_surface
 
 
 def test_a_gate_file_the_command_names_is_in_the_delta_when_the_candidate_rewrites_it(
@@ -1345,6 +1404,38 @@ def test_a_gate_file_the_command_names_is_in_the_delta_when_the_candidate_rewrit
     v = _built(tmp_path / "untouched", untouched, work=[("src.py", "work\n")],
                command=verify.Command.parse([["./check.sh"]]))
     assert v.candidate_surface == ("check.sh",) and v.candidate.gate_delta == ()
+
+
+def test_a_pass_over_an_empty_gate_surface_says_it_measured_nothing(tmp_path):
+    """The reviewer's scenario end to end: the only file defining the gate is `./check.sh`,
+    the candidate GUTS it, and the caller named no verify command.
+
+    Nothing here is a bug in the delta machinery. `check.sh` carries no gate role, so with
+    no command both surfaces are empty, the delta is `()` — a real measurement, taken over
+    nothing — and every other premise of a PASS holds. The outcome stays PASS, because the
+    runs are what they are and this engine has no evidence against them; what may not
+    survive is the SENTENCE, which claimed the gate surface had been measured and found
+    unchanged over a surface that held no file at all.
+
+    Told apart from the same `()` delta over a surface that held something in
+    `test_a_candidate_that_leaves_the_gate_alone_gets_an_empty_delta_not_none`, which is the
+    fixture this one is only distinguishable against.
+    """
+    repo = _surface_repo(tmp_path, [("check.sh", "#!/bin/sh\nexit 1\n")])
+    (Path(repo) / "check.sh").chmod(0o755)
+    commit_all(repo, "an executable gate no rule names")
+    v = _built(tmp_path, repo, work=[("check.sh", "#!/bin/sh\nexit 0\n")], command=None)
+    assert v.baseline_surface == () and v.candidate_surface == (), \
+        "a rule now names check.sh, so this is no longer the unexamined-gate case"
+    assert v.candidate.gate_delta == () and v.candidate.gate_surface == ()
+    r = verify.run_command(v.path, verify.Command.parse([["./check.sh"]]))
+    assert r.exit_code == 0, "the gutted gate must exit 0, or there is no PASS to qualify"
+
+    outcome, reason = verify.classify(r, _run(0), v.candidate)
+    assert outcome == verify.PASS, reason
+    assert "measured and unchanged" not in reason and "measured over" not in reason, \
+        "the verdict claims a measurement this run never took"
+    assert "the gate surface was EMPTY" in reason, reason
 
 
 def test_a_gate_file_that_is_a_symlink_is_measured_by_where_it_POINTS(tmp_path):
@@ -1592,7 +1683,7 @@ def test_an_incomplete_harvest_still_reports_what_the_gate_surface_says(tmp_path
     assert "sub" in reason and "Makefile" in reason
 
     outcome, reason = verify.classify(
-        _run(0), _run(0), _bundle(gate_delta=None, omitted=("sub",)))
+        _run(0), _run(0), _bundle(gate_delta=None, gate_surface=None, omitted=("sub",)))
     assert outcome == verify.HARVEST_INCOMPLETE
     assert "nobody measured the gate surface" in reason
 

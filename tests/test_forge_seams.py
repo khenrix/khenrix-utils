@@ -512,7 +512,7 @@ def test_the_contract_the_gate_admits_under_is_the_one_the_manifest_records(tmp_
         "the manifest's record of the run's contract, written by `bundle.build`"
     with pytest.raises(verify.ContractMismatch):
         verify.build_verifier(repo, chain.base, chain.candidate, tmp_path / "v-y",
-                              identity=IDENT, contract=y)
+                              identity=IDENT, contract=y, command=None)
     assert not (tmp_path / "v-y").exists(), \
         "and refused before the clone, so no tree exists for a gate to run in under Y"
 

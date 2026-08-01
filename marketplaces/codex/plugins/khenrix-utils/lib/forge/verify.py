@@ -27,6 +27,15 @@ command and REFUSES it, rather than continuing, if it moved a tracked path no re
 declares: the gate would then measure a tree whose tracked content differs from the candidate
 the bundle describes, with nothing in the run accounting for the difference.
 
+WHAT ORDERS THE REST IS THE ORCHESTRATOR, NOT THIS MODULE. §6's chronology is enforced at
+exactly one joint — `run_setup`'s own call to `validate_materialized` — because that check
+stops being makeable once setup has run. Everywhere else the five steps are five public functions a
+caller composes: nothing here stops `fixed_point` running in a tree setup never touched, or
+`classify` reading a run taken before the materialization was checked. `calibrate` is not the
+exception it looks like; it sequences the same calls over §5's UNTOUCHED BASELINE and never
+sees a candidate, so no candidate's §6 run is ordered by anything in this module. Sequencing
+those is the caller's job, named as such rather than implied by the order they appear in.
+
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
 the two options the plan offered are NOT equivalent:
 
@@ -155,12 +164,20 @@ class VerifyError(RuntimeError):
 
 
 class GeneratorUnstable(VerifyError):
-    """A declared generator never settled, so this command has no fixed point to reach.
+    """The verify command has no fixed point to reach: re-running it keeps moving tracked
+    files.
 
-    INFRASTRUCTURE-CLASS (spec §7.2): it says the verify command keeps rewriting its own
-    declared outputs, which is a property of the command and the tree rather than a verdict
-    on the candidate — a consumer that folds it into FAIL blames a builder for a
-    nondeterministic generator it did not write.
+    TWO RAISE SITES, and the tracked movement they see is not the same movement. `fixed_point`
+    raises when the command is still rewriting its own DECLARED outputs after its pass budget,
+    with each pass's output staged in between. `_confirm_fixed_point` raises when a second
+    pass over the untouched baseline moved a tracked path NO generator relation declares —
+    which that function does not stage and cannot admit, so a declared rewrite is subtracted
+    there rather than reported. The two are complements: neither one sees the other's paths.
+
+    INFRASTRUCTURE-CLASS (spec §7.2) at both, and that is what a consumer reads it for: it is
+    a property of the command and the tree rather than a verdict on the candidate — one that
+    folds it into FAIL blames a builder for a generator it did not write, or for a baseline
+    that was never quiet before any provider ran.
     """
 
 
@@ -573,10 +590,11 @@ def _assert_hooks_pinned(path: Path) -> None:
 class Verifier:
     """A tree the builder never had access to, and what building it measured.
 
-    `candidate` is NOT the bundle the caller passed in: it is that bundle with its
-    `gate_delta` filled from the two trees `build_verifier` had and no other caller has. A
-    caller that classifies the INPUT bundle instead reads `gate_delta is None`, which is
-    UNKNOWN, which is `GATE_CHANGED` — correct, and useless.
+    `candidate` is NOT the bundle the caller passed in: it is that bundle with §6.1's whole
+    measurement — `gate_delta` and the `gate_surface` it ranged over — filled from the two
+    trees `build_verifier` had and no other caller has. A caller that classifies the INPUT
+    bundle instead reads `gate_delta is None`, which is UNKNOWN, which is `GATE_CHANGED` —
+    correct, and useless.
 
     `contract` rides along because the gate that runs in this tree admits verify-origin
     rewrites under exactly one contract, and a caller that sources a second one from
@@ -585,14 +603,23 @@ class Verifier:
     that argument rather than a check on it.
 
     The two surfaces are kept because the delta alone cannot say what was measured: a tree
-    with no gate files at all and a tree whose gate files the candidate left untouched
-    both produce `()`, and only the surfaces separate them.
+    with no gate files at all and a tree whose gate files the candidate left untouched both
+    produce `()`, and a surface is what separates them. THE VERDICT PATH CANNOT REACH THESE
+    TWO — `classify` is handed a bundle and never a `Verifier` — so their union goes onto the
+    candidate as `CandidateBundle.gate_surface`, which is what answers that question for a
+    verdict. What is left here is the one thing the union drops: which SIDE a surface path
+    came from, and so whether a path entered the surface or left it.
+
+    Neither carries a default. `()` is a measured, empty surface and `build_verifier` is the
+    sole constructor, so a default could only ever supply that measurement on behalf of a
+    caller who took none — the fail-open reading of the distinction the paragraph above
+    exists to preserve.
     """
     path: Path
     candidate: bundle.CandidateBundle
     contract: GeneratorContract
-    baseline_surface: tuple[str, ...] = ()
-    candidate_surface: tuple[str, ...] = ()
+    baseline_surface: tuple[str, ...]
+    candidate_surface: tuple[str, ...]
 
 
 def _sha256_file(p: Path) -> str:
@@ -670,7 +697,7 @@ def _gate_delta(before: dict, after: dict) -> tuple[str, ...]:
 
 
 def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
-                   command=None) -> Verifier:
+                   command) -> Verifier:
     """A clone of the BASELINE with the candidate laid down in it, ready for the gate.
 
     `identity` is the verifier's own `(name, email)`, required for the same reason
@@ -688,11 +715,17 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
     already holds, so paying for a checkout to discover it would leave a verifier tree
     behind that no gate may run in.
 
-    `command` is the confirmed verify command, and it is optional because a caller that
-    has not chosen one yet can still build a tree. Passing it only WIDENS the surface —
-    it is the sole route to a gate file whose name says nothing (`./check.sh`) and to one
-    git does not enumerate (`.venv/bin/pytest`) — so omitting it costs coverage of exactly
-    those, and `gate_surface` names that gap among the ones it does not close.
+    `command` is the confirmed verify command, and it is REQUIRED for `contract`'s reason
+    rather than defaulted — though `None` remains a legal VALUE, because a caller that has
+    not chosen a command yet can still build a tree and has only to say so at the call site.
+    It is the sole route to a gate file whose name says nothing (`./check.sh`) and to one git
+    does not enumerate (`.venv/bin/pytest`), so leaving it out costs coverage of exactly
+    those. MEASURED, on a repository whose only gate is `./check.sh` and a candidate that
+    gutted it: with no command both surfaces come back empty, the delta is a clean `()` and
+    the runs earn a PASS. No value-level check can separate that from a deliberate `None` —
+    by the time this function runs they are one value — so the requirement is the signature's
+    to carry, and what a `None` still costs is recorded rather than assumed: the empty surface
+    it produces travels to `classify` on the candidate, which says so in the verdict.
 
     THE GATE DELTA IS TAKEN HERE BECAUSE THIS IS THE ONLY PLACE BOTH TREES EXIST.
     `gate_surface` answers one tree; a delta needs two, and between the clone and the
@@ -709,7 +742,8 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
     seat = fleet.clone_seat(repo, baseline, dest, name=VERIFIER_NAME, identity=identity)
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
     # read back after it, because the candidate is the only writer BEFORE THIS READBACK.
-    # `run_setup` writes later, and its writes are not re-checked — see its docstring.
+    # `run_setup` writes later and nothing reads the pin again, so a confirmed setup command
+    # that repoints core.hooksPath moves it with no canary left to fire.
     _hooks_pin(seat.path)
     # The baseline half of the delta, and this is the only moment it can be taken: the
     # clone holds exactly B1 and `clone_seat` has already verified the checkout against its
@@ -721,8 +755,15 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
     candidate_surface = gate_surface(seat.path, contract, command=command)
     return Verifier(
         path=seat.path,
-        candidate=bundle.with_gate_delta(
-            candidate, _gate_delta(before, _surface_state(seat.path, candidate_surface))),
+        # The UNION of the two surfaces, because that is the domain the delta was taken
+        # over: a path present in one tree's surface and not the other's was compared just
+        # as much as one in both — its absence on the other side is what puts it in the
+        # delta. Either surface alone would under-report the measurement, which is the
+        # direction a gate-surface claim must never be wrong in.
+        candidate=bundle.with_gate_measurement(
+            candidate,
+            surface=tuple(sorted(set(baseline_surface) | set(candidate_surface))),
+            delta=_gate_delta(before, _surface_state(seat.path, candidate_surface))),
         contract=contract,
         baseline_surface=baseline_surface,
         candidate_surface=candidate_surface)
@@ -1079,6 +1120,14 @@ class Calibration:
     running the command wherever it happens to be standing. A calibration taken somewhere
     a builder could reach turns that outcome into a verdict the builder chose.
 
+    WHAT `classify` READS IT FOR IS THAT ONE OUTCOME AND THE FAIL BESIDE IT. `baseline_run`
+    is consulted only once the candidate's gate has already exited nonzero, to choose between
+    `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE` and `FAIL`; a PASS is decided without reading it
+    at all. An orchestrator that expects a green calibration to strengthen a candidate's PASS
+    is reading a comparison `classify` never makes. What this object contributes to a run
+    that goes on to pass is elsewhere: the §5 step 3 refusals made on the way here, and
+    `unexplained` below.
+
     `setup` is the confirmed setup command's own run. `run_setup` RETURNS a failing setup
     rather than raising — only a tracked overlap is a refusal — so a setup that exited
     nonzero over a gate that still passed exists nowhere else once this object is built, and
@@ -1209,10 +1258,17 @@ def _harvest_reason(cand: Run, omitted) -> str:
 def _gate_taints(candidate_run, cand: Run, cb) -> list:
     """Every reason this run's gate cannot be treated as the baseline's.
 
-    Two facts, and the first has three states rather than two. `gate_delta is None` is
+    Two facts, and the first has four states rather than two. `gate_delta is None` is
     "nobody looked", which `bundle.CandidateBundle` names as the fail-OPEN reading of an
-    empty tuple and requires a consumer to treat as UNKNOWN; `()` is a measured, clean
-    surface; a non-empty tuple is §6.1's `gate_changed`.
+    empty tuple and requires a consumer to treat as UNKNOWN; a non-empty tuple is §6.1's
+    `gate_changed`; `()` is a clean measurement, and it splits again on whether the bundle
+    records WHAT was measured. An empty delta with `gate_surface is None` is the first state
+    one field over — the record says nothing moved and nothing says over what — so it is a
+    taint too, and the two are kept as separate sentences because one is a measurement to go
+    and take while the other is a record to go and repair. `gate_surface == ()` is NOT a
+    taint: a tree really can define its gate somewhere no rule and no command reaches, and
+    refusing every such repository a PASS would answer a stated coverage gap with a verdict
+    nobody can act on. What it costs is said in the PASS sentence instead — see `classify`.
 
     The second is §7.2's: a gate that rewrote tracked files no generator relation declares
     is partly a generator nobody declared, and §7.2 routes exactly that through §6.1's
@@ -1229,6 +1285,10 @@ def _gate_taints(candidate_run, cand: Run, cb) -> list:
     elif cb.gate_delta:
         taints.append(f"the candidate changed {len(cb.gate_delta)} path(s) that define "
                       f"the gate: {_paths_phrase(cb.gate_delta)}")
+    elif cb.gate_surface is None:
+        taints.append("this candidate records a clean gate delta with no record of what it "
+                      "measured (gate_surface is None), so an unexamined gate and an "
+                      "unchanged one cannot be told apart here")
     if (isinstance(candidate_run, FixedPoint) and cand.exit_code == 0
             and candidate_run.unexplained):
         taints.append(
@@ -1304,10 +1364,20 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
       3. `FLAKY` before `BASELINE_RED_…`: a rerun that disagrees with itself is not evidence
          that no new failure exists, it is evidence that this gate cannot say.
 
-    A PASS says in its own reason whether the §7.2 half was measured at all. A bare `Run`
-    cannot answer it — only `fixed_point` measures a tracked delta — so a caller that ran
-    the gate through `fixed_point` and then hands over `fp.run` gets a weaker PASS than
-    §6.2's, and the reason is where that is visible instead of assumed.
+    A PASS says in its own reason how much of it was measured, on two independent axes, and
+    both are weaker claims rather than different outcomes. A bare `Run` cannot answer §7.2's
+    half — only `fixed_point` measures a tracked delta — so a caller that ran the gate
+    through `fixed_point` and then hands over `fp.run` gets a weaker PASS than §6.2's. And
+    `bundle.gate_surface` says whether §6.1's half had anything to range over: `()` is a real
+    measurement that found no gate-defining file, and the sentence names that instead of
+    claiming the surface was unchanged. Both are visible in the reason rather than assumed.
+
+    PASS NEVER READS `baseline_run`. `_run_verdict` returns it on `cand.exit_code == 0`
+    before `base` is consulted at all, so a calibration is what makes
+    `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE` an honest outcome and contributes nothing to a
+    PASS — an orchestrator that supplies a green `Run` from anywhere gets the same PASS it
+    would get from `calibrate`. What a PASS rests on is the candidate's own exit code, the
+    bundle, and the two measurements above.
     """
     cand = _as_run(candidate_run, "candidate_run")
     base = _as_run(baseline_run, "baseline_run")
@@ -1332,8 +1402,18 @@ def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, s
                     if isinstance(candidate_run, FixedPoint) else
                     "nothing here measured whether the gate rewrote tracked files (§7.2), "
                     "so this rests on the exit code and the bundle alone")
-        reason = (f"{reason}; the bundle carried every artifact path, the gate surface was "
-                  f"measured and unchanged, and {measured}")
+        # `gate_surface` is `()` only when a real measurement found no gate-defining file,
+        # and the sentence says which of the two it was: an empty delta over an empty
+        # surface is the shape a candidate that GUTS `./check.sh` produces when no rule
+        # names that file and no confirmed command was passed, and "measured and unchanged"
+        # over it is a verdict reading cleaner than its evidence.
+        surface = (f"the gate surface was measured over {len(bundle.gate_surface)} file(s) "
+                   "and unchanged"
+                   if bundle.gate_surface else
+                   "the gate surface was EMPTY — no file in this tree matched a "
+                   "gate-surface rule and no verify command named one — so whatever defines "
+                   "this gate is outside what §6.1 measured")
+        reason = f"{reason}; the bundle carried every artifact path, {surface}, and {measured}"
     return outcome, reason
 
 

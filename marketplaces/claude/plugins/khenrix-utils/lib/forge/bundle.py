@@ -100,13 +100,22 @@ class CandidateBundle:
     # detector is `verify.gate_surface`, which answers ONE tree; what produces the delta is
     # `verify.build_verifier`, the one place both trees exist — the clone holds exactly the
     # baseline and `materialize` turns it into exactly the candidate — and it writes the
-    # result back through `with_gate_delta`. `build` is not that caller: it is handed a
-    # seat path, an `ArtifactSet` and a `Baseline`, never a checkout the builder did not
+    # result back through `with_gate_measurement`. `build` is not that caller: it is handed
+    # a seat path, an `ArtifactSet` and a `Baseline`, never a checkout the builder did not
     # write. So it leaves this field unset. `Baseline.sidecars` is the precedent: an empty
     # tuple says "the candidate changed nothing that defines the gate" when the truth is
     # "nobody looked", which is the fail-OPEN reading. A consumer classifying
     # `GATE_CHANGED` must treat None as UNKNOWN — not as a clean gate.
     gate_delta: tuple[str, ...] | None = None
+    # WHAT THE DELTA ABOVE RANGED OVER: the union of the two trees' gate surfaces, so
+    # `gate_delta == ()` over two gate files and `gate_delta == ()` over a tree in which
+    # nothing matched a gate-surface rule stop being the same record. They are not the same
+    # claim — the first found the gate untouched, the second found no gate to look at — and
+    # a consumer holding only the delta has to pick one of them to say. Three states again,
+    # for `gate_delta`'s reason and written by the same call: None is "nobody looked", `()`
+    # is "looked, and this tree defines its gate somewhere no rule and no command reaches",
+    # and a non-empty tuple is the paths that were compared.
+    gate_surface: tuple[str, ...] | None = None
     # "" means the run declared no GeneratorContract, which admits NOTHING as a permitted
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
     # default in a way `gate_delta=()` is not.
@@ -120,31 +129,43 @@ class CandidateBundle:
     omitted: tuple[str, ...] = ()
 
 
-def with_gate_delta(candidate: CandidateBundle, delta) -> CandidateBundle:
-    """The same candidate with its gate-surface delta recorded.
+def with_gate_measurement(candidate: CandidateBundle, *, surface,
+                          delta) -> CandidateBundle:
+    """The same candidate with §6.1's gate measurement recorded: what was examined, and
+    what of it moved.
+
+    ONE CALL FOR BOTH FIELDS, and that is the whole of why this is not two functions. A
+    delta recorded without its surface is a clean-looking measurement with no record of what
+    it ranged over, which is the fail-open reading `gate_delta`'s own three states exist to
+    refuse; a surface recorded without a delta says what was examined and not what came of
+    it. Neither half is a state the engine should be able to produce, so neither half can be
+    written alone.
 
     A new instance rather than a mutation because `CandidateBundle` is frozen, and it is
     frozen because a candidate that can be edited after it is built is a candidate whose
     manifest describes something else.
 
-    Refuses when a delta is already recorded, INCLUDING an empty one. Two measurements of
-    one tree pair agree or one of them is wrong, and taking the second silently would make
-    which answer survives depend on call order. `()` is a measurement — it is the whole
+    Refuses when either field is already recorded, INCLUDING an empty one. Two measurements
+    of one tree pair agree or one of them is wrong, and taking the second silently would
+    make which answer survives depend on call order. `()` is a measurement — it is the whole
     difference between "the candidate changed nothing that defines the gate" and "nobody
     looked" — so it is exactly as unoverwritable as a non-empty one.
     """
     # A str is iterable, so `tuple("Makefile")` is eight one-character paths and no caller
     # would see the mistake until a delta named `M`, `a`, `k`. Refused for the reason
     # `Command.parse` refuses a spec that is one string.
-    if isinstance(delta, (str, bytes)):
-        raise BundleError(
-            f"a gate delta is a sequence of paths, not one path: {delta!r}. Write "
-            f"({delta!r},) for a single one.")
-    if candidate.gate_delta is not None:
-        raise BundleError(
-            f"this candidate already records a gate delta ({candidate.gate_delta!r}); a "
-            f"second measurement ({tuple(delta)!r}) is a disagreement, not an update")
-    return replace(candidate, gate_delta=tuple(delta))
+    for what, value in (("gate surface", surface), ("gate delta", delta)):
+        if isinstance(value, (str, bytes)):
+            raise BundleError(
+                f"a {what} is a sequence of paths, not one path: {value!r}. Write "
+                f"({value!r},) for a single one.")
+    for field_name, value in (("gate_delta", delta), ("gate_surface", surface)):
+        recorded = getattr(candidate, field_name)
+        if recorded is not None:
+            raise BundleError(
+                f"this candidate already records a {field_name} ({recorded!r}); a second "
+                f"measurement ({tuple(value)!r}) is a disagreement, not an update")
+    return replace(candidate, gate_delta=tuple(delta), gate_surface=tuple(surface))
 
 
 def _patch_paths(repo, patch: bytes) -> tuple[frozenset, frozenset]:

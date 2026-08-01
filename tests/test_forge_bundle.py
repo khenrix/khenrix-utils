@@ -655,6 +655,8 @@ def test_build_leaves_the_gate_delta_unknown_rather_than_empty(tmp_path):
     p = _phases(s.path, lambda: write(s.path, "Makefile", "verify:\n\ttrue\n"))
     cb = bundle.build(s.path, harvest.artifact_set(p, s.path, b.commit), b)
     assert cb.gate_delta is None, "an empty tuple would be a claim nobody made"
+    assert cb.gate_surface is None, \
+        "and neither is there a surface, or the delta would look measured over nothing"
     assert cb.generator_contract_id == ""
     assert cb.version == bundle.VERSION
     assert (cb.baseline_ref, cb.baseline_commit) == (b.ref, b.commit)
@@ -692,17 +694,22 @@ def _bare(**kw):
                                   baseline_commit="c", **kw)
 
 
-def test_with_gate_delta_returns_a_new_bundle_and_leaves_the_original():
+def _measured(cb, *, surface=("Makefile",), delta=("Makefile",)):
+    return bundle.with_gate_measurement(cb, surface=surface, delta=delta)
+
+
+def test_with_gate_measurement_returns_a_new_bundle_and_leaves_the_original():
     cb = _bare()
-    out = bundle.with_gate_delta(cb, ("Makefile",))
-    assert out.gate_delta == ("Makefile",)
-    assert cb.gate_delta is None, "the input is frozen and must be untouched"
+    out = _measured(cb)
+    assert (out.gate_delta, out.gate_surface) == (("Makefile",), ("Makefile",))
+    assert cb.gate_delta is None and cb.gate_surface is None, \
+        "the input is frozen and must be untouched"
     # Everything else rides across: a `replace` that dropped a field would hand the gate a
     # bundle carrying no patch, which materializes clean and verifies nothing.
     assert out.baseline_commit == "c" and out.version == bundle.VERSION
 
 
-def test_with_gate_delta_carries_the_whole_candidate_across(tmp_path):
+def test_with_gate_measurement_carries_the_whole_candidate_across(tmp_path):
     """The measurement is written onto a REAL bundle, so every channel has to survive it."""
     _repo, b, s = _seat(tmp_path)
 
@@ -712,33 +719,45 @@ def test_with_gate_delta_carries_the_whole_candidate_across(tmp_path):
 
     cb = bundle.build(s.path, harvest.artifact_set(_phases(s.path, work), s.path, b.commit), b)
     assert cb.tracked_patch and cb.sidecars, "the fixture exercises only one channel"
-    out = bundle.with_gate_delta(cb, ("Makefile",))
+    out = _measured(cb)
     assert out.tracked_patch == cb.tracked_patch
     assert (out.sidecars, out.omitted, out.generator_contract_id) == \
         (cb.sidecars, cb.omitted, cb.generator_contract_id)
 
 
-def test_with_gate_delta_refuses_to_overwrite_a_measurement():
+def test_with_gate_measurement_refuses_to_overwrite_a_measurement():
     """Two measurements of one tree pair disagree only if one of them is wrong."""
     with pytest.raises(bundle.BundleError, match="already records"):
-        bundle.with_gate_delta(_bare(gate_delta=()), ("Makefile",))
+        _measured(_bare(gate_delta=()))
     # The empty MEASUREMENT is as unoverwritable as a non-empty one, and that direction is
     # the dangerous one: a second call that quietly won would let a caller turn a clean
     # gate into a changed one, or a changed one into a clean one, by calling twice.
     with pytest.raises(bundle.BundleError):
-        bundle.with_gate_delta(_bare(gate_delta=("Makefile",)), ())
+        _measured(_bare(gate_delta=("Makefile",)), delta=())
+    # EITHER field already recorded is a refusal, not only the delta. The two are written
+    # by one call, so a bundle holding one of them is already a record two calls disagree
+    # about — and a second call that overwrote only the surface would leave a delta
+    # describing paths the surface beside it never named.
+    with pytest.raises(bundle.BundleError, match="gate_surface"):
+        _measured(_bare(gate_surface=()))
 
 
-def test_with_gate_delta_accepts_the_empty_measurement():
-    """() is a RESULT here — the candidate changed nothing that defines the gate — and it
-    is the only value that can reach PASS, so it must be storable."""
-    assert bundle.with_gate_delta(_bare(), ()).gate_delta == ()
-    assert bundle.with_gate_delta(_bare(), ()).gate_delta is not None
+def test_with_gate_measurement_accepts_the_empty_measurement():
+    """() is a RESULT on both fields — the candidate changed nothing that defines the gate,
+    and nothing in this tree defines it by any rule — so both must be storable, and both
+    must come back distinguishable from the `None` they replace."""
+    out = bundle.with_gate_measurement(_bare(), surface=(), delta=())
+    assert (out.gate_delta, out.gate_surface) == ((), ())
+    assert out.gate_delta is not None and out.gate_surface is not None
 
 
-def test_with_gate_delta_refuses_one_path_written_as_a_string():
+def test_with_gate_measurement_refuses_one_path_written_as_a_string():
     """`tuple("Makefile")` is eight one-character paths, and nothing downstream would say so."""
     cb = bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r", baseline_commit="c")
-    with pytest.raises(bundle.BundleError, match="not one path"):
-        bundle.with_gate_delta(cb, "Makefile")
-    assert bundle.with_gate_delta(cb, ("Makefile",)).gate_delta == ("Makefile",)
+    with pytest.raises(bundle.BundleError, match="gate delta is a sequence"):
+        bundle.with_gate_measurement(cb, surface=("Makefile",), delta="Makefile")
+    # BOTH arguments, because both are path sequences and only one of them was guarded when
+    # this was a one-field call.
+    with pytest.raises(bundle.BundleError, match="gate surface is a sequence"):
+        bundle.with_gate_measurement(cb, surface="Makefile", delta=("Makefile",))
+    assert _measured(cb).gate_delta == ("Makefile",)
