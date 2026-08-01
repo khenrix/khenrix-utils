@@ -90,16 +90,31 @@ def main() -> int:
     purge = args.purge or [ROOT / "shared" / "lib", ROOT / "tests"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
+    mutant = text.replace(args.old, args.new).encode("utf-8")
     try:
-        path.write_bytes(text.replace(args.old, args.new).encode("utf-8"))
-        # Read back rather than trust the write: this is the one fact everything else rests on.
-        if args.new not in path.read_text():
+        path.write_bytes(mutant)
+        # Read back rather than trust the write: this is the one fact everything else rests
+        # on. Compared as the WHOLE expected bytes, not as `--new in <text>`: that membership
+        # test passes whenever `--new` already occurs anywhere else in the file, which is the
+        # common case for a mutation that swaps one operator or one constant for another the
+        # file already uses. Bytes, so the readback cannot disagree with the write about an
+        # encoding either.
+        if path.read_bytes() != mutant:
             print("mutate: the mutation did not survive the write", file=sys.stderr)
             return 2
         purged = _purge_bytecode(purge)
         print(f"mutate: applied to {args.file}, purged {purged} __pycache__ dir(s)",
               file=sys.stderr)
-        rc = subprocess.run(cmd, cwd=ROOT, env=env).returncode
+        try:
+            rc = subprocess.run(cmd, cwd=ROOT, env=env).returncode
+        except OSError as e:
+            # A command that cannot START is a usage error, and it has to say so HERE. The
+            # uncaught traceback exits 1, and 1 is the machine-readable spelling of SURVIVED
+            # — so a harness building a mutation table off exit codes records a survivor for
+            # a typo'd test command, which is the false SURVIVED this script exists to
+            # prevent, reached by a different route.
+            print(f"mutate: cannot run the test command {cmd[0]!r}: {e}", file=sys.stderr)
+            return 2
     finally:
         path.write_bytes(original)
         _purge_bytecode(purge)
