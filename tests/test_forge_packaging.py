@@ -1,4 +1,5 @@
 """forge must ship in the rendered plugins and be inside the receipt closure."""
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +47,33 @@ def test_the_tests_stripper_is_live_and_not_merely_unexercised():
         "witness moved — re-point this at whichever shared lib still ships tests/"
     for cli in CLIS:
         assert not (_plugin(cli) / "lib" / "wikisync" / "tests").exists(), cli
+
+
+def _make_variable(name: str) -> set:
+    """One `NAME := …` assignment from the Makefile, with its continuations folded.
+
+    The lookbehind is what folds them: the assignment ends at the first line-end NOT
+    preceded by a backslash, so a multi-line list reads as one value. Parsing the file
+    rather than running `make` keeps this a test of what the gate says it runs.
+    """
+    text = (ROOT / "Makefile").read_text()
+    m = re.search(rf"^{name} :=(.*?)(?<!\\)$", text, re.M | re.S)
+    assert m, f"the Makefile no longer assigns {name}"
+    return set(m.group(1).replace("\\\n", " ").split())
+
+
+def test_every_forge_suite_is_named_in_the_makefile_gate():
+    """A suite the Makefile does not name is a suite `make council-test` never runs.
+
+    Invisible from inside the suite itself — every test in it passes locally and the gate
+    stays green while covering nothing — and it has happened in this package before.
+
+    Equality, not containment, so the other direction fails too: a RENAMED suite leaves a
+    dead name in the variable, and `pytest` is handed a path that no longer exists.
+    """
+    on_disk = {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_forge_*.py")}
+    assert _make_variable("FORGE_TESTS") == on_disk, \
+        "add the new suite to FORGE_TESTS in the Makefile, or drop the stale name"
 
 
 def test_llm_forge_closure_covers_both_libs():

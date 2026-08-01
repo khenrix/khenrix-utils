@@ -7,17 +7,33 @@ seat's environment re-admitted the redirectors gitcmd strips. Each is one assert
 
 Every assertion below names TWO modules and holds only if both agree. A test that would
 still pass with either side broken belongs in that side's own suite, not this file.
+
+THE LAST SEAM CLASS HERE HAS A DIFFERENT SHAPE: one side is a REFUSAL rather than a value
+another module consumes. Nothing asserted that a repository preflight ADMITS is one the
+chain completes, nor that one it REFUSES would have failed — so a refusal could be
+unnecessary, or could be the only thing standing between the chain and a silent wrong
+answer, and neither the per-module suites nor the seams above could tell those apart. Each
+fixture below is the minimal repository that trips ONE `inspect.rejections` line, driven
+through the chain with the policy bypassed; what it must produce is the harm that line's own
+text claims. Measured: only one of the three RAISES. The other two complete and hand the
+harm to the verifier in silence, which is why "the chain breaks" is the wrong assertion to
+write for them and why each case names its own consequence.
 """
+import ast
+import contextlib
 import hashlib
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import (baseline, bundle, fleet, gitcmd, harvest,  # noqa: E402
-                   inspect as finspect, screen, snapshot)
-from forge_fixtures import git as _git, make_repo, write  # noqa: E402
+                   inspect as finspect, screen, snapshot, verify)
+from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
 
@@ -396,3 +412,374 @@ def test_the_no_contract_sentinel_is_one_value_across_inspect_and_bundle():
     assert finspect.GeneratorContract().id == bundle.CandidateBundle(
         version=bundle.VERSION, baseline_ref="r", baseline_commit="c").generator_contract_id
     assert finspect.detect_generators(ROOT).id == finspect.GeneratorContract().id
+
+
+# --------------------------------------------------------------------------- #
+# SEAM CLASS: refusals — see the module docstring for what makes this class
+# different from every seam above it.
+# --------------------------------------------------------------------------- #
+
+_HOST_ONLY = "HOST-ONLY-CONTENT\n"
+
+
+@dataclass(frozen=True)
+class _Chain:
+    base: baseline.Baseline
+    seat: fleet.Seat
+    artifacts: harvest.ArtifactSet
+    candidate: bundle.CandidateBundle
+    verifier: Path
+
+
+def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
+    """Everything an orchestrator does between preflight and the gate, on one repository.
+
+    The agent's work is one new file, because the point of these cases is what the
+    REPOSITORY carries into a seat and a verifier — a richer candidate would only add
+    shapes the per-module suites already cover.
+
+    Nothing in here consults `inspect.rejections`; that is the property under test, and
+    `test_nothing_in_the_chain_consults_the_refusal_policy` is where it is measured rather
+    than assumed.
+    """
+    facts = finspect.repo_facts(repo)
+    run = tmp / "run"
+    run.mkdir(exist_ok=True)
+    base = baseline.materialize(repo, run, facts, [], run_id)
+    seat = fleet.clone_seat(repo, base, tmp / "seat", name="claude", identity=IDENT)
+    f0 = harvest.record(seat.path)
+    write(seat.path, "src.py", "work\n")
+    fwork = harvest.record(seat.path)
+    artifacts = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=f0, fwork=fwork, fverify=fwork), seat.path, base.commit)
+    candidate = bundle.build(seat.path, artifacts, base)
+    verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier", identity=IDENT)
+    return _Chain(base, seat, artifacts, candidate, verifier)
+
+
+@contextlib.contextmanager
+def _refusals_disabled():
+    """Bypass the POLICY — the `rejections` function itself — and nothing it protects.
+
+    Replacing the function is the whole bypass and is deliberately the narrowest one
+    available: every mechanism the chain has is left standing — the manifest check in
+    `clone_seat`, the containment tests in `bundle`, the hooks pin in `verify` — so a case
+    that comes through clean below comes through on a mechanism's own evidence.
+
+    TODAY THIS CHANGES NOTHING, and that is measured next door: no module under
+    `shared/lib/forge` calls `rejections` at all, so the chain never consults the policy
+    whether it is patched or not. The patch is here so that the day a consumer appears —
+    spec §5 lists unsupported-feature rejections at step 1 of its confirmation chronology,
+    so that is where one belongs — these cases keep bypassing exactly the policy and not
+    the defence underneath it.
+    """
+    original = finspect.rejections
+    finspect.rejections = lambda facts, selected_untracked: []
+    try:
+        yield
+    finally:
+        finspect.rejections = original
+
+
+def _calls_the_policy(path: Path) -> bool:
+    """True when this module CALLS `rejections`, as opposed to naming it in prose.
+
+    Parsed rather than grepped: the name occurs six times across `inspect` and `bundle` and
+    not one of them is a call — five are prose and the sixth is the definition — so a text
+    search answers yes for both modules and the question this asks, is the policy enforced
+    anywhere, becomes unanswerable.
+    """
+    for node in ast.walk(ast.parse(path.read_bytes())):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if (fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")) \
+                    == "rejections":
+                return True
+    return False
+
+
+def test_nothing_in_the_chain_consults_the_refusal_policy():
+    """SEAM: `inspect.rejections` and every module that would have to obey it.
+
+    This is the premise the whole section below rests on, so it is measured here instead of
+    asserted in a docstring. `rejections` returns a list and no module reads it: the
+    refusals are enforced by whoever calls preflight, and spec §5's chronology — the
+    caller that would — is not in this plan.
+
+    WHEN THIS GOES RED, a consumer has appeared. That is the intended direction and nothing
+    here should be deleted for it: `_refusals_disabled` has just become load-bearing, so
+    check that it still bypasses only the policy, and that each case below still reaches the
+    mechanism it is measuring.
+    """
+    callers = sorted(p.name for p in (ROOT / "shared" / "lib" / "forge").glob("*.py")
+                     if _calls_the_policy(p))
+    assert callers == [], (
+        f"{callers} now enforce inspect.rejections — see this test's docstring before "
+        "changing anything below it")
+
+
+# --- eol_no_roundtrip ------------------------------------------------------ #
+
+def _mk_eol_repo(tmp):
+    """The minimal repository whose worktree line endings a checkout would rewrite.
+
+    One added file. `seed.txt` is already committed with LF, so declaring `eol=crlf` over
+    it is the whole condition — index LF, worktree LF, and a checkout that would produce
+    CRLF. `commit_all`'s `git add -A` does not disturb that: the clean direction is
+    CRLF->LF, a no-op on an LF worktree, so the file re-adds to the blob already in the
+    index and the tree stays clean.
+    """
+    repo = make_repo(tmp)
+    write(repo, ".gitattributes", "seed.txt text eol=crlf\n")
+    commit_all(repo, "declare crlf over an LF worktree")
+    return repo
+
+
+def _mk_eol_near_miss(tmp):
+    """The same declaration over a worktree that DOES round-trip."""
+    repo = make_repo(tmp)
+    write(repo, ".gitattributes", "seed.txt text eol=crlf\n")
+    write(repo, "seed.txt", "seed\r\n")
+    commit_all(repo, "declare crlf over a crlf worktree")
+    return repo
+
+
+def _harm_of_eol(repo, tmp):
+    """"a seat can never reproduce the bytes the baseline manifest records" — as raised.
+
+    The one case of the three that BREAKS the chain. It breaks where the seat checks its own
+    checkout against B: the manifest holds the raw worktree bytes, the checkout re-ran the
+    smudge, and the two cannot agree for as long as the declaration and the worktree
+    disagree.
+    """
+    with pytest.raises(fleet.SeatError, match="differs from the baseline manifest"):
+        _chain_to_verifier(repo, tmp)
+
+
+def _no_harm_of_eol(chain: _Chain):
+    assert chain.seat.verified is True
+    assert (chain.verifier / "seed.txt").read_bytes() == b"seed\r\n", \
+        "and the bytes really are the converted ones, or the fixture is not the near miss"
+
+
+# --- escaping_symlink ------------------------------------------------------ #
+
+def _mk_escaping_repo(tmp):
+    """The minimal repository holding a TRACKED symlink out of the tree.
+
+    Distinct from `test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat`,
+    which trips the SELECTED-untracked branch of `rejections` with a nested link and stops
+    at the seat. This one trips `facts.escaping_symlinks` — the index-mode-120000 branch,
+    which rejects unconditionally — and follows it into the verifier.
+    """
+    repo = make_repo(tmp)
+    outside = tmp / "outside"
+    outside.mkdir()
+    (outside / "credentials").write_text(_HOST_ONLY)
+    (Path(repo) / "creds").symlink_to(outside / "credentials")
+    _git(repo, "add", "creds")
+    _git(repo, "commit", "-qm", "a tracked link out of the repository")
+    return repo
+
+
+def _mk_escaping_near_miss(tmp):
+    """The same tracked link, pointing INSIDE the tree."""
+    repo = make_repo(tmp)
+    (Path(repo) / "creds").symlink_to("seed.txt")
+    _git(repo, "add", "creds")
+    _git(repo, "commit", "-qm", "a tracked link inside the repository")
+    return repo
+
+
+def _harm_of_escaping_link(repo, tmp):
+    """"every seat would get a working path out of the repository" — and the verifier too.
+
+    Nothing raises. Every module reports success on its own terms: the seat VERIFIES,
+    because since D-1 a link is its target text everywhere and the seat's link carries the
+    same text B recorded; the bundle omits nothing, because the link is B's, not the
+    agent's. The refusal is earned by what the chain then hands over rather than by a break
+    — which makes it a strictly more dangerous one to lose, since nothing would report it.
+
+    The VERIFIER is asserted as well as the seat because it is the tree the gate runs in,
+    built to be independent of the builder: a confirmed verify command executing there can
+    read and write a host path through this link.
+    """
+    chain = _chain_to_verifier(repo, tmp)
+    assert chain.seat.verified is True and chain.candidate.omitted == (), \
+        "no module in the chain objects, which is what makes the refusal load-bearing"
+    for tree, what in ((chain.seat.path, "seat"), (chain.verifier, "verifier")):
+        link = tree / "creds"
+        assert link.is_symlink(), what
+        assert link.read_text() == _HOST_ONLY, f"{what} reads outside the repository"
+
+
+def _no_harm_of_escaping_link(chain: _Chain):
+    for tree in (chain.seat.path, chain.verifier):
+        link = tree / "creds"
+        assert link.is_symlink() and link.read_text() == "seed\n", \
+            "the near miss carries a link too, so the probe measures the TARGET, not its "\
+            "presence"
+
+
+# --- shallow --------------------------------------------------------------- #
+
+def _mk_shallow_repo(tmp):
+    """The minimal shallow repository: a depth-1 clone of a two-commit source.
+
+    `file://` rather than a path, because git takes a plain local path as the LOCAL
+    transport and ignores `--depth` there. Measured on git 2.53: the plain form prints
+    "--depth is ignored in local clones; use file:// instead", exits 0, and produces a
+    clone with no `.git/shallow` — a fixture that quietly stopped being shallow.
+    """
+    origin = make_repo(tmp, name="origin")
+    write(origin, "b.txt", "b\n")
+    commit_all(origin, "second")
+    _git(tmp, "clone", "-q", "--depth", "1", f"file://{origin}", str(tmp / "repo"))
+    return tmp / "repo"
+
+
+def _mk_shallow_near_miss(tmp):
+    """The same source, cloned whole."""
+    origin = make_repo(tmp, name="origin")
+    write(origin, "b.txt", "b\n")
+    commit_all(origin, "second")
+    _git(tmp, "clone", "-q", f"file://{origin}", str(tmp / "repo"))
+    return tmp / "repo"
+
+
+def _harm_of_shallow(repo, tmp):
+    """"history is incomplete; clone semantics differ" — and the truncation propagates.
+
+    Nothing raises here either: git 2.53 clones happily from a shallow repository, the seat
+    verifies against B's manifest (which describes the TREE, and the tree is complete), and
+    the verifier builds. What the chain delivers is two trees that are themselves shallow,
+    where an ordinary history command exits 128 — so an agent asked to bisect, rebase, or
+    read the log fails, and so does a verify command that runs one.
+
+    Both trees are asserted because they fail differently: in the SEAT it lands on the
+    agent, and in the VERIFIER it is an infrastructure failure of the gate, which §4 is most
+    insistent must never be read as a verdict on the candidate.
+    """
+    chain = _chain_to_verifier(repo, tmp)
+    assert chain.seat.verified is True, \
+        "the truncation is invisible to every check the chain makes"
+    for tree in (chain.seat.path, chain.verifier):
+        assert _git(tree, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        with pytest.raises(RuntimeError, match="unknown revision"):
+            _git(tree, "log", "-1", "HEAD~1")
+
+
+def _no_harm_of_shallow(chain: _Chain):
+    for tree in (chain.seat.path, chain.verifier):
+        assert _git(tree, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+        assert _git(tree, "log", "-1", "--format=%s", "HEAD~1").stdout.strip() == "seed"
+
+
+# --------------------------------------------------------------------------- #
+
+@dataclass(frozen=True)
+class _Refusal:
+    """One `inspect.rejections` line, and everything needed to hold it to account.
+
+    `marker` is a substring of the line itself, so a fixture that trips a DIFFERENT
+    refusal — easy to write by accident, since these repositories are unusual on purpose —
+    does not read as this one firing.
+    """
+    name: str
+    marker: str
+    build: object
+    near_miss: object
+    harm: object
+    no_harm: object
+
+
+REFUSAL_FIXTURES = [
+    _Refusal("eol_no_roundtrip", "worktree line endings do not round-trip",
+             _mk_eol_repo, _mk_eol_near_miss, _harm_of_eol, _no_harm_of_eol),
+    _Refusal("escaping_symlink", "tracked symlink escapes the repository",
+             _mk_escaping_repo, _mk_escaping_near_miss,
+             _harm_of_escaping_link, _no_harm_of_escaping_link),
+    _Refusal("shallow", "shallow repository: history is incomplete",
+             _mk_shallow_repo, _mk_shallow_near_miss, _harm_of_shallow, _no_harm_of_shallow),
+]
+
+
+@pytest.mark.parametrize("case", REFUSAL_FIXTURES, ids=lambda c: c.name)
+def test_a_repo_preflight_refuses_would_have_failed_downstream(case, tmp_path):
+    """Every refusal is EARNED: with the policy bypassed, the chain delivers the harm the
+    refusal's own text names.
+
+    Not `pytest.raises` for all three, which is what this task set out to write. Measured:
+    one raises and two complete, so a shared raises-anything assertion would have had to be
+    weakened to something two of the three could satisfy — and an assertion satisfied by
+    "the chain finished" is satisfied by a chain that finished wrongly. Each case names its
+    consequence instead.
+    """
+    repo = case.build(tmp_path)
+    facts = finspect.repo_facts(repo)
+    named = [r for r in finspect.rejections(facts, []) if case.marker in r]
+    assert named, (f"{case.name}: the fixture no longer trips its refusal — "
+                   f"rejections said {finspect.rejections(facts, [])}")
+    with _refusals_disabled():
+        case.harm(repo, tmp_path)
+
+
+@pytest.mark.parametrize("case", REFUSAL_FIXTURES, ids=lambda c: c.name)
+def test_each_refusal_fixture_is_one_property_from_an_admitted_repository(case, tmp_path):
+    """The discrimination check for the test above: the near miss must DISAGREE with it.
+
+    A fixture and the behaviour it claims to trip can be wrong together — the fixture is
+    exotic, the refusal fires, and neither the fixture nor the assertion notices it fired
+    for a reason nobody meant. So each fixture is paired with a repository that differs in
+    exactly the one property the refusal names, and that one must be admitted AND arrive at
+    a verifier without the harm.
+
+    That second half is what makes this more than a `rejections == []` check: it is also
+    the admission half of this seam class, run on three repositories that are individually
+    strange — a CRLF worktree, a tracked symlink, a full clone with a remote.
+    """
+    repo = case.near_miss(tmp_path)
+    facts = finspect.repo_facts(repo)
+    assert finspect.rejections(facts, []) == []
+    chain = _chain_to_verifier(repo, tmp_path)
+    case.no_harm(chain)
+
+
+def test_a_repo_preflight_admits_completes_the_chain(tmp_path):
+    """The other half: a clean repository must reach a VERDICT, not merely avoid a refusal.
+
+    THE VERDICT IT REACHES IS `GATE_CHANGED`, NOT `PASS`, and the reason is asserted so that
+    this test says why. `bundle.build` leaves `gate_delta` at None — "nobody looked", the
+    fail-closed reading — and `classify` correctly refuses to call a run PASS when nothing
+    established that it ran the baseline's gate. So no chain assembled from these modules
+    alone can reach PASS today; the surface has to be measured in a tree the builder never
+    wrote, and there is no such tree in `bundle.build`'s arguments (a seat path, an
+    `ArtifactSet`, and a `Baseline` carrying OIDs and a manifest, never a checkout).
+
+    Asserted as an equality against the verdict actually reached, rather than as `!= None`
+    or "nothing raised": those weaker forms keep passing on the day the verdict changes,
+    which is the one event a reader of this test needs to be told about. When a producer
+    for `gate_delta` lands, this goes red at the outcome AND at the reason.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "check.sh", "#!/bin/sh\nexit 0\n")
+    (Path(repo) / "check.sh").chmod(0o755)
+    commit_all(repo, "gate")
+    facts = finspect.repo_facts(repo)
+    assert finspect.rejections(facts, []) == []
+
+    chain = _chain_to_verifier(repo, tmp_path)
+    # "Completes" has to mean the candidate ARRIVED, not merely that no call raised: a
+    # verifier holding none of the agent's work would still run the gate and still be
+    # classified.
+    assert chain.seat.verified is True and chain.candidate.omitted == ()
+    assert (chain.verifier / "src.py").read_text() == "work\n"
+
+    run = verify.run_command(chain.verifier, verify.Command.parse([["./check.sh"]]))
+    assert run.exit_code == 0, f"the gate itself failed: {run.stderr}"
+    outcome, reason = verify.classify(run, run, chain.candidate)
+    assert outcome in verify.OUTCOMES
+    assert chain.candidate.gate_delta is None
+    assert outcome == verify.GATE_CHANGED
+    assert "nobody measured the gate surface" in reason
+    assert "On the runs alone this would have been PASS" in reason
