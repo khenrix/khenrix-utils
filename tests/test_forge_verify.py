@@ -1945,7 +1945,7 @@ def test_a_calibration_runs_the_baseline_in_a_clone_the_builder_never_had(tmp_pa
     b = _baseline(tmp_path, repo)
     cal = verify.calibrate(repo, b, tmp_path / "cal", identity=IDENT, contract=NO_CONTRACT,
                            setup=NOOP_SETUP, command=BUILD)
-    assert cal.run.exit_code == 0 and cal.converged
+    assert cal.run.exit_code == 0 and cal.second_pass.exit_code == 0
 
     # Asked with an ORDINARY git, for `test_the_verifier_clone_has_no_origin_…`'s reason:
     # the property has to survive the git a gate step would use.
@@ -1964,7 +1964,7 @@ def test_a_red_baseline_calibrates_red_rather_than_raising(tmp_path):
     """§6.2 needs the red result — it is what `BASELINE_RED_…` is a comparison against, so
     a refusal here would delete the outcome instead of producing it."""
     cal = _calibrate(tmp_path, _generator_repo(tmp_path, "#!/bin/sh\nexit 1\n"))
-    assert cal.run.exit_code == 1 and cal.converged
+    assert cal.run.exit_code == 1 and cal.second_pass is None
 
 
 def test_a_calibration_run_makes_a_red_baseline_classifiable(tmp_path):
@@ -1998,34 +1998,150 @@ def test_a_nondeterministic_baseline_generator_is_caught_before_any_provider_run
 
 def test_a_baseline_gate_that_rewrites_a_tracked_file_says_so_before_a_token_is_spent(
         tmp_path):
-    """What §5 step 3 measures when the contract declares NOTHING, which is every run
-    today — `detect_generators` returns the empty contract.
+    """What §5 step 3 measures when the contract declares NOTHING, which is every contract
+    this engine can DETECT today — `detect_generators` returns no relations whatever repo it
+    is handed, though `build_verifier` takes one a human confirmed at the §5 gate.
 
     A gate that rewrites a tracked path no relation covers is a `_gate_taints` taint, so it
     displaces the outcome of every candidate that would otherwise have PASSed — and the
-    baseline is where that is knowable first. `converged` cannot carry it: `fixed_point`
-    re-runs the gate only while DECLARED output is still moving, so an empty contract
-    reaches its fixed point in ONE pass and converges over a tree the gate rewrote. The
-    `passes.log` lines are how many times the gate actually ran, so the two halves below
-    measure that rather than restating it.
+    baseline is where that is knowable first. The confirming pass cannot carry it: this gate
+    is IDEMPOTENT, so it rewrites the same bytes forever and the confirming pass measures an
+    empty delta on a tree that is not the baseline's. `unexplained` is the only channel that
+    reports it. The `passes.log` lines are how many times the gate actually ran, so the two
+    halves below measure that rather than restating it.
     """
     script = "#!/bin/sh\necho ran >> passes.log\necho v2 > gen.txt\n"
     undeclared = _calibrate(
         tmp_path, _generator_repo(tmp_path, script, files=[("gen.txt", "v1\n")]))
-    assert undeclared.run.exit_code == 0 and undeclared.converged
+    assert undeclared.run.exit_code == 0 and undeclared.second_pass.exit_code == 0
     assert undeclared.unexplained == ("gen.txt",) and undeclared.admitted == ()
-    assert (undeclared.path / "passes.log").read_text() == "ran\n"
+    # One `fixed_point` pass — nothing DECLARED moved, so it did not re-run — plus §5 step
+    # 3's confirming pass, which every green calibration pays.
+    assert (undeclared.path / "passes.log").read_text() == "ran\nran\n"
 
     sub = tmp_path / "declared"
     declared = _calibrate(
         sub, _generator_repo(sub, script, files=[("gen.txt", "v1\n")]),
         contract=_contract(("src/*", "gen.txt")))
     assert declared.admitted == ("gen.txt",) and declared.unexplained == ()
-    assert (declared.path / "passes.log").read_text() == "ran\nran\n", \
+    assert (declared.path / "passes.log").read_text() == "ran\nran\nran\n", \
         "the declared output has to be seen settling, which takes a second pass"
 
 
-def test_the_calibrations_environment_reaches_both_of_its_commands(tmp_path):
+def test_a_red_calibration_reports_nothing_about_the_tree_its_gate_rewrote(tmp_path):
+    """`unexplained` is `fixed_point`'s, and carries `fixed_point`'s precondition.
+
+    A nonzero gate returns from that loop BEFORE the pass that failed is measured, so on a
+    red calibration `unexplained` holds whatever earlier passes measured — nothing at all
+    here, because a contract that declares nothing runs the gate once. The gate below really
+    did rewrite a tracked file and the object says `()`, which is why the field's own
+    docstring has to name the precondition rather than a manifest writer inferring one.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\necho ran >> passes.log\necho v2 > gen.txt\n"
+                                     "exit 1\n", files=[("gen.txt", "v1\n")])
+    cal = _calibrate(tmp_path, repo)
+
+    assert cal.run.exit_code == 1
+    assert cal.unexplained == () and cal.admitted == ()
+    assert (cal.path / "gen.txt").read_text() == "v2\n", "the gate did not rewrite anything"
+    # No confirming pass over a red gate: §6.2 already has its verdict, and the `passes.log`
+    # line count is what says the gate was not run again rather than the field alone.
+    assert cal.second_pass is None
+    assert (cal.path / "passes.log").read_text() == "ran\n"
+
+
+def test_a_gate_that_moves_a_tracked_file_only_on_its_second_run_fails_calibration(tmp_path):
+    """§5 step 3's second pass, and the case `fixed_point` structurally cannot see.
+
+    That loop re-runs only while DECLARED output is still moving, so under the empty
+    contract the gate below is quiet on its one pass and converges — over a repository whose
+    verify command is not a fixed point. The confirming pass is what turns "assume the
+    generator is a fixed point" into a measurement.
+    """
+    repo = _generator_repo(
+        tmp_path,
+        '#!/bin/sh\necho ran >> passes.log\n'
+        'if [ "$(wc -l < passes.log)" -eq 2 ]; then echo v2 > gen.txt; fi\nexit 0\n',
+        files=[("gen.txt", "v1\n")])
+
+    with pytest.raises(verify.GeneratorUnstable, match="gen.txt") as e:
+        _calibrate(tmp_path, repo)
+    assert "second" in str(e.value), "the refusal does not say which pass measured it"
+
+
+def test_a_gate_that_only_stages_a_file_on_its_second_run_fails_calibration(tmp_path):
+    """The index channel of the confirming pass, where a content diff sees nothing.
+
+    `note.txt` is written on the first pass and merely `git add`ed on the second, so its
+    bytes never move while the tree's next commit changes — the same predicate
+    `fixed_point` and `run_setup` both spell out, and a content-only reading of it reports
+    a clean confirming pass here.
+    """
+    repo = _generator_repo(
+        tmp_path,
+        '#!/bin/sh\necho ran >> passes.log\n'
+        'if [ "$(wc -l < passes.log)" -eq 1 ]; then echo hi > note.txt\n'
+        'else git add -f note.txt; fi\nexit 0\n')
+
+    with pytest.raises(verify.GeneratorUnstable, match="note.txt"):
+        _calibrate(tmp_path, repo)
+
+
+def test_the_confirming_pass_leaves_declared_output_to_the_contract(tmp_path):
+    """The subtraction, which is what keeps this pass from judging what it cannot settle.
+
+    Admitting an output and STAGING it is how declared movement is resolved, and
+    `fixed_point` owns both; this pass does neither, so a raise here would name an
+    instability the engine's own admission step was never given a chance to answer. The gate
+    below moves `gen.txt` for the first time on the confirming pass, and the contract
+    declares it.
+    """
+    script = ('#!/bin/sh\necho ran >> passes.log\n'
+              'if [ "$(wc -l < passes.log)" -eq 2 ]; then echo v2 > gen.txt; fi\nexit 0\n')
+    cal = _calibrate(tmp_path, _generator_repo(tmp_path, script, files=[("gen.txt", "v1\n")]),
+                     contract=_contract(("src/*", "gen.txt")))
+
+    assert cal.second_pass.exit_code == 0
+    assert (cal.path / "gen.txt").read_text() == "v2\n", "the declared output never moved"
+    assert cal.admitted == () and cal.unexplained == (), \
+        "the confirming pass is not `fixed_point`'s and must not be reported as its passes"
+
+
+def test_a_baseline_gate_that_passes_then_fails_is_recorded_rather_than_refused(tmp_path):
+    """`second_pass` is a `Run` because it has something to say beyond having happened.
+
+    A gate that disagrees with itself on an untouched baseline is not a generator that
+    failed to settle, so `GeneratorUnstable` would be the wrong name for it; §5 step 2 has
+    the user confirm a policy for calibration failure, which takes seeing the failure, and
+    `classify` reads the same disagreeing pair in the candidate direction as FLAKY rather
+    than an infrastructure refusal.
+    """
+    repo = _generator_repo(
+        tmp_path,
+        '#!/bin/sh\necho ran >> passes.log\n[ "$(wc -l < passes.log)" -eq 1 ]\n')
+
+    cal = _calibrate(tmp_path, repo)
+    assert cal.run.exit_code == 0
+    assert cal.second_pass.exit_code == 1
+
+
+def test_a_setup_that_failed_under_a_green_gate_survives_in_the_calibration(tmp_path):
+    """`run_setup` RETURNS a failing setup rather than raising — only an overlap is a
+    refusal — so this object is the last place that run exists.
+
+    A setup that exited nonzero without reddening the gate is otherwise unobservable, and
+    §5 step 2's calibration-failure policy is a decision about exactly that.
+    """
+    setup = verify.Command.parse(
+        [[sys.executable, "-c",
+          "import sys; sys.stderr.write('boom\\n'); raise SystemExit(3)"]])
+
+    cal = _calibrate(tmp_path, _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n"), setup=setup)
+    assert cal.run.exit_code == 0, "the gate was not green, so this proves nothing"
+    assert cal.setup.exit_code == 3 and "boom" in cal.setup.stderr
+
+
+def test_the_calibrations_environment_reaches_every_command_it_runs(tmp_path):
     """`env` is the composition this module documents — a caller holding the repo path
     passes `fleet.forge_child_env(repo)` — and it is the calibration that most needs it.
 
@@ -2042,3 +2158,7 @@ def test_the_calibrations_environment_reaches_both_of_its_commands(tmp_path):
     assert cal.run.exit_code == 0, "the gate did not run under the caller's environment"
     assert (cal.path / "probe.txt").read_text() == "seen", \
         "setup did not run under the caller's environment"
+    # Three commands, not two: §5 step 3's confirming pass runs the same gate, and a pass
+    # run in a different environment measures a delta between two machines.
+    assert cal.second_pass.exit_code == 0, \
+        "the confirming pass did not run under the caller's environment"

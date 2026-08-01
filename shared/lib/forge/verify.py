@@ -1019,6 +1019,54 @@ def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> 
         "infrastructure failure of the command, never the candidate's verdict.")
 
 
+def _confirm_fixed_point(root: Path, command, contract, *, env=None) -> Run:
+    """§5 step 3's second pass: run the gate again and require every TRACKED path it moved
+    to be one the contract declares.
+
+    `fixed_point` cannot answer this and is not changed to. It re-runs only while DECLARED
+    output is still moving, so under a contract that declares nothing the gate runs ONCE and
+    a command that is quiet on its first pass and writes on its second — exactly what a
+    second pass exists to catch — converges. Its contract is nonetheless right for its own
+    caller: §6 runs that loop for every seat's candidate, where an unconditional extra pass
+    charges another full gate run each time, while §5 runs THIS one once, before any
+    provider spends a token, which is where the spec puts the cost.
+
+    The delta predicate is `fixed_point`'s and `run_setup`'s, spelled out at both: content
+    can move under a tracked path, or TRACKED-NESS can move in either direction — a
+    `git add`, a `git rm --cached` — with the bytes on disk untouched.
+
+    Declared output is subtracted because this pass does not checkpoint. Admitting an output
+    and STAGING it is what settles declared movement and `fixed_point` owns both, so a raise
+    here would name an instability the engine's own admission step was never given a chance
+    to answer. What that leaves for no one to catch is a declared output whose first move is
+    on this pass.
+
+    A nonzero exit returns the run unmeasured, on `fixed_point`'s reason for the same skip:
+    the post-run `_inventory` FAILS CLOSED, so a gate that failed in a tree over quota would
+    come back as a `VerifyError` — and here that would take the green first pass, which is
+    the value §6.2 needs, down with a measurement that only confirms it. A baseline gate that
+    disagrees with itself is also not a generator that failed to settle, so it is reported
+    rather than renamed: §5 step 2 has the user confirm a policy for calibration failure.
+    """
+    before = _inventory(root)
+    tracked_before = _tracked(root)
+    run = run_command(root, command, env=env)
+    if run.exit_code != 0:
+        return run
+    tracked = _tracked(root)
+    moved = ({p for p in snapshot.diff(before, _inventory(root)) if p in tracked}
+             | (tracked_before ^ tracked))
+    delta = tuple(sorted(p for p in moved if not _declared(contract, p)))
+    if delta:
+        raise GeneratorUnstable(
+            f"the verify command changed {_paths_phrase(delta)} on a second pass over the "
+            "untouched baseline, which no generator relation declares, so it has no fixed "
+            "point: §5 step 3 requires that pass to show zero tracked delta before any "
+            "provider spends a token. This is an infrastructure failure of the command, "
+            "never a candidate's verdict.")
+    return run
+
+
 @dataclass(frozen=True)
 class Calibration:
     """What the untouched baseline does under the confirmed commands (spec §5 step 3).
@@ -1031,26 +1079,43 @@ class Calibration:
     running the command wherever it happens to be standing. A calibration taken somewhere
     a builder could reach turns that outcome into a verdict the builder chose.
 
-    `unexplained` is what §5 step 3 measures when the contract declares NOTHING, which is
-    every run today — `inspect.detect_generators` returns the empty contract whatever repo
-    it is handed. A verify command that rewrites tracked paths no relation covers is a
-    `_gate_taints` taint, so it displaces the outcome of every candidate that would
-    otherwise have PASSed; measuring it on the baseline is how that is known before a
-    provider spends a token rather than after three of them have.
+    `setup` is the confirmed setup command's own run. `run_setup` RETURNS a failing setup
+    rather than raising — only a tracked overlap is a refusal — so a setup that exited
+    nonzero over a gate that still passed exists nowhere else once this object is built, and
+    §5 step 2 has the user confirm a policy for calibration failure, which takes seeing one.
 
-    `converged` is True on every result this function hands back, which is a postcondition
-    rather than a field with nothing to say — `SetupResult.overlap`'s precedent: the other
-    case raises `GeneratorUnstable`, and a caller writing a manifest should record the fact
-    rather than the absence of an exception. What it does NOT say is that the gate ran
-    TWICE: `fixed_point` re-runs only while DECLARED output is still moving, so a run whose
-    contract declares nothing reaches its fixed point in one pass, over a tree the gate may
-    well have rewritten. `unexplained` is that half of §5 step 3, not this field.
+    `unexplained` is `fixed_point`'s and carries ITS PRECONDITION: READ IT ONLY WHEN
+    `run.exit_code == 0`. That loop returns on a nonzero gate before the pass that failed is
+    measured, so on a red calibration it holds whatever EARLIER passes measured — nothing at
+    all under a contract that declares nothing, since the gate then runs once, however much
+    of the tree it rewrote on its way to failing. `_gate_taints` states the same precondition
+    for the same value. `admitted` needs no such guard and is given none: it is what the
+    engine STAGED, which is a fact about this tree whatever the gate went on to exit.
+
+    On a green run, `unexplained` is what §5 step 3 measures where a contract declares
+    NOTHING — which is every contract this engine can DETECT today, since
+    `inspect.detect_generators` takes its `repo` argument unused and answers with no
+    relations, though `build_verifier` and the §5 gate both take one a human confirmed. A
+    verify command that rewrites tracked paths no relation covers is a `_gate_taints` taint,
+    so it displaces the outcome of every candidate that would otherwise have PASSed;
+    measuring it on the baseline is how that is known before a provider spends a token rather
+    than after three of them have. It is also the only channel that reports an IDEMPOTENT
+    rewrite, which the confirming pass cannot see: that pass writes the same bytes again and
+    measures nothing.
+
+    `second_pass` is the confirming gate run. When it exited 0 its tracked delta was empty,
+    because a non-empty one raised `GeneratorUnstable` instead of reaching this object; when
+    it exited nonzero nothing was measured at all. `None` means the FIRST pass was red and no
+    second was spent — §6.2 already has its verdict there. A red `second_pass` over a green
+    `run` is a baseline gate that disagrees with itself, which is recorded rather than
+    refused; `classify` reads the same pair in the candidate direction as FLAKY.
     """
     run: Run
     path: Path
+    setup: Run
+    second_pass: Run | None
     admitted: tuple[str, ...] = ()
     unexplained: tuple[str, ...] = ()
-    converged: bool = True
 
 
 def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
@@ -1082,10 +1147,12 @@ def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
     # unobservable is one the next reader has to re-derive as harmless.
     v = build_verifier(repo, baseline, empty, dest, identity=identity, contract=contract,
                        command=command)
-    run_setup(v, setup, env=env)
+    s = run_setup(v, setup, env=env)
     fp = fixed_point(v.path, command, v.contract, env=env)
-    return Calibration(run=fp.run, path=v.path, admitted=fp.admitted,
-                       unexplained=fp.unexplained, converged=True)
+    second = (_confirm_fixed_point(v.path, command, v.contract, env=env)
+              if fp.run.exit_code == 0 else None)
+    return Calibration(run=fp.run, path=v.path, setup=s.run, second_pass=second,
+                       admitted=fp.admitted, unexplained=fp.unexplained)
 
 
 def _as_run(value, what: str) -> Run:
