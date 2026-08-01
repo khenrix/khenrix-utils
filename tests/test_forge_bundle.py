@@ -312,6 +312,34 @@ def test_a_rename_preimage_that_still_has_content_crosses_as_a_sidecar(tmp_path)
     assert (dest / "renamed.txt").read_text() == "seed\n"
 
 
+def test_a_path_both_channels_touch_is_returned_once(tmp_path):
+    """`materialize`'s return is a SET of paths, so `len()` counts paths and not writes.
+
+    The rename-with-a-shim above is the shape that produces the collision: the patch
+    DELETES the preimage and a sidecar then puts the shim back, so `seed.txt` reaches the
+    return through both channels. Measured before the dedupe: `('renamed.txt', 'seed.txt',
+    'seed.txt')` — a three-element answer for a two-path candidate, on exactly the shape
+    the rename fix introduced.
+    """
+    repo, b, s = _seat(tmp_path)
+    f0 = harvest.record(s.path)
+    fsetup = harvest.record(s.path)
+    git(s.path, "mv", "seed.txt", "renamed.txt")
+    write(s.path, "seed.txt", "SHIM: moved to renamed.txt\n")
+    fwork = harvest.record(s.path)
+    a = harvest.artifact_set(
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
+    cb = bundle.build(s.path, a, b)
+    assert [e.path for e in cb.sidecars] == ["seed.txt"], \
+        "precondition: the shim crosses as a sidecar, so both channels name seed.txt"
+
+    dest = tmp_path / "verifier"
+    fleet.clone_seat(repo, b, dest, name="verifier", identity=IDENT)
+    written = bundle.materialize(cb, dest)
+    assert written == ("renamed.txt", "seed.txt")
+    assert len(written) == len(set(written))
+
+
 def test_materialize_refuses_a_sidecar_symlink_pointing_out_of_the_tree(tmp_path):
     """The containment guard runs on a PATH on both sides; a sidecar's TARGET on one.
 
@@ -608,14 +636,16 @@ def test_a_sidecar_replaces_whatever_already_sits_at_its_path(tmp_path):
     assert (dest / "seed.txt").is_symlink()
 
 
-def test_the_gate_delta_is_unknown_rather_than_empty_until_a_detector_exists(tmp_path):
+def test_build_leaves_the_gate_delta_unknown_rather_than_empty(tmp_path):
     """`Baseline.sidecars` is the precedent: `()` would say "the candidate changed nothing
     that defines the gate" when the truth is "nobody looked".
 
-    There is no gate-surface detector yet, so a consumer classifying `GATE_CHANGED` must
-    read None as UNKNOWN. An empty tuple here would let a candidate that rewrote the
-    Makefile pass as an independent gate. `generator_contract_id` defaults the other way
-    because "" admits NOTHING as permitted verify-origin output, which is fail-closed.
+    `verify.gate_surface` measures ONE tree; the delta needs it run on two, and `build` is
+    handed no tree the builder did not write. So it makes no claim, and a consumer
+    classifying `GATE_CHANGED` must read None as UNKNOWN — an empty tuple here would let a
+    candidate that rewrote the Makefile pass as an independent gate.
+    `generator_contract_id` defaults the other way because "" admits NOTHING as permitted
+    verify-origin output, which is fail-closed.
     """
     repo, b, s = _seat(tmp_path)
     p = _phases(s.path, lambda: write(s.path, "Makefile", "verify:\n\ttrue\n"))

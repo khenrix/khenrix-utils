@@ -203,9 +203,10 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         gitcmd.git(dest, "config", "user.email", identity[1], env_extra=env)
 
         # §4 item 1 + §1: the TRUSTED PARENT recomputes readiness from primary evidence.
-        # Until now the module asserted nothing about what it had built and the TEST
-        # asserted HEAD == B1 — a readiness check living on the wrong side of the boundary,
-        # and one no production caller ever ran.
+        # The same assertions in the suite instead would be a readiness check on the wrong
+        # side of the boundary: no production caller runs the suite, so they would say
+        # nothing about the seat this function hands back. `Seat.verified` is worth reading
+        # only because the check is HERE.
         head = gitcmd.git(dest, "rev-parse", "HEAD", env_extra=env).stdout.strip()
         if head != baseline.commit:
             raise SeatError(f"seat checked out {head[:12]}, expected {baseline.commit[:12]}")
@@ -367,9 +368,10 @@ def forge_child_env(repo_path, env=None) -> dict:
     order: strip HOSTILE_ENV, then pin config discovery to /dev/null. Pinning LAST
     matters — `GIT_CONFIG_GLOBAL` is not in that list precisely because removing it would
     RESTORE ~/.gitconfig, so it is set rather than dropped. The list is read from `gitcmd`
-    rather than restated so that a seat and an engine call cannot drift apart; the two names
-    it grew in this commit, `GIT_CONFIG_PARAMETERS` and `GIT_TEMPLATE_DIR`, were reaching
-    every seat for exactly that reason.
+    rather than restated so that a seat and an engine call cannot drift apart, and the drift
+    is not hypothetical: while `GIT_CONFIG_PARAMETERS` and `GIT_TEMPLATE_DIR` sat outside
+    that list, every seat inherited both — the first of them even after a strip written for
+    the gate alone had closed it there.
     """
     base = dict(env if env is not None else os.environ)
     for k in gitcmd.HOSTILE_ENV:

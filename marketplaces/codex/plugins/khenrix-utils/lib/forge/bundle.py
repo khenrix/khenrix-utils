@@ -21,12 +21,13 @@ reading through the link would put content from outside the candidate into the c
 Two things were required to make that one answer rather than a third opinion. First,
 `baseline`'s manifest hashed a tracked link THROUGH itself (`ls-files` + `is_file()`), so B
 described a link as its target's CONTENT while `snapshot` described it as the target's TEXT
-and `fleet` skipped it rather than choose; that is fixed in `baseline`/`fleet` in this same
-commit, so all three modules now agree with this one. Second, containment: an ESCAPING link
-does NOT cross. Materializing `out -> ../../user-repo` into a verifier and then running the
-confirmed verify command there would write outside the clone, which is the one thing §4 and
-§6 exist to prevent — so an escaping link goes to `omitted`, where a verifier failure
-attributable to it is at least honest.
+and `fleet` skipped it rather than choose. `baseline._entry_digest` digests the target TEXT
+and `fleet` VERIFIES a seat's link against that digest rather than stepping over it, so
+`baseline`, `snapshot`, `fleet` and this module give one shape one identity. Second,
+containment: an ESCAPING link does NOT cross. Materializing `out -> ../../user-repo` into a
+verifier and then running the confirmed verify command there would write outside the clone,
+which is the one thing §4 and §6 exist to prevent — so an escaping link goes to `omitted`,
+where a verifier failure attributable to it is at least honest.
 
 The escape test is LEXICAL, over the target text: that text is the only thing that crosses,
 and where it lands is decided in the VERIFIER's tree, not the seat's. It composes because
@@ -95,11 +96,15 @@ class CandidateBundle:
     baseline_commit: str
     tracked_patch: bytes = b""
     sidecars: tuple[SidecarEntry, ...] = ()
-    # None, never (). `gate_delta`'s producer is the gate-surface detector, which does not
-    # exist yet, and `Baseline.sidecars` is the precedent: an empty tuple says "the
-    # candidate changed nothing that defines the gate" when the truth is "nobody looked",
-    # which is the fail-OPEN reading. A consumer classifying `GATE_CHANGED` must treat None
-    # as UNKNOWN — not as a clean gate.
+    # None, never (). `gate_delta` is a DIFFERENCE between two trees' gate surfaces. The
+    # detector is `verify.gate_surface`, which answers ONE tree; what produces the delta is
+    # a caller that runs it on the baseline and on the verifier and writes the result back,
+    # and `build` is not that caller — it is handed a seat path, an `ArtifactSet` and a
+    # `Baseline`, never a checkout the builder did not write. So it leaves this field
+    # unset. `Baseline.sidecars` is the precedent: an empty tuple says "the candidate
+    # changed nothing that defines the gate" when the truth is "nobody looked", which is
+    # the fail-OPEN reading. A consumer classifying `GATE_CHANGED` must treat None as
+    # UNKNOWN — not as a clean gate.
     gate_delta: tuple[str, ...] | None = None
     # "" means the run declared no GeneratorContract, which admits NOTHING as a permitted
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
@@ -408,7 +413,11 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
 
 
 def materialize(bundle, dest) -> tuple[str, ...]:
-    """Lay the candidate down in `dest`. Returns every path it touched.
+    """Lay the candidate down in `dest`. Returns every path it touched, sorted and once each.
+
+    A SET of paths, not a log of touches: one path can be reached through both channels — a
+    rename shim is deleted by the patch and put back by a sidecar — and counting it twice
+    would make `len()` a number no tree matches.
 
     `dest` must be a clone sitting at the bundle's own baseline commit. That is checked
     BEFORE anything is written, so a mismatched pair leaves the destination untouched
@@ -454,9 +463,9 @@ def materialize(bundle, dest) -> tuple[str, ...]:
                 f"sidecar symlink {e.path!r} points out of the tree: {e.payload!r}")
 
     post, pre = _patch_paths(dest, bundle.tracked_patch)
-    # Both sides here, unlike in `build`: this list is "what did materializing touch", and a
+    # Both sides here, unlike in `build`: this answers "what did materializing touch", and a
     # rename preimage is deleted whether or not a sidecar then puts something back at it.
-    written = sorted(post | pre)
+    written = set(post | pre)
     if bundle.tracked_patch:
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / "candidate.patch"
@@ -489,5 +498,5 @@ def materialize(bundle, dest) -> tuple[str, ...]:
             # After the write, never before: `write_bytes` creates with the process umask,
             # so a chmod first would be undone for a NEW file and the +x would be lost.
             p.chmod(e.mode)
-        written.append(e.path)
-    return tuple(written)
+        written.add(e.path)
+    return tuple(sorted(written))

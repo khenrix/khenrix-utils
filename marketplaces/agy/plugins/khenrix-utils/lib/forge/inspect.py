@@ -1,6 +1,6 @@
 """Read-only preflight: describe the repository, say what makes it unsupported, and say
 which of its tracked files a DECLARED generator owns — see `detect_generators` for why
-that last answer is empty for every repository so far.
+that last answer is empty for every repository, this one included.
 
 Two hard rules:
 

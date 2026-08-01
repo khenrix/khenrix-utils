@@ -55,8 +55,9 @@ REDIRECTING_ENV = (
 #
 # Every consumer drops this list, not a subset of it: `git()` below, `fleet.forge_child_env`
 # for a seat, `verify._gate_env` for a gate. A name dropped in one of the three and kept in
-# the other two is a hole, and both additions below were exactly that hole before this
-# commit — the gate stripped GIT_CONFIG_PARAMETERS while every seat inherited it.
+# the other two is a hole, and the config-injector and template-dir names below were exactly
+# that hole while they sat outside this tuple: GIT_CONFIG_PARAMETERS was stripped for the
+# gate by a list written there, and every seat went on inheriting it.
 HOSTILE_ENV = (
     *REDIRECTING_ENV,
     # The two ways config enters at COMMAND-LINE precedence — above the local file, so above

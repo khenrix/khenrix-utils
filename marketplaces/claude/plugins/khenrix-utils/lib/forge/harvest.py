@@ -108,8 +108,8 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
     """The path set, its provenance, and the tracked content behind it.
 
     The error surface is stated because it is NOT closed by this package's three classes,
-    and a Task 5 caller that catches only `HarvestError` / `GitError` / `SnapshotError`
-    misses the last two: a failing git raises `gitcmd.GitError`; a path set long enough to
+    and a caller that catches only `HarvestError` / `GitError` / `SnapshotError` misses the
+    last two: a failing git raises `gitcmd.GitError`; a path set long enough to
     exceed ARG_MAX raises `OSError(E2BIG)` out of subprocess (`git diff` has no
     `--pathspec-from-file`, measured, so chunking would be the fix); and a wedged git
     raises `subprocess.TimeoutExpired` at `gitcmd`'s 60s.
