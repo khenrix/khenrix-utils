@@ -99,7 +99,7 @@ def test_everything_in_the_tree_is_in_the_manifest(tmp_path):
         "the screen still declines to read through it; B describing it is not B reading it"
 
 
-def test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat(tmp_path):
+def test_an_escaping_link_inside_a_selected_directory_is_stopped_only_by_the_two_refusals(tmp_path):
     """SEAM: four modules individually consistent and jointly wrong, measured end to end.
 
     `inspect.rejections` tested only the top-level selected path; `screen._walk` dropped a
@@ -594,7 +594,8 @@ def _no_harm_of_eol(chain: _Chain):
 def _mk_escaping_repo(tmp):
     """The minimal repository holding a TRACKED symlink out of the tree.
 
-    Distinct from `test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat`,
+    Distinct from
+    `test_an_escaping_link_inside_a_selected_directory_is_stopped_only_by_the_two_refusals`,
     which trips the SELECTED-untracked branch of `rejections` with a nested link and stops
     at the seat. This one trips `facts.escaping_symlinks` — the index-mode-120000 branch,
     which rejects unconditionally — and follows it into the verifier.
