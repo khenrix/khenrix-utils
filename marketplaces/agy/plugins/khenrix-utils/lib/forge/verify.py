@@ -359,7 +359,7 @@ def _contained(rel: str) -> str | None:
     and it belongs here rather than at each caller for the reason that defect demonstrates.
 
     Normalization is `PurePosixPath`, which collapses `.` components and repeated slashes
-    exactly as the kernel does when it resolves the same string. A textual edit cannot
+    as the kernel does for every path it resolves. A textual edit cannot
     stand in for it: `.//x` is a RELATIVE path meaning `x`, so a rule that strips the `./`
     off it produces an absolute one. `step.cwd` and the argv tokens are the only inputs,
     and both are POSIX strings handed to a POSIX gate; this module is POSIX-only regardless
@@ -1117,7 +1117,7 @@ def _command_paths(root: Path, command) -> set:
             continue
         for token in step.argv:
             named_path = _contained(token)
-            if not named_path:
+            if named_path is None:
                 continue
             rel = f"{base}/{named_path}" if base else named_path
             p = root / rel

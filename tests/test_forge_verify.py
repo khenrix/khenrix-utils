@@ -1342,8 +1342,11 @@ def test_the_cwd_rule_is_one_rule_so_both_callers_read_the_same_path(tmp_path):
     The first was in the code. Checking `.//etc` -- contained, it means `etc` -- and then
     STRIPPING the leading `./` off it produced `/etc`, so the surface named `/etc/passwd`
     while the step ran inside the tree. Moving the strip above the check closes that one
-    and opens the mirror: `.//sub` is then refused by the surface and still run, so a
-    candidate hides `sub/check.sh` from `gate_delta` by writing one extra slash. A
+    and makes the mirror SYSTEMATIC: `.//sub` is then refused by the surface and still run,
+    so a candidate hides `sub/check.sh` from `gate_delta` by writing one extra slash.
+    Before the reorder that spelling is silent too, but only because the `/sub/check.sh` it
+    joins happens not to exist on this host -- an accident, where the reorder makes it a
+    rule. A
     leading-`./` strip is not a path normalization at all -- `.//x` is a RELATIVE path
     meaning `x`, which is where `chdir` goes with it -- so the two share the step that
     produces the path, not only the predicate that judges it.
