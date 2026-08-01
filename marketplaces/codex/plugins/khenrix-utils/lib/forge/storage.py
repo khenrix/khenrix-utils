@@ -1,15 +1,123 @@
-"""Run directory layout and quotas (spec §15).
+"""The run directory, its quotas, and the writes that let it survive a crash (§14.1, §15).
 
 Under XDG_STATE_HOME, not XDG_CACHE_HOME: the run directory holds the only copy of the
 seats' work, and XDG defines the cache as data that can be deleted without loss — it is
 what every cleanup tool targets first. The repo path is hashed rather than basenamed so
 ~/git/a/utils and ~/work/b/utils cannot collide.
+
+For the same reason the writes below return only once their bytes are on the platter. A
+record that reached the page cache and not the disk turns a crash into a run that never
+happened while the work it describes did — the one asymmetry the whole run directory exists
+to prevent. `os.replace` does not give that: it is atomic against a concurrent READER, which
+is a different property from surviving power loss.
 """
 import hashlib
 import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+
+
+class StorageError(RuntimeError):
+    """A write whose bytes did not all arrive, or a record that would break the framing the
+    reader depends on."""
+
+
+def _fsync_dir(path: Path) -> None:
+    """fsync the DIRECTORY, which is what makes a rename or a creation survive power loss.
+
+    A file's own fsync covers its contents and says nothing about the name pointing at them.
+    Without this the directory entry can be lost while those bytes are safe, so a newly
+    created `events.jsonl` vanishes entirely and a rename un-happens. Spec §10.1 names
+    exactly this omission as its example of a coverage row that reads present while the
+    property is false.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_exactly(fd: int, data: bytes, path: Path) -> None:
+    """One write() of the whole record, or an error — never a partial one, never a loop.
+
+    `os.write` is permitted to consume fewer bytes than it was handed, and an unchecked short
+    write is a silent truncation: the file is well-formed to every later reader and missing
+    its tail. Finishing it with a second write is what an O_APPEND journal cannot do, because
+    another process's append can land between the two and split one record into two halves
+    around a stranger. So a short write is reported rather than completed, and the caller
+    learns the record's fate instead of inheriting a torn one.
+    """
+    n = os.write(fd, data)
+    if n != len(data):
+        raise StorageError(f"short write to {path}: {n} of {len(data)} bytes")
+
+
+def atomic_write(path, data: bytes) -> None:
+    """Publish `data` at `path` as one all-or-nothing replacement.
+
+    Three steps whose ORDER is the durability argument: the bytes reach the platter, then the
+    name is swapped, then the directory entry reaches the platter. Renaming first publishes a
+    name pointing at content a crash can still lose; syncing the directory first records a
+    rename that has not happened yet.
+
+    The temp name carries a random suffix as well as the pid. A name a process can derive
+    twice is one `O_EXCL` refuses the second time, so debris from an interrupted write would
+    make this path permanently unwritable by a process that draws the same pid — on a
+    directory whose whole purpose is to still be usable after a crash.
+    """
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_exactly(fd, data, tmp)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        # The previous version survives by construction — nothing here has touched `path`.
+        # What a failure would ALSO leave is a temp file that a later glob or a `--gc` walk
+        # has to guess about, and removing it is this arm's whole job.
+        tmp.unlink(missing_ok=True)
+        raise
+    _fsync_dir(path.parent)
+
+
+def append_line(path, data: bytes) -> None:
+    """Append one newline-terminated record, durably.
+
+    `O_APPEND` so the record lands at the end however many writers there are, one write of
+    the record AND its terminator so no other writer's append can land between them, and an
+    fsync before returning so a caller holding the return value knows the record is on the
+    platter.
+
+    The directory is synced on creation only: without it the first record's file can vanish
+    whole, and once the entry exists every later append would be paying a second fsync for a
+    name that is already durable. That rests on this function being what creates the log — a
+    file created by other means is one whose directory entry nothing here ever syncs.
+    """
+    path = Path(path)
+    if b"\n" in data:
+        # Refused BEFORE the file is opened: a rejected record must not be what creates the
+        # log, or a reader finds an empty journal where the writer reported an error.
+        raise StorageError(
+            f"an event record may not contain a newline: {data[:80]!r}. One record per line "
+            "is the reader's only framing, so an embedded newline lands as two lines, "
+            "neither of which is the record and both of which the reader treats as "
+            "authoritative — the torn-tail rule discards only an unterminated LAST line, "
+            "and these are terminated.")
+    existed = path.exists()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        _write_exactly(fd, data + b"\n", path)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if not existed:
+        _fsync_dir(path.parent)
 
 
 def new_run_id() -> str:

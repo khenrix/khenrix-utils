@@ -1,4 +1,4 @@
-"""Run-directory layout and quotas (spec §15)."""
+"""Run-directory layout, quotas, and durable writes (spec §15)."""
 import os
 import stat
 import sys
@@ -61,6 +61,215 @@ def test_quota_default_and_breach():
     assert "files" in small.breach(files=3, file_bytes=5, total_bytes=50)
     assert "file_bytes" in small.breach(files=1, file_bytes=99, total_bytes=50)
     assert "total_bytes" in small.breach(files=1, file_bytes=5, total_bytes=999)
+
+
+def _fd_path(fd: int) -> str:
+    """The path an open fd currently points at.
+
+    Resolved through /proc/self/fd, which is Linux-only. A resolution failure RAISES instead
+    of recording a placeholder: every durability assertion below reads "this path was
+    synced", so a placeholder makes all of them pass at once and the suite measures nothing
+    while reporting green — the false green spec §10.1 describes, reached from the test side.
+    The forge package is POSIX-only anyway (verify._kill_group needs process groups); this
+    narrows these assertions to Linux and says so out loud rather than going quiet.
+    """
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except OSError as e:
+        raise AssertionError(
+            f"cannot resolve fd {fd} through /proc/self/fd ({e}). These assertions identify "
+            "WHICH object was fsync'd by reading that link, and none of them mean anything "
+            "on a machine without it") from e
+
+
+def _require_fd_resolution() -> None:
+    """Resolve a fd whose path is already known, before any assertion trusts the mechanism.
+
+    _fd_path raises on a readlink FAILURE; this pins the other direction, where the link
+    resolves to something other than the file it was opened from. It also fixes the
+    comparison basis: the kernel reports the path with symlinks already resolved, which is
+    why every assertion below compares against realpath rather than the string it opened.
+    """
+    fd = os.open(__file__, os.O_RDONLY)
+    try:
+        resolved = _fd_path(fd)
+    finally:
+        os.close(fd)
+    assert resolved == os.path.realpath(__file__), (
+        f"/proc/self/fd resolved this suite's own file to {resolved!r}; the fsync assertions "
+        "below identify their target the same way and cannot be trusted here")
+
+
+class _SyscallSpy:
+    """The durability syscalls in the order they were made: each fsync resolved to the path
+    its fd pointed at, and each rename to its destination.
+
+    Resolved at CALL time, because an fd is an integer and the fact that matters is which
+    object it named while it was open. A spy that counted fsyncs instead reports two for a
+    writer that synced the file twice and the directory never.
+    """
+
+    def __init__(self, monkeypatch):
+        _require_fd_resolution()
+        self.events: list[tuple[str, str]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            self.events.append(("fsync", _fd_path(fd)))
+            return real_fsync(fd)
+
+        def replace(src, dst, *args, **kwargs):
+            self.events.append(("replace", os.path.realpath(dst)))
+            return real_replace(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(os, "fsync", fsync)
+        monkeypatch.setattr(os, "replace", replace)
+
+    def synced(self) -> list[str]:
+        return [p for kind, p in self.events if kind == "fsync"]
+
+    def index(self, kind: str, match) -> int:
+        """Position of the first `kind` event whose path is `match` (a str) or satisfies it
+        (a callable). Raises naming the whole sequence, so a miss says what did happen."""
+        for i, (k, p) in enumerate(self.events):
+            if k == kind and (p == match if isinstance(match, str) else match(p)):
+                return i
+        raise AssertionError(f"no {kind} matching {match!r} in {self.events}")
+
+
+def test_atomic_write_syncs_the_bytes_then_renames_then_syncs_the_directory(
+        tmp_path, monkeypatch):
+    """`os.replace` is atomic for READERS, not against power loss. Without the directory
+    fsync a newly created file can vanish entirely; without the file fsync the name is
+    published pointing at content the crash lost. Spec §10.1 names this exact omission as its
+    example of a row that reads present while the property is false.
+
+    Asserted on the syscalls and their ORDER, because the read-back is identical with no
+    fsync at all, and a directory synced before the rename records a rename that has not
+    happened.
+    """
+    spy = _SyscallSpy(monkeypatch)
+    target = tmp_path / "sub" / "state.json"
+    target.parent.mkdir()
+    storage.atomic_write(target, b'{"a":1}')
+
+    assert target.read_bytes() == b'{"a":1}'
+    parent = os.path.realpath(target.parent)
+    # a file IN that directory — the temp one, whose name is the writer's business
+    bytes_synced = spy.index("fsync", lambda p: os.path.dirname(p) == parent)
+    renamed = spy.index("replace", os.path.realpath(target))
+    dir_synced = spy.index("fsync", parent)
+    assert bytes_synced < renamed < dir_synced, (
+        f"bytes, then the name, then the directory entry — got {spy.events}")
+
+
+def test_atomic_write_leaves_no_temp_file_behind(tmp_path):
+    storage.atomic_write(tmp_path / "s.json", b"x")
+    assert [p.name for p in tmp_path.iterdir()] == ["s.json"]
+
+
+def test_atomic_write_does_not_clobber_on_failure(tmp_path, monkeypatch):
+    """A write that dies mid-way must leave the previous version intact, not a truncated one
+    — which is the whole reason for the temp-then-rename rather than an in-place write."""
+    target = tmp_path / "s.json"
+    storage.atomic_write(target, b"first")
+    monkeypatch.setattr(storage.os, "replace",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+    with pytest.raises(OSError):
+        storage.atomic_write(target, b"second")
+    assert target.read_bytes() == b"first"
+    assert [p.name for p in tmp_path.iterdir()] == ["s.json"], "the temp file was left behind"
+
+
+def test_atomic_write_survives_a_temp_file_left_by_an_earlier_crash(tmp_path, monkeypatch):
+    """A process killed between the create and the rename leaves its temp file behind, and
+    pids are recycled. A temp name a second call can derive is one `O_EXCL` refuses, so the
+    debris makes the path permanently unwritable — on a directory whose whole purpose is to
+    still be usable after a crash.
+
+    The debris is the name the first write ACTUALLY used rather than a guessed one, so this
+    fails for any naming scheme a later call can repeat, not only the pid-derived spelling.
+    """
+    target = tmp_path / "s.json"
+    used = []
+    real_replace = os.replace
+
+    def record(src, dst, *args, **kwargs):
+        used.append(Path(src))
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", record)
+    storage.atomic_write(target, b"first")
+    assert used, "the write never renamed anything into place"
+    used[0].write_bytes(b"debris from a crash")
+
+    storage.atomic_write(target, b"second")
+    assert target.read_bytes() == b"second"
+
+
+def test_atomic_write_refuses_a_short_write(tmp_path, monkeypatch):
+    """`os.write` may consume fewer bytes than it was handed. Unchecked, the rename publishes
+    the truncation as the record: a file every later reader finds well-formed and short."""
+    real_write = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[:-1]))
+    with pytest.raises(storage.StorageError):
+        storage.atomic_write(tmp_path / "s.json", b"0123456789")
+    assert list(tmp_path.iterdir()) == [], "a partial write was left in the directory"
+
+
+def test_append_line_syncs_the_record_and_the_directory_on_creation(tmp_path, monkeypatch):
+    spy = _SyscallSpy(monkeypatch)
+    log = tmp_path / "events.jsonl"
+    storage.append_line(log, b'{"event":"a"}')
+    on_creation = spy.synced()
+    storage.append_line(log, b'{"event":"b"}')
+
+    assert log.read_bytes() == b'{"event":"a"}\n{"event":"b"}\n'
+    assert os.path.realpath(log) in on_creation, "the record was never fsync'd"
+    assert os.path.realpath(tmp_path) in on_creation, \
+        "the directory was never fsync'd, so the whole log can vanish with its entry"
+    # and not again afterwards: the entry is already durable, and a journal that syncs its
+    # directory per record pays two fsyncs for every one it needs
+    assert os.path.realpath(tmp_path) not in spy.synced()[len(on_creation):]
+
+
+def test_append_line_writes_the_record_and_its_terminator_in_one_call(tmp_path, monkeypatch):
+    """Two writes can interleave with another process's O_APPEND write between them, and the
+    reader then frames one record as two halves around a stranger. The bytes on disk are the
+    same either way, so the assertion is on the call."""
+    writes = []
+    real_write = os.write
+
+    def record(fd, data):
+        writes.append(bytes(data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", record)
+    storage.append_line(tmp_path / "events.jsonl", b'{"event":"a"}')
+    assert writes == [b'{"event":"a"}\n']
+
+
+def test_append_line_refuses_an_embedded_newline(tmp_path):
+    """One record per line is the reader's whole framing, and a record carrying a newline
+    lands as two lines, neither of which is the record. Both are newline-terminated, so
+    §14.1's torn-tail rule — which discards an unterminated LAST line — does not reach
+    them: the reader takes both as authoritative."""
+    log = tmp_path / "e.jsonl"
+    with pytest.raises(storage.StorageError):
+        storage.append_line(log, b'{"a":"x\ny"}')
+    assert not log.exists(), "the refused record created the log it was refused from"
+
+
+def test_append_line_reports_a_torn_record_rather_than_completing_it(tmp_path, monkeypatch):
+    """A half-written record cannot be finished by a second write — another process's append
+    can already have landed behind it. The tail is torn either way; what a caller must not
+    get back is a return value saying the record is durable."""
+    log = tmp_path / "events.jsonl"
+    real_write = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[:-3]))
+    with pytest.raises(storage.StorageError):
+        storage.append_line(log, b'{"event":"a"}')
+    assert not log.read_bytes().endswith(b"\n"), "the fixture did not tear anything"
 
 
 def test_git_readonly_preset_reaches_the_child(tmp_path):
