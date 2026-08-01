@@ -151,6 +151,16 @@ class GeneratorUnstable(VerifyError):
     """
 
 
+class ContractMismatch(VerifyError):
+    """A bundle and a verifier disagree about which generator contract the run declared.
+
+    Fatal rather than resolved in either direction. Taking the bundle's would let a
+    candidate's own recorded id decide what the gate admits; taking the verifier's would
+    write a manifest whose contract is not the one the gate ran under. Both are the failure
+    §7.2 names — a success criterion the run did not confirm.
+    """
+
+
 @dataclass(frozen=True)
 class Step:
     """One process in a gate.
@@ -529,7 +539,7 @@ def _assert_hooks_pinned(path: Path) -> None:
                 "cannot be used as a verifier.")
 
 
-def build_verifier(repo, baseline, candidate, dest, *, identity) -> Path:
+def build_verifier(repo, baseline, candidate, dest, *, identity, contract) -> Path:
     """A clone of the BASELINE with the candidate laid down in it, ready for the gate.
 
     `identity` is the verifier's own `(name, email)`, required for the same reason
@@ -538,7 +548,20 @@ def build_verifier(repo, baseline, candidate, dest, *, identity) -> Path:
     needs no identity. What still needs one is the GATE: a verify command that commits is
     ordinary — this suite's own hook cases are exactly that — and in a clone without an
     identity it fails for an infrastructure reason.
+
+    `contract` is required rather than defaulted, because a default is a policy and the
+    policy this field encodes is confirmed by a human at the §5 gate. A caller with no
+    contract passes the empty one, which is a statement that the run declared none.
+
+    It is checked BEFORE the clone: a mismatch is a fact about two values the caller
+    already holds, so paying for a checkout to discover it would leave a verifier tree
+    behind that no gate may run in.
     """
+    if candidate.generator_contract_id != contract.id:
+        raise ContractMismatch(
+            f"the candidate was built under generator contract "
+            f"{candidate.generator_contract_id!r} and this verifier was handed "
+            f"{contract.id!r}; a run has one contract, confirmed once at the §5 gate")
     seat = fleet.clone_seat(repo, baseline, dest, name=VERIFIER_NAME, identity=identity)
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
     # read back after it, because the candidate is the one thing in between that writes.

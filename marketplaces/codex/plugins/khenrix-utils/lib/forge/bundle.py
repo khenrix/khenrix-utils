@@ -290,11 +290,18 @@ def _safe_rel(rel: str, what: str) -> str:
     return rel
 
 
-def build(seat_path, artifacts, baseline) -> CandidateBundle:
+def build(seat_path, artifacts, baseline, *, contract=None) -> CandidateBundle:
     """The candidate, as data, from a seat that has already been harvested.
 
     `artifacts.paths` is the whole claim; every entry ends up in exactly one of the three
     channels — the patch, a sidecar, or `omitted`.
+
+    `contract` is the RUN's `inspect.GeneratorContract`, and it arrives as an argument
+    rather than being read out of the seat for §7.2's reason: a seat-declared relation
+    would let a candidate write its own success criterion. All this function does with it
+    is record its id, so the verifier that later admits output under a contract and the
+    manifest that says which one are comparable rather than two independent claims.
+    `None` records the fail-closed sentinel — the same value the empty contract carries.
 
     Raises `BundleError` if the patch cannot be parsed. A file that cannot be READ is not a
     raise: it is one path of many, and `omitted` is precisely the honest place for it.
@@ -408,6 +415,7 @@ def build(seat_path, artifacts, baseline) -> CandidateBundle:
         baseline_commit=baseline.commit,
         tracked_patch=patch,
         sidecars=tuple(sidecars),
+        generator_contract_id=contract.id if contract is not None else "",
         omitted=tuple(omitted),
     )
 

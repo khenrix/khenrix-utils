@@ -454,7 +454,11 @@ def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
     artifacts = harvest.artifact_set(
         harvest.Phases(f0=f0, fsetup=f0, fwork=fwork, fverify=fwork), seat.path, base.commit)
     candidate = bundle.build(seat.path, artifacts, base)
-    verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier", identity=IDENT)
+    # The empty contract on both sides: `bundle.build` above was handed none, and this is
+    # the value that records the same thing. `build_verifier` refuses a pair that disagrees,
+    # so naming it here is what keeps this chain about the seams it exists to measure.
+    verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier",
+                                     identity=IDENT, contract=finspect.GeneratorContract())
     return _Chain(base, seat, artifacts, candidate, verifier, tmp)
 
 

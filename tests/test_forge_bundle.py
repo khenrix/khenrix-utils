@@ -654,3 +654,30 @@ def test_build_leaves_the_gate_delta_unknown_rather_than_empty(tmp_path):
     assert cb.generator_contract_id == ""
     assert cb.version == bundle.VERSION
     assert (cb.baseline_ref, cb.baseline_commit) == (b.ref, b.commit)
+
+
+def test_build_stamps_the_runs_contract_id_into_the_bundle(tmp_path):
+    """The manifest's record of which contract the run declared, written by the one call
+    that knows — nothing downstream can recover it from the bundle's other fields."""
+    _repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "src.py", "work\n"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
+    assert bundle.build(s.path, a, b, contract=c).generator_contract_id == "render-v1"
+
+
+def test_build_without_a_contract_stamps_the_fail_closed_sentinel(tmp_path):
+    """No contract is not the same claim as an unrecorded one: "" admits nothing.
+
+    Three spellings of "this run declared none", pinned as ONE value. The empty contract is
+    the third because it is what every caller with no contract of its own passes — it is
+    `detect_generators`'s answer for this repository — and the claim that such a caller
+    changes no meaning holds only while it stamps the same sentinel as an omitted argument.
+    """
+    _repo, b, s = _seat(tmp_path)
+    p = _phases(s.path, lambda: write(s.path, "src.py", "work\n"))
+    a = harvest.artifact_set(p, s.path, b.commit)
+    assert bundle.build(s.path, a, b).generator_contract_id == ""
+    assert bundle.build(s.path, a, b, contract=None).generator_contract_id == ""
+    assert bundle.build(
+        s.path, a, b, contract=finspect.GeneratorContract()).generator_contract_id == ""

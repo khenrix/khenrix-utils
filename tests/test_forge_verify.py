@@ -14,8 +14,14 @@ from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E4
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
 
+# What a case with nothing to say about generators hands `build_verifier`: the empty
+# contract, which is `detect_generators`'s answer for this repository and the same value a
+# bundle built without one records. It admits no verify-origin rewrite, so a case carrying
+# it is a case with no generator in play at all.
+NO_CONTRACT = finspect.GeneratorContract()
 
-def _candidate(tmp_path, repo, *, selected=(), setup=(), work=()):
+
+def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), contract=None):
     """Baseline -> seat -> four phases -> bundle, with `setup` written before Fsetup and
     `work` after it.
 
@@ -36,7 +42,23 @@ def _candidate(tmp_path, repo, *, selected=(), setup=(), work=()):
     fwork = harvest.record(s.path)
     a = harvest.artifact_set(
         harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
-    return b, s, bundle.build(s.path, a, b)
+    return b, s, bundle.build(s.path, a, b, contract=contract)
+
+
+def _repo_baseline_bundle(tmp_path, *, contract_id):
+    """A repo, its baseline, and a candidate built under `contract_id` — or under none.
+
+    Through `_candidate`, i.e. the real chain, rather than by constructing a
+    `CandidateBundle` here: a hand-built one would test the contract check against a shape
+    `bundle.build` never produces, and the field under test is exactly the one `build` is
+    now responsible for writing.
+    """
+    repo = make_repo(tmp_path)
+    contract = None if contract_id is None else finspect.GeneratorContract(
+        id=contract_id, relations=(("shared/*", "gen/*"),))
+    b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "the actual work\n")],
+                           contract=contract)
+    return repo, b, cb
 
 
 def test_parse_rejects_shell_metacharacters():
@@ -119,7 +141,8 @@ def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
         setup=[(".venv/bin/pytest", "#!/bin/sh\nexit 0\n")],
         work=[("src.py", "the actual work\n")])
 
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     assert (v / "src.py").exists(), "the agent's work must cross"
     assert not (v / ".venv").exists(), "seat-only state must not cross"
     r = verify.run_command(v, verify.Command.parse([["./check.sh"]]))
@@ -223,7 +246,8 @@ def test_a_gate_with_no_steps_is_refused_rather_than_passed(tmp_path):
 def test_the_verifier_clone_has_no_origin_and_its_own_identity(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     # Asked with an ORDINARY git, never `forge.gitcmd`: the property must survive a git
     # that has none of the engine's presets, which is the git a gate step would use.
     assert _git(v, "remote").stdout.strip() == "", "the verifier ships a push target"
@@ -251,7 +275,8 @@ def test_the_gate_sees_none_of_the_users_global_git_config(tmp_path, monkeypatch
     monkeypatch.setenv("HOME", str(home))
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     r = verify.run_command(v, verify.Command.parse(
         [["git", "config", "--get", "fetch.parallel"]]))
     assert r.stdout.strip() == "", \
@@ -261,7 +286,8 @@ def test_the_gate_sees_none_of_the_users_global_git_config(tmp_path, monkeypatch
 def test_a_hook_in_the_verifiers_own_hooks_dir_does_not_run(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     hook = v / ".git" / "hooks" / "pre-commit"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
@@ -292,7 +318,8 @@ def test_an_ambient_git_config_injection_cannot_re_enable_hooks(
     (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
 
     for k, tmpl in injection.items():
         monkeypatch.setenv(k, tmpl.format(hooks=hooks))
@@ -325,7 +352,8 @@ def test_the_gate_does_not_inherit_the_users_git_template(tmp_path, monkeypatch)
     monkeypatch.setenv("GIT_TEMPLATE_DIR", str(tmpl))
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     r = verify.run_command(v, verify.Command.parse([["git", "init", "-q", "inner"]]))
     assert r.exit_code == 0, f"the gate's own git init failed: {r.stderr}"
     assert not (v / "inner" / ".git" / "hooks" / "pre-commit").exists(), \
@@ -342,7 +370,8 @@ def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
     (hooks / "pre-commit").write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
-    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
     write(v, "later.txt", "later\n")
     _assert_gate_commit_ran_no_hook(
         v, {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath'='{hooks}'"})
@@ -365,7 +394,8 @@ def test_a_bundle_that_would_rewrite_the_clone_config_never_reaches_the_gate(tmp
                                       b"[core]\n\thooksPath = /tmp/rigged\n"),))
     dest = tmp_path / "verifier"
     with pytest.raises(bundle.BundleError, match="git's own directory"):
-        verify.build_verifier(repo, b, hostile, dest, identity=IDENT)
+        verify.build_verifier(repo, b, hostile, dest, identity=IDENT,
+                              contract=NO_CONTRACT)
     assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
         == os.devnull, "the pin was already gone by the time the refusal landed"
 
@@ -401,7 +431,8 @@ def test_the_hooks_pin_is_read_back_after_the_candidate_is_laid_down(
 
     monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
-        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=NO_CONTRACT)
 
 
 def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
@@ -436,7 +467,8 @@ def test_the_readback_asks_the_clones_own_file_not_whatever_would_answer(
     monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
     dest = tmp_path / "verifier"
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
-        verify.build_verifier(repo, b, cb, dest, identity=IDENT)
+        verify.build_verifier(repo, b, cb, dest, identity=IDENT,
+                              contract=NO_CONTRACT)
     assert _git(dest, "config", "--get", "core.hooksPath").stdout.strip() == os.devnull, \
         "the fixture no longer masks the rewrite, so it pins nothing"
 
@@ -475,7 +507,8 @@ def test_a_scope_above_the_clones_local_file_cannot_hide_a_live_hook(tmp_path, m
     monkeypatch.setattr(verify.bundle, "materialize", _rewrite)
     dest = tmp_path / "verifier"
     with pytest.raises(verify.VerifyError, match="rewrote the verifier's git config"):
-        verify.build_verifier(repo, b, cb, dest, identity=IDENT)
+        verify.build_verifier(repo, b, cb, dest, identity=IDENT,
+                              contract=NO_CONTRACT)
     assert _git(dest, "config", "--local", "--get", "core.hooksPath").stdout.strip() \
         == os.devnull, "the fixture disturbed the pin, so a --local readback would catch it"
     # ...and the override was live, not merely present: the refused clone runs the hook.
@@ -485,6 +518,61 @@ def test_a_scope_above_the_clones_local_file_cannot_hide_a_live_hook(tmp_path, m
         _git(dest, "commit", "-m", "gate")
     assert (dest / "HOOK-RAN").exists(), \
         "the worktree-scope override did not actually reach git, so it pins nothing"
+
+
+def test_a_verifier_refuses_a_bundle_built_under_another_contract(tmp_path):
+    """The manifest's contract and the gate's contract are one fact or the run is a lie.
+
+    Both ids are named in the refusal because either one alone leaves the reader unable to
+    tell which side moved. The clone is the second assertion: the check is what decides
+    whether this dest may exist at all, so paying for it and then refusing would leave a
+    verifier tree behind that no gate will ever run in.
+    """
+    repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id="render-v1")
+    other = finspect.GeneratorContract(id="render-v2", relations=(("a/*", "b/*"),))
+    with pytest.raises(verify.ContractMismatch) as e:
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=other)
+    assert "render-v1" in str(e.value) and "render-v2" in str(e.value)
+    assert not (tmp_path / "verifier").exists(), \
+        "a mismatch that has already cloned the baseline decided nothing before it spent"
+
+
+def test_a_verifier_refuses_a_contract_when_the_bundle_recorded_none(tmp_path):
+    """The dangerous direction: a bundle that admits nothing, verified under one that does.
+
+    "" is the sentinel for "the run declared no contract", so a verifier handed a real one
+    would admit verify-origin rewrites the bundle's own record says were never permitted.
+    """
+    repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id=None)
+    c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
+    with pytest.raises(verify.ContractMismatch):
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=c)
+
+
+def test_a_verifier_accepts_the_contract_its_bundle_was_built_under(tmp_path):
+    repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id="render-v1")
+    c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
+    v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                              identity=IDENT, contract=c)
+    assert (v / "src.py").is_file()
+
+
+def test_a_verifier_cannot_be_built_without_naming_the_runs_contract(tmp_path):
+    """`contract` carries no default, and the harmless-looking one is why.
+
+    MEASURED: with `contract=GeneratorContract()` as the default, every other forge test
+    still passes — including every case above. What that default admits is an ORCHESTRATOR
+    that hands the run's real contract to `fixed_point` and forgets it here: the verifier is
+    built under "no contract declared", the bundle recorded the same, the two agree, and
+    the gate then admits rewrites under a contract the manifest says was never declared.
+    That is the manifest-records-X-while-the-gate-admitted-Y hole this check exists to
+    close, reintroduced as an omission a defaulted signature can no longer name.
+    """
+    repo, b, cb = _repo_baseline_bundle(tmp_path, contract_id=None)
+    with pytest.raises(TypeError, match="contract"):
+        verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
 
 
 def test_a_step_cwd_may_not_leave_the_verifier(tmp_path):
@@ -530,7 +618,8 @@ def _generator_repo(tmp_path, script, *, files=()):
 
 def _verifier(tmp_path, repo, **kw):
     b, _s, cb = _candidate(tmp_path, repo, **kw)
-    return verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+    return verify.build_verifier(repo, b, cb, tmp_path / "verifier",
+                                 identity=IDENT, contract=NO_CONTRACT)
 
 
 def _staged(v):
