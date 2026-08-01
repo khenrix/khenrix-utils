@@ -45,9 +45,9 @@ def test_a_torn_final_line_is_discarded_and_the_rest_is_authoritative(tmp_path):
 
 
 def test_a_torn_line_that_is_not_last_is_a_refusal_not_a_skip(tmp_path):
-    """Tolerating a torn line ANYWHERE would let one corrupt record silently drop a fact
-    that was fully written after it — the file is append-only, so damage in the middle is
-    corruption rather than a crash.
+    """Tolerating a torn line ANYWHERE would let one corrupt record silently drop a fact that
+    was fully written after it. No complete record is ever removed or rewritten here, so a
+    damaged one with complete records behind it is corruption rather than a crash.
 
     The DIAGNOSIS is asserted, not just the raise, because this fixture is numbered 1 then 3
     and so trips a second net: a reader that silently skipped the torn line would produce a

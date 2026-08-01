@@ -13,8 +13,11 @@ how it ended", which §14.1 requires be recorded `outcome_unknown` and never sil
 
 Two framing rules keep the file readable after a crash: an unterminated LAST line is
 discarded, while a line that fails to parse anywhere else is refused. The second is what stops
-one damaged record from silently dropping the facts written after it — the file only ever
-grows, so damage in the middle cannot have come from a crash.
+one damaged record from silently dropping the facts written after it. It rests on the writer's
+one invariant — no COMPLETE record is ever removed or rewritten — so a damaged record with
+complete records behind it cannot have come from a crash. The invariant is not "the file only
+grows": `record` truncates a torn tail, and that is the single exception, an unterminated line
+that was never a record.
 
 Taken alone those two leave a resumed run unable to read its own journal: it appends behind
 the tear, and the tear is then in the middle. `record` reconciles them by dropping a torn tail
@@ -112,11 +115,11 @@ def orphans(events) -> tuple[Event, ...]:
 class Journal:
     """One append-only log file, with one writer at a time.
 
-    Concurrent writers are neither supported nor silently tolerated: each writer derives `seq`
-    once and then counts, so two whose appends interleave put one number on the file twice and
-    every later `read()` refuses the whole file. The failure is loud and total rather than a
-    partial read, which is the right trade for a file whose entire value is that a reader can
-    trust every line of it.
+    Concurrent writers are neither supported nor silently tolerated: a writer derives `seq`
+    from the file and then counts on from it, so two whose appends interleave put one number on
+    the file twice and every later `read()` refuses the whole file. The failure is loud and
+    total rather than a partial read, which is the right trade for a file whose entire value is
+    that a reader can trust every line of it.
     """
 
     def __init__(self, path):
