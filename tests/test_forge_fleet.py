@@ -644,6 +644,39 @@ def test_clone_seat_verifies_a_symlink_by_its_target_text(tmp_path):
     assert seat.verified is True
 
 
+def test_clone_seat_verifies_a_symlink_whose_target_is_not_utf8(tmp_path):
+    """A link target is a filesystem NAME: `os.readlink` hands back surrogates for one that
+    is not valid UTF-8, and a plain `.encode()` raises `UnicodeEncodeError` on them.
+
+    `_sha256_link` runs on EVERY seat verification, so that raise would not cost one entry —
+    it would take `clone_seat` down in a class that is neither `SeatError` nor anything else
+    the chain names, out of the one path whose whole job is a named refusal. It is the third
+    site of one encode: `baseline` and `snapshot` each pin their own, and mutating this one
+    alone survived the whole suite while they were the only two fixtures.
+
+    The link's own NAME is ASCII, so what is under test is the target text and not path
+    handling.
+    """
+    repo = make_repo(tmp_path)
+    os.symlink(b"caf\xe9.txt", Path(repo) / "link.txt")
+    _git(repo, "add", "link.txt")
+    _git(repo, "commit", "-qm", "latin-1 target")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    assert b.filesystem_manifest["link.txt"] == \
+        hashlib.sha256(b"caf\xe9.txt").hexdigest(), \
+        "precondition: the manifest digests the raw bytes of the target name"
+
+    seat = fleet.clone_seat(repo, b, tmp_path / "seats" / "s1",
+                            name="claude", identity=IDENT)
+    assert seat.verified is True
+    target = os.readlink(seat.path / "link.txt")
+    with pytest.raises(UnicodeEncodeError):
+        target.encode("utf-8")
+    assert target.encode("utf-8", "surrogateescape") == b"caf\xe9.txt", \
+        "anti-vacuity: the checkout carries the raw bytes, so the strict encode is reached"
+
+
 def test_clone_seat_refuses_a_seat_whose_symlink_points_somewhere_else(tmp_path):
     """The other half of the branch above: it must COMPARE, not merely not-crash.
 
