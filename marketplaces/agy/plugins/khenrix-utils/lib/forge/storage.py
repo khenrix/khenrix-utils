@@ -110,9 +110,10 @@ def append_line(path, data: bytes) -> None:
     which is the one failure the sync exists to prevent.
 
     Observing creation does not remove the obligation that goes with it: the sync only ever
-    happens on the call that WINS the `O_EXCL`, so a log first brought into existence by any
-    other route — a `touch`, an `atomic_write` of a header — has a directory entry nothing
-    here will ever sync.
+    happens on the call that WINS the `O_EXCL`, so a log first brought into existence by a
+    route that does not sync the directory itself — a `touch`, a shell redirect, a plain
+    `open(path, "w")` — has a directory entry nothing here will ever sync. `atomic_write` is
+    NOT such a route: syncing the directory is the third of its own three steps.
     """
     path = Path(path)
     if b"\n" in data:

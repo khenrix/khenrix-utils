@@ -160,16 +160,30 @@ def test_a_torn_tail_is_dropped_by_the_next_write_so_a_resumed_run_stays_readabl
         [(1, "seat_start"), (2, "seat_done")]
 
 
-def test_a_journal_that_cannot_be_read_is_never_appended_to(tmp_path):
+def test_a_journal_that_cannot_be_read_gains_no_record(tmp_path):
     """The reader stops at the first damaged record, so anything appended behind the break is
     written, fsynced and unreachable forever. The engine would then hold a durable record of
-    facts no reader can ever see, and would have no way to know it."""
+    facts no reader can ever see, and would have no way to know it.
+
+    "Gains no record", not "is never touched": a refused append can still have dropped a torn
+    TAIL first, which is bytes no writer was ever told had landed. The fixture below ends in a
+    terminator so the file is byte-identical, and the second one carries a tail as well, so
+    the property is asserted in both shapes rather than only the quiet one.
+    """
     p = tmp_path / "e.jsonl"
     p.write_bytes(b'{"event":"a","operation_id":"o","seq":1,"at":"t"}\n{"broken"\n')
     before = p.read_bytes()
     with pytest.raises(journal.JournalError):
         journal.Journal(p).record("x", operation_id="o")
     assert p.read_bytes() == before
+
+    q = tmp_path / "f.jsonl"
+    q.write_bytes(b'{"event":"a","operation_id":"o","seq":1,"at":"t"}\n{"broken"\n{"tor')
+    with pytest.raises(journal.JournalError):
+        journal.Journal(q).record("x", operation_id="o")
+    assert b'"event":"x"' not in q.read_bytes(), "the refused record must not have landed"
+    assert q.read_bytes().endswith(b'{"broken"\n'), \
+        "only the unacknowledged tail may go, and the damage itself must remain"
 
 
 def test_a_run_that_has_recorded_nothing_reads_empty_rather_than_failing(tmp_path):
