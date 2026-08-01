@@ -1,4 +1,6 @@
-"""The run's identity: the manifest written once, and the refs it is judged against (§9, §14.2)."""
+"""The run's identity: the manifest written once, the refs it is judged against, where the
+run had got to, and what each seat last managed to say (§9, §14, §14.1, §14.2)."""
+import dataclasses
 import hashlib
 import json
 import os
@@ -713,3 +715,340 @@ def test_a_seat_name_cannot_escape_the_run_directory(tmp_path):
     for bad in ("../escape", "a/b", "", ".", "CODEX"):
         with pytest.raises(storage.StorageError):
             storage.seat_state_path(run, bad)
+
+
+# ------------------------------------------------------------------------- the state machine
+
+def _state(phase, **kw):
+    base = dict(round=0, attempt=0, verified_checkpoint=None, deliverable_checkpoint=None)
+    return runstate.State(phase=phase, **{**base, **kw})
+
+
+def _successors(phase):
+    """The phases `advance` will actually go to from `phase`, measured rather than read.
+
+    Asking the public call one target at a time keeps every graph property below a statement
+    about what the engine DOES: a table with the right contents and a refusal that consults
+    the wrong end of it would satisfy a test that read `_EDGES` directly.
+    """
+    s = _state(phase)
+    out = set()
+    for target in runstate.PHASES:
+        try:
+            runstate.advance(s, target)
+        except runstate.TransitionError:
+            continue
+        out.add(target)
+    return out
+
+
+def test_the_back_edge_from_reviewing_to_synthesizing_is_declared(tmp_path):
+    """§14: a single enum cannot represent "fixing after review round 2". The back-edge is
+    what makes the round counter mean anything."""
+    s = runstate.State(phase="reviewing", round=2, attempt=1,
+                       verified_checkpoint="a" * 40, deliverable_checkpoint=None)
+    out = runstate.advance(s, "synthesizing")
+    assert out.phase == "synthesizing"
+    assert (out.round, out.verified_checkpoint) == (2, "a" * 40), \
+        "a back-edge must not reset the dimensions it is orthogonal to"
+
+
+def test_advance_moves_the_phase_and_leaves_the_other_four_dimensions_alone(tmp_path):
+    """The whole tuple, not the two the back-edge test happens to name.
+
+    Each of the four has its own reason for not riding along, and they are not
+    interchangeable: `round` incremented here would spend a council round §14.2 says is never
+    spent automatically, and `verified_checkpoint` cleared here would drop the commit §14.2
+    keeps as the deliverable when a resumed fix fails to verify. A mutant that reset `attempt`
+    or `deliverable_checkpoint` alone passes the back-edge test.
+    """
+    s = runstate.State(phase="reviewing", round=2, attempt=3,
+                       verified_checkpoint="a" * 40, deliverable_checkpoint="b" * 40)
+    for target in ("synthesizing", "ready", "review_blocked"):
+        out = runstate.advance(s, target)
+        assert dataclasses.replace(out, phase=s.phase) == s, target
+
+
+def test_advance_returns_a_new_state_and_never_edits_the_one_it_was_given(tmp_path):
+    """A resume compares where it thought it was against where the journal says it got to,
+    and an in-place move would make those the same object."""
+    s = _state("created")
+    out = runstate.advance(s, "confirmed")
+    assert s.phase == "created" and out is not s
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.phase = "confirmed"
+
+
+def test_an_undeclared_edge_is_a_refusal(tmp_path):
+    s = runstate.State(phase="created", round=0, attempt=0,
+                       verified_checkpoint=None, deliverable_checkpoint=None)
+    with pytest.raises(runstate.TransitionError):
+        runstate.advance(s, "reviewing")
+
+
+def test_a_terminal_state_admits_no_successor(tmp_path):
+    for name in runstate.TERMINAL:
+        s = runstate.State(phase=name, round=1, attempt=1,
+                           verified_checkpoint=None, deliverable_checkpoint=None)
+        with pytest.raises(runstate.TransitionError):
+            runstate.advance(s, "synthesizing")
+
+
+def test_no_terminal_phase_admits_any_successor_at_all(tmp_path):
+    """The test above names one target. A terminal that had kept an edge to anything ELSE
+    would end a run that then carries on, and nothing would say so."""
+    for name in runstate.TERMINAL:
+        assert _successors(name) == set(), name
+
+
+def test_every_terminal_the_spec_names_exists(tmp_path):
+    """A terminal nothing can reach is the defect class this project has found in every
+    plan; a terminal the spec names and the code omits is the same defect one step earlier."""
+    assert set(runstate.TERMINAL) == {
+        "ready", "degraded", "review_blocked", "source_diverged", "failed"}
+
+
+def test_the_declared_phases_are_section_14s_in_section_14s_order(tmp_path):
+    """PHASES is the ordered tuple, so this pins the order as well as the membership. It also
+    pins the count: the graph is declared as a mapping, and a name written twice there would
+    collapse into one entry with only the second spelling's successors."""
+    assert runstate.PHASES == (
+        "created", "confirmed", "setting_up", "building", "harvested", "comparing",
+        "synthesizing", "verifying", "reviewing",
+        "ready", "degraded", "review_blocked", "source_diverged", "failed")
+
+
+def test_every_phase_the_graph_names_can_be_reached_from_created(tmp_path):
+    """A phase nothing can reach is a terminal the run can never report, and §14's five
+    terminals hang off one node — dropping `reviewing → failed` strands that outcome with no
+    route in.
+
+    Reachability alone is WEAK, and measurably so: pointing `comparing` at `verifying`
+    instead of `synthesizing` leaves every phase reachable, because `verifying ⇄ synthesizing`
+    lets the walk arrive by the back-edge. That mutant survives this test and is caught by the
+    spine below — this one is here for the phase a later graph adds with no way in.
+    """
+    seen, frontier = {"created"}, ["created"]
+    while frontier:
+        for nxt in _successors(frontier.pop()):
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    assert seen == set(runstate.PHASES)
+
+
+def test_the_spine_is_the_single_chain_section_14_draws(tmp_path):
+    """Each phase up to `verifying` has exactly ONE successor, and this pins which.
+
+    Equality rather than membership, and per phase rather than over the whole walk: a run
+    that went `comparing → verifying` would hand the verifier a synthesis nobody made, and
+    every weaker property — reachability, the terminal set, the back-edge — holds while it
+    does.
+    """
+    chain = ("created", "confirmed", "setting_up", "building", "harvested", "comparing",
+             "synthesizing", "verifying")
+    for phase, nxt in zip(chain, chain[1:]):
+        assert _successors(phase) == {nxt}, phase
+
+
+def test_a_failed_verify_returns_to_synthesizing_and_a_passing_one_goes_to_review(tmp_path):
+    """§14's `synthesizing ⇄ verifying`, whose second arrow reachability cannot see — every
+    phase is already reachable without it, so a graph that had lost it would leave a run whose
+    verify failed with nowhere to go but a terminal."""
+    assert _successors("verifying") == {"synthesizing", "reviewing"}
+
+
+def test_reviewing_is_where_the_run_chooses_its_ending(tmp_path):
+    """The one node with a fan-out, pinned exactly so an edge nobody declared cannot be added
+    to it — `reviewing → verifying` would re-verify a candidate without re-synthesizing the
+    fix the review asked for. Composed from the two facts pinned above rather than restating
+    the graph: the back-edge, and the five terminals."""
+    assert _successors("reviewing") == {"synthesizing"} | set(runstate.TERMINAL)
+
+
+def test_a_phase_name_that_does_not_exist_is_refused_and_named_as_such(tmp_path):
+    """A typo and a wrong edge are different repairs, so the refusal separates them."""
+    s = _state("synthesizing")
+    with pytest.raises(runstate.TransitionError) as e:
+        runstate.advance(s, "synthesising")
+    assert "not a declared phase" in str(e.value)
+
+
+def test_a_state_carrying_a_phase_section_14_never_declared_is_refused(tmp_path):
+    """A state read back from a damaged or foreign record arrives here, and a raw lookup
+    would answer it with a KeyError that no resume is catching."""
+    with pytest.raises(runstate.TransitionError):
+        runstate.advance(_state("fixing"), "verifying")
+
+
+def test_a_target_that_is_not_a_name_is_refused_rather_than_raising_from_the_lookup(tmp_path):
+    with pytest.raises(runstate.TransitionError):
+        runstate.advance(_state("created"), ["confirmed"])
+
+
+def test_advancing_something_that_is_not_a_state_is_refused(tmp_path):
+    with pytest.raises(runstate.TransitionError):
+        runstate.advance(("created", 0, 0, None, None), "confirmed")
+
+
+def test_outcome_unknown_is_a_seats_outcome_and_not_a_phase_of_the_run(tmp_path):
+    """§14.1 gives it to an operation that started, left no receipt and has no surviving
+    process. §14's graph has no such ending, so a run that reached it as a phase would be in a
+    state nothing can leave and no terminal accounts for."""
+    assert runstate.OUTCOME_UNKNOWN == "outcome_unknown"
+    assert runstate.OUTCOME_UNKNOWN not in runstate.PHASES
+
+
+# ------------------------------------------------------------------------------- seat state
+
+def test_seat_state_survives_a_torn_write(tmp_path):
+    """§14.1: a SIGTERM landing mid-rewrite must not leave truncated JSON indistinguishable
+    from a seat that never wrote."""
+    run = tmp_path / "run"; run.mkdir()
+    runstate.write_seat(run, "claude", {"status": "building", "attempt": 1})
+    p = storage.seat_state_path(run, "claude")
+    p.write_bytes(p.read_bytes()[:12])          # truncate as a killed writer would
+    with pytest.raises(runstate.StateError):
+        runstate.read_seat(run, "claude")
+
+
+def test_a_seat_that_never_wrote_is_none_not_an_error(tmp_path):
+    run = tmp_path / "run"; run.mkdir()
+    assert runstate.read_seat(run, "codex") is None
+
+
+def test_a_seat_record_of_json_null_is_not_a_seat_that_never_wrote(tmp_path):
+    """The route that collapses the two states without damaging a byte: `null` is valid JSON
+    and `json.loads` hands back the very object a missing file returns. A reader that trusted
+    the parse would report a seat which recorded something as one that never ran."""
+    run = _run_dir(tmp_path)
+    storage.seat_state_path(run, "claude").write_bytes(b"null\n")
+    with pytest.raises(runstate.StateError):
+        runstate.read_seat(run, "claude")
+
+
+def test_a_seat_record_that_is_not_an_object_is_refused(tmp_path):
+    run = _run_dir(tmp_path)
+    for document in (b"[]\n", b'"building"\n', b"3\n"):
+        storage.seat_state_path(run, "claude").write_bytes(document)
+        with pytest.raises(runstate.StateError):
+            runstate.read_seat(run, "claude")
+
+
+def test_an_empty_seat_record_is_refused_at_both_ends(tmp_path):
+    """`{}` is falsy exactly as `None` is, so `if read_seat(...)` — the shortest way a caller
+    asks whether a seat wrote — answers the same for a seat that recorded an empty record and
+    one that recorded nothing. Refused where it is produced AND where it is read, because the
+    reader meets records this writer did not write."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.StateError):
+        runstate.write_seat(run, "claude", {})
+    storage.seat_state_path(run, "claude").write_bytes(b"{}\n")
+    with pytest.raises(runstate.StateError):
+        runstate.read_seat(run, "claude")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads through mode 000")
+def test_a_seat_record_that_cannot_be_read_is_not_a_seat_that_never_wrote(tmp_path):
+    """The other way None could be over-reported: a blanket `except OSError` would answer a
+    permission failure with the same silence as an absent file."""
+    run = _run_dir(tmp_path)
+    runstate.write_seat(run, "claude", {"status": "building"})
+    p = storage.seat_state_path(run, "claude")
+    p.chmod(0o000)
+    try:
+        with pytest.raises(runstate.StateError):
+            runstate.read_seat(run, "claude")
+    finally:
+        p.chmod(0o600)
+
+
+def test_seat_state_round_trips_a_candidate_bundles_two_gate_fields(tmp_path):
+    """Carrying `gate_delta` without `gate_surface` re-creates the half-record
+    `bundle.with_gate_measurement` refuses; the classifier's fourth taint is the tripwire,
+    not a silent regression."""
+    run = tmp_path / "run"; run.mkdir()
+    runstate.write_seat(run, "agy", {"gate_delta": ["Makefile"], "gate_surface": ["Makefile"]})
+    back = runstate.read_seat(run, "agy")
+    assert back["gate_delta"] == ["Makefile"] and back["gate_surface"] == ["Makefile"]
+
+
+def test_a_seat_rewrites_its_own_record_as_the_run_moves(tmp_path):
+    """The manifest's write-once refusal would make a seat's second status update a crash: a
+    seat says `building`, then `harvested`, then what it verified, all under one name."""
+    run = _run_dir(tmp_path)
+    runstate.write_seat(run, "claude", {"status": "building"})
+    runstate.write_seat(run, "claude", {"status": "harvested"})
+    assert runstate.read_seat(run, "claude") == {"status": "harvested"}
+
+
+def test_a_seat_record_is_published_by_rename_and_never_truncated_in_place(tmp_path):
+    """§14.1's rule for the rewrite, measured by the only thing it leaves behind: publishing
+    through a rename gives the name a NEW inode, while a writer that opened the record and
+    truncated it keeps the old one — and it is that in-place window a killed writer leaves a
+    reader staring at. A record replaced whole has no such window.
+
+    The debris assertion is the same discipline one level out: a run directory that
+    accumulates a temp file per status update is one `--gc` has to guess about.
+    """
+    run = _run_dir(tmp_path)
+    runstate.write_seat(run, "claude", {"status": "building"})
+    p = storage.seat_state_path(run, "claude")
+    first = p.stat().st_ino
+    runstate.write_seat(run, "claude", {"status": "harvested"})
+    assert p.stat().st_ino != first
+    assert [q.name for q in run.iterdir()] == ["seat-claude.json"]
+
+
+def test_one_seat_record_has_one_spelling_on_disk(tmp_path):
+    """Two callers building the same record in different key orders must produce the same
+    bytes, or a `--gc` walk and a human diffing two runs both see a change that is not one."""
+    run = _run_dir(tmp_path)
+    runstate.write_seat(run, "claude", {"status": "building", "attempt": 1})
+    runstate.write_seat(run, "codex", {"attempt": 1, "status": "building"})
+    blob = storage.seat_state_path(run, "claude").read_bytes()
+    assert storage.seat_state_path(run, "codex").read_bytes() == blob
+    assert blob.index(b'"attempt"') < blob.index(b'"status"')
+
+
+def test_a_seat_payload_json_cannot_carry_is_refused_and_the_previous_record_stands(tmp_path):
+    """The refusal happens before anything is published, so the seat's last good record is
+    still what a resume finds — the alternative is a seat whose status file was destroyed by
+    the write that failed to replace it."""
+    run = _run_dir(tmp_path)
+    runstate.write_seat(run, "claude", {"status": "building"})
+    with pytest.raises(runstate.StateError):
+        runstate.write_seat(run, "claude", {"started_at": object()})
+    assert runstate.read_seat(run, "claude") == {"status": "building"}
+
+
+@pytest.mark.parametrize("payload", [
+    {"gate_delta": ("Makefile",)},   # a tuple reads back a list
+    {1: "building"},                 # an int key reads back a string
+])
+def test_a_seat_payload_that_would_not_survive_its_round_trip_is_refused(tmp_path, payload):
+    """The manifest's argument, one file over: JSON has one sequence type and one key type, so
+    a tuple and an int key are accepted at the write and come back as something that compares
+    unequal — and nothing says so until a resume compares them hours later."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.StateError):
+        runstate.write_seat(run, "claude", payload)
+    assert runstate.read_seat(run, "claude") is None
+
+
+def test_writing_something_that_is_not_a_record_is_refused(tmp_path):
+    run = _run_dir(tmp_path)
+    for payload in (["status"], "building", None):
+        with pytest.raises(runstate.StateError):
+            runstate.write_seat(run, "claude", payload)
+
+
+def test_a_seat_name_that_cannot_name_a_file_is_refused_at_both_ends(tmp_path):
+    """StorageError rather than StateError, and the difference is the point: a damaged record
+    and a caller that asked for a seat it cannot have are different repairs, and folding the
+    second into the first would report a typo'd seat name as a damaged seat."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(storage.StorageError):
+        runstate.write_seat(run, "../escape", {"status": "building"})
+    with pytest.raises(storage.StorageError):
+        runstate.read_seat(run, "../escape")

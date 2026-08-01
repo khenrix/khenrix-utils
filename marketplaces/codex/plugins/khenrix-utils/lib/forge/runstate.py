@@ -1,11 +1,17 @@
-"""What the run agreed to do, and the repository state it is judged against (§9, §14.2).
+"""What the run agreed to do, where it got to, and the repository state it is judged against
+(§9, §14, §14.1, §14.2).
 
-Both facts live here because they are recorded at the same instant and are worth nothing
-apart. The manifest says what the run committed to — repo path, `base_commit`, the baseline's
-identity, the selected paths, the confirmed steps. The snapshot says what the user's repository
-looked like when it committed to that. A manifest without the snapshot describes a deliverable
-with no way to ask whether it still applies; a snapshot without the manifest is a photograph
-of nothing in particular.
+The manifest and the snapshot live here together because they are recorded at the same instant
+and are worth nothing apart. The manifest says what the run committed to — repo path,
+`base_commit`, the baseline's identity, the selected paths, the confirmed steps. The snapshot
+says what the user's repository looked like when it committed to that. A manifest without the
+snapshot describes a deliverable with no way to ask whether it still applies; a snapshot
+without the manifest is a photograph of nothing in particular.
+
+The other two facts here are the ones a RESUME needs and neither of those carries: §14's phase
+tuple, which says where the run had got to, and the per-seat record, which says what each seat
+last managed to write down. Both are described at the end of this docstring and implemented at
+the end of the file.
 
 WRITTEN ONCE. §14.2 requires the manifest be written at `confirmed` and never rewritten, so
 commands are never re-detected. That is not a style rule about callers: `--collect` resuming
@@ -67,6 +73,31 @@ server rewrites ignored build output continuously, and a digest that moved on al
 make the one drift report that means something unreadable. An ignored path the run IS carrying
 is covered anyway, because selection is what puts a path in the content set — so the case that
 was open here, a caller hand-selecting an ignored path, is closed by the selection it made.
+
+WHERE THE RUN GOT TO is five dimensions and not one. §14: `(phase, round, attempt,
+verified_checkpoint, deliverable_checkpoint)`, "separate dimensions, with the
+`reviewing → synthesizing` back-edge declared. A single enum cannot represent 'fixing after
+review round 2.'" The phase reads `synthesizing` for a first synthesis and again for a fix
+after the second review round; what tells those apart is a counter the phase does not move.
+So `advance` moves the phase and NOTHING else, and each of the other four has its own reason
+for not riding along: a `round` incremented on the back-edge would spend a council round §14.2
+says is never spent automatically, an `attempt` reset would lose the retry count on the one
+operation being retried, and either checkpoint cleared on the way back to `synthesizing` would
+drop a commit §14.2 depends on having — the last verified one is what it keeps as the
+deliverable when a resumed fix fails to verify.
+
+WHAT A SEAT LAST SAID has one rule, and §14.1 states it as the thing the whole discipline is
+for: a SIGTERM landing mid-rewrite of `seat-codex.json` "must not leave truncated JSON
+indistinguishable from a seat that never wrote". Distinguishability is what §14.1 puts in
+place of an exactly-once it opens by conceding is not deliverable, so `read_seat` answers None
+for exactly ONE condition — no such file — and raises for every other way a record can fail to
+be one. Three of those routes reach None without damaging a byte and are the reason the rule
+is written as a whitelist: a JSON `null` parses cleanly and hands back the same object a
+missing file would, an unreadable record is an OSError that a blanket `except OSError` would
+answer with the same silence, and an empty record is falsy exactly as None is — so the
+shortest question a caller can ask, `if read_seat(...)`, gets the wrong answer from a seat
+that did write. The last of those is refused at BOTH ends, because the reader meets records
+this writer did not write.
 """
 import dataclasses
 import hashlib
@@ -81,6 +112,15 @@ from .verify import Step, VerifyError
 
 class ManifestError(RuntimeError):
     """A run's identity that cannot be recorded, cannot be recovered, or would be rewritten."""
+
+
+class StateError(RuntimeError):
+    """A seat's record that is damaged, unreadable, or written in a shape its reader could not
+    tell from a seat that never wrote at all."""
+
+
+class TransitionError(RuntimeError):
+    """A move §14's graph does not declare."""
 
 
 # §9's two explicitly-allowed namespaces. Prefixes rather than a substring test: a user's
@@ -490,3 +530,179 @@ def _decode(row, source) -> Manifest:
             raise ManifestError(f"no decoder is declared for the manifest field {name!r}")
         fields[name] = decode(name, row[name], source)
     return Manifest(**fields)
+
+
+# §14's graph, as the successors of each phase — the one place it is written down. Read as a
+# mapping rather than a list of pairs so a refusal can say what IS legal from where the run
+# stands, which is the difference between a message a resume can act on and one that only
+# says no. The chain is §14's wrapped line straightened out: `comparing → synthesizing` is
+# the joint the wrap hides, `synthesizing ⇄ verifying` is two edges, and `reviewing →
+# synthesizing` is the back-edge §14 declares in prose beside the diagram.
+_EDGES = {
+    "created": frozenset({"confirmed"}),
+    "confirmed": frozenset({"setting_up"}),
+    "setting_up": frozenset({"building"}),
+    "building": frozenset({"harvested"}),
+    "harvested": frozenset({"comparing"}),
+    "comparing": frozenset({"synthesizing"}),
+    "synthesizing": frozenset({"verifying"}),
+    "verifying": frozenset({"synthesizing", "reviewing"}),
+    "reviewing": frozenset({"synthesizing", "ready", "degraded", "review_blocked",
+                            "source_diverged", "failed"}),
+    "ready": frozenset(),
+    "degraded": frozenset(),
+    "review_blocked": frozenset(),
+    "source_diverged": frozenset(),
+    "failed": frozenset(),
+}
+
+# Both views are DERIVED from that one declaration. A separately spelled terminal list is a
+# second place to be right about which phases end a run, and the two are then free to
+# disagree — a phase listed terminal while holding a successor is a run that ends and then
+# carries on. What derivation costs is that a phase whose successors were forgotten reads as
+# terminal instead of failing; `test_every_terminal_the_spec_names_exists` is what stands
+# there, by naming the five §14 declares rather than counting them.
+PHASES = tuple(_EDGES)
+TERMINAL = frozenset(name for name, successors in _EDGES.items() if not successors)
+
+# §14.1's name for an operation that started, left no receipt and has no surviving process:
+# "It is never silently retried." A SEAT's outcome, not a phase of the run — §14's graph has
+# no such ending, so it is deliberately absent from PHASES and `advance` refuses it like any
+# other name the graph does not declare.
+OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+@dataclass(frozen=True)
+class State:
+    """§14's five dimensions, which are separate because one enum cannot hold them.
+
+    No defaults, on `snapshot_refs`'s argument: a run at `created` with round 0 and a run
+    resuming a fix after round 2 are both ordinary, and a dimension the constructor supplies
+    is a fact nobody recorded.
+
+    `phase` is NOT validated here. A state read back from a foreign or damaged record has to
+    be constructible for a resume to report what it found, so the refusal lives at `advance`,
+    where the question "what happens next" is actually being asked.
+    """
+    phase: str
+    round: int
+    attempt: int
+    verified_checkpoint: str | None
+    deliverable_checkpoint: str | None
+
+
+def advance(state: State, phase: str) -> State:
+    """`state` moved to `phase`, or TransitionError because §14 declares no such edge.
+
+    ONLY the phase moves — see the module docstring for what each of the other four would cost
+    if it rode along. A caller that means to spend a round or a retry says so itself, which is
+    what "separate dimensions" buys and what a resume reads back to tell one fix from the next.
+    """
+    if not isinstance(state, State):
+        raise TransitionError(f"a State is required, not {type(state).__name__}")
+    if not isinstance(phase, str):
+        # Checked rather than left to the lookup: an unhashable target raises TypeError out of
+        # `in`, which no caller of this module is catching.
+        raise TransitionError(f"a phase is one of §14's names, not {phase!r}")
+    successors = _EDGES.get(state.phase)
+    if successors is None:
+        raise TransitionError(
+            f"this run is in {state.phase!r}, which §14 does not declare, so what follows it "
+            f"is not a question this graph can answer. The declared phases are {list(PHASES)}.")
+    if phase not in successors:
+        if not successors:
+            raise TransitionError(
+                f"{state.phase!r} ends the run; §14 declares no phase after a terminal, and a "
+                f"run that left one would have reported an outcome it then went on to change.")
+        unknown = "" if phase in _EDGES else " — which is not a declared phase at all"
+        raise TransitionError(
+            f"§14 declares no edge {state.phase!r} → {phase!r}{unknown}. From {state.phase!r} "
+            f"a run may go to {sorted(successors)}.")
+    return dataclasses.replace(state, phase=phase)
+
+
+def write_seat(run_dir, name: str, payload: dict) -> None:
+    """Record what seat `name` last knew, replacing whatever it last said.
+
+    REWRITTEN, unlike the manifest: a seat's status moves the whole length of its run, and
+    write-once here would make its second update a crash. `atomic_write` is what makes the
+    rewrite safe to be interrupted — the record is published by a rename, so a reader arriving
+    mid-write sees the previous record whole rather than a prefix of this one, and the killed
+    writer of §14.1 leaves the seat saying something older rather than something torn.
+
+    NOT THE SIGNAL PATH. §14.1 requires the handler write "only pre-formatted bytes it already
+    holds, never serializes", and this call serializes; a handler owing a record hands the
+    bytes it is already holding to `storage.atomic_write` itself.
+
+    Refused BEFORE anything is published, on all four counts below, so a rejected record
+    leaves the seat's last good one exactly where a resume will look for it.
+    """
+    path = storage.seat_state_path(run_dir, name)
+    if not isinstance(payload, dict):
+        raise StateError(
+            f"{path}: a seat record is an object of facts about the seat, not "
+            f"{type(payload).__name__}")
+    if not payload:
+        raise StateError(
+            f"{path}: a seat record may not be empty. `{{}}` is falsy exactly as the None a "
+            "seat that never wrote reads back as, and §14.1 requires those two stay apart.")
+    try:
+        # sort_keys so one seat state has one spelling on disk whatever order the caller built
+        # it in; indented because the first reader of this file is usually a human working out
+        # what a crashed seat had got to.
+        blob = json.dumps(payload, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    except (TypeError, ValueError) as e:
+        raise StateError(
+            f"{path}: this record carries a value json cannot serialize: {e}") from e
+    restored = json.loads(blob)
+    if restored != payload:
+        # `write_manifest`'s check, one file over and for the same reason: JSON has one
+        # sequence type and one key type, so a tuple or an int key is accepted here and comes
+        # back as something that compares unequal — with nothing saying so until a resume
+        # compares them hours later. Keys are reported through repr() because the mismatched
+        # pair is usually `1` and `"1"`, which sort against each other otherwise.
+        differing = sorted(repr(k) for k in set(payload) | set(restored)
+                           if payload.get(k) != restored.get(k))
+        raise StateError(
+            f"{path}: this record does not survive its own round trip; {differing} come back "
+            "as something else. Store lists, strings and numbers under string keys.")
+    storage.atomic_write(path, blob)
+
+
+def read_seat(run_dir, name: str) -> dict | None:
+    """What seat `name` last recorded, or None because it never recorded anything.
+
+    None means ONE thing — no such file. Every other way a record can fail to be one raises,
+    because §14.1's requirement is that a damaged seat and a silent one stay different
+    answers; see the module docstring for the three routes that reach None without damaging a
+    byte, which is why the None is written as a whitelist rather than a fallback.
+    """
+    path = storage.seat_state_path(run_dir, name)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        # The one absence this call reports. A run directory that does not exist at all is
+        # `read_manifest`'s refusal, which every resume passes through before it asks a seat
+        # anything.
+        return None
+    except OSError as e:
+        raise StateError(f"{path} exists and cannot be read: {e}") from e
+    try:
+        row = json.loads(raw)
+    except ValueError as e:
+        raise StateError(
+            f"{path} is not readable as JSON: {e}. A record cut short by a killed writer "
+            "lands here, and §14.1 requires that it read as a damaged seat and not a silent "
+            "one.") from e
+    if not isinstance(row, dict):
+        raise StateError(
+            f"{path} holds a {type(row).__name__}, which is not a seat record. A JSON `null` "
+            "is the one that matters: it parses cleanly and reads back as the same None a "
+            "missing file gives, so a reader trusting the parse would report a seat that "
+            "recorded something as one that never ran.")
+    if not row:
+        raise StateError(
+            f"{path} holds an empty record, which is falsy exactly as the None a seat that "
+            "never wrote reads back as. `write_seat` refuses to produce one; this arrived by "
+            "another route.")
+    return row
