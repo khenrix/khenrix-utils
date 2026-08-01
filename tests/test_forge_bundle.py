@@ -730,3 +730,11 @@ def test_with_gate_delta_accepts_the_empty_measurement():
     is the only value that can reach PASS, so it must be storable."""
     assert bundle.with_gate_delta(_bare(), ()).gate_delta == ()
     assert bundle.with_gate_delta(_bare(), ()).gate_delta is not None
+
+
+def test_with_gate_delta_refuses_one_path_written_as_a_string():
+    """`tuple("Makefile")` is eight one-character paths, and nothing downstream would say so."""
+    cb = bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r", baseline_commit="c")
+    with pytest.raises(bundle.BundleError, match="not one path"):
+        bundle.with_gate_delta(cb, "Makefile")
+    assert bundle.with_gate_delta(cb, ("Makefile",)).gate_delta == ("Makefile",)

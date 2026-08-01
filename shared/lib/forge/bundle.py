@@ -133,6 +133,13 @@ def with_gate_delta(candidate: CandidateBundle, delta) -> CandidateBundle:
     difference between "the candidate changed nothing that defines the gate" and "nobody
     looked" — so it is exactly as unoverwritable as a non-empty one.
     """
+    # A str is iterable, so `tuple("Makefile")` is eight one-character paths and no caller
+    # would see the mistake until a delta named `M`, `a`, `k`. Refused for the reason
+    # `Command.parse` refuses a spec that is one string.
+    if isinstance(delta, (str, bytes)):
+        raise BundleError(
+            f"a gate delta is a sequence of paths, not one path: {delta!r}. Write "
+            f"({delta!r},) for a single one.")
     if candidate.gate_delta is not None:
         raise BundleError(
             f"this candidate already records a gate delta ({candidate.gate_delta!r}); a "

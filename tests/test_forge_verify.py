@@ -568,6 +568,10 @@ def test_a_verifier_accepts_the_contract_its_bundle_was_built_under(tmp_path):
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
                               identity=IDENT, contract=c)
     assert (v.path / "src.py").is_file()
+    # Identity, not equality: `Verifier.contract` exists so a caller has one place to read
+    # the run's contract from, and a fabricated one here is the manifest-records-X-while-
+    # the-gate-admitted-Y shape that `ContractMismatch` refuses two lines up.
+    assert v.contract is c
 
 
 def test_a_verifier_cannot_be_built_without_naming_the_runs_contract(tmp_path):
@@ -1385,7 +1389,15 @@ def test_a_gate_file_that_only_loses_its_executable_bit_is_in_the_delta(tmp_path
 def test_a_gate_surface_path_that_cannot_be_read_is_refused_not_skipped(tmp_path):
     """Skipping it would give it the same absent identity on both sides, so a gate file
     rewritten and then made unreadable would compare equal to itself — the direction the
-    delta fails open in."""
+    delta fails open in.
+
+    Not reachable by a candidate: every mode that makes a seat file unreadable is refused
+    at harvest, where `snapshot._digest` raises before a bundle exists. The tree that can
+    reach it is the user's own repository holding an unreadable gate file, and an
+    infrastructure refusal is the right answer there.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root reads a 0o000 file, so the fixture cannot deny anything")
     repo = _surface_repo(tmp_path, [("Makefile", "verify:\n\t@true\n")])
     v = _verifier(tmp_path, repo)
     (v / "Makefile").chmod(0o000)
