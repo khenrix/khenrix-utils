@@ -17,7 +17,7 @@
 - **A verdict must never read cleaner than its evidence.**
 - **A comment asserting something the code does not do is a defect.** Sweep your own prose against the code as it stands, not as you were thinking about it while writing — and against prose *beside* your additions, not only prose your changes touched. That specific blind spot let one false sentence survive four sweeps in the preceding plan.
 - `shared/lib/forge/**` is source of truth; `marketplaces/**` is render output. Never hand-edit it — run `make render`.
-- Every task ends with `make render`, `make verify`, `make precommit` and an explicit-pathspec commit. Never `git add -A`.
+- Every task ends with `make render`, an explicit-pathspec `git add` INCLUDING `marketplaces`, then `make verify` and `make precommit`, then the commit. Never `git add -A`. The order matters: `precommit`s drift check compares the working tree to the INDEX, so running it before the render output is staged fails unconditionally.
 - Use **`scripts/mutate.py`** to run mutations. Do not author a harness: a same-length edit inside one second reuses a stale `.pyc` and manufactures a false SURVIVED, and the guard for that was independently rediscovered and then lost across twelve hand-written harnesses.
 
 ## The one thing this plan must not get wrong
@@ -234,9 +234,9 @@ Use `scripts/mutate.py`, one site at a time, and report the table with per-fixtu
 
 ```bash
 make render
+git add shared/lib/forge/storage.py tests/test_forge_storage.py marketplaces
 make verify
 make precommit
-git add shared/lib/forge/storage.py tests/test_forge_storage.py marketplaces
 git commit -m "feat(forge): writes that survive power loss, and tests that can tell"
 ```
 
@@ -379,9 +379,9 @@ One site at a time via `scripts/mutate.py`: tolerate a torn line anywhere; drop 
 
 ```bash
 make render
+git add shared/lib/forge/journal.py tests/test_forge_journal.py Makefile marketplaces
 make verify
 make precommit
-git add shared/lib/forge/journal.py tests/test_forge_journal.py Makefile marketplaces
 git commit -m "feat(forge): an append-only journal whose torn tail is the only thing it forgets"
 ```
 
@@ -523,9 +523,9 @@ One site at a time: drop the overwrite refusal; drop the forge-ref exclusion; us
 
 ```bash
 make render
+git add shared/lib/forge/runstate.py shared/lib/forge/storage.py tests/test_forge_runstate.py Makefile marketplaces
 make verify
 make precommit
-git add shared/lib/forge/runstate.py shared/lib/forge/storage.py tests/test_forge_runstate.py Makefile marketplaces
 git commit -m "feat(forge): a manifest written once, and the refs it must be judged against"
 ```
 
@@ -643,9 +643,9 @@ One site at a time: remove the back-edge from the graph; make `advance` reset `r
 
 ```bash
 make render
+git add shared/lib/forge/runstate.py tests/test_forge_runstate.py marketplaces
 make verify
 make precommit
-git add shared/lib/forge/runstate.py tests/test_forge_runstate.py marketplaces
 git commit -m "feat(forge): five dimensions of state, and a damaged seat that says so"
 ```
 
@@ -793,9 +793,9 @@ Sweep `shared/lib/forge/**` for prose this plan falsified — in particular any 
 
 ```bash
 make render
+git add shared/lib/forge/runstate.py tests/test_forge_runstate.py tests/test_forge_seams.py marketplaces
 make verify
 make precommit
-git add shared/lib/forge/runstate.py tests/test_forge_runstate.py tests/test_forge_seams.py marketplaces
 git commit -m "feat(forge): reconstruct a run from disk, and name the drift that stops it"
 ```
 
