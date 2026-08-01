@@ -248,6 +248,11 @@ class FixedPoint:
     EARLIER passes measured and nothing about the pass that failed.
     """
     run: Run
+    # What the ENGINE staged, not everything under the contract that moved. A declared path
+    # whose index membership the gate moved without touching its bytes is in neither this
+    # field nor `unexplained` — the contract explains it, so it is not unexplained, and the
+    # engine did not stage it, so it is not admitted. A consumer that needs "the index moved
+    # at all" is asking for a different field and has to name it.
     admitted: tuple[str, ...] = ()
     unexplained: tuple[str, ...] = ()
 
