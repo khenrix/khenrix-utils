@@ -55,11 +55,17 @@ def _make_variable(name: str) -> set:
     The lookbehind is what folds them: the assignment ends at the first line-end NOT
     preceded by a backslash, so a multi-line list reads as one value. Parsing the file
     rather than running `make` keeps this a test of what the gate says it runs.
+
+    The `#` cut comes AFTER the fold and not before, because a make comment runs to the end
+    of the LOGICAL line — a backslash-newline continues the comment too (measured, GNU Make
+    4.4.1). Without the cut a legal trailing `# note` reads back as extra filenames and the
+    caller's set-difference names words nobody wrote.
     """
     text = (ROOT / "Makefile").read_text()
     m = re.search(rf"^{name} :=(.*?)(?<!\\)$", text, re.M | re.S)
     assert m, f"the Makefile no longer assigns {name}"
-    return set(m.group(1).replace("\\\n", " ").split())
+    folded = m.group(1).replace("\\\n", " ")
+    return set(folded.split("#", 1)[0].split())
 
 
 def test_every_forge_suite_is_named_in_the_makefile_gate():

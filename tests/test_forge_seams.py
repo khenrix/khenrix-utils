@@ -466,8 +466,8 @@ def _refusals_disabled():
     `clone_seat`, the containment tests in `bundle`, the hooks pin in `verify` — so a case
     that comes through clean below comes through on a mechanism's own evidence.
 
-    TODAY THIS CHANGES NOTHING, and that is measured next door: no module under
-    `shared/lib/forge` calls `rejections` at all, so the chain never consults the policy
+    TODAY THIS CHANGES NOTHING, and that is measured next door: nothing under `shared/` or
+    `scripts/` so much as names `rejections` in code, so the chain never consults the policy
     whether it is patched or not. The patch is here so that the day a consumer appears —
     spec §5 lists unsupported-feature rejections at step 1 of its confirmation chronology,
     so that is where one belongs — these cases keep bypassing exactly the policy and not
@@ -481,21 +481,37 @@ def _refusals_disabled():
         finspect.rejections = original
 
 
-def _calls_the_policy(path: Path) -> bool:
-    """True when this module CALLS `rejections`, as opposed to naming it in prose.
+def _references_the_policy(source: bytes) -> bool:
+    """True when this source reaches for `rejections` in CODE rather than in prose.
 
-    Parsed rather than grepped: the name occurs six times across `inspect` and `bundle` and
-    not one of them is a call — five are prose and the sixth is the definition — so a text
-    search answers yes for both modules and the question this asks, is the policy enforced
-    anywhere, becomes unanswerable.
+    Parsed rather than grepped: every occurrence of the name in `inspect` and `bundle` is
+    prose or the definition itself, and not one is a call — so a text search answers yes for
+    both modules and the question this asks, is the policy enforced anywhere, becomes
+    unanswerable.
+
+    A REFERENCE rather than a `Call`, so `f = finspect.rejections` followed by `f(facts, [])`
+    counts: an enforcer that routes the policy through a local name or a dispatch table would
+    otherwise read as green. `getattr(finspect, "rejections")` still passes — the name is a
+    string there, and chasing it is a dataflow analysis with no end.
     """
-    for node in ast.walk(ast.parse(path.read_bytes())):
-        if isinstance(node, ast.Call):
-            fn = node.func
-            if (fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")) \
-                    == "rejections":
-                return True
+    for node in ast.walk(ast.parse(source)):
+        name = (node.attr if isinstance(node, ast.Attribute)
+                else node.id if isinstance(node, ast.Name) else "")
+        if name == "rejections":
+            return True
     return False
+
+
+def test_the_policy_detector_sees_an_aliased_reference():
+    """The tripwire's own eyesight, since a tripwire that cannot see is not one.
+
+    Both forms are pinned because narrowing the detector back to `ast.Call` would leave the
+    test below green and blind at the same time, with nothing to say so. The definition must
+    NOT count, or `inspect.py` reports itself as its own consumer.
+    """
+    assert _references_the_policy(b"finspect.rejections(facts, [])\n")
+    assert _references_the_policy(b"f = finspect.rejections\nf(facts, [])\n")
+    assert not _references_the_policy(b"def rejections(facts, sel):\n    return []\n")
 
 
 def test_nothing_in_the_chain_consults_the_refusal_policy():
@@ -506,13 +522,24 @@ def test_nothing_in_the_chain_consults_the_refusal_policy():
     refusals are enforced by whoever calls preflight, and spec §5's chronology — the
     caller that would — is not in this plan.
 
+    SCANNED OVER `shared/` AND `scripts/`, not just `shared/lib/forge/*.py`. The consumer
+    this waits for is that chronology, whose likeliest home is an orchestrator under
+    `shared/skills/llm-forge/scripts/` which does not exist yet — outside the package, and a
+    glob that cannot see it stays green on the one day it should fire.
+
     WHEN THIS GOES RED, a consumer has appeared. That is the intended direction and nothing
     here should be deleted for it: `_refusals_disabled` has just become load-bearing, so
     check that it still bypasses only the policy, and that each case below still reaches the
     mechanism it is measuring.
     """
-    callers = sorted(p.name for p in (ROOT / "shared" / "lib" / "forge").glob("*.py")
-                     if _calls_the_policy(p))
+    scanned = sorted(p for root in (ROOT / "shared", ROOT / "scripts")
+                     for p in root.glob("**/*.py"))
+    # Both roots must really have been reached, or `callers == []` is a statement about an
+    # empty sweep — the failure a widened glob is meant to remove, arriving as a pass.
+    assert ROOT / "shared" / "lib" / "forge" / "inspect.py" in scanned
+    assert ROOT / "scripts" / "render.py" in scanned
+    callers = [str(p.relative_to(ROOT)) for p in scanned
+               if _references_the_policy(p.read_bytes())]
     assert callers == [], (
         f"{callers} now enforce inspect.rejections — see this test's docstring before "
         "changing anything below it")
@@ -603,6 +630,11 @@ def _harm_of_escaping_link(repo, tmp):
     The VERIFIER is asserted as well as the seat because it is the tree the gate runs in,
     built to be independent of the builder: a confirmed verify command executing there can
     read and write a host path through this link.
+
+    WHEN THIS GOES RED, someone has closed the hole, and the red is good news wearing a
+    regression's clothes: this case pins the ABSENCE of a defence (`verified is True`,
+    `omitted == ()`, a host file reachable from the gate). Do not restore the absence — move
+    each assertion onto whatever now refuses, and leave the case measuring the same seam.
     """
     chain = _chain_to_verifier(repo, tmp)
     assert chain.seat.verified is True and chain.candidate.omitted == (), \
@@ -611,6 +643,19 @@ def _harm_of_escaping_link(repo, tmp):
         link = tree / "creds"
         assert link.is_symlink(), what
         assert link.read_text() == _HOST_ONLY, f"{what} reads outside the repository"
+
+    # The WRITE, and through the engine's own runner: `run_command` is what executes a
+    # confirmed verify command, so this is the gate itself — in the tree built to be
+    # independent of the builder — reaching a path the repository never contained. Reading
+    # is the lesser half; a gate that can write outside its clone can rewrite the thing it
+    # was cloned to judge. argv, never a shell.
+    host = (chain.verifier / "creds").readlink()
+    assert not host.is_relative_to(chain.verifier), "the fixture's link must really escape"
+    run = verify.run_command(chain.verifier, verify.Command.parse(
+        [[sys.executable, "-c", "open('creds', 'w').write('PWNED-BY-THE-GATE\\n')"]]))
+    assert run.exit_code == 0, run.stderr
+    assert host.read_text() == "PWNED-BY-THE-GATE\n", \
+        "the gate wrote out of its own tree, onto a host file, at exit 0"
 
 
 def _no_harm_of_escaping_link(chain: _Chain):
@@ -659,6 +704,11 @@ def _harm_of_shallow(repo, tmp):
     Both trees are asserted because they fail differently: in the SEAT it lands on the
     agent, and in the VERIFIER it is an infrastructure failure of the gate, which §4 is most
     insistent must never be read as a verdict on the candidate.
+
+    WHEN THIS GOES RED, as with the escaping link above: this case pins the ABSENCE of a
+    defence — `verified is True` over a truncation nothing objects to — so a consumer for
+    the refusal, or a fetch that deepens the clone, turns it red as a side effect of being
+    fixed. Move the assertions onto whatever now refuses rather than deleting the case.
     """
     chain = _chain_to_verifier(repo, tmp)
     assert chain.seat.verified is True, \
@@ -778,7 +828,6 @@ def test_a_repo_preflight_admits_completes_the_chain(tmp_path):
     run = verify.run_command(chain.verifier, verify.Command.parse([["./check.sh"]]))
     assert run.exit_code == 0, f"the gate itself failed: {run.stderr}"
     outcome, reason = verify.classify(run, run, chain.candidate)
-    assert outcome in verify.OUTCOMES
     assert chain.candidate.gate_delta is None
     assert outcome == verify.GATE_CHANGED
     assert "nobody measured the gate surface" in reason
