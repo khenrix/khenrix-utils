@@ -1826,10 +1826,14 @@ def test_setup_cannot_run_in_a_tree_that_never_matched_its_bundle(tmp_path):
 
 
 def test_setup_that_changes_a_tracked_file_fails_the_candidate_closed(tmp_path):
-    """§6: it would otherwise be applied twice — once inside the candidate's own B->final
-    content, once when the verifier re-runs setup. A `schema.lock` bumped to 2 by the seat
-    and to 3 here leaves the gate running against a tree that is neither the baseline nor
-    the candidate, so this is a refusal rather than a repair.
+    """§6: the gate would otherwise measure a tree whose tracked content is not the
+    candidate the bundle describes, with nothing in the run accounting for the difference.
+
+    Note what this fixture is NOT: the candidate here carries `paths=()` and an empty patch,
+    so nothing is "already inside the candidate" to be applied a second time. That reading
+    of §6 holds only where harvest names the path in `ArtifactSet.setup_overlap`, and the
+    refusal does not depend on it — which is why this case, with an empty candidate, still
+    has to be refused.
     """
     repo = make_repo(tmp_path)
     write(repo, "schema.lock", "1\n")

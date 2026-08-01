@@ -23,9 +23,9 @@ SETUP IS REPLAYED HERE, and §6 puts a check in front of it. The tree is first c
 against the bundle that describes it (`validate_materialized`), because setup is the first
 thing that legitimately changes this tree and afterwards "differs from the bundle" and
 "setup installed something" are one observation. Then `run_setup` runs the confirmed setup
-command and REFUSES it, rather than re-applying it, if it moved a tracked path no relation
-declares: that change is already inside the candidate's own B->final content, so applying it
-a second time here leaves a tree that is neither the baseline nor the candidate.
+command and REFUSES it, rather than continuing, if it moved a tracked path no relation
+declares: the gate would then measure a tree whose tracked content differs from the candidate
+the bundle describes, with nothing in the run accounting for the difference.
 
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
 the two options the plan offered are NOT equivalent:
@@ -167,10 +167,17 @@ class GeneratorUnstable(VerifyError):
 class SetupOverlap(VerifyError):
     """Setup changed a tracked file the run's generator contract does not declare (spec §6).
 
-    Fails the candidate CLOSED rather than continuing. The change is already inside the
-    candidate's own B->final content, so letting the verifier's setup apply it again runs the
-    gate against a tree that is neither the baseline nor the candidate — a `schema.lock`
-    bumped to 2 by the seat and to 3 here.
+    Fails the candidate CLOSED. The gate would otherwise measure a tree whose tracked
+    content differs from the candidate the bundle describes, with nothing in the run
+    accounting for the difference — the verdict would name a candidate nobody built.
+
+    NOT, in general, "the change is already in the candidate and would be applied twice".
+    Measured: `harvest.artifact_set` sets `paths` from the WORK window alone, so a tracked
+    effect setup produced in the seat never crosses into the bundle, and re-running setup
+    here reproduces it exactly once. Stacking is real only where harvest already names the
+    path in `ArtifactSet.setup_overlap` — both windows touched it — and there an IDEMPOTENT
+    setup leaves no delta for this function to see at all. The refusal earns its keep on the
+    first argument, not the second.
     """
 
 
@@ -701,7 +708,8 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
             f"{contract.id!r}; a run has one contract, confirmed once at the §5 gate")
     seat = fleet.clone_seat(repo, baseline, dest, name=VERIFIER_NAME, identity=identity)
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
-    # read back after it, because the candidate is the one thing in between that writes.
+    # read back after it, because the candidate is the only writer BEFORE THIS READBACK.
+    # `run_setup` writes later, and its writes are not re-checked — see its docstring.
     _hooks_pin(seat.path)
     # The baseline half of the delta, and this is the only moment it can be taken: the
     # clone holds exactly B1 and `clone_seat` has already verified the checkout against its
@@ -731,6 +739,12 @@ def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
     has (a FIFO, a directory). They collapse into one answer because `SidecarEntry` only
     carries "file" or "symlink", so none of them can compare equal to one — and a path that
     cannot be READ is one this function cannot vouch for in either direction.
+
+    That collapse is deliberately NOT what `_surface_state` does with the same OSError: it
+    raises a distinct refusal, because a gate-surface path is compared against ITSELF across
+    two reads and an unreadable one would compare equal to itself and vanish from the delta.
+    Here the comparison is against a payload the bundle already holds, so an unreadable path
+    can only ever produce a mismatch — fail-closed either way, and one answer is enough.
     """
     p = root / rel
     try:
@@ -878,8 +892,8 @@ def run_setup(verifier: Verifier, setup: Command, *, env=None) -> SetupResult:
     if overlap:
         raise SetupOverlap(
             f"the setup command changed {_paths_phrase(overlap)}, which the run's generator "
-            "contract does not declare; those changes are already inside the candidate, so "
-            "running setup here would apply them twice")
+            "contract does not declare; the gate would measure a tree whose tracked content "
+            "is not the candidate the bundle describes")
     return SetupResult(run=run, overlap=overlap)
 
 
