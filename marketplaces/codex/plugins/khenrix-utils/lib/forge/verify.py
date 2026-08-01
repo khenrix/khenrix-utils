@@ -62,11 +62,13 @@ the repo path passes `env=fleet.forge_child_env(repo)`, which composes: that fun
 the same `HOSTILE_ENV` and pins the same /dev/null pair, so this module's strip and pin are
 idempotent over its result and all it contributes is the checkout scrub.
 """
+import configparser
 import fnmatch
 import os
 import signal
 import subprocess
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -78,6 +80,27 @@ from .storage import Quota
 # that cannot be one, so feeding it a caller-chosen directory name would add a failure mode
 # for no gain — the clones have no remotes, so two verifiers cannot collide.
 VERIFIER_NAME = "verify"
+
+# §6.2's outcome vocabulary. Plain `str` constants, not an Enum: these values travel into a
+# manifest, a report and a judge prompt as text, and a `str`-mixin Enum gives one value two
+# spellings in exactly those places — measured on 3.14, `f"{X.PASS}"` is "X.PASS" while
+# `json.dumps(X.PASS)` is "PASS". `enum.StrEnum` agrees with itself, but nothing else in
+# this package is an enum, and a bare `str` is what a manifest round-trips unchanged.
+PASS = "PASS"
+FAIL = "FAIL"
+FLAKY = "FLAKY"
+BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE = "BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE"
+HARVEST_INCOMPLETE = "HARVEST_INCOMPLETE"
+GATE_CHANGED = "GATE_CHANGED"
+
+# Every value `classify` can return, for a consumer validating one read back out of a
+# manifest. In §6.2's table order, which is NOT the precedence — see `classify` for that.
+OUTCOMES = (PASS, BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE, FAIL, FLAKY, HARVEST_INCOMPLETE,
+            GATE_CHANGED)
+
+# How many paths a reason names before it counts the rest. A reason is carried into a report
+# and a judge prompt, and `omitted` and a gate delta are each as large as the candidate.
+_REASON_PATHS = 5
 
 # Characters that mean something only to a SHELL. Applied to a step's PROGRAM NAME, never
 # to its arguments: nothing here runs a shell, so `grep -E 'a|b'` and `find -name '*.py'`
@@ -663,3 +686,429 @@ def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> 
         f"output(s) on the last of its {max_passes} passes, so it has no fixed point: "
         f"{', '.join(declared[:5])}{' …' if len(declared) > 5 else ''}. This is an "
         "infrastructure failure of the command, never the candidate's verdict.")
+
+
+def _as_run(value, what: str) -> Run:
+    """The `Run` inside `value`, which may be a `FixedPoint` wrapping one.
+
+    Both shapes are accepted because §6.2's PASS is "exit 0 AND no unexplained tracked
+    delta" and only the `FixedPoint` carries the second half. Anything else is refused
+    rather than duck-typed: `.exit_code` off some other object would be a verdict read from
+    a value nobody in this module measured.
+    """
+    run = value.run if isinstance(value, FixedPoint) else value
+    if not isinstance(run, Run):
+        raise VerifyError(
+            f"classify's {what} must be a Run or a FixedPoint, not "
+            f"{type(value).__name__}; a verdict has to be read off a run this module made")
+    return run
+
+
+def _paths_phrase(paths) -> str:
+    shown = ", ".join(paths[:_REASON_PATHS])
+    rest = len(paths) - _REASON_PATHS
+    return f"{shown} (+{rest} more)" if rest > 0 else shown
+
+
+def _harvest_reason(cand: Run, omitted) -> str:
+    """Why a bundle that omitted something is not a verdict on the candidate.
+
+    The strongest form is §6.2's own mechanical check — a failing command whose output
+    names one of the missing paths — so it is stated separately when it holds. It does not
+    hold on a PASS, and a PASS is exactly where the field is load-bearing: the gate can
+    exit 0 BECAUSE an input is missing, and `bundle.CandidateBundle.omitted` records the
+    measurement (a nested repo's gitlink omitted, `git -C sub rev-parse HEAD` answering the
+    verifier's own HEAD) where that is invisible at the gate itself.
+    """
+    named = [p for p in omitted
+             if cand.exit_code != 0 and (p in cand.stdout or p in cand.stderr)]
+    if named:
+        return (f"the gate exited {cand.exit_code} and its output names {len(named)} path(s) "
+                f"the bundle could not carry: {_paths_phrase(named)}. §6.2 calls that a "
+                "harvesting gap, not a candidate defect")
+    return (f"the bundle could not carry {len(omitted)} of the candidate's paths, so the "
+            f"verifier never held the whole candidate: {_paths_phrase(omitted)}. The gate "
+            f"exited {cand.exit_code}, which settles nothing either way — a gate can pass "
+            "BECAUSE an input is missing")
+
+
+def _gate_taints(candidate_run, cand: Run, cb) -> list:
+    """Every reason this run's gate cannot be treated as the baseline's.
+
+    Two facts, and the first has three states rather than two. `gate_delta is None` is
+    "nobody looked", which `bundle.CandidateBundle` names as the fail-OPEN reading of an
+    empty tuple and requires a consumer to treat as UNKNOWN; `()` is a measured, clean
+    surface; a non-empty tuple is §6.1's `gate_changed`.
+
+    The second is §7.2's: a gate that rewrote tracked files no generator relation declares
+    is partly a generator nobody declared, and §7.2 routes exactly that through §6.1's
+    `gate_changed` rather than inventing a seventh outcome. It is read ONLY from a
+    `FixedPoint` whose run exited 0, because `FixedPoint.unexplained` is measured only for
+    a pass that exited 0 — on a failing run it holds whatever earlier passes measured and
+    nothing about the pass that failed, so reading it there would attribute a gate change
+    to evidence that is not about this verdict.
+    """
+    taints = []
+    if cb.gate_delta is None:
+        taints.append("nobody measured the gate surface (gate_delta is None), so this run "
+                      "cannot claim it ran the baseline's gate")
+    elif cb.gate_delta:
+        taints.append(f"the candidate changed {len(cb.gate_delta)} path(s) that define "
+                      f"the gate: {_paths_phrase(cb.gate_delta)}")
+    if (isinstance(candidate_run, FixedPoint) and cand.exit_code == 0
+            and candidate_run.unexplained):
+        taints.append(
+            f"the gate rewrote {len(candidate_run.unexplained)} tracked path(s) no "
+            f"generator relation declares: {_paths_phrase(candidate_run.unexplained)}")
+    return taints
+
+
+def _run_verdict(cand: Run, base: Run, again) -> tuple[str, str]:
+    """What the RUNS alone say, before the bundle is consulted.
+
+    Kept separate so its reason can be quoted verbatim by a `GATE_CHANGED` that displaces
+    it. A reason built here that also claimed the bundle was clean would become false the
+    moment it was quoted, so everything about the bundle is added by the caller instead.
+    """
+    if again is not None and (again.exit_code == 0) != (cand.exit_code == 0):
+        # Both directions, not only §6.2's fail->pass. A pass->fail rerun left as PASS is
+        # precisely the conversion §6.2 forbids, read from the run that happened to be
+        # first.
+        return FLAKY, (
+            f"the gate exited {cand.exit_code} and then {again.exit_code} on a rerun in the "
+            "same verifier; §6.2 labels a run pair that disagrees with itself indeterminate "
+            "and never converts it to a pass")
+    if cand.exit_code == 0:
+        agreed = " and again on a rerun" if again is not None else ""
+        return PASS, (f"the gate exited 0{agreed} in a verifier clone built from the "
+                      "baseline, which the builder never had access to")
+    if base.exit_code != 0:
+        return BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE, (
+            f"the candidate's gate exited {cand.exit_code} at step {cand.step_index} and "
+            f"the calibration run had already exited {base.exit_code}; no NEW failure was "
+            "identified, and §6.2 requires structured test identities to identify one, so "
+            "this comparison is degraded rather than an equivalence")
+    return FAIL, (f"the calibration run exited 0 and the candidate's gate exited "
+                  f"{cand.exit_code} at step {cand.step_index}")
+
+
+def classify(candidate_run, baseline_run, bundle, *, rerun=None) -> tuple[str, str]:
+    """§6.2's outcome for this run, and the sentence that has to hold for it.
+
+    `candidate_run` and `baseline_run` are each a `Run` or the `FixedPoint` around one;
+    `baseline_run` is the CALIBRATION — the confirmed command run before the candidate
+    existed, which is what makes "a new failure" a statement about the candidate.
+
+    PRECEDENCE, in full: §6.2's table is a list of meanings, not an order, so all three
+    of these are this function's reading rather than a transcription.
+
+      1. `HARVEST_INCOMPLETE` whenever `bundle.omitted` is non-empty — before the exit
+         code, which is `CandidateBundle.omitted`'s own stated consumer contract. A
+         narrower rule would have to decide which omissions are benign, and the only thing
+         that could is the phase inventories, which no argument here carries.
+      2. `GATE_CHANGED` DISPLACES `PASS` and `BASELINE_RED_…`, and only those two. Both
+         rest on a premise a moved gate surface removes: PASS claims the gate was the
+         baseline's, and §6.2 names "changed test discovery" as a way two nonzero runs stop
+         being comparable, which is the whole of what `BASELINE_RED_…` asserts. `FAIL` and
+         `FLAKY` are left standing because neither rests on that premise: FAIL is already
+         the most adverse thing that can be said about a candidate, and replacing it with
+         "changed, please review" is the verdict reading cleaner than its evidence; FLAKY
+         says the run pair cannot answer at all, which a gate mark does not say. Whatever
+         the outcome, the taints are in the reason, so nothing is lost.
+      3. `FLAKY` before `BASELINE_RED_…`: a rerun that disagrees with itself is not evidence
+         that no new failure exists, it is evidence that this gate cannot say.
+
+    A PASS says in its own reason whether the §7.2 half was measured at all. A bare `Run`
+    cannot answer it — only `fixed_point` measures a tracked delta — so a caller that ran
+    the gate through `fixed_point` and then hands over `fp.run` gets a weaker PASS than
+    §6.2's, and the reason is where that is visible instead of assumed.
+    """
+    cand = _as_run(candidate_run, "candidate_run")
+    base = _as_run(baseline_run, "baseline_run")
+    again = None if rerun is None else _as_run(rerun, "rerun")
+
+    if bundle.omitted:
+        return HARVEST_INCOMPLETE, _harvest_reason(cand, bundle.omitted)
+
+    outcome, reason = _run_verdict(cand, base, again)
+    taints = _gate_taints(candidate_run, cand, bundle)
+    if taints and outcome in (PASS, BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE):
+        return GATE_CHANGED, (f"{'; '.join(taints)}. On the runs alone this would have been "
+                              f"{outcome}: {reason}")
+    if taints:
+        reason = f"{reason}; also, {'; '.join(taints)}"
+    if outcome == PASS:
+        measured = ("the gate itself rewrote no tracked path outside the generator contract"
+                    if isinstance(candidate_run, FixedPoint) else
+                    "nothing here measured whether the gate rewrote tracked files (§7.2), "
+                    "so this rests on the exit code and the bundle alone")
+        reason = (f"{reason}; the bundle carried every artifact path, the gate surface was "
+                  f"measured and unchanged, and {measured}")
+    return outcome, reason
+
+
+# Files a build or task runner finds BY NAME in the directory it is started in — each entry
+# is that tool's own documented search, not a guess: GNU make reads GNUmakefile, makefile,
+# Makefile in that order; `just` reads justfile/.justfile/Justfile; rake reads Rakefile;
+# nox reads noxfile.py; go-task reads Taskfile.{yml,yaml}. Naming one is how a gate gets
+# defined without anything else in the tree mentioning it.
+_BUILD_FILES = frozenset({
+    "Makefile", "makefile", "GNUmakefile",
+    "justfile", ".justfile", "Justfile",
+    "Rakefile", "rakefile", "Rakefile.rb", "rakefile.rb",
+    "noxfile.py", "Taskfile.yml", "Taskfile.yaml", "dodo.py", "SConstruct", "meson.build",
+    "CMakeLists.txt", "build.gradle", "build.gradle.kts", "pom.xml", "build.xml", "BUILD",
+    "BUILD.bazel", "WORKSPACE", "MODULE.bazel",
+})
+
+# Manifests and configuration that decide WHAT the gate runs rather than being run: npm's
+# `scripts` block, pytest's ini options and its per-directory conftest hook, tox's envlist,
+# cargo's `[[test]]`, coverage thresholds that turn a green suite red.
+_RUNNER_CONFIG_FILES = frozenset({
+    "package.json", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "pytest.ini",
+    "conftest.py", ".coveragerc", "Cargo.toml", "Gemfile", "composer.json", "phpunit.xml",
+    "phpunit.xml.dist", ".rspec", "deno.json", "deno.jsonc", ".pre-commit-config.yaml",
+    "nx.json", "turbo.json",
+})
+
+# The same role, matched as a glob because the tool accepts several extensions for one
+# config file (`jest.config.{js,ts,mjs,cjs,json}` and friends).
+_RUNNER_CONFIG_GLOBS = (
+    "jest.config.*", "vitest.config.*", "vite.config.*", "karma.conf.*", ".mocharc.*",
+    "playwright.config.*", "cypress.config.*", "ava.config.*",
+)
+
+# CI definitions, matched on the DIRECTORY the CI system reads, at ANY depth. A CI system
+# reads only the directory at its own checkout root, so a nested `.github/workflows` costs
+# an over-report — while anchoring at the root costs a MISSED gate file in any tree this is
+# handed a subdirectory of, and under-reporting is the direction `gate_delta` fails open in.
+_CI_DIRS = (".github/workflows/", ".github/actions/", ".circleci/", ".buildkite/",
+            ".woodpecker/", ".gitea/workflows/", ".forgejo/workflows/")
+
+# CI definitions matched by name rather than by directory.
+_CI_FILES = frozenset({
+    ".gitlab-ci.yml", ".gitlab-ci.yaml", ".travis.yml", "azure-pipelines.yml",
+    "Jenkinsfile", "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml",
+    "cloudbuild.yaml",
+})
+
+# Files a runner DISCOVERS with nothing naming them, so deleting or weakening one changes
+# the gate silently. Each is a documented default: pytest's `python_files` (`test_*.py`,
+# `*_test.py`), go's `_test.go` suffix, bats' `.bats`, rspec's `_spec.rb`, phpunit's
+# `*Test.php`, surefire's four (`Test*.java`, `*Test.java`, `*Tests.java`, `*TestCase.java`)
+# and the `.test.`/`.spec.` half of Jest's and Vitest's default match. The character classes
+# are fnmatch's: `[jt]s` is js and ts, `[mc]js` is mjs and cjs. The DIRECTORY half of those
+# JS defaults — `__tests__/**` — is a positional rule this cannot express; see
+# `gate_surface` for what that leaves uncovered.
+_TEST_GLOBS = (
+    "test_*.py", "*_test.py",
+    "*_test.go",
+    "*.bats",
+    "*_spec.rb",
+    "*Test.php",
+    "Test*.java", "*Test.java", "*Tests.java", "*TestCase.java",
+    "*.test.[jt]s", "*.test.[jt]sx", "*.test.[mc]js",
+    "*.spec.[jt]s", "*.spec.[jt]sx", "*.spec.[mc]js",
+)
+
+# The INI-shaped places a pytest run reads `python_files` from, and the section each keeps
+# it in; `pyproject.toml` is the fourth and is read by `tomllib` instead. Both are parsed as
+# DATA and never imported — a tree under classification is builder-controlled, so importing
+# its config would be the engine executing that code outside the gate, which is the one
+# thing §6 exists to prevent.
+_PYTEST_CONFIG = (
+    ("pytest.ini", "pytest"),
+    ("tox.ini", "pytest"),
+    ("setup.cfg", "tool:pytest"),
+)
+
+
+def _enumerate(root: Path) -> tuple[str, ...]:
+    """Every path in the tree git will name, keyed the way `snapshot` keys one.
+
+    `--cached --others --exclude-standard`. The index ALONE would miss a gate file the
+    candidate added, because `bundle.materialize` writes a sidecar to disk and not to the
+    index — and a missing gate file is the fail-OPEN direction for a surface.
+
+    `--exclude-standard` is the boundary this function accepts rather than the one it would
+    like: without it, `--others` enumerates `.venv/` and `node_modules/`, i.e. every
+    installed package. So an IGNORED gate file — the `.venv/bin/pytest` this module's own
+    docstring names — is NOT enumerated here, and is reached only when `command` names it.
+
+    binary=True + surrogateescape for `_tracked`'s reason: these keys are compared against
+    and returned alongside paths that came off a filesystem.
+    """
+    out = gitcmd.git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                     env_extra=gitcmd.READONLY, binary=True).stdout
+    return tuple(sorted({p for p in out.decode("utf-8", "surrogateescape").split("\0") if p}))
+
+
+def _ini_python_files(text: str, section: str) -> list:
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(text)
+        raw = parser.get(section, "python_files")
+    except (configparser.Error, ValueError):
+        # A config this cannot parse leaves the DEFAULTS standing, which is the wider
+        # surface. Raising instead would let a candidate that writes a malformed
+        # `setup.cfg` stop the surface being computed at all.
+        return []
+    return raw.split()
+
+
+def _toml_python_files(raw: bytes) -> list:
+    try:
+        value = tomllib.loads(raw.decode("utf-8", "replace"))
+    except (tomllib.TOMLDecodeError, ValueError):
+        return []
+    for key in ("tool", "pytest", "ini_options", "python_files"):
+        if not isinstance(value, dict):
+            return []
+        value = value.get(key)
+        if value is None:
+            return []
+    if isinstance(value, str):
+        return value.split()
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def _test_globs(root: Path, paths) -> tuple[str, ...]:
+    """`_TEST_GLOBS`, WIDENED by whatever discovery the tree's own pytest config declares.
+
+    Union, never replacement, and that is the whole security property: `python_files` is
+    read out of a file the candidate may have written, so honouring it as a REPLACEMENT
+    would let `python_files = nothing_*.py` drop every real test file out of the surface —
+    a candidate narrowing the definition of the gate it is about to be measured against.
+    Widening can only add, so the worst a rewritten config can do is over-report.
+
+    Only the tree's root-level config is read. A nested one belongs to a rootdir this
+    function was not told about, and pytest reads the ini file at the rootdir alone.
+    """
+    found = set(_TEST_GLOBS)
+    for rel, section in _PYTEST_CONFIG:
+        if rel in paths:
+            try:
+                text = (root / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            found.update(_ini_python_files(text, section))
+    if "pyproject.toml" in paths:
+        try:
+            found.update(_toml_python_files((root / "pyproject.toml").read_bytes()))
+        except OSError:
+            pass
+    return tuple(sorted(found))
+
+
+def _gate_role(path: str, test_globs) -> str:
+    """The gate-defining role `path` plays, or "" when it plays none."""
+    name = path.rsplit("/", 1)[-1]
+    if name in _BUILD_FILES:
+        return "build definition"
+    if name in _RUNNER_CONFIG_FILES:
+        return "runner or package configuration"
+    if any(fnmatch.fnmatchcase(name, g) for g in _RUNNER_CONFIG_GLOBS):
+        return "runner configuration"
+    if name in _CI_FILES or any(path.startswith(d) or f"/{d}" in path for d in _CI_DIRS):
+        return "CI definition"
+    if any(fnmatch.fnmatchcase(name, g) for g in test_globs):
+        return "discovered test file"
+    return ""
+
+
+def _command_paths(root: Path, command) -> set:
+    """Paths inside the tree that the gate's own argv names.
+
+    This is the half of the surface no naming rule can reach: `[["./check.sh"]]` and
+    `[["make", "-f", "mk/gate.mk"]]` define the gate completely and neither file's name
+    says so. It is also the only route to a gate file git does not enumerate — the ignored
+    `.venv/bin/pytest`.
+
+    Containment is LEXICAL and matches `_step_cwd`: an absolute token or one with `..` in
+    it names something outside the tree, which cannot be a candidate path and so cannot be
+    in a delta computed against one. Directories are skipped — a delta is over files, and
+    `pytest tests` is already covered by the discovery globs underneath it.
+    """
+    named = set()
+    for step in getattr(command, "steps", ()):
+        base = step.cwd.rstrip("/") if step.cwd else ""
+        for token in step.argv:
+            token = token[2:] if token.startswith("./") else token
+            if not token or os.path.isabs(token) or ".." in Path(token).parts:
+                continue
+            rel = f"{base}/{token}" if base else token
+            p = root / rel
+            if p.is_file() or p.is_symlink():
+                named.add(rel)
+    return named
+
+
+def _contract_sources(contract, paths, surface) -> set:
+    """The SOURCES of any contract relation whose output is already gate surface.
+
+    A gate file that is generated is defined by whatever generates it: if the contract says
+    `shared/** -> marketplaces/**` and a Makefile under `marketplaces/` is surface, then
+    editing the shared source moves that gate on the next generator pass. Leaving the
+    source out would make exactly that edit invisible, which is the fail-open direction.
+
+    The cost is stated rather than hidden: a broad source glob puts every file it matches
+    into the surface, so a contract author writing one is declaring that editing any of
+    them can rewrite the gate. `fnmatchcase` and `*`-crosses-`/` are `_declared`'s, so a
+    relation means the same thing here as it does at admission.
+    """
+    extra = set()
+    for source, output in contract.relations:
+        if any(fnmatch.fnmatchcase(p, output) for p in surface):
+            extra.update(p for p in paths if fnmatch.fnmatchcase(p, source))
+    return extra
+
+
+def gate_surface(verifier_path, contract, *, command=None) -> tuple[str, ...]:
+    """The files in this tree that DEFINE the gate, so a caller can compute `gate_delta`.
+
+    §6.1's list — build definitions, package-script definitions, test-runner config, CI
+    helpers, discovered test files — answered against ONE TREE. Four derivations, and each
+    is named because a surface nobody can audit is not a defence:
+
+      * `git ls-files --cached --others --exclude-standard` says which paths the tree
+        actually has. Nothing here returns a name the tree does not hold, so a repository
+        with no Makefile has no Makefile in its surface.
+      * the ROLE RULES (`_BUILD_FILES`, `_RUNNER_CONFIG_*`, `_CI_*`, `_TEST_GLOBS`) are
+        engine-owned and fixed. They have to be: each one encodes a tool's own documented
+        discovery, and deriving them from the tree instead would mean asking the builder's
+        config which files count as the gate — the question under suspicion.
+      * the tree's own pytest config WIDENS the test-file globs (see `_test_globs`), which
+        is the one discovery rule a repository can legitimately redefine.
+      * `command`, when given, adds the paths the gate's argv names — the only route to a
+        gate file whose name says nothing, and the only route to one git does not
+        enumerate.
+      * `contract` adds the sources of any relation whose output is already surface.
+
+    WHAT THIS DOES NOT COVER, because `gate_delta` is fail-OPEN when it under-reports and a
+    surface that hides its gaps is worse than a small one:
+
+      * INDIRECTION inside a gate file. `include mk/*.mk`, a `package.json` script that
+        runs `scripts/ci.sh`, a Makefile recipe naming a helper: reading those means
+        parsing each tool's language, and getting it wrong silently drops a real gate file.
+        Only the entry point is covered, and only when a rule or `command` names it.
+      * IGNORED paths, per `_enumerate` — `.venv/bin/pytest`, `node_modules/.bin/jest` —
+        except when `command` names one directly.
+      * POSITIONAL test layouts, where membership is a directory rather than a name: Rust's
+        `tests/*.rs`, Maven's `src/test/java/**`, Jest's `__tests__/**`, a suite listed only
+        inside a CI matrix.
+        A directory rule needs to know which tool owns the tree, and this function is not
+        told which tool the gate is.
+      * A runner reached only through PATH. `make` invoking `pytest` names no path, so the
+        binary that runs is whatever the environment resolves.
+
+    `verifier_path` must be a tree the ENGINE built — a verifier, or the baseline checkout.
+    A seat's index is writable by the party under suspicion, and `git rm --cached Makefile`
+    in a seat would delete a gate file from a surface computed there.
+    """
+    root = Path(verifier_path)
+    paths = _enumerate(root)
+    globs = _test_globs(root, paths)
+    surface = {p for p in paths if _gate_role(p, globs)}
+    surface |= _command_paths(root, command)
+    surface |= _contract_sources(contract, paths, surface)
+    return tuple(sorted(surface))

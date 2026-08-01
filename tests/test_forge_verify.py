@@ -834,3 +834,408 @@ def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(tmp_
     assert name in entries, "the fixture did not produce the filename this test is about"
     assert name in verify._tracked(Path(repo)), \
         "git's view of the index and snapshot's view of the tree disagree on this name"
+
+
+def _run(code, out=""):
+    return verify.Run(exit_code=code, stdout=out, stderr="", duration_sec=0.1, step_index=0)
+
+
+def test_exit_zero_alone_is_not_a_pass_when_the_bundle_omitted_an_input():
+    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                               tracked_patch=b"", sidecars=(), gate_delta=(),
+                               generator_contract_id="x", omitted=("fixtures/data.bin",))
+    outcome, reason = verify.classify(_run(1, "FileNotFoundError: fixtures/data.bin"),
+                                      _run(0), b)
+    assert outcome == verify.HARVEST_INCOMPLETE
+    assert "fixtures/data.bin" in reason
+
+
+def test_a_baseline_that_was_already_red_is_not_reported_as_a_pass():
+    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                               tracked_patch=b"", sidecars=(), gate_delta=(),
+                               generator_contract_id="x", omitted=())
+    outcome, _ = verify.classify(_run(1, "1 failed"), _run(1, "1 failed"), b)
+    assert outcome == verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE
+
+
+def test_a_fail_then_pass_rerun_is_flaky_not_a_pass():
+    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                               tracked_patch=b"", sidecars=(), gate_delta=(),
+                               generator_contract_id="x", omitted=())
+    outcome, _ = verify.classify(_run(1), _run(0), b, rerun=_run(0))
+    assert outcome == verify.FLAKY
+
+
+def test_a_candidate_that_edited_the_gate_is_marked_not_silently_passed():
+    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                               tracked_patch=b"", sidecars=(), gate_delta=("Makefile",),
+                               generator_contract_id="x", omitted=())
+    outcome, reason = verify.classify(_run(0), _run(0), b)
+    assert outcome == verify.GATE_CHANGED and "Makefile" in reason
+
+
+def test_a_clean_pass_is_a_pass():
+    b = bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                               tracked_patch=b"", sidecars=(), gate_delta=(),
+                               generator_contract_id="x", omitted=())
+    assert verify.classify(_run(0), _run(0), b)[0] == verify.PASS
+
+
+def _bundle(**kw):
+    """A bundle that carries nothing, so a test names only the field it is about.
+
+    `gate_delta` is spelled out in every call rather than defaulted, because its default is
+    `None` — "nobody looked" — and a test that meant "clean gate" and got the default would
+    be asserting the opposite of what it says.
+    """
+    kw.setdefault("gate_delta", ())
+    return bundle.CandidateBundle(version=1, baseline_ref="r", baseline_commit="c",
+                                  tracked_patch=b"", sidecars=(),
+                                  generator_contract_id="x", **kw)
+
+
+def test_a_gate_surface_nobody_measured_is_not_treated_as_a_clean_one():
+    """`gate_delta is None` is the fail-OPEN reading of `()`, and it is the DEFAULT.
+
+    `bundle.build` does not populate the field yet, so this is the shape every real bundle
+    has today: a clean pass on an unmeasured gate surface must come back as GATE_CHANGED,
+    not PASS, or the whole gate-surface defence is off by default.
+    """
+    outcome, reason = verify.classify(_run(0), _run(0), _bundle(gate_delta=None))
+    assert outcome == verify.GATE_CHANGED
+    assert "gate_delta is None" in reason
+    assert "PASS" in reason, "the displaced verdict is not stated"
+
+
+def test_the_reason_separates_an_unmeasured_gate_from_an_edited_one():
+    """One outcome, two very different facts. A reviewer who cannot tell them apart cannot
+    act: one is a missing measurement to go and take, the other is a diff to read."""
+    unmeasured = verify.classify(_run(0), _run(0), _bundle(gate_delta=None))[1]
+    edited = verify.classify(_run(0), _run(0), _bundle(gate_delta=("Makefile",)))[1]
+    assert "nobody measured" in unmeasured and "Makefile" not in unmeasured
+    assert "Makefile" in edited and "nobody measured" not in edited
+
+
+def test_a_bundle_that_omitted_a_path_is_incomplete_even_when_the_gate_passed():
+    """`CandidateBundle.omitted`'s own consumer contract: before the exit code, not after.
+
+    The measured case behind it is a nested repo whose gitlink is omitted while its content
+    crosses as ordinary sidecars — `git -C sub rev-parse HEAD` then exits 0 in the verifier
+    and answers the VERIFIER's HEAD, so the gate passes BECAUSE something is missing and
+    nothing at the gate can see it.
+    """
+    outcome, reason = verify.classify(_run(0), _run(0), _bundle(omitted=("sub",)))
+    assert outcome == verify.HARVEST_INCOMPLETE
+    assert "sub" in reason and "settles nothing" in reason
+
+
+def test_a_changed_gate_does_not_launder_a_failing_gate_into_a_review_mark():
+    """GATE_CHANGED displaces PASS, never FAIL.
+
+    A candidate that both weakened the gate and still failed it has failed; reporting
+    "changed, please review" instead would be the verdict reading cleaner than its
+    evidence. The gate edit is not lost — it is in the reason.
+    """
+    outcome, reason = verify.classify(_run(1), _run(0), _bundle(gate_delta=("Makefile",)))
+    assert outcome == verify.FAIL
+    assert "Makefile" in reason
+
+
+def test_two_red_runs_are_not_comparable_when_the_gate_moved_between_them():
+    """§6.2 names changed test discovery as a way two nonzero runs stop being equivalent,
+    and "no new failure identified" is exactly that equivalence claim — so a moved gate
+    surface has to displace it the same way it displaces PASS."""
+    outcome, reason = verify.classify(_run(1), _run(1), _bundle(gate_delta=("Makefile",)))
+    assert outcome == verify.GATE_CHANGED
+    assert verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE in reason
+
+
+def test_an_unexplained_tracked_rewrite_is_not_a_pass():
+    """§6.2's PASS is exit 0 AND no unexplained tracked delta, and only the `FixedPoint`
+    carries the second half. §7.2 routes an undeclared generator through §6.1's
+    gate_changed rather than inventing a seventh outcome, so that is what it comes back as.
+    """
+    fp = verify.FixedPoint(_run(0), (), ("evals/chunk-map/receipt.json",))
+    outcome, reason = verify.classify(fp, _run(0), _bundle())
+    assert outcome == verify.GATE_CHANGED
+    assert "evals/chunk-map/receipt.json" in reason
+
+
+def test_a_failing_runs_stale_unexplained_set_is_not_read_as_a_gate_change():
+    """`FixedPoint.unexplained` is measured only for a pass whose gate exited 0. On a
+    failing run it holds whatever EARLIER passes measured, so reading it there would pin a
+    gate change on evidence that is not about this verdict."""
+    fp = verify.FixedPoint(_run(1), (), ("from/an/earlier/pass.txt",))
+    outcome, reason = verify.classify(fp, _run(0), _bundle())
+    assert outcome == verify.FAIL
+    assert "from/an/earlier/pass.txt" not in reason
+
+
+def test_a_pass_states_whether_the_tracked_delta_was_measured_at_all():
+    """A bare `Run` cannot answer §7.2's half of PASS. That is allowed — `run_command` is a
+    legitimate way to run a gate — but the PASS has to say so, or a weaker claim is
+    indistinguishable from §6.2's."""
+    bare = verify.classify(_run(0), _run(0), _bundle())
+    measured = verify.classify(verify.FixedPoint(_run(0), (), ()), _run(0), _bundle())
+    assert bare[0] == measured[0] == verify.PASS
+    assert "nothing here measured" in bare[1]
+    assert "nothing here measured" not in measured[1]
+    assert "rewrote no tracked path outside the generator contract" in measured[1]
+
+
+def test_a_pass_then_fail_rerun_is_flaky_in_that_direction_too():
+    """§6.2 spells out fail->pass. Leaving pass->fail as a PASS would be the conversion it
+    forbids, decided by which run happened to be first."""
+    assert verify.classify(_run(0), _run(0), _bundle(), rerun=_run(1))[0] == verify.FLAKY
+
+
+def test_classify_refuses_a_verdict_read_off_something_that_is_not_a_run():
+    with pytest.raises(verify.VerifyError, match="Run or a FixedPoint"):
+        verify.classify(0, _run(0), _bundle())
+
+
+# --- gate_surface -----------------------------------------------------------------
+
+
+def _surface_repo(tmp_path, files, *, commit=True):
+    repo = make_repo(tmp_path)
+    for rel, text in files:
+        write(repo, rel, text)
+    if commit:
+        commit_all(repo, "surface")
+    return repo
+
+
+def test_the_gate_surface_holds_the_build_definition_and_the_discovered_tests_only(tmp_path):
+    """§6.1's list, against a tree that actually has each thing."""
+    repo = _surface_repo(tmp_path, [
+        ("Makefile", "verify:\n\t./run\n"),
+        ("tests/test_a.py", "def test_a(): pass\n"),
+        ("tests/helpers.py", "X = 1\n"),
+        ("src/app.py", "print(1)\n"),
+        ("README.md", "docs\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert "Makefile" in s and "tests/test_a.py" in s
+    assert "src/app.py" not in s and "README.md" not in s and "seed.txt" not in s
+    assert "tests/helpers.py" not in s, "a module no runner discovers is not gate surface"
+
+
+def test_a_conftest_is_gate_surface_even_though_it_is_not_a_test(tmp_path):
+    """pytest's per-directory hook file can drop a failing test from the collection
+    entirely, which is the quietest way there is to weaken a gate."""
+    repo = _surface_repo(tmp_path, [("tests/conftest.py", "def pytest_configure(c): pass\n")])
+    assert "tests/conftest.py" in verify.gate_surface(repo, finspect.GeneratorContract())
+
+
+def test_the_surface_never_names_a_file_the_tree_does_not_have(tmp_path):
+    """The rules are engine-owned; the ANSWER is derived from the tree. A repo with no
+    Makefile and no CI has neither in its surface — a hardcoded name set would return both.
+    """
+    repo = _surface_repo(tmp_path, [("src/app.py", "print(1)\n")])
+    assert verify.gate_surface(repo, finspect.GeneratorContract()) == ()
+
+
+def test_the_repos_own_pytest_config_widens_the_test_globs_and_cannot_narrow_them(tmp_path):
+    """The one discovery rule a repository legitimately redefines — read as DATA, and
+    UNIONed with the defaults.
+
+    Replacement would be the fail-open form: `python_files` is read out of a file the
+    candidate may have written, so honouring it as a replacement lets the candidate drop
+    every real test file out of the gate's own definition.
+    """
+    repo = _surface_repo(tmp_path, [
+        ("pytest.ini", "[pytest]\npython_files = check_*.py\n"),
+        ("check_thing.py", "def test(): pass\n"),
+        ("tests/test_a.py", "def test_a(): pass\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert "check_thing.py" in s, "the tree's own declared discovery was not read"
+    assert "tests/test_a.py" in s, "a declared narrowing removed a default-discovered test"
+    assert "pytest.ini" in s
+
+
+def test_a_gate_file_the_candidate_added_without_committing_is_still_surface(tmp_path):
+    """A candidate's new file arrives in a verifier as a SIDECAR — written to disk, not to
+    the index — so an index-only enumeration would miss the test file it just added."""
+    repo = _surface_repo(tmp_path, [("Makefile", "verify:\n\t./run\n")])
+    write(repo, "tests/test_new.py", "def test_new(): assert True\n")
+    assert "tests/test_new.py" in verify.gate_surface(repo, finspect.GeneratorContract())
+
+
+def test_a_ci_workflow_is_gate_surface(tmp_path):
+    repo = _surface_repo(tmp_path, [
+        (".github/workflows/ci.yml", "on: push\n"),
+        ("docs/workflows/ci.yml", "not ci\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert ".github/workflows/ci.yml" in s
+    assert "docs/workflows/ci.yml" not in s
+
+
+def test_the_command_names_the_gate_files_no_rule_can(tmp_path):
+    """Two holes closed by the same derivation, and both are stated as holes without it.
+
+    `check.sh` defines the gate completely and its name says nothing; `.venv/bin/pytest` is
+    gitignored, so `_enumerate` cannot see it at all — and this module's own docstring
+    opens on a seat replacing exactly that file.
+    """
+    repo = _surface_repo(tmp_path, [
+        (".gitignore", ".venv/\n"),
+        ("check.sh", "#!/bin/sh\nexit 0\n"),
+        (".venv/bin/pytest", "#!/bin/sh\nexit 0\n"),
+    ])
+    empty = finspect.GeneratorContract()
+    assert verify.gate_surface(repo, empty) == ()
+    s = verify.gate_surface(repo, empty, command=verify.Command.parse(
+        [["./check.sh"], [".venv/bin/pytest", "-q"]]))
+    assert "check.sh" in s and ".venv/bin/pytest" in s
+
+
+def test_a_generated_gate_file_pulls_its_contract_source_into_the_surface(tmp_path):
+    """A gate file that is GENERATED is defined by whatever generates it, so an edit to the
+    source moves the gate on the next generator pass. Without this the edit is invisible."""
+    repo = _surface_repo(tmp_path, [
+        ("out/Makefile", "verify:\n\t./run\n"),
+        ("src/render.py", "print(1)\n"),
+        ("elsewhere/other.py", "print(2)\n"),
+    ])
+    assert "src/render.py" not in verify.gate_surface(repo, finspect.GeneratorContract())
+    s = verify.gate_surface(repo, _contract(("src/*", "out/Makefile")))
+    assert "src/render.py" in s and "elsewhere/other.py" not in s
+
+
+def test_a_reason_that_would_carry_the_whole_candidate_is_bounded():
+    """`omitted` and a gate delta are each as large as the candidate, and a reason travels
+    into a report and a judge prompt."""
+    reason = verify.classify(_run(0), _run(0),
+                             _bundle(omitted=tuple(f"p{i}.txt" for i in range(9))))[1]
+    assert "p4.txt" in reason and "p5.txt" not in reason and "(+4 more)" in reason
+
+
+def test_a_config_that_cannot_be_parsed_leaves_the_defaults_standing(tmp_path):
+    """A candidate can write the config this reads. Raising on a malformed one would let it
+    stop the surface being computed at all; keeping the defaults is the wider answer."""
+    repo = _surface_repo(tmp_path, [
+        ("pytest.ini", "[pytest\nthis is not an ini file\n"),
+        ("pyproject.toml", "[tool.pytest.ini_options\n"),
+        ("tests/test_a.py", "def test_a(): pass\n"),
+    ])
+    assert "tests/test_a.py" in verify.gate_surface(repo, finspect.GeneratorContract())
+
+
+def test_a_command_token_that_leaves_the_tree_is_not_surface(tmp_path):
+    """A token naming something outside the tree cannot be a candidate path, so it cannot
+    be in a delta computed against one — and `..` in a surface would be a path this module
+    hands on to a caller that resolves it."""
+    repo = _surface_repo(tmp_path, [("check.sh", "#!/bin/sh\nexit 0\n")])
+    (tmp_path / "outside.sh").write_text("#!/bin/sh\nexit 1\n")
+    s = verify.gate_surface(repo, finspect.GeneratorContract(),
+                            command=verify.Command.parse(
+                                [["/bin/sh", "check.sh"], ["../outside.sh"]]))
+    assert s == ("check.sh",)
+
+
+def test_a_directory_the_command_names_is_not_itself_surface(tmp_path):
+    """A delta is over files. `pytest tests` is covered by the discovery globs underneath
+    it, and adding the directory would put a name no delta can ever match into a surface."""
+    repo = _surface_repo(tmp_path, [("tests/test_a.py", "def test_a(): pass\n")])
+    s = verify.gate_surface(repo, finspect.GeneratorContract(),
+                            command=verify.Command.parse([["pytest", "tests"]]))
+    assert s == ("tests/test_a.py",)
+
+
+def test_a_contract_whose_output_is_not_gate_surface_adds_nothing(tmp_path):
+    """The relation only reaches the surface through its OUTPUT. Adding every source of
+    every relation would put the whole of a generator's input into the gate surface."""
+    repo = _surface_repo(tmp_path, [
+        ("out/Makefile", "verify:\n\t./run\n"),
+        ("src/render.py", "print(1)\n"),
+    ])
+    s = verify.gate_surface(repo, _contract(("src/*", "out/nothing.mk")))
+    assert s == ("out/Makefile",)
+
+
+def test_a_passing_gate_that_merely_mentions_an_omitted_path_is_not_a_named_failure():
+    """§6.2's mechanical check is a FAILING command naming a missing path. A passing run
+    whose output happens to print the same name has not identified anything, and reporting
+    it in the failing-command form would put a diagnosis in front of a reviewer that no
+    failure supports."""
+    reason = verify.classify(_run(0, "wrote fixtures/data.bin\n"), _run(0),
+                             _bundle(omitted=("fixtures/data.bin",)))[1]
+    assert "settles nothing" in reason and "its output names" not in reason
+
+
+def test_an_ignored_gate_shaped_file_is_outside_the_surface(tmp_path):
+    """The boundary `_enumerate` accepts, pinned rather than left to be rediscovered.
+
+    Dropping `--exclude-standard` would catch this file — and would also enumerate every
+    `*.test.js` inside `node_modules` and every file in `.venv`, so a candidate that
+    reinstalled a dependency would read as a gate change. The cost is stated in
+    `gate_surface`'s uncovered list, and `command` is the route that reaches such a file.
+    """
+    repo = _surface_repo(tmp_path, [(".gitignore", "build/\n")])
+    write(repo, "build/test_generated.py", "def test_g(): pass\n")
+    assert verify.gate_surface(repo, finspect.GeneratorContract()) == ()
+
+
+def test_a_pyproject_declared_discovery_widens_the_globs_too(tmp_path):
+    """The same rule as `pytest.ini`, through the other parser this has to speak."""
+    repo = _surface_repo(tmp_path, [
+        ("pyproject.toml",
+         '[tool.pytest.ini_options]\npython_files = ["check_*.py", "probe_*.py"]\n'),
+        ("check_thing.py", "def test(): pass\n"),
+        ("probe_thing.py", "def test(): pass\n"),
+        ("src/app.py", "print(1)\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert "check_thing.py" in s and "probe_thing.py" in s and "src/app.py" not in s
+    # `python_files` is whitespace-separated, so TOML lets it be one string as well as a
+    # list, and pytest reads both. Handling only the list drops the whole declaration.
+    other = _surface_repo(tmp_path / "b", [
+        ("pyproject.toml", '[tool.pytest.ini_options]\npython_files = "check_*.py"\n'),
+        ("check_thing.py", "def test(): pass\n"),
+    ])
+    assert "check_thing.py" in verify.gate_surface(other, finspect.GeneratorContract())
+
+
+def test_a_runner_config_whose_name_varies_by_extension_is_still_surface(tmp_path):
+    """`jest.config.{js,ts,mjs,cjs,json}` is one config file with five spellings, which is
+    why the runner-config rules have a glob half as well as a name half."""
+    repo = _surface_repo(tmp_path, [
+        ("jest.config.mjs", "export default {};\n"),
+        ("vitest.config.ts", "export default {};\n"),
+        ("jest.helpers.mjs", "export const x = 1;\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert "jest.config.mjs" in s and "vitest.config.ts" in s
+    assert "jest.helpers.mjs" not in s
+
+
+def test_a_ci_directory_below_the_root_is_surface_too(tmp_path):
+    """A CI system reads only its own checkout root, so this over-reports by one file in a
+    monorepo — and anchoring at the root instead would MISS the gate in every tree this is
+    handed a subdirectory of, which is the direction `gate_delta` fails open in."""
+    repo = _surface_repo(tmp_path, [
+        ("sub/.github/workflows/ci.yml", "on: push\n"),
+        ("docs/workflows/ci.yml", "not ci\n"),
+        # A path that CONTAINS the directory's name without containing the directory. The
+        # match has to be on a path SEGMENT, or a surface can be widened by a filename.
+        ("docs/my.github/workflowsx/a.yml", "not ci\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert "sub/.github/workflows/ci.yml" in s
+    assert "docs/workflows/ci.yml" not in s
+    assert "docs/my.github/workflowsx/a.yml" not in s
+
+
+def test_a_ci_definition_matched_by_name_is_surface_wherever_it_sits(tmp_path):
+    """The other half of the CI rule: `Jenkinsfile` and `.gitlab-ci.yml` are named files
+    rather than a directory, and a `.gitlab-ci.yml` reached by `include:` sits anywhere."""
+    repo = _surface_repo(tmp_path, [
+        (".gitlab-ci.yml", "stages: [test]\n"),
+        ("ci/Jenkinsfile", "pipeline {}\n"),
+        ("ci/notes.md", "prose\n"),
+    ])
+    s = verify.gate_surface(repo, finspect.GeneratorContract())
+    assert ".gitlab-ci.yml" in s and "ci/Jenkinsfile" in s and "ci/notes.md" not in s
