@@ -278,8 +278,9 @@ def _carried_digest(root: bytes, porcelain: bytes, selected_paths) -> bytes:
 
     Paths stay BYTES from git's output to `os.lstat`, never decoded: a repository may hold a
     path that is not valid UTF-8, and a drift check that raises is a drift check that does not
-    run. `selected_paths` are `str` — they came out of a manifest, where JSON has only text —
-    so `os.fsencode` puts them in the same alphabet.
+    run. `selected_paths` are `str` on both call paths — the caller's at the confirmation
+    gate, and a manifest's, where JSON has only text — so `os.fsencode` puts them in the same
+    alphabet.
 
     The length framing here is LOAD-BEARING, unlike `_status_digest`'s over the four parts. A
     path may contain anything but NUL, including the text of another entry's digest, so
