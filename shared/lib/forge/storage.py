@@ -98,11 +98,16 @@ def atomic_write(path, data: bytes) -> None:
 def exclusive_write(path, data: bytes) -> None:
     """Publish `data` at `path`, or raise FileExistsError because something is already there.
 
-    The same three steps as `atomic_write` with `os.link` in place of `os.replace`, and that
-    one substitution IS the guarantee: `replace` overwrites whatever holds the name and `link`
-    cannot. A caller holding a record that must never be rewritten cannot get this from
-    checking first — the check passes, the process is descheduled, and the write still lands
-    on top of the file the check was protecting. Here the kernel decides, once.
+    `atomic_write`'s steps with `os.link` in place of `os.replace`, and that one substitution
+    IS the guarantee: `replace` overwrites whatever holds the name and `link` cannot. A caller
+    holding a record that must never be rewritten cannot get this from checking first — the
+    check passes, the process is descheduled, and the write still lands on top of the file the
+    check was protecting. Here the kernel decides, once.
+
+    It costs one step more than `atomic_write`: `replace` publishes the name and removes the
+    staging one in a single syscall, while `link` only adds a name, so the staging name has to
+    be unlinked separately. Four steps here, three there — the durability ORDER is the same in
+    both, with the directory synced last.
 
     The staging file is unlinked on both paths, so a refusal leaves the directory exactly as
     it found it. What a CRASH leaves is the same debris `atomic_write` leaves, for the same
@@ -145,8 +150,7 @@ def append_line(path, data: bytes) -> None:
     happens on the call that WINS the `O_EXCL`, so a log first brought into existence by a
     route that does not sync the directory itself — a `touch`, a shell redirect, a plain
     `open(path, "w")` — has a directory entry nothing here will ever sync. `atomic_write` and
-    `exclusive_write` are NOT such routes: syncing the directory is the third of the three
-    steps in each.
+    `exclusive_write` are NOT such routes: each ends by syncing the directory.
     """
     path = Path(path)
     if b"\n" in data:

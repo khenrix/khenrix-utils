@@ -2,7 +2,7 @@
 
 Both facts live here because they are recorded at the same instant and are worth nothing
 apart. The manifest says what the run committed to — repo path, `base_commit`, the baseline's
-identity, the selected paths, the confirmed argv. The snapshot says what the user's repository
+identity, the selected paths, the confirmed steps. The snapshot says what the user's repository
 looked like when it committed to that. A manifest without the snapshot describes a deliverable
 with no way to ask whether it still applies; a snapshot without the manifest is a photograph
 of nothing in particular.
@@ -20,32 +20,63 @@ and every argv would arrive as something that compares unequal to what was confi
 field is decoded explicitly, and a field added to `Manifest` without a decoder makes the next
 read fail rather than arrive as whatever JSON happened to make of it.
 
-WHAT THE SNAPSHOT IS. §9 protects the user's current branch ref, `HEAD`, the index hash, the
-checkout, and every non-forge ref, and whitelists forge's own refs by exact name AND the exact
-OID recorded here — a namespace whitelist would let a seat write into forge's own namespace
-invisibly. So `protected_refs` is name-to-OID for every ref that is not forge's, and
-`status_digest` covers the three parts of the checkout state that move independently:
+WHAT THE SNAPSHOT IS. §9's protected list is the user's current branch ref, `HEAD`, the index
+hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION; forge's own refs are
+whitelisted by exact name AND the exact OID recorded here, because a namespace whitelist would
+let a seat write into forge's own namespace invisibly. The last two of those seven are NOT
+recorded: nothing here reads `remote.*` or any other config key, so a seat that adds a remote
+or sets a repo-local value leaves no t0 fact to be judged against, and §9's drift check cannot
+speak for either. What is recorded is `protected_refs`, name-to-OID for every ref that is not
+forge's, and `status_digest`, over the four parts of the checkout state that move
+independently:
 
-  * the porcelain, for the working tree and the index;
+  * the porcelain, which is a PATH/STATUS LISTING — it says which paths differ from `HEAD`
+    and in which direction, and carries none of their content;
   * `HEAD`, because a clean tree, an edit and a commit leaves the porcelain byte for byte
     what it was — measured — so on the porcelain alone an entire commit of the user's work
     reads as no drift at all;
   * the branch `HEAD` points at, because switching between two branches at one commit moves
     the porcelain, `HEAD`'s OID and every ref not at all, and handover targets the branch that
-    was current.
+    was current;
+  * the CONTENT of the paths the run is carrying, because the listing above cannot see an
+    edit to a path it already lists. Measured: a tree with `seed.txt` modified and `notes.txt`
+    untracked-and-selected, rewritten in both, leaves the porcelain, the refs and the first
+    three parts identical — and that is §9's own worked example, "you have since changed 4 of
+    the files it touches", on the tree shape forge treats as normal.
 
-It does not cover ignored paths. `git status` needs `--ignored` for those, and admitting them
-was rejected on the other direction: a repository with a watcher or a dev server rewrites
-ignored build output continuously, so the digest would move during every run and the drift
-report would fire on all of them. What bounds it is that the untracked set preflight offers
-comes from `--untracked-files=all`, which does not list ignored paths.
+WHAT THE RUN CARRIES, exactly, is what that fourth part ranges over: the tracked entries the
+porcelain names, plus `selected_paths`. That is `baseline.materialize`'s domain read back —
+`add -u -- :/` then `add -f` over the selection. Recomputing the tree OID is the other way to
+ask the same question, and the two were measured against each other over thirteen cases: they
+agree on twelve, and the one they differ on is a branch switch at one commit, which the tree
+OID cannot see at all. What the recomputation costs is a write into the USER's object store on
+every drift check — measured at +21 loose objects per call on a twenty-file dirty tree, one
+blob each plus the tree, unreachable until git's two-week gc grace expires. Reading the paths
+back writes nothing, so this is the read-only half of the same answer.
+
+Two boundaries follow from that domain rather than being chosen. A tracked path whose content
+moves while the porcelain does NOT list it is one git itself calls clean, so `add -u` would
+skip it on the same stat comparison — neither method sees it, and neither can. An untracked
+path nobody selected is deliberately outside it: no tree forge writes contains it, so no merge
+of forge's work can revert it, and hashing it would put every stray editor swap file and test
+log into a drift report whose only value is that it means something.
+
+Ignored paths follow from that same rule rather than being a separate gap. `git status` does
+not list them without `--ignored`, which stays off: a repository with a watcher or a dev
+server rewrites ignored build output continuously, and a digest that moved on all of it would
+make the one drift report that means something unreadable. An ignored path the run IS carrying
+is covered anyway, because selection is what puts a path in the content set — so the case that
+was open here, a caller hand-selecting an ignored path, is closed by the selection it made.
 """
 import dataclasses
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass
 
 from . import gitcmd, storage
+from .verify import Step, VerifyError
 
 
 class ManifestError(RuntimeError):
@@ -62,14 +93,24 @@ _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
 class Manifest:
     """The run's identity, as agreed at the §5 gate.
 
-    `setup` and `verify` are sequences of argv sequences, never strings: §5.1 rejects shell
-    metacharacter syntax rather than reinterpreting it, and a manifest holding
-    `"cd frontend && npm ci"` would hand a resume a command it has to re-parse — which is
-    re-detection under another name, at the one moment nobody is watching.
+    `setup` and `verify` are sequences of `verify.Step`, which is §5.1's step record whole —
+    `{argv, cwd, env, timeout}`. All four, not argv alone: §5.1's motivating sentence is that
+    "real monorepos need several steps with different cwds", so a manifest that recorded the
+    argv and left the rest to a resume would hand `--collect` a `cwd` of "" and a timeout of
+    600 SUPPLIED BY THE READER rather than agreed by the user — this file's own failure mode,
+    three fields per step instead of one field per manifest. The type is `verify`'s own rather
+    than a record this module invents, so there is no conversion between what is written and
+    what the gate runs for a field to go missing in.
+
+    Never a string, at any level: §5.1 rejects shell metacharacter syntax rather than
+    reinterpreting it, and a manifest holding `"cd frontend && npm ci"` would hand a resume a
+    command it has to re-parse — which is re-detection under another name, at the one moment
+    nobody is watching.
 
     `protected_refs` and `status_digest` are the t0 snapshot: what the user's repository
     looked like at the moment of agreement, kept so a later check can ask whether it still
-    does.
+    does. `selected_paths` is an input to the second of those as well as a record — see
+    `snapshot_refs`.
     """
     run_id: str
     repo_path: str
@@ -79,8 +120,8 @@ class Manifest:
     tracked_tree_oid: str
     selected_paths: tuple[str, ...]
     generator_contract: dict
-    setup: tuple[tuple[str, ...], ...]
-    verify: tuple[tuple[str, ...], ...]
+    setup: tuple[Step, ...]
+    verify: tuple[Step, ...]
     protected_refs: dict
     status_digest: str
     created_at: str
@@ -138,8 +179,14 @@ def read_manifest(run_dir) -> Manifest:
     return _decode(row, path)
 
 
-def snapshot_refs(repo) -> tuple[dict, str]:
+def snapshot_refs(repo, selected_paths) -> tuple[dict, str]:
     """`(protected_refs, status_digest)` for `repo` as it is right now.
+
+    `selected_paths` is REQUIRED rather than defaulted, on `verify.build_verifier`'s argument
+    for its `contract`: a default here is a policy, and the policy is the one a human
+    confirmed at the §5 gate. A caller that has selected nothing passes `()`, which is a
+    statement that the run carries no untracked path — and a caller that HAS selected
+    something and forgets is the fail-open case the fourth digest part exists to close.
 
     Every call is read-only against the USER's repository, which is why `READONLY` is on all
     of them rather than on the status call alone: measured on git 2.53, a plain `git status`
@@ -159,7 +206,7 @@ def snapshot_refs(repo) -> tuple[dict, str]:
     head = _head(repo)
     if head:
         refs["HEAD"] = head
-    return refs, _status_digest(repo, head)
+    return refs, _status_digest(repo, head, selected_paths)
 
 
 def _head(repo) -> str:
@@ -171,21 +218,29 @@ def _head(repo) -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def _status_digest(repo, head: str) -> str:
-    """sha256 over the three parts of the checkout state that move independently.
+def _status_digest(repo, head: str, selected_paths) -> str:
+    """sha256 over the four parts of the checkout state that move independently.
 
     Read as BYTES. Under `-z` a path is git's raw bytes with no quoting, and a repository is
     allowed to hold a path that is not valid UTF-8; decoding to compute a digest would raise
     on the one repository that most needs a drift check to work.
 
-    Each part is fed in with its name and its LENGTH, and that framing is defence in depth
-    rather than load-bearing: a porcelain is empty or NUL-terminated, no path may contain a
-    NUL, and `head` is fixed-width hex or empty, so the three parts are already unambiguous
-    end to end and no pair of checkouts can be made to digest the same without it. What the
-    framing buys is that the argument stops depending on the value domain of these particular
-    three — a fourth part that is neither NUL-free nor fixed-width would otherwise reopen it
-    silently.
+    Each part is fed in with its name and its LENGTH, and that framing is still defence in
+    depth rather than load-bearing: the porcelain is the only part that may contain a NUL and
+    is empty or NUL-terminated, `head` and the content digest are fixed-width hex or empty, and
+    a ref name is empty or begins `refs/`, so the boundaries stay recoverable from the ends
+    inward without it. What the framing buys is that the argument stops having to be re-derived
+    over the value domains of whichever parts happen to be here — it took three steps for three
+    parts and four for four, and a fifth with none of those properties would reopen it silently.
     """
+    # The porcelain's paths are REPOSITORY-ROOT-relative even when git runs in a subdirectory
+    # — measured — while `repo` only has to name the repository. Joining content paths onto
+    # the argument would read them from the wrong directory whenever a caller passes a
+    # subdirectory, which is the same slip `baseline.materialize` resolves `facts.root` for.
+    # Binary, because a repository is allowed to live under a path that is not valid UTF-8 and
+    # a text-mode read of it raises before any digest exists.
+    root = gitcmd.git(repo, "rev-parse", "--show-toplevel", env_extra=gitcmd.READONLY,
+                      binary=True).stdout.strip()
     porcelain = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "status", "--porcelain=v1", "-z",
                            "--untracked-files=all", "--no-renames",
                            env_extra=gitcmd.READONLY, binary=True).stdout
@@ -193,20 +248,128 @@ def _status_digest(repo, head: str) -> str:
     # directory to a single `?? dir/` record, so a file appearing inside one leaves the
     # porcelain identical — measured — and untracked paths are selectable into the baseline.
     #
-    # `--no-renames` is required here for a DIFFERENT reason than the one inspect.repo_facts
-    # gives, which is about parsing the records and this does not parse them. `status.renames`
-    # is repo-local config, so it survives the /dev/null pins on the global and system files;
+    # `--no-renames` carries BOTH of the reasons this package has for it. `status.renames` is
+    # repo-local config, so it survives the /dev/null pins on the global and system files;
     # measured, flipping it rewrote an unchanged staged rename from `R renamed\0big` to
-    # `D big\0A renamed`. Inheriting it would let a display preference the user changed report
-    # as drift in their work.
+    # `D big\0A renamed`, and inheriting it would let a display preference the user changed
+    # report as drift in their work. And `_carried_digest` PARSES these records — which this
+    # call did not do before it existed, and which is `inspect.repo_facts`'s reason — so a
+    # rename record's second NUL-separated path would be read as a status code plus a path.
     branch = gitcmd.git(repo, "symbolic-ref", "-q", "HEAD", env_extra=gitcmd.READONLY,
                         check=False).stdout.strip()   # "" when HEAD is detached
     h = hashlib.sha256()
     for label, value in (("porcelain", porcelain), ("head", head.encode()),
-                         ("branch", branch.encode())):
+                         ("branch", branch.encode()),
+                         ("carried", _carried_digest(root, porcelain, selected_paths))):
         h.update(f"{label}:{len(value)}:".encode("utf-8"))
         h.update(value)
     return h.hexdigest()
+
+
+def _carried_digest(root: bytes, porcelain: bytes, selected_paths) -> bytes:
+    """The content identity of every path the run is carrying, as one fixed-width digest.
+
+    The set is the porcelain's TRACKED entries plus the selection, which is
+    `baseline.materialize`'s `add -u -- :/` plus its `add -f` over `selected_untracked` read
+    back — see the module docstring for why that is the right domain and what a recomputed
+    tree OID would cost instead. `??` is dropped because forge carries no unselected untracked
+    path; `!!` cannot appear without `--ignored` and is dropped for the same reason it would
+    be if it could.
+
+    Paths stay BYTES from git's output to `os.lstat`, never decoded: a repository may hold a
+    path that is not valid UTF-8, and a drift check that raises is a drift check that does not
+    run. `selected_paths` are `str` — they came out of a manifest, where JSON has only text —
+    so `os.fsencode` puts them in the same alphabet.
+
+    The length framing here is LOAD-BEARING, unlike `_status_digest`'s over the four parts. A
+    path may contain anything but NUL, including the text of another entry's digest, so
+    unframed `"a" + digest(a) + "b" + digest(b)` is byte for byte what one path literally named
+    `a<digest(a)>b` produces when its own content digests to `digest(b)` — constructed, not
+    hypothesised, and pinned by a test. Framing the digest as one value outside cannot help:
+    the collision has already happened by the time that framing is applied.
+    """
+    paths = {rec[3:] for rec in porcelain.split(b"\0")
+             if rec and rec[:2] not in (b"??", b"!!")}
+    paths |= {os.fsencode(p) for p in selected_paths}
+    h = hashlib.sha256()
+    for rel in sorted(paths):
+        value = _path_digest(os.path.join(root, rel))
+        for part in (rel, value):
+            h.update(b"%d:" % len(part))
+            h.update(part)
+    return h.hexdigest().encode("ascii")
+
+
+def _path_digest(path: bytes) -> bytes:
+    """One path's content identity — total over every shape a path can have, and raising for
+    none of them.
+
+    NEVER READ THROUGH A LINK, and never OPEN what is not a regular file. A symlink is its
+    target TEXT on `baseline._sha256_link`'s argument: following it would put content from
+    outside the tree into a measurement that claims to describe the tree. A FIFO is its file
+    TYPE on `verify._surface_state`'s: a read-open on one blocks until a writer appears, and
+    there is no timeout anywhere in this call path.
+
+    The executable BIT rides along with a regular file's bytes because that is the only part
+    of the mode git records, so a `chmod +x` on a carried script is work a merge could revert.
+    The rest of the mode is left out deliberately: git ignores it, so hashing it would report
+    a umask difference as drift in the user's work.
+
+    An OSError is an ANSWER, not an exception: this runs at t0 and again at every drift check,
+    and one raised here would take the whole check with it — on the repository least able to
+    spare it. Every one contributes its ERRNO rather than a shared "missing" value, so a
+    carried file the user deleted (ENOENT) and one they made unreadable (EACCES) stay different
+    answers; collapsing them would let either become the other without moving the digest.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return b"error:%d" % e.errno
+    try:
+        if stat.S_ISLNK(st.st_mode):
+            return b"link:" + hashlib.sha256(os.readlink(path)).hexdigest().encode("ascii")
+        if stat.S_ISDIR(st.st_mode):
+            return _dir_digest(path)
+        if stat.S_ISREG(st.st_mode):
+            h = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 16), b""):
+                    h.update(chunk)
+            return b"file:%d:" % bool(st.st_mode & 0o111) + h.hexdigest().encode("ascii")
+    except OSError as e:
+        return b"error:%d" % e.errno
+    return b"special:%d" % stat.S_IFMT(st.st_mode)
+
+
+def _dir_digest(path: bytes) -> bytes:
+    """A selected DIRECTORY's contents. §2.2 contemplates selecting one explicitly, and
+    `baseline.materialize`'s literal pathspec sweeps its whole contents into B — so a digest
+    that stopped at the directory itself would be blind to every file the run is carrying
+    inside it, which was measured against a recomputed tree OID and is why this exists.
+
+    `baseline._walk_selected`'s rules, for its reasons: `.git` is pruned rather than
+    post-filtered, and a linked directory is reported by its own target text rather than
+    descended into. A directory that cannot be listed contributes its errno rather than
+    nothing, because os.walk's default is to swallow the error and yield an empty tree — which
+    would make an unreadable directory digest the same as an empty one.
+    """
+    h = hashlib.sha256()
+    failures = []
+    for dirpath, dirnames, filenames in os.walk(path, followlinks=False,
+                                                onerror=failures.append):
+        dirnames[:] = sorted(n for n in dirnames if n != b".git")
+        leaves = [n for n in list(dirnames) if os.path.islink(os.path.join(dirpath, n))]
+        for n in leaves:
+            dirnames.remove(n)
+        for name in leaves + sorted(filenames):
+            leaf = os.path.join(dirpath, name)
+            rel = os.path.relpath(leaf, path)
+            for part in (rel, _path_digest(leaf)):
+                h.update(b"%d:" % len(part))
+                h.update(part)
+    for e in failures:
+        h.update(b"error:%d:" % (e.errno or 0))
+    return b"dir:" + h.hexdigest().encode("ascii")
 
 
 def _text(name, value, source):
@@ -224,16 +387,58 @@ def _texts(name, value, source):
     return tuple(value)
 
 
-def _argv(name, value, source):
+# §5.1's step record, whole. Named here rather than derived from `verify.Step`'s fields so a
+# field added there cannot start arriving in manifests this reader silently accepts — the same
+# argument the unknown-field refusal below makes one level up.
+_STEP_FIELDS = ("argv", "cwd", "env", "timeout")
+
+
+def _steps(name, value, source):
     if not isinstance(value, list):
-        raise ManifestError(f"{source}: {name} must be a list of argv lists, not {value!r}")
-    for cmd in value:
-        if not isinstance(cmd, list) or not all(isinstance(w, str) for w in cmd):
+        raise ManifestError(f"{source}: {name} must be a list of step records, not {value!r}")
+    steps = []
+    for i, row in enumerate(value):
+        where = f"{source}: {name}[{i}]"
+        if not isinstance(row, dict):
             raise ManifestError(
-                f"{source}: {name} holds {cmd!r}, which is not an argv list. A command is "
-                "the words it is made of — a string here would be re-parsed by whoever runs "
-                "it, and §5.1 rejects shell syntax rather than reinterpreting it.")
-    return tuple(tuple(cmd) for cmd in value)
+                f"{where} is {row!r}, not a step record. §5.1's step is "
+                "{argv, cwd, env, timeout} — an argv on its own leaves the cwd, the "
+                "environment and the timeout for whoever resumes to supply, and a field the "
+                "reader supplies is a fact the run never agreed to.")
+        missing = [f for f in _STEP_FIELDS if f not in row]
+        if missing:
+            raise ManifestError(f"{where} is missing {missing}")
+        unknown = sorted(set(row) - set(_STEP_FIELDS))
+        if unknown:
+            raise ManifestError(f"{where} carries fields this engine does not know: {unknown}")
+        argv = row["argv"]
+        if not isinstance(argv, list) or not all(isinstance(w, str) for w in argv):
+            raise ManifestError(
+                f"{where}: argv is {argv!r}, which is not a list of words. A command is the "
+                "words it is made of — a string here would be re-parsed by whoever runs it, "
+                "and §5.1 rejects shell syntax rather than reinterpreting it.")
+        env = row["env"]
+        if not isinstance(env, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+            raise ManifestError(
+                f"{where}: env must be an object of strings, not {env!r}; it is spliced into "
+                "a process environment, where anything else raises at spawn time")
+        timeout = row["timeout"]
+        # `isinstance(True, int)` — a JSON `true` here would run the step under a one-second
+        # budget rather than being refused.
+        if isinstance(timeout, bool) or not isinstance(timeout, int):
+            raise ManifestError(
+                f"{where}: timeout must be a whole number of seconds, not {timeout!r}")
+        try:
+            steps.append(Step(argv=tuple(argv), cwd=_text("cwd", row["cwd"], where),
+                              env=env, timeout=timeout))
+        except VerifyError as e:
+            # `Step` refuses an empty argv and a program name only a shell could resolve.
+            # Re-raised in this module's vocabulary rather than propagated: `read_manifest`'s
+            # documented contract is that a record it will not stand behind arrives as a
+            # ManifestError, and the resume that catches it has no other name for this.
+            raise ManifestError(f"{where}: {e}") from e
+    return tuple(steps)
 
 
 def _mapping(name, value, source):
@@ -254,8 +459,8 @@ _DECODERS = {
     "tracked_tree_oid": _text,
     "selected_paths": _texts,
     "generator_contract": _mapping,
-    "setup": _argv,
-    "verify": _argv,
+    "setup": _steps,
+    "verify": _steps,
     "protected_refs": _mapping,
     "status_digest": _text,
     "created_at": _text,

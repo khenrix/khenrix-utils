@@ -117,6 +117,7 @@ class _SyscallSpy:
         _require_fd_resolution()
         self.events: list[tuple[str, str]] = []
         real_fsync, real_replace = os.fsync, os.replace
+        real_link, real_unlink = os.link, os.unlink
 
         def fsync(fd):
             self.events.append(("fsync", _fd_path(fd)))
@@ -126,8 +127,22 @@ class _SyscallSpy:
             self.events.append(("replace", os.path.realpath(dst)))
             return real_replace(src, dst, *args, **kwargs)
 
+        def link(src, dst, *args, **kwargs):
+            # Recorded BEFORE the call: realpath of the destination is only meaningful once
+            # it exists, and a link that raises still has to appear in the sequence.
+            self.events.append(("link", os.path.join(os.path.realpath(os.path.dirname(dst)),
+                                                     os.path.basename(dst))))
+            return real_link(src, dst, *args, **kwargs)
+
+        def unlink(target, *args, **kwargs):
+            self.events.append(("unlink", os.path.join(
+                os.path.realpath(os.path.dirname(target)), os.path.basename(target))))
+            return real_unlink(target, *args, **kwargs)
+
         monkeypatch.setattr(os, "fsync", fsync)
         monkeypatch.setattr(os, "replace", replace)
+        monkeypatch.setattr(os, "link", link)
+        monkeypatch.setattr(os, "unlink", unlink)
 
     def synced(self) -> list[str]:
         return [p for kind, p in self.events if kind == "fsync"]
@@ -220,6 +235,58 @@ def test_atomic_write_refuses_a_short_write(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[:-1]))
     with pytest.raises(storage.StorageError):
         storage.atomic_write(tmp_path / "s.json", b"0123456789")
+    assert list(tmp_path.iterdir()) == [], "a partial write was left in the directory"
+
+
+def test_exclusive_write_syncs_the_bytes_then_links_then_unlinks_then_syncs_the_directory(
+        tmp_path, monkeypatch):
+    """FOUR steps, where `atomic_write` has three, and the difference is the one substitution.
+    `os.replace` publishes the name and removes the staging one in a single syscall; `os.link`
+    only ADDS a name, so the staging name is still there and has to go separately. The
+    durability order is otherwise identical, with the directory entry synced last.
+    """
+    spy = _SyscallSpy(monkeypatch)
+    target = tmp_path / "sub" / "manifest.json"
+    target.parent.mkdir()
+    storage.exclusive_write(target, b'{"run_id":"r1"}')
+
+    assert target.read_bytes() == b'{"run_id":"r1"}'
+    parent = os.path.realpath(target.parent)
+    bytes_synced = spy.index("fsync", lambda p: os.path.dirname(p) == parent)
+    linked = spy.index("link", os.path.join(parent, "manifest.json"))
+    staging_gone = spy.index("unlink", lambda p: os.path.dirname(p) == parent
+                             and os.path.basename(p) != "manifest.json")
+    dir_synced = spy.index("fsync", parent)
+    assert bytes_synced < linked < staging_gone < dir_synced, (
+        f"bytes, then the name, then the staging name, then the directory — got {spy.events}")
+
+
+def test_exclusive_write_refuses_to_overwrite_and_raises_file_exists(tmp_path):
+    """The documented contract, asserted directly rather than through a caller that wraps it.
+    `FileExistsError` and not `StorageError`: the refusal is the KERNEL's, and a caller that
+    means to translate it into its own vocabulary — `runstate` does — needs the class the
+    kernel raises, not one this module invented on top of it."""
+    target = tmp_path / "manifest.json"
+    storage.exclusive_write(target, b"first")
+    with pytest.raises(FileExistsError):
+        storage.exclusive_write(target, b"second")
+    assert target.read_bytes() == b"first"
+    assert [p.name for p in tmp_path.iterdir()] == ["manifest.json"], \
+        "the refusal left its staging file behind"
+
+
+def test_exclusive_write_leaves_no_temp_file_behind(tmp_path):
+    storage.exclusive_write(tmp_path / "m.json", b"x")
+    assert [p.name for p in tmp_path.iterdir()] == ["m.json"]
+
+
+def test_exclusive_write_refuses_a_short_write(tmp_path, monkeypatch):
+    """A record that must never be rewritten is the last one that may be published truncated:
+    nothing can correct it afterwards, because the name it would need is now taken."""
+    real_write = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[:-1]))
+    with pytest.raises(storage.StorageError):
+        storage.exclusive_write(tmp_path / "m.json", b"0123456789")
     assert list(tmp_path.iterdir()) == [], "a partial write was left in the directory"
 
 
