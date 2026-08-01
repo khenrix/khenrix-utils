@@ -267,10 +267,11 @@ def _gate_env(env=None) -> dict:
 def _step_cwd(root: Path, step: Step, index: int) -> Path:
     """Where a step runs — inside the verifier, or nowhere.
 
-    Lexical, matching `bundle._safe_rel`: `..` in the parts and any absolute path are
-    refused, and the check is on the TEXT rather than on a resolved path. A `Path(root) /
-    "/etc"` is `/etc`, silently, so an unguarded absolute cwd runs the gate outside the
-    clone the gate exists to be confined to.
+    Lexical, matching `bundle._assert_contained`: `..` in the parts and any absolute path
+    are refused, and the check is on the TEXT rather than on a resolved path. A `Path(root)
+    / "/etc"` is `/etc`, silently, so an unguarded absolute cwd runs the gate outside the
+    clone the gate exists to be confined to. `bundle._safe_rel` is the wider rule — it also
+    refuses a `.git` component, which has no analogue for a working directory.
     """
     rel = step.cwd or ""
     if not rel:

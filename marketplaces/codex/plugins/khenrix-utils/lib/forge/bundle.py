@@ -97,6 +97,12 @@ class CandidateBundle:
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
     # default in a way `gate_delta=()` is not.
     generator_contract_id: str = ""
+    # A consumer classifying an outcome must treat a non-empty `omitted` as HARVEST_INCOMPLETE
+    # before it reads the exit code: the gate can pass BECAUSE something is missing, and the
+    # omission is invisible at the gate itself. Measured on the case that motivated the field
+    # — a nested repo, whose gitlink is omitted while its content crosses as ordinary
+    # sidecars — `git -C sub rev-parse HEAD` inside the verifier exits 0 and answers the
+    # VERIFIER's HEAD, because git walks up past the missing gitlink into the parent.
     omitted: tuple[str, ...] = ()
 
 
