@@ -1,4 +1,4 @@
-"""Run-directory layout, quotas, and durable writes (spec §15)."""
+"""Run-directory layout, quotas, and durable writes (spec §14.1, §15)."""
 import os
 import stat
 import sys
@@ -67,9 +67,13 @@ def _fd_path(fd: int) -> str:
     """The path an open fd currently points at.
 
     Resolved through /proc/self/fd, which is Linux-only. A resolution failure RAISES instead
-    of recording a placeholder: every durability assertion below reads "this path was
-    synced", so a placeholder makes all of them pass at once and the suite measures nothing
-    while reporting green — the false green spec §10.1 describes, reached from the test side.
+    of recording a placeholder, for two measured reasons and not the obvious one. Most
+    assertions below are POSITIVE membership tests, which a placeholder FAILS — so the
+    obvious hazard, a suite going green while measuring nothing, is not what a placeholder
+    produces here; it produces a false RED accusing correct code, with a diagnostic naming
+    the wrong culprit. The one assertion a placeholder does satisfy silently is the NEGATIVE
+    one — "this path was not synced" — and that is the false green spec §10.1 describes,
+    reached from the test side. Raising closes both.
     The forge package is POSIX-only anyway (verify._kill_group needs process groups); this
     narrows these assertions to Linux and says so out loud rather than going quiet.
     """
@@ -145,8 +149,8 @@ def test_atomic_write_syncs_the_bytes_then_renames_then_syncs_the_directory(
     example of a row that reads present while the property is false.
 
     Asserted on the syscalls and their ORDER, because the read-back is identical with no
-    fsync at all, and a directory synced before the rename records a rename that has not
-    happened.
+    fsync at all, and a directory synced before the rename flushes a directory that does not
+    yet hold it — leaving the rename as exactly what a crash loses.
     """
     spy = _SyscallSpy(monkeypatch)
     target = tmp_path / "sub" / "state.json"
@@ -184,8 +188,10 @@ def test_atomic_write_does_not_clobber_on_failure(tmp_path, monkeypatch):
 def test_atomic_write_survives_a_temp_file_left_by_an_earlier_crash(tmp_path, monkeypatch):
     """A process killed between the create and the rename leaves its temp file behind, and
     pids are recycled. A temp name a second call can derive is one `O_EXCL` refuses, so the
-    debris makes the path permanently unwritable — on a directory whose whole purpose is to
-    still be usable after a crash.
+    debris fails this write — on a directory whose whole purpose is to still be usable after
+    a crash. Measured, that failure is ONE call and self-heals, because the failure arm
+    unlinks the debris; the cost of the random suffix is the other direction, that nothing
+    collects debris at all and a `--gc` walk becomes mandatory.
 
     The debris is the name the first write ACTUALLY used rather than a guessed one, so this
     fails for any naming scheme a later call can repeat, not only the pid-derived spelling.

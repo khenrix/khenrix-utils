@@ -48,6 +48,9 @@ def _write_exactly(fd: int, data: bytes, path: Path) -> None:
     another process's append can land between the two and split one record into two halves
     around a stranger. So a short write is reported rather than completed, and the caller
     learns the record's fate instead of inheriting a torn one.
+
+    `atomic_write`'s temp file is exclusive and could safely loop; it does not, because one
+    rule that always reports beats two rules a later reader has to tell apart.
     """
     n = os.write(fd, data)
     if n != len(data):
@@ -59,13 +62,17 @@ def atomic_write(path, data: bytes) -> None:
 
     Three steps whose ORDER is the durability argument: the bytes reach the platter, then the
     name is swapped, then the directory entry reaches the platter. Renaming first publishes a
-    name pointing at content a crash can still lose; syncing the directory first records a
-    rename that has not happened yet.
+    name pointing at content a crash can still lose; syncing the directory first flushes a
+    directory that does not yet hold the rename, so the rename is exactly what a crash loses.
 
     The temp name carries a random suffix as well as the pid. A name a process can derive
-    twice is one `O_EXCL` refuses the second time, so debris from an interrupted write would
-    make this path permanently unwritable by a process that draws the same pid — on a
-    directory whose whole purpose is to still be usable after a crash.
+    twice is one `O_EXCL` refuses, so debris from an interrupted write makes this call fail
+    for a process that draws the same pid — on a directory whose whole purpose is to still be
+    usable after a crash. Measured, the failure is ONE call, not permanent: the arm below
+    unlinks the debris on its way out, so the next attempt succeeds. What the random suffix
+    costs is that nothing ever collects debris again — the pid scheme cleaned up after itself
+    on the following write, and this one leaves every interrupted write's temp file for a
+    `--gc` walk, which is now mandatory rather than tidy.
     """
     path = Path(path)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
@@ -91,13 +98,16 @@ def append_line(path, data: bytes) -> None:
 
     `O_APPEND` so the record lands at the end however many writers there are, one write of
     the record AND its terminator so no other writer's append can land between them, and an
-    fsync before returning so a caller holding the return value knows the record is on the
-    platter.
+    fsync before returning so a caller that has seen this call return knows the record is on
+    the platter.
 
     The directory is synced on creation only: without it the first record's file can vanish
     whole, and once the entry exists every later append would be paying a second fsync for a
-    name that is already durable. That rests on this function being what creates the log — a
-    file created by other means is one whose directory entry nothing here ever syncs.
+    name that is already durable. Creation is OBSERVED rather than inferred — an `O_EXCL`
+    attempt first, falling back on `FileExistsError` — because a `path.exists()` check has a
+    window in both directions, and the direction that matters is a log unlinked between the
+    check and the open: this call would then create the file and skip the directory sync,
+    which is the one failure the sync exists to prevent.
     """
     path = Path(path)
     if b"\n" in data:
@@ -109,14 +119,18 @@ def append_line(path, data: bytes) -> None:
             "neither of which is the record and both of which the reader treats as "
             "authoritative — the torn-tail rule discards only an unterminated LAST line, "
             "and these are terminated.")
-    existed = path.exists()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    created = True
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+    except FileExistsError:
+        created = False
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND, 0o600)
     try:
         _write_exactly(fd, data + b"\n", path)
         os.fsync(fd)
     finally:
         os.close(fd)
-    if not existed:
+    if created:
         _fsync_dir(path.parent)
 
 
