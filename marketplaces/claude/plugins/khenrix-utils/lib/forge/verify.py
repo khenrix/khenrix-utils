@@ -1090,7 +1090,10 @@ class Calibration:
     all under a contract that declares nothing, since the gate then runs once, however much
     of the tree it rewrote on its way to failing. `_gate_taints` states the same precondition
     for the same value. `admitted` needs no such guard and is given none: it is what the
-    engine STAGED, which is a fact about this tree whatever the gate went on to exit.
+    engine ADMITTED, which is a fact about this tree whatever the gate went on to exit.
+    ADMITTED, not staged — `_checkpoint` stages only a path that still exists or is already
+    tracked, so a declared path the gate created and then deleted is admitted and never
+    reaches the index.
 
     On a green run, `unexplained` is what §5 step 3 measures where a contract declares
     NOTHING — which is every contract this engine can DETECT today, since
