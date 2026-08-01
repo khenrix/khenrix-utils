@@ -233,12 +233,19 @@ class FixedPoint:
     `run.exit_code == 0` with `admitted == ()` is what BOTH a gate that changed nothing and
     a gate that rewrote a tracked file no relation covers hand back — and §6.2 makes only
     the first a PASS. Measured: under the pair those two runs return equal values, so the
-    unexplained rewrite is unrecoverable by the time a caller sees it (see
+    unexplained rewrite is unrecoverable FROM THE RETURNED VALUES (see
     `test_an_unexplained_tracked_rewrite_is_not_hidden_behind_exit_zero`).
 
-    `unexplained` carries only TRACKED paths. Untracked churn — `__pycache__`, a build
-    directory, a test runner's cache — is what every real gate produces, and reporting it
-    here would bury the one kind of delta §7.2 is about in the kind it is not.
+    `unexplained` is what the gate did to git's own view of the tree that no relation
+    declares: CONTENT that moved under a tracked path, or TRACKED-NESS that moved in either
+    direction — a `git add` of a sidecar the candidate carried, a `git rm --cached`, both of
+    which leave the bytes on disk exactly as they were. Untracked churn — `__pycache__`, a
+    build directory, a test runner's cache — is what every real gate produces and is
+    excluded; a path the gate STAGES has stopped being churn.
+
+    It is measured only for a pass whose gate exited 0. A nonzero exit returns at once,
+    because §6.2 already has its verdict, so on a failing run this field holds whatever
+    EARLIER passes measured and nothing about the pass that failed.
     """
     run: Run
     admitted: tuple[str, ...] = ()
@@ -586,7 +593,11 @@ def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> 
 
     Three terminations, and only the last is a raise:
       * the gate answered nonzero — there is a verdict, and checkpointing after it would
-        stage output from a failed run;
+        stage output from a failed run. The delta is not measured there either, and that
+        is a choice with a measurement behind it: reading it costs a post-run `_inventory`,
+        which FAILS CLOSED, so a gate that failed in a tree over quota came back as a
+        `VerifyError` instead of the FAIL it had already earned — an infrastructure failure
+        manufactured out of a measurement that §6.2 needs only to call a run a PASS;
       * nothing in the delta was admissible — staging nothing leaves the next pass the same
         tree, so it can only produce the same answer;
       * `max_passes` exhausted with declared output still moving — `GeneratorUnstable`.
@@ -606,16 +617,37 @@ def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> 
     unexplained: set = set()
     before = _inventory(root)
     for _pass in range(max_passes):
+        # Re-read each pass rather than once before the loop, so that `moved` below means
+        # only what it says: what the GATE moved during THIS pass. The other thing that
+        # writes this index is `_checkpoint`, between passes. UNPINNED, measured: hoisting
+        # this read out of the loop fails no test, because everything the checkpoint stages
+        # is by construction declared and the subtraction below drops it either way. It is
+        # the latch that keeps that from depending on the subtraction.
+        tracked_before = _tracked(root)
         run = run_command(root, command, env=env)
         if run.exit_code != 0:
             return FixedPoint(run, tuple(sorted(admitted)), tuple(sorted(unexplained)))
         after = _inventory(root)
         changed = snapshot.diff(before, after)
         declared = [p for p in sorted(changed) if _declared(contract, p)]
-        # Read AFTER the run, so a path the gate staged itself counts as tracked: that is a
-        # tracked delta the gate authored, and it is outside any contract.
         tracked = _tracked(root)
-        unexplained |= {p for p in changed if p in tracked} - set(declared)
+        # TWO ways the gate can author a tracked change, and a content diff sees only the
+        # first: it can move CONTENT under a path git tracks, or it can move TRACKED-NESS
+        # itself — `git add` of a sidecar the candidate carried, `git rm --cached` of a
+        # tracked file — with the bytes on disk untouched. Removals count as much as
+        # additions: `git rm` leaves a changed path that is no longer tracked when the run
+        # ends, which the first half alone reads as untracked build noise. WHICH side of the
+        # run the first half asks about is not itself a defence — a path the two tracked sets
+        # disagree about is in the second half by definition, so the union is the same either
+        # way, and it is the transition set that makes an index the gate moved visible.
+        moved = {p for p in changed if p in tracked} | (tracked_before ^ tracked)
+        # Subtracted by the contract's OWN GLOBS, not by the set the content delta admitted:
+        # "admission is decided by the output glob alone, not by what changed" has to hold in
+        # the index channel too, or a declared path is explained when its bytes move and
+        # unexplained when only its index entry does. One predicate across both halves also
+        # leaves no gap between them for a path that is regenerated AND newly tracked in the
+        # same pass to fall into.
+        unexplained |= {p for p in moved if not _declared(contract, p)}
         if not declared:
             return FixedPoint(run, tuple(sorted(admitted)), tuple(sorted(unexplained)))
         admitted |= set(declared)

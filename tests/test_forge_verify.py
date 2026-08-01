@@ -708,11 +708,12 @@ def test_a_declared_output_that_is_gitignored_is_still_checkpointed(tmp_path):
 
 
 def test_a_path_the_gate_itself_stages_is_a_tracked_delta(tmp_path):
-    """Tracked-ness is read AFTER the run, not before it.
+    """A verify command that writes a file and stages it has authored a tracked delta
+    outside the contract, and the gate is the party under suspicion here.
 
-    A verify command that stages a file has authored a tracked delta outside the contract,
-    and it is invisible to a set of tracked paths captured before the command ran — which is
-    the fail-open direction, since the gate is the party under suspicion.
+    BOTH halves of the delta see this one: content appeared under the path, and the index
+    grew by it. The two cases that need one half only — an index promotion with no content
+    delta, and a path the gate drops from the index — are pinned separately below.
     """
     repo = _generator_repo(
         tmp_path, "#!/bin/sh\necho x > snuck.txt\ngit add snuck.txt\n")
@@ -721,6 +722,93 @@ def test_a_path_the_gate_itself_stages_is_a_tracked_delta(tmp_path):
     assert fp.run.exit_code == 0 and fp.admitted == ()
     assert fp.unexplained == ("snuck.txt",), \
         f"a file the gate staged for itself was read as untracked noise: {fp.unexplained}"
+
+
+def test_an_index_promotion_with_no_content_delta_is_still_a_tracked_delta(tmp_path):
+    """The gate can author a tracked change without moving a byte on disk.
+
+    `git add` of a file the candidate carried as a sidecar promotes it into the verifier's
+    index, and the bytes under that path are the bytes the inventory already saw — so a
+    content diff reports nothing. Measured on the content-only form of this loop:
+    `exit=0 admitted=() unexplained=()` with `git diff --cached` already naming
+    `A  carried.txt`.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\ngit add carried.txt\n")
+    v = _verifier(tmp_path, repo, work=[("carried.txt", "sidecar\n")])
+
+    fp = verify.fixed_point(v, BUILD, finspect.GeneratorContract())
+    assert fp.run.exit_code == 0 and fp.admitted == ()
+    assert fp.unexplained == ("carried.txt",), \
+        f"the gate promoted a path into the index unseen: {fp.unexplained}"
+    assert _staged(v) == {"carried.txt": "A"}, "the fixture did not stage anything"
+
+
+def test_a_tracked_path_the_gate_drops_from_the_index_is_a_tracked_delta(tmp_path):
+    """A path LEAVING the index is a transition too, and a content diff misses both shapes.
+
+    `git rm --cached` moves no bytes at all. `git rm` moves bytes at a path that is no
+    longer tracked when the run ends, so asking only whether a changed path is tracked
+    AFTER the run reads a deleted tracked file as untracked noise — the fail-open
+    direction, and the reason removals count here and are not filtered to additions.
+    Measured on the content-only form: `unexplained=()` for both files.
+    """
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\ngit rm -q --cached kept.txt\ngit rm -q -f gone.txt\n",
+        files=[("kept.txt", "still on disk\n"), ("gone.txt", "deleted too\n")])
+    v = _verifier(tmp_path, repo)
+
+    fp = verify.fixed_point(v, BUILD, finspect.GeneratorContract())
+    assert fp.run.exit_code == 0 and fp.admitted == ()
+    assert fp.unexplained == ("gone.txt", "kept.txt"), \
+        f"the gate emptied the index of two tracked paths unseen: {fp.unexplained}"
+
+
+def test_a_declared_output_the_gate_stages_itself_is_not_unexplained(tmp_path):
+    """The subtraction is the contract's globs, the same predicate that decides admission —
+    so both halves of the delta are explained by exactly the same rule and nothing falls
+    into the gap between them.
+
+    `gen/new.txt` is regenerated AND newly tracked in one pass, and it is the path the two
+    candidate subtractions agree on. `gen/carried.txt` is the one they do not: the gate
+    promotes it with no content delta at all, so a subtraction of what the CONTENT delta
+    admitted would report it while a subtraction by the globs does not. The globs win
+    because they are what this module means by explained — "admission is decided by the
+    output glob alone, not by what changed" has to hold in the index channel too, or a
+    declared path is treated one way when its bytes move and another way when they do not.
+    The visible consequence, stated rather than hidden: a declared path whose index
+    membership the gate moves without touching its bytes is in neither `admitted` (the
+    engine never staged it) nor `unexplained` (the contract covers it).
+    """
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\nmkdir -p gen\necho fresh > gen/new.txt\n"
+                  "git add gen/new.txt gen/carried.txt\n")
+    v = _verifier(tmp_path, repo, work=[("gen/carried.txt", "sidecar\n")])
+
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert fp.run.exit_code == 0
+    assert fp.admitted == ("gen/new.txt",) and fp.unexplained == (), \
+        f"a declared path the gate staged itself was reported as unexplained: {fp}"
+    assert _staged(v) == {"gen/carried.txt": "A", "gen/new.txt": "A"}, \
+        f"the fixture did not promote both paths: {_staged(v)}"
+
+
+def test_a_rename_the_gate_stages_surfaces_as_both_of_its_halves(tmp_path):
+    """`git mv` is a removal plus an addition in a name-keyed set, and both are reported.
+
+    Two entries for one logical change is the honest answer: nothing in this module detects
+    renames, both statements are true of the index, and §6.2's PASS row asks for "no
+    unexplained tracked delta" — a question about the set being empty, not about its shape.
+    Pairing them up would need a similarity heuristic the engine has no way to state
+    truthfully.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\ngit mv old.txt new.txt\n",
+                           files=[("old.txt", "content\n")])
+    v = _verifier(tmp_path, repo)
+
+    fp = verify.fixed_point(v, BUILD, finspect.GeneratorContract())
+    assert fp.run.exit_code == 0
+    assert fp.unexplained == ("new.txt", "old.txt"), \
+        f"a staged rename lost one of its halves: {fp.unexplained}"
 
 
 def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(tmp_path):
