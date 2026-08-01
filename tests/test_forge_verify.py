@@ -21,16 +21,23 @@ IDENT = ("Forge Seat", "seat@forge.invalid")
 NO_CONTRACT = finspect.GeneratorContract()
 
 
-def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), contract=None):
+def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), remove=(), mutate=None,
+               contract=None):
     """Baseline -> seat -> four phases -> bundle, with `setup` written before Fsetup and
-    `work` after it.
+    `work` (then `remove`) after it.
 
     The phase placement is the whole point and is why this helper takes two lists rather
     than one: `harvest.artifact_set` takes the artifact PATH set from Fsetup->Fwork, so
     setup's output is differenced out and only `work` has a channel into a verifier.
+
+    `remove` is `git rm`, not `unlink`, because the candidate shape it produces is a
+    deletion the tracked patch carries rather than a file that merely went missing.
+    `mutate` is called on the seat in the same phase and takes whatever shape has no bytes
+    to write — a chmod, a repointed symlink — which is how a candidate whose CONTENT is
+    identical to the baseline's gets built at all.
     """
     run = tmp_path / "run"
-    run.mkdir(exist_ok=True)
+    run.mkdir(parents=True, exist_ok=True)
     b = baseline.materialize(repo, run, finspect.repo_facts(repo), list(selected), "r1")
     s = fleet.clone_seat(repo, b, tmp_path / "seat", name="claude", identity=IDENT)
     f0 = harvest.record(s.path)
@@ -39,6 +46,10 @@ def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), contract=None)
     fsetup = harvest.record(s.path)
     for rel, text in work:
         write(s.path, rel, text)
+    for rel in remove:
+        _git(s.path, "rm", "-q", "--", rel)
+    if mutate is not None:
+        mutate(s.path)
     fwork = harvest.record(s.path)
     a = harvest.artifact_set(
         harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), s.path, b.commit)
@@ -130,8 +141,8 @@ def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
     The rig is SETUP's output — written before Fsetup — because that is the phase
     `harvest` differences out (its docstring names `.venv` by name). A rig the agent places
     in its OWN work crosses BY DESIGN: the candidate is the agent's edits, and a candidate
-    that edits the gate is a thing to FLAG, which is `gate_delta`'s job — and `gate_delta`
-    is None ("nobody looked"), not (), precisely so nothing reads it as a clean gate.
+    that edits the gate is a thing to FLAG rather than to drop, which is `gate_delta`'s job
+    and not this one's.
     """
     repo = make_repo(tmp_path)
     write(repo, "check.sh", "#!/bin/sh\nexit 1\n")
@@ -142,7 +153,7 @@ def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
         work=[("src.py", "the actual work\n")])
 
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     assert (v / "src.py").exists(), "the agent's work must cross"
     assert not (v / ".venv").exists(), "seat-only state must not cross"
     r = verify.run_command(v, verify.Command.parse([["./check.sh"]]))
@@ -247,7 +258,7 @@ def test_the_verifier_clone_has_no_origin_and_its_own_identity(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     # Asked with an ORDINARY git, never `forge.gitcmd`: the property must survive a git
     # that has none of the engine's presets, which is the git a gate step would use.
     assert _git(v, "remote").stdout.strip() == "", "the verifier ships a push target"
@@ -276,7 +287,7 @@ def test_the_gate_sees_none_of_the_users_global_git_config(tmp_path, monkeypatch
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     r = verify.run_command(v, verify.Command.parse(
         [["git", "config", "--get", "fetch.parallel"]]))
     assert r.stdout.strip() == "", \
@@ -287,7 +298,7 @@ def test_a_hook_in_the_verifiers_own_hooks_dir_does_not_run(tmp_path):
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     hook = v / ".git" / "hooks" / "pre-commit"
     hook.parent.mkdir(parents=True, exist_ok=True)
     hook.write_text("#!/bin/sh\ntouch HOOK-RAN\nexit 1\n")
@@ -319,7 +330,7 @@ def test_an_ambient_git_config_injection_cannot_re_enable_hooks(
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
 
     for k, tmpl in injection.items():
         monkeypatch.setenv(k, tmpl.format(hooks=hooks))
@@ -353,7 +364,7 @@ def test_the_gate_does_not_inherit_the_users_git_template(tmp_path, monkeypatch)
     repo = make_repo(tmp_path)
     b, _s, cb = _candidate(tmp_path, repo)
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     r = verify.run_command(v, verify.Command.parse([["git", "init", "-q", "inner"]]))
     assert r.exit_code == 0, f"the gate's own git init failed: {r.stderr}"
     assert not (v / "inner" / ".git" / "hooks" / "pre-commit").exists(), \
@@ -371,7 +382,7 @@ def test_a_steps_own_env_cannot_re_admit_what_the_base_dropped(tmp_path):
     (hooks / "pre-commit").chmod(0o755)
     b, _s, cb = _candidate(tmp_path, repo, work=[("src.py", "x\n")])
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                              identity=IDENT, contract=NO_CONTRACT)
+                              identity=IDENT, contract=NO_CONTRACT).path
     write(v, "later.txt", "later\n")
     _assert_gate_commit_ran_no_hook(
         v, {"GIT_CONFIG_PARAMETERS": f"'core.hooksPath'='{hooks}'"})
@@ -556,7 +567,7 @@ def test_a_verifier_accepts_the_contract_its_bundle_was_built_under(tmp_path):
     c = finspect.GeneratorContract(id="render-v1", relations=(("shared/*", "gen/*"),))
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
                               identity=IDENT, contract=c)
-    assert (v / "src.py").is_file()
+    assert (v.path / "src.py").is_file()
 
 
 def test_a_verifier_cannot_be_built_without_naming_the_runs_contract(tmp_path):
@@ -616,13 +627,18 @@ def _generator_repo(tmp_path, script, *, files=()):
     return repo
 
 
-def _verifier(tmp_path, repo, *, contract=NO_CONTRACT, **kw):
+def _built(tmp_path, repo, *, contract=NO_CONTRACT, command=None, **kw):
     # `contract` reaches BOTH calls or neither. Forwarding it to `_candidate` alone while
     # pinning NO_CONTRACT here would make the helper answer a ContractMismatch to a caller
     # who passed one contract and looks like they were obeyed.
     b, _s, cb = _candidate(tmp_path, repo, contract=contract, **kw)
     return verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                                 identity=IDENT, contract=contract)
+                                 identity=IDENT, contract=contract, command=command)
+
+
+def _verifier(tmp_path, repo, **kw):
+    """`_built`'s tree, for a case that has nothing to say about what building it measured."""
+    return _built(tmp_path, repo, **kw).path
 
 
 def _staged(v):
@@ -990,9 +1006,10 @@ def _bundle(**kw):
 def test_a_gate_surface_nobody_measured_is_not_treated_as_a_clean_one():
     """`gate_delta is None` is the fail-OPEN reading of `()`, and it is the DEFAULT.
 
-    `bundle.build` does not populate the field yet, so this is the shape every real bundle
-    has today: a clean pass on an unmeasured gate surface must come back as GATE_CHANGED,
-    not PASS, or the whole gate-surface defence is off by default.
+    `bundle.build` leaves the field unset — only `build_verifier` holds the two trees a
+    delta needs — so this is the shape of every bundle that has not reached a verifier: a
+    clean pass on an unmeasured gate surface must come back as GATE_CHANGED, not PASS, or
+    the whole gate-surface defence is off for anything that skipped the measurement.
     """
     outcome, reason = verify.classify(_run(0), _run(0), _bundle(gate_delta=None))
     assert outcome == verify.GATE_CHANGED
@@ -1201,6 +1218,181 @@ def test_a_generated_gate_file_pulls_its_contract_source_into_the_surface(tmp_pa
     assert "src/render.py" in s and "elsewhere/other.py" not in s
 
 
+def _gate_repo(tmp_path):
+    """A tree with both shapes §6.1 names: a build definition and a discovered test."""
+    return _surface_repo(tmp_path, [
+        ("Makefile", "verify:\n\t@true\n"),
+        ("tests/test_a.py", "def test_a():\n    assert True\n"),
+    ])
+
+
+def test_a_candidate_that_edits_the_gate_lands_in_the_bundles_delta(tmp_path):
+    """§6.1's measurement, taken between the clone and the candidate.
+
+    A REWRITE IN PLACE, which is the case a difference over surface NAMES cannot see.
+    Measured on this candidate: both surfaces come back `('Makefile', 'tests/test_a.py')`,
+    so every difference over the names alone — either direction, or symmetric — is empty
+    while the file that decides what the gate runs has been replaced. That is why the
+    delta is taken over each surface path's content identity instead.
+    """
+    v = _built(tmp_path, _gate_repo(tmp_path),
+               work=[("Makefile", "verify:\n\t@echo weakened\n")])
+    assert v.baseline_surface == v.candidate_surface == ("Makefile", "tests/test_a.py"), \
+        "the surfaces differ, so this case is no longer about a rewrite in place"
+    assert "Makefile" in v.candidate.gate_delta
+    assert "tests/test_a.py" not in v.candidate.gate_delta, \
+        "an untouched gate file is surface, not delta"
+
+
+def test_a_candidate_that_leaves_the_gate_alone_gets_an_empty_delta_not_none(tmp_path):
+    """The whole point: () is measured-and-clean, and only () can reach PASS."""
+    v = _built(tmp_path, _gate_repo(tmp_path), work=[("src.py", "work\n")])
+    assert v.candidate.gate_delta == ()
+    assert v.baseline_surface == ("Makefile", "tests/test_a.py"), \
+        "an empty delta over an empty surface would pass this test having measured nothing"
+    r = verify.run_command(v.path, verify.Command.parse([["true"]]))
+    assert verify.classify(r, r, v.candidate)[0] == verify.PASS, \
+        "a clean gate delta is what makes PASS reachable at all"
+
+
+def test_a_candidate_that_deletes_a_discovered_test_lands_in_the_delta(tmp_path):
+    """The §6 threat verbatim: delete a test file, leave the Makefile untouched."""
+    v = _built(tmp_path, _gate_repo(tmp_path), remove=["tests/test_a.py"])
+    assert v.candidate.gate_delta == ("tests/test_a.py",)
+    assert not (v.path / "tests" / "test_a.py").exists(), \
+        "the deletion never reached the verifier, so the delta is about nothing"
+
+
+def test_a_candidate_that_adds_a_test_file_lands_in_the_delta_too(tmp_path):
+    """The other direction, and the reason the delta is not read off `before` alone.
+
+    A candidate that ADDS a test file has changed what the gate collects just as surely as
+    one that deletes it — a new test that passes vacuously, or one that shadows a real
+    collection — and a delta computed as "what the baseline had and the candidate does
+    not" reports the deletion above and nothing here.
+    """
+    v = _built(tmp_path, _gate_repo(tmp_path),
+               work=[("tests/test_z.py", "def test_z():\n    assert True\n"),
+                     ("tests/test_b.py", "def test_b():\n    assert True\n")])
+    assert v.candidate.gate_delta == ("tests/test_b.py", "tests/test_z.py")
+
+
+def test_the_delta_comes_back_in_a_stable_order():
+    """The delta travels into a manifest, a report and a judge prompt, so two runs over one
+    pair of trees must not disagree on the text of it.
+
+    A set's iteration order does not supply that: it is hash order, which Python randomizes
+    per process. Twenty paths rather than the two a chain fixture affords, and for that
+    reason — measured, a two-entry delta comes back sorted at some hash seeds and not at
+    others, so a fixture that size reports the ordering CAUGHT roughly half the time.
+    """
+    paths = tuple(f"tests/test_{i:02d}.py" for i in range(20))
+    assert verify._gate_delta({}, dict.fromkeys(paths, "x")) == paths
+
+
+def test_the_delta_is_measured_against_the_baseline_and_not_the_candidate(tmp_path):
+    """`baseline_surface` is read BEFORE the candidate is laid down, and it has to be.
+
+    Measured after `materialize`, both surfaces are the candidate's, every identity agrees
+    with itself and the delta is `()` for every candidate there is — a gate-surface check
+    that certifies its own subject. The surfaces are on the `Verifier` so this is a
+    question the caller can ask.
+    """
+    v = _built(tmp_path, _gate_repo(tmp_path),
+               work=[("tests/test_new.py", "def test_new():\n    assert True\n")])
+    assert v.baseline_surface == ("Makefile", "tests/test_a.py")
+    assert v.candidate_surface == ("Makefile", "tests/test_a.py", "tests/test_new.py")
+    assert v.candidate.gate_delta == ("tests/test_new.py",)
+
+
+def test_a_gate_file_the_command_names_is_in_the_delta_when_the_candidate_rewrites_it(
+        tmp_path):
+    """`build_verifier` forwards `command` to both surface reads or to neither.
+
+    `check.sh` carries no gate role and its name says nothing, so the command is the only
+    thing that makes it surface — and this module's own opening threat is a seat replacing
+    exactly such a file. Forwarding it to one read and not the other would be worse than
+    dropping it: the file would enter one surface and not the other, and every candidate
+    would come back gate_changed on a file none of them touched.
+    """
+    def rewritten(where, **kw):
+        # A repo apiece: one baseline ref per run id, and both runs here are "r1".
+        repo = _surface_repo(where, [("check.sh", "#!/bin/sh\nexit 1\n")])
+        return _built(where, repo, work=[("check.sh", "#!/bin/sh\nexit 0\n")], **kw)
+
+    blind = rewritten(tmp_path / "blind")
+    assert blind.candidate.gate_delta == (), \
+        "no rule names check.sh, so without the command this edit is invisible — the gap"
+    seeing = rewritten(tmp_path / "seeing",
+                       command=verify.Command.parse([["./check.sh"]]))
+    assert seeing.baseline_surface == ("check.sh",)
+    assert seeing.candidate.gate_delta == ("check.sh",)
+
+    # Forwarded to the CANDIDATE read too, which only a candidate that leaves the file
+    # alone can show: with the command on one read only, `check.sh` is in one surface and
+    # not the other, so every candidate in this repository comes back gate_changed on a
+    # file none of them touched.
+    untouched = _surface_repo(tmp_path / "untouched", [("check.sh", "#!/bin/sh\nexit 1\n")])
+    v = _built(tmp_path / "untouched", untouched, work=[("src.py", "work\n")],
+               command=verify.Command.parse([["./check.sh"]]))
+    assert v.candidate_surface == ("check.sh",) and v.candidate.gate_delta == ()
+
+
+def test_a_gate_file_that_is_a_symlink_is_measured_by_where_it_POINTS(tmp_path):
+    """A gate file can be a link, and repointing one rewrites the gate with no bytes and
+    no names moved: neither `mk/strict.mk` nor `mk/lax.mk` carries a gate role, so both
+    surfaces are `('Makefile',)` before and after, and only what that name POINTS AT moved.
+
+    The target TEXT is the identity, and the link is never read through. Reading through it
+    would put the content of a file that is not itself surface into this measurement, and
+    for an escaping link it would reach outside the tree — which is the one thing §6 exists
+    to prevent.
+    """
+    repo = _surface_repo(tmp_path, [("mk/strict.mk", "verify:\n\t@false\n"),
+                                    ("mk/lax.mk", "verify:\n\t@true\n")])
+    (Path(repo) / "Makefile").symlink_to("mk/strict.mk")
+    _git(repo, "add", "Makefile")
+    commit_all(repo, "a Makefile that is a link")
+
+    def repoint(seat):
+        (seat / "Makefile").unlink()
+        (seat / "Makefile").symlink_to("mk/lax.mk")
+
+    v = _built(tmp_path, repo, mutate=repoint)
+    assert (v.path / "Makefile").is_symlink() and \
+        os.readlink(v.path / "Makefile") == "mk/lax.mk", "the repointing never crossed"
+    assert v.baseline_surface == v.candidate_surface == ("Makefile",), \
+        "the surfaces differ, so this is no longer a case about one path's identity"
+    assert v.candidate.gate_delta == ("Makefile",)
+
+
+def test_a_gate_file_that_only_loses_its_executable_bit_is_in_the_delta(tmp_path):
+    """A mode is half of what a gate file is. `./check.sh` without its +x does not run at
+    all, and its content digest is unchanged — so an identity over bytes alone reports a
+    clean gate for a candidate that disabled the check."""
+    repo = _surface_repo(tmp_path, [("check.sh", "#!/bin/sh\nexit 1\n")])
+    (Path(repo) / "check.sh").chmod(0o755)
+    commit_all(repo, "make it executable")
+    v = _built(tmp_path, repo, command=verify.Command.parse([["./check.sh"]]),
+               mutate=lambda seat: (seat / "check.sh").chmod(0o644))
+    assert (v.path / "check.sh").read_text() == "#!/bin/sh\nexit 1\n", \
+        "the fixture moved the bytes, so a content-only identity would catch it anyway"
+    assert not os.access(v.path / "check.sh", os.X_OK), \
+        "the mode change never crossed into the verifier"
+    assert v.candidate.gate_delta == ("check.sh",)
+
+
+def test_a_gate_surface_path_that_cannot_be_read_is_refused_not_skipped(tmp_path):
+    """Skipping it would give it the same absent identity on both sides, so a gate file
+    rewritten and then made unreadable would compare equal to itself — the direction the
+    delta fails open in."""
+    repo = _surface_repo(tmp_path, [("Makefile", "verify:\n\t@true\n")])
+    v = _verifier(tmp_path, repo)
+    (v / "Makefile").chmod(0o000)
+    with pytest.raises(verify.VerifyError, match="could not be read"):
+        verify._surface_state(v, verify.gate_surface(v, NO_CONTRACT))
+
+
 def test_a_reason_that_would_carry_the_whole_candidate_is_bounded():
     """`omitted` and a gate delta are each as large as the candidate, and a reason travels
     into a report and a judge prompt."""
@@ -1375,8 +1567,7 @@ def test_an_incomplete_harvest_still_reports_what_the_gate_surface_says(tmp_path
     These are independent measurements: the bundle lost a path, AND nobody measured the
     gate surface (or the candidate moved it). A reviewer deciding whether to re-harvest is
     the same reviewer who has to decide whether the gate can be trusted afterwards, and
-    dropping the second fact makes the verdict read cleaner than its evidence. `gate_delta
-    is None` is the shape of every real bundle today, so this is not a corner case.
+    dropping the second fact makes the verdict read cleaner than its evidence.
     """
     outcome, reason = verify.classify(
         _run(0), _run(0), _bundle(gate_delta=("Makefile",), omitted=("sub",)))

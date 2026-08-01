@@ -459,7 +459,7 @@ def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
     # so naming it here is what keeps this chain about the seams it exists to measure.
     verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier",
                                      identity=IDENT, contract=finspect.GeneratorContract())
-    return _Chain(base, seat, artifacts, candidate, verifier, tmp)
+    return _Chain(base, seat, artifacts, candidate, verifier.path, tmp)
 
 
 @contextlib.contextmanager

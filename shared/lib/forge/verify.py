@@ -5,7 +5,9 @@ delete an auto-discovered test file, or weaken the Makefile — so the candidate
 materialized into a CLONE BUILT FROM THE BASELINE and the gate runs there, never in the
 seat. `build_verifier` is `fleet.clone_seat` plus `bundle.materialize`, so every defence the
 seat clone already carries — no origin, no hardlinks, no ambient template, its own identity,
-a checkout verified against B1's manifest — is reused rather than restated.
+a checkout verified against B1's manifest — is reused rather than restated. It is also where
+§6.1's GATE DELTA is measured, because the clone and the materialization put the baseline and
+the candidate in one directory one after the other, and nowhere else in the run holds both.
 
 `SeatError` and `BundleError` PROPAGATE UNWRAPPED, on `harvest`'s precedent for
 `SnapshotError`: both already name the thing that failed and are already RuntimeErrors, so
@@ -64,8 +66,10 @@ idempotent over its result and all it contributes is the checkout scrub.
 """
 import configparser
 import fnmatch
+import hashlib
 import os
 import signal
+import stat
 import subprocess
 import time
 import tomllib
@@ -73,6 +77,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import bundle, fleet, gitcmd, snapshot
+from .inspect import GeneratorContract
 from .storage import Quota
 
 # The branch every verifier gets inside its own clone. Fixed rather than derived from
@@ -539,7 +544,108 @@ def _assert_hooks_pinned(path: Path) -> None:
                 "cannot be used as a verifier.")
 
 
-def build_verifier(repo, baseline, candidate, dest, *, identity, contract) -> Path:
+@dataclass(frozen=True)
+class Verifier:
+    """A tree the builder never had access to, and what building it measured.
+
+    `candidate` is NOT the bundle the caller passed in: it is that bundle with its
+    `gate_delta` filled from the two trees `build_verifier` had and no other caller has. A
+    caller that classifies the INPUT bundle instead reads `gate_delta is None`, which is
+    UNKNOWN, which is `GATE_CHANGED` — correct, and useless.
+
+    `contract` rides along because the gate that runs in this tree admits verify-origin
+    rewrites under exactly one contract, and a caller that sources a second one from
+    somewhere else is the manifest-records-X-while-the-gate-admitted-Y shape one call site
+    over. `fixed_point` still takes its own, so this field is what a caller reads to fill
+    that argument rather than a check on it.
+
+    The two surfaces are kept because the delta alone cannot say what was measured: a tree
+    with no gate files at all and a tree whose gate files the candidate left untouched
+    both produce `()`, and only the surfaces separate them.
+    """
+    path: Path
+    candidate: bundle.CandidateBundle
+    contract: GeneratorContract
+    baseline_surface: tuple[str, ...] = ()
+    candidate_surface: tuple[str, ...] = ()
+
+
+def _sha256_file(p: Path) -> str:
+    """Deliberately NOT bound to `snapshot._digest`, `baseline._sha256_file` and
+    `fleet._sha256_file`, which must agree with each other byte for byte. Nothing compares
+    this one against a manifest; see `_surface_state` for what that buys."""
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _surface_state(root: Path, paths) -> dict:
+    """Each gate-surface path's CONTENT identity, so a delta can see an in-place rewrite.
+
+    A gate surface is a set of NAMES, and a candidate that weakens `Makefile` where it
+    stands adds and removes no name at all. Measured on that candidate: the two surfaces
+    come back equal and a difference over the names alone is empty, while §6.1 requires
+    that edit to mark the candidate for review. So the delta is taken over these pairs and
+    the names are read back off it.
+
+    The identity is the bytes AND the mode. `check.sh` losing its executable bit is a gate
+    that stops running, and no digest of its content says so. A symlink is its TARGET
+    TEXT, never read through, on `snapshot._symlink_entry`'s argument: reading through it
+    would put content from outside the tree into this measurement. A FIFO or a device node
+    is its file TYPE, never opened, on `snapshot._special_entry`'s: a read-open on a FIFO
+    blocks until a writer appears, and there is no timeout anywhere in this call path.
+
+    This digest is compared ONLY against another value this function produced in the same
+    call, which is what separates it from `snapshot._digest`, `baseline._sha256_file` and
+    `fleet._sha256_file` — those three must agree byte for byte, because a snapshot digest
+    is checked against a baseline manifest hash of the same file. Nothing checks this one
+    against anything, so it is free to carry the mode the other three keep separate.
+
+    A path with NO entry is one the tree does not hold. `_enumerate` reads the index as
+    well as the worktree, so a tracked path missing from the worktree is an ordinary
+    answer, and its absence here is exactly what puts it in the delta when the other side
+    has it. A path that cannot be READ raises instead, because dropping it would give it
+    the same absent identity on both sides — a gate file rewritten and then made
+    unreadable would compare equal to itself, in the direction the delta fails open in.
+    """
+    state = {}
+    for rel in paths:
+        p = root / rel
+        try:
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                target = os.readlink(p).encode("utf-8", "surrogateescape")
+                state[rel] = f"symlink:{hashlib.sha256(target).hexdigest()}"
+            elif stat.S_ISREG(st.st_mode):
+                state[rel] = f"file:{st.st_mode & 0o777:o}:{_sha256_file(p)}"
+            else:
+                state[rel] = f"special:{stat.S_IFMT(st.st_mode)}"
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise VerifyError(
+                f"the gate-surface path {rel!r} could not be read, so no gate delta over "
+                f"this tree would be honest: {e}") from e
+    return state
+
+
+def _gate_delta(before: dict, after: dict) -> tuple[str, ...]:
+    """§6.1's measurement: every gate-surface path the candidate moved.
+
+    BOTH directions and the middle. A gate file the candidate DELETES leaves the surface,
+    one it ADDS enters it, and one it rewrites in place is in neither difference — so the
+    union of the names is walked and each is decided by its identity. An `after`-only
+    reading would report the added test file and miss the deleted one, which is §6's
+    threat verbatim; a `before`-only reading misses the added one.
+    """
+    return tuple(sorted(p for p in before.keys() | after.keys()
+                        if before.get(p) != after.get(p)))
+
+
+def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
+                   command=None) -> Verifier:
     """A clone of the BASELINE with the candidate laid down in it, ready for the gate.
 
     `identity` is the verifier's own `(name, email)`, required for the same reason
@@ -556,6 +662,19 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract) -> Pa
     It is checked BEFORE the clone: a mismatch is a fact about two values the caller
     already holds, so paying for a checkout to discover it would leave a verifier tree
     behind that no gate may run in.
+
+    `command` is the confirmed verify command, and it is optional because a caller that
+    has not chosen one yet can still build a tree. Passing it only WIDENS the surface —
+    it is the sole route to a gate file whose name says nothing (`./check.sh`) and to one
+    git does not enumerate (`.venv/bin/pytest`) — so omitting it costs coverage of exactly
+    those, and `gate_surface` names that gap among the ones it does not close.
+
+    THE GATE DELTA IS TAKEN HERE BECAUSE THIS IS THE ONLY PLACE BOTH TREES EXIST.
+    `gate_surface` answers one tree; a delta needs two, and between the clone and the
+    materialization this one directory is first exactly the baseline and then exactly the
+    candidate. It costs two surface reads and NO extra clone, which is the expensive half.
+    `bundle.build` cannot do it: it is handed the seat's tree, which is the one tree a gate
+    surface must not be read from, since the party under suspicion can write it.
     """
     if candidate.generator_contract_id != contract.id:
         raise ContractMismatch(
@@ -566,9 +685,21 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract) -> Pa
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
     # read back after it, because the candidate is the one thing in between that writes.
     _hooks_pin(seat.path)
+    # The baseline half of the delta, and this is the only moment it can be taken: the
+    # clone holds exactly B1 and `clone_seat` has already verified the checkout against its
+    # manifest, so this is the one gate surface in the run known not to be a builder's.
+    baseline_surface = gate_surface(seat.path, contract, command=command)
+    before = _surface_state(seat.path, baseline_surface)
     bundle.materialize(candidate, seat.path)
     _assert_hooks_pinned(seat.path)
-    return seat.path
+    candidate_surface = gate_surface(seat.path, contract, command=command)
+    return Verifier(
+        path=seat.path,
+        candidate=bundle.with_gate_delta(
+            candidate, _gate_delta(before, _surface_state(seat.path, candidate_surface))),
+        contract=contract,
+        baseline_surface=baseline_surface,
+        candidate_surface=candidate_surface)
 
 
 def _inventory(root: Path) -> dict:
@@ -1170,7 +1301,11 @@ def _contract_sources(contract, paths, surface) -> set:
 
 
 def gate_surface(verifier_path, contract, *, command=None) -> tuple[str, ...]:
-    """The files in this tree that DEFINE the gate, so a caller can compute `gate_delta`.
+    """The files in this tree that DEFINE the gate — one half of a `gate_delta`.
+
+    `build_verifier` is the caller that takes the other half and differences the two; what
+    it differences is not these names but each name's content identity, because a candidate
+    that rewrites a gate file in place changes no name at all.
 
     §6.1's list — build definitions, package-script definitions, test-runner config, CI
     helpers, discovered test files — answered against ONE TREE. Four derivations, and each

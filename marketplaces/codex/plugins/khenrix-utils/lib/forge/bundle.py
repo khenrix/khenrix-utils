@@ -54,7 +54,7 @@ containment predicate there would certify unread content clean; see
 import os
 import stat
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import gitcmd
@@ -98,13 +98,14 @@ class CandidateBundle:
     sidecars: tuple[SidecarEntry, ...] = ()
     # None, never (). `gate_delta` is a DIFFERENCE between two trees' gate surfaces. The
     # detector is `verify.gate_surface`, which answers ONE tree; what produces the delta is
-    # a caller that runs it on the baseline and on the verifier and writes the result back,
-    # and `build` is not that caller — it is handed a seat path, an `ArtifactSet` and a
-    # `Baseline`, never a checkout the builder did not write. So it leaves this field
-    # unset. `Baseline.sidecars` is the precedent: an empty tuple says "the candidate
-    # changed nothing that defines the gate" when the truth is "nobody looked", which is
-    # the fail-OPEN reading. A consumer classifying `GATE_CHANGED` must treat None as
-    # UNKNOWN — not as a clean gate.
+    # `verify.build_verifier`, the one place both trees exist — the clone holds exactly the
+    # baseline and `materialize` turns it into exactly the candidate — and it writes the
+    # result back through `with_gate_delta`. `build` is not that caller: it is handed a
+    # seat path, an `ArtifactSet` and a `Baseline`, never a checkout the builder did not
+    # write. So it leaves this field unset. `Baseline.sidecars` is the precedent: an empty
+    # tuple says "the candidate changed nothing that defines the gate" when the truth is
+    # "nobody looked", which is the fail-OPEN reading. A consumer classifying
+    # `GATE_CHANGED` must treat None as UNKNOWN — not as a clean gate.
     gate_delta: tuple[str, ...] | None = None
     # "" means the run declared no GeneratorContract, which admits NOTHING as a permitted
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
@@ -117,6 +118,26 @@ class CandidateBundle:
     # sidecars — `git -C sub rev-parse HEAD` inside the verifier exits 0 and answers the
     # VERIFIER's HEAD, because git walks up past the missing gitlink into the parent.
     omitted: tuple[str, ...] = ()
+
+
+def with_gate_delta(candidate: CandidateBundle, delta) -> CandidateBundle:
+    """The same candidate with its gate-surface delta recorded.
+
+    A new instance rather than a mutation because `CandidateBundle` is frozen, and it is
+    frozen because a candidate that can be edited after it is built is a candidate whose
+    manifest describes something else.
+
+    Refuses when a delta is already recorded, INCLUDING an empty one. Two measurements of
+    one tree pair agree or one of them is wrong, and taking the second silently would make
+    which answer survives depend on call order. `()` is a measurement — it is the whole
+    difference between "the candidate changed nothing that defines the gate" and "nobody
+    looked" — so it is exactly as unoverwritable as a non-empty one.
+    """
+    if candidate.gate_delta is not None:
+        raise BundleError(
+            f"this candidate already records a gate delta ({candidate.gate_delta!r}); a "
+            f"second measurement ({tuple(delta)!r}) is a disagreement, not an update")
+    return replace(candidate, gate_delta=tuple(delta))
 
 
 def _patch_paths(repo, patch: bytes) -> tuple[frozenset, frozenset]:

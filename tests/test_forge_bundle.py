@@ -681,3 +681,52 @@ def test_build_without_a_contract_stamps_the_fail_closed_sentinel(tmp_path):
     assert bundle.build(s.path, a, b, contract=None).generator_contract_id == ""
     assert bundle.build(
         s.path, a, b, contract=finspect.GeneratorContract()).generator_contract_id == ""
+
+
+def _bare(**kw):
+    return bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r",
+                                  baseline_commit="c", **kw)
+
+
+def test_with_gate_delta_returns_a_new_bundle_and_leaves_the_original():
+    cb = _bare()
+    out = bundle.with_gate_delta(cb, ("Makefile",))
+    assert out.gate_delta == ("Makefile",)
+    assert cb.gate_delta is None, "the input is frozen and must be untouched"
+    # Everything else rides across: a `replace` that dropped a field would hand the gate a
+    # bundle carrying no patch, which materializes clean and verifies nothing.
+    assert out.baseline_commit == "c" and out.version == bundle.VERSION
+
+
+def test_with_gate_delta_carries_the_whole_candidate_across(tmp_path):
+    """The measurement is written onto a REAL bundle, so every channel has to survive it."""
+    _repo, b, s = _seat(tmp_path)
+
+    def work():
+        write(s.path, "seed.txt", "agent edit\n")   # the tracked-patch channel
+        write(s.path, "src.py", "work\n")           # the sidecar channel
+
+    cb = bundle.build(s.path, harvest.artifact_set(_phases(s.path, work), s.path, b.commit), b)
+    assert cb.tracked_patch and cb.sidecars, "the fixture exercises only one channel"
+    out = bundle.with_gate_delta(cb, ("Makefile",))
+    assert out.tracked_patch == cb.tracked_patch
+    assert (out.sidecars, out.omitted, out.generator_contract_id) == \
+        (cb.sidecars, cb.omitted, cb.generator_contract_id)
+
+
+def test_with_gate_delta_refuses_to_overwrite_a_measurement():
+    """Two measurements of one tree pair disagree only if one of them is wrong."""
+    with pytest.raises(bundle.BundleError, match="already records"):
+        bundle.with_gate_delta(_bare(gate_delta=()), ("Makefile",))
+    # The empty MEASUREMENT is as unoverwritable as a non-empty one, and that direction is
+    # the dangerous one: a second call that quietly won would let a caller turn a clean
+    # gate into a changed one, or a changed one into a clean one, by calling twice.
+    with pytest.raises(bundle.BundleError):
+        bundle.with_gate_delta(_bare(gate_delta=("Makefile",)), ())
+
+
+def test_with_gate_delta_accepts_the_empty_measurement():
+    """() is a RESULT here — the candidate changed nothing that defines the gate — and it
+    is the only value that can reach PASS, so it must be storable."""
+    assert bundle.with_gate_delta(_bare(), ()).gate_delta == ()
+    assert bundle.with_gate_delta(_bare(), ()).gate_delta is not None
