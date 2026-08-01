@@ -19,6 +19,14 @@ so `fixed_point` re-runs it and stages the outputs a `GeneratorContract` declare
 contract does NOT declare is never staged and never silently dropped either; see
 `FixedPoint`, whose third field is the whole of that argument.
 
+SETUP IS REPLAYED HERE, and §6 puts a check in front of it. The tree is first compared
+against the bundle that describes it (`validate_materialized`), because setup is the first
+thing that legitimately changes this tree and afterwards "differs from the bundle" and
+"setup installed something" are one observation. Then `run_setup` runs the confirmed setup
+command and REFUSES it, rather than re-applying it, if it moved a tracked path no relation
+declares: that change is already inside the candidate's own B->final content, so applying it
+a second time here leaves a tree that is neither the baseline nor the candidate.
+
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
 the two options the plan offered are NOT equivalent:
 
@@ -153,6 +161,16 @@ class GeneratorUnstable(VerifyError):
     declared outputs, which is a property of the command and the tree rather than a verdict
     on the candidate — a consumer that folds it into FAIL blames a builder for a
     nondeterministic generator it did not write.
+    """
+
+
+class SetupOverlap(VerifyError):
+    """Setup changed a tracked file the run's generator contract does not declare (spec §6).
+
+    Fails the candidate CLOSED rather than continuing. The change is already inside the
+    candidate's own B->final content, so letting the verifier's setup apply it again runs the
+    gate against a tree that is neither the baseline nor the candidate — a `schema.lock`
+    bumped to 2 by the seat and to 3 here.
     """
 
 
@@ -702,6 +720,61 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
         candidate_surface=candidate_surface)
 
 
+def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
+    """The `bundle.SidecarEntry` this tree would produce at `rel`, or None for no entry.
+
+    Built in the bundle's OWN shape rather than as a tuple this module invents, so the
+    comparison is entry against entry and every field `bundle.build` records — kind, mode,
+    payload — is in it by construction rather than by a second list kept in step by hand.
+
+    None is "nothing a sidecar could describe": missing, unreadable, or a shape no sidecar
+    has (a FIFO, a directory). They collapse into one answer because `SidecarEntry` only
+    carries "file" or "symlink", so none of them can compare equal to one — and a path that
+    cannot be READ is one this function cannot vouch for in either direction.
+    """
+    p = root / rel
+    try:
+        st = os.lstat(p)
+        if stat.S_ISLNK(st.st_mode):
+            # A link's own mode is not meaningful and `bundle` fabricates 0 for it; the
+            # target TEXT is what materialization reproduces. Bytes, via surrogateescape,
+            # because a link target is a filesystem name — `.encode()` raises on the
+            # surrogates `os.readlink` puts there for a non-UTF-8 one.
+            return bundle.SidecarEntry(
+                rel, "symlink", 0, os.readlink(p).encode("utf-8", "surrogateescape"))
+        if stat.S_ISREG(st.st_mode):
+            return bundle.SidecarEntry(rel, "file", st.st_mode & 0o777, p.read_bytes())
+    except OSError:
+        return None
+    return None
+
+
+def validate_materialized(verifier: Verifier) -> None:
+    """§6 step 2: the tree matches the bundle it was built from, or nothing else in §6 holds.
+
+    Runs BEFORE setup because setup is the first thing that legitimately changes this tree:
+    after it, "differs from the bundle" and "setup installed something" are the same
+    observation, and the check can no longer be made at all.
+
+    Only the SIDECARS are content-checked. The patch is applied by `git apply --index`, which
+    fails loudly on a context mismatch, onto a clone `materialize` has already checked against
+    the bundle's own baseline commit; re-hashing its postimages would re-derive what git
+    enforced. A sidecar is a raw write, and a raw write is what a truncating or
+    mode-dropping materialization gets wrong.
+
+    The MODE is part of the comparison, not only the bytes. `check.sh` without its executable
+    bit is a gate that stops running and no digest of its content says so — the same argument
+    `_surface_state` makes for a gate surface, and §6's own reason for applying a patch rather
+    than writing blobs.
+    """
+    bad = sorted(e.path for e in verifier.candidate.sidecars
+                 if _materialized_sidecar(verifier.path, e.path) != e)
+    if bad:
+        raise VerifyError(
+            f"the materialized candidate does not match its bundle at {_paths_phrase(bad)}; "
+            "the gate would be measuring a tree nobody described")
+
+
 def _inventory(root: Path) -> dict:
     """One content-keyed inventory of the verifier, or a refusal.
 
@@ -749,6 +822,65 @@ def _declared(contract, path: str) -> bool:
     path onto a glob it does not literally match.
     """
     return any(fnmatch.fnmatchcase(path, output) for _source, output in contract.relations)
+
+
+@dataclass(frozen=True)
+class SetupResult:
+    """What re-running the confirmed setup command in the verifier measured.
+
+    `overlap` is `()` on every result this module hands back, and that is a postcondition
+    rather than a field with nothing to say: it is the written form of "setup left this
+    tree's tracked files clean", which is the premise §6 requires before the gate may run
+    here. A non-empty one has no result to travel in — it raises `SetupOverlap`, whose
+    message carries the names.
+    """
+    run: Run
+    overlap: tuple[str, ...] = ()
+
+
+def run_setup(verifier: Verifier, setup: Command, *, env=None) -> SetupResult:
+    """§6 step 3: run the confirmed setup command here, and refuse a tracked effect.
+
+    A RIG THE BUILDER PLACED IN ITS OWN WORK PHASE IS ANSWERED HERE, if it is answered at
+    all. `harvest` differences setup's output out of the artifact set, so a rig placed during
+    the seat's SETUP phase never crosses; one placed during its WORK phase crosses as an
+    ordinary sidecar, and the only thing that displaces it is the real toolchain this call
+    installs over it. The argument reaches exactly as far as setup does — a rig at a path
+    setup never writes is still standing when the gate runs, and §6.1's `gate_delta` rather
+    than this is what marks that candidate.
+
+    The contract comes off `verifier`, not from a parameter. A second contract argument would
+    be a second place for one run to disagree with itself, which is what binding the contract
+    to the bundle closed.
+
+    `validate_materialized` is called from here rather than left to the caller because §6
+    orders it before this command and the ordering is the whole of its value — a caller that
+    made the check afterwards would be reading a tree setup had already moved.
+
+    The delta is measured whatever the exit code, unlike `fixed_point`'s. That loop skips it
+    because §6.2 already has the candidate's verdict from a nonzero gate and the post-run
+    `_inventory` fails closed; here a nonzero exit is the SETUP failing, which produces no
+    verdict to protect, and the tree is inventoried again by `fixed_point`'s own first line
+    regardless.
+    """
+    validate_materialized(verifier)
+    before = _inventory(verifier.path)
+    tracked_before = _tracked(verifier.path)
+    run = run_command(verifier.path, setup, env=env)
+    tracked = _tracked(verifier.path)
+    # `fixed_point`'s predicate, for `fixed_point`'s reason: setup can move CONTENT under a
+    # path git tracks, or it can move TRACKED-NESS itself — `git add` of a sidecar the
+    # candidate carried, `git rm --cached` of a tracked file — with the bytes on disk
+    # untouched. A content-only reading sees neither of the second kind.
+    moved = ({p for p in snapshot.diff(before, _inventory(verifier.path)) if p in tracked}
+             | (tracked_before ^ tracked))
+    overlap = tuple(sorted(p for p in moved if not _declared(verifier.contract, p)))
+    if overlap:
+        raise SetupOverlap(
+            f"the setup command changed {_paths_phrase(overlap)}, which the run's generator "
+            "contract does not declare; those changes are already inside the candidate, so "
+            "running setup here would apply them twice")
+    return SetupResult(run=run, overlap=overlap)
 
 
 def _checkpoint(root: Path, paths, tracked) -> None:

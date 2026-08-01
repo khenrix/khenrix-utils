@@ -1730,3 +1730,187 @@ def test_a_candidate_written_ignore_rule_can_hide_a_gate_file_it_added(tmp_path)
     ])
     write(tracked, ".gitignore", "tests/conftest.py\n")
     assert "tests/conftest.py" in verify.gate_surface(tracked, finspect.GeneratorContract())
+
+
+def test_the_materialized_tree_is_checked_against_the_bundle_that_describes_it(tmp_path):
+    """§6 step 2: the tree matches the bundle it was built from, or nothing else is trustworthy.
+
+    Only the SIDECARS are content-checked. The patch is applied by `git apply --index`, which
+    refuses a context mismatch, and `materialize` has already checked the clone's HEAD against
+    the bundle's baseline commit — re-hashing its postimages would re-derive what git enforced.
+    A sidecar is a raw write, and a raw write is what a truncating materialization gets wrong.
+    """
+    v = _built(tmp_path, make_repo(tmp_path), work=[("src.py", "the actual work\n")])
+    assert [e.path for e in v.candidate.sidecars] == ["src.py"], \
+        "the fixture's work did not cross as a sidecar, so nothing here is content-checked"
+    verify.validate_materialized(v)
+
+    (v.path / "src.py").write_text("tampered\n")
+    with pytest.raises(verify.VerifyError, match="does not match its bundle") as e:
+        verify.validate_materialized(v)
+    assert "src.py" in str(e.value)
+
+    # A sidecar path the tree does not hold at all is refused in this module's vocabulary
+    # too, rather than as the FileNotFoundError a bare read raises out of the one check whose
+    # whole job is a named refusal.
+    (v.path / "src.py").unlink()
+    with pytest.raises(verify.VerifyError, match="does not match its bundle"):
+        verify.validate_materialized(v)
+
+
+def test_a_sidecar_that_lost_its_mode_does_not_match_its_bundle(tmp_path):
+    """`check.sh` without its executable bit is a gate that stops running, and no digest of
+    its bytes says so — `_surface_state` makes the same argument for a gate surface. §6 names
+    this shape directly: a mode-dropping materialization turns a candidate into an
+    infrastructure FAIL, which is why `materialize` applies a patch rather than writing blobs.
+    """
+    v = _built(tmp_path, make_repo(tmp_path), work=[("check.sh", "#!/bin/sh\nexit 0\n")],
+               mutate=lambda seat: (seat / "check.sh").chmod(0o755))
+    assert [(e.path, oct(e.mode)) for e in v.candidate.sidecars] == [("check.sh", "0o755")], \
+        "the fixture did not carry the executable bit this test is about"
+    verify.validate_materialized(v)
+
+    (v.path / "check.sh").chmod(0o644)
+    with pytest.raises(verify.VerifyError, match="does not match its bundle") as e:
+        verify.validate_materialized(v)
+    assert "check.sh" in str(e.value)
+
+
+def test_a_carried_link_is_compared_by_its_target_bytes(tmp_path):
+    """A link's identity is its TARGET TEXT, and a filesystem name is bytes, not text.
+
+    The bundle carries `caf\\xe9.txt` surrogate-escaped, so a comparison against `os.readlink`'s
+    `str` reports every clean link as a mismatch, and re-encoding with a plain `.encode()`
+    raises UnicodeEncodeError on the surrogate — the failure that once took
+    `baseline.materialize` down on an ordinary tracked link. One link the tree really holds
+    pins both.
+    """
+    def mutate(seat):
+        raw = os.path.join(os.fsencode(seat), b"caf\xe9.txt")
+        with open(raw, "wb") as fh:
+            fh.write(b"latin-1 name\n")
+        os.symlink(os.fsdecode(raw).rsplit("/", 1)[1], seat / "link")
+
+    v = _built(tmp_path, make_repo(tmp_path), mutate=mutate)
+    assert [(e.path, e.payload) for e in v.candidate.sidecars if e.kind == "symlink"] == \
+        [("link", b"caf\xe9.txt")], "the fixture did not carry the link this test is about"
+    verify.validate_materialized(v)
+
+    # ...and a link that points somewhere else is a mismatch, so the clean pass above is a
+    # measurement rather than a branch that answers True for every link it is handed.
+    (v.path / "link").unlink()
+    os.symlink("seed.txt", v.path / "link")
+    with pytest.raises(verify.VerifyError, match="does not match its bundle") as e:
+        verify.validate_materialized(v)
+    assert "link" in str(e.value)
+
+
+def test_setup_cannot_run_in_a_tree_that_never_matched_its_bundle(tmp_path):
+    """§6 step 2 is a precondition of step 3, so `run_setup` makes it rather than trusting a
+    caller to have made it.
+
+    After setup, "differs from the bundle" and "setup installed something" are the same
+    observation and the check can no longer be made — which this setup command demonstrates
+    literally, by writing the tampered path back to the content the bundle describes.
+    """
+    work = "the actual work\n"
+    v = _built(tmp_path, make_repo(tmp_path), work=[("src.py", work)])
+    (v.path / "src.py").write_text("tampered\n")
+    setup = verify.Command.parse(
+        [[sys.executable, "-c", f"open('src.py','w').write({work!r})"]])
+
+    with pytest.raises(verify.VerifyError, match="does not match its bundle"):
+        verify.run_setup(v, setup)
+    assert (v.path / "src.py").read_text() == "tampered\n", \
+        "setup ran first, so the check it precedes was made against a tree setup had moved"
+
+
+def test_setup_that_changes_a_tracked_file_fails_the_candidate_closed(tmp_path):
+    """§6: it would otherwise be applied twice — once inside the candidate's own B->final
+    content, once when the verifier re-runs setup. A `schema.lock` bumped to 2 by the seat
+    and to 3 here leaves the gate running against a tree that is neither the baseline nor
+    the candidate, so this is a refusal rather than a repair.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "schema.lock", "1\n")
+    commit_all(repo, "seed a tracked lockfile")
+    v = _built(tmp_path, repo)
+    setup = verify.Command.parse(
+        [[sys.executable, "-c", "open('schema.lock','w').write('2\\n')"]])
+
+    with pytest.raises(verify.SetupOverlap) as e:
+        verify.run_setup(v, setup)
+    assert "schema.lock" in str(e.value)
+
+
+def test_setup_that_only_touches_untracked_paths_is_clean(tmp_path):
+    """Installing a toolchain is what setup is FOR, and only a TRACKED effect is the defect.
+
+    A rule over content alone would refuse every `.venv` and `node_modules` setup exists to
+    create — and this path is also the whole argument that a rig the builder placed in its
+    own work phase is not decisive, since what setup installs is written over it here.
+    """
+    v = _built(tmp_path, make_repo(tmp_path))
+    setup = verify.Command.parse(
+        [[sys.executable, "-c", "import os; os.makedirs('.venv/bin'); "
+          "open('.venv/bin/pytest','w').write('#!/bin/sh\\nexit 0\\n')"]])
+
+    out = verify.run_setup(v, setup)
+    assert out.run.exit_code == 0 and out.overlap == ()
+    assert (v.path / ".venv" / "bin" / "pytest").is_file(), "the fixture installed nothing"
+
+
+def test_a_tracked_setup_effect_the_contract_declares_is_not_an_overlap(tmp_path):
+    """A generator IS allowed to run in setup — that is exactly what the contract admits.
+
+    The predicate is `_declared`, the same one `fixed_point` admits gate output by, so a
+    relation means one thing across both phases rather than two.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "gen/a.txt", "1\n")
+    commit_all(repo, "seed a generated file")
+    v = _built(tmp_path, repo, contract=_contract(("src/*", "gen/*")))
+    setup = verify.Command.parse(
+        [[sys.executable, "-c", "open('gen/a.txt','w').write('2\\n')"]])
+
+    out = verify.run_setup(v, setup)
+    assert out.run.exit_code == 0 and out.overlap == ()
+    assert (v.path / "gen" / "a.txt").read_text() == "2\n", "the fixture rewrote nothing"
+
+
+def test_setup_that_moves_only_a_paths_tracked_ness_is_still_an_overlap(tmp_path):
+    """The index channel, where a content diff sees nothing at all.
+
+    `git add` of a sidecar the candidate carried and `git rm --cached` of a tracked file both
+    leave the bytes on disk exactly as they were, and both change what this tree's next commit
+    would hold. The two assertions on content are what make the case discriminating: neither
+    file moved a byte, so a content-only predicate reports nothing for either.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "kept.txt", "still on disk\n")
+    commit_all(repo, "seed a tracked file")
+    v = _built(tmp_path, repo, work=[("carried.txt", "sidecar\n")])
+    setup = verify.Command.parse([["git", "add", "carried.txt"],
+                                  ["git", "rm", "-q", "--cached", "kept.txt"]])
+
+    with pytest.raises(verify.SetupOverlap) as e:
+        verify.run_setup(v, setup)
+    assert "carried.txt" in str(e.value) and "kept.txt" in str(e.value)
+    assert (v.path / "carried.txt").read_text() == "sidecar\n"
+    assert (v.path / "kept.txt").read_text() == "still on disk\n"
+
+
+def test_a_failing_setup_returns_its_run_rather_than_raising(tmp_path):
+    """A setup that exits nonzero is an answer about this tree, and the caller classifies it.
+
+    Only an OVERLAP is a refusal. A `VerifyError` here would replace the exit code and the
+    output an operator has to read with this engine's own name for a thing it did not decide.
+    """
+    v = _built(tmp_path, make_repo(tmp_path))
+    setup = verify.Command.parse(
+        [[sys.executable, "-c",
+          "import sys; sys.stderr.write('boom\\n'); raise SystemExit(3)"]])
+
+    out = verify.run_setup(v, setup)
+    assert out.run.exit_code == 3 and out.overlap == ()
+    assert "boom" in out.run.stderr
