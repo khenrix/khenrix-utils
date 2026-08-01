@@ -99,7 +99,7 @@ def test_everything_in_the_tree_is_in_the_manifest(tmp_path):
         "the screen still declines to read through it; B describing it is not B reading it"
 
 
-def test_an_escaping_link_inside_a_selected_directory_is_stopped_only_by_the_two_refusals(tmp_path):
+def test_an_escaping_link_in_a_selection_is_named_by_two_refusals_and_stopped_by_neither(tmp_path):
     """SEAM: four modules individually consistent and jointly wrong, measured end to end.
 
     `inspect.rejections` tested only the top-level selected path; `screen._walk` dropped a
@@ -109,16 +109,14 @@ def test_an_escaping_link_inside_a_selected_directory_is_stopped_only_by_the_two
     `scratch/creds` read a file outside the repository. Every module's own suite was green.
 
     The manifest and `fleet` now describe the link by its target text (Plan D, D-1), which
-    changes nothing about the containment story: describing a link is not refusing one, so
-    the two refusals asserted below remain the whole defence.
+    changes nothing about the containment story: describing a link is not refusing one.
 
-    BOTH gates are asserted rather than one, because either alone would let a single edit
-    reopen the whole path.
-
-    The last two assertions CHARACTERIZE what the tree still does — the link is committed
-    and a seat can follow it — rather than endorsing it. That behaviour is the tracked-
-    symlink design question routed to Plan D, and it is what makes the two refusals above
-    load-bearing instead of decorative.
+    BOTH refusals are asserted rather than one, because either alone would let a single
+    edit reopen the whole path. Neither STOPS anything today — Task 5 measured that
+    `rejections` and `screen_tree` each have zero consumers, so both return a list into a
+    void. What is pinned here is that they still NAME it; the closing assertions
+    CHARACTERIZE what the tree does anyway, and the distance between the two halves is the
+    finding, not a gap in the test.
     """
     repo = make_repo(tmp_path)
     outside = tmp_path / "outside"
@@ -429,6 +427,9 @@ class _Chain:
     artifacts: harvest.ArtifactSet
     candidate: bundle.CandidateBundle
     verifier: Path
+    # The test's own tmp_path, so a case can bound where a fixture's escaping
+    # link is allowed to reach — see `_harm_of_escaping_link`.
+    tmp: Path
 
 
 def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
@@ -454,7 +455,7 @@ def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
         harvest.Phases(f0=f0, fsetup=f0, fwork=fwork, fverify=fwork), seat.path, base.commit)
     candidate = bundle.build(seat.path, artifacts, base)
     verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier", identity=IDENT)
-    return _Chain(base, seat, artifacts, candidate, verifier)
+    return _Chain(base, seat, artifacts, candidate, verifier, tmp)
 
 
 @contextlib.contextmanager
@@ -493,6 +494,12 @@ def _references_the_policy(source: bytes) -> bool:
     counts: an enforcer that routes the policy through a local name or a dispatch table would
     otherwise read as green. `getattr(finspect, "rejections")` still passes — the name is a
     string there, and chasing it is a dataflow analysis with no end.
+
+    The cost of matching a bare name over the whole scanned tree: an unrelated local called
+    `rejections` anywhere under `shared/` or `scripts/` reds this gate with a message about
+    the forge policy. Accepted rather than narrowed — the tripwire exists to fire on a day
+    nobody is expecting it, so a false alarm someone must read beats a filter that quietly
+    excludes the file the consumer actually lands in.
     """
     for node in ast.walk(ast.parse(source)):
         name = (node.attr if isinstance(node, ast.Attribute)
@@ -595,7 +602,7 @@ def _mk_escaping_repo(tmp):
     """The minimal repository holding a TRACKED symlink out of the tree.
 
     Distinct from
-    `test_an_escaping_link_inside_a_selected_directory_is_stopped_only_by_the_two_refusals`,
+    `test_an_escaping_link_in_a_selection_is_named_by_two_refusals_and_stopped_by_neither`,
     which trips the SELECTED-untracked branch of `rejections` with a nested link and stops
     at the seat. This one trips `facts.escaping_symlinks` — the index-mode-120000 branch,
     which rejects unconditionally — and follows it into the verifier.
@@ -652,6 +659,9 @@ def _harm_of_escaping_link(repo, tmp):
     # was cloned to judge. argv, never a shell.
     host = (chain.verifier / "creds").readlink()
     assert not host.is_relative_to(chain.verifier), "the fixture's link must really escape"
+    # And escapes only as far as the test's own tmp_path. Without this, a later fixture edit
+    # that repoints the link would have this test overwrite whatever it then names.
+    assert host.is_relative_to(chain.tmp), "the target must stay inside the test's tmp_path"
     run = verify.run_command(chain.verifier, verify.Command.parse(
         [[sys.executable, "-c", "open('creds', 'w').write('PWNED-BY-THE-GATE\\n')"]]))
     assert run.exit_code == 0, run.stderr
