@@ -1,4 +1,6 @@
-"""Read-only preflight: describe the repository, then say what makes it unsupported.
+"""Read-only preflight: describe the repository, say what makes it unsupported, and say
+which of its tracked files a DECLARED generator owns — see `detect_generators` for why
+that last answer is empty for every repository so far.
 
 Two hard rules:
 
@@ -377,3 +379,98 @@ def rejections(facts: RepoFacts, selected_untracked: list) -> list:
         elif p.exists() and not p.is_file():
             out.append(f"special file selected: {rel}")
     return out
+
+
+def _not_a_relation(r) -> str:
+    return (f"a generator relation is a (source glob, output glob) pair, not {r!r}; "
+            'a single relation is still a tuple OF pairs: relations=(("a/*", "b/*"),)')
+
+
+@dataclass(frozen=True)
+class GeneratorContract:
+    """Which verify-origin rewrites a run may admit (spec §7.2).
+
+    A property of the RUN, never of a seat. A seat-declared relation would let a candidate
+    write its own success criterion — "receipts are generated" is one line away from
+    laundering an unearned eval receipt past a commit gate — so it is built by the engine's
+    read-only preflight, confirmed at the §5 gate, and recorded in the manifest.
+
+    Each relation is `(source glob, output glob)`, and only the OUTPUT side decides
+    admission: `verify.fixed_point` never matches against the source, which is provenance
+    for the manifest and for the human at the gate. Stated because a reader who assumes
+    both halves are enforced would read a narrow source glob as a guarantee it is not.
+
+    `id` is what `bundle.CandidateBundle.generator_contract_id` carries, and "" is that
+    field's fail-closed sentinel — "the run declared no contract", which admits nothing.
+    """
+    id: str = ""
+    relations: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self):
+        # ValueError rather than a forge error class: every other refusal in this module
+        # describes a state of the REPOSITORY, which a caller reports to a user. These
+        # describe a malformed literal in engine code or in a gate answer.
+        for r in self.relations:
+            # The string test comes FIRST because a two-character string unpacks into a
+            # pair without complaint. It is also the likely mistake, since one relation is
+            # itself a pair: `relations=("shared/**", "marketplaces/**")` iterates as two
+            # strings, and `"shared/**"` would unpack into 9 characters below.
+            if isinstance(r, (str, bytes)):
+                raise ValueError(_not_a_relation(r))
+            try:
+                source, output = r
+            except (TypeError, ValueError):
+                raise ValueError(_not_a_relation(r)) from None
+            if not (isinstance(source, str) and isinstance(output, str)):
+                raise ValueError(f"a generator relation's globs must be strings: {r!r}")
+            if not output:
+                raise ValueError(
+                    f"generator relation {r!r} has an empty output glob, which matches no "
+                    "path at all — write the relation out or drop it")
+        # Refused because the two halves would disagree at the two places they are read:
+        # the gate would admit these paths while the manifest recorded, in the one field
+        # that carries the contract forward, that the run declared none.
+        if self.relations and not self.id:
+            raise ValueError(
+                "a generator contract that admits paths needs an id: \"\" is the manifest's "
+                "fail-closed sentinel for 'this run declared no contract'")
+
+
+def detect_generators(repo) -> GeneratorContract:
+    """The contract a STATIC read of `repo` can justify. For this repository: none.
+
+    `repo` is taken and unused. The signature is the one a declaration reader needs, and
+    the empty contract is an answer about what is declared, not about what exists.
+
+    WHAT WAS LOOKED FOR, in this repository, whose `make verify` runs `render` and is the
+    reason §7.2 exists at all:
+
+    - No `.gitattributes` anywhere in the tree, so git carries no `linguist-generated` (or
+      any other) marking of generated paths.
+    - `capabilities.toml`, the repo's own machine-readable source of truth, names no
+      generator relation.
+    - The relation lives in `scripts/render.py` — but as PYTHON, not as data. Its constants
+      (`BUNDLED`, `BUNDLED_DIRS`, `SHARED_LIBS`, `SHARED_LIB_FILES`, `TEMPLATED_SKILLS`)
+      name only SOURCES; where each lands is four different mappings expressed in the
+      copy loop's control flow (root-relative file -> plugin root, `shared/lib/<n>` ->
+      `<plugin>/lib/<n>` minus `tests`, `shared/skills/<n>` -> `<plugin>/skills/<n>`,
+      template + `[skill_facts]` -> a generated `SKILL.md`). Reading it soundly means
+      reimplementing render inside forge; running it means the engine executing
+      builder-controlled code OUTSIDE the gate, which is the one thing §6 exists to prevent.
+
+    And the coarse relation is not a safe fallback, which is the measurement that settles
+    it: `shared/** + capabilities.toml -> marketplaces/**` over-admits. Of the 254 tracked
+    files under `marketplaces/`, five are hand-maintained manifests render never writes —
+    `marketplaces/<cli>/**/plugin.json` and the two `marketplace.json` files — so that glob
+    would let a verify command rewrite the plugin manifest (which carries the version
+    Claude and Codex key their plugin cache on) and have the engine STAGE it as generated
+    output. An empty contract admits nothing, which is the fail-closed direction; a glob
+    that is nearly right fails open on exactly the paths nobody re-reads.
+
+    What would make detection possible is a DECLARATION the engine can read without
+    executing anything and without modelling another program: source/output globs in
+    `capabilities.toml`, or a generated-path marking in `.gitattributes`. Until one exists,
+    §7.2's chain still works — preflight proposes nothing, the §5 gate is where a human
+    states the relation, and the manifest records what they stated.
+    """
+    return GeneratorContract()

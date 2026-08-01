@@ -11,6 +11,12 @@ a checkout verified against B1's manifest — is reused rather than restated.
 `SnapshotError`: both already name the thing that failed and are already RuntimeErrors, so
 wrapping them would only put this module's name in front of the one that knows.
 
+THE GATE IS RUN TO A FIXED POINT, not once. A repository whose verify command regenerates
+tracked files — this one, whose `make verify` runs `render` — has no clean single-pass tree,
+so `fixed_point` re-runs it and stages the outputs a `GeneratorContract` declares. What the
+contract does NOT declare is never staged and never silently dropped either; see
+`FixedPoint`, whose third field is the whole of that argument.
+
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
 the two options the plan offered are NOT equivalent:
 
@@ -56,6 +62,7 @@ the repo path passes `env=fleet.forge_child_env(repo)`, which composes: that fun
 the same `HOSTILE_ENV` and pins the same /dev/null pair, so this module's strip and pin are
 idempotent over its result and all it contributes is the checkout scrub.
 """
+import fnmatch
 import os
 import signal
 import subprocess
@@ -63,7 +70,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import bundle, fleet, gitcmd
+from . import bundle, fleet, gitcmd, snapshot
+from .storage import Quota
 
 # The branch every verifier gets inside its own clone. Fixed rather than derived from
 # `dest`: `clone_seat` turns this into `refs/heads/forge/<run-id>/<name>` and refuses a name
@@ -95,8 +103,26 @@ _REAP_GRACE = 10
 _TAIL_CHARS = 2000
 
 
+# How many admitted paths go into one `git add`. The admitted set is as large as whatever
+# the generator rewrote, which nothing bounds, and a path set long enough to exceed ARG_MAX
+# raises OSError(E2BIG) out of subprocess — a class `harvest` documents as UNCLOSED for
+# `git diff`, which has no way to take its pathspec in chunks. `git add` does, so here it is
+# closed instead of documented, batched the way `inspect._ATTR_BATCH` batches check-attr.
+_CHECKPOINT_BATCH = 500
+
+
 class VerifyError(RuntimeError):
     """The gate could not be built, could not be run, or would not have been a gate."""
+
+
+class GeneratorUnstable(VerifyError):
+    """A declared generator never settled, so this command has no fixed point to reach.
+
+    INFRASTRUCTURE-CLASS (spec §7.2): it says the verify command keeps rewriting its own
+    declared outputs, which is a property of the command and the tree rather than a verdict
+    on the candidate — a consumer that folds it into FAIL blames a builder for a
+    nondeterministic generator it did not write.
+    """
 
 
 @dataclass(frozen=True)
@@ -197,6 +223,26 @@ class Run:
     stderr: str
     duration_sec: float
     step_index: int
+
+
+@dataclass(frozen=True)
+class FixedPoint:
+    """What running the gate to a fixed point measured.
+
+    THREE facts, not the `(Run, admitted)` pair the plan sketched, and the third is why.
+    `run.exit_code == 0` with `admitted == ()` is what BOTH a gate that changed nothing and
+    a gate that rewrote a tracked file no relation covers hand back — and §6.2 makes only
+    the first a PASS. Measured: under the pair those two runs return equal values, so the
+    unexplained rewrite is unrecoverable by the time a caller sees it (see
+    `test_an_unexplained_tracked_rewrite_is_not_hidden_behind_exit_zero`).
+
+    `unexplained` carries only TRACKED paths. Untracked churn — `__pycache__`, a build
+    directory, a test runner's cache — is what every real gate produces, and reporting it
+    here would bury the one kind of delta §7.2 is about in the kind it is not.
+    """
+    run: Run
+    admitted: tuple[str, ...] = ()
+    unexplained: tuple[str, ...] = ()
 
 
 def _not_an_argv(index: int, raw) -> str:
@@ -421,8 +467,11 @@ def build_verifier(repo, baseline, candidate, dest, *, identity) -> Path:
     """A clone of the BASELINE with the candidate laid down in it, ready for the gate.
 
     `identity` is the verifier's own `(name, email)`, required for the same reason
-    `clone_seat` requires one: §7.2 has the engine CHECKPOINT admitted generator output
-    here, and a clone that cannot commit would fail that at the last moment.
+    `clone_seat` requires one. It used to be justified here by §7.2's checkpoint; that
+    justification is gone, because `fixed_point` only STAGES admitted output and `git add`
+    needs no identity. What still needs one is the GATE: a verify command that commits is
+    ordinary — this suite's own hook cases are exactly that — and in a clone without an
+    identity it fails for an infrastructure reason.
     """
     seat = fleet.clone_seat(repo, baseline, dest, name=VERIFIER_NAME, identity=identity)
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
@@ -431,3 +480,149 @@ def build_verifier(repo, baseline, candidate, dest, *, identity) -> Path:
     bundle.materialize(candidate, seat.path)
     _assert_hooks_pinned(seat.path)
     return seat.path
+
+
+def _inventory(root: Path) -> dict:
+    """One content-keyed inventory of the verifier, or a refusal.
+
+    `Quota.for_harvest`, not `Quota.default`, on `harvest.record`'s measurement: the default
+    fails closed at 5000 files, and a verifier holds a checkout plus whatever setup and the
+    gate itself installed — this stdlib-only repository's own worktree is already past it.
+
+    A breach RAISES for a reason sharper than "fail closed": `snapshot.take` answers a
+    breach with an empty dict, and `snapshot.diff({}, {})` is empty, which this function's
+    caller reads as CONVERGED. Swallowing the line would not lose a warning, it would
+    manufacture a fixed point. `SnapshotError` propagates unwrapped, on this module's stated
+    precedent for `SeatError` and `BundleError`.
+    """
+    entries, breaches = snapshot.take(root, quota=Quota.for_harvest())
+    if breaches:
+        raise VerifyError(
+            f"the verifier tree could not be inventoried, so no fixed point can be "
+            f"measured in it: {'; '.join(breaches)}")
+    return entries
+
+
+def _tracked(root: Path) -> frozenset:
+    """Every path in the verifier's index, as `snapshot` would key it.
+
+    binary=True + surrogateescape, not `gitcmd`'s text mode: these strings are compared
+    against `snapshot`'s keys, which come from `os.walk` and therefore already carry
+    surrogates for a non-UTF-8 filename. A strict decode would raise on that filename, and
+    `errors="replace"` would produce a key that silently never matches — a tracked path
+    reported as untracked, which is the fail-OPEN direction here.
+    """
+    out = gitcmd.git(root, "ls-files", "-z", env_extra=gitcmd.READONLY, binary=True).stdout
+    return frozenset(p for p in out.decode("utf-8", "surrogateescape").split("\0") if p)
+
+
+def _declared(contract, path: str) -> bool:
+    """True when `path` is an output some relation in `contract` declares.
+
+    `*` CROSSES `/` here, measured: `gen/*` matches `gen/deep/a.txt`, and `marketplaces/**`
+    and `marketplaces/*` are the same pattern. A relation therefore cannot be narrowed by
+    depth, which a contract author writing `gen/*` for one directory needs to know.
+
+    `fnmatchcase` is an UNPINNED latch: `fnmatch` normalizes both sides through
+    `os.path.normcase`, which is the identity function on this platform, so no test here
+    can tell the two apart. It is the form that cannot widen a contract by case-folding a
+    path onto a glob it does not literally match.
+    """
+    return any(fnmatch.fnmatchcase(path, output) for _source, output in contract.relations)
+
+
+def _checkpoint(root: Path, paths, tracked) -> None:
+    """Stage the admitted outputs. Staged, and deliberately not committed.
+
+    §7.2 requires this to be stage-or-commit rather than a record, and this repository is
+    the proof: `make precommit`'s render-drift check exits nonzero on regenerated-but-
+    UNSTAGED output, so a record-only checkpoint makes the most likely confirmed verify
+    command structurally un-passable. Stopping at the index is what keeps the engine's
+    bookkeeping out of the history a later stage diffs.
+
+    `-f` because a declared generator output may be gitignored (§7.4's `.chunkmap/map.md`
+    is the spec's own example) and git's ignore rules must not veto a relation the §5 gate
+    confirmed — the same flag `baseline.materialize` spends on selected untracked paths.
+    `:(literal)` for `harvest._literal`'s reason: a pathspec is a glob with magic, and these
+    names came off a filesystem.
+
+    A path that no longer exists is staged only when the index still knows it — that is a
+    deletion to record. An untracked file that appeared and vanished within one pass has no
+    index state to write, and naming it would fail the whole call with "did not match any
+    files".
+    """
+    stageable = [p for p in paths if os.path.lexists(root / p) or p in tracked]
+    for start in range(0, len(stageable), _CHECKPOINT_BATCH):
+        batch = stageable[start:start + _CHECKPOINT_BATCH]
+        # check=False: a checkpoint that cannot be written is this module's failure to
+        # report, not a raw GitError — the §6.2 caller has no name for that class and would
+        # read it as an engine crash.
+        r = gitcmd.git(root, "add", "-f", "--", *(f":(literal){p}" for p in batch),
+                       check=False)
+        if r.returncode != 0:
+            raise VerifyError(
+                "the admitted generator output could not be checkpointed into the "
+                f"verifier's index: git add -> {r.returncode}: {r.stderr.strip()}")
+
+
+def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> FixedPoint:
+    """Run the gate until running it again changes nothing, admitting only declared output.
+
+    Why a loop exists at all: a repository whose verify command REGENERATES tracked files
+    can never show a clean tree on a single pass — this repository is that shape, its
+    `make verify` runs `render` — so without a fixed point every candidate fails for an
+    infrastructure reason, which is the outcome §4 is most insistent about.
+
+    ADMISSION IS DECIDED BY THE CONTRACT'S OUTPUT GLOBS ALONE. Not by what changed, which is
+    what "a seat cannot widen the contract" means concretely; and not by whether the path is
+    already tracked, because a generator that creates a NEW output file must have it staged
+    too or the drift check sees an untracked required file.
+
+    The delta is measured PER PASS, against the state the previous pass left, because that
+    is the fixed-point question — does running it again change anything. `unexplained`
+    accumulates across passes instead: a rewrite outside the contract that is idempotent
+    shows up on the first pass and never again, so a set read off the last pass would be
+    empty exactly when the loop converged.
+
+    Three terminations, and only the last is a raise:
+      * the gate answered nonzero — there is a verdict, and checkpointing after it would
+        stage output from a failed run;
+      * nothing in the delta was admissible — staging nothing leaves the next pass the same
+        tree, so it can only produce the same answer;
+      * `max_passes` exhausted with declared output still moving — `GeneratorUnstable`.
+
+    `env` composes the way `run_command`'s does: a caller holding the repo path passes
+    `env=fleet.forge_child_env(repo)`. Without it this function would be strictly less
+    usable than the `run_command` it wraps, on the one composition this module documents.
+    """
+    root = Path(verifier_path)
+    if max_passes < 1:
+        # `range(0)` would fall straight through to the raise below, reporting a generator
+        # unstable on the evidence of zero runs. Same sin as a gate with no steps.
+        raise VerifyError(
+            f"max_passes={max_passes} would run the gate zero times; a fixed point nobody "
+            "measured is not a fixed point")
+    admitted: set = set()
+    unexplained: set = set()
+    before = _inventory(root)
+    for _pass in range(max_passes):
+        run = run_command(root, command, env=env)
+        if run.exit_code != 0:
+            return FixedPoint(run, tuple(sorted(admitted)), tuple(sorted(unexplained)))
+        after = _inventory(root)
+        changed = snapshot.diff(before, after)
+        declared = [p for p in sorted(changed) if _declared(contract, p)]
+        # Read AFTER the run, so a path the gate staged itself counts as tracked: that is a
+        # tracked delta the gate authored, and it is outside any contract.
+        tracked = _tracked(root)
+        unexplained |= {p for p in changed if p in tracked} - set(declared)
+        if not declared:
+            return FixedPoint(run, tuple(sorted(admitted)), tuple(sorted(unexplained)))
+        admitted |= set(declared)
+        _checkpoint(root, declared, tracked)
+        before = after
+    raise GeneratorUnstable(
+        f"the verify command was still rewriting {len(declared)} declared generator "
+        f"output(s) on the last of its {max_passes} passes, so it has no fixed point: "
+        f"{', '.join(declared[:5])}{' …' if len(declared) > 5 else ''}. This is an "
+        "infrastructure failure of the command, never the candidate's verdict.")

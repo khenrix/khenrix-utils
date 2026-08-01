@@ -382,3 +382,17 @@ def test_the_seat_environment_admits_no_git_redirector(tmp_path):
     # PATH fails every candidate for an infrastructure reason (spec §4).
     assert out["PATH"] == "/usr/bin"
     assert out["GIT_CONFIG_GLOBAL"] == gitcmd.NO_USER_CONFIG["GIT_CONFIG_GLOBAL"]
+
+
+def test_the_no_contract_sentinel_is_one_value_across_inspect_and_bundle():
+    """`detect_generators` proposing "nothing declared" and a bundle recording "nothing was
+    declared" have to be the SAME string, because `bundle.generator_contract_id` is the only
+    channel the contract crosses into the manifest on.
+
+    Two fail-closed defaults that merely happen to agree is one rename away from a manifest
+    that says a contract was declared while the gate admitted nothing under it — or worse,
+    the reverse. Nothing else pins the pair.
+    """
+    assert finspect.GeneratorContract().id == bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref="r", baseline_commit="c").generator_contract_id
+    assert finspect.detect_generators(ROOT).id == finspect.GeneratorContract().id

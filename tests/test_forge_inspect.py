@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
+import pytest  # noqa: E402
 from forge import inspect as finspect  # noqa: E402
 from forge_fixtures import _env, make_repo, write  # noqa: E402
 
@@ -427,3 +428,46 @@ def test_a_tracked_symlink_inside_the_repository_is_not_an_escape(tmp_path):
     f = finspect.repo_facts(repo)
     assert f.escaping_symlinks == []
     assert finspect.rejections(f, []) == []
+
+
+def test_a_generator_contract_refuses_a_shape_the_manifest_could_not_carry():
+    """The one invariant that spans two modules: `bundle`'s `generator_contract_id` reads ""
+    as "this run declared no contract, admit nothing", so a contract that admits paths under
+    an empty id would be enforced one way at the gate and recorded the other way."""
+    with pytest.raises(ValueError, match="fail-closed sentinel"):
+        finspect.GeneratorContract(id="", relations=(("shared/**", "marketplaces/**"),))
+    # A single relation IS a pair, so the outer tuple is easy to forget — and without it
+    # `"shared/**"` unpacks into nine characters somewhere much later.
+    with pytest.raises(ValueError, match="tuple OF pairs"):
+        finspect.GeneratorContract(id="x", relations=("shared/**", "marketplaces/**"))
+    # The string test is not subsumed by the arity one, and this is the case that shows it:
+    # a TWO-character string unpacks into a pair of one-character strings and would be
+    # accepted as the relation `("a", "b")` — a glob nobody wrote, admitting a file named b.
+    with pytest.raises(ValueError, match="tuple OF pairs"):
+        finspect.GeneratorContract(id="x", relations=("ab",))
+    for bad in (("a", "b", "c"), ("a",), 42):
+        with pytest.raises(ValueError, match="tuple OF pairs"):
+            finspect.GeneratorContract(id="x", relations=(bad,))
+    with pytest.raises(ValueError, match="must be strings"):
+        finspect.GeneratorContract(id="x", relations=((1, "b"),))
+    # An empty output glob matches no path at all, so it reads as a relation and admits
+    # nothing — the shape that looks like a contract and is not one.
+    with pytest.raises(ValueError, match="empty output glob"):
+        finspect.GeneratorContract(id="x", relations=(("a/*", ""),))
+    assert finspect.GeneratorContract(id="x", relations=()).relations == ()
+
+
+def test_generator_detection_proposes_nothing_it_cannot_read_from_a_declaration(tmp_path):
+    """Fail-closed by default, and on THIS repository too — the §7.2 counterexample, whose
+    own `make verify` runs `render`.
+
+    ROOT is asserted next to a fixture repo because it is the one tree where a detector is
+    tempted to guess. The relation there is real, but it is expressed in `scripts/render.py`
+    as Python rather than as data, and the coarse `marketplaces/**` glob that looks like it
+    would over-admit five hand-maintained manifests render never writes. If a machine-
+    readable declaration is ever added, this is the assertion that has to be re-earned
+    rather than quietly widened.
+    """
+    for repo in (make_repo(tmp_path), ROOT):
+        c = finspect.detect_generators(repo)
+        assert (c.id, c.relations) == ("", ())

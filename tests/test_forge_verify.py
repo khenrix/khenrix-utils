@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import pytest  # noqa: E402
 from forge import baseline, bundle, fleet, harvest, inspect as finspect, verify  # noqa: E402
-from forge_fixtures import git as _git, make_repo, write  # noqa: E402
+from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
 
@@ -508,3 +508,241 @@ def test_undecodable_gate_output_is_not_a_crash(tmp_path):
     d.mkdir()
     r = verify.run_command(d, verify.Command.parse([["printf", "caf\\351\\n"]]))
     assert r.exit_code == 0 and r.stdout.startswith("caf")
+
+
+def _generator_repo(tmp_path, script, *, files=()):
+    """A repo whose tracked `build.sh` IS the verify command, plus a verifier over it.
+
+    The generator is committed rather than carried in the candidate, because §7.2's subject
+    is a verify command the REPOSITORY already has — this repo's `make verify` runs
+    `render` — and a build script the seat introduced would be testing §6.1's gate_changed
+    instead.
+    """
+    repo = make_repo(tmp_path)
+    for rel, text in files:
+        write(repo, rel, text)
+    write(repo, "build.sh", script)
+    (repo / "build.sh").chmod(0o755)
+    commit_all(repo, "seed generator")
+    return repo
+
+
+def _verifier(tmp_path, repo, **kw):
+    b, _s, cb = _candidate(tmp_path, repo, **kw)
+    return verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT)
+
+
+def _staged(v):
+    """What the verifier's INDEX holds against its HEAD — the checkpoint, not the worktree."""
+    return dict(
+        (line[2:], line[0])
+        for line in _git(v, "diff", "--cached", "--name-status").stdout.splitlines() if line)
+
+
+def _contract(*relations):
+    return finspect.GeneratorContract(id="test", relations=relations)
+
+
+BUILD = verify.Command.parse([["./build.sh"]])
+
+
+def test_a_verify_that_regenerates_tracked_files_converges_in_two_passes(tmp_path):
+    """This repo's own shape: `make verify` runs `render`, which rewrites tracked output.
+
+    Adapted from the plan's draft in one place: `fixed_point` returns a `FixedPoint`, not
+    an `(r, admitted)` pair — see `FixedPoint`'s docstring and
+    `test_an_unexplained_tracked_rewrite_is_not_hidden_behind_exit_zero` for what the pair
+    could not express.
+
+    The staging assertion is the plan's own §7.2 requirement and nothing else pins it:
+    convergence alone does NOT, because an idempotent generator writes the same bytes on
+    pass 2 whether or not pass 1's output was checkpointed. Measured — with `_checkpoint`
+    removed entirely, every other assertion here still passed.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nmkdir -p gen\ncp src/a.txt gen/a.txt\n",
+                           files=[("src/a.txt", "v1\n"), ("gen/a.txt", "v1\n")])
+    v = _verifier(tmp_path, repo, work=[("src/a.txt", "v2\n")])   # the agent edits the SOURCE
+
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert fp.run.exit_code == 0
+    assert "gen/a.txt" in fp.admitted, "the regenerated output must be admitted, not discarded"
+    assert (v / "gen" / "a.txt").read_text() == "v2\n"
+    assert _staged(v).get("gen/a.txt") == "M", \
+        f"admitted output was recorded but never staged: {_staged(v)}"
+
+
+def test_a_nondeterministic_generator_is_unstable_not_silently_accepted(tmp_path):
+    repo = _generator_repo(tmp_path, "#!/bin/sh\ndate +%s%N > gen.txt\n",
+                           files=[("gen.txt", "seed\n")])
+    v = _verifier(tmp_path, repo)
+    with pytest.raises(verify.GeneratorUnstable, match="no fixed point"):
+        verify.fixed_point(v, BUILD, _contract((".", "gen.txt")))
+
+
+def test_an_output_outside_the_contract_is_not_admitted(tmp_path):
+    """A seat cannot widen the contract by writing somewhere new."""
+    repo = _generator_repo(tmp_path, "#!/bin/sh\necho sneaky > receipt.json\n")
+    v = _verifier(tmp_path, repo)
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert "receipt.json" not in fp.admitted
+    assert _staged(v) == {}, "an unadmitted path was checkpointed anyway"
+
+
+def test_an_unexplained_tracked_rewrite_is_not_hidden_behind_exit_zero(tmp_path):
+    """Why `FixedPoint` carries three fields and not the plan's `(Run, admitted)` pair.
+
+    The contract here is the EMPTY one `detect_generators` returns, so this is also what
+    forge's fail-closed default does end to end: it admits nothing, and the tracked rewrite
+    it refuses to admit is still reported.
+
+    §6.2 makes exit 0 a PASS only alongside "no unexplained tracked delta", and the two runs
+    below differ in exactly that — yet their `run.exit_code` and `admitted` are equal, which
+    is the measurement. `junk.log` is the other half: untracked churn is what every real
+    gate produces, so it must NOT arrive as an unexplained delta.
+    """
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\necho rewritten > notes.txt\necho noise > junk.log\n",
+        files=[("notes.txt", "original\n")])
+    v = _verifier(tmp_path, repo)
+
+    clean = verify.fixed_point(v, verify.Command.parse([["true"]]), finspect.GeneratorContract())
+    dirty = verify.fixed_point(v, BUILD, finspect.GeneratorContract())
+
+    assert (clean.run.exit_code, clean.admitted) == (dirty.run.exit_code, dirty.admitted) \
+        == (0, ()), "the pair the plan specified cannot distinguish these two runs"
+    assert clean.unexplained == ()
+    assert dirty.unexplained == ("notes.txt",), \
+        f"the tracked rewrite outside the contract was lost: {dirty.unexplained}"
+
+
+def test_a_generated_file_that_is_new_or_deleted_is_checkpointed_too(tmp_path, monkeypatch):
+    """Admission is decided by the contract's output globs ALONE.
+
+    Not by tracked-ness: `gen/new.txt` has no index entry when the generator creates it, and
+    leaving it unstaged hands over a required file that a drift check reads as untracked.
+    And not by presence: a generator that DELETES one of its outputs has to have that
+    deletion staged, or the same check sees a tracked file missing from the worktree.
+
+    The batch size is driven down to 1 so the checkpoint's argv batching runs at all: at the
+    default every admitted set in this suite is one batch, so a loop that staged only its
+    first batch would look identical to a correct one.
+    """
+    monkeypatch.setattr(verify, "_CHECKPOINT_BATCH", 1)
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\nmkdir -p gen\necho fresh > gen/new.txt\nrm -f gen/old.txt\n",
+        files=[("gen/old.txt", "stale\n")])
+    v = _verifier(tmp_path, repo)
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert fp.run.exit_code == 0
+    assert fp.admitted == ("gen/new.txt", "gen/old.txt")
+    assert _staged(v) == {"gen/new.txt": "A", "gen/old.txt": "D"}, \
+        f"the generator's creation and deletion were not both checkpointed: {_staged(v)}"
+
+
+def test_an_untracked_declared_path_the_generator_removes_is_not_a_failed_checkpoint(tmp_path):
+    """`git add` on a path that is neither on disk nor in the index exits 128 — measured:
+    `fatal: pathspec ':(literal)…' did not match any files` — which would turn an ordinary
+    run into an engine error.
+
+    Reachable without anything exotic: an untracked file the candidate carries as a sidecar,
+    under a path the contract declares, that the generator then cleans up.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nrm -f gen/stale.txt\n")
+    v = _verifier(tmp_path, repo, work=[("gen/stale.txt", "carried\n")])
+    assert not (v / "gen" / "stale.txt").is_symlink() and (v / "gen" / "stale.txt").exists()
+
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert fp.run.exit_code == 0 and "gen/stale.txt" in fp.admitted
+    assert _staged(v) == {}, "a path git never tracked was somehow checkpointed"
+
+
+def test_a_failing_gate_is_returned_rather_than_checkpointed(tmp_path):
+    """The gate has answered. Staging its output would checkpoint a failed run's leftovers,
+    and re-running would spend the whole pass budget on a command that already lost."""
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\nmkdir -p gen\necho out > gen/a.txt\nexit 3\n",
+        files=[("gen/a.txt", "before\n")])
+    v = _verifier(tmp_path, repo)
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+    assert fp.run.exit_code == 3
+    assert fp.admitted == () and fp.unexplained == ()
+    assert _staged(v) == {}, "a failed gate's output was checkpointed"
+
+
+def test_an_uninventoriable_verifier_is_refused_rather_than_read_as_converged(
+        tmp_path, monkeypatch):
+    """A quota breach answers `({}, [breach])`, and `diff({}, {})` is empty — which is
+    exactly what this loop reads as a clean fixed point. Dropping the breach line would not
+    lose a warning, it would manufacture a PASS."""
+    repo = _generator_repo(tmp_path, "#!/bin/sh\ntrue\n")
+    v = _verifier(tmp_path, repo)
+    monkeypatch.setattr(verify.snapshot, "take", lambda *a, **kw: ({}, ["files: 9 > 8"]))
+    with pytest.raises(verify.VerifyError, match="could not be inventoried"):
+        verify.fixed_point(v, BUILD, _contract(("src/*", "gen/*")))
+
+
+def test_fixed_point_refuses_a_pass_budget_that_would_run_nothing(tmp_path):
+    """`range(0)` falls straight through to the unstable raise, which would report a
+    generator unstable on the evidence of zero runs. The refusal also comes BEFORE the first
+    inventory, so it is the budget that is named rather than the tree."""
+    d = tmp_path / "not-even-a-tree"
+    with pytest.raises(verify.VerifyError, match="run the gate zero times"):
+        verify.fixed_point(d, BUILD, finspect.GeneratorContract(), max_passes=0)
+
+
+def test_a_declared_output_that_is_gitignored_is_still_checkpointed(tmp_path):
+    """`git add` refuses an ignored path and exits 1, so without `-f` a repository whose
+    generator writes into an ignored directory could never reach a fixed point.
+
+    §7.4's own example is `.chunkmap/map.md`. The contract is the engine's declaration,
+    confirmed at the §5 gate; the repo's ignore rules must not overrule it — the same
+    argument `baseline.materialize` makes for selected untracked paths.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nmkdir -p dist\necho built > dist/out.txt\n",
+                           files=[(".gitignore", "dist/\n")])
+    v = _verifier(tmp_path, repo)
+    fp = verify.fixed_point(v, BUILD, _contract(("src/*", "dist/*")))
+    assert fp.run.exit_code == 0 and fp.admitted == ("dist/out.txt",)
+    assert _staged(v) == {"dist/out.txt": "A"}, \
+        f"git's ignore rules vetoed a declared generator output: {_staged(v)}"
+
+
+def test_a_path_the_gate_itself_stages_is_a_tracked_delta(tmp_path):
+    """Tracked-ness is read AFTER the run, not before it.
+
+    A verify command that stages a file has authored a tracked delta outside the contract,
+    and it is invisible to a set of tracked paths captured before the command ran — which is
+    the fail-open direction, since the gate is the party under suspicion.
+    """
+    repo = _generator_repo(
+        tmp_path, "#!/bin/sh\necho x > snuck.txt\ngit add snuck.txt\n")
+    v = _verifier(tmp_path, repo)
+    fp = verify.fixed_point(v, BUILD, finspect.GeneratorContract())
+    assert fp.run.exit_code == 0 and fp.admitted == ()
+    assert fp.unexplained == ("snuck.txt",), \
+        f"a file the gate staged for itself was read as untracked noise: {fp.unexplained}"
+
+
+def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(tmp_path):
+    """These two sets are compared path by path, so they have to agree byte for byte on a
+    filename that is not valid UTF-8 — a filesystem name is bytes, not text.
+
+    `harvest` already paid for the strict-decode half of this: one latin-1 byte raised
+    UnicodeDecodeError out of subprocess and took the whole call with it. The other half is
+    worse here, because it is silent: under `errors="replace"` git's answer would come back
+    with U+FFFD where `os.walk` put a surrogate, so the path would be in the index and
+    absent from this set — a tracked file reported as untracked, which is the direction that
+    turns an unexplained delta into ordinary build noise.
+    """
+    repo = make_repo(tmp_path)
+    raw = os.path.join(os.fsencode(repo), b"caf\xe9.txt")
+    with open(raw, "wb") as fh:
+        fh.write(b"latin-1 name\n")
+    commit_all(repo, "a filename that is not utf-8")
+
+    name = os.fsdecode(raw).rsplit("/", 1)[1]
+    entries, breaches = verify.snapshot.take(repo)
+    assert breaches == []
+    assert name in entries, "the fixture did not produce the filename this test is about"
+    assert name in verify._tracked(Path(repo)), \
+        "git's view of the index and snapshot's view of the tree disagree on this name"
