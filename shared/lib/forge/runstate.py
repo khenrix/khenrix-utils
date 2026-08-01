@@ -12,8 +12,9 @@ The rest of this file is what a RESUME needs and neither of those carries: §14'
 which says where the run had got to; the per-seat record, which says what each seat last
 managed to write down; and the two reads that put a crashed run back together — `drift`, which
 asks whether the snapshot still describes the repository, and `reconstruct`, which answers
-that and everything above it from the run directory alone. Each is described at the end of
-this docstring and implemented at the end of the file.
+that and everything above it out of the run directory, taking no fact from the caller that
+the directory already holds. Each is described at the end of this docstring and implemented
+at the end of the file.
 
 WRITTEN ONCE. §14.2 requires the manifest be written at `confirmed` and never rewritten, so
 commands are never re-detected. That is not a style rule about callers: `--collect` resuming
@@ -29,20 +30,50 @@ field is decoded explicitly, and a field added to `Manifest` without a decoder m
 read fail rather than arrive as whatever JSON happened to make of it.
 
 WHAT THE SNAPSHOT IS. §9's protected list is the user's current branch ref, `HEAD`, the index
-hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION; forge's own refs are
-whitelisted by exact name AND the exact OID recorded here, because a namespace whitelist would
-let a seat write into forge's own namespace invisibly. The last two of those seven are NOT
-recorded: nothing here reads `remote.*` or any other config key, so a seat that adds a remote
-or sets a repo-local value leaves no t0 fact to be judged against, and `drift` cannot speak
-for either. The INDEX HASH is covered only through its effects rather than as a fact of its
-own — no digest of `.git/index` is stored — and the boundary that leaves is the right one
-rather than a shortfall. Measured: staging an edit and staging a new file both move the
-porcelain and so the digest, while the one index move that does not is a stat-only refresh,
-which is not the user's work and is precisely what the READONLY pins below exist to stop
-forge itself causing. A t0 fact that moved whenever git touched the index for its own reasons
-would report as drift the one thing this file is most careful never to do. What IS recorded
-is `protected_refs`, name-to-OID for every ref that is not forge's, and `status_digest`, over
-the four parts of the checkout state that move independently:
+hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION. Three of those seven
+are not recorded here, and each is a §9 GAP rather than a boundary this file chose — written
+down so the sentence and the code do not disagree:
+
+  * REMOTES and CONFIGURATION. Nothing here reads `remote.*` or any other config key, so a
+    seat that adds a remote or sets a repo-local value leaves no t0 fact to be judged
+    against, and `drift` cannot speak for either.
+  * The INDEX HASH. No digest of `.git/index` is stored, so the index is covered only through
+    its effects on the porcelain, and three classes of index move have no effect there.
+    Measured, each on git 2.53. A stat-only refresh moves the index and not the digest — an
+    ordinary `git status` over stale stat data does it, and it is not the user's work at all,
+    which is what the READONLY pins below stop forge itself causing. Index-format churn
+    (`update-index --split-index`) moves the index and not the digest, and changes nothing
+    the digest could have seen: `ls-files -s` and the porcelain come back identical. Setting
+    a per-path skip bit (`update-index --assume-unchanged` or `--skip-worktree`) moves the
+    index and not the digest, and IS the user's work — that class is UNCOVERED, not a
+    boundary chosen here.
+
+§9 also asks that forge's own refs be whitelisted by exact name AND the exact OID recorded at
+creation, because a namespace whitelist lets a seat write into forge's own namespace
+invisibly. What is implemented is the namespace whitelist: `snapshot_refs` drops
+`refs/khenrix-forge/**` and `refs/heads/forge/**` BEFORE recording, so no forge ref has either
+a name or an OID in `protected_refs`, and a forge ref that existed at t0 and then moved is
+invisible — measured, and pinned by
+`test_a_forge_ref_that_existed_at_t0_and_moved_is_invisible_rather_than_whitelisted`. Closing
+it needs a producer that records each forge ref as forge creates it, which this plan has none
+of. Without one the only alternative available here is to record forge's refs as PROTECTED,
+and that is worse in the direction that matters: the run creates refs after t0, so each would
+read as a ref the user made and every run would diverge from itself.
+
+THE CONTENT BEHIND A SKIP BIT is a second question from the index move above, and a different
+answer: not a gap of this file's, but a floor it shares with B. Measured with the bit set and
+the path clean, both bits alike — the user's own later edit moves neither the porcelain nor the
+digest, and `git add -u` skips it on the same comparison, so `baseline.materialize` does not
+carry that content into B either, while the user's own `git status`, `git diff` and `git stash`
+are equally blind (`stash` answers "No local changes to save" and leaves the edit where it
+was). Both ways out are ones this file already has, measured for both bits: a path that was
+DIRTY at t0 leaves the porcelain when the bit is set, which moves the digest, and a SELECTED
+path stays in the content set whatever the porcelain says. The selected case is also where the
+sharing stops — `add -f` does not carry the hidden edit into B while the digest does see it, so
+the two disagree in the direction that stops the run rather than the one that hands over.
+
+What IS recorded is `protected_refs`, name-to-OID for every ref that is not forge's, and
+`status_digest`, over the four parts of the checkout state that move independently:
 
   * the porcelain, which is a PATH/STATUS LISTING — it says which paths differ from `HEAD`
     and in which direction, and carries none of their content;
@@ -112,23 +143,25 @@ implementation detail: resuming "always from disk and never from conversation st
 compaction and restart indistinguishable, one code path instead of two". A reconstruction that
 consulted anything held in memory would be two code paths, and the one that runs after a crash
 is the one nobody tested. So `reconstruct` opens the manifest, the run's own position, every
-seat record and the journal, and asks `drift` what has moved. Three ordinary ABSENCES are
-states rather than errors — a journal with no records, a run that has not moved since
-`confirmed`, and a seat that never wrote — and everything else propagates in the vocabulary of
-whichever reader met it, because a resume that swallowed a damaged record would carry on from
-a position nobody recorded.
+seat record and the journal, and asks `drift` what has moved. The repository it is handed is
+the one thing in that list a caller supplies rather than the disk, and the manifest records it
+too — so `drift` refuses one that is not the recorded repository instead of comparing the
+snapshot against a stranger. Three ordinary ABSENCES are states rather than errors — a journal
+with no records, a run that has not moved since `confirmed`, and a seat that never wrote — and
+everything else propagates in the vocabulary of whichever reader met it, because a resume that
+swallowed a damaged record would carry on from a position nobody recorded.
 
 WHAT DRIFT IS. §9 protects the checkout and "all non-forge refs", and says a protected branch
 or the checkout moving during the run transitions to `source_diverged` and does NOT continue
 to handover automatically — because "a clean merge can silently revert the user's own
-subsequent work on any hunk forge also touched". A ref whose OID moved is the obvious half.
-The other two halves were measured, and each is invisible to every other fact this file
-records: deleting a tag leaves every surviving ref and the whole checkout digest byte for
-byte where they were, and so does a branch the user creates while the run is out. So a ref
-that DISAPPEARED and a ref that is NEW since t0 are drift as much as one that moved. The
-new-ref half needs no forge exclusion of its own: the fresh side is `snapshot_refs`, which
-names no forge ref at all, so forge's own baseline cannot arrive as a ref the user made — a
-`drift` reading a raw `show-ref` instead would report every run as diverging from itself.
+subsequent work on any hunk forge also touched". A ref whose OID moved is the obvious case.
+Two more were measured, and each is invisible to every other fact this file records: deleting
+a tag leaves every surviving ref and the whole checkout digest byte for byte where they were,
+and so does a branch the user creates while the run is out. So a ref that DISAPPEARED and a
+ref that is NEW since t0 are drift as much as one that moved. The new-ref case needs no forge
+exclusion of its own: the fresh side is `snapshot_refs`, which names no forge ref at all, so
+forge's own baseline cannot arrive as a ref the user made — a `drift` reading a raw
+`show-ref` instead would report every run as diverging from itself.
 
 Naming it is where this file stops. `reconstruct` reports what moved; §9's transition and its
 refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14's
@@ -159,7 +192,9 @@ class TransitionError(RuntimeError):
     """A move §14's graph does not declare."""
 
 
-# §9's two explicitly-allowed namespaces. Prefixes rather than a substring test: a user's
+# §9's two explicitly-allowed namespaces, excluded WHOLESALE — which is the namespace
+# whitelist §9 warns about rather than its name-and-OID one; see the module docstring for the
+# measurement and what closing it needs. Prefixes rather than a substring test: a user's
 # `refs/heads/forgery-experiments` is theirs, and dropping it here would leave a moved ref
 # with nothing to compare against — the fail-OPEN direction of the same decision.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
@@ -199,6 +234,10 @@ class Manifest:
     `selected_paths` is an input to the second of those as well as a record — which is why
     `drift` re-derives the digest from THIS field and not from an argument. See
     `snapshot_refs`.
+
+    `repo_path` says WHICH repository those two describe, and is read for that: `drift`
+    refuses a repository that is not this one, so the snapshot is never compared against a
+    copy that would answer "nothing moved" on the run's behalf.
     """
     run_id: str
     repo_path: str
@@ -781,6 +820,18 @@ def write_state(run_dir, state: State) -> None:
     ALL FIVE DIMENSIONS or none. A record carrying the phase alone would hand a resume a
     round and an attempt supplied by its READER — the failure `Manifest` records four fields
     per step to avoid, one file over.
+
+    A CACHE, NOT THE AUTHORITY. §14.2 makes git the ordering of record — `--collect`
+    "reconstructs the checkpoint sequence and the last verify-passing OID even if every JSON
+    file is torn" — so this file is an optimisation over a derivation from the synthesis
+    branch, and the derivation is the one that must win where they disagree. Nothing derives
+    it yet; whoever writes it owns that precedence, and should not read a position here as
+    evidence against what the branch says.
+
+    The body below is `write_seat`'s, one record over: the same publish-by-rename, the same
+    refuse-before-publishing, the same round trip. They are not factored together because the
+    decoders differ and each refusal names its own constraint — a third record here is the
+    point at which that stops paying.
     """
     path = storage.state_path(run_dir)
     if not isinstance(state, State):
@@ -857,9 +908,64 @@ def _decode_state(row, source) -> State:
     return State(**{n: row[n] for n in _STATE_FIELDS})
 
 
+def _refuse_a_repository_the_manifest_did_not_record(manifest: Manifest, repo) -> None:
+    """Raise unless `repo` is the repository the manifest names.
+
+    The manifest already records the repository, so an unchecked argument is a second answer
+    to a settled question — and the wrong one answers CLEANLY. Measured with this check
+    removed: given a manifest recorded for A, `drift` against a byte copy of A taken at t0
+    returns `()` while A itself has moved `HEAD`, its branch and the checkout. §9 says that
+    run must stop before handover, and `()` is how it would sail through.
+
+    IDENTITY IS GIT'S, not the string's. The toplevel is asked for rather than compared as
+    written, because `_status_digest` accepts a subdirectory and answers for the whole
+    repository — a literal comparison would refuse that caller. Measured, `--show-toplevel`
+    gives ONE answer for the repository as recorded, with a trailing slash, through a `.`
+    segment, through a symlink and from a subdirectory, and a DIFFERENT answer for a byte
+    copy and for a linked worktree — which is a second checkout with its own HEAD, index and
+    status, so the snapshot cannot be judged against it however many objects it shares.
+
+    `realpath` on top, because the recorded side is a string nobody resolved: a manifest
+    written under a symlinked path records the link while git answers with the target, and
+    both sides are resolved so that resume still works. It resolves LINKS and not mounts, so
+    one directory reachable at two mount points reads as two paths here and is refused; the
+    message names both, and the resume the user meant is one path away.
+
+    Bytes then decoded, on `_status_digest`'s argument: a repository may live under a path
+    that is not valid UTF-8, and `os.fsdecode` spells one the way `str(Path)` spelled it into
+    the manifest.
+    """
+    if not manifest.repo_path:
+        # `os.path.realpath("")` is the PROCESS's working directory, so an empty recorded
+        # path is met by whatever directory forge happens to be run from — the one input
+        # here that would answer for itself.
+        raise ManifestError(
+            "this manifest records no repository, so nothing can be shown to be the one the "
+            "run agreed to; a resume cannot judge the snapshot against a repository the "
+            "manifest never named.")
+    r = gitcmd.git(repo, "rev-parse", "--show-toplevel", env_extra=gitcmd.READONLY,
+                   binary=True, check=False)
+    if r.returncode != 0:
+        raise ManifestError(
+            f"{repo} cannot be shown to be the repository this run recorded "
+            f"({manifest.repo_path!r}): {r.stderr.decode('utf-8', 'replace').strip()}")
+    root = os.path.realpath(os.fsdecode(r.stdout.strip()))
+    if root != os.path.realpath(manifest.repo_path):
+        raise ManifestError(
+            f"this run was recorded against {manifest.repo_path!r} and was handed {root!r}. "
+            "The snapshot describes the first, so judging it against the second reports what "
+            "moved in a repository nobody is resuming — and a copy taken at t0 reports "
+            "nothing moved at all. Resume against the repository the manifest names.")
+
+
 def drift(manifest: Manifest, repo) -> tuple[str, ...]:
     """What has moved in `repo` since the manifest recorded it: §9's ref names, sorted, plus
     `"status"` when the checkout digest moved. `()` when the snapshot still describes it.
+
+    `repo` is CHECKED against the one the manifest records before anything is compared, and
+    here rather than in `reconstruct`: this call is public and a check one level up would
+    leave it answering `()` for a stranger, while `reconstruct` reaches the same refusal by
+    handing its own argument straight through.
 
     THREE WAYS A REF DRIFTS, not one — see the module docstring for the measurements. A
     recorded ref whose OID differs covers two of them at once, because a ref that is GONE
@@ -873,6 +979,7 @@ def drift(manifest: Manifest, repo) -> tuple[str, ...]:
     """
     if not isinstance(manifest, Manifest):
         raise ManifestError(f"a manifest is required, not {type(manifest).__name__}")
+    _refuse_a_repository_the_manifest_did_not_record(manifest, repo)
     refs, digest = snapshot_refs(repo, manifest.selected_paths)
     moved = {name for name, oid in manifest.protected_refs.items() if refs.get(name) != oid}
     moved |= set(refs) - set(manifest.protected_refs)
@@ -906,13 +1013,19 @@ class Reconstruction:
 
 
 def reconstruct(run_dir, repo) -> Reconstruction:
-    """Everything `--collect` knows, read from `run_dir` and `repo` — never from a caller.
+    """Everything `--collect` knows, read from `run_dir` — and judged against the repository
+    the manifest names, not the one the caller believes in.
 
-    Raises whatever the record that failed raises: ManifestError with no manifest, StateError
-    for a damaged position or seat, JournalError for a log that is no longer a sequence of
-    facts, StorageError for a seat file this engine could not have written. Unwrapped, on the
-    precedent this package sets for `SeatError` and `BundleError` — a resume repairs those
-    differently, and one class over all of them would say only that the run is unreadable.
+    `repo` is the one argument that does not come out of the run directory, and the manifest
+    records it too: `drift` refuses a repository that is not the recorded one, so a caller
+    cannot substitute a twin and be told nothing moved.
+
+    Raises whatever the record that failed raises: ManifestError with no manifest or a
+    repository the manifest did not record, StateError for a damaged position or seat,
+    JournalError for a log that is no longer a sequence of facts, StorageError for a seat
+    file this engine could not have written. Unwrapped, on the precedent this package sets
+    for `SeatError` and `BundleError` — a resume repairs those differently, and one class
+    over all of them would say only that the run is unreadable.
     """
     manifest = read_manifest(run_dir)
     return Reconstruction(

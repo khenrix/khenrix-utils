@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -698,6 +699,13 @@ def test_the_snapshot_does_not_rewrite_the_users_index(tmp_path):
     runstate.snapshot_refs(repo, ())
     assert _digest() == before
 
+    # And the whole drift check, which is what a resume actually calls: it makes git calls
+    # `snapshot_refs` does not, and the pin has to hold for every one of them.
+    os.utime(seed, (1893456120, 1893456120))
+    before = _digest()
+    runstate.drift(_manifest(repo), repo)
+    assert _digest() == before
+
 
 # -------------------------------------------------------------------------- run-dir layout
 
@@ -1310,6 +1318,139 @@ def test_drift_over_something_that_is_not_a_manifest_is_refused(tmp_path):
         runstate.drift({"protected_refs": {}}, repo)
 
 
+def test_a_forge_ref_that_existed_at_t0_and_moved_is_invisible_rather_than_whitelisted(
+        tmp_path):
+    """§9 asks for a whitelist by exact name AND the OID recorded at creation. This is what
+    is here instead, pinned so the gap is measured rather than asserted: `snapshot_refs`
+    drops forge's namespaces BEFORE recording, so a forge ref that was already there at t0
+    has no recorded OID to be compared against and its movement leaves no trace at all."""
+    repo = make_repo(tmp_path)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
+    m = _manifest(repo)
+    assert not [k for k in m.protected_refs if "forge" in k], \
+        "the premise is that no forge ref has a recorded name or OID"
+    # A commit nothing else points at, so the only thing that moves is forge's own ref.
+    moved = _git(repo, "commit-tree", f"{head}^{{tree}}", "-p", head,
+                 "-m", "a seat writing into forge's own namespace").stdout.strip()
+    _git(repo, "update-ref", "refs/khenrix-forge/r1/base", moved)
+    assert runstate.drift(m, repo) == ()
+
+
+# ------------------------------------------------- the repository the manifest recorded
+
+def test_drift_against_a_repository_the_manifest_never_recorded_is_refused(tmp_path):
+    """The manifest records the repository, so a repository handed in beside it is a second
+    answer to a question already settled — and the wrong one answers cleanly. Measured
+    before this refusal: `drift` against a byte copy of the repo taken at t0 reported `()`
+    while the recorded repository had moved `HEAD`, its branch and the checkout."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    twin = tmp_path / "twin"
+    shutil.copytree(repo, twin, symlinks=True)
+    write(repo, "seed.txt", "the user kept working\n")
+    commit_all(repo, "user's own commit")
+    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status")
+    with pytest.raises(runstate.ManifestError):
+        runstate.drift(m, twin)
+
+
+def test_a_reconstruction_of_a_twin_of_the_recorded_repository_is_refused(tmp_path):
+    """§14's "always from disk" is not only about where the FACTS come from: a resume that
+    accepted any repository would report `diverged == ()` for a run whose repository moved
+    on every axis §9 protects, and §9 says that run must not continue to handover."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    twin = tmp_path / "twin"
+    shutil.copytree(repo, twin, symlinks=True)
+    write(repo, "seed.txt", "the user kept working\n")
+    commit_all(repo, "user's own commit")
+    with pytest.raises(runstate.ManifestError):
+        runstate.reconstruct(run, twin)
+    assert runstate.reconstruct(run, repo).diverged != ()
+
+
+@pytest.mark.parametrize("spelling", ["trailing slash", "dot segments", "symlink",
+                                      "subdirectory"])
+def test_the_recorded_repository_answers_to_every_spelling_of_itself(tmp_path, spelling):
+    """The identity is git's, not the string's. A refusal that compared the argument as
+    written would fail an ordinary resume — the same directory reached through a symlinked
+    home, or named from inside itself, which `_status_digest` already answers for because
+    the porcelain's paths are repository-root-relative wherever git ran."""
+    repo = make_repo(tmp_path)
+    (repo / "sub").mkdir()
+    write(repo, "sub/a.txt", "a\n")
+    commit_all(repo, "sub")
+    m = _manifest(repo)
+    link = tmp_path / "link-to-repo"
+    os.symlink(repo, link)
+    named = {"trailing slash": Path(str(repo) + os.sep),
+             "dot segments": repo.parent / "." / repo.name,
+             "symlink": link,
+             "subdirectory": repo / "sub"}[spelling]
+    assert runstate.drift(m, named) == ()
+    write(repo, "seed.txt", "the user kept working\n")
+    assert runstate.drift(m, named) == ("status",), \
+        "and it must still be the same repository's drift, not a silent ()"
+
+
+def test_a_repository_recorded_through_a_symlink_resumes_from_either_path(tmp_path):
+    """The RECORDED side is a string nobody resolved. A run confirmed under a symlinked path
+    — a home directory reached through a link, a `/tmp` that is one — records the link, while
+    git answers with the target: resolving only the argument would refuse the repository the
+    manifest was written for."""
+    repo = make_repo(tmp_path)
+    link = tmp_path / "link-to-repo"
+    os.symlink(repo, link)
+    m = _manifest(repo, repo_path=str(link))
+    assert runstate.drift(m, repo) == ()
+    assert runstate.drift(m, link) == ()
+
+
+def test_a_linked_worktree_of_the_recorded_repository_is_refused(tmp_path):
+    """A second checkout of one repository is a different working tree with its own HEAD,
+    its own index and its own status — so the snapshot cannot be judged against it, even
+    though every object and ref is shared."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    wt = tmp_path / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt), "-b", "wt-branch")
+    with pytest.raises(runstate.ManifestError):
+        runstate.drift(m, wt)
+
+
+def test_a_manifest_that_records_no_repository_is_refused_rather_than_met_by_the_cwd(
+        tmp_path, monkeypatch):
+    """`os.path.realpath("")` is the PROCESS's working directory, so a manifest whose
+    `repo_path` is empty is satisfied by whatever directory forge happens to be run from —
+    a fact nobody recorded answering for itself, which is the fail-OPEN direction. Measured
+    with the cwd inside the repository, which is where a resume is normally launched."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo, repo_path="")
+    monkeypatch.chdir(repo)
+    with pytest.raises(runstate.ManifestError):
+        runstate.drift(m, repo)
+
+
+def test_a_path_that_is_not_a_repository_is_refused_for_the_reason_it_actually_failed(
+        tmp_path):
+    """Fail closed on the question actually being asked, and SAY which way it failed.
+
+    The message is asserted because the other branch answers too, wrongly: with the git
+    failure unhandled, the empty stdout resolves to the PROCESS's working directory, and the
+    mismatch branch then reports a run "handed" a path nobody named. Measured as a surviving
+    mutant, which is what this assertion now kills.
+    """
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    stranger = tmp_path / "not-a-repo"
+    stranger.mkdir()
+    with pytest.raises(runstate.ManifestError) as e:
+        runstate.drift(m, stranger)
+    assert str(stranger) in str(e.value) and "not a git repository" in str(e.value)
+
+
 # --------------------------------------------------------------- reconstruction from disk
 
 def test_a_run_reconstructs_from_disk_after_the_writer_is_gone(tmp_path):
@@ -1365,11 +1506,16 @@ def test_a_reconstruction_reads_every_seat_that_wrote_and_invents_none_that_did_
 def test_a_damaged_seat_is_not_dropped_from_a_reconstruction(tmp_path):
     """§14.1's whole point, at the one call that reads every seat at once: a resume that
     skipped the torn record would report the other two seats and carry on as though the
-    third had never run."""
+    third had never run.
+
+    Three seats, because that sentence is the failure: with one seat on disk a skipping
+    reconstruction returns an empty mapping, which a caller may still notice, while with two
+    healthy neighbours it returns a full-looking fleet that is quietly missing a member."""
     repo = make_repo(tmp_path)
     run = _run_dir(tmp_path)
     runstate.write_manifest(run, _manifest(repo))
-    runstate.write_seat(run, "claude", {"phase": "building"})
+    for name in ("claude", "codex", "agy"):
+        runstate.write_seat(run, name, {"phase": "building"})
     p = storage.seat_state_path(run, "claude")
     p.write_bytes(p.read_bytes()[:12])
     with pytest.raises(runstate.StateError):
