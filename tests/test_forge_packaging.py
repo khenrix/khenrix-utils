@@ -1,8 +1,11 @@
 """forge must ship in the rendered plugins and be inside the receipt closure."""
+import ast
+import io
 import re
 import shutil
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,3 +228,53 @@ def test_the_bundled_checks_copies_are_exempt_from_the_secret_scan():
         rel = f"marketplaces/{cli}/plugins/khenrix-utils/lib/checks.py"
         assert (ROOT / rel).is_file(), rel
         assert rel in skip, rel
+
+
+# A `test_` name cited in PROSE. `(?!\.py)` drops module citations — `test_forge_seams.py`
+# is a file that exists, not a function that might not.
+_CITED_TEST = re.compile(r"\btest_[a-z0-9_]+\b(?!\.py)")
+
+
+def _prose(source: str) -> str:
+    """Every docstring and comment in `source`, and nothing that is code.
+
+    Scanned rather than grepped because a `test_`-prefixed PARAMETER reads identically to a
+    citation: `_gate_role(path, test_globs)` is not a reference to a test named `test_globs`,
+    and a text search over the whole file says it is.
+    """
+    tree = ast.parse(source)
+    docs = [ast.get_docstring(n) or "" for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.ClassDef,
+                              ast.FunctionDef, ast.AsyncFunctionDef))]
+    comments = [t.string for t in
+                tokenize.generate_tokens(io.StringIO(source).readline)
+                if t.type == tokenize.COMMENT]
+    return "\n".join(docs + comments)
+
+
+def test_every_test_named_in_shipped_forge_prose_still_exists():
+    """A docstring that cites a test by name is a cross-reference nothing resolves.
+
+    Three renames in two waves left one dangling each, and one shipped into all three
+    plugins before a reviewer caught it by reading — past the point where review is the
+    reliable mechanism. `make verify` stayed green for every one.
+
+    Guards the direction that SHIPS: `shared/lib/forge/` prose naming a test in `tests/`.
+    A citation pointing the other way, and prose naming a test CONCEPT rather than a
+    symbol, still needs a reader. Scoped to forge rather than all of `shared/lib/` because
+    `wikisync` vendors its own suite, whose names resolve against a different directory.
+    """
+    forge = sorted((ROOT / "shared" / "lib" / "forge").glob("**/*.py"))
+    defined = {m.group(1) for p in (ROOT / "tests").glob("test_*.py")
+               for m in re.finditer(r"^def (test_[a-z0-9_]+)", p.read_text(), re.M)}
+    # A typo in that pattern would empty the set and report every citation as dangling; an
+    # empty glob would report none. Both failure directions are pinned before the sweep.
+    assert "test_every_test_named_in_shipped_forge_prose_still_exists" in defined
+    assert forge, "the forge glob matched nothing"
+
+    dangling = sorted(f"{p.relative_to(ROOT)}: {name}" for p in forge
+                      for name in _CITED_TEST.findall(_prose(p.read_text()))
+                      if name not in defined)
+    assert dangling == [], (
+        f"{dangling} — shipped prose names a test that does not exist; rename the citation "
+        "with the test, or drop it")

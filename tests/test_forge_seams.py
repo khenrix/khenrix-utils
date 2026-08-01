@@ -440,7 +440,7 @@ def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
     shapes the per-module suites already cover.
 
     Nothing in here consults `inspect.rejections`; that is the property under test, and
-    `test_nothing_in_the_chain_consults_the_refusal_policy` is where it is measured rather
+    `test_nothing_in_the_chain_consults_either_refusal` is where it is measured rather
     than assumed.
     """
     facts = finspect.repo_facts(repo)
@@ -482,8 +482,11 @@ def _refusals_disabled():
         finspect.rejections = original
 
 
+_REFUSALS = ("rejections", "screen_tree")
+
+
 def _references_the_policy(source: bytes) -> bool:
-    """True when this source reaches for `rejections` in CODE rather than in prose.
+    """True when this source reaches for a refusal in CODE rather than in prose.
 
     Parsed rather than grepped: every occurrence of the name in `inspect` and `bundle` is
     prose or the definition itself, and not one is a call — so a text search answers yes for
@@ -495,16 +498,20 @@ def _references_the_policy(source: bytes) -> bool:
     otherwise read as green. `getattr(finspect, "rejections")` still passes — the name is a
     string there, and chasing it is a dataflow analysis with no end.
 
+    BOTH refusals are watched. `screen_tree` has no consumer either, and the escaping-link
+    seam's docstring says so — a claim that would go false in silence if only `rejections`
+    were pinned here.
+
     The cost of matching a bare name over the whole scanned tree: an unrelated local called
-    `rejections` anywhere under `shared/` or `scripts/` reds this gate with a message about
-    the forge policy. Accepted rather than narrowed — the tripwire exists to fire on a day
+    `rejections` or `screen_tree` anywhere under `shared/` or `scripts/` reds this gate with
+    a message about the forge policy. Accepted rather than narrowed — the tripwire exists to fire on a day
     nobody is expecting it, so a false alarm someone must read beats a filter that quietly
     excludes the file the consumer actually lands in.
     """
     for node in ast.walk(ast.parse(source)):
         name = (node.attr if isinstance(node, ast.Attribute)
                 else node.id if isinstance(node, ast.Name) else "")
-        if name == "rejections":
+        if name in _REFUSALS:
             return True
     return False
 
@@ -518,16 +525,17 @@ def test_the_policy_detector_sees_an_aliased_reference():
     """
     assert _references_the_policy(b"finspect.rejections(facts, [])\n")
     assert _references_the_policy(b"f = finspect.rejections\nf(facts, [])\n")
+    assert _references_the_policy(b"screen.screen_tree(root, sel)\n")
     assert not _references_the_policy(b"def rejections(facts, sel):\n    return []\n")
 
 
-def test_nothing_in_the_chain_consults_the_refusal_policy():
-    """SEAM: `inspect.rejections` and every module that would have to obey it.
+def test_nothing_in_the_chain_consults_either_refusal():
+    """SEAM: `inspect.rejections`, `screen.screen_tree`, and every module that would obey.
 
     This is the premise the whole section below rests on, so it is measured here instead of
-    asserted in a docstring. `rejections` returns a list and no module reads it: the
-    refusals are enforced by whoever calls preflight, and spec §5's chronology — the
-    caller that would — is not in this plan.
+    asserted in a docstring. Each returns a list and no module reads it: the refusals are
+    enforced by whoever calls preflight, and spec §5's chronology — the caller that would —
+    is not in this plan.
 
     SCANNED OVER `shared/` AND `scripts/`, not just `shared/lib/forge/*.py`. The consumer
     this waits for is that chronology, whose likeliest home is an orchestrator under
@@ -548,8 +556,8 @@ def test_nothing_in_the_chain_consults_the_refusal_policy():
     callers = [str(p.relative_to(ROOT)) for p in scanned
                if _references_the_policy(p.read_bytes())]
     assert callers == [], (
-        f"{callers} now enforce inspect.rejections — see this test's docstring before "
-        "changing anything below it")
+        f"{callers} now enforce {' or '.join(_REFUSALS)} — see this test's docstring "
+        "before changing anything below it")
 
 
 # --- eol_no_roundtrip ------------------------------------------------------ #
