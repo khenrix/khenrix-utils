@@ -412,54 +412,190 @@ def test_the_no_contract_sentinel_is_one_value_across_inspect_and_bundle():
     assert finspect.detect_generators(ROOT).id == finspect.GeneratorContract().id
 
 
-# --------------------------------------------------------------------------- #
-# SEAM CLASS: refusals — see the module docstring for what makes this class
-# different from every seam above it.
-# --------------------------------------------------------------------------- #
-
-_HOST_ONLY = "HOST-ONLY-CONTENT\n"
-
-
 @dataclass(frozen=True)
 class _Chain:
     base: baseline.Baseline
     seat: fleet.Seat
     artifacts: harvest.ArtifactSet
+    # THE BUNDLE AS THE SEAT'S SIDE BUILT IT, whose `gate_delta` is None. The measured one
+    # is `built.candidate`, and the two are kept apart rather than collapsed because the
+    # difference is a verdict: `classify` reads None as UNKNOWN, which displaces the PASS an
+    # otherwise clean candidate would earn. A case that wants the run's verdict wants
+    # `built.candidate`; a case about what crossed out of the seat wants this one.
     candidate: bundle.CandidateBundle
-    verifier: Path
+    built: verify.Verifier
     # The test's own tmp_path, so a case can bound where a fixture's escaping
     # link is allowed to reach — see `_harm_of_escaping_link`.
     tmp: Path
 
+    @property
+    def verifier(self) -> Path:
+        return self.built.path
 
-def _chain_to_verifier(repo, tmp, *, run_id="r1") -> _Chain:
+
+def _chain_to_verifier(repo, tmp, *, run_id="r1", contract=None, command=None,
+                       setup=None) -> _Chain:
     """Everything an orchestrator does between preflight and the gate, on one repository.
 
     The agent's work is one new file, because the point of these cases is what the
     REPOSITORY carries into a seat and a verifier — a richer candidate would only add
     shapes the per-module suites already cover.
 
+    `contract` reaches `bundle.build` and `build_verifier` together or neither: they are the
+    two sides `ContractMismatch` compares, so a helper that fed one of them would answer a
+    refusal to a caller who named a single contract. The default is the empty one, which is
+    what `detect_generators` answers for every repository and what a bundle built without
+    one records.
+
+    `command` is the confirmed gate. It is optional because it only WIDENS the surface
+    `build_verifier` differences — a case with nothing to say about the gate delta leaves it
+    out, and a case whose gate is a script no naming rule reaches must pass it or measure a
+    surface that does not hold that script.
+
+    `setup` is the seat's SETUP phase, run before Fsetup is recorded, which is what puts its
+    writes on the far side of the boundary `harvest.artifact_set` differences: that function
+    takes the artifact paths from Fsetup->Fwork, so only the work crosses. Omitted, F0 and
+    Fsetup are one inventory and the seat has no setup phase at all.
+
     Nothing in here consults `inspect.rejections`; that is the property under test, and
     `test_nothing_in_the_chain_consults_either_refusal` is where it is measured rather
     than assumed.
     """
+    contract = finspect.GeneratorContract() if contract is None else contract
     facts = finspect.repo_facts(repo)
     run = tmp / "run"
     run.mkdir(exist_ok=True)
     base = baseline.materialize(repo, run, facts, [], run_id)
     seat = fleet.clone_seat(repo, base, tmp / "seat", name="claude", identity=IDENT)
     f0 = harvest.record(seat.path)
+    if setup is not None:
+        setup(seat.path)
+    fsetup = harvest.record(seat.path) if setup is not None else f0
     write(seat.path, "src.py", "work\n")
     fwork = harvest.record(seat.path)
     artifacts = harvest.artifact_set(
-        harvest.Phases(f0=f0, fsetup=f0, fwork=fwork, fverify=fwork), seat.path, base.commit)
-    candidate = bundle.build(seat.path, artifacts, base)
-    # The empty contract on both sides: `bundle.build` above was handed none, and this is
-    # the value that records the same thing. `build_verifier` refuses a pair that disagrees,
-    # so naming it here is what keeps this chain about the seams it exists to measure.
-    verifier = verify.build_verifier(repo, base, candidate, tmp / "verifier",
-                                     identity=IDENT, contract=finspect.GeneratorContract())
-    return _Chain(base, seat, artifacts, candidate, verifier.path, tmp)
+        harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=fwork), seat.path,
+        base.commit)
+    candidate = bundle.build(seat.path, artifacts, base, contract=contract)
+    built = verify.build_verifier(repo, base, candidate, tmp / "verifier",
+                                  identity=IDENT, contract=contract, command=command)
+    return _Chain(base, seat, artifacts, candidate, built, tmp)
+
+
+def test_the_contract_the_gate_admits_under_is_the_one_the_manifest_records(tmp_path):
+    """SEAM: `bundle.build` writes the id, `verify.build_verifier` refuses a disagreement,
+    and `verify.fixed_point` admits under the contract that survived it.
+
+    The ids here are NON-EMPTY and the two contracts declare DIFFERENT outputs, which is
+    what the sentinel test above cannot do: while both sides were "", a manifest recording
+    contract X while the gate admitted under Y was undetectable, and pinning that the two
+    defaults agree says nothing about a run that declares one.
+
+    The admission is the far end of the link. The id in the manifest is worth checking only
+    because it decides what the gate may rewrite without failing the candidate, so the last
+    assertion is the gate actually admitting `gen/out.txt` — and `_declared` is asked
+    directly about the contract that was refused, so "Y would have answered differently" is
+    a measurement here rather than a claim about a call nobody makes.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "gen/out.txt", "v1\n")
+    write(repo, "build.sh", "#!/bin/sh\necho v2 > gen/out.txt\n")
+    (Path(repo) / "build.sh").chmod(0o755)
+    commit_all(repo, "a declared generator")
+    x = finspect.GeneratorContract(id="render-x", relations=(("src/*", "gen/*"),))
+    y = finspect.GeneratorContract(id="render-y", relations=(("src/*", "other/*"),))
+    assert verify._declared(x, "gen/out.txt") and not verify._declared(y, "gen/out.txt"), \
+        "the two contracts must disagree about this path, or the refusal below costs nothing"
+
+    chain = _chain_to_verifier(repo, tmp_path, contract=x)
+    assert chain.candidate.generator_contract_id == "render-x", \
+        "the manifest's record of the run's contract, written by `bundle.build`"
+    with pytest.raises(verify.ContractMismatch):
+        verify.build_verifier(repo, chain.base, chain.candidate, tmp_path / "v-y",
+                              identity=IDENT, contract=y)
+    assert not (tmp_path / "v-y").exists(), \
+        "and refused before the clone, so no tree exists for a gate to run in under Y"
+
+    assert chain.built.contract is x
+    fp = verify.fixed_point(chain.built.path, verify.Command.parse([["./build.sh"]]),
+                            chain.built.contract)
+    assert fp.run.exit_code == 0 and fp.admitted == ("gen/out.txt",) and fp.unexplained == ()
+
+
+def test_the_calibration_tree_is_not_a_seat(tmp_path):
+    """SEAM: `verify.calibrate` and `fleet`. §6.2's baseline-red outcome is a claim about a
+    tree the builder never had, and `_as_run` says a `Run` carries no provenance at all — so
+    the tree is what must be checked, and this is where it is checked against a REAL seat
+    from the same run rather than against a description of one.
+
+    A real seat from the same run is what the branch and the tree are read against, because
+    "not a seat" is a comparison and the other half of it has to exist: `clone_seat` gave
+    the builder that tree, `fleet` named that branch, and the builder's work is in it. The
+    remaining assertions are about the calibration alone and are named where they sit.
+    """
+    repo = make_repo(tmp_path)
+    chain = _chain_to_verifier(repo, tmp_path)
+    noop = verify.Command.parse([["true"]])
+    cal = verify.calibrate(repo, chain.base, tmp_path / "cal", identity=IDENT,
+                           contract=finspect.GeneratorContract(), setup=noop, command=noop)
+
+    # Ordinary git, not `gitcmd`: a gate step runs the git the environment gives it, so the
+    # property has to survive that one rather than the engine's hardened invocation.
+    branch = _git(cal.path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    seat_branch = _git(chain.seat.path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert (branch, seat_branch) == ("forge/r1/verify", "forge/r1/claude"), \
+        "the calibration is not on any branch this run gave a builder"
+    assert cal.path != chain.seat.path
+    assert _git(cal.path, "remote").stdout.strip() == "", \
+        "no origin, so the calibration ships no push target back into the user's repository"
+
+    # NO ORIGIN is only half of "the builder was never here". The other half is the tree:
+    # the seat holds the agent's work and the calibration holds B1 and nothing else.
+    assert (chain.seat.path / "src.py").read_text() == "work\n"
+    assert not (cal.path / "src.py").exists(), "the builder's work reached the calibration"
+    assert _git(cal.path, "rev-parse", "HEAD").stdout.strip() == chain.base.commit
+    assert _git(cal.path, "status", "--porcelain").stdout == ""
+
+
+def test_setup_replayed_in_the_verifier_sees_the_candidates_own_setup_state(tmp_path):
+    """SEAM: `harvest` differences setup-phase state out, `verify.run_setup` regenerates it.
+
+    That exclusion was an argument no code made until setup was replayed in the verifier: a
+    seat's setup-phase `.venv` never crosses, so the toolchain the gate runs against is the
+    one this call installs.
+
+    THE WINDOW IS THE WHOLE FIXTURE, and it was measured both ways rather than assumed. The
+    identical file written in the WORK window comes back in `artifacts.paths`, crosses as an
+    ordinary sidecar, and is sitting in the verifier before setup runs — correct carriage of
+    the agent's own output, and a different property. Only the SETUP placement asks the
+    question this test is named for.
+
+    Which is also what stops this being a test about an empty tree: on one seat and one
+    phase boundary, the work crossed and the rig did not.
+    """
+    chain = _chain_to_verifier(
+        make_repo(tmp_path), tmp_path,
+        setup=lambda seat: write(seat, ".venv/bin/pytest", "#!/bin/sh\nexit 0\n"))
+    assert chain.artifacts.paths == ("src.py",), \
+        "harvest kept the rig out of the candidate's claim, and the work in it"
+    v = chain.built
+    assert (v.path / "src.py").read_text() == "work\n"
+    assert not (v.path / ".venv").exists(), "the seat's setup state did not cross"
+
+    verify.run_setup(v, verify.Command.parse(
+        [[sys.executable, "-c",
+          "import os; os.makedirs('.venv/bin'); "
+          "open('.venv/bin/pytest','w').write('#!/bin/sh\\nexit 1\\n')"]]))
+    assert (v.path / ".venv" / "bin" / "pytest").read_text() == "#!/bin/sh\nexit 1\n", \
+        "and the verifier built its own, which is the file the gate would reach"
+
+
+# --------------------------------------------------------------------------- #
+# SEAM CLASS: refusals — see the module docstring for what makes this class
+# different from every seam above it.
+# --------------------------------------------------------------------------- #
+
+_HOST_ONLY = "HOST-ONLY-CONTENT\n"
 
 
 @contextlib.contextmanager
@@ -818,21 +954,26 @@ def test_each_refusal_fixture_is_one_property_from_an_admitted_repository(case, 
     case.no_harm(chain)
 
 
-def test_a_repo_preflight_admits_completes_the_chain(tmp_path):
-    """The other half: a clean repository must reach a VERDICT, not merely avoid a refusal.
+def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
+    """The other half: a clean repository must reach a VERDICT, and the verdict is `PASS`.
 
-    THE VERDICT IT REACHES IS `GATE_CHANGED`, NOT `PASS`, and the reason is asserted so that
-    this test says why. `bundle.build` leaves `gate_delta` at None — "nobody looked", the
-    fail-closed reading — and `classify` correctly refuses to call a run PASS when nothing
-    established that it ran the baseline's gate. So no chain assembled from these modules
-    alone can reach PASS today; the surface has to be measured in a tree the builder never
-    wrote, and there is no such tree in `bundle.build`'s arguments (a seat path, an
-    `ArtifactSet`, and a `Baseline` carrying OIDs and a manifest, never a checkout).
+    This case used to assert `GATE_CHANGED` with the reason "nobody measured the gate
+    surface", by equality on both, so that it would go red rather than drift once the chain
+    could answer. IT DID NOT GO RED, and that is worth more than the pin was: the producers
+    landed and this test kept passing, because it classified the bundle the SEAT's side
+    built — where `gate_delta` is None whatever the verifier went on to measure. An equality
+    is only as sharp as the value it is read off, and a chain helper that handed back a
+    `Path` instead of the `Verifier` is what kept the measured value out of reach.
 
-    Asserted as an equality against the verdict actually reached, rather than as `!= None`
-    or "nothing raised": those weaker forms keep passing on the day the verdict changes,
-    which is the one event a reader of this test needs to be told about. When a producer
-    for `gate_delta` lands, this goes red at the outcome AND at the reason.
+    Every value here now comes from the chain. The delta is `build_verifier`'s, the only
+    caller that holds the baseline tree and the candidate tree one after the other; the
+    baseline run is `calibrate`'s, the only producer of one; and the candidate's run is a
+    `fixed_point`, which is what makes the PASS §6.2's rather than the weaker form
+    `classify` gives a bare `Run`.
+
+    `command=gate` is not decoration. `./check.sh` matches no role rule, so without it both
+    surfaces are empty, the delta is a clean `()` measured over nothing, and this test would
+    certify a PASS on an unexamined gate — which is why `baseline_surface` is asserted.
     """
     repo = make_repo(tmp_path)
     write(repo, "check.sh", "#!/bin/sh\nexit 0\n")
@@ -841,17 +982,28 @@ def test_a_repo_preflight_admits_completes_the_chain(tmp_path):
     facts = finspect.repo_facts(repo)
     assert finspect.rejections(facts, []) == []
 
-    chain = _chain_to_verifier(repo, tmp_path)
+    contract = finspect.detect_generators(repo)
+    setup = verify.Command.parse([["true"]])
+    gate = verify.Command.parse([["./check.sh"]])
+    chain = _chain_to_verifier(repo, tmp_path, contract=contract, command=gate)
     # "Completes" has to mean the candidate ARRIVED, not merely that no call raised: a
     # verifier holding none of the agent's work would still run the gate and still be
     # classified.
     assert chain.seat.verified is True and chain.candidate.omitted == ()
     assert (chain.verifier / "src.py").read_text() == "work\n"
 
-    run = verify.run_command(chain.verifier, verify.Command.parse([["./check.sh"]]))
-    assert run.exit_code == 0, f"the gate itself failed: {run.stderr}"
-    outcome, reason = verify.classify(run, run, chain.candidate)
-    assert chain.candidate.gate_delta is None
-    assert outcome == verify.GATE_CHANGED
-    assert "nobody measured the gate surface" in reason
-    assert "On the runs alone this would have been PASS" in reason
+    v = chain.built
+    assert v.baseline_surface == ("check.sh",), \
+        "an empty surface would make the clean delta below a measurement of nothing"
+    verify.validate_materialized(v)
+    verify.run_setup(v, setup)
+    fp = verify.fixed_point(v.path, gate, v.contract)
+    assert fp.run.exit_code == 0, f"the gate itself failed: {fp.run.stderr}"
+    cal = verify.calibrate(repo, chain.base, tmp_path / "cal", identity=IDENT,
+                           contract=contract, setup=setup, command=gate)
+
+    outcome, reason = verify.classify(fp, cal.run, v.candidate)
+    assert v.candidate.gate_delta == (), "measured and clean, not unmeasured"
+    assert outcome == verify.PASS, reason
+    assert "rewrote no tracked path outside the generator contract" in reason, \
+        "and §6.2's PASS, not the weaker one a bare Run earns"

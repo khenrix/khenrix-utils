@@ -640,10 +640,14 @@ def test_build_leaves_the_gate_delta_unknown_rather_than_empty(tmp_path):
     """`Baseline.sidecars` is the precedent: `()` would say "the candidate changed nothing
     that defines the gate" when the truth is "nobody looked".
 
-    `verify.gate_surface` measures ONE tree; the delta needs it run on two, and `build` is
-    handed no tree the builder did not write. So it makes no claim, and a consumer
-    classifying `GATE_CHANGED` must read None as UNKNOWN — an empty tuple here would let a
-    candidate that rewrote the Makefile pass as an independent gate.
+    ABOUT `build` ALONE, and no longer about the chain it sits in. `verify.gate_surface`
+    measures ONE tree; the delta needs it run on two, and `build` is handed no tree the
+    builder did not write — a seat path, an `ArtifactSet` and a `Baseline`, never a
+    checkout. `verify.build_verifier` is where both trees exist and it writes the
+    measurement back, so a candidate that reaches a gate carries a delta and a candidate
+    read off `build` does not. A consumer classifying `GATE_CHANGED` must read None as
+    UNKNOWN — an empty tuple here would let a candidate that rewrote the Makefile pass as
+    an independent gate.
     `generator_contract_id` defaults the other way because "" admits NOTHING as permitted
     verify-origin output, which is fail-closed.
     """
