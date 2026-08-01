@@ -616,10 +616,13 @@ def _generator_repo(tmp_path, script, *, files=()):
     return repo
 
 
-def _verifier(tmp_path, repo, **kw):
-    b, _s, cb = _candidate(tmp_path, repo, **kw)
+def _verifier(tmp_path, repo, *, contract=NO_CONTRACT, **kw):
+    # `contract` reaches BOTH calls or neither. Forwarding it to `_candidate` alone while
+    # pinning NO_CONTRACT here would make the helper answer a ContractMismatch to a caller
+    # who passed one contract and looks like they were obeyed.
+    b, _s, cb = _candidate(tmp_path, repo, contract=contract, **kw)
     return verify.build_verifier(repo, b, cb, tmp_path / "verifier",
-                                 identity=IDENT, contract=NO_CONTRACT)
+                                 identity=IDENT, contract=contract)
 
 
 def _staged(v):

@@ -154,8 +154,8 @@ class GeneratorUnstable(VerifyError):
 class ContractMismatch(VerifyError):
     """A bundle and a verifier disagree about which generator contract the run declared.
 
-    Fatal rather than resolved in either direction. Taking the bundle's would let a
-    candidate's own recorded id decide what the gate admits; taking the verifier's would
+    Fatal rather than resolved in either direction. Taking the id the bundle happens to
+    carry would let a stale record decide what the gate admits; taking the verifier's would
     write a manifest whose contract is not the one the gate ran under. Both are the failure
     §7.2 names — a success criterion the run did not confirm.
     """

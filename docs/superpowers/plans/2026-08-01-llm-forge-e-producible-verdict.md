@@ -216,7 +216,7 @@ git commit -m "feat(forge): one contract per run, bound to the bundle that recor
 - Consumes: Task 1's `build_verifier(..., contract=)`; `verify.gate_surface(verifier_path, contract, *, command=None)`.
 - Produces:
   - `bundle.with_gate_delta(candidate, delta) -> CandidateBundle` — a new frozen instance with `gate_delta` set. Refuses to overwrite a delta that is already not `None`.
-  - `verify.Verifier` — frozen: `path: Path`, `candidate: CandidateBundle`, `baseline_surface: tuple[str, ...]`, `candidate_surface: tuple[str, ...]`.
+  - `verify.Verifier` — frozen: `path: Path`, `candidate: CandidateBundle`, `contract: GeneratorContract`, `baseline_surface: tuple[str, ...]`, `candidate_surface: tuple[str, ...]`.
   - `verify.build_verifier(repo, baseline, candidate, dest, *, identity, contract, command=None) -> Verifier` — **return type changes from `Path` to `Verifier`.**
 
 **Why the delta is produced here and nowhere else.** `gate_surface` answers one tree. A delta needs two, and the only place both exist is between the clone and the materialization: `clone_seat` leaves the verifier holding exactly the baseline, and `materialize` turns it into exactly the candidate. Measuring there costs one extra `gate_surface` call and no extra clone. `bundle.build` cannot do it — it is handed a seat path, an `ArtifactSet` and a `Baseline`, and the seat's tree is builder-writable, which is the one tree a gate surface must not be read from.
@@ -357,9 +357,22 @@ class Verifier:
     """
     path: Path
     candidate: bundle.CandidateBundle
+    contract: "inspect.GeneratorContract"
     baseline_surface: tuple[str, ...] = ()
     candidate_surface: tuple[str, ...] = ()
 ```
+
+**`contract` is on this object because Task 1 bound the bundle to the verifier and stopped
+there, and Task 1's review measured that the gap it left is already live in the suite:**
+`_verifier` builds under the empty contract while ten generator tests then call
+`fixed_point(v, …, _contract(id="test"))`, so the tests admit and stage output under a
+contract the bundle and the verifier both recorded as `""` — the manifest-records-X-while-
+the-gate-admitted-Y shape, one call site over. Carrying it here is what lets Task 3 read the
+run's contract off the verifier instead of being handed a second one.
+
+`fixed_point` keeps taking a path and a contract; it is Plan D's and this plan does not
+reshape it. What changes is that a caller holding a `Verifier` has no reason to source a
+contract from anywhere else, and Task 5 asserts that the two agree along the real chain.
 
 and in `build_verifier`, after `_hooks_pin` and around `materialize`:
 
@@ -375,6 +388,7 @@ and in `build_verifier`, after `_hooks_pin` and around `materialize`:
     return Verifier(
         path=seat.path,
         candidate=bundle.with_gate_delta(candidate, sorted(set(before) ^ set(after))),
+        contract=contract,
         baseline_surface=before,
         candidate_surface=after,
     )
@@ -417,7 +431,7 @@ git commit -m "feat(forge): measure the gate delta where both trees exist"
 - Consumes: Task 2's `Verifier`; `verify._inventory`, `verify._tracked`, `verify._declared`, `verify.run_command`, `verify.Command`.
 - Produces:
   - `verify.SetupResult` — frozen: `run: Run`, `overlap: tuple[str, ...]`.
-  - `verify.run_setup(verifier, setup, contract, *, env=None) -> SetupResult` — takes a `Verifier`, not a path.
+  - `verify.run_setup(verifier, setup, *, env=None) -> SetupResult` — takes a `Verifier`, not a path, and reads the run's contract off it rather than being handed a second one (Task 2's correction).
   - `verify.SetupOverlap(VerifyError)`.
   - `verify.validate_materialized(verifier) -> None`; raises `VerifyError`.
 
@@ -453,7 +467,7 @@ def test_setup_that_changes_a_tracked_file_fails_the_candidate_closed(tmp_path):
     setup = verify.Command.parse(
         [[sys.executable, "-c", "open('schema.lock','w').write('2\\n')"]])
     with pytest.raises(verify.SetupOverlap) as e:
-        verify.run_setup(v, setup, finspect.GeneratorContract())
+        verify.run_setup(v, setup)
     assert "schema.lock" in str(e.value)
 
 
@@ -465,7 +479,7 @@ def test_setup_that_only_touches_untracked_paths_is_clean(tmp_path):
     setup = verify.Command.parse(
         [[sys.executable, "-c", "import os; os.makedirs('.venv'); "
           "open('.venv/pytest','w').write('#!/bin/sh\\n')"]])
-    out = verify.run_setup(v, setup, finspect.GeneratorContract())
+    out = verify.run_setup(v, setup)
     assert out.run.exit_code == 0 and out.overlap == ()
 
 
@@ -482,7 +496,7 @@ def test_a_tracked_setup_effect_the_contract_declares_is_not_an_overlap(tmp_path
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT, contract=c)
     setup = verify.Command.parse(
         [[sys.executable, "-c", "open('gen/a.txt','w').write('2\\n')"]])
-    assert verify.run_setup(v, setup, c).overlap == ()
+    assert verify.run_setup(v, setup).overlap == ()
 
 
 def test_a_failing_setup_returns_its_run_rather_than_raising(tmp_path):
@@ -492,7 +506,7 @@ def test_a_failing_setup_returns_its_run_rather_than_raising(tmp_path):
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier",
                               identity=IDENT, contract=finspect.GeneratorContract())
     setup = verify.Command.parse([[sys.executable, "-c", "raise SystemExit(3)"]])
-    out = verify.run_setup(v, setup, finspect.GeneratorContract())
+    out = verify.run_setup(v, setup)
     assert out.run.exit_code == 3 and out.overlap == ()
 ```
 
@@ -560,8 +574,14 @@ class SetupOverlap(VerifyError):
     """
 
 
-def run_setup(verifier: Verifier, setup: Command, contract, *, env=None) -> SetupResult:
-    """Run the confirmed setup command in the verifier and refuse a tracked effect."""
+def run_setup(verifier: Verifier, setup: Command, *, env=None) -> SetupResult:
+    """Run the confirmed setup command in the verifier and refuse a tracked effect.
+
+    The contract comes off `verifier`, not from a parameter. A second contract argument here
+    would be a second place for a run to disagree with itself, which is the defect Task 1
+    closed between the bundle and the verifier.
+    """
+    contract = verifier.contract
     before = _inventory(verifier.path)
     tracked_before = _tracked(verifier.path)
     run = run_command(verifier.path, setup, env=env)
@@ -744,7 +764,7 @@ def calibrate(repo, baseline_, dest, *, identity, contract, setup, command,
     v = build_verifier(repo, baseline_, empty, dest, identity=identity, contract=contract,
                        command=command)
     validate_materialized(v)
-    run_setup(v, setup, contract, env=env)
+    run_setup(v, setup, env=env)
     fp = fixed_point(v.path, command, contract, env=env)
     return Calibration(run=fp.run, path=v.path, admitted=fp.admitted, converged=True)
 ```
@@ -836,7 +856,7 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
     v = verify.build_verifier(repo, b, cb, tmp_path / "verifier", identity=IDENT,
                               contract=c, command=gate)
     verify.validate_materialized(v)
-    verify.run_setup(v, setup, c)
+    verify.run_setup(v, setup)
     fp = verify.fixed_point(v.path, gate, c)
     outcome, reason = verify.classify(fp, cal.run, v.candidate)
     assert outcome == verify.PASS, reason
@@ -904,8 +924,7 @@ def test_setup_replayed_in_the_verifier_sees_the_candidates_own_setup_state(tmp_
                               contract=finspect.GeneratorContract())
     assert not (v.path / ".venv").exists(), "the seat's setup state did not cross"
     verify.run_setup(v, verify.Command.parse(
-        [[sys.executable, "-c", "import os; os.makedirs('.venv')"]]),
-        finspect.GeneratorContract())
+        [[sys.executable, "-c", "import os; os.makedirs('.venv')"]]))
     assert (v.path / ".venv").is_dir(), "and the verifier built its own"
 ```
 
