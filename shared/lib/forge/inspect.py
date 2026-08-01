@@ -221,6 +221,11 @@ def _escaping_links_under(root: Path, base: Path) -> list:
     seat that read the host's AWS credentials with `verified=True`. Nothing exotic is
     required — a selected `.venv` carries `bin/python -> /usr/bin/python3`.
 
+    This walk changes the FIRST of those three, and `screen._walk` the second. The THIRD is
+    unchanged — a seat still reads the host file, because nothing consults this list — and
+    that is what the closing assertions of `test_forge_seams.py`'s
+    `test_an_escaping_link_inside_a_selected_directory_never_reaches_a_seat` measure today.
+
     `.git` is pruned for `screen._walk`'s reason. os.walk under `followlinks=False` does not
     descend a linked directory and reports it in `dirnames`, never in `filenames`, so both
     lists are inspected. `_escaping_target` answers None for anything that is not a symlink,
