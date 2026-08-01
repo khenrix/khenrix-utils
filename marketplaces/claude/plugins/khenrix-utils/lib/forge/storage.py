@@ -208,6 +208,10 @@ def journal_path(run_dir) -> Path:
     return Path(run_dir) / "events.jsonl"
 
 
+def state_path(run_dir) -> Path:
+    return Path(run_dir) / "state.json"
+
+
 # Lowercase, digits and internal hyphens. A seat is named for a provider, so this is not a
 # narrowing anyone will notice — and the alternative is that a separator or a `..` in the
 # name silently relocates the file the run's state lives in.
@@ -221,6 +225,21 @@ def seat_state_path(run_dir, name: str) -> Path:
             "becomes a filename inside the run directory, so anything else can put a run's "
             "state where nothing accounts for it.")
     return Path(run_dir) / f"seat-{name}.json"
+
+
+def seat_names(run_dir) -> tuple[str, ...]:
+    """Every seat with a record in `run_dir`, sorted — the inverse of `seat_state_path`.
+
+    Kept beside it so the glob and the name it builds cannot drift apart: a resume enumerates
+    seats it never launched, so the writer's spelling is the only thing that says which files
+    are seats at all.
+
+    NOT VALIDATED here. A name this directory holds that `seat_state_path` would refuse to
+    produce is reported rather than skipped, so the caller that reads it meets the refusal —
+    a filter here would make the enumeration quietly narrower than the directory.
+    """
+    return tuple(p.name[len("seat-"):-len(".json")]
+                 for p in sorted(Path(run_dir).glob("seat-*.json")))
 
 
 @dataclass(frozen=True)

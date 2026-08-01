@@ -22,6 +22,7 @@ write for them and why each case names its own consequence.
 import ast
 import contextlib
 import hashlib
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,8 +32,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import (baseline, bundle, fleet, gitcmd, harvest,  # noqa: E402
-                   inspect as finspect, screen, snapshot, verify)
+from forge import (baseline, bundle, fleet, gitcmd, harvest, journal,  # noqa: E402
+                   inspect as finspect, runstate, screen, snapshot, storage, verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -587,6 +588,79 @@ def test_setup_replayed_in_the_verifier_sees_the_candidates_own_setup_state(tmp_
           "open('.venv/bin/pytest','w').write('#!/bin/sh\\nexit 1\\n')"]]))
     assert (v.path / ".venv" / "bin" / "pytest").read_text() == "#!/bin/sh\nexit 1\n", \
         "and the verifier built its own, which is the file the gate would reach"
+
+
+def _manifest_for(repo, base=None):
+    """A manifest for `repo`, snapshotted now. `base` supplies B's identity when the case is
+    about that agreement; the placeholder OIDs stand in when it is not."""
+    refs, digest = runstate.snapshot_refs(repo, ())
+    return runstate.Manifest(
+        run_id="r1", repo_path=str(repo),
+        base_commit=base.base_commit if base else "a" * 40,
+        baseline_ref=base.ref if base else "refs/khenrix-forge/r1/base",
+        baseline_commit=base.commit if base else "b" * 40,
+        tracked_tree_oid=base.tracked_tree_oid if base else "c" * 40,
+        selected_paths=(), generator_contract={},
+        setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./check.sh",)),),
+        protected_refs=refs, status_digest=digest, created_at="2026-08-01T00:00:00Z")
+
+
+def test_a_crash_between_intent_and_result_is_not_a_completed_operation(tmp_path):
+    """SEAM: `journal` and `runstate`. The write-ahead rule only means something if the
+    reconstruction reads it — an orphan that reconstructs as "done" would let a resume skip
+    an operation that never finished, which §14.1 says is unrecoverable by inspection.
+
+    The orphan is the FACT and naming it `outcome_unknown` is the orchestrator's job, so
+    what this pins on the runstate side is that the fact arrives whole. §14.1's rule is
+    "started with no receipt AND NO SURVIVING PROCESS", and the process identity is the only
+    part of that a later caller cannot re-derive: a reconstruction that handed back operation
+    ids alone would leave the liveness half unanswerable, and an operation that cannot be
+    asked whether it is running is one that gets retried.
+
+    The receipt is then appended and the run reconstructed a second time, so the assertions
+    above are about the write-ahead PAIRING rather than about "every start is an orphan" —
+    which is a shape that would satisfy all of them and be wrong on every completed run.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    runstate.write_manifest(run, _manifest_for(repo))
+    j = journal.Journal(storage.journal_path(run))
+    j.record(journal.intent("verify"), operation_id="v1", seat="claude")
+    # The killer writes nothing more — this is the SIGKILL §14.1 is about.
+    r = runstate.reconstruct(run, repo)
+    assert [e.operation_id for e in r.orphans] == ["v1"]
+    assert (r.orphans[0].event, r.orphans[0].data["pid"]) == ("verify_start", os.getpid()), \
+        "the orphan carries the identity §14.1's liveness question needs, not just an id"
+
+    j.record(journal.done("verify"), operation_id="v1", exit_code=0)
+    assert runstate.reconstruct(run, repo).orphans == (), \
+        "and the receipt closes it, so the orphan is the pairing and not the start alone"
+
+
+def test_the_manifest_and_the_baseline_agree_on_what_the_run_started_from(tmp_path):
+    """SEAM: `runstate` and `baseline`. The manifest records B's identity so a resume never
+    re-derives it; a manifest whose commit disagrees with the ref it names would send a
+    verifier to the wrong tree with nothing to say so.
+
+    The repository is DIRTY, which is what makes the agreement checkable: over a clean tree
+    B1 IS the base commit and the baseline ref, `HEAD` and `refs/heads/main` all resolve to
+    one OID, so a manifest that had recorded `base_commit` in `baseline_commit` would satisfy
+    every assertion here. Dirty, the two are different commits and only the right one
+    resolves.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    runstate.write_manifest(run, _manifest_for(repo, base=b))
+
+    back = runstate.read_manifest(run)
+    assert back.baseline_commit != back.base_commit, \
+        "the premise: B1 is a commit of its own, so naming the wrong one is detectable"
+    assert _git(repo, "rev-parse", back.baseline_ref).stdout.strip() == back.baseline_commit
+    assert _git(repo, "rev-parse", f"{back.baseline_commit}^{{tree}}").stdout.strip() == \
+        back.tracked_tree_oid, \
+        "and the tree the manifest names is B1's own, not the base commit's"
 
 
 # --------------------------------------------------------------------------- #

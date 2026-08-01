@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import baseline, runstate, storage  # noqa: E402
+from forge import baseline, journal, runstate, storage  # noqa: E402
 from forge import inspect as repo_inspect  # noqa: E402
 from forge.verify import Step  # noqa: E402
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
@@ -705,7 +705,26 @@ def test_the_run_directory_names_are_where_the_engine_looks_for_them(tmp_path):
     run = _run_dir(tmp_path)
     assert storage.manifest_path(run) == run / "manifest.json"
     assert storage.journal_path(run) == run / "events.jsonl"
+    assert storage.state_path(run) == run / "state.json"
     assert storage.seat_state_path(run, "codex") == run / "seat-codex.json"
+
+
+def test_the_seat_records_a_run_directory_holds_are_enumerable(tmp_path):
+    """A resume enumerates seats it never launched, so the writer's own spelling is the only
+    thing that says which files in the directory are seats. Read back through
+    `seat_state_path`, so the glob and the name it builds cannot drift apart — and the run's
+    other three files are present, or "these are the seats" would be a claim about a
+    directory holding nothing else."""
+    run = _run_dir(tmp_path)
+    assert storage.seat_names(run) == ()
+    for name in ("codex", "claude"):
+        runstate.write_seat(run, name, {"phase": "building"})
+    storage.manifest_path(run).write_text("{}")
+    storage.state_path(run).write_text("{}")
+    storage.journal_path(run).write_text("")
+    assert storage.seat_names(run) == ("claude", "codex")
+    assert [storage.seat_state_path(run, n) for n in storage.seat_names(run)] == \
+        sorted(run.glob("seat-*.json"))
 
 
 def test_a_seat_name_cannot_escape_the_run_directory(tmp_path):
@@ -1071,3 +1090,329 @@ def test_seat_state_refuses_a_value_json_can_write_but_no_reader_can_parse(tmp_p
             runstate.write_seat(run, "claude", {"elapsed": bad})
     assert runstate.read_seat(run, "claude") is None, \
         "a refused record must not be what creates the seat's file"
+
+
+# --------------------------------------------------------------------- where the run got to
+
+def test_the_run_state_round_trips_all_five_dimensions(tmp_path):
+    """§14's tuple is five separate dimensions, so a record that carried the phase alone
+    would hand a resume a round and an attempt IT chose — the manifest's failure mode one
+    file over."""
+    run = _run_dir(tmp_path)
+    s = runstate.State(phase="verifying", round=2, attempt=3,
+                       verified_checkpoint="a" * 40, deliverable_checkpoint="b" * 40)
+    runstate.write_state(run, s)
+    assert runstate.read_state(run) == s
+
+
+def test_a_run_that_never_recorded_where_it_got_to_reads_back_none(tmp_path):
+    """A run at `confirmed` has written its manifest and moved nowhere since, so no record
+    is an ordinary state — and the ONE condition that reads back None, on `read_seat`'s
+    rule."""
+    assert runstate.read_state(_run_dir(tmp_path)) is None
+
+
+def test_the_run_state_is_rewritten_as_the_run_advances(tmp_path):
+    """Unlike the manifest: a phase moves the whole length of a run, so write-once here
+    would make the second advance a crash."""
+    run = _run_dir(tmp_path)
+    runstate.write_state(run, _state("setting_up"))
+    runstate.write_state(run, _state("building", attempt=1))
+    assert runstate.read_state(run) == _state("building", attempt=1)
+
+
+def test_a_damaged_run_state_is_not_a_run_that_never_recorded_one(tmp_path):
+    """§14.1's rule for `seat-codex.json`, one file up. A killed writer's truncated JSON and
+    a run that never wrote must stay different answers, or a resume starts from `confirmed`
+    a run that was most of the way through."""
+    run = _run_dir(tmp_path)
+    runstate.write_state(run, _state("building"))
+    p = storage.state_path(run)
+    p.write_bytes(p.read_bytes()[:12])
+    with pytest.raises(runstate.StateError):
+        runstate.read_state(run)
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(lambda row: row.pop("attempt"), id="missing-a-dimension"),
+    pytest.param(lambda row: row.update(escalated=True), id="unknown-dimension"),
+    pytest.param(lambda row: row.update(round="2"), id="round-is-a-string"),
+    # `isinstance(True, int)` — a JSON `true` here would resume at round 1.
+    pytest.param(lambda row: row.update(round=True), id="round-is-a-bool"),
+    pytest.param(lambda row: row.update(phase=None), id="phase-is-not-a-name"),
+    pytest.param(lambda row: row.update(verified_checkpoint=40), id="checkpoint-not-an-oid"),
+])
+def test_a_run_state_that_is_not_section_14s_tuple_is_refused(tmp_path, mutate):
+    """Each dimension is recovered or the record is refused — never defaulted. A resume that
+    accepted any of these would carry on from a position nobody recorded."""
+    run = _run_dir(tmp_path)
+    runstate.write_state(run, _state("verifying", round=2, attempt=1))
+    row = json.loads(storage.state_path(run).read_text())
+    mutate(row)
+    storage.state_path(run).write_text(json.dumps(row))
+    with pytest.raises(runstate.StateError):
+        runstate.read_state(run)
+
+
+def test_writing_something_that_is_not_a_state_is_refused(tmp_path):
+    """`dataclasses.asdict` raises TypeError on a plain dict, which is not a failure any
+    caller of this module has a name for."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.StateError):
+        runstate.write_state(run, {"phase": "building"})
+    assert not storage.state_path(run).exists()
+
+
+def test_a_run_state_that_would_not_survive_its_round_trip_is_refused_at_write(tmp_path):
+    """JSON has one sequence type, so a checkpoint handed in as a tuple is written happily and
+    comes back a list — and nothing says so until the resume that can no longer recognise its
+    own position. `State` validates none of its five dimensions, so the write is where this is
+    caught."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.StateError):
+        runstate.write_state(run, _state("building", verified_checkpoint=("a" * 40,)))
+    assert runstate.read_state(run) is None, \
+        "a refused record must not be what creates the run's state file"
+
+
+def test_a_run_state_json_cannot_carry_is_refused_and_the_last_one_stands(tmp_path):
+    """Nothing is published until the record is known to survive its own round trip, so a
+    refused write leaves the position a resume will actually find."""
+    run = _run_dir(tmp_path)
+    runstate.write_state(run, _state("building"))
+    with pytest.raises(runstate.StateError):
+        runstate.write_state(run, _state("building", verified_checkpoint=object()))
+    assert runstate.read_state(run) == _state("building")
+
+
+# ------------------------------------------------------------------------------- the drift
+
+def test_a_moved_protected_ref_is_drift(tmp_path):
+    """§9: transition to `source_diverged` and do not continue to handover automatically."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    m = _manifest(repo)
+    runstate.write_manifest(run, m)
+    write(repo, "seed.txt", "the user kept working\n")
+    commit_all(repo, "user's own commit")
+    assert "HEAD" in runstate.drift(m, repo)
+    # Equality as well, because this is the only case where several names drift at once: it
+    # pins that the report is complete and that its order is stable, which a report a human
+    # reads at handover and a resume compares between attempts both depend on.
+    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status")
+    assert runstate.reconstruct(run, repo).diverged != ()
+
+
+def test_a_protected_ref_that_disappeared_is_drift(tmp_path):
+    """Measured: deleting a tag moves NO surviving ref's OID and does not move the status
+    digest either — a tag is not a checkout file. So a comparison that only walks the refs
+    present in both snapshots reports nothing at all, and §9's "all non-forge refs" would be
+    protected only against being moved, never against being removed."""
+    repo = make_repo(tmp_path)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/tags/v1", head)
+    m = _manifest(repo)
+    _git(repo, "update-ref", "-d", "refs/tags/v1")
+    refs, digest = runstate.snapshot_refs(repo, ())
+    assert all(refs[n] == o for n, o in m.protected_refs.items() if n in refs), \
+        "the premise is that no surviving ref moved"
+    assert digest == m.status_digest, "and that the checkout digest did not move either"
+    assert runstate.drift(m, repo) == ("refs/tags/v1",)
+
+
+def test_a_ref_the_user_created_during_the_run_is_drift(tmp_path):
+    """§9 protects "all non-forge refs" and whitelists exactly two namespaces; a branch that
+    appeared since t0 is in neither, so it is a write into the user's repository that nothing
+    here accounted for. Measured: it moves no recorded ref's OID and no digest, so the
+    new-ref case is the only thing that can see it."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    _git(repo, "branch", "users-own-idea")
+    assert runstate.snapshot_refs(repo, ())[1] == m.status_digest, \
+        "the premise is that creating a branch moves nothing else this snapshot records"
+    assert runstate.drift(m, repo) == ("refs/heads/users-own-idea",)
+
+
+def test_a_forge_ref_created_during_the_run_is_not_drift(tmp_path):
+    """Expected forge-ref movement is reported separately from unexpected protected-ref
+    movement — the run creates those refs, so counting them as drift would make every run
+    diverge from itself.
+
+    The exclusion is `snapshot_refs`' own, applied to BOTH sides: the fresh snapshot never
+    names a forge ref, so the new-ref case above cannot see one. A `drift` that listed refs
+    from a raw `show-ref` instead would report forge's own baseline as the user's work.
+    """
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
+    _git(repo, "update-ref", "refs/heads/forge/r1/claude", head)
+    assert runstate.drift(m, repo) == ()
+
+
+def test_a_user_ref_whose_name_merely_starts_with_forge_is_drift(tmp_path):
+    """The whitelist is two exact prefixes, and this is the half `snapshot_refs`' own test
+    cannot reach: a `forgery-experiments` branch created DURING the run has no t0 entry to be
+    compared against, so only the new-ref case speaks for it."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/heads/forgery-experiments", head)
+    assert runstate.drift(m, repo) == ("refs/heads/forgery-experiments",)
+
+
+def test_an_uncommitted_checkout_change_is_drift(tmp_path):
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    write(repo, "seed.txt", "dirty\n")
+    assert "status" in runstate.drift(m, repo)
+
+
+@pytest.mark.parametrize("selected", [(), ("notes.txt",)])
+def test_drift_is_empty_while_the_repository_stands_still(tmp_path, selected):
+    """Drift has to mean drift. A report that fired on a repository nobody touched would stop
+    every run at `source_diverged` and teach the user to ignore the one that matters.
+
+    The SELECTION is parametrized because a drift check that re-derived the digest with the
+    WRONG selection fails only here. Measured: with a selection recorded, such a check
+    compares two digests taken over different file sets, so it reports `status` — which the
+    moved-checkout cases below cannot see, since they expect `status` and get it for a reason
+    nobody asked about. The failure is the always-fires direction, and it is the one that
+    makes §9's report unreadable rather than absent.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "notes.txt", "notes v1\n")
+    assert runstate.drift(_manifest(repo, selected_paths=selected), repo) == ()
+
+
+def test_drift_measures_the_checkout_against_the_paths_the_run_carries(tmp_path):
+    """The t0 digest ranges over `selected_paths`, so the drift check must re-derive it from
+    the MANIFEST's selection rather than from a default. Measured: rewriting a selected
+    untracked file leaves `?? notes.txt` byte for byte what it was, so a check that passed
+    `()` would compare two digests that agree and report the user's own edit as no drift —
+    while the t0 digest it was compared against saw the file."""
+    repo = make_repo(tmp_path)
+    write(repo, "notes.txt", "notes v1\n")
+    m = _manifest(repo, selected_paths=("notes.txt",))
+    listing = _git(repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
+    write(repo, "notes.txt", "notes v2\n")
+    assert _git(repo, "status", "--porcelain=v1",
+                "--untracked-files=all").stdout == listing, \
+        "the premise is that the listing cannot see the edit"
+    assert runstate.drift(m, repo) == ("status",)
+
+
+def test_drift_over_something_that_is_not_a_manifest_is_refused(tmp_path):
+    """An attribute error out of a drift check is a failure `--collect` has no name for, on
+    the one path whose whole job is to say what moved."""
+    repo = make_repo(tmp_path)
+    with pytest.raises(runstate.ManifestError):
+        runstate.drift({"protected_refs": {}}, repo)
+
+
+# --------------------------------------------------------------- reconstruction from disk
+
+def test_a_run_reconstructs_from_disk_after_the_writer_is_gone(tmp_path):
+    """The property `--collect` rests on: nothing in memory, and the same answer whether the
+    process was compacted or killed."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    j = journal.Journal(storage.journal_path(run))
+    j.record(journal.intent("setup"), operation_id="op1", seat="claude")
+    j.record(journal.done("setup"), operation_id="op1", exit_code=0)
+    j.record(journal.intent("build"), operation_id="op2", seat="claude")
+    runstate.write_seat(run, "claude", {"phase": "building"})
+    runstate.write_state(run, _state("building"))
+    del j                                    # the writer is gone; only the directory remains
+
+    r = runstate.reconstruct(run, repo)
+    assert r.manifest.run_id == "r1"
+    assert [e.operation_id for e in r.orphans] == ["op2"], \
+        "the build started and never finished — outcome_unknown, not a retry"
+    assert r.seats["claude"]["phase"] == "building"
+    assert r.state == _state("building")
+    assert r.diverged == ()
+
+
+def test_a_run_that_recorded_nothing_but_its_manifest_still_reconstructs(tmp_path):
+    """A journal with no records and a seat that never wrote are STATES, not errors: a run
+    killed between `confirmed` and its first operation has exactly this directory, and a
+    reconstruction that raised on it would leave the one run `--collect` most needs to read
+    unreadable."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    assert not storage.journal_path(run).exists(), "the premise is that nothing was recorded"
+    r = runstate.reconstruct(run, repo)
+    assert (r.orphans, r.seats, r.state) == ((), {}, None)
+
+
+def test_a_reconstruction_reads_every_seat_that_wrote_and_invents_none_that_did_not(tmp_path):
+    """A seat absent from the mapping never wrote; that is `read_seat`'s None carried up
+    without a placeholder, because a seat entry the reader supplied is a fact no seat
+    recorded."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    runstate.write_seat(run, "claude", {"phase": "building"})
+    runstate.write_seat(run, "agy", {"phase": "harvested"})
+    r = runstate.reconstruct(run, repo)
+    assert sorted(r.seats) == ["agy", "claude"]
+    assert "codex" not in r.seats
+
+
+def test_a_damaged_seat_is_not_dropped_from_a_reconstruction(tmp_path):
+    """§14.1's whole point, at the one call that reads every seat at once: a resume that
+    skipped the torn record would report the other two seats and carry on as though the
+    third had never run."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    runstate.write_seat(run, "claude", {"phase": "building"})
+    p = storage.seat_state_path(run, "claude")
+    p.write_bytes(p.read_bytes()[:12])
+    with pytest.raises(runstate.StateError):
+        runstate.reconstruct(run, repo)
+
+
+def test_a_seat_record_this_engine_could_not_have_written_is_refused(tmp_path):
+    """`seat-CODEX.json` is a name `write_seat` refuses to produce, so a run directory
+    holding one holds a record from somewhere else. Skipping it would make the reconstruction
+    quietly narrower than the directory it read."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    (run / "seat-CODEX.json").write_text('{"phase": "building"}')
+    with pytest.raises(storage.StorageError):
+        runstate.reconstruct(run, repo)
+
+
+def test_a_reconstruction_refuses_a_journal_it_cannot_read(tmp_path):
+    """JournalError unwrapped, on this package's precedent: a resume that read past a
+    damaged record would proceed on a history missing whatever came after it."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    storage.journal_path(run).write_bytes(b'{"seq": 1}\nnot json at all\n')
+    with pytest.raises(journal.JournalError):
+        runstate.reconstruct(run, repo)
+
+
+def test_a_reconstruction_without_a_manifest_stops_before_it_reads_anything_else(tmp_path):
+    """`--collect` on a run that never reached `confirmed` has no record of what the run
+    agreed to do, and everything below the manifest is read in terms of it.
+
+    The ORDER is asserted with a damaged seat present, because `read_seat`'s own docstring
+    rests on it: "a run directory that does not exist at all is `read_manifest`'s refusal,
+    which every resume passes through before it asks a seat anything". A reconstruction that
+    read the seats first would answer a missing run with a torn-record message, and send
+    whoever is repairing it to the wrong file.
+    """
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.ManifestError):
+        runstate.reconstruct(run, repo)
+    (run / "seat-claude.json").write_bytes(b'{"phase": "buil')
+    with pytest.raises(runstate.ManifestError):
+        runstate.reconstruct(run, repo)

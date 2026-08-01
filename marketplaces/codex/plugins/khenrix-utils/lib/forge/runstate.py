@@ -8,10 +8,12 @@ says what the user's repository looked like when it committed to that. A manifes
 snapshot describes a deliverable with no way to ask whether it still applies; a snapshot
 without the manifest is a photograph of nothing in particular.
 
-The other two facts here are the ones a RESUME needs and neither of those carries: §14's phase
-tuple, which says where the run had got to, and the per-seat record, which says what each seat
-last managed to write down. Both are described at the end of this docstring and implemented at
-the end of the file.
+The rest of this file is what a RESUME needs and neither of those carries: §14's phase tuple,
+which says where the run had got to; the per-seat record, which says what each seat last
+managed to write down; and the two reads that put a crashed run back together — `drift`, which
+asks whether the snapshot still describes the repository, and `reconstruct`, which answers
+that and everything above it from the run directory alone. Each is described at the end of
+this docstring and implemented at the end of the file.
 
 WRITTEN ONCE. §14.2 requires the manifest be written at `confirmed` and never rewritten, so
 commands are never re-detected. That is not a style rule about callers: `--collect` resuming
@@ -31,10 +33,16 @@ hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION; forge'
 whitelisted by exact name AND the exact OID recorded here, because a namespace whitelist would
 let a seat write into forge's own namespace invisibly. The last two of those seven are NOT
 recorded: nothing here reads `remote.*` or any other config key, so a seat that adds a remote
-or sets a repo-local value leaves no t0 fact to be judged against, and §9's drift check cannot
-speak for either. What is recorded is `protected_refs`, name-to-OID for every ref that is not
-forge's, and `status_digest`, over the four parts of the checkout state that move
-independently:
+or sets a repo-local value leaves no t0 fact to be judged against, and `drift` cannot speak
+for either. The INDEX HASH is covered only through its effects rather than as a fact of its
+own — no digest of `.git/index` is stored — and the boundary that leaves is the right one
+rather than a shortfall. Measured: staging an edit and staging a new file both move the
+porcelain and so the digest, while the one index move that does not is a stat-only refresh,
+which is not the user's work and is precisely what the READONLY pins below exist to stop
+forge itself causing. A t0 fact that moved whenever git touched the index for its own reasons
+would report as drift the one thing this file is most careful never to do. What IS recorded
+is `protected_refs`, name-to-OID for every ref that is not forge's, and `status_digest`, over
+the four parts of the checkout state that move independently:
 
   * the porcelain, which is a PATH/STATUS LISTING — it says which paths differ from `HEAD`
     and in which direction, and carries none of their content;
@@ -98,6 +106,34 @@ answer with the same silence, and an empty record is falsy exactly as None is �
 shortest question a caller can ask, `if read_seat(...)`, gets the wrong answer from a seat
 that did write. The last of those is refused at BOTH ends, because the reader meets records
 this writer did not write.
+
+WHAT `--collect` READS is the run directory, and §14 makes that a requirement rather than an
+implementation detail: resuming "always from disk and never from conversation state ... makes
+compaction and restart indistinguishable, one code path instead of two". A reconstruction that
+consulted anything held in memory would be two code paths, and the one that runs after a crash
+is the one nobody tested. So `reconstruct` opens the manifest, the run's own position, every
+seat record and the journal, and asks `drift` what has moved. Three ordinary ABSENCES are
+states rather than errors — a journal with no records, a run that has not moved since
+`confirmed`, and a seat that never wrote — and everything else propagates in the vocabulary of
+whichever reader met it, because a resume that swallowed a damaged record would carry on from
+a position nobody recorded.
+
+WHAT DRIFT IS. §9 protects the checkout and "all non-forge refs", and says a protected branch
+or the checkout moving during the run transitions to `source_diverged` and does NOT continue
+to handover automatically — because "a clean merge can silently revert the user's own
+subsequent work on any hunk forge also touched". A ref whose OID moved is the obvious half.
+The other two halves were measured, and each is invisible to every other fact this file
+records: deleting a tag leaves every surviving ref and the whole checkout digest byte for
+byte where they were, and so does a branch the user creates while the run is out. So a ref
+that DISAPPEARED and a ref that is NEW since t0 are drift as much as one that moved. The
+new-ref half needs no forge exclusion of its own: the fresh side is `snapshot_refs`, which
+names no forge ref at all, so forge's own baseline cannot arrive as a ref the user made — a
+`drift` reading a raw `show-ref` instead would report every run as diverging from itself.
+
+Naming it is where this file stops. `reconstruct` reports what moved; §9's transition and its
+refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14's
+graph declares `source_diverged` only out of `reviewing` — see the comment below on what that
+graph cannot express, and why the missing edges are not invented here.
 """
 import dataclasses
 import hashlib
@@ -106,7 +142,7 @@ import os
 import stat
 from dataclasses import dataclass
 
-from . import gitcmd, storage
+from . import gitcmd, journal, storage
 from .verify import Step, VerifyError
 
 
@@ -159,8 +195,9 @@ class Manifest:
     nobody is watching.
 
     `protected_refs` and `status_digest` are the t0 snapshot: what the user's repository
-    looked like at the moment of agreement, kept so a later check can ask whether it still
-    does. `selected_paths` is an input to the second of those as well as a record — see
+    looked like at the moment of agreement, kept so `drift` can ask whether it still does.
+    `selected_paths` is an input to the second of those as well as a record — which is why
+    `drift` re-derives the digest from THIS field and not from an argument. See
     `snapshot_refs`.
     """
     run_id: str
@@ -725,3 +762,162 @@ def read_seat(run_dir, name: str) -> dict | None:
             "never wrote reads back as. `write_seat` refuses to produce one; this arrived by "
             "another route.")
     return row
+
+
+# §14's tuple, named here rather than derived from `State`'s fields so a dimension added
+# there cannot start arriving in records this reader silently accepts — `_STEP_FIELDS`'
+# argument, one record over.
+_STATE_FIELDS = ("phase", "round", "attempt", "verified_checkpoint", "deliverable_checkpoint")
+
+
+def write_state(run_dir, state: State) -> None:
+    """Record where the run has got to, replacing whatever it last said.
+
+    REWRITTEN like a seat's record and unlike the manifest: the phase moves the whole length
+    of a run, so write-once here would make the second advance a crash. `atomic_write`
+    publishes by rename, so a reader arriving mid-write sees the previous position whole
+    rather than a prefix of this one.
+
+    ALL FIVE DIMENSIONS or none. A record carrying the phase alone would hand a resume a
+    round and an attempt supplied by its READER — the failure `Manifest` records four fields
+    per step to avoid, one file over.
+    """
+    path = storage.state_path(run_dir)
+    if not isinstance(state, State):
+        raise StateError(f"{path}: a State is required, not {type(state).__name__}")
+    try:
+        # sort_keys and indent for `write_seat`'s reasons; allow_nan=False because the
+        # default emits `Infinity`, which this reader would accept back and no strict JSON
+        # reader will.
+        blob = json.dumps(dataclasses.asdict(state), sort_keys=True, indent=2,
+                          allow_nan=False).encode("utf-8") + b"\n"
+    except (TypeError, ValueError) as e:
+        raise StateError(
+            f"{path}: this record carries a value json cannot serialize: {e}") from e
+    # Decoded back before anything is published, so a dimension that would not survive its own
+    # round trip — a checkpoint handed in as a tuple comes back a list — is refused while the
+    # caller is still there, rather than at the resume that can no longer read its position.
+    if _decode_state(json.loads(blob), path) != state:
+        raise StateError(f"{path}: this record does not survive its own round trip")
+    storage.atomic_write(path, blob)
+
+
+def read_state(run_dir) -> State | None:
+    """Where the run had got to, or None because it never recorded a position.
+
+    None means ONE thing — no such file — on `read_seat`'s rule and for its reason. A run at
+    `confirmed` has written its manifest and moved nowhere since, so no record is an ordinary
+    state; a record cut short by a killed writer is not, and §14.1 requires those two stay
+    different answers.
+    """
+    path = storage.state_path(run_dir)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise StateError(f"{path} exists and cannot be read: {e}") from e
+    try:
+        row = json.loads(raw)
+    except ValueError as e:
+        raise StateError(
+            f"{path} is not readable as JSON: {e}. A record cut short by a killed writer "
+            "lands here, and a resume that read it as a run which never moved would restart "
+            "one that was most of the way through.") from e
+    return _decode_state(row, path)
+
+
+def _decode_state(row, source) -> State:
+    """§14's five dimensions as recorded, or StateError. Never defaulted: a dimension the
+    reader supplies is a position nobody was in.
+
+    `phase` is checked for being a STRING and not for being one of §14's names, on `State`'s
+    own rule — a foreign or damaged record has to be constructible for a resume to report
+    what it found, and `advance` is where the graph refuses.
+    """
+    if not isinstance(row, dict):
+        raise StateError(f"{source}: a run state is an object, not {type(row).__name__}")
+    missing = [n for n in _STATE_FIELDS if n not in row]
+    if missing:
+        raise StateError(f"{source} is missing {missing}")
+    unknown = sorted(set(row) - set(_STATE_FIELDS))
+    if unknown:
+        raise StateError(f"{source} carries fields this engine does not know: {unknown}")
+    if not isinstance(row["phase"], str):
+        raise StateError(f"{source}: phase is one of §14's names, not {row['phase']!r}")
+    for name in ("round", "attempt"):
+        value = row[name]
+        # `isinstance(True, int)` — a JSON `true` would resume the run at round 1.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise StateError(f"{source}: {name} is a whole count, not {value!r}")
+    for name in ("verified_checkpoint", "deliverable_checkpoint"):
+        value = row[name]
+        if value is not None and not isinstance(value, str):
+            raise StateError(f"{source}: {name} is a commit OID or null, not {value!r}")
+    return State(**{n: row[n] for n in _STATE_FIELDS})
+
+
+def drift(manifest: Manifest, repo) -> tuple[str, ...]:
+    """What has moved in `repo` since the manifest recorded it: §9's ref names, sorted, plus
+    `"status"` when the checkout digest moved. `()` when the snapshot still describes it.
+
+    THREE WAYS A REF DRIFTS, not one — see the module docstring for the measurements. A
+    recorded ref whose OID differs covers two of them at once, because a ref that is GONE
+    reads back as no OID at all; the third is a ref present now and absent at t0.
+
+    The selection comes from the MANIFEST rather than from an argument, because the t0 digest
+    ranges over it: re-derived with a different selection the two digests describe different
+    file sets, and the comparison would report drift on every run or on none.
+
+    `"status"` cannot collide with a ref name — every ref here is `HEAD` or begins `refs/`.
+    """
+    if not isinstance(manifest, Manifest):
+        raise ManifestError(f"a manifest is required, not {type(manifest).__name__}")
+    refs, digest = snapshot_refs(repo, manifest.selected_paths)
+    moved = {name for name, oid in manifest.protected_refs.items() if refs.get(name) != oid}
+    moved |= set(refs) - set(manifest.protected_refs)
+    out = sorted(moved)
+    if digest != manifest.status_digest:
+        out.append("status")
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class Reconstruction:
+    """A crashed run as its directory describes it, and nothing else.
+
+    `seats` maps a seat's name to what it last recorded. A seat that never wrote is ABSENT
+    rather than present with a placeholder, on `read_seat`'s rule: an entry the reader
+    supplied is a fact no seat recorded.
+
+    `orphans` are `journal.Event`s — a start with no result, which §14.1 names
+    `outcome_unknown` and says is never silently retried. They are handed back whole, process
+    identity included, because "no receipt AND no surviving process" is the test and the
+    identity is the only half of it a later caller cannot re-derive.
+
+    `state` is None when the run never recorded a position, and `diverged` is `drift`'s
+    answer — a report, not a decision.
+    """
+    manifest: Manifest
+    state: State | None
+    seats: dict
+    orphans: tuple
+    diverged: tuple[str, ...]
+
+
+def reconstruct(run_dir, repo) -> Reconstruction:
+    """Everything `--collect` knows, read from `run_dir` and `repo` — never from a caller.
+
+    Raises whatever the record that failed raises: ManifestError with no manifest, StateError
+    for a damaged position or seat, JournalError for a log that is no longer a sequence of
+    facts, StorageError for a seat file this engine could not have written. Unwrapped, on the
+    precedent this package sets for `SeatError` and `BundleError` — a resume repairs those
+    differently, and one class over all of them would say only that the run is unreadable.
+    """
+    manifest = read_manifest(run_dir)
+    return Reconstruction(
+        manifest=manifest,
+        state=read_state(run_dir),
+        seats={name: read_seat(run_dir, name) for name in storage.seat_names(run_dir)},
+        orphans=journal.orphans(journal.Journal(storage.journal_path(run_dir)).read()),
+        diverged=drift(manifest, repo))
