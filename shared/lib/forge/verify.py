@@ -1019,6 +1019,75 @@ def fixed_point(verifier_path, command, contract, *, max_passes=2, env=None) -> 
         "infrastructure failure of the command, never the candidate's verdict.")
 
 
+@dataclass(frozen=True)
+class Calibration:
+    """What the untouched baseline does under the confirmed commands (spec §5 step 3).
+
+    `run` is the only value in this package a caller may pass as `classify`'s
+    `baseline_run`. Nothing downstream can enforce that — `_as_run` says in as many words
+    that passing its type check is no evidence about where a `Run` came from — so what
+    makes §6.2's `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE` an honest outcome is the TREE
+    this ran in, and that is the whole reason this function exists rather than a caller
+    running the command wherever it happens to be standing. A calibration taken somewhere
+    a builder could reach turns that outcome into a verdict the builder chose.
+
+    `unexplained` is what §5 step 3 measures when the contract declares NOTHING, which is
+    every run today — `inspect.detect_generators` returns the empty contract whatever repo
+    it is handed. A verify command that rewrites tracked paths no relation covers is a
+    `_gate_taints` taint, so it displaces the outcome of every candidate that would
+    otherwise have PASSed; measuring it on the baseline is how that is known before a
+    provider spends a token rather than after three of them have.
+
+    `converged` is True on every result this function hands back, which is a postcondition
+    rather than a field with nothing to say — `SetupResult.overlap`'s precedent: the other
+    case raises `GeneratorUnstable`, and a caller writing a manifest should record the fact
+    rather than the absence of an exception. What it does NOT say is that the gate ran
+    TWICE: `fixed_point` re-runs only while DECLARED output is still moving, so a run whose
+    contract declares nothing reaches its fixed point in one pass, over a tree the gate may
+    well have rewritten. `unexplained` is that half of §5 step 3, not this field.
+    """
+    run: Run
+    path: Path
+    admitted: tuple[str, ...] = ()
+    unexplained: tuple[str, ...] = ()
+    converged: bool = True
+
+
+def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
+              env=None) -> Calibration:
+    """Run the confirmed setup and verify commands on the untouched baseline (spec §5 step 3).
+
+    The candidate is EMPTY — no patch, no sidecars — so `build_verifier` produces exactly
+    the baseline through the path every other tree in the run takes. Building it any other
+    way would make the calibration the one clone in the run whose construction nobody
+    reviewed, and it is the run §6.2 leans on hardest.
+
+    `validate_materialized` is deliberately not called here. `run_setup` makes that check as
+    its first statement, because §6 orders it before setup and the ordering is the whole of
+    its value; a second call would re-read nothing anyway, since an empty bundle has no
+    sidecars to compare.
+
+    `env` is passed through rather than derived from `repo`, though this IS a caller holding
+    the repo path. The calibration and the candidates it will be compared against have to
+    run in one environment or `classify` is differencing two machines, and the caller is
+    what holds both.
+    """
+    empty = bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref=baseline.ref,
+        baseline_commit=baseline.commit, generator_contract_id=contract.id)
+    # `command` is passed as it is for a candidate, and NOTHING can tell the difference: a
+    # calibration's gate delta is empty by construction, since both surfaces are read off
+    # one untouched tree. It is passed anyway because "built the way every other tree in the
+    # run is built" is this function's whole claim, and an argument dropped for being
+    # unobservable is one the next reader has to re-derive as harmless.
+    v = build_verifier(repo, baseline, empty, dest, identity=identity, contract=contract,
+                       command=command)
+    run_setup(v, setup, env=env)
+    fp = fixed_point(v.path, command, v.contract, env=env)
+    return Calibration(run=fp.run, path=v.path, admitted=fp.admitted,
+                       unexplained=fp.unexplained, converged=True)
+
+
 def _as_run(value, what: str) -> Run:
     """The `Run` inside `value`, which may be a `FixedPoint` wrapping one.
 

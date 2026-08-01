@@ -21,6 +21,13 @@ IDENT = ("Forge Seat", "seat@forge.invalid")
 NO_CONTRACT = finspect.GeneratorContract()
 
 
+def _baseline(tmp_path, repo, selected=()):
+    """B1 for `repo` — the one argument every clone in a run is built from."""
+    run = tmp_path / "run"
+    run.mkdir(parents=True, exist_ok=True)
+    return baseline.materialize(repo, run, finspect.repo_facts(repo), list(selected), "r1")
+
+
 def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), remove=(), mutate=None,
                contract=None):
     """Baseline -> seat -> four phases -> bundle, with `setup` written before Fsetup and
@@ -36,9 +43,7 @@ def _candidate(tmp_path, repo, *, selected=(), setup=(), work=(), remove=(), mut
     to write — a chmod, a repointed symlink — which is how a candidate whose CONTENT is
     identical to the baseline's gets built at all.
     """
-    run = tmp_path / "run"
-    run.mkdir(parents=True, exist_ok=True)
-    b = baseline.materialize(repo, run, finspect.repo_facts(repo), list(selected), "r1")
+    b = _baseline(tmp_path, repo, selected)
     s = fleet.clone_seat(repo, b, tmp_path / "seat", name="claude", identity=IDENT)
     f0 = harvest.record(s.path)
     for rel, text in setup:
@@ -1918,3 +1923,122 @@ def test_a_failing_setup_returns_its_run_rather_than_raising(tmp_path):
     out = verify.run_setup(v, setup)
     assert out.run.exit_code == 3 and out.overlap == ()
     assert "boom" in out.run.stderr
+
+
+# Setup that does nothing, for a case whose subject is the calibration rather than setup.
+NOOP_SETUP = verify.Command.parse([["true"]])
+
+
+def _calibrate(tmp_path, repo, *, contract=NO_CONTRACT, setup=NOOP_SETUP, command=BUILD,
+               env=None):
+    return verify.calibrate(repo, _baseline(tmp_path, repo), tmp_path / "cal",
+                            identity=IDENT, contract=contract, setup=setup, command=command,
+                            env=env)
+
+
+def test_a_calibration_runs_the_baseline_in_a_clone_the_builder_never_had(tmp_path):
+    """§6.2's `BASELINE_RED_…` is a claim about a CALIBRATION, and `_as_run` is explicit
+    that a `Run` carries no provenance at all — so the only thing that can make the claim
+    true is the tree the run happened in, and these assertions are that tree.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
+    b = _baseline(tmp_path, repo)
+    cal = verify.calibrate(repo, b, tmp_path / "cal", identity=IDENT, contract=NO_CONTRACT,
+                           setup=NOOP_SETUP, command=BUILD)
+    assert cal.run.exit_code == 0 and cal.converged
+
+    # Asked with an ORDINARY git, for `test_the_verifier_clone_has_no_origin_…`'s reason:
+    # the property has to survive the git a gate step would use.
+    assert _git(cal.path, "remote").stdout.strip() == "", "the calibration ships a push target"
+    assert _git(cal.path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() \
+        == "forge/r1/verify", "the calibration was not built as a verifier"
+    # B1 AND ONLY B1, which takes both halves. The commit alone is satisfied by a candidate
+    # materialized onto it — `materialize` moves the worktree and the index, never HEAD, so
+    # it shows up as a dirty tree and nothing else. The clean tree alone is satisfied by a
+    # clone of some other commit.
+    assert _git(cal.path, "rev-parse", "HEAD").stdout.strip() == b.commit
+    assert _git(cal.path, "status", "--porcelain").stdout == ""
+
+
+def test_a_red_baseline_calibrates_red_rather_than_raising(tmp_path):
+    """§6.2 needs the red result — it is what `BASELINE_RED_…` is a comparison against, so
+    a refusal here would delete the outcome instead of producing it."""
+    cal = _calibrate(tmp_path, _generator_repo(tmp_path, "#!/bin/sh\nexit 1\n"))
+    assert cal.run.exit_code == 1 and cal.converged
+
+
+def test_a_calibration_run_makes_a_red_baseline_classifiable(tmp_path):
+    """The seam this function exists to close: nothing in the package could produce
+    `classify`'s `baseline_run`, so this outcome could never fire."""
+    cal = _calibrate(tmp_path, _generator_repo(tmp_path, "#!/bin/sh\nexit 1\n"))
+    cb = _bundle()
+    outcome, reason = verify.classify(_run(1, "1 failed"), cal.run, cb)
+    assert outcome == verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE
+    assert "calibration run had already exited 1" in reason
+
+
+def test_a_calibration_refuses_a_setup_that_touches_a_tracked_file(tmp_path):
+    """§6's rule holds for the calibration too — it is a verifier like any other, and a
+    calibration measured in a tree setup moved is not the baseline's result."""
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
+    with pytest.raises(verify.SetupOverlap) as e:
+        _calibrate(tmp_path, repo, setup=verify.Command.parse(
+            [[sys.executable, "-c", "open('seed.txt','w').write('rigged\\n')"]]))
+    assert "seed.txt" in str(e.value)
+
+
+def test_a_nondeterministic_baseline_generator_is_caught_before_any_provider_runs(tmp_path):
+    """§5 step 3's whole purpose: measured evidence rather than §7.2's assumption, and
+    measured before a token is spent."""
+    repo = _generator_repo(tmp_path, "#!/bin/sh\ndate +%s%N > gen.txt\n",
+                           files=[("gen.txt", "seed\n")])
+    with pytest.raises(verify.GeneratorUnstable, match="no fixed point"):
+        _calibrate(tmp_path, repo, contract=_contract(("src/*", "gen.txt")))
+
+
+def test_a_baseline_gate_that_rewrites_a_tracked_file_says_so_before_a_token_is_spent(
+        tmp_path):
+    """What §5 step 3 measures when the contract declares NOTHING, which is every run
+    today — `detect_generators` returns the empty contract.
+
+    A gate that rewrites a tracked path no relation covers is a `_gate_taints` taint, so it
+    displaces the outcome of every candidate that would otherwise have PASSed — and the
+    baseline is where that is knowable first. `converged` cannot carry it: `fixed_point`
+    re-runs the gate only while DECLARED output is still moving, so an empty contract
+    reaches its fixed point in ONE pass and converges over a tree the gate rewrote. The
+    `passes.log` lines are how many times the gate actually ran, so the two halves below
+    measure that rather than restating it.
+    """
+    script = "#!/bin/sh\necho ran >> passes.log\necho v2 > gen.txt\n"
+    undeclared = _calibrate(
+        tmp_path, _generator_repo(tmp_path, script, files=[("gen.txt", "v1\n")]))
+    assert undeclared.run.exit_code == 0 and undeclared.converged
+    assert undeclared.unexplained == ("gen.txt",) and undeclared.admitted == ()
+    assert (undeclared.path / "passes.log").read_text() == "ran\n"
+
+    sub = tmp_path / "declared"
+    declared = _calibrate(
+        sub, _generator_repo(sub, script, files=[("gen.txt", "v1\n")]),
+        contract=_contract(("src/*", "gen.txt")))
+    assert declared.admitted == ("gen.txt",) and declared.unexplained == ()
+    assert (declared.path / "passes.log").read_text() == "ran\nran\n", \
+        "the declared output has to be seen settling, which takes a second pass"
+
+
+def test_the_calibrations_environment_reaches_both_of_its_commands(tmp_path):
+    """`env` is the composition this module documents — a caller holding the repo path
+    passes `fleet.forge_child_env(repo)` — and it is the calibration that most needs it.
+
+    A calibration that dropped it would measure the baseline in an environment no candidate
+    is ever verified in, and `classify` would be differencing two machines while calling
+    the difference a new failure.
+    """
+    repo = _generator_repo(tmp_path, '#!/bin/sh\ntest "$FORGE_PROBE" = seen\n')
+    setup = verify.Command.parse(
+        [[sys.executable, "-c",
+          "import os; open('probe.txt','w').write(os.environ.get('FORGE_PROBE', 'unset'))"]])
+
+    cal = _calibrate(tmp_path, repo, setup=setup, env=dict(os.environ, FORGE_PROBE="seen"))
+    assert cal.run.exit_code == 0, "the gate did not run under the caller's environment"
+    assert (cal.path / "probe.txt").read_text() == "seen", \
+        "setup did not run under the caller's environment"
