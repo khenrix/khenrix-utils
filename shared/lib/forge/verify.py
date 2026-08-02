@@ -1524,9 +1524,18 @@ def _enumerate(root: Path) -> tuple[str, ...]:
 
     binary=True + surrogateescape for `_tracked`'s reason: these keys are compared against
     and returned alongside paths that came off a filesystem.
+
+    `NO_DAEMON_CACHE` is load-bearing on the ONE tree this function is also read over that
+    the engine did not build: `gate.must_show` resolves the surface against the USER's
+    worktree at §5 step 2, which is before the user has authorized anything. Measured on git
+    2.53.0, with `core.fsmonitor` pointed at a script that touches a file, this command
+    without the flags RUNS that script — `--others` has to decide what is untracked, so
+    unlike `rev-parse --show-toplevel` it consults the monitor. §5 step 1 admits no
+    repository-supplied code before authorization, and a surface computed by running the
+    repository's own program is the one measurement that cannot claim it.
     """
-    out = gitcmd.git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-                     env_extra=gitcmd.READONLY, binary=True).stdout
+    out = gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-z", "--cached", "--others",
+                     "--exclude-standard", env_extra=gitcmd.READONLY, binary=True).stdout
     return tuple(sorted({p for p in out.decode("utf-8", "surrogateescape").split("\0") if p}))
 
 
@@ -1733,9 +1742,13 @@ def gate_surface(verifier_path, contract, *, command=None) -> tuple[str, ...]:
       * A runner reached only through PATH. `make` invoking `pytest` names no path, so the
         binary that runs is whatever the environment resolves.
 
-    `verifier_path` must be a tree the ENGINE built — a verifier, or the baseline checkout.
-    A seat's index is writable by the party under suspicion, and `git rm --cached Makefile`
-    in a seat would delete a gate file from a surface computed there.
+    `verifier_path` must be a tree THE PARTY UNDER SUSPICION COULD NOT HAVE WRITTEN. A
+    verifier and the baseline checkout qualify by being engine-built; a seat's does not —
+    its index is the candidate's, and `git rm --cached Makefile` there would delete a gate
+    file from a surface computed over it. The user's own worktree qualifies at §5 step 2 and
+    only there, which is what `gate.must_show` reads it for: no seat exists yet, so the
+    suspect party does not either. What that costs is `_enumerate`'s flags — see its own
+    note for the program a repository can otherwise have git run on the reader's behalf.
     """
     root = Path(verifier_path)
     paths = _enumerate(root)

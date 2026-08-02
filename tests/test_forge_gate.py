@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from forge import gate, preflight, verify  # noqa: E402
+from forge import gate, journal, preflight, runstate, storage, verify  # noqa: E402
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 
@@ -739,3 +739,416 @@ def test_a_remedy_findings_order_dependence_never_loses_the_spending_finding(tmp
         found = gate.provider_invoking_verify(repo, verify.Command.parse([["make", "verify"]]))
         spends = [f for f in found if f.startswith(gate.SPENDS)]
         assert len(spends) == 1, (name, found)
+
+
+# --------------------------------------------------------------------------- the gate
+
+def _state(monkeypatch, tmp_path):
+    """Point the run directory at the fixture's own tree. Every `open_run` below writes one,
+    and `storage.run_root` reads XDG_STATE_HOME at call time."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    return tmp_path / "state" / "khenrix-forge"
+
+
+def _report_and_quote(tmp_path):
+    r = _report(tmp_path)
+    return r, gate.quote(r)
+
+
+def _answers(**kw):
+    """A complete answer sheet for §5 step 2 — both commands and both policies."""
+    return {"setup": [["true"]], "verify": [["true"]],
+            "on_calibration_failure": "abort", "strategy": "size-gated", **kw}
+
+
+def _confirmation(**kw):
+    return gate.Confirmation(setup=(verify.Step(argv=("true",)),),
+                             verify=(verify.Step(argv=("true",)),),
+                             on_calibration_failure="abort", strategy="size-gated",
+                             accepted_gaps=(), **kw)
+
+
+def test_a_repository_whose_gate_cannot_be_seen_is_shown_to_the_human(tmp_path):
+    """The condition the qualified-PASS ruling rests on: a verdict that says the gate surface
+    was measured and unchanged is honest only if the operator was told once, before a token
+    was spent, that the engine can see no gate here.
+
+    Pinned by the gap ID rather than by the word "gate", which appears in half the lines this
+    function emits — including the line that fires when the surface is NOT empty. The
+    discrimination check is that same repository given a Makefile and a discovered test file.
+    """
+    bare = make_repo(tmp_path, "bare")
+    r = preflight.inspect_repo(bare)
+    cmd = verify.Command.parse([["true"]])
+    shown = gate.must_show(r, gate.quote(r), cmd)
+    assert any(gate.GATE_SURFACE_EMPTY in line for line in shown), shown
+
+    gated = make_repo(tmp_path, "gated")
+    write(gated, "Makefile", "verify:\n\techo ok\n")
+    write(gated, "tests/test_x.py", "def test_x():\n    pass\n")
+    commit_all(gated, "a gate the rules can see")
+    r2 = preflight.inspect_repo(gated)
+    shown2 = gate.must_show(r2, gate.quote(r2), cmd)
+    assert not any(gate.GATE_SURFACE_EMPTY in line for line in shown2), shown2
+    assert any("Makefile" in line and "tests/test_x.py" in line for line in shown2), shown2
+
+
+def test_the_empty_surface_is_measured_with_the_command_or_it_is_a_false_alarm(tmp_path):
+    """Why `must_show` takes the command and not only the report.
+
+    A repository whose gate is a named script has an EMPTY surface until the command names
+    it — §6.1's role rules reach `Makefile` and `tests/test_*.py` by name, and `check.sh` by
+    nothing. So the line above, resolved without the command, would fire on an ordinary
+    repository whose gate the engine can see perfectly well, and a warning that is usually
+    wrong is one an operator learns to click past. Both halves are measured here rather than
+    asserted, because it is the DIFFERENCE that decides the argument.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "check.sh", "#!/bin/sh\nexit 0\n")
+    commit_all(repo, "a gate no naming rule reaches")
+    r = preflight.inspect_repo(repo)
+
+    assert verify.gate_surface(r.facts.root, r.contract) == (), \
+        "the premise: with no command this repository's gate surface is empty"
+    assert verify.gate_surface(r.facts.root, r.contract,
+                               command=verify.Command.parse([["./check.sh"]])) == ("check.sh",)
+
+    shown = gate.must_show(r, gate.quote(r), verify.Command.parse([["./check.sh"]]))
+    assert not any(gate.GATE_SURFACE_EMPTY in line for line in shown), shown
+
+
+def test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied(tmp_path):
+    """§5 step 1 admits no repository-supplied code before authorization, and `must_show` runs
+    BEFORE the operator answers — so the rule still binds here.
+
+    `core.fsmonitor` is the supplier, because git runs it on the caller's behalf. Measured on
+    git 2.53.0: `ls-files --cached --others` consults the monitor and DOES run the program,
+    unlike `rev-parse --show-toplevel`, so the surface read is the second call in this package
+    to have needed `NO_DAEMON_CACHE` for a reason that is not caching. The control shows the
+    same hook firing under an ordinary git.
+    """
+    repo = make_repo(tmp_path)
+    hook = write(repo, "fsmonitor.sh", f"#!/bin/sh\n: > {repo}/HOOK-RAN\nprintf ''\n")
+    hook.chmod(0o755)
+    commit_all(repo, "monitor")
+    _git(repo, "config", "core.fsmonitor", str(hook))
+
+    r = preflight.inspect_repo(repo)
+    gate.must_show(r, gate.quote(r), verify.Command.parse([["true"]]))
+    assert not (repo / "HOOK-RAN").exists(), "git ran the repository's fsmonitor for us"
+
+    _git(repo, "status", "--porcelain")
+    assert (repo / "HOOK-RAN").exists(), \
+        "the control failed: this fsmonitor does nothing even when an ordinary git runs it"
+
+
+def test_every_gap_the_gate_shows_is_one_the_confirmation_can_cite(tmp_path):
+    """The four lines are ids, not sentences, so what a handover records resolves to a line
+    the operator actually saw.
+
+    Both directions. Every `gap <id>` `must_show` emits is a value `confirm` accepts — an id
+    shown and then refused is a gap nobody could ever accept — and the three the engine
+    carries whatever the repository looks like are all present, so a dropped one fails here
+    rather than in a handover that never mentions it.
+    """
+    r, q = _report_and_quote(tmp_path)
+    shown = gate.must_show(r, q, verify.Command.parse([["true"]]))
+    named = {line.split(":")[0][len("gap "):] for line in shown if line.startswith("gap ")}
+    assert named <= set(gate.ACCEPTABLE_GAPS), named
+    assert {gate.REMOTES_AND_CONFIGURATION, gate.GC_UNBUILT,
+            gate.GENERATOR_CONTRACT_EMPTY} <= named, named
+    for gap in named:
+        assert gate.confirm(r, q, _answers(accepted_gaps=[gap])).accepted_gaps == (gap,)
+
+
+def test_the_gate_shows_the_refusals_the_operator_may_not_answer_past(tmp_path):
+    """§2.3's list fails closed, so the operator meets it as a line rather than as "why did it
+    stop". The discrimination check is the same repository without the bit."""
+    repo = make_repo(tmp_path)
+    clean = preflight.inspect_repo(repo)
+    assert preflight.refusals(clean) == ()
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    r = preflight.inspect_repo(repo)
+
+    shown = gate.must_show(r, gate.quote(r), verify.Command.parse([["true"]]))
+    assert set(preflight.refusals(r)) <= set(shown), shown
+    assert any("§2.3" in line and "open_run" in line for line in shown), shown
+    assert not any("§2.3" in line and "open_run" in line
+                   for line in gate.must_show(clean, gate.quote(clean),
+                                              verify.Command.parse([["true"]])))
+
+
+def test_the_quote_shown_is_the_quote_that_was_priced(tmp_path):
+    """`must_show` carries the quote whole rather than re-deriving it, so a run priced with
+    `--no-ultra` is not shown the default's numbers. Differenced against the same report,
+    which is the only way to show which quote the lines came from."""
+    r = _report(tmp_path)
+    on, off = gate.quote(r), gate.quote(r, ultrareview=False)
+    cmd = verify.Command.parse([["true"]])
+    assert set(on.lines) <= set(gate.must_show(r, on, cmd))
+    assert set(off.lines) <= set(gate.must_show(r, off, cmd))
+    assert on.lines != off.lines, "the premise: --no-ultra moves the lines it is shown by"
+    assert "$5-25" in " ".join(gate.must_show(r, on, cmd))
+    assert "$5-25" not in " ".join(gate.must_show(r, off, cmd)), \
+        "a run priced without ultrareview must not be shown its money line"
+
+
+def test_the_gate_shows_a_verify_command_that_spends_rather_than_only_pricing_it(tmp_path):
+    """§5.2's finding is what an operator prices the run against, so it belongs beside the
+    quote and not in a log. The discrimination check is the same repository with a command
+    that reaches nothing."""
+    repo = _repo_shaped_like_this_one(tmp_path)
+    r = preflight.inspect_repo(repo)
+    q = gate.quote(r)
+    shown = gate.must_show(r, q, verify.Command.parse([["make", "eval"]]))
+    assert any(line.startswith(gate.SPENDS) for line in shown), shown
+    assert not any(line.startswith(gate.SPENDS)
+                   for line in gate.must_show(r, q, verify.Command.parse([["true"]])))
+
+
+def test_must_show_refuses_what_it_cannot_speak_for(tmp_path):
+    r, q = _report_and_quote(tmp_path)
+    cmd = verify.Command.parse([["true"]])
+    with pytest.raises(gate.GateError):
+        gate.must_show(r.facts, q, cmd)
+    with pytest.raises(gate.GateError):
+        gate.must_show(r, q.lines, cmd)
+    with pytest.raises(gate.GateError):
+        # An unparsed spec: the surface would resolve against no command and report the empty
+        # condition for any repository at all.
+        gate.must_show(r, q, [["true"]])
+
+
+def test_the_confirmation_records_both_policies_or_refuses(tmp_path):
+    """§5 asks once. A missing policy cannot be defaulted — the default IS the decision, and
+    it would be the reader's rather than the operator's.
+
+    Each is dropped on its own, so a check that happens to cover one covers neither by
+    accident, and the complete sheet is confirmed as the discrimination check.
+    """
+    r, q = _report_and_quote(tmp_path)
+    with pytest.raises(gate.GateError):
+        gate.confirm(r, q, {"setup": [["true"]], "verify": [["true"]]})
+    for dropped in ("on_calibration_failure", "strategy", "setup", "verify"):
+        answers = _answers()
+        del answers[dropped]
+        with pytest.raises(gate.GateError, match=dropped):
+            gate.confirm(r, q, answers)
+    c = gate.confirm(r, q, _answers())
+    assert (c.on_calibration_failure, c.strategy) == ("abort", "size-gated")
+
+
+def test_a_policy_value_no_later_phase_can_act_on_is_refused(tmp_path):
+    """Recording an answer nobody can apply is the same failure as not asking: §5 step 5 says
+    the decision is not re-asked, so a value no phase branches on would have to be.
+
+    `partition` is the case worth naming — §12.1 admits one only where stable seams exist,
+    which §10.1 forbids presenting as a checked predicate, so it cannot be pre-committed to
+    at a gate that has measured no artifact.
+    """
+    r, q = _report_and_quote(tmp_path)
+    for bad in ("continue as degraded", "ABORT", "", None):
+        with pytest.raises(gate.GateError):
+            gate.confirm(r, q, _answers(on_calibration_failure=bad))
+    for bad in ("partition", "whatever the seats agree on", ""):
+        with pytest.raises(gate.GateError):
+            gate.confirm(r, q, _answers(strategy=bad))
+    assert gate.confirm(r, q, _answers(on_calibration_failure="degraded",
+                                       strategy="base-and-port")).strategy == "base-and-port"
+
+
+def test_a_verify_command_that_names_no_step_is_not_a_gate(tmp_path):
+    """§6.2 reads every outcome off this command's exit code, so a command with no step passes
+    every candidate — including one that deleted the tests. An empty SETUP is an ordinary
+    repository that needs none, and is the discrimination check."""
+    r, q = _report_and_quote(tmp_path)
+    with pytest.raises(gate.GateError):
+        gate.confirm(r, q, _answers(verify=[]))
+    assert gate.confirm(r, q, _answers(setup=[])).setup == ()
+
+
+def test_a_per_step_cwd_reaches_the_manifest_only_through_a_step(tmp_path, monkeypatch):
+    """§5.1's motivating example is `cd frontend && npm ci`, and `verify.Command.parse` takes
+    a list of argv lists with nowhere to put a cwd — so the argv route cannot express one, and
+    a run over a real monorepo has to hand `confirm` built `verify.Step`s.
+
+    Both routes are measured rather than described: the argv route records `Step`'s own
+    defaults, and the Step route records what the caller chose, all four fields.
+    """
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    assert gate.confirm(r, q, _answers()).verify[0].cwd == "", \
+        "the gap: nothing in an argv list is a cwd"
+
+    step = verify.Step(argv=("npm", "ci"), cwd="frontend", env={"CI": "1"}, timeout=90)
+    c = gate.confirm(r, q, _answers(setup=[step], verify=[verify.Step(argv=("true",))]))
+    assert c.setup == (step,)
+    back = runstate.read_manifest(gate.open_run(r, c, "r1")).setup[0]
+    assert (back.argv, back.cwd, back.env, back.timeout) == \
+        (("npm", "ci"), "frontend", {"CI": "1"}, 90)
+
+
+def test_half_a_command_each_way_is_refused(tmp_path):
+    """A `Step` carries the cwd, env and timeout a caller chose; an argv list takes the
+    defaults. Mixed, which of the two a given step was agreed under depends on how it happened
+    to be written, and the manifest records the result as one agreement."""
+    r, q = _report_and_quote(tmp_path)
+    with pytest.raises(gate.GateError, match="mixes"):
+        gate.confirm(r, q, _answers(verify=[verify.Step(argv=("a",)), ["b"]]))
+
+
+def test_a_confirmed_run_writes_its_manifest_exactly_once(tmp_path, monkeypatch):
+    """§14.2: written once at `confirmed`, never rewritten, so commands are never re-detected.
+
+    TWO kernel refusals stand behind that, not one, and the plan's expectation of which fires
+    is measured here rather than assumed. A repeated `open_run` never reaches the manifest:
+    `storage.run_root` refuses the taken run id first — and if it did not, B's ref is created
+    with a compare-and-swap against "must not already exist", which would refuse next. The
+    manifest's own `os.link` refusal is real all the same, and is exercised directly against
+    the run that already has one.
+    """
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    c = gate.confirm(r, q, _answers())
+    run = gate.open_run(r, c, "r1")
+    assert runstate.read_manifest(run).verify == c.verify
+    with pytest.raises(gate.GateError, match="already has a directory"):
+        gate.open_run(r, c, "r1")
+    with pytest.raises(runstate.ManifestError):
+        runstate.write_manifest(run, runstate.read_manifest(run))
+
+
+def test_the_manifest_records_the_repository_git_names(tmp_path, monkeypatch):
+    """A caller may run preflight on a SUBDIRECTORY — `Report` documents that — and `drift`
+    resolves `repo_path` through `rev-parse --show-toplevel`. A manifest recording the
+    directory the caller typed would therefore be refused by every later drift check as a
+    repository this run was not recorded against, which is a resume that cannot start."""
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path, "sub-repo")
+    (repo / "sub").mkdir()
+    write(repo, "sub/keep.txt", "x\n")
+    commit_all(repo, "a subdirectory to be run from")
+    r = preflight.inspect_repo(repo / "sub")
+    assert str(r.repo) != str(r.facts.root), "the premise: the caller named a subdirectory"
+
+    run = gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1")
+    m = runstate.read_manifest(run)
+    assert m.repo_path == str(r.facts.root)
+    assert runstate.drift(m, repo) == (), "t0 is taken here, so nothing has moved yet"
+
+
+def test_the_run_records_the_baseline_it_was_opened_over(tmp_path, monkeypatch):
+    """§9 whitelists forge's ref by exact name AND the OID recorded at creation, and only
+    `materialize`'s return value knows that OID — so the manifest cannot be written before B
+    exists, and the snapshot beside it must already exclude B's ref or the run reports its own
+    baseline as a ref the user made.
+
+    The repository is DIRTY, which is what makes the agreement checkable: over a clean tree B1
+    IS the base commit and a manifest that recorded the wrong one of the two would satisfy
+    every assertion here.
+    """
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path)
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+    r = preflight.inspect_repo(repo)
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1"))
+
+    assert m.baseline_commit != m.base_commit, "the premise: B1 is a commit of its own"
+    assert m.forge_refs == {m.baseline_ref: m.baseline_commit}
+    assert m.baseline_ref not in m.protected_refs, \
+        "forge's own ref in protected_refs is a run that reports its baseline as drift"
+    assert _git(repo, "rev-parse", m.baseline_ref).stdout.strip() == m.baseline_commit
+    assert runstate.drift(m, repo) == ()
+
+
+def test_a_refused_repository_never_reaches_a_manifest(tmp_path, monkeypatch):
+    """Preflight's refusals are not advice. A run that opens over them is a run whose manifest
+    records an agreement about a repository the engine said it could not handle — and it
+    stops before anything is written, which is measured by the state directory being empty
+    rather than by the exception alone."""
+    state = _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    r = preflight.inspect_repo(repo)
+    assert preflight.refusals(r), "the premise: this repository is refused"
+
+    with pytest.raises(gate.GateError):
+        gate.open_run(r, _confirmation(), "r1")
+    assert not state.exists(), "a refused run left a directory behind"
+    assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
+        "and no ref in the user's repository"
+
+
+def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):
+    """§5.2's disposition of the three classes, which is why they are three. A `spends:` is
+    "detected and refused"; a `remedy:` is what the same sentence prices "as its own explicit
+    line", so it is shown and the run opens over it.
+
+    Re-detected at `open_run` rather than trusted from `must_show`, because the command a
+    human confirmed is allowed to differ from the one they were shown — which is the whole
+    reason they were shown it.
+    """
+    state = _state(monkeypatch, tmp_path)
+    repo = _repo_shaped_like_this_one(tmp_path)
+    r = preflight.inspect_repo(repo)
+    q = gate.quote(r)
+    spending = gate.confirm(r, q, _answers(verify=[["make", "eval"]]))
+    with pytest.raises(gate.GateError, match="provider CLI"):
+        gate.open_run(r, spending, "r1")
+    assert not state.exists(), "a refused run left a directory behind"
+
+    priced = gate.confirm(r, q, _answers(verify=[["make", "precommit"]]))
+    assert any(f.startswith(gate.REMEDY)
+               for f in gate.provider_invoking_verify(repo, verify.Command(priced.verify))), \
+        "the discrimination check: this command is priced rather than refused"
+    assert runstate.read_manifest(gate.open_run(r, priced, "r2")).verify == priced.verify
+
+
+def test_the_gate_records_what_the_operator_accepted(tmp_path, monkeypatch):
+    """A gap the human was shown and accepted is a different fact from one nobody raised, and
+    only the first belongs in a handover. An id `must_show` cannot raise is refused, so what
+    is recorded resolves to a line rather than to a sentence someone typed."""
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    c = gate.confirm(r, q, _answers(accepted_gaps=[gate.GATE_SURFACE_EMPTY]))
+    assert gate.GATE_SURFACE_EMPTY in c.accepted_gaps
+    assert gate.confirm(r, q, _answers()).accepted_gaps == ()
+    with pytest.raises(gate.GateError):
+        gate.confirm(r, q, _answers(accepted_gaps=["the-disk-is-fine"]))
+    with pytest.raises(gate.GateError):
+        # A string iterates into its characters, so this would record acceptance of letters.
+        gate.confirm(r, q, _answers(accepted_gaps=gate.GC_UNBUILT))
+
+
+def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
+    """§5 records the decision and does not ask again, so both policies have to outlive the
+    process that collected them. They are journaled rather than carried in the manifest —
+    §14.2's manifest is the repository, B's identity, the selection and the commands, and
+    `events.jsonl` is one of the six sources it names — so this is where a resume reads them.
+    """
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    c = gate.confirm(r, q, _answers(on_calibration_failure="degraded", strategy="fusion",
+                                    accepted_gaps=[gate.GATE_SURFACE_EMPTY]))
+    run = gate.open_run(r, c, "r1")
+
+    events = journal.Journal(storage.journal_path(run)).read()
+    done = [e for e in events if e.event == journal.done("confirm")]
+    assert len(done) == 1, [e.event for e in events]
+    assert done[0].data["on_calibration_failure"] == "degraded"
+    assert done[0].data["strategy"] == "fusion"
+    assert done[0].data["accepted_gaps"] == [gate.GATE_SURFACE_EMPTY]
+    assert journal.orphans(events) == (), \
+        "the write-ahead pair is closed, so a crash inside open_run stays distinguishable"
+
+
+def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch):
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    for bad in ({"setup": (), "verify": ()}, _answers()):
+        with pytest.raises(gate.GateError):
+            gate.open_run(r, bad, "r1")
+    with pytest.raises(gate.GateError):
+        gate.open_run(r.facts, _confirmation(), "r1")
+    with pytest.raises(gate.GateError):
+        gate.open_run(r, _confirmation(), "")

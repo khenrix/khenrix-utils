@@ -117,8 +117,10 @@ class Report:
 
     `gate_surface` is None and that is an answer: §6.1's surface is the resolved gate's own
     scripts, runners and discovered test files, and preflight has no confirmed verify command
-    to resolve — the user names it at §5 step 2. `()` would say this repository defines no
-    gate, which is a far stronger claim than nobody looked.
+    to resolve — the user names it at §5 step 2, and `gate.must_show` resolves the surface
+    there, where the command is in hand. `()` would say this repository defines no gate, which
+    is a far stronger claim than nobody looked, and it is the claim the §5 gate shows a human
+    once because a `PASS` can later rest on it.
     """
     repo: Path
     facts: inspect.RepoFacts

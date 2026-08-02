@@ -32,7 +32,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import (baseline, bundle, fleet, gitcmd, harvest, journal,  # noqa: E402
+from forge import (baseline, bundle, fleet, gate, gitcmd, harvest, journal,  # noqa: E402
                    inspect as finspect, preflight, runstate, screen, snapshot, storage,
                    verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
@@ -667,6 +667,79 @@ def test_the_manifest_and_the_baseline_agree_on_what_the_run_started_from(tmp_pa
     assert _git(repo, "rev-parse", f"{back.baseline_commit}^{{tree}}").stdout.strip() == \
         back.tracked_tree_oid, \
         "and the tree the manifest names is B1's own, not the base commit's"
+
+
+def _answered(**kw):
+    return {"setup": [["true"]], "verify": [["make", "verify"]],
+            "on_calibration_failure": "abort", "strategy": "size-gated", **kw}
+
+
+def test_the_manifest_records_the_commands_the_gate_confirmed(tmp_path, monkeypatch):
+    """SEAM: `gate` and `runstate`. §5.1's four per-step fields survive the round trip, so a
+    resume runs what the human agreed to rather than what a reader supplied.
+
+    Every field is given a NON-DEFAULT value, which is what makes the claim checkable: with
+    `Step`'s own defaults on both sides, a manifest that dropped the cwd, the env and the
+    timeout and let `read_manifest` rebuild them would satisfy an equality test exactly.
+
+    The second half is the seam the first cannot reach: a manifest is read back by a process
+    that never saw the confirmation, so what `--collect` compares against is `read_manifest`'s
+    output and not the `Confirmation` still in memory here.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = make_repo(tmp_path)
+    (repo / "frontend").mkdir()
+    write(repo, "frontend/build.sh", "#!/bin/sh\nexit 0\n")
+    commit_all(repo, "a monorepo shape")
+    report = preflight.inspect_repo(repo)
+    steps = (verify.Step(argv=("./build.sh",), cwd="frontend", env={"CI": "1"}, timeout=45),
+             verify.Step(argv=("make", "verify"), cwd="", env={}, timeout=600))
+    setup = (verify.Step(argv=("npm", "ci"), cwd="frontend", env={"CI": "0"}, timeout=30),)
+    confirmation = gate.confirm(report, gate.quote(report),
+                                _answered(setup=list(setup), verify=list(steps)))
+
+    run = gate.open_run(report, confirmation, "r1")
+    back = runstate.read_manifest(run)
+    # Both commands, and each asserted against its OWN steps: the two are the same type and a
+    # manifest that recorded one of them twice round-trips perfectly.
+    assert (back.setup, back.verify) == (setup, steps)
+    assert [(s.argv, s.cwd, s.env, s.timeout) for s in back.verify] == \
+        [(("./build.sh",), "frontend", {"CI": "1"}, 45), (("make", "verify"), "", {}, 600)], \
+        "§5.1's step is {argv, cwd, env, timeout}, and a field the reader supplies is a fact " \
+        "the run never agreed to"
+    assert [(s.argv, s.cwd, s.env, s.timeout) for s in back.setup] == \
+        [(("npm", "ci"), "frontend", {"CI": "0"}, 30)]
+
+
+def test_a_repository_preflight_refuses_never_reaches_a_run_directory(tmp_path, monkeypatch):
+    """SEAM: `preflight` and `gate` and `storage`. The refusal is what stops the run, and it
+    stops it before anything is written — measured by the run root not existing.
+
+    The exception alone would not show that. `open_run` could raise after creating the run
+    directory, after materializing B into the user's object store, or after writing a
+    manifest, and every one of those still raises — so what is asserted is the absence of
+    each, against the same repository admitted one bit later as the discrimination check.
+    """
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    refused = preflight.inspect_repo(repo)
+    assert any("skip-worktree" in line for line in preflight.refusals(refused)), \
+        preflight.refusals(refused)
+    confirmation = gate.confirm(refused, gate.quote(refused), _answered(verify=[["true"]]))
+
+    with pytest.raises(gate.GateError):
+        gate.open_run(refused, confirmation, "r1")
+    assert not (state / "khenrix-forge").exists(), "a refused run left a run directory"
+    assert "khenrix-forge" not in _git(repo, "show-ref").stdout, \
+        "a refused run left a ref in the user's repository"
+
+    _git(repo, "update-index", "--no-skip-worktree", "seed.txt")
+    admitted = preflight.inspect_repo(repo)
+    assert preflight.refusals(admitted) == ()
+    assert runstate.read_manifest(gate.open_run(admitted, confirmation, "r1")).run_id == "r1", \
+        "the discrimination check: one bit is the whole difference"
 
 
 # --------------------------------------------------------------------------- #

@@ -1,4 +1,13 @@
-"""§5.2's cost quote, and the detector that can refuse a verify command before it is confirmed.
+"""§5's confirmation gate: the cost quote, the detector that can refuse a verify command,
+and the one question a run is opened on.
+
+ONE QUESTION, AND EVERYTHING THE ANSWER IS WORTH. §5 step 2 asks once — both command
+sequences, a policy for calibration failure, and the strategy rule to be applied later — and
+§5 step 5 says "record the decision; do not ask again". Three functions carry that: `must_show`
+is what a human reads before answering, `confirm` turns the answer into a record that cannot
+be defaulted, and `open_run` writes the manifest §14.2 forbids rewriting. Nothing here spends
+a provider call, and nothing after it asks again — which is why every refusal in this file
+lands before a run directory exists rather than after.
 
 A QUOTE IS A REFUSAL SURFACE, NOT A DISPLAY. Everything here is sized so that being wrong is
 wrong in the OPERATOR's disfavour: a worst case that reads low is a number somebody agrees to
@@ -52,16 +61,21 @@ the parent's objects, and where setup never runs.
 
 THE DETECTOR IS STATIC AND READS ONLY. §5 step 1 admits no repository-supplied code before
 authorization, and a detector whose job is "would this command spend provider calls" is exactly
-the one tempted to find out by running it. Nothing here executes a Makefile, a recipe, a script
-or a `make -n`, and the one git call is `rev-parse --show-toplevel`. That call carries
-`NO_DAEMON_CACHE` even though it does not need it: measured on git 2.53.0, with
-`core.fsmonitor` pointed at a script that touches a file, `git status` runs the script and
-`git rev-parse --show-toplevel` does not, because the second refreshes no index. The flags are
-on it so the guarantee holds for whatever git call is added here next, which is the direction
-this package has already lost the property in once — see `gitcmd.NO_DAEMON_CACHE`'s own note
-on the `ls-files --eol` and `check-attr` calls in `inspect`.
-`test_the_detector_runs_nothing_the_repository_supplied` pins both halves against controls
-showing the same recipe does run under `make` and the same hook does run under `git status`.
+the one tempted to find out by running it. THE WHOLE MODULE is bound by that rule, not only
+the detector, because `must_show` runs at §5 step 2 and the operator has still not answered.
+Nothing here executes a Makefile, a recipe, a script or a `make -n`. The detector's own git
+call is `rev-parse --show-toplevel`, which carries `NO_DAEMON_CACHE` even though it does not
+need it: measured on git 2.53.0, with `core.fsmonitor` pointed at a script that touches a
+file, `git status` runs the script and `git rev-parse --show-toplevel` does not, because the
+second refreshes no index. The flags are on it so the guarantee holds for whatever git call is
+added here next, which is the direction this package has already lost the property in once —
+see `gitcmd.NO_DAEMON_CACHE`'s own note on the `ls-files --eol` and `check-attr` calls in
+`inspect`. That prediction has since been paid: `must_show` reaches `verify.gate_surface`,
+whose `ls-files --cached --others` DOES run the monitor, and the flags went on it for this
+reason rather than for caching. `test_the_detector_runs_nothing_the_repository_supplied` and
+`test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied` pin both halves
+against controls showing the same recipe does run under `make` and the same hook does run
+under `git status`.
 
 A DETECTOR THAT MUST BE EXHAUSTIVE CANNOT BE, so the bound is declared instead of implied, and
 every place the reader ran out is EMITTED rather than dropped. Findings carry one of three
@@ -113,14 +127,20 @@ with it every `make verify`. See `test_a_file_handed_to_a_runner_as_data_is_not_
 """
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from . import bundle, gitcmd, preflight
+from . import baseline, bundle, gitcmd, journal, preflight, runstate, storage, verify
 
 
 class GateError(RuntimeError):
-    """An argument the gate will not answer for — never a property of the repository or of the
-    command, which is what `Quote.lines` and `provider_invoking_verify`'s findings are for."""
+    """What stops a run at this gate: an argument the gate will not answer for, an answer §5
+    will not record, or the two conditions §2.3 and §5.2 refuse a run over.
+
+    `Quote.lines` and `provider_invoking_verify`'s findings stay DESCRIPTIONS. They say what
+    is true of a repository or a command; a raise says the run does not open. The overlap is
+    deliberate and one-directional — `open_run` turns a `spends:` finding and a non-empty
+    `preflight.refusals` into this, and nothing turns this back into a line."""
 
 
 # The three classes a finding from `provider_invoking_verify` can carry, as the module
@@ -248,8 +268,9 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
         "temporary clones, which would otherwise reclaim the retries; nothing reclaims the rest "
         "until `--gc`. Not counted: the synthesis worktree, which §4 keeps a worktree so it "
         "shares the parent's objects",
-        "wall clock: not quoted — the setup and verify commands are named at §5 step 2 and "
-        "this report has no gate surface to time (preflight leaves gate_surface None)",
+        "wall clock: not quoted — a duration is measured by running the gate, and §5 step 3's "
+        "calibration is the first time anything does. Nothing static reads one off a command, "
+        "and the surface `must_show` resolves is a file list rather than a timing",
         "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
         "line §13.1 prices in money. Shell-command time is the wall-clock line above",
         "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
@@ -838,3 +859,373 @@ def provider_invoking_verify(repo, command) -> tuple[str, ...]:
     for i, step in enumerate(steps):
         resolver.scan_step(i, step)
     return tuple(dict.fromkeys(resolver.findings))
+
+
+# ---------------------------------------------------------------------------------------
+# §5 step 2: the one question, and the record its answer writes.
+
+# The gaps a run may be asked to accept, as IDS rather than as sentences. `Confirmation`
+# records the id, so a handover cites a name that resolves to a line `must_show` emitted
+# rather than a paraphrase of one, and a caller can tell the empty-surface condition from the
+# other three without matching prose that is free to be reworded.
+GATE_SURFACE_EMPTY = "gate-surface-empty"
+REMOTES_AND_CONFIGURATION = "remotes-and-configuration-unrecorded"
+GC_UNBUILT = "gc-unbuilt"
+GENERATOR_CONTRACT_EMPTY = "generator-contract-empty"
+ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GC_UNBUILT,
+                   GENERATOR_CONTRACT_EMPTY)
+
+# §5 step 2's first policy, spelled as the two branches a later phase can act on. §5 writes
+# the second as "continue as degraded"; the value is the branch name, and `degraded` is also
+# §14's terminal phase for a run that took it.
+CALIBRATION_POLICIES = ("abort", "degraded")
+
+# §12's strategy rule, and the reason `partition` is NOT one of these. §12.1 makes the size
+# gate "trigger analysis, it does not force partitioning", and admits a partition only "where
+# stable seams exist" — a natural-language criterion §10.1 forbids presenting as a checked
+# predicate, so it cannot be pre-committed to at a gate that has seen no artifact. What CAN
+# be confirmed in advance is which of §12.1's three rules the run applies to a measured size:
+#
+#   * `size-gated`     §12.1 itself — fusion below ~400 changed lines / ~15 files, and above
+#                      it, partition only where stable seams exist, else base-and-port.
+#   * `fusion`         from-scratch fusion whatever the size measures.
+#   * `base-and-port`  §12.1's "correct primary strategy" where no stable seams exist,
+#                      chosen up front rather than after the analysis.
+STRATEGY_RULES = ("size-gated", "fusion", "base-and-port")
+
+# What §5 step 2 asks. `accepted_gaps` is the one that may be left out, and the asymmetry is
+# the point: either calibration policy is an ACTION a later phase takes, so silence there has
+# no safe reading, while silence about a gap means the operator accepted none — which is the
+# reading that cannot later be cited as agreement.
+_ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "accepted_gaps")
+_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy")
+
+
+@dataclass(frozen=True)
+class Confirmation:
+    """The answer to §5 step 2, in the shape the manifest records it.
+
+    `setup` and `verify` are `verify.Step` tuples — §5.1's record whole, all four fields —
+    and they are the manifest's own type so `open_run` performs no conversion. A conversion
+    here is where a `cwd` or a `timeout` would go missing between what a human agreed to and
+    what a resume runs.
+
+    NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
+    constructor supplies is a fact nobody answered for. `confirm` is where an omitted
+    `accepted_gaps` becomes the empty tuple, because that is a normalization of an answer
+    sheet and this is the record.
+    """
+    setup: tuple
+    verify: tuple
+    on_calibration_failure: str
+    strategy: str
+    accepted_gaps: tuple[str, ...]
+
+
+def must_show(report, quote_, command) -> tuple[str, ...]:
+    """Everything a human must see before answering §5 step 2, in the order it matters.
+
+    THE COMMAND IS AN ARGUMENT BECAUSE THE FIRST LINE CANNOT BE READ OFF A REPORT.
+    `preflight.Report.gate_surface` is None and says why: §6.1's surface belongs to the
+    RESOLVED gate, and preflight has no command to resolve. Here the command is in hand — it
+    is what the human is being asked to confirm — so the surface is computable, and the
+    difference between "measured, found nothing" and "nobody looked" is exactly the condition
+    the qualified-PASS ruling rests on.
+
+    Measured on a repository holding `check.sh` and nothing else a role rule names:
+    `gate_surface` with no command returns `()`, and with `[["./check.sh"]]` returns
+    `('check.sh',)`. So the surface resolved WITHOUT the command reports the empty condition
+    for an ordinary repository whose gate is a named script — a false alarm on the one line
+    whose whole value is that it is rare. The CONFIRMATION is deliberately not what is taken
+    instead: it is the answer, and this is the question.
+
+    WHY THE USER'S OWN WORKTREE MAY BE RESOLVED AGAINST, when `gate_surface` requires a tree
+    the engine built. That requirement is about a tree the party under suspicion could have
+    written — a seat's index, where `git rm --cached Makefile` would delete a gate file from
+    its own surface. At §5 step 2 no seat exists and no provider has run, so the worktree is
+    the user's own. The other half of "engine-built" is that reading it must run nothing the
+    repository supplies; `verify._enumerate` carries `NO_DAEMON_CACHE` so that holds here.
+
+    WHAT IS NOT SCREENED, stated because the detector's findings below read as though the
+    whole confirmation had been read: `provider_invoking_verify` is run on the VERIFY command
+    alone, which is §5.2's own scope and the vocabulary its findings are written in. A SETUP
+    command that reaches a provider CLI is not detected, and it is the more expensive miss —
+    setup runs once per builder clone and once per verifier clone.
+    """
+    if not isinstance(report, preflight.Report):
+        raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
+                        "§5 step 2 is what the static look at step 1 is shown for")
+    if not isinstance(quote_, Quote):
+        raise GateError(f"a Quote is required, not {type(quote_).__name__}; §5.2 prices the "
+                        "run at this gate and there is no later one to correct it")
+    if getattr(command, "steps", None) is None:
+        raise GateError(f"a verify Command is required, not {type(command).__name__}; the "
+                        "surface below is §6.1's answer for the RESOLVED gate, and an "
+                        "unresolved one reports the empty condition for any repository")
+
+    lines = list(preflight.refusals(report))
+    if lines:
+        # First, and in `quote`'s own order: nothing below is reachable while one of these
+        # stands, and §2.3 does not let the operator answer past them.
+        lines.append("the lines above are §2.3 refusals — they fail closed, this gate cannot "
+                     "be answered past them, and `open_run` will not open a run over one")
+
+    surface = verify.gate_surface(report.facts.root, report.contract, command=command)
+    if surface:
+        lines.append(f"gate surface: §6.1's rules and this command resolve to {len(surface)} "
+                     f"file(s) — {', '.join(surface[:6])}"
+                     f"{' …' if len(surface) > 6 else ''}. A candidate that rewrites one of "
+                     "them is marked `gate_changed` and never silently keeps independent-gate "
+                     "status")
+    else:
+        lines.append(
+            f"gap {GATE_SURFACE_EMPTY}: §6.1's rules and this command resolve to NO file in "
+            "this repository, so the engine cannot see what defines your gate. A candidate "
+            "can gut the gate and still earn a PASS whose reason says the surface was "
+            "measured and unchanged. That verdict qualifies itself rather than being "
+            "displaced — displacing it would attribute to the candidate a fact about the "
+            "engine — on the condition that you are told once, before a token is spent. "
+            "This line is that condition.")
+
+    lines += [
+        f"gap {REMOTES_AND_CONFIGURATION}: §9 protects seven things and the t0 snapshot "
+        "records five. A remote added or a repository-local config key set while the run is "
+        "out leaves no t0 fact behind it, so `drift` cannot speak for either and a handover "
+        "will not stop for one",
+        f"gap {GC_UNBUILT}: every interrupted write leaves a staging file nothing collects, "
+        "so `--gc` is mandatory rather than tidy — and it is not built. The peak disk below "
+        "is what accumulates until it is",
+        f"gap {GENERATOR_CONTRACT_EMPTY}: the generator contract is empty for every "
+        "repository the detector can read, this one included, so no relation admits a "
+        "verify-origin rewrite of a TRACKED file. A PASS therefore requires a gate that "
+        "rewrites no tracked file, whatever this repository's own generators do",
+    ]
+    lines += list(quote_.lines)
+    lines += list(provider_invoking_verify(report.repo, command))
+    return tuple(lines)
+
+
+def _confirmed_steps(name: str, value) -> tuple:
+    """§5.1's steps as the manifest's own type, from either shape a caller can hold.
+
+    ALREADY-BUILT `verify.Step`s are accepted whole, and that route is the only one that can
+    express a per-step `cwd`: `verify.Command.parse` takes a list of ARGV LISTS and has no
+    place to put one, so §5.1's own motivating example — `cd frontend && npm ci` as two steps
+    in two directories — is unconfirmable through it. The argv route is still the ordinary
+    one, and it reaches `parse` whole rather than step by step so its refusals keep naming
+    the index of the step at fault.
+
+    A MIXED sequence is refused rather than handled. The two routes differ in what they
+    settle: a `Step` carries a cwd, an env and a timeout the caller chose, while an argv list
+    takes `Step`'s defaults. Reading half a command each way makes which of those a given
+    step got depend on how it happened to be written.
+    """
+    if isinstance(value, (str, bytes)):
+        raise GateError(
+            f"{name} is {value!r}, a single string. A command is a LIST of steps and a step "
+            'is a list of words — write [["make", "verify"]]. Nothing here runs a shell.')
+    try:
+        rows = list(value)
+    except TypeError as e:
+        raise GateError(f"{name} is not a sequence of steps: {value!r}") from e
+    built = [isinstance(r, verify.Step) for r in rows]
+    if any(built) and not all(built):
+        raise GateError(
+            f"{name} mixes verify.Step records with bare argv lists. A Step carries the cwd, "
+            "env and timeout the caller chose and an argv list takes the defaults, so a mixed "
+            "command hides which of the two each step was agreed under.")
+    if all(built) and rows:
+        return tuple(rows)
+    try:
+        return verify.Command.parse(rows).steps
+    except verify.VerifyError as e:
+        # Re-raised in this module's vocabulary, on `runstate._steps`' precedent: `confirm`'s
+        # documented contract is that an answer it will not stand behind arrives as a
+        # GateError, and the caller catching it has no other name for this.
+        raise GateError(f"{name}: {e}") from e
+
+
+def confirm(report, quote_, answers) -> Confirmation:
+    """§5 step 2's answer, validated into the record §14.2 writes once.
+
+    `report` and `quote_` are required and type-checked though neither is stored, for
+    `quote`'s own reason one step on: a caller holding neither has not reached this gate, and
+    an answer collected before the static look and the price is an answer to a different
+    question.
+
+    NO POLICY IS DEFAULTED. §5 asks for both once and §5 step 5 says the decision is not
+    re-asked, so a missing one cannot be filled in here — the value this function would
+    choose IS the decision, taken by the reader, at the one gate whose whole purpose is that
+    the operator takes it. `accepted_gaps` is the single omissible answer and its silence
+    reads as "accepted none", which is the reading that cannot later be cited as agreement.
+
+    An UNKNOWN answer key is refused rather than ignored: a caller that spells a policy
+    slightly wrong would otherwise have it silently defaulted by the missing-key check it
+    just passed.
+
+    WHAT `accepted_gaps` IS CHECKED FOR is that each id is one this engine can raise —
+    `ACCEPTABLE_GAPS` — and not that `must_show` raised it for THIS repository. The narrower
+    check needs the command the surface was measured with, and a `Confirmation` is the answer
+    to a question its caller rendered. So accepting a gap nobody raised is recorded rather
+    than refused; it is noise in a handover, never a licence.
+    """
+    if not isinstance(report, preflight.Report):
+        raise GateError(f"a preflight.Report is required, not {type(report).__name__}")
+    if not isinstance(quote_, Quote):
+        raise GateError(f"a Quote is required, not {type(quote_).__name__}")
+    if not isinstance(answers, dict):
+        raise GateError(f"the answers to §5 step 2 are a mapping, not {type(answers).__name__}")
+    missing = [k for k in _REQUIRED if k not in answers]
+    if missing:
+        raise GateError(
+            f"§5 step 2 is asked once and {missing} went unanswered. Neither policy has a "
+            f"safe default — calibration failure is one of {list(CALIBRATION_POLICIES)} and "
+            f"the strategy rule is one of {list(STRATEGY_RULES)} — and a value chosen here "
+            "would be the reader's decision recorded as the operator's.")
+    unknown = sorted(set(answers) - set(_ANSWERS))
+    if unknown:
+        raise GateError(f"§5 step 2 does not ask {unknown}; it asks {list(_ANSWERS)}")
+
+    verify_steps = _confirmed_steps("verify", answers["verify"])
+    if not verify_steps:
+        # An empty SETUP is an ordinary repository that needs none. An empty VERIFY is a gate
+        # that decides nothing, and §6.2's outcomes are all read off its exit code — so every
+        # candidate would pass, including one that deleted the tests.
+        raise GateError(
+            "the verify command names no step, so the gate would decide nothing and every "
+            "candidate would pass it. §6.2 reads every outcome off this command.")
+
+    policy = answers["on_calibration_failure"]
+    if policy not in CALIBRATION_POLICIES:
+        raise GateError(
+            f"on_calibration_failure is {policy!r}; §5 step 2 offers {list(CALIBRATION_POLICIES)} "
+            "— abort the run when the untouched baseline fails its own gate, or continue and "
+            "carry the run to §14's `degraded` ending")
+    rule = answers["strategy"]
+    if rule not in STRATEGY_RULES:
+        raise GateError(
+            f"strategy is {rule!r}; §12's rule is confirmed here and applied to measured "
+            f"artifact size later, so it is one of {list(STRATEGY_RULES)}. `partition` is "
+            "deliberately absent: §12.1 admits one only where stable seams exist, which is "
+            "§10.1's non-mechanical criterion and cannot be pre-committed to.")
+
+    gaps = answers.get("accepted_gaps", ())
+    if isinstance(gaps, (str, bytes)):
+        raise GateError(
+            f"accepted_gaps is {gaps!r}, a single string; iterating one yields its characters, "
+            "so a run would record acceptance of a list of letters")
+    gaps = tuple(gaps)
+    stray = sorted(set(gaps) - set(ACCEPTABLE_GAPS))
+    if stray:
+        raise GateError(
+            f"accepted_gaps names {stray}, which `must_show` cannot raise. An accepted gap has "
+            f"to resolve to a line the operator was shown; the ids are {list(ACCEPTABLE_GAPS)}.")
+    return Confirmation(setup=_confirmed_steps("setup", answers["setup"]), verify=verify_steps,
+                        on_calibration_failure=policy, strategy=rule, accepted_gaps=gaps)
+
+
+def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
+    """Open the run this confirmation agreed to, and record it where a resume will read it.
+
+    THE REPOSITORY IS THE REPORT'S, not a second argument. `report.facts.root` is git's own
+    answer for the repository preflight looked at, and it is what `baseline.materialize`
+    builds from and what `drift` resolves the manifest's `repo_path` against. A `repo`
+    argument beside it would be a second answer to a settled question, and the wrong one
+    answers cleanly — the failure `runstate._refuse_a_repository_the_manifest_did_not_record`
+    exists for. It also decides `repo_path`: a caller who ran preflight on a SUBDIRECTORY has
+    a `report.repo` that is not the toplevel, and a manifest recording it would be refused by
+    every later `drift` as a repository this run was not recorded against.
+
+    ORDER, AND WHAT EACH STEP MAKES TRUE. The two refusals come first, so a run that is not
+    going to happen leaves nothing at all on disk — not a run directory, not an object and
+    not a ref. Then the run root, which fails on a run id already taken rather than sharing a
+    directory with the run that owns it. Then B, whose ref and OID cannot be recorded any
+    earlier because §9's whitelist is "the exact OID recorded AT CREATION" and only
+    `materialize`'s return value knows it. Then t0 — §14.2 puts it at this gate, which is why
+    `preflight` deliberately takes no snapshot — with B's ref declared, so forge's own
+    baseline is not reported as the user's ref appearing. Then the manifest, once. Then the
+    receipt.
+
+    WRITE-ONCE IS TWO KERNEL REFUSALS, neither of which is a check this function performs: a
+    second `open_run` for the same run id meets `mkdir`'s, and a second manifest inside one
+    run meets `os.link`'s. The first is what a repeated call actually hits, because B's ref
+    is created with a compare-and-swap against "must not already exist" and would refuse
+    before the manifest was reached at all.
+
+    THE POLICIES ARE JOURNALED, not in the manifest — §14.2's list of what the manifest holds
+    is the repository, `base_commit`, B's identity, the selected paths and the confirmed
+    commands, and `events.jsonl` is one of the six sources it names for a resume. What that
+    costs is that no decoder type-checks them on the way back in, the way `read_manifest`
+    does for every field it carries; `confirm` is the only thing that ever validated them.
+
+    The record is WRITE-AHEAD around everything that touches the user's repository, so a
+    crash between the two halves leaves the orphan §14.1 requires rather than a run directory
+    that cannot say whether a ref was made in the user's repository on its behalf.
+    """
+    if not isinstance(report, preflight.Report):
+        raise GateError(f"a preflight.Report is required, not {type(report).__name__}")
+    if not isinstance(confirmation, Confirmation):
+        raise GateError(
+            f"a Confirmation is required, not {type(confirmation).__name__}; the manifest is "
+            "written once and never rewritten, so what it records has to be what a human "
+            "answered rather than what a caller assembled")
+    if not isinstance(run_id, str) or not run_id:
+        raise GateError(f"a run needs an id: {run_id!r}")
+
+    blocked = preflight.refusals(report)
+    if blocked:
+        raise GateError(
+            f"preflight refuses this repository, so there is nothing to agree to: {list(blocked)}. "
+            "§2.3 fails closed before a run starts, and a manifest opened over one of these "
+            "would record an agreement about a repository the engine said it could not handle.")
+    spends = [f for f in provider_invoking_verify(report.repo, verify.Command(confirmation.verify))
+              if f.startswith(SPENDS)]
+    if spends:
+        # §5.2's own disposition of the three classes: a verify command that reaches a
+        # provider CLI is "detected and refused", while a documented remedy is what the same
+        # sentence prices "as its own explicit line" — which is `must_show`'s job and not
+        # this one's. Re-detected here rather than trusted from `must_show`, because the
+        # command a human confirmed is allowed to differ from the one they were shown.
+        raise GateError(
+            f"the confirmed verify command reaches a provider CLI: {spends}. §5.2 refuses one "
+            "— it would be re-run fresh per candidate, two orders of magnitude above the "
+            "quote. Point the gate at the advisory target instead.")
+
+    try:
+        run_dir = storage.run_root(report.facts.root, run_id, must_be_new=True)
+    except FileExistsError as e:
+        raise GateError(
+            f"run {run_id!r} already has a directory for this repository, and a second run "
+            "sharing it would write over the first run's record of what it agreed to. Draw "
+            "another id with `storage.new_run_id()`.") from e
+
+    log = journal.Journal(storage.journal_path(run_dir))
+    log.record(journal.intent("confirm"), operation_id=run_id)
+    b = baseline.materialize(report.facts.root, run_dir, report.facts,
+                             list(report.selected), run_id)
+    protected, status_digest = runstate.snapshot_refs(report.facts.root, report.selected,
+                                                      forge_refs=(b.ref,))
+    runstate.write_manifest(run_dir, runstate.Manifest(
+        run_id=run_id,
+        repo_path=str(report.facts.root),
+        base_commit=b.base_commit,
+        baseline_ref=b.ref,
+        baseline_commit=b.commit,
+        tracked_tree_oid=b.tracked_tree_oid,
+        # `report.selected` rather than a contained subset: an escaping entry is one of the
+        # refusals above, so by here the two are the same tuple and narrowing it would only
+        # hide a disagreement between what was refused and what is recorded.
+        selected_paths=tuple(report.selected),
+        generator_contract=report.contract,
+        setup=confirmation.setup,
+        verify=confirmation.verify,
+        protected_refs=protected,
+        forge_refs={b.ref: b.commit},
+        status_digest=status_digest,
+        index_digest=runstate.snapshot_index(report.facts.root),
+        created_at=datetime.now(timezone.utc).isoformat()))
+    log.record(journal.done("confirm"), operation_id=run_id,
+               on_calibration_failure=confirmation.on_calibration_failure,
+               strategy=confirmation.strategy,
+               accepted_gaps=list(confirmation.accepted_gaps))
+    return run_dir
