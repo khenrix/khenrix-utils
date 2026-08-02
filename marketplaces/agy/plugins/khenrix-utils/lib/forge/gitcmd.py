@@ -49,12 +49,14 @@ NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnu
 # It does not cover git's HOOKS, which are the repository's OTHER program — NO_HOOKS below.
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
-# The repository's own hooks, suppressed on the calls this package makes into the USER's
-# repository. Measured on git 2.53.0: `update-ref` runs `reference-transaction`, and `add`
-# and `write-tree` run `post-index-change` — GIT_INDEX_FILE does NOT exempt those two,
-# because writing the private copy is still an index write. `status` runs it as well unless
-# GIT_OPTIONAL_LOCKS=0 keeps the index from being rewritten at all, which is why the
-# READONLY describe calls need nothing from this.
+# The repository's own hooks, suppressed on the calls this package makes into a repository
+# whose hooks directory it did not write — the USER's, and equally a builder SEAT's, which is
+# where four of these twelve call sites point and which the paragraph beginning "WHAT DECIDES
+# ON A SEAT" is entirely about. Measured on git 2.53.0: `update-ref` runs
+# `reference-transaction`, and `add` and `write-tree` run `post-index-change` —
+# GIT_INDEX_FILE does NOT exempt those two, because writing the private copy is still an
+# index write. `status` runs it as well unless GIT_OPTIONAL_LOCKS=0 keeps the index from
+# being rewritten at all, which is why the READONLY describe calls need nothing from this.
 #
 # WHY ALL FIVE SITES IN `baseline.materialize` AND NOT THREE. The three `post-index-change`
 # firings are plainly false: the user's hook is told their index moved when the only index

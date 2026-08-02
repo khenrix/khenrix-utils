@@ -1243,15 +1243,43 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
 # fixture, since the clean branch returns before the tree is ever built. The closures below
 # read call SITES, so a site added tomorrow fails them tomorrow whatever any fixture reaches.
 
-# Measured on git 2.53.0 against a `core.fsmonitor` script that touches a file: every
-# subcommand here ran it, in every form — `ls-files --cached` alone included, and `checkout -b`,
-# which writes the index on its way to moving HEAD — while `rev-parse`, `show-ref`,
-# `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`, `remote`
-# (the listing and `remove` forms alike) and `clone` did not. LOADING AN INDEX is the rule;
-# `--others` was a narrower one that read a cached-only `ls-files` as safe. See
-# `gitcmd.NO_DAEMON_CACHE`'s own note.
-_INDEX_LOADING = frozenset({"ls-files", "status", "diff", "add", "write-tree", "check-attr",
-                            "update-index", "checkout"})
+# THESE ARE ALLOW-LISTS, AND THE INVERSION IS THE POINT. Each was a list of subcommands that
+# DO the thing, so a resolved subcommand nobody had enumerated fell through to False and was
+# silently exempt from all three rules at once — while an UNRESOLVED one failed closed. The
+# next call site this project adds is `git worktree add -b` into the user's own repository
+# (spec §4 makes the synthesis tree a linked worktree sharing the user's `.git`, §16
+# prescribes the command), and measured with the monitor armed and hooks planted it ran the
+# monitor twice and fired `post-index-change` and `post-checkout` — passing all three
+# enumerations without a flag. Inverted, an unmeasured verb reads as needing every preset,
+# exactly as `*args` already did, and the way to clear one is to measure it.
+#
+# SO EVERY NAME BELOW CARRIES ITS MEASUREMENT. All three sets were measured together on git
+# 2.53.0, one fresh repository per probe, in the argv form this package actually uses, under
+# the environment `gitcmd.git` builds and WITHOUT the presets: a `core.fsmonitor` script and
+# all 25 hook names planted at `.git/hooks`; then `diff.external`; then an in-tree
+# `.gitattributes` marking `* diff=probe` with `diff.probe.command` and, separately,
+# `diff.probe.textconv`.
+
+# Measured NOT to load an index, so measured not to run `core.fsmonitor`. Everything else
+# does, or has not been looked at. `ls-files` in every form ran it — `--cached` alone
+# included — as did `status`, `diff`, `add`, `write-tree`, `check-attr`, `update-index` and
+# `checkout -b`, which writes the index on its way to moving HEAD.
+_INDEX_SAFE = frozenset({
+    # Six forms measured between them: `--show-toplevel`, `HEAD`, `--absolute-git-dir`,
+    # `--git-common-dir`, `--verify HEAD` and `<c>^{tree}`. None opens an index.
+    "rev-parse",
+    "show-ref", "symbolic-ref", "for-each-ref", "cat-file",
+    # All four forms this package runs: `--get`, `--get-regexp`, and the two WRITES
+    # (`config user.name X` and `config --local core.hooksPath /dev/null`).
+    "config",
+    "check-ref-format",   # measured with this inversion; the only verb in use nobody had
+    "commit-tree", "update-ref", "var",
+    # `remote` and `remote remove origin` alike, the latter against a clone that HAS a fetch
+    # refspec — the condition that makes it touch refs at all.
+    "remote",
+    # The SOURCE's index is not opened; the destination has none yet.
+    "clone",
+})
 # `apply` is the one subcommand that decides by FLAG rather than by name: measured, `apply
 # --index` runs the monitor and writes the index, while `apply --numstat` and a bare `apply`
 # do neither — they never open one.
@@ -1271,26 +1299,50 @@ _APPLY_INDEX = "--index"
 #   `clone`           the DESTINATION's hooks, installed out of `--template`; the source
 #                     repository's are never consulted.
 #
-# `status` is in the set although `GIT_OPTIONAL_LOCKS=0` is what actually keeps it from
-# rewriting the index — a call added without READONLY would fire the hook, so the closure
-# fails closed and asks for the flags rather than reasoning about a second call's env.
-# `apply` decides by `--index` here for the same reason it does above, and on the same
-# measurement: that form wrote the index and fired `post-index-change`, the other two did not.
+# `status` is NOT here although the same measurement clears it under READONLY: with
+# `GIT_OPTIONAL_LOCKS=0` it fired nothing and without it fired `post-index-change`, so a call
+# added without READONLY would fire the user's hook. The closure asks for the flags rather
+# than reasoning about a second call's env. `apply` decides by `--index` for the reason it
+# does above, and on the same measurement: that form wrote the index and fired
+# `post-index-change`, the other two fired nothing.
 #
-# Membership is read off the FIRST positional word, so one `remote` entry covers `remove` and
-# the listing form together, and the listing form pays a preset it cannot need. That is the
+# Membership is read off the FIRST positional word, so `remote` and `remote remove` are one
+# verb — and it is the DELETING form that fires `reference-transaction`, so the verb is
+# absent from this set and the listing form pays a preset it cannot need. That is the
 # fail-closed direction and it costs one flag pair; a second-word rule would have to be right
 # about every second word anyone adds.
-_HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status",
-                          "checkout", "remote", "clone"})
+#
+# Measured to fire something, and so absent below: `add`, `write-tree` and `apply --index`
+# (`post-index-change`), `update-ref` and `remote remove` (`reference-transaction`),
+# `status` without READONLY, `checkout -q -b` (`post-checkout`, `post-index-change`,
+# `reference-transaction`) and `clone` (the same three, out of the DESTINATION's template).
+_HOOK_SAFE = frozenset({
+    "rev-parse", "show-ref", "symbolic-ref", "for-each-ref", "cat-file", "var",
+    "config",             # all four forms, the two writes included
+    "check-ref-format", "check-attr",
+    "ls-files",           # every form: `-z`, `--eol`, `-v -s -z`, `--cached --others`
+    "commit-tree",        # writes an object and no ref, so no transaction to report
+    "diff",               # measured in both config scopes, with and without READONLY
+})
 
-# What runs a DIFF DRIVER — the repository's THIRD program, after `core.fsmonitor` and its
-# hooks. `diff.external` needs nothing but the config; `diff.<d>.command` and
-# `diff.<d>.textconv` are selected by an in-tree `.gitattributes`, which a seat also writes.
-# Measured on git 2.53.0 for `diff`, the only one this package runs; the rest are here so a
-# site added to one of them fails until someone measures it, and all nine accept both flags.
-_DIFF_DRIVING = frozenset({"diff", "log", "show", "format-patch", "diff-tree", "diff-index",
-                           "diff-files", "range-diff", "blame"})
+# What is measured NOT to run a DIFF DRIVER — the repository's THIRD program, after
+# `core.fsmonitor` and its hooks. `diff.external` needs nothing but the config;
+# `diff.<d>.command` and `diff.<d>.textconv` are selected by an in-tree `.gitattributes`,
+# which a seat also writes. `diff` ran all three and is absent below; every verb here ran
+# none of them. `add` and `checkout` are on the list for the driver only — they run a
+# `filter.<d>.clean`/`smudge`, which is the fourth program and no argv closes it.
+#
+# INVERTED LIKE THE OTHER TWO, and here the fail-closed direction cannot be answered with
+# flags: `NO_DIFF_DRIVERS` is a SUBCOMMAND option, so `rev-parse --no-ext-diff` is an error.
+# An unmeasured verb is therefore cleared by measuring it onto this list or by an exemption
+# naming what it actually runs.
+_DIFF_DRIVER_SAFE = frozenset({
+    "rev-parse", "show-ref", "symbolic-ref", "for-each-ref", "cat-file", "var",
+    "config", "check-ref-format", "check-attr", "ls-files", "status",
+    "add", "write-tree", "commit-tree", "update-ref", "checkout", "clone", "remote",
+    "apply",              # both forms: `--numstat -z` and `--index --binary`
+})
+
 
 @dataclass(frozen=True)
 class _GitCall:
@@ -1369,27 +1421,22 @@ def _forge_git_calls() -> list:
 
 
 def _loads_an_index(call: _GitCall) -> bool:
-    if not call.sub:
-        return True
+    """An unresolved subcommand ("") is in no allow-list, so it reads as needing the flags —
+    the same answer the enumeration gave it, now reached by the same rule as every other
+    unmeasured verb rather than by a special case."""
     if call.sub == "apply":
         return _APPLY_INDEX in call.flags
-    return call.sub in _INDEX_LOADING
+    return call.sub not in _INDEX_SAFE
 
 
 def _fires_a_hook(call: _GitCall) -> bool:
-    if not call.sub:
-        return True
     if call.sub == "apply":
         return _APPLY_INDEX in call.flags
-    return call.sub in _HOOK_FIRING
+    return call.sub not in _HOOK_SAFE
 
 
 def _runs_a_diff_driver(call: _GitCall) -> bool:
-    """Unresolved reads as YES here too, but it cannot be answered by adding the flags:
-    `NO_DIFF_DRIVERS` is a SUBCOMMAND option, and `rev-parse --no-ext-diff` is an error. So an
-    unresolved call is cleared by an exemption naming what it actually runs, which is the same
-    fail-closed direction reached through the one door that exists for it."""
-    return not call.sub or call.sub in _DIFF_DRIVING
+    return call.sub not in _DIFF_DRIVER_SAFE
 
 
 # Every call site allowed to load an index WITHOUT the flags, and the reason it is allowed.
@@ -1406,6 +1453,14 @@ def _runs_a_diff_driver(call: _GitCall) -> bool:
 # `core.fsmonitor` they left behind is code the engine already granted itself by running them.
 # The seat is the tree where that argument does NOT hold, which is why `harvest.artifact_set`
 # and `bundle._rediff` carry the flags rather than an entry here.
+#
+# WHAT THE FIRST ENTRY RESTS ON, stated here because it is a claim about CALLERS and this
+# file cannot check one. "Every caller was traced" was true when it was written and is not a
+# property of the code: `verify.fixed_point(verifier_path, …)` is public and takes any path,
+# so a caller added later that passes a SEAT path makes the exemption false with nothing here
+# to say so. The rule for that day is the entry's own words — it clears a tree the ENGINE
+# built — so a seat-facing caller of the verify chain is what deletes this entry and puts the
+# flags on the call, not what widens the sentence.
 _DAEMON_CACHE_EXEMPT = {
     "verify.py:_tracked:ls-files":
         "reads the verifier or calibration clone around the commands the engine runs in it",
@@ -1500,6 +1555,13 @@ def test_the_git_call_reader_sees_a_new_call_site():
     assert not _runs_a_diff_driver(one('gitcmd.git(r, "rev-parse", "HEAD")'))
     assert _runs_a_diff_driver(one('gitcmd.git(r, *args)')), \
         "an unresolved subcommand must read as needing an exemption, not as clear"
+    assert not _loads_an_index(one('gitcmd.git(r, "config", "--get", "user.name")')), \
+        "a measured-safe verb is cleared by BEING on the list, not by being absent from one"
+    assert _loads_an_index(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+        "the inversion's whole point: a verb nobody measured needs the flags"
+    assert _fires_a_hook(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')) and \
+        _runs_a_diff_driver(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+        "and needs them for all three rules, not for whichever one was enumerated"
     assert not one('gitcmd.git(r, "config", "--get", "user.name")').user_config
     assert one('gitcmd.git(r, "config", "--get", "user.name", user_config=True)').user_config, \
         "the door out of the /dev/null pin is a keyword, and the reader has to see it"
