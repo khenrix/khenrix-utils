@@ -2,12 +2,19 @@
 which of its tracked files a DECLARED generator owns — see `detect_generators` for why
 that last answer is empty for every repository, this one included.
 
-Two hard rules:
+Three hard rules:
 
 1. Describe-only. Nothing here writes an object, a ref, or the index. `git write-tree` is
    deliberately absent — it locks and rewrites the real index whenever the cache tree is
    stale, which is precisely the dirty-tree case forge exists for (spec §2.2).
-2. Structural rejections are scoped to the SELECTED baseline — tracked content plus the
+2. Describe-only covers EXECUTION too, and `NO_DAEMON_CACHE` is what carries that half:
+   `core.fsmonitor` names a program git RUNS and lives in the repository's own `.git/config`,
+   while §5 step 1 admits no repository-supplied code before authorization. It goes on EVERY
+   worktree-reading call, not the porcelain alone. Measured on git 2.53 against a repository
+   whose `core.fsmonitor` touched a marker file: `ls-files --eol` and `check-attr` each ran
+   it while they lacked the flags, and `status`/`ls-files -s` did not, because they already
+   carried them.
+3. Structural rejections are scoped to the SELECTED baseline — tracked content plus the
    untracked paths the user chose. An unscoped sweep would abort on ignored artifacts the
    user never created: this very repository carries leaked agy worktrees under gitignored
    eval workspaces, each with a `.git` FILE (spec §2.3).
@@ -125,7 +132,7 @@ def _filtered_paths(repo, tracked: list) -> list:
     """
     hits = []
     for start in range(0, len(tracked), _ATTR_BATCH):
-        out = gitcmd.git(repo, "check-attr", "-z", "filter", "--",
+        out = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "check-attr", "-z", "filter", "--",
                          *tracked[start:start + _ATTR_BATCH],
                          env_extra=gitcmd.READONLY).stdout
         fields = out.split("\0")
@@ -159,7 +166,7 @@ def _eol_mismatched_paths(repo) -> list:
     `_index_entries` gives — under `-z` the path is raw and may contain one.
     """
     out = []
-    for rec in _z(gitcmd.git(repo, "ls-files", "--eol", "-z",
+    for rec in _z(gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "ls-files", "--eol", "-z",
                              env_extra=gitcmd.READONLY).stdout):
         meta, tab, path = rec.partition("\t")
         cols = meta.split()
@@ -222,8 +229,9 @@ def _escaping_links_under(root: Path, base: Path) -> list:
     required — a selected `.venv` carries `bin/python -> /usr/bin/python3`.
 
     This walk changes the FIRST of those three, and `screen._walk` the second. The THIRD is
-    unchanged — a seat still reads the host file, because nothing consults this list — and
-    that is what the closing assertions of `test_forge_seams.py`'s
+    unchanged for a chain entered below preflight — `preflight.refusals` consults this list,
+    but `baseline.materialize` does not — and that is what the closing assertions of
+    `test_forge_seams.py`'s
     `test_an_escaping_link_in_a_selection_is_named_by_two_refusals_and_stopped_by_neither`
     measure today.
 

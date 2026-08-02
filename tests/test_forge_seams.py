@@ -33,7 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import (baseline, bundle, fleet, gitcmd, harvest, journal,  # noqa: E402
-                   inspect as finspect, runstate, screen, snapshot, storage, verify)
+                   inspect as finspect, preflight, runstate, screen, snapshot, storage,
+                   verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -113,11 +114,11 @@ def test_an_escaping_link_in_a_selection_is_named_by_two_refusals_and_stopped_by
     changes nothing about the containment story: describing a link is not refusing one.
 
     BOTH refusals are asserted rather than one, because either alone would let a single
-    edit reopen the whole path. Neither STOPS anything today — Task 5 measured that
-    `rejections` and `screen_tree` each have zero consumers, so both return a list into a
-    void. What is pinned here is that they still NAME it; the closing assertions
-    CHARACTERIZE what the tree does anyway, and the distance between the two halves is the
-    finding, not a gap in the test.
+    edit reopen the whole path. Neither stops THIS chain, and the reason is now specific
+    rather than universal: `preflight.refusals` consults both, and nothing between
+    `baseline.materialize` and the verifier calls preflight — so the closing assertions still
+    CHARACTERIZE what the tree does when the selection is carried without one, and the
+    distance between the two halves is the finding, not a gap in the test.
     """
     repo = make_repo(tmp_path)
     outside = tmp_path / "outside"
@@ -458,9 +459,10 @@ def _chain_to_verifier(repo, tmp, *, run_id="r1", contract=None, command=None,
     takes the artifact paths from Fsetup->Fwork, so only the work crosses. Omitted, F0 and
     Fsetup are one inventory and the seat has no setup phase at all.
 
-    Nothing in here consults `inspect.rejections`; that is the property under test, and
-    `test_nothing_in_the_chain_consults_either_refusal` is where it is measured rather
-    than assumed.
+    This helper starts at `baseline.materialize` and never calls `preflight`, so nothing in
+    here consults `inspect.rejections` — which is what makes the refusal cases below able to
+    measure what an unrefused repository delivers. `preflight` is where the policy IS
+    consulted; see `test_preflight_consults_both_refusals_and_what_they_name_it_refuses`.
     """
     contract = finspect.GeneratorContract() if contract is None else contract
     facts = finspect.repo_facts(repo)
@@ -680,12 +682,15 @@ def _refusals_disabled():
     `clone_seat`, the containment tests in `bundle`, the hooks pin in `verify` — so a case
     that comes through clean below comes through on a mechanism's own evidence.
 
-    TODAY THIS CHANGES NOTHING, and that is measured next door: nothing under `shared/` or
-    `scripts/` so much as names `rejections` in code, so the chain never consults the policy
-    whether it is patched or not. The patch is here so that the day a consumer appears —
-    spec §5 lists unsupported-feature rejections at step 1 of its confirmation chronology,
-    so that is where one belongs — these cases keep bypassing exactly the policy and not
-    the defence underneath it.
+    THIS CHANGES NOTHING FOR THE CHAIN BELOW, and the reason moved once already. It used to
+    be that nothing anywhere consulted the policy; `preflight.refusals` now does, which is
+    what `test_preflight_consults_both_refusals_and_what_they_name_it_refuses` measures. What
+    holds instead is narrower and is the reason these cases still read the same:
+    `_chain_to_verifier` starts at `baseline.materialize` and never runs preflight, so the
+    fixtures below reach a seat and a verifier whether the policy is patched or not. The
+    patch is what keeps that true deliberately rather than by accident — and what will keep
+    these cases bypassing exactly the policy, and not the defence underneath it, on the day
+    an orchestrator puts preflight in front of the chain.
     """
     original = finspect.rejections
     finspect.rejections = lambda facts, selected_untracked: []
@@ -711,15 +716,17 @@ def _references_the_policy(source: bytes) -> bool:
     otherwise read as green. `getattr(finspect, "rejections")` still passes — the name is a
     string there, and chasing it is a dataflow analysis with no end.
 
-    BOTH refusals are watched. `screen_tree` has no consumer either, and the escaping-link
-    seam's docstring says so — a claim that would go false in silence if only `rejections`
-    were pinned here.
+    BOTH refusals are watched, because they are enforced together or not at all: §2.3 and §3
+    are two conditions at one step of §5's chronology, and a consumer that dropped either
+    would leave the other looking enforced.
 
     The cost of matching a bare name over the whole scanned tree: an unrelated local called
     `rejections` or `screen_tree` anywhere under `shared/` or `scripts/` reds this gate with
     a message about the forge policy. Accepted rather than narrowed — the tripwire exists to fire on a day
     nobody is expecting it, so a false alarm someone must read beats a filter that quietly
-    excludes the file the consumer actually lands in.
+    excludes the file the consumer actually lands in. `preflight.Report.rejections` is the
+    predictable one: any module that reads a report's own field lands in the list, and the
+    right response is to check that module obeys the refusal, not to narrow the match.
     """
     for node in ast.walk(ast.parse(source)):
         name = (node.attr if isinstance(node, ast.Attribute)
@@ -742,35 +749,87 @@ def test_the_policy_detector_sees_an_aliased_reference():
     assert not _references_the_policy(b"def rejections(facts, sel):\n    return []\n")
 
 
-def test_nothing_in_the_chain_consults_either_refusal():
-    """SEAM: `inspect.rejections`, `screen.screen_tree`, and every module that would obey.
+# Every file allowed to reach for a refusal in code. Set equality against this list, not
+# containment, so BOTH directions still fire: the consumer disappearing was the original
+# subject of this tripwire, and an unvetted second one is what it watches for now. Adding a
+# name here is the decision the test's docstring asks you to make deliberately.
+_POLICY_CONSUMERS = ["shared/lib/forge/preflight.py"]
 
-    This is the premise the whole section below rests on, so it is measured here instead of
-    asserted in a docstring. Each returns a list and no module reads it: the refusals are
-    enforced by whoever calls preflight, and spec §5's chronology — the caller that would —
-    is not in this plan.
 
-    SCANNED OVER `shared/` AND `scripts/`, not just `shared/lib/forge/*.py`. The consumer
-    this waits for is that chronology, whose likeliest home is an orchestrator under
-    `shared/skills/llm-forge/scripts/` which does not exist yet — outside the package, and a
-    glob that cannot see it stays green on the one day it should fire.
+def test_preflight_consults_both_refusals_and_what_they_name_it_refuses():
+    """SEAM: `inspect.rejections`, `screen.screen_tree`, and the module that obeys them.
 
-    WHEN THIS GOES RED, a consumer has appeared. That is the intended direction and nothing
-    here should be deleted for it: `_refusals_disabled` has just become load-bearing, so
-    check that it still bypasses only the policy, and that each case below still reaches the
-    mechanism it is measuring.
+    THIS TEST USED TO ASSERT THE OPPOSITE, and the change of subject is the point. Its
+    predecessor measured that neither refusal had a single consumer anywhere under `shared/`
+    or `scripts/` — a policy nothing calls is a policy that does not run — and it went red the
+    day `preflight` imported them. What holds now is one step further on: the policy is wired
+    to the thing that stops a run.
+
+    Wiring is asserted BY MEASUREMENT and the two measurements are the tests directly below —
+    `test_a_line_rejections_names_is_a_line_refusals_refuses` and
+    `test_a_screened_secret_stops_the_run_rather_than_informing_it`. This one may not make
+    them, because the property it can see is textual: "preflight imports inspect" would pass
+    forever and pin nothing, since a module may import a policy and drop its answer on the
+    floor — the shape the predecessor existed to catch, reintroduced one level up.
+
+    What this half still buys is the sweep, over every file under `shared/` and `scripts/`
+    including an orchestrator under `shared/skills/llm-forge/scripts/` that does not exist
+    yet: it fires when the consumer goes away, and when a second one appears that nobody has
+    checked obeys anything.
+
+    WHEN THE SWEEP GOES RED with a new name, decide before adding it: does that module act on
+    the refusal, or merely read it? `_refusals_disabled` bypasses the policy for the cases
+    below, so a consumer that runs inside them changes what those cases measure.
     """
     scanned = sorted(p for root in (ROOT / "shared", ROOT / "scripts")
                      for p in root.glob("**/*.py"))
-    # Both roots must really have been reached, or `callers == []` is a statement about an
-    # empty sweep — the failure a widened glob is meant to remove, arriving as a pass.
+    # Both roots must really have been reached, or the comparison below is a statement about
+    # an empty sweep — the failure a widened glob is meant to remove, arriving as a pass.
     assert ROOT / "shared" / "lib" / "forge" / "inspect.py" in scanned
     assert ROOT / "scripts" / "render.py" in scanned
     callers = [str(p.relative_to(ROOT)) for p in scanned
                if _references_the_policy(p.read_bytes())]
-    assert callers == [], (
-        f"{callers} now enforce {' or '.join(_REFUSALS)} — see this test's docstring "
-        "before changing anything below it")
+    assert callers == _POLICY_CONSUMERS, (
+        f"{callers} reach for {' or '.join(_REFUSALS)} — see this test's docstring before "
+        "adding a name to _POLICY_CONSUMERS")
+
+
+def test_a_line_rejections_names_is_a_line_refusals_refuses(tmp_path):
+    """The second half of the seam above, on a repository built for it.
+
+    `escaping_symlink` rather than `shallow`, because a tracked escaping link is the case
+    `bundle`'s docstring defers to preflight for: the link is B's, so B is where the decision
+    belongs, and this is the assertion that the decision now exists.
+    """
+    repo = _mk_escaping_repo(tmp_path)
+    facts = finspect.repo_facts(repo)
+    named = [r for r in finspect.rejections(facts, [])
+             if "tracked symlink escapes the repository" in r]
+    assert named, "the fixture no longer trips the refusal it was built for"
+    assert set(named) <= set(preflight.refusals(preflight.inspect_repo(repo))), \
+        "the policy names it and the consumer drops it — which is the defect this closes"
+
+    assert preflight.refusals(preflight.inspect_repo(_mk_escaping_near_miss(
+        tmp_path / "near"))) == (), "and the in-tree link is admitted, or the refusal is noise"
+
+
+def test_a_screened_secret_stops_the_run_rather_than_informing_it(tmp_path):
+    """SEAM: `screen.screen_tree` and `preflight.refusals`. §3 runs the screen before any
+    provider starts precisely so its answer can stop one; a finding that only informs is a
+    finding that ships the credential to three full-permission cloud-backed agents.
+
+    The near miss is the same directory without the credential file, so what is measured is
+    the finding and not the act of selecting a directory.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/notes.md", "nothing sensitive\n")
+    assert preflight.refusals(preflight.inspect_repo(repo, ("scratch",))) == ()
+
+    write(repo, "scratch/.env", "TOKEN=whatever\n")
+    findings, _breaches = screen.screen_tree(repo, ["scratch"])
+    assert [f.path for f in findings] == ["scratch/.env"], "the screen must name it first"
+    assert preflight.refusals(preflight.inspect_repo(repo, ("scratch",))) == (
+        "scratch/.env: high-risk-filename",)
 
 
 # --- eol_no_roundtrip ------------------------------------------------------ #

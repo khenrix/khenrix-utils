@@ -37,11 +37,12 @@ omitted, so in the verifier `a` dangles rather than escapes.
 WHAT THIS CONTAINMENT DOES NOT COVER. Only an AGENT-PRODUCED link reaches the test: a link
 already in B is in neither the diff against B nor `artifacts.paths`, so `_escaping_link`
 never sees it. That scope leans on `inspect.rejections` refusing a tracked escaping link at
-preflight, and `rejections` is a POLICY nothing calls — measured in
-`test_forge_seams.py::test_nothing_in_the_chain_consults_either_refusal`. So such a link
-does reach a baseline, a seat and a verifier, and a verify command run there reads AND
-writes a host path through it (`test_forge_seams.py::_harm_of_escaping_link`). Widening this
-module is not the fix: the link is B's, so B is where the decision belongs.
+preflight, and `preflight.refusals` is what now consults it —
+`test_forge_seams.py::test_a_line_rejections_names_is_a_line_refusals_refuses`. The lean is
+on the CALLER running preflight and obeying it: a chain entered at `baseline.materialize`
+still carries such a link to a seat and a verifier, where a verify command reads AND writes
+a host path through it (`test_forge_seams.py::_harm_of_escaping_link`). Widening this module
+is not the fix: the link is B's, so B is where the decision belongs.
 
 D-2 — THE ESCAPE-VS-INTERNAL DISCRIMINATION IS THE CALLER'S, NOT `screen`'s. See
 `screen.screen_tree`'s docstring, which states the sound predicate. It is NOT the one this

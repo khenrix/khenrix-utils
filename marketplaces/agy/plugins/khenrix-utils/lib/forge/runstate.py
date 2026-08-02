@@ -80,14 +80,15 @@ neither the porcelain nor the digest; `git add -u -- :/` exits ZERO and skips th
 a SELECTED path's edit moves the digest under either bit. So both ways out are the same two, and
 there is no separate case here.
 
-The reading it replaces was that preflight refuses the repository outright, and preflight
-refuses nothing. It NAMES the condition — the index tag is `S`, `facts.sparse` is True,
-`inspect.rejections` returns a line for it, and spec §2.3 lists skip-worktree state among the
-conditions that fail closed before a run starts — but `rejections` is a policy with zero
-consumers, so no repository is stopped by it, and nothing downstream stands in for it: `git add
--u` skipping the path is the bit working as documented, not a refusal. That is a §2.3 GAP of
-the same kind as the §9 ones above, and it is the gap that makes the shared floor reachable
-rather than theoretical. The mid-run case remains the index-move class already covered.
+The reading it replaces was that preflight refuses the repository outright, and for a while
+preflight refused nothing: it NAMED the condition — the index tag is `S`, `facts.sparse` is
+True, `inspect.rejections` returns a line for it, and spec §2.3 lists skip-worktree state
+among the conditions that fail closed before a run starts — while `rejections` was a policy
+with zero consumers. `preflight.refusals` is that consumer now, so the original reading holds
+again for any caller that runs preflight and obeys it. What is left is the caller's to get
+right rather than this file's: a run entered below preflight still meets the floor, because
+nothing downstream stands in for the refusal — `git add -u` skipping the path is the bit
+working as documented. The mid-run case remains the index-move class already covered.
 
 What IS recorded is `protected_refs`, name-to-OID for every ref that is not forge's, and
 `status_digest`, over the four parts of the checkout state that move independently:

@@ -20,7 +20,12 @@ import subprocess
 
 READONLY = {"GIT_OPTIONAL_LOCKS": "0"}
 NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-# fsmonitor/untracked-cache are daemon state; a baseline must not depend on them.
+# fsmonitor/untracked-cache are daemon state; a baseline must not depend on them. The
+# fsmonitor half also carries a second, stronger reason, so dropping this from a call is not
+# a caching decision: the value is a PROGRAM git runs, set in the repository's own
+# `.git/config`, and §5 step 1 admits no repository-supplied code before authorization —
+# measured through `ls-files --eol` and `check-attr` in `inspect`, which ran one until they
+# carried these flags.
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
 # Ambient values that decide which repository, index, object store or ref namespace a call
