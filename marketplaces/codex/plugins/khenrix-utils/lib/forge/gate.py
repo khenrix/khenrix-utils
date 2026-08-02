@@ -195,6 +195,13 @@ class Quote:
     to compare — so a scalar that reads low is not rescued by a line naming what it left out.
     Every line names the section it comes from, because an operator who thinks a number is
     wrong needs the derivation, not the total.
+
+    `seats` and `attempts` are the two INPUTS kept on the record, and they are here rather
+    than only in `quote`'s signature because everything downstream reads them from here:
+    `confirm` records what this priced, and `open_run` writes what `confirm` recorded. A
+    launcher taking them from its own argument instead would be free to build a fleet the
+    quote never costed, and no test comparing two literals catches a caller that passes the
+    wrong literal twice.
     """
     provider_calls: int
     ultrareview: str
@@ -202,6 +209,8 @@ class Quote:
     verify_runs: int
     peak_disk_gb: float
     lines: tuple[str, ...]
+    seats: int
+    attempts: int
 
 
 def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> Quote:
@@ -292,7 +301,8 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
         "documented remedy is what spends",
     ]
     return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
-                 verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines))
+                 verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
+                 seats=seats, attempts=attempts)
 
 
 # ---------------------------------------------------------------------------------------
@@ -913,8 +923,53 @@ STRATEGY_RULES = ("size-gated", "fusion", "base-and-port")
 # the point: either calibration policy is an ACTION a later phase takes, so silence there has
 # no safe reading, while silence about a gap means the operator accepted none — which is the
 # reading that cannot later be cited as agreement.
-_ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "accepted_gaps")
-_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy")
+_ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "author", "accepted_gaps")
+_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy", "author")
+
+# What git's ident line cannot hold: `<` and `>` delimit the email and a newline ends the
+# header. Refused HERE because git does not refuse it — measured on git 2.53.0, `commit-tree`
+# with GIT_AUTHOR_NAME `Ada <x>` exits 0 and the commit reads `Ada x`, and `Ada\nNewline`
+# reads `AdaNewline`. So the alternative to this check is not a late failure but a permanent
+# false attribution on the commit the user is asked to merge, with nothing raised.
+_IDENT_FORBIDDEN = "<>\n\r"
+
+
+def propose_identity(repo):
+    """The identity git would use for a commit here — `(name, email)`, or None.
+
+    THE ONE CALL IN THIS PACKAGE THAT READS THE USER'S OWN CONFIG, and it exists because
+    `baseline._resolve_author` cannot: `gitcmd` pins the global and system files to /dev/null
+    on every other call, so the engine is blind to the place an identity normally lives, and
+    "no local user.name" is the ordinary state of an ordinary repository rather than a fault.
+    §5 step 2 is where the operator is present, which is where a fact this hardened path
+    cannot see has to enter.
+
+    NOT `git var GIT_AUTHOR_IDENT`, which is what a reader reaches for and what
+    `baseline`'s own docstring recommended. Measured on git 2.53.0, `user.name` set and
+    `user.email` unset: it answers `Configured <khenrix@Surface-Book-2.localdomain>` at rc=0,
+    inventing the email from user@hostname with nothing in the output marking which half was
+    guessed — and B1 is history the user is asked to merge, so a guess that reaches the record
+    is the permanent false attribution `baseline` refuses to make. `config --get` on the same
+    repository exits 1 for the unset half, which is the answer that can be shown as missing.
+    The cost is what `git var` reads and this does not: `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`
+    and `EMAIL` in the ambient environment. An operator using those passes `author` directly.
+
+    None, never a half-filled pair: an email without a name is not an identity, and a caller
+    handed one field would fill the other in — which is the guess again, one level up.
+
+    RETURNED, NEVER RECORDED. This is a proposal for the operator to read and confirm; what
+    reaches `Confirmation` is what they answered. A run authored by this function's return
+    value without anybody seeing it is the same false attribution reached politely.
+    """
+    def value(key):
+        # `user_config=True` is argued at `gitcmd.git`; measured on git 2.53.0 with a
+        # `core.fsmonitor` armed and a full hook set planted, `config --get` ran neither, so
+        # restoring the file that can NAME those programs cannot run one here.
+        return gitcmd.git(repo, "config", "--get", key, env_extra=gitcmd.READONLY,
+                          check=False, user_config=True).stdout.strip()
+
+    name, email = value("user.name"), value("user.email")
+    return (name, email) if name and email else None
 
 
 @dataclass(frozen=True)
@@ -936,6 +991,21 @@ class Confirmation:
     aborts its sequence on a nonzero exit, and §12.3 classifies a contention-class failure for
     these runs without the input §5.1 promises it.
 
+    `author` is who B1 is recorded as — the one commit forge writes into the user's own
+    history, and the one §2.1 makes theirs rather than forge's. It is an ANSWER and not a
+    probe: every call `gitcmd` makes has the global config pinned at /dev/null, so
+    `baseline._resolve_author`'s fallback sees repo-LOCAL identity only and a repository whose
+    identity lives in `~/.gitconfig` — the ordinary one, this one included — had no route to
+    supply one at all. `propose_identity` is what fills this in for the ordinary case; the
+    field is what makes the run refusable before anything is on disk rather than three writes
+    in. Carried here rather than in the manifest because B1's commit object already records
+    it and `baseline_commit` is in the manifest, so a second copy is a second thing to be
+    right about.
+
+    `seats` and `attempts` come off the `Quote` the operator was shown, and `confirm` refuses
+    to take them from anywhere else. They are the run's shape and §5.2 priced the run BY them,
+    so the alternative — a launcher passing its own — is a fleet nobody costed.
+
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
     constructor supplies is a fact nobody answered for. `confirm` is where an omitted
     `accepted_gaps` becomes the empty tuple, because that is a normalization of an answer
@@ -946,6 +1016,9 @@ class Confirmation:
     on_calibration_failure: str
     strategy: str
     accepted_gaps: tuple[str, ...]
+    author: tuple[str, str]
+    seats: int
+    attempts: int
 
 
 def must_show(report, quote_, command) -> tuple[str, ...]:
@@ -1021,11 +1094,25 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
         f"gap {GC_UNBUILT}: every interrupted write leaves a staging file nothing collects, "
         "so `--gc` is mandatory rather than tidy — and it is not built. The peak disk below "
         "is what accumulates until it is",
-        f"gap {GENERATOR_CONTRACT_EMPTY}: the generator contract is empty for every "
-        "repository the detector can read, this one included, so no relation admits a "
-        "verify-origin rewrite of a TRACKED file. A PASS therefore requires a gate that "
-        "rewrites no tracked file, whatever this repository's own generators do",
     ]
+    # READ OFF `report.contract`, never asserted. "The contract is empty" is true of every
+    # repository `detect_generators` can read today, so a hardcoded sentence and this branch
+    # are indistinguishable until they are not — and the case they then differ on is the one
+    # deciding whether a candidate may rewrite a tracked file and keep its PASS.
+    relations = report.contract.relations
+    if relations:
+        shown = ", ".join(f"{s} -> {o}" for s, o in relations[:4])
+        lines.append(
+            f"generator contract {report.contract.id!r}: {len(relations)} relation(s) — "
+            f"{shown}{' …' if len(relations) > 4 else ''}. A verify-origin rewrite of a "
+            "tracked file matching one of the OUTPUT globs is admitted and keeps the "
+            "candidate's PASS; the source glob is provenance and decides nothing")
+    else:
+        lines.append(
+            f"gap {GENERATOR_CONTRACT_EMPTY}: this repository's generator contract is empty, "
+            "so no relation admits a verify-origin rewrite of a TRACKED file. A PASS "
+            "therefore requires a gate that rewrites no tracked file, whatever this "
+            "repository's own generators do")
     lines += list(quote_.lines)
     lines += list(provider_invoking_verify(report.facts.root, command))
     return tuple(lines)
@@ -1071,6 +1158,38 @@ def _confirmed_steps(name: str, value) -> tuple:
         raise GateError(f"{name}: {e}") from e
 
 
+def _confirmed_author(value) -> tuple[str, str]:
+    """`(name, email)` for B1, or a GateError naming what is wrong with the answer.
+
+    A bare STRING is refused first, on `_confirmed_steps`' argument: `"Ada <ada@x>"` unpacks
+    into two characters without complaint, and the run would be authored by `A <d>`.
+    """
+    if isinstance(value, (str, bytes)):
+        raise GateError(
+            f"author is {value!r}, a single string. It is a (name, email) PAIR — write "
+            '("Ada Lovelace", "ada@example.com"). A string unpacks into its first two '
+            "characters, and B1 would carry them as a name and an address.")
+    try:
+        name, email = value
+    except (TypeError, ValueError):
+        raise GateError(
+            f"author is {value!r}; §5 step 2 asks for the (name, email) B1 is recorded "
+            "as. `gate.propose_identity(repo)` reads the one git would use, including the "
+            "global config every other call this package makes is blind to.") from None
+    for label, part in (("name", name), ("email", email)):
+        if not isinstance(part, str) or not part.strip():
+            raise GateError(
+                f"author's {label} is {part!r}. B1 is the commit §2.1 makes the USER's and "
+                "the branch they are asked to merge is rooted on it, so half an identity is "
+                "refused rather than completed here — see `baseline`'s own refusal to guess.")
+        if any(c in part for c in _IDENT_FORBIDDEN):
+            raise GateError(
+                f"author's {label} is {part!r}, which carries one of {_IDENT_FORBIDDEN!r}. "
+                "Those delimit git's ident line, and git 2.53 strips them rather than "
+                "failing — so B1 would record a name the operator did not type.")
+    return name.strip(), email.strip()
+
+
 def confirm(report, quote_, answers) -> Confirmation:
     """§5 step 2's answer, validated into the record §14.2 writes once.
 
@@ -1092,6 +1211,21 @@ def confirm(report, quote_, answers) -> Confirmation:
     "accepted none": a gap the operator did accept, dropped from the record, with nothing
     raised. Spelled as a whole-key check rather than a special case for that one name,
     because the next optional answer would arrive with the same hole.
+
+    THE AUTHOR IS VALIDATED HERE, WHICH IS WHERE THE COST OF REFUSING IT IS NOTHING. B1
+    cannot be authored from what this package can see — `gitcmd` pins the global config to
+    /dev/null on every call, so a repository whose identity is in `~/.gitconfig` has none as
+    far as `baseline._resolve_author` is concerned. Validating at `open_run` instead would
+    refuse after a run directory and a journalled intent already existed, which is the orphan
+    §14.1 reserves for a crash; validating here means the answer sheet is either usable or
+    rejected before anything is created. `propose_identity` is what an operator's front end
+    fills the field from, and it is deliberately not called here: this function records an
+    answer and a value it went and fetched is not one.
+
+    `seats` and `attempts` are read OFF THE QUOTE and are not answer keys. §5.2 prices the run
+    by them, and a second route in is a run whose recorded shape and quoted shape are two
+    numbers a reader has to compare — so there is one number, and the only way to change it is
+    to price the change first.
 
     WHAT `accepted_gaps` IS CHECKED FOR is that each id is one this engine can raise —
     `ACCEPTABLE_GAPS` — and not that `must_show` raised it for THIS repository. The narrower
@@ -1139,6 +1273,14 @@ def confirm(report, quote_, answers) -> Confirmation:
             "deliberately absent: §12.1 admits one only where stable seams exist, which is "
             "§10.1's non-mechanical criterion and cannot be pre-committed to.")
 
+    author = _confirmed_author(answers["author"])
+    if quote_.seats < 1 or quote_.attempts < 1:
+        # `quote()` refuses these at its own door; this is the floor under a `Quote` built by
+        # hand, which is the shape that reaches the manifest without ever passing that door.
+        raise GateError(
+            f"the quote prices {quote_.seats} seat(s) x {quote_.attempts} attempt(s): a run "
+            "with no seat is not a run and an attempt budget below one is not a retry policy")
+
     gaps = answers.get("accepted_gaps", ())
     if isinstance(gaps, (str, bytes)):
         raise GateError(
@@ -1151,7 +1293,8 @@ def confirm(report, quote_, answers) -> Confirmation:
             f"accepted_gaps names {stray}, which `must_show` cannot raise. An accepted gap has "
             f"to resolve to a line the operator was shown; the ids are {list(ACCEPTABLE_GAPS)}.")
     return Confirmation(setup=_confirmed_steps("setup", answers["setup"]), verify=verify_steps,
-                        on_calibration_failure=policy, strategy=rule, accepted_gaps=gaps)
+                        on_calibration_failure=policy, strategy=rule, accepted_gaps=gaps,
+                        author=author, seats=quote_.seats, attempts=quote_.attempts)
 
 
 def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
@@ -1168,8 +1311,14 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
 
     ORDER, AND WHAT EACH STEP MAKES TRUE. The two refusals come first, so a run that is not
     going to happen leaves nothing at all on disk — not a run directory, not an object and
-    not a ref. Then the run root, which fails on a run id already taken rather than sharing a
-    directory with the run that owns it. Then `journal.intent("confirm")`, before anything
+    not a ref. The THIRD thing that can stop a run is not checked here at all, and its absence
+    is the point: B1's author is settled at `confirm`, so the one input `materialize` used to
+    raise on — a repository with no LOCAL identity, which is the ordinary repository, since
+    every call this package makes is blind to `~/.gitconfig` — cannot reach this function.
+    While it could, it raised below the two writes that follow, which made the ordinary case
+    leave the orphan §14.1 reserves for a crash. Then the run root, which fails on a run id
+    already taken rather than sharing a directory with the run that owns it. Then
+    `journal.intent("confirm")`, before anything
     touches the user's repository. Then B, whose ref and OID cannot be recorded any earlier
     because §9's whitelist is "the exact OID recorded AT CREATION" and only `materialize`'s
     return value knows it. Then t0 — §14.2 puts it at this gate, which is why `preflight`
@@ -1192,6 +1341,9 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     commands, and `events.jsonl` is one of the six sources it names for a resume. What that
     costs is that no decoder type-checks them on the way back in, the way `read_manifest`
     does for every field it carries; `confirm` is the only thing that ever validated them.
+    `seats` and `attempts` go the OTHER way and are in the manifest, because a launcher reads
+    them to decide how many providers to spend — see `runstate.Manifest` for why that one is
+    not a policy — and `read_manifest` type-checks them on the way back.
 
     The record is WRITE-AHEAD around everything that touches the user's repository, so a
     crash between the two halves leaves the orphan §14.1 requires rather than a run directory
@@ -1237,8 +1389,12 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
 
     log = journal.Journal(storage.journal_path(run_dir))
     log.record(journal.intent("confirm"), operation_id=run_id)
+    # `author=` is passed ALWAYS, including over a clean tree where `materialize` will not use
+    # it. The alternative is this function re-deriving `dirty` to decide whether to bother,
+    # which is `materialize`'s own predicate spelled a second time — and the branch where the
+    # two disagree is the one that raises three writes into an opened run.
     b = baseline.materialize(report.facts.root, run_dir, report.facts,
-                             list(report.selected), run_id)
+                             list(report.selected), run_id, author=confirmation.author)
     protected, status_digest = runstate.snapshot_refs(report.facts.root, report.selected,
                                                       forge_refs=(b.ref,))
     runstate.write_manifest(run_dir, runstate.Manifest(
@@ -1259,7 +1415,9 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
         forge_refs={b.ref: b.commit},
         status_digest=status_digest,
         index_digest=runstate.snapshot_index(report.facts.root),
-        created_at=datetime.now(timezone.utc).isoformat()))
+        created_at=datetime.now(timezone.utc).isoformat(),
+        seats=confirmation.seats,
+        attempts=confirmation.attempts))
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,

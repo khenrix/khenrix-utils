@@ -20,8 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from forge import gate, journal, preflight, runstate, storage, verify  # noqa: E402
-from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
+from forge import baseline, gate, journal, preflight, runstate, storage, verify  # noqa: E402
+from forge_fixtures import (GLOBAL_IDENTITY, commit_all, git as _git,  # noqa: E402
+                            global_identity, make_repo, write)
 
 
 _SERIAL = itertools.count()
@@ -757,17 +758,21 @@ def _report_and_quote(tmp_path):
     return r, gate.quote(r)
 
 
+AUTHOR = ("Ada Lovelace", "ada@example.invalid")
+
+
 def _answers(**kw):
-    """A complete answer sheet for §5 step 2 — both commands and both policies."""
+    """A complete answer sheet for §5 step 2 — both commands, both policies, the author."""
     return {"setup": [["true"]], "verify": [["true"]],
-            "on_calibration_failure": "abort", "strategy": "size-gated", **kw}
+            "on_calibration_failure": "abort", "strategy": "size-gated",
+            "author": AUTHOR, **kw}
 
 
 def _confirmation(**kw):
     return gate.Confirmation(setup=(verify.Step(argv=("true",)),),
                              verify=(verify.Step(argv=("true",)),),
                              on_calibration_failure="abort", strategy="size-gated",
-                             accepted_gaps=(), **kw)
+                             accepted_gaps=(), author=AUTHOR, seats=3, attempts=3, **kw)
 
 
 def test_a_repository_whose_gate_cannot_be_seen_is_shown_to_the_human(tmp_path):
@@ -817,6 +822,34 @@ def test_the_empty_surface_is_measured_with_the_command_or_it_is_a_false_alarm(t
 
     shown = gate.must_show(r, gate.quote(r), verify.Command.parse([["./check.sh"]]))
     assert not any(gate.GATE_SURFACE_EMPTY in line for line in shown), shown
+
+
+def test_the_generator_contract_line_is_read_off_the_report_it_was_handed(tmp_path):
+    """Which verify-origin rewrites a run admits is what §7.2 decides a PASS by, so the line
+    the operator reads about it has to come from the contract in hand rather than from a
+    sentence that happens to be true of every repository today.
+
+    `detect_generators` returns the empty contract for every repository it can read, so an
+    asserted line and a derived one agree everywhere the suite can go — which is exactly the
+    condition under which the assertion goes on being emitted after it stops being true.
+
+    The report is REPLACED for the same reason `test_the_manifest_records_the_contract_the_
+    report_carried` replaces one: no fixture repository yields a non-empty contract, so the
+    derivation is unpinnable from a real tree and a hardcoded line is an equivalent mutant
+    against every other test in this file.
+    """
+    r = _report(tmp_path)
+    cmd = verify.Command.parse([["true"]])
+    assert r.contract.relations == (), "the premise: a real repository declares none"
+    assert any(gate.GENERATOR_CONTRACT_EMPTY in line for line in gate.must_show(r, gate.quote(r),
+                                                                                cmd))
+
+    declared = dataclasses.replace(
+        r, contract=r.contract.__class__(id="render-x", relations=(("shared/**", "gen/**"),)))
+    shown = gate.must_show(declared, gate.quote(declared), cmd)
+    assert not any(gate.GENERATOR_CONTRACT_EMPTY in line for line in shown), shown
+    assert any("render-x" in line and "shared/** -> gen/**" in line for line in shown), \
+        "an operator agreeing to a contract has to be shown which rewrites it admits"
 
 
 def test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied(tmp_path):
@@ -1079,6 +1112,158 @@ def test_a_refused_repository_never_reaches_a_manifest(tmp_path, monkeypatch):
     assert not state.exists(), "a refused run left a directory behind"
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
         "and no ref in the user's repository"
+
+
+def test_the_gate_opens_a_run_on_a_repository_whose_identity_is_only_global(tmp_path,
+                                                                            monkeypatch):
+    """THE ORDINARY REPOSITORY, and the one no fixture in this suite could build.
+
+    `make_repo` sets `user.name`/`user.email` LOCALLY, so every other `open_run` test here
+    runs against a repository whose identity `baseline._resolve_author` can see — while
+    `gitcmd` pins the global and system files to /dev/null on every call, which is where a
+    real machine keeps one. This repository's own `khenrix-utils` checkout has no local
+    identity, so before the `author` answer existed the gate failed on the repository forge is
+    developed in.
+
+    DIRTY, because the clean branch returns before `_resolve_author` is reached at all: over a
+    clean tree B1 IS the base commit, no commit is authored, and a run opens whether or not
+    any of this works. The premises are asserted rather than assumed for that reason.
+    """
+    _state(monkeypatch, tmp_path)
+    global_identity(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path, local_identity=False)
+    assert _git(repo, "config", "--local", "--get", "user.name",
+                check=False).returncode != 0, "the premise: no LOCAL identity"
+    assert _git(repo, "config", "--get", "user.name").stdout.strip() == GLOBAL_IDENTITY[0], \
+        "the premise: an ordinary git DOES find one, in the global file"
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+
+    r = preflight.inspect_repo(repo)
+    assert r.facts.unstaged, "the premise: dirty, so B1 is a commit that must be authored"
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
+                                             "r1"))
+    assert m.baseline_commit != m.base_commit, "B1 is a commit of its own, and it was authored"
+
+
+def test_b1_carries_the_identity_the_operator_confirmed_and_not_the_one_lying_about(tmp_path,
+                                                                                    monkeypatch):
+    """The author is an ANSWER, so a route that quietly preferred the repository's own config
+    would satisfy every green fixture in this suite and record the wrong person on the one
+    commit §2.1 makes the user's.
+
+    Discriminating by CONTRADICTION: the repository has a local identity, and the operator
+    confirms a different one. A `materialize` call that dropped `author=` reads back
+    `Fixture`; the confirmed answer reads back `Ada Lovelace`.
+    """
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path)
+    assert _git(repo, "config", "--get", "user.name").stdout.strip() == "Fixture", \
+        "the premise: the repository names somebody else"
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+
+    r = preflight.inspect_repo(repo)
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
+                                             "r1"))
+    ident = _git(repo, "log", "-1", "--format=%an|%ae", m.baseline_commit).stdout.strip()
+    assert ident == f"{AUTHOR[0]}|{AUTHOR[1]}", ident
+
+
+def test_an_identity_the_gate_cannot_stand_behind_is_refused_before_anything_exists(tmp_path,
+                                                                                    monkeypatch):
+    """The SECOND half of the finding, and a different failure from the first: not that the
+    run could not be authored, but WHERE it stopped. `materialize` raised from `open_run`
+    after `storage.run_root` had made the run directory and `journal.intent` had written
+    `confirm_start` — an orphan §14.1 reserves for a crash, produced on the ordinary path, and
+    a retry with the same id then meeting the taken-run-id refusal instead.
+
+    An unusable answer is refused at `confirm`, which runs before `open_run` is called at
+    all, so the state directory does not merely lack a manifest — it does not exist. The
+    half-identity row is the one `baseline` refuses rather than completes; the `<`/`>` and
+    newline rows are refused here because git does not refuse them (measured on git 2.53.0:
+    `commit-tree` with an author name `Ada <x>` exits 0 and the commit reads `Ada x`).
+    """
+    state = _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    # `"ab"` is the string that does NOT fail on arity: it unpacks into ("a", "b"), two
+    # non-empty strings carrying nothing forbidden, so every check below the string guard
+    # passes it and B1 is authored `a <b>`. A longer string is refused by the unpack alone,
+    # which is why a fixture made only of realistic-looking answers cannot reach that guard.
+    for bad in (None, "Ada <ada@example.invalid>", "ab", b"ab", ("Ada",), ("Ada", ""),
+                ("", "a@b.invalid"), ("Ada", "a@b.invalid\nname"), ("Ada <x>", "a@b.invalid")):
+        with pytest.raises(gate.GateError):
+            gate.confirm(r, q, _answers(author=bad))
+    with pytest.raises(gate.GateError, match="unanswered"):
+        gate.confirm(r, q, {k: v for k, v in _answers().items() if k != "author"})
+    assert not state.exists(), \
+        "an answer the gate would not record still created a run directory"
+
+    assert gate.confirm(r, q, _answers()).author == AUTHOR, \
+        "the discrimination check: an ordinary pair is taken and stripped of nothing it needs"
+
+
+def test_the_gate_reads_the_identity_the_engines_own_git_is_blind_to(tmp_path, monkeypatch):
+    """`propose_identity` is the one call in this package that reads the user's own config,
+    and the asymmetry it exists for is measured here: the same repository and the same key,
+    answered by this call and refused by `baseline._resolve_author` beside it.
+
+    HALF AN IDENTITY IS NONE, and the control is what makes that a choice rather than a
+    limitation: over the same half-configured repository `git var GIT_AUTHOR_IDENT` — the
+    call `baseline`'s docstring recommended — answers a complete ident at exit 0, with an
+    email it built out of user@hostname. That value would reach B1 and `git log` with nothing
+    marking the invented half, which is why this reads `config --get` instead.
+    """
+    cfg = global_identity(tmp_path, monkeypatch)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    repo = make_repo(tmp_path, local_identity=False)
+
+    assert gate.propose_identity(repo) == GLOBAL_IDENTITY
+    assert _git(repo, "config", "--local", "--get", "user.name",
+                check=False).returncode != 0, \
+        "the premise: the identity is in the global file and nowhere in the repository"
+    with pytest.raises(baseline.BaselineError):
+        baseline._resolve_author(repo, None)
+
+    cfg.write_text(f"[user]\n\tname = {GLOBAL_IDENTITY[0]}\n")
+    assert gate.propose_identity(repo) is None, "a name with no email is not an identity"
+    guessed = _git(repo, "var", "GIT_AUTHOR_IDENT").stdout
+    assert guessed.startswith(GLOBAL_IDENTITY[0]) and "@" in guessed, \
+        f"the control: git invents the missing half and reports success — {guessed!r}"
+
+
+def test_the_seats_and_attempts_the_quote_priced_are_what_the_manifest_records(tmp_path,
+                                                                              monkeypatch):
+    """§5.2 answers the peak-disk figure "by parameter, not by shrinking", and the parameter
+    has to survive the gate for that to be an answer. §5 step 5 forbids asking again, so a
+    launcher that read a seat count from its own default would build a fleet nobody priced.
+
+    TWO rows disjoint in both numbers, because one row cannot tell a carried field from a
+    writer that hardcoded whatever that row happened to ask for. The quote LINE is read back
+    beside the manifest, so a record agreeing with the confirmation while the price the
+    operator actually saw disagreed with both would still fail.
+    """
+    _state(monkeypatch, tmp_path)
+    for run_id, seats, attempts in (("r1", 2, 4), ("r2", 5, 1)):
+        r = _report(tmp_path)
+        q = gate.quote(r, seats=seats, attempts=attempts, review_rounds=2)
+        c = gate.confirm(r, q, _answers())
+        assert (c.seats, c.attempts) == (seats, attempts), \
+            "the confirmation takes the shape off the quote that was shown"
+        m = runstate.read_manifest(gate.open_run(r, c, run_id))
+        assert (m.seats, m.attempts) == (seats, attempts)
+        assert f"builders {seats}x{attempts}={seats * attempts}" in q.lines[0], \
+            "and the price the operator read was computed from the same two numbers"
+
+
+def test_a_quote_naming_no_seat_never_becomes_a_record(tmp_path):
+    """`quote` refuses these at its own door, so the floor at `confirm` is about the Quote
+    nobody built there — a frozen dataclass is public and constructible, and the manifest is
+    written once with no later gate to correct it."""
+    r, q = _report_and_quote(tmp_path)
+    for seats, attempts in ((0, 3), (3, 0), (-1, 3)):
+        with pytest.raises(gate.GateError):
+            gate.confirm(r, dataclasses.replace(q, seats=seats, attempts=attempts), _answers())
+    with pytest.raises(gate.GateError):
+        gate.quote(r, seats=0)
 
 
 def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):

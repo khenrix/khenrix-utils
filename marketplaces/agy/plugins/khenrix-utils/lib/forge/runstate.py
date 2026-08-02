@@ -305,6 +305,16 @@ class Manifest:
     `repo_path` says WHICH repository those describe, and is read for that: `drift` refuses a
     repository that is not this one, so the snapshot is never compared against a copy that
     would answer "nothing moved" on the run's behalf.
+
+    `seats` and `attempts` are the run's SHAPE, and they are here because §5.2 prices the run
+    by them and §5 step 5 forbids asking again — a launcher that read a seat count from its
+    own default would build a fleet the operator never agreed to, at a cost the quote never
+    showed. They are the parameter §5.2's disk figure is answered "by parameter, not by
+    shrinking" with, so a manifest without them records the agreement and drops the number the
+    agreement was about. Neither is derivable from the rest: a run harvested down to two
+    surviving seats is indistinguishable from a two-seat run once the third's directory is
+    gone. `gate.confirm` takes both off the `Quote` that was shown rather than from a second
+    argument, so the priced number and the recorded number are the same number.
     """
     run_id: str
     repo_path: str
@@ -321,6 +331,8 @@ class Manifest:
     status_digest: str
     index_digest: str
     created_at: str
+    seats: int
+    attempts: int
 
 
 def write_manifest(run_dir, manifest: Manifest) -> None:
@@ -707,6 +719,21 @@ def _text(name, value, source):
     return value
 
 
+def _count(name, value, source):
+    """A whole count of at least one — the shape `seats` and `attempts` have to survive in.
+
+    `isinstance(True, int)`, so the bool test is not defensiveness: a JSON `true` would launch
+    a one-seat fleet out of a field nobody wrote a number in. The floor is checked HERE and
+    not only at the gate because `write_manifest` decodes what it is about to write, so a
+    zero-seat run cannot reach the disk from either direction.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ManifestError(
+            f"{source}: {name} is a whole count of at least 1, not {value!r}; a run with no "
+            "seat is not a run and an attempt budget below one is not a retry policy")
+    return value
+
+
 def _texts(name, value, source):
     # The list check is not redundant with the element check below: a string iterates into
     # its characters, so `tuple("scratch")` yields a seven-element path list without a word
@@ -857,6 +884,8 @@ _DECODERS = {
     "status_digest": _text,
     "index_digest": _text,
     "created_at": _text,
+    "seats": _count,
+    "attempts": _count,
 }
 
 

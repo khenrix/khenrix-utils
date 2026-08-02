@@ -32,7 +32,7 @@ def _manifest(repo, **kw):
                 setup=(Step(argv=("true",)),), verify=(Step(argv=("./check.sh",)),),
                 protected_refs=refs, forge_refs={}, status_digest=digest,
                 index_digest=runstate.snapshot_index(repo),
-                created_at="2026-08-01T00:00:00Z")
+                created_at="2026-08-01T00:00:00Z", seats=3, attempts=3)
     return runstate.Manifest(**{**base, **kw})
 
 
@@ -357,6 +357,37 @@ def test_a_manifest_field_of_the_wrong_type_is_refused(tmp_path, field, value):
     _tamper(run, lambda row: row.update({field: value}))
     with pytest.raises(runstate.ManifestError):
         runstate.read_manifest(run)
+
+
+@pytest.mark.parametrize("field", ["seats", "attempts"])
+@pytest.mark.parametrize("value", [0, -1, True, 2.0, "3", None])
+def test_a_run_shape_that_is_not_a_whole_count_of_at_least_one_is_refused(tmp_path, field,
+                                                                          value):
+    """The run's SHAPE, and the two values a launcher spends providers on. §5.2 prices the run
+    by them and §5 step 5 forbids asking again, so what is recorded is the whole answer.
+
+    The FLOOR is checked as well as the type, and each row is a different way past a check
+    that only had one of the two: `0` opens a run with no seat, `-1` is a count nothing can
+    mean, and `True` passes `isinstance(int)` — a JSON `true` would launch a one-seat fleet
+    out of a field nobody wrote a number in. `2.0` and `"3"` are the JSON shapes that compare
+    unequal to what was written while reading as the same number.
+    """
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    _tamper(run, lambda row: row.update({field: value}))
+    with pytest.raises(runstate.ManifestError):
+        runstate.read_manifest(run)
+
+
+def test_a_run_shape_survives_the_round_trip_as_the_numbers_that_were_agreed(tmp_path):
+    """The discrimination check for the refusals above: an ordinary shape is taken, and a
+    non-default one, so a decoder that refused everything or answered a constant fails."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo, seats=2, attempts=5))
+    back = runstate.read_manifest(run)
+    assert (back.seats, back.attempts) == (2, 5)
 
 
 def test_a_manifest_whose_selected_paths_is_a_bare_string_is_refused(tmp_path):

@@ -27,14 +27,16 @@ merge, forge's own commits are authored `llm-forge`, and a fabricated third name
 attribution that outlives the run in `git log`, `git blame` and `--author` filters with no
 signal at the point it was decided. A missing author is recoverable; a wrong one is not.
 
-The caller should resolve identity once at the consent gate — a single deliberate
-`git var GIT_AUTHOR_IDENT` outside this hardened path — and DISPLAY it as part of what the
-user consents to, because its output is possibly-a-guess that must never be trusted
-silently. Measured on git 2.53: with `user.name` set and no `user.email` it returns
-`Configured <khenrix@Surface-Book-2.localdomain>` at rc=0, the email invented from
-user@hostname with nothing marking which half was guessed. It is not infallible in the
-other direction either — with no name and an empty gecos field it exits 128
-(`empty ident name`), so a caller cannot assume the call always yields an answer.
+The caller resolves identity once at the consent gate, and `gate.propose_identity` is that
+caller: a single deliberate read outside this hardened path, DISPLAYED as part of what the
+user consents to and recorded as an answer by `gate.confirm`. It reads `config --get` on
+both halves rather than `git var GIT_AUTHOR_IDENT`, which this file recommended until the
+guess was measured against what it costs here: with `user.name` set and no `user.email`,
+git 2.53.0 returns `Configured <khenrix@Surface-Book-2.localdomain>` at rc=0, the email
+invented from user@hostname with nothing marking which half was guessed — and a guess that
+survives to B1 is exactly the permanent false attribution the paragraph above refuses. `git
+var` is not infallible in the other direction either: with no name and an empty gecos field
+it exits 128 (`empty ident name`), so a caller cannot assume it always yields an answer.
 """
 import hashlib
 import os
@@ -75,10 +77,13 @@ def _resolve_author(repo, author):
     if not (name and email):
         raise BaselineError(
             "cannot author B1: this repository has no local user.name/user.email, and "
-            "global config is disabled on every call this package makes. Resolve the "
-            "user's identity at the consent gate and pass author=(name, email). "
-            "Refusing to substitute a placeholder — B1 is history the user is asked to "
-            "merge, so a fabricated author would be a permanent false attribution.")
+            "global config is disabled on every call this package makes. This is the "
+            "ORDINARY state of a repository whose identity lives in ~/.gitconfig, not a "
+            "fault — the identity is an ANSWER at the §5 gate, so pass author=(name, email); "
+            "`gate.propose_identity(repo)` is what reads the one git would use, and "
+            "`gate.confirm` records what the operator confirmed of it. Refusing to "
+            "substitute a placeholder — B1 is history the user is asked to merge, so a "
+            "fabricated author would be a permanent false attribution.")
     return name, email
 
 
@@ -173,9 +178,12 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     to name the same repository — a subdirectory of it is fine. Naming a different one
     raises rather than quietly building A's baseline because the caller passed B.
 
-    `author` is the (name, email) recorded on B1. When it is None the repository's own
-    user.name/user.email are probed, and `BaselineError` is raised if either is missing —
-    see the module docstring for why this refuses to guess.
+    `author` is the (name, email) recorded on B1, and `gate.open_run` always supplies one —
+    the None branch is what a direct caller gets, and it probes the repository's own
+    user.name/user.email and raises `BaselineError` if either is missing. That refusal is
+    reachable on an ORDINARY repository, since the probe is blind to `~/.gitconfig`, which is
+    why the gate settles the identity before a run directory exists rather than letting this
+    branch decide it three writes in. See the module docstring for why neither guesses.
     """
     run_dir = Path(run_dir)
     # Every path here is worktree-ROOT-relative, so the root is where commands must run.

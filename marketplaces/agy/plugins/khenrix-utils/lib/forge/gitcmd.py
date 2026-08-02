@@ -3,13 +3,14 @@
 Every call is an argv list with an explicit environment — never a shell string, so a
 path containing a metacharacter cannot become a command.
 
-NO_USER_CONFIG is applied to EVERY call rather than offered as an opt-in: an empty template
-dir does NOT neutralise a global core.hooksPath or url.*.insteadOf (spec §4.1), and a
-preset a caller can forget is a preset that will be forgotten. It stays exported because
-it is a published interface and because callers that build their own environment for a
-non-git subprocess still need it. It reaches the GLOBAL and SYSTEM files only; a
-repository's own config is read by the git that runs in it, which is what the three argv
-presets below are for. One env preset remains opt-in:
+NO_USER_CONFIG is applied by DEFAULT rather than offered as a preset a caller splats in: an
+empty template dir does NOT neutralise a global core.hooksPath or url.*.insteadOf (spec
+§4.1), and a preset a caller can forget is a preset that will be forgotten. It stays
+exported because it is a published interface and because callers that build their own
+environment for a non-git subprocess still need it. It reaches the GLOBAL and SYSTEM files
+only; a repository's own config is read by the git that runs in it, which is what the three
+argv presets below are for. `git(..., user_config=True)` is the one door out of it and
+argues itself there. One env preset remains opt-in:
 
   READONLY       describe-only calls; GIT_OPTIONAL_LOCKS=0 stops read-oriented commands
                  opportunistically refreshing the USER's real index (spec §2.2).
@@ -165,7 +166,7 @@ class GitError(RuntimeError):
     """A git invocation exited non-zero and the caller asked for check=True."""
 
 
-def git(repo, *args, env_extra=None, check=True, binary=False, timeout=60):
+def git(repo, *args, env_extra=None, check=True, binary=False, timeout=60, user_config=False):
     """Run git in `repo` with an argv list and an explicit environment.
 
     Environment order is a contract later tasks depend on: HOSTILE_ENV is scrubbed from the
@@ -173,9 +174,21 @@ def git(repo, *args, env_extra=None, check=True, binary=False, timeout=60):
     LAST. So an ambient GIT_DIR cannot redirect the call and the user's global config is
     never read, while a caller that deliberately passes GIT_INDEX_FILE (as baseline
     construction does) or points GIT_CONFIG_GLOBAL at a config of its own still wins.
+
+    `user_config=True` is the ONE door out of that pin, and it exists because one fact this
+    engine needs lives in the global file by design: WHO the user is. `env_extra` cannot open
+    it — restoring the global file means UNSETTING two variables, and a dict update can only
+    set them, while naming git's default path instead reconstructs it wrongly (git reads
+    `$XDG_CONFIG_HOME/git/config` AND `~/.gitconfig`, and GIT_CONFIG_GLOBAL names one file).
+    So the door is a parameter, spelled at the call site, where
+    `test_only_a_measured_call_reads_the_users_own_config` reads it: a call that opens it must
+    be on that allow-list with the measurement clearing it. What the pin is FOR is that the
+    global file can name a PROGRAM — `core.hooksPath`, `url.*.insteadOf`, `core.fsmonitor` —
+    so the allow-list is over calls measured to run none of the three.
     """
     env = {k: v for k, v in os.environ.items() if k not in HOSTILE_ENV}
-    env.update(NO_USER_CONFIG)
+    if not user_config:
+        env.update(NO_USER_CONFIG)
     env.update(env_extra or {})
     r = subprocess.run(["git", "-C", str(repo), *args],
                        capture_output=True, text=not binary, timeout=timeout, env=env)

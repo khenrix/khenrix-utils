@@ -608,7 +608,8 @@ def _manifest_for(repo, base=None):
         selected_paths=(), generator_contract=finspect.GeneratorContract(),
         setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./check.sh",)),),
         protected_refs=refs, forge_refs=forge, status_digest=digest,
-        index_digest=runstate.snapshot_index(repo), created_at="2026-08-01T00:00:00Z")
+        index_digest=runstate.snapshot_index(repo), created_at="2026-08-01T00:00:00Z",
+        seats=3, attempts=3)
 
 
 def test_a_crash_between_intent_and_result_is_not_a_completed_operation(tmp_path):
@@ -671,7 +672,8 @@ def test_the_manifest_and_the_baseline_agree_on_what_the_run_started_from(tmp_pa
 
 def _answered(**kw):
     return {"setup": [["true"]], "verify": [["make", "verify"]],
-            "on_calibration_failure": "abort", "strategy": "size-gated", **kw}
+            "on_calibration_failure": "abort", "strategy": "size-gated",
+            "author": ("Ada Lovelace", "ada@example.invalid"), **kw}
 
 
 def test_the_manifest_records_the_commands_the_gate_confirmed(tmp_path, monkeypatch):
@@ -1290,7 +1292,6 @@ _HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status",
 _DIFF_DRIVING = frozenset({"diff", "log", "show", "format-patch", "diff-tree", "diff-index",
                            "diff-files", "range-diff", "blame"})
 
-
 @dataclass(frozen=True)
 class _GitCall:
     module: str
@@ -1299,6 +1300,7 @@ class _GitCall:
     sub: str            # the resolved subcommand, or "" when no literal one is reachable
     flags: frozenset    # literal option strings passed positionally
     presets: frozenset  # dotted names splatted in, e.g. "gitcmd.NO_DAEMON_CACHE"
+    user_config: bool   # `user_config=True`: this call reads the USER's global/system config
 
     @property
     def where(self) -> str:
@@ -1346,11 +1348,16 @@ def _git_calls(source: bytes, module: str) -> list:
                     flags.add(arg.value)
                 elif not sub:
                     sub = arg.value
+        # A KEYWORD, not a positional: `user_config=True` is the one door out of the /dev/null
+        # pin on the user's global config, and a door nothing reads is a door.
+        user_config = any(k.arg == "user_config" and getattr(k.value, "value", None) is True
+                          for k in node.keywords)
         # The innermost enclosing def, so a nested helper is named rather than its parent.
         func = min((s for s in scopes if s[0] <= node.lineno <= s[1]),
                    key=lambda s: s[1] - s[0], default=(0, 0, "<module>"))[2]
         calls.append(_GitCall(module=module, func=func, line=node.lineno, sub=sub,
-                              flags=frozenset(flags), presets=frozenset(presets)))
+                              flags=frozenset(flags), presets=frozenset(presets),
+                              user_config=user_config))
     return calls
 
 
@@ -1433,6 +1440,19 @@ _DIFF_DRIVER_EXEMPT = {
         "repository; it runs no diff producer, and the flags are not options those accept",
 }
 
+# The calls allowed to read the USER's global and system config, and what each was measured
+# to run there. `gitcmd.NO_USER_CONFIG` is on every other call because the global file can
+# name a PROGRAM — `core.hooksPath`, `core.fsmonitor`, `url.*.insteadOf` — so an entry here
+# is a claim that this subcommand runs none of them, and it is the same measurement the three
+# sets above rest on.
+_USER_CONFIG_ALLOWED = {
+    "gate.py:value:config":
+        "`config --get user.name`/`user.email` for the identity B1 is authored with, which "
+        "lives in ~/.gitconfig on an ordinary machine and is the one fact the pin hides from "
+        "this engine. Measured on git 2.53.0 with a monitor armed and all 25 hooks planted: "
+        "`config --get` ran neither, in any of its four forms",
+}
+
 
 def test_the_git_call_reader_sees_a_new_call_site():
     """The closure's own eyesight, since a closure that cannot see is not one.
@@ -1480,6 +1500,9 @@ def test_the_git_call_reader_sees_a_new_call_site():
     assert not _runs_a_diff_driver(one('gitcmd.git(r, "rev-parse", "HEAD")'))
     assert _runs_a_diff_driver(one('gitcmd.git(r, *args)')), \
         "an unresolved subcommand must read as needing an exemption, not as clear"
+    assert not one('gitcmd.git(r, "config", "--get", "user.name")').user_config
+    assert one('gitcmd.git(r, "config", "--get", "user.name", user_config=True)').user_config, \
+        "the door out of the /dev/null pin is a keyword, and the reader has to see it"
     assert one('def f(r):\n    gitcmd.git(r, "status")\n').func == "f"
     assert _git_calls(b'git(r, "status")\n', "gitcmd.py"), \
         "gitcmd calls its own function unqualified; a site added there must still be read"
@@ -1584,3 +1607,22 @@ def test_every_diff_producing_call_disables_the_repositorys_diff_drivers():
     assert claimed == set(_DIFF_DRIVER_EXEMPT), \
         "an exemption whose call site is gone: the allow-list no longer describes the code"
     assert all(_DIFF_DRIVER_EXEMPT.values()), "an exemption must say why"
+
+
+def test_only_a_measured_call_reads_the_users_own_config():
+    """`gitcmd.git(..., user_config=True)` unpins GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM, and
+    the user's global file is the one place a `core.hooksPath` or a `url.*.insteadOf` reaches
+    every repository at once — §4.1 names both. The pin is the package's blanket answer to
+    that, so a door out of it is only as good as the list of who walked through.
+
+    A CLOSURE for the same reason the three above are: this one has exactly one call site
+    today, which is the condition under which a rule is easiest to lose. The set equality runs
+    both ways, so an entry whose call is gone fails as loudly as a call with no entry.
+    """
+    calls = _forge_git_calls()
+    opened = {c.where for c in calls if c.user_config}
+    assert opened == set(_USER_CONFIG_ALLOWED), (
+        f"these calls read the user's global and system config: {sorted(opened)}. Either drop "
+        "`user_config=True`, or add the call to _USER_CONFIG_ALLOWED with the measurement "
+        "showing that subcommand runs none of the programs that file can name.")
+    assert all(_USER_CONFIG_ALLOWED.values()), "an entry must say what was measured"
