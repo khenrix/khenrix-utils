@@ -595,7 +595,10 @@ def test_setup_replayed_in_the_verifier_sees_the_candidates_own_setup_state(tmp_
 def _manifest_for(repo, base=None):
     """A manifest for `repo`, snapshotted now. `base` supplies B's identity when the case is
     about that agreement; the placeholder OIDs stand in when it is not."""
-    refs, digest = runstate.snapshot_refs(repo, ())
+    # A real `base` supplies §9's whitelist the way production does — from `materialize`'s own
+    # return value, which is the only thing that knows the OID the ref was created at.
+    forge = {base.ref: base.commit} if base else {}
+    refs, digest = runstate.snapshot_refs(repo, (), forge_refs=forge)
     return runstate.Manifest(
         run_id="r1", repo_path=str(repo),
         base_commit=base.base_commit if base else "a" * 40,
@@ -604,7 +607,8 @@ def _manifest_for(repo, base=None):
         tracked_tree_oid=base.tracked_tree_oid if base else "c" * 40,
         selected_paths=(), generator_contract=finspect.GeneratorContract(),
         setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./check.sh",)),),
-        protected_refs=refs, status_digest=digest, created_at="2026-08-01T00:00:00Z")
+        protected_refs=refs, forge_refs=forge, status_digest=digest,
+        index_digest=runstate.snapshot_index(repo), created_at="2026-08-01T00:00:00Z")
 
 
 def test_a_crash_between_intent_and_result_is_not_a_completed_operation(tmp_path):

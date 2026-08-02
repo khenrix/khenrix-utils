@@ -23,13 +23,16 @@ AUTHOR = ("Fixture", "fixture@example.invalid")
 
 def _manifest(repo, **kw):
     selected = kw.get("selected_paths", ())
-    refs, digest = runstate.snapshot_refs(repo, selected)
+    forge = kw.get("forge_refs", {})
+    refs, digest = runstate.snapshot_refs(repo, selected, forge_refs=forge)
     base = dict(run_id="r1", repo_path=str(repo), base_commit="a" * 40,
                 baseline_ref="refs/khenrix-forge/r1/base", baseline_commit="b" * 40,
                 tracked_tree_oid="c" * 40, selected_paths=(),
                 generator_contract=repo_inspect.GeneratorContract(),
                 setup=(Step(argv=("true",)),), verify=(Step(argv=("./check.sh",)),),
-                protected_refs=refs, status_digest=digest, created_at="2026-08-01T00:00:00Z")
+                protected_refs=refs, forge_refs={}, status_digest=digest,
+                index_digest=runstate.snapshot_index(repo),
+                created_at="2026-08-01T00:00:00Z")
     return runstate.Manifest(**{**base, **kw})
 
 
@@ -380,21 +383,43 @@ def test_the_refs_snapshot_records_protected_refs_by_name_and_oid(tmp_path):
     assert digest
 
 
-def test_a_forge_ref_is_not_recorded_as_protected(tmp_path):
+def test_only_a_declared_forge_ref_is_left_out_of_protection(tmp_path):
     """§9 allows `refs/khenrix-forge/<run>/*` and `refs/heads/forge/<run>/*` explicitly;
-    recording them as protected would make forge's own baseline commit look like drift."""
+    recording the run's OWN baseline ref as protected would make forge's own commit look like
+    drift. The exclusion is by exact declared name, so the OTHER ref in the same namespace —
+    which this run did not create — stays protected."""
     repo = make_repo(tmp_path)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
     _git(repo, "update-ref", "refs/heads/forge/r1/claude", head)
-    refs, _ = runstate.snapshot_refs(repo, ())
-    assert not [k for k in refs if "forge" in k]
+    refs, _ = runstate.snapshot_refs(repo, (),
+                                     forge_refs=("refs/khenrix-forge/r1/base",))
+    assert "refs/khenrix-forge/r1/base" not in refs
+    assert refs["refs/heads/forge/r1/claude"] == head
 
 
-def test_a_user_ref_whose_name_merely_starts_with_forge_stays_protected(tmp_path):
-    """The exclusion is two exact prefixes, not the substring "forge". A user's
-    `forgery-experiments` branch is theirs, and dropping it from the snapshot would let a
-    seat move it with nothing to compare against."""
+def test_a_ref_the_run_may_not_claim_as_its_own_is_refused(tmp_path):
+    """The declaration removes a ref from protection, so an unchecked one is the largest hole
+    in this module reachable by a single wrong argument: declaring `refs/heads/main` would drop
+    the user's branch out of the snapshot and every write to it would be invisible."""
+    repo = make_repo(tmp_path)
+    with pytest.raises(runstate.ManifestError, match="refs/heads/main"):
+        runstate.snapshot_refs(repo, (), forge_refs=("refs/heads/main",))
+
+
+def test_a_declaration_handed_in_as_one_string_is_refused(tmp_path):
+    """`frozenset("refs/heads/forge/r1/x")` is twenty-one one-character names, none of which
+    matches a ref — so the declaration would silently do nothing and forge's own baseline
+    would read as the user's work on the first check."""
+    repo = make_repo(tmp_path)
+    with pytest.raises(runstate.ManifestError, match="single string"):
+        runstate.snapshot_refs(repo, (), forge_refs="refs/heads/forge/r1/x")
+
+
+def test_a_user_ref_whose_name_merely_starts_with_forge_cannot_be_claimed(tmp_path):
+    """The ceiling is two exact prefixes, not the substring "forge". A user's
+    `forgery-experiments` branch is theirs, and it stays protected whether or not a run tries
+    to name it."""
     repo = make_repo(tmp_path)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(repo, "update-ref", "refs/heads/forgery-experiments", head)
@@ -402,6 +427,8 @@ def test_a_user_ref_whose_name_merely_starts_with_forge_stays_protected(tmp_path
     refs, _ = runstate.snapshot_refs(repo, ())
     assert refs["refs/heads/forgery-experiments"] == head
     assert refs["refs/tags/forge-v1"] == head
+    with pytest.raises(runstate.ManifestError):
+        runstate.snapshot_refs(repo, (), forge_refs=("refs/heads/forgery-experiments",))
 
 
 def test_the_refs_snapshot_survives_a_repository_with_no_refs_at_all(tmp_path):
@@ -759,6 +786,151 @@ def test_the_snapshot_does_not_rewrite_the_users_index(tmp_path):
     before = _digest()
     runstate.drift(_manifest(repo), repo)
     assert _digest() == before
+
+
+# -------------------------------------------------------------------------- the index digest
+
+def test_the_index_digest_moves_when_a_skip_bit_is_set(tmp_path):
+    """§9 lists the index hash among protected state. Without it, `--assume-unchanged` makes
+    the user's own later edits to that path permanently invisible: measured, the porcelain,
+    the carried digest, `git diff` and `git stash` are all blind to them."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    _git(repo, "update-index", "--assume-unchanged", "seed.txt")
+    assert "index" in runstate.drift(m, repo)
+
+
+def test_the_index_digest_moves_when_the_skip_worktree_bit_is_set(tmp_path):
+    """The other bit, which is NOT the same bit — `facts.sparse` and `git add -u` treat them
+    differently, and the `ls-files -v` tag is `S` here and `h` above. A digest that saw only
+    one would leave the other exactly as invisible."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    assert "index" in runstate.drift(m, repo)
+
+
+def test_the_two_skip_bits_do_not_digest_the_same(tmp_path):
+    """`h` and `S`. The module docstring turns on the two bits being distinguishable here,
+    since the porcelain and the carried digest cannot tell them apart at all."""
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--assume-unchanged", "seed.txt")
+    assumed = runstate.snapshot_index(repo)
+    _git(repo, "update-index", "--no-assume-unchanged", "seed.txt")
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    assert runstate.snapshot_index(repo) != assumed
+
+
+def test_the_index_digest_ignores_a_stat_only_refresh(tmp_path):
+    """A refresh rewrites `.git/index` and changes nothing the user did. A digest that fired
+    on it would report drift on every run and be edited around — and an ordinary `git status`
+    is enough to cause one, so it would fire on runs where nobody touched git at all."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    raw = Path(repo) / ".git" / "index"
+    os.utime(Path(repo) / "seed.txt", (1893456000, 1893456000))
+    before = hashlib.sha256(raw.read_bytes()).hexdigest()
+    _git(repo, "update-index", "--refresh")
+    assert hashlib.sha256(raw.read_bytes()).hexdigest() != before, \
+        "premise: the refresh rewrote the index file, so sha256(.git/index) would have fired"
+    assert "index" not in runstate.drift(m, repo)
+
+
+def test_the_index_digest_ignores_split_index_churn(tmp_path):
+    """The second thing that rewrites the file and changes no entry. Measured on git 2.53.0:
+    `update-index --split-index` moves `sha256(.git/index)` and moves nothing `ls-files -v -s`
+    reports."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    raw = Path(repo) / ".git" / "index"
+    before = hashlib.sha256(raw.read_bytes()).hexdigest()
+    _git(repo, "update-index", "--split-index")
+    assert hashlib.sha256(raw.read_bytes()).hexdigest() != before, \
+        "premise: split-index rewrote the index file"
+    assert "index" not in runstate.drift(m, repo)
+
+
+def test_the_index_digest_moves_when_the_user_stages_something(tmp_path):
+    """The entries themselves, not only their flags: a staged OID is index content the
+    porcelain reduces to a letter."""
+    repo = make_repo(tmp_path)
+    before = runstate.snapshot_index(repo)
+    write(repo, "seed.txt", "staged\n")
+    _git(repo, "add", "seed.txt")
+    assert runstate.snapshot_index(repo) != before
+
+
+def test_the_index_digest_reads_the_whole_index_from_a_subdirectory(tmp_path):
+    """`ls-files` defaults to the CWD's subtree, and `snapshot_refs` accepts a subdirectory
+    and answers for the whole repository. Measured: without `--full-name -- :/` the bare
+    command lists only that subdirectory, so a t0 taken at the root would be compared against
+    a digest over a fraction of the index — and an edit outside the subdirectory would be
+    invisible."""
+    repo = make_repo(tmp_path)
+    write(repo, "sub/x.txt", "x\n")
+    _git(repo, "add", "sub/x.txt")
+    sub = Path(repo) / "sub"
+    # Equality is the discriminating assertion: scoped to `sub` the listing would be one
+    # entry spelled `x.txt`, and at the root two spelled `seed.txt` and `sub/x.txt`.
+    assert runstate.snapshot_index(sub) == runstate.snapshot_index(repo)
+    before = runstate.snapshot_index(sub)
+    write(repo, "outside.txt", "o\n")
+    _git(repo, "add", "outside.txt")
+    assert runstate.snapshot_index(sub) != before, \
+        "a path outside the subdirectory has to reach a digest taken from inside it"
+    assert runstate.snapshot_index(sub) == runstate.snapshot_index(repo)
+
+
+def test_the_index_digest_survives_an_ambient_literal_pathspec_setting(tmp_path, monkeypatch):
+    """Measured on git 2.53.0: under `GIT_LITERAL_PATHSPECS=1` the `:/` above stops being
+    magic, matches nothing, and `ls-files` exits ZERO with EMPTY output — so the digest would
+    become the digest of nothing and would never move again. A caller defending its own
+    pathspecs exports that variable."""
+    repo = make_repo(tmp_path)
+    before = runstate.snapshot_index(repo)
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    assert runstate.snapshot_index(repo) == before
+    write(repo, "seed.txt", "changed\n")
+    _git(repo, "add", "seed.txt")
+    assert runstate.snapshot_index(repo) != before
+
+
+def test_the_index_digest_survives_a_repository_with_no_index_at_all(tmp_path):
+    """A freshly initialised repository has no `.git/index`, and preflight rejects it with a
+    sentence the user can act on; a digest that raised first would replace that with a git
+    stderr dump. Measured: `ls-files` exits 0 with empty output there."""
+    repo = Path(tmp_path) / "empty"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main", ".")
+    assert not (repo / ".git" / "index").exists()
+    assert runstate.snapshot_index(repo)
+
+
+def test_the_index_digest_ignores_the_users_path_quoting_preference(tmp_path):
+    """`core.quotePath` is a DISPLAY preference and repo-local, so it survives the /dev/null
+    pins on the global and system files and a seat can set it. Measured on git 2.53.0 without
+    `-z`: flipping it rewrote `"caf\\303\\251.txt"` to `café.txt` and moved the digest while no
+    index entry changed at all — the same always-fires failure `--no-renames` is there for one
+    digest over. Under `-z` git emits the raw path bytes and there is no quoting layer for the
+    preference to act on."""
+    repo = make_repo(tmp_path)
+    write(repo, "café.txt", "x\n")
+    _git(repo, "add", "café.txt")
+    before = runstate.snapshot_index(repo)
+    _git(repo, "config", "core.quotePath", "false")
+    assert runstate.snapshot_index(repo) == before
+
+
+def test_the_index_digest_reads_a_path_that_is_not_valid_utf8(tmp_path):
+    """`-z` gives git's raw path bytes with no quoting, and a repository is allowed to hold a
+    path that is not valid UTF-8. A text-mode read of that output raises before any digest
+    exists."""
+    repo = make_repo(tmp_path)
+    before = runstate.snapshot_index(repo)
+    with open(os.path.join(os.fsencode(repo), b"bad\xffname.txt"), "wb") as fh:
+        fh.write(b"x")
+    _git(repo, "add", "-A")
+    assert runstate.snapshot_index(repo) != before
 
 
 # -------------------------------------------------------------------------- run-dir layout
@@ -1344,8 +1516,10 @@ def test_a_moved_protected_ref_is_drift(tmp_path):
     assert "HEAD" in runstate.drift(m, repo)
     # Equality as well, because this is the only case where several names drift at once: it
     # pins that the report is complete and that its order is stable, which a report a human
-    # reads at handover and a resume compares between attempts both depend on.
-    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status")
+    # reads at handover and a resume compares between attempts both depend on. `index` is
+    # there because staging the edit rewrote the entry's OID — the commit is four moves, not
+    # three, and a report that named only three would understate what the user did.
+    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status", "index")
     assert runstate.reconstruct(run, repo).diverged != ()
 
 
@@ -1379,20 +1553,16 @@ def test_a_ref_the_user_created_during_the_run_is_drift(tmp_path):
     assert runstate.drift(m, repo) == ("refs/heads/users-own-idea",)
 
 
-def test_a_forge_ref_created_during_the_run_is_not_drift(tmp_path):
+def test_the_runs_own_forge_ref_sitting_where_forge_put_it_is_not_drift(tmp_path):
     """Expected forge-ref movement is reported separately from unexpected protected-ref
-    movement — the run creates those refs, so counting them as drift would make every run
-    diverge from itself.
-
-    The exclusion is `snapshot_refs`' own, applied to BOTH sides: the fresh snapshot never
-    names a forge ref, so the new-ref case above cannot see one. A `drift` that listed refs
-    from a raw `show-ref` instead would report forge's own baseline as the user's work.
+    movement — the run creates that ref, so counting it as drift would make every run diverge
+    from itself. This is the half the whitelist exists for; the two below are the half a
+    NAMESPACE whitelist would have swallowed.
     """
     repo = make_repo(tmp_path)
-    m = _manifest(repo)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
-    _git(repo, "update-ref", "refs/heads/forge/r1/claude", head)
+    m = _manifest(repo, forge_refs={"refs/khenrix-forge/r1/base": head})
     assert runstate.drift(m, repo) == ()
 
 
@@ -1456,23 +1626,93 @@ def test_drift_over_something_that_is_not_a_manifest_is_refused(tmp_path):
         runstate.drift({"protected_refs": {}}, repo)
 
 
-def test_a_forge_ref_that_existed_at_t0_and_moved_is_invisible_rather_than_whitelisted(
-        tmp_path):
-    """§9 asks for a whitelist by exact name AND the OID recorded at creation. This is what
-    is here instead, pinned so the gap is measured rather than asserted: `snapshot_refs`
-    drops forge's namespaces BEFORE recording, so a forge ref that was already there at t0
-    has no recorded OID to be compared against and its movement leaves no trace at all."""
+def test_a_forge_ref_moving_off_its_recorded_oid_is_drift(tmp_path):
+    """§9's whole point: the whitelist is by name AND OID, because a namespace whitelist lets
+    a seat write into forge's own namespace invisibly. Measured before this: the same
+    sequence returned `()`."""
     repo = make_repo(tmp_path)
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
-    m = _manifest(repo)
-    assert not [k for k in m.protected_refs if "forge" in k], \
-        "the premise is that no forge ref has a recorded name or OID"
+    m = _manifest(repo, forge_refs={"refs/khenrix-forge/r1/base": head})
+    assert runstate.drift(m, repo) == (), "the premise is that the declared ref is not drift"
     # A commit nothing else points at, so the only thing that moves is forge's own ref.
     moved = _git(repo, "commit-tree", f"{head}^{{tree}}", "-p", head,
                  "-m", "a seat writing into forge's own namespace").stdout.strip()
     _git(repo, "update-ref", "refs/khenrix-forge/r1/base", moved)
+    assert runstate.drift(m, repo) == ("refs/khenrix-forge/r1/base",)
+
+
+def test_a_forge_ref_declared_at_t0_and_created_afterwards_is_not_drift(tmp_path):
+    """The ordering §9's "recorded at creation" has to survive: `baseline.materialize` makes
+    the ref AFTER a t0 snapshot taken at the §5 gate. Declaring the NAME at t0 keeps it out
+    of `protected_refs`, so the ref appearing later is not a ref the user made; the OID is
+    filled in from `materialize`'s own return, which is the only thing that knows it.
+
+    A snapshot that protected forge's own name instead would report every run as diverging
+    from itself on its first check — the failure the old namespace filter was there for, and
+    the one an exact-name whitelist has to keep closed while closing the other."""
+    repo = make_repo(tmp_path)
+    refs, digest = runstate.snapshot_refs(repo, (),
+                                          forge_refs=("refs/khenrix-forge/r1/base",))
+    assert "refs/khenrix-forge/r1/base" not in refs, \
+        "the premise is that the ref does not exist yet"
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    made = _git(repo, "commit-tree", f"{head}^{{tree}}", "-p", head,
+                "-m", "forge: snapshot of your uncommitted working tree").stdout.strip()
+    _git(repo, "update-ref", "refs/khenrix-forge/r1/base", made)
+    m = _manifest(repo, protected_refs=refs, status_digest=digest,
+                  forge_refs={"refs/khenrix-forge/r1/base": made})
     assert runstate.drift(m, repo) == ()
+
+
+def test_a_declared_forge_ref_that_disappears_is_drift(tmp_path):
+    """A recorded OID compared against no OID at all. Deleting the run's baseline ref makes
+    B unreachable and a `git gc` free to drop it, which is the deliverable's own footing."""
+    repo = make_repo(tmp_path)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/khenrix-forge/r1/base", head)
+    m = _manifest(repo, forge_refs={"refs/khenrix-forge/r1/base": head})
+    _git(repo, "update-ref", "-d", "refs/khenrix-forge/r1/base")
+    assert runstate.drift(m, repo) == ("refs/khenrix-forge/r1/base",)
+
+
+def test_a_forge_ref_the_run_never_declared_is_drift(tmp_path):
+    """The namespace hole, closed: a seat creating `refs/heads/forge/r1/impostor` is not
+    forge's ref because forge never declared it. Measured before this: `()`.
+
+    Both §9 namespaces, because the exclusion used to be a prefix test over both and closing
+    one would leave the other exactly as open."""
+    repo = make_repo(tmp_path)
+    m = _manifest(repo)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/heads/forge/r1/impostor", head)
+    _git(repo, "update-ref", "refs/khenrix-forge/r99/impostor", head)
+    assert runstate.drift(m, repo) == ("refs/heads/forge/r1/impostor",
+                                       "refs/khenrix-forge/r99/impostor")
+
+
+def test_a_manifest_claiming_another_runs_forge_ref_is_refused(tmp_path):
+    """§9's pattern carries the RUN ID, and it is the segment that stops one run vouching for
+    a concurrent run's ref — whose OID at creation it has no way to have recorded."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(runstate.ManifestError, match="r99"):
+        runstate.write_manifest(run, _manifest(
+            repo, forge_refs={"refs/khenrix-forge/r99/base": head}))
+
+
+@pytest.mark.parametrize("oid", ["", None, "not-hex", 40])
+def test_a_declared_forge_ref_without_a_real_oid_is_refused(tmp_path, oid):
+    """`""` is the one that matters: it is how "declared but not yet created" would be
+    spelled, and it would have `drift` compare a live ref against nothing. §9 says the exact
+    OID recorded AT CREATION, and the manifest cannot be written before creation anyway —
+    `baseline_commit` beside this field is `baseline.materialize`'s own return value."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    with pytest.raises(runstate.ManifestError, match="forge_refs"):
+        runstate.write_manifest(run, _manifest(
+            repo, forge_refs={"refs/khenrix-forge/r1/base": oid}))
 
 
 # ------------------------------------------------- the repository the manifest recorded
@@ -1488,7 +1728,7 @@ def test_drift_against_a_repository_the_manifest_never_recorded_is_refused(tmp_p
     shutil.copytree(repo, twin, symlinks=True)
     write(repo, "seed.txt", "the user kept working\n")
     commit_all(repo, "user's own commit")
-    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status")
+    assert runstate.drift(m, repo) == ("HEAD", "refs/heads/main", "status", "index")
     with pytest.raises(runstate.ManifestError):
         runstate.drift(m, twin)
 

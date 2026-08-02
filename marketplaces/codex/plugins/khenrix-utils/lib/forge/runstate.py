@@ -30,35 +30,50 @@ field is decoded explicitly, and a field added to `Manifest` without a decoder m
 read fail rather than arrive as whatever JSON happened to make of it.
 
 WHAT THE SNAPSHOT IS. §9's protected list is the user's current branch ref, `HEAD`, the index
-hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION. Three of those seven
-are not recorded here, and each is a §9 GAP rather than a boundary this file chose — written
+hash, the checkout files, all non-forge refs, REMOTES, and CONFIGURATION. Five of those seven
+are recorded; the remaining pair is a §9 GAP rather than a boundary this file chose — written
 down so the sentence and the code do not disagree:
 
   * REMOTES and CONFIGURATION. Nothing here reads `remote.*` or any other config key, so a
     seat that adds a remote or sets a repo-local value leaves no t0 fact to be judged
     against, and `drift` cannot speak for either.
-  * The INDEX HASH. No digest of `.git/index` is stored, so the index is covered only through
-    its effects on the porcelain, and three classes of index move have no effect there.
-    Measured, each on git 2.53. A stat-only refresh moves the index and not the digest — an
-    ordinary `git status` over stale stat data does it, and it is not the user's work at all,
-    which is what the READONLY pins below stop forge itself causing. Index-format churn
-    (`update-index --split-index`) moves the index and not the digest, and changes nothing
-    the digest could have seen: `ls-files -s` and the porcelain come back identical. Setting
-    a per-path skip bit (`update-index --assume-unchanged` or `--skip-worktree`) moves the
-    index and not the digest, and IS the user's work — that class is UNCOVERED, not a
-    boundary chosen here.
+
+The INDEX HASH is `index_digest`, and it is DERIVED rather than taken, because the file and
+its meaning move for different reasons. Measured on git 2.53.0: `update-index --refresh` over
+stale stat data rewrites `.git/index` — an ordinary `git status` does the same — and
+`update-index --split-index` rewrites it again, while neither changes an index entry's tag,
+mode, staged OID, stage or path. So `sha256(.git/index)` reports drift on a repository nobody
+touched, on every run, which costs §9 the reports that mean something. `snapshot_index` hashes
+`ls-files -v -s -z` instead: the same measurement says `update-index --assume-unchanged` moves
+it (the `-v` tag goes `H` to `h`) and `--skip-worktree` moves it (`H` to `S`). That closes the
+one class of index move the porcelain cannot see and that IS the user's work — without it, a
+skip bit makes their own later edits to that path invisible for the life of the run. The index's
+stat cache and extension records are deliberately outside it: they are a cache OF the worktree,
+which `_carried_digest` already measures directly.
 
 §9 also asks that forge's own refs be whitelisted by exact name AND the exact OID recorded at
-creation, because a namespace whitelist lets a seat write into forge's own namespace
-invisibly. What is implemented is the namespace whitelist: `snapshot_refs` drops
-`refs/khenrix-forge/**` and `refs/heads/forge/**` BEFORE recording, so no forge ref has either
-a name or an OID in `protected_refs`, and a forge ref that existed at t0 and then moved is
-invisible — measured, and pinned by
-`test_a_forge_ref_that_existed_at_t0_and_moved_is_invisible_rather_than_whitelisted`. Closing
-it needs a producer that records each forge ref as forge creates it, which this plan has none
-of. Without one the only alternative available here is to record forge's refs as PROTECTED,
-and that is worse in the direction that matters: the run creates refs after t0, so each would
-read as a ref the user made and every run would diverge from itself.
+creation, because a namespace whitelist lets a seat write into forge's own namespace invisibly.
+That is `Manifest.forge_refs`, name to OID, and `_FORGE_REF_PREFIXES` is now a CEILING on what
+a run may claim rather than the whitelist itself. Nothing is dropped for being under a forge
+namespace: `refs/heads/forge/r99/impostor` is protected like any other ref, because forge never
+declared it, and `drift` reports it as a ref that appeared.
+
+The ORDERING that shape has to survive is that the ref is created after t0. `baseline.materialize`
+makes `refs/khenrix-forge/<run_id>/base` with `update-ref <ref> <oid> <zero>`, and it is the only
+forge ref written into the USER's repository at all — a seat's `refs/heads/forge/<run-id>/<name>`
+is created in the seat's own clone by `fleet.clone_seat`, and nothing fetches it back. "Recorded
+at creation" therefore means recorded from `materialize`'s own return value, and the manifest
+cannot be written any earlier than that whatever a caller intends: `baseline_ref` and
+`baseline_commit` sit beside this field and are that same return value, and §14.2 lets the
+manifest be written once. So a declared name whose OID is empty is refused rather than treated
+as not-yet-created — that spelling is the fail-open one, and it is what would let a seat create
+the ref and have forge vouch for whatever it pointed at.
+
+Why a seat's ref cannot pass as forge's own, in the three ways it could try. Creating a ref in
+forge's namespace: not declared, so protected, so reported as new. Moving forge's declared ref:
+the recorded OID is compared, so reported. Pre-empting the name before forge creates it: the
+`<zero>` in `materialize`'s update-ref is a compare-and-swap against "must not already exist",
+so creation fails loudly rather than adopting whatever was there.
 
 THE CONTENT BEHIND `--assume-unchanged` is a second question from the index move above, and a
 different answer: not a gap of this file's, but a floor it shares with B. Measured with the bit
@@ -68,15 +83,18 @@ it never reaches `add` at all, since an empty porcelain makes `dirty` False and 
 and when a selection does make the run dirty `git add -u -- :/` exits ZERO and skips the path
 on that same stat comparison. The user's own `git status`, `git diff` and `git stash` are
 equally blind (`stash` answers "No local changes to save" and leaves the edit where it was).
-Two ways out are ones this file already has: a path that was DIRTY at t0 leaves the porcelain
-when the bit is set, which moves the digest, and a SELECTED path stays in the content set
-whatever the porcelain says. The selected case is where the sharing stops — `add -f` does not
-carry the hidden edit into B while the digest does see it, so the two disagree in the direction
-that stops the run rather than the one that hands over.
+Three ways out: a path that was DIRTY at t0 leaves the porcelain when the bit is set, which
+moves the status digest; a SELECTED path stays in the content set whatever the porcelain says;
+and the bit going ON during the run moves `index_digest`, which is what that field was added
+for. The last covers only the bit set MID-RUN — a bit already set at t0 is recorded as set, and
+the edit behind it stays this file's floor. The selected case is where the sharing with B stops
+— `add -f` does not carry the hidden edit into B while the digest does see it, so the two
+disagree in the direction that stops the run rather than the one that hands over.
 
 `--skip-worktree` shares that floor, but the two bits are NOT INTERCHANGEABLE and nothing here
-may treat them as one. Measured on git 2.53.0: the porcelain and the digest cannot tell them
-apart, and `rejections` and `git add` can. `facts.sparse` is True under skip-worktree and
+may treat them as one. Measured on git 2.53.0: the porcelain and the CARRIED digest cannot tell
+them apart, and `index_digest`, `rejections` and `git add` can — the `ls-files -v` tag is `h`
+for one and `S` for the other. `facts.sparse` is True under skip-worktree and
 False under assume-unchanged, so §2.3's line fires for one bit and not the other. And
 `git add -u -- :/`
 exits ONE on a skip-worktree path — "paths ... exist outside of your sparse-checkout
@@ -193,10 +211,11 @@ subsequent work on any hunk forge also touched". A ref whose OID moved is the ob
 Two more were measured, and each is invisible to every other fact this file records: deleting
 a tag leaves every surviving ref and the whole checkout digest byte for byte where they were,
 and so does a branch the user creates while the run is out. So a ref that DISAPPEARED and a
-ref that is NEW since t0 are drift as much as one that moved. The new-ref case needs no forge
-exclusion of its own: the fresh side is `snapshot_refs`, which names no forge ref at all, so
-forge's own baseline cannot arrive as a ref the user made — a `drift` reading a raw
-`show-ref` instead would report every run as diverging from itself.
+ref that is NEW since t0 are drift as much as one that moved. The new-ref case is where a
+namespace whitelist would have shown: with forge's refs dropped from both sides, forge's own
+baseline could not arrive as a ref the user made — and neither could a seat's write into that
+namespace. Both sides now drop only the DECLARED names, so the first is still silent and the
+second is not.
 
 Naming it is where this file stops. `reconstruct` reports what moved; §9's transition and its
 refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14
@@ -229,11 +248,14 @@ class TransitionError(RuntimeError):
     """A move §14's graph does not declare."""
 
 
-# §9's two explicitly-allowed namespaces, excluded WHOLESALE — which is the namespace
-# whitelist §9 warns about rather than its name-and-OID one; see the module docstring for the
-# measurement and what closing it needs. Prefixes rather than a substring test: a user's
-# `refs/heads/forgery-experiments` is theirs, and dropping it here would leave a moved ref
-# with nothing to compare against — the fail-OPEN direction of the same decision.
+# §9's two explicitly-allowed namespaces, read as a CEILING on what may be whitelisted rather
+# than as the whitelist. Nothing is excluded for being under one of these: a run excludes the
+# exact names it declares, and this pair only says which names it is allowed to declare. A
+# caller that named `refs/heads/main` as one of its own refs would drop the user's branch out
+# of `protected_refs` entirely, which is the largest hole in this file reachable by one wrong
+# argument.
+#
+# Prefixes rather than a substring test: a user's `refs/heads/forgery-experiments` is theirs.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
 
 
@@ -266,15 +288,23 @@ class Manifest:
     command it has to re-parse — which is re-detection under another name, at the one moment
     nobody is watching.
 
-    `protected_refs` and `status_digest` are the t0 snapshot: what the user's repository
-    looked like at the moment of agreement, kept so `drift` can ask whether it still does.
-    `selected_paths` is an input to the second of those as well as a record — which is why
-    `drift` re-derives the digest from THIS field and not from an argument. See
-    `snapshot_refs`.
+    `protected_refs`, `status_digest` and `index_digest` are the t0 snapshot: what the user's
+    repository looked like at the moment of agreement, kept so `drift` can ask whether it still
+    does. `selected_paths` is an input to the second of those as well as a record — which is
+    why `drift` re-derives the digest from THIS field and not from an argument. See
+    `snapshot_refs` and `snapshot_index`.
 
-    `repo_path` says WHICH repository those two describe, and is read for that: `drift`
-    refuses a repository that is not this one, so the snapshot is never compared against a
-    copy that would answer "nothing moved" on the run's behalf.
+    `forge_refs` is §9's whitelist and the only field whose effect is to REMOVE something from
+    protection, so it is the one decoded most strictly. Name to the OID forge created the ref
+    at — never a name alone, because a name alone is a namespace whitelist one entry wide and
+    a seat moving the ref afterwards would pass. Every key must lie under THIS run's own
+    `refs/khenrix-forge/<run_id>/` or `refs/heads/forge/<run_id>/`, and every value must be a
+    hex OID: an empty one would mean "declared but not yet created", which is the shape that
+    would let a seat create the ref and have forge vouch for whatever it pointed at.
+
+    `repo_path` says WHICH repository those describe, and is read for that: `drift` refuses a
+    repository that is not this one, so the snapshot is never compared against a copy that
+    would answer "nothing moved" on the run's behalf.
     """
     run_id: str
     repo_path: str
@@ -287,7 +317,9 @@ class Manifest:
     setup: tuple[Step, ...]
     verify: tuple[Step, ...]
     protected_refs: dict
+    forge_refs: dict
     status_digest: str
+    index_digest: str
     created_at: str
 
 
@@ -341,14 +373,89 @@ def read_manifest(run_dir) -> Manifest:
     return _decode(row, path)
 
 
-def snapshot_refs(repo, selected_paths) -> tuple[dict, str]:
+def _declared(forge_refs) -> frozenset:
+    """The exact ref names a run says are its own, refusing any this run may not claim.
+
+    A `str` is refused before anything else on `_texts`' argument, one level up from where it
+    makes it: `frozenset("refs/heads/x")` is eleven single-character ref names, none of which
+    matches anything, so the whole declaration would silently do nothing and every forge ref
+    would read as the user's.
+
+    The ceiling is checked HERE rather than only in the decoder because this is the surface
+    that removes refs from protection, and it is reached by callers that never wrote a
+    manifest — the §5 gate takes the t0 snapshot before there is one to read back.
+    """
+    if isinstance(forge_refs, (str, bytes)):
+        raise ManifestError(
+            f"forge_refs is {forge_refs!r}, a single string; iterating one yields its "
+            "characters, so the declaration would match no ref and quietly protect nothing")
+    names = frozenset(forge_refs)
+    outside = sorted(n for n in names if not str(n).startswith(_FORGE_REF_PREFIXES))
+    if outside:
+        raise ManifestError(
+            f"{outside} cannot be declared as forge's own refs: §9 allows exactly "
+            f"{list(_FORGE_REF_PREFIXES)}, and a name outside them would be dropped from "
+            "`protected_refs` — so a write to it would be invisible for the life of the run.")
+    return names
+
+
+def _show_ref(repo) -> dict:
+    """Every ref in `repo`, name to OID. `HEAD` is not among them — `show-ref` lists it only
+    under `--head`, and `_head` reads it separately because an unborn HEAD is a state rather
+    than a failure."""
+    # `git show-ref` exits 1 in a repository that has no refs at all, which is a fact about
+    # the repository rather than a failure of the call.
+    listed = gitcmd.git(repo, "show-ref", env_extra=gitcmd.READONLY, check=False)
+    refs = {}
+    for line in listed.stdout.splitlines():
+        oid, _, name = line.partition(" ")
+        if name:
+            refs[name] = oid
+    return refs
+
+
+def _partition(repo, selected_paths, forge_refs) -> tuple[dict, dict, str]:
+    """`(protected, forge_present, status_digest)` from ONE ref listing.
+
+    One listing rather than two because `drift` reads both halves and a second `show-ref`
+    would sample a later repository: a ref moved between the two reads would be missing from
+    one answer and present in the other, and the report would describe a state that existed at
+    neither instant.
+
+    The `forge_present` filter is EQUIVALENT to returning the whole listing, and no test can
+    pin it — `drift` only ever looks up names it declared, and those carry the same OID either
+    way. It is here so the returned value matches its name, because the next reader to iterate
+    it would otherwise be iterating the user's refs under the word "forge".
+    """
+    declared = _declared(forge_refs)
+    listed = _show_ref(repo)
+    protected = {n: o for n, o in listed.items() if n not in declared}
+    forge_present = {n: o for n, o in listed.items() if n in declared}
+    head = _head(repo)
+    if head:
+        protected["HEAD"] = head
+    return protected, forge_present, _status_digest(repo, head, selected_paths)
+
+
+def snapshot_refs(repo, selected_paths, *, forge_refs=()) -> tuple[dict, str]:
     """`(protected_refs, status_digest)` for `repo` as it is right now.
 
-    `selected_paths` is REQUIRED rather than defaulted, on `verify.build_verifier`'s argument
-    for its `contract`: a default here is a policy, and the policy is the one a human
-    confirmed at the §5 gate. A caller that has selected nothing passes `()`, which is a
-    statement that the run carries no untracked path — and a caller that HAS selected
-    something and forgets is the fail-open case the fourth digest part exists to close.
+    `forge_refs` is the EXACT NAMES this run created in the user's repository, and everything
+    not in that set is protected — including a name under §9's own namespaces that this run
+    never made. That is the difference between §9's whitelist and the namespace whitelist it
+    warns about: `refs/heads/forge/r99/impostor` is not forge's ref because forge never
+    declared it, so it lands in `protected_refs` and `drift` reports it as a ref that appeared.
+    The OIDs are the caller's to record, because only the caller knows what it created the ref
+    AT — see `Manifest.forge_refs`, which is what `drift` compares against.
+
+    Empty by default, and that default is the SAFE one for once: a caller that forgets it
+    protects forge's own refs and reports its own baseline as drift, loudly, on the first
+    check. `selected_paths` is REQUIRED rather than defaulted for the opposite reason — on
+    `verify.build_verifier`'s argument for its `contract`, a default there is a policy, and the
+    policy is the one a human confirmed at the §5 gate. A caller that has selected nothing
+    passes `()`, which is a statement that the run carries no untracked path — and a caller
+    that HAS selected something and forgets is the fail-open case the fourth digest part exists
+    to close.
 
     Every call is read-only against the USER's repository, which is why `READONLY` is on all
     of them rather than on the status call alone: measured on git 2.53, a plain `git status`
@@ -357,18 +464,58 @@ def snapshot_refs(repo, selected_paths) -> tuple[dict, str]:
     hash, so a snapshot that refreshed it would be forge moving the very thing it is here to
     watch — once at t0 and again at every drift check.
     """
-    refs = {}
-    # `git show-ref` exits 1 in a repository that has no refs at all, which is a fact about
-    # the repository rather than a failure of the call.
-    listed = gitcmd.git(repo, "show-ref", env_extra=gitcmd.READONLY, check=False)
-    for line in listed.stdout.splitlines():
-        oid, _, name = line.partition(" ")
-        if name and not name.startswith(_FORGE_REF_PREFIXES):
-            refs[name] = oid
-    head = _head(repo)
-    if head:
-        refs["HEAD"] = head
-    return refs, _status_digest(repo, head, selected_paths)
+    protected, _, digest = _partition(repo, selected_paths, forge_refs)
+    return protected, digest
+
+
+def snapshot_index(repo) -> str:
+    """sha256 over what the index MEANS — §9's protected "index hash", derived rather than
+    taken.
+
+    NOT `sha256(.git/index)`, and the difference is the whole of this function. Measured on git
+    2.53.0, over `git update-index --refresh` on an index whose stat data had gone stale: the
+    file's bytes MOVED and this digest did not. A raw file hash would therefore report drift on
+    a repository nobody touched — every `git status` anyone ran while the run was out — and a
+    drift check that fires on every run is one people edit around, which costs §9 the case it
+    exists for. The same measurement over `update-index --split-index` and back says the same:
+    the file moves, the meaning does not.
+
+    What it IS: `ls-files -v -s -z`, which is one record per index entry — the `-v` tag
+    (`H` cached, `h` assume-unchanged, `S` skip-worktree, `M` unmerged), the mode, the staged
+    OID, the stage number and the path. Measured on the same git: `update-index
+    --assume-unchanged` moves it (`H` to `h`) and `--skip-worktree` moves it (`H` to `S`), so
+    the class the module docstring used to name as UNCOVERED is covered — a per-path skip bit
+    is the user's own work, and without this digest their later edits to that path stay
+    invisible for the life of the run.
+
+    What it is NOT is the index's stat cache and its extension records. Those are a cache OF
+    the worktree, and the worktree is `_carried_digest`'s question; hashing them here would
+    answer that question a second time and worse, in the always-fires direction.
+
+    `--full-name -- :/` is not tidiness: `ls-files` defaults to the CWD's subtree, so from a
+    subdirectory — which `_status_digest` accepts and answers for the whole repository from —
+    the bare command lists that subdirectory alone, and a t0 taken at the root would then be
+    compared against a digest over a fraction of the index. `GIT_LITERAL_PATHSPECS` is pinned
+    OFF for `baseline.materialize`'s reason, and here it is worse than there: measured, an
+    ambient `1` makes `-- :/` a directory name that matches nothing and `ls-files` exits ZERO
+    with EMPTY output, so the digest would be the digest of nothing and would never move again.
+
+    Read as BYTES: a repository may hold a path that is not valid UTF-8, and a drift check that
+    raises on decoding is a drift check that does not run. The records are self-delimiting —
+    fixed-width tag, mode, OID and stage before a tab, then the path, then NUL — so no framing
+    is added on top.
+
+    `-z` carries a second reason, and it is `--no-renames`' reason one digest over. Without it
+    git C-QUOTES the path, and the quoting obeys `core.quotePath` — a DISPLAY preference, set
+    repo-locally, so it survives the /dev/null pins and a seat can flip it. Measured: flipping
+    it rewrote `"caf\\303\\251.txt"` to `café.txt` and moved a `-z`-less digest while no index
+    entry changed, which is a drift report about the user's work caused by nobody's work.
+    """
+    listing = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-v", "-s", "-z",
+                         "--full-name", "--", ":/",
+                         env_extra={**gitcmd.READONLY, "GIT_LITERAL_PATHSPECS": "0"},
+                         binary=True).stdout
+    return hashlib.sha256(listing).hexdigest()
 
 
 def _head(repo) -> str:
@@ -618,6 +765,30 @@ def _mapping(name, value, source):
     return value
 
 
+def _oid_mapping(name, value, source):
+    """`forge_refs`, checked harder than `protected_refs` because it means the opposite.
+
+    A `protected_refs` entry ADDS a ref to what is watched, so a damaged one reports drift.
+    A `forge_refs` entry REMOVES one, so a damaged one reports nothing — for the life of the
+    run, about the namespace §9 says is the one a seat would write into invisibly.
+
+    A value that is not a hex OID is refused rather than carried, and `""` is the one that
+    matters: it is what "declared but not yet created" would be spelled as, and it would make
+    `drift` compare a ref's real OID against nothing. §9 says "the exact OID recorded AT
+    CREATION" — a manifest cannot be written before creation, because `baseline_commit` beside
+    this field is `baseline.materialize`'s own output.
+    """
+    if not isinstance(value, dict):
+        raise ManifestError(f"{source}: {name} must be an object, not {value!r}")
+    for ref, oid in value.items():
+        if not isinstance(oid, str) or not oid or any(c not in "0123456789abcdef" for c in oid):
+            raise ManifestError(
+                f"{source}: {name}[{ref!r}] is {oid!r}, not the hex OID the ref was created "
+                "at. §9 whitelists by exact name AND exact OID; a name whose OID is missing "
+                "is a namespace whitelist one entry wide.")
+    return value
+
+
 def _contract(name, value, source):
     """Rebuild `inspect.GeneratorContract` from the object json made of it.
 
@@ -671,7 +842,9 @@ _DECODERS = {
     "setup": _steps,
     "verify": _steps,
     "protected_refs": _mapping,
+    "forge_refs": _oid_mapping,
     "status_digest": _text,
+    "index_digest": _text,
     "created_at": _text,
 }
 
@@ -697,6 +870,18 @@ def _decode(row, source) -> Manifest:
         if decode is None:
             raise ManifestError(f"no decoder is declared for the manifest field {name!r}")
         fields[name] = decode(name, row[name], source)
+    # The one CROSS-field check in this decoder, and `forge_refs` earns it by being the one
+    # field that subtracts. `_declared`'s ceiling says a declared name is under one of §9's two
+    # namespaces; §9's pattern is narrower than that — `refs/khenrix-forge/<run-id>/*` — and the
+    # run-id is the segment that stops THIS run vouching for a ref belonging to a concurrent
+    # one, whose OID it has no way to have recorded at creation.
+    own = tuple(f"{p}{fields['run_id']}/" for p in _FORGE_REF_PREFIXES)
+    stray = sorted(n for n in fields["forge_refs"] if not n.startswith(own))
+    if stray:
+        raise ManifestError(
+            f"{source}: forge_refs claims {stray}, which run {fields['run_id']!r} did not "
+            f"create; §9's namespaces are {list(own)}. A ref outside them is dropped from "
+            "`protected_refs` on the word of a run that never made it.")
     return Manifest(**fields)
 
 
@@ -1068,8 +1253,9 @@ def _refuse_a_repository_the_manifest_did_not_record(manifest: Manifest, repo) -
 
 
 def drift(manifest: Manifest, repo) -> tuple[str, ...]:
-    """What has moved in `repo` since the manifest recorded it: §9's ref names, sorted, plus
-    `"status"` when the checkout digest moved. `()` when the snapshot still describes it.
+    """What has moved in `repo` since the manifest recorded it: §9's ref names, sorted, then
+    `"status"` when the checkout digest moved and `"index"` when the index digest did. `()`
+    when the snapshot still describes it.
 
     `repo` is CHECKED against the one the manifest records before anything is compared, and
     here rather than in `reconstruct`: this call is public and a check one level up would
@@ -1080,21 +1266,35 @@ def drift(manifest: Manifest, repo) -> tuple[str, ...]:
     recorded ref whose OID differs covers two of them at once, because a ref that is GONE
     reads back as no OID at all; the third is a ref present now and absent at t0.
 
+    FORGE'S OWN REFS ARE COMPARED, not skipped. §9 whitelists them by exact name and the exact
+    OID recorded at creation, so the same three ways apply to them: the run's baseline ref
+    moved off the commit forge made it at, or deleted, is drift. What is NOT drift is that ref
+    sitting where forge put it — which is why the whitelist exists at all. A ref under §9's
+    namespaces that this manifest does not declare was never forge's, so it never reaches this
+    comparison: `_partition` leaves it in the protected half, where the new-ref case has it.
+
     The selection comes from the MANIFEST rather than from an argument, because the t0 digest
     ranges over it: re-derived with a different selection the two digests describe different
-    file sets, and the comparison would report drift on every run or on none.
+    file sets, and the comparison would report drift on every run or on none. The declared
+    forge refs come from the manifest for the sharper version of the same reason — passed in,
+    a caller could hand this call a wider set than the one it recorded and be told nothing
+    moved in the namespace §9 is about.
 
-    `"status"` cannot collide with a ref name — every ref here is `HEAD` or begins `refs/`.
+    Neither `"status"` nor `"index"` can collide with a ref name — every ref here is `HEAD` or
+    begins `refs/`.
     """
     if not isinstance(manifest, Manifest):
         raise ManifestError(f"a manifest is required, not {type(manifest).__name__}")
     _refuse_a_repository_the_manifest_did_not_record(manifest, repo)
-    refs, digest = snapshot_refs(repo, manifest.selected_paths)
+    refs, forge_now, digest = _partition(repo, manifest.selected_paths, manifest.forge_refs)
     moved = {name for name, oid in manifest.protected_refs.items() if refs.get(name) != oid}
     moved |= set(refs) - set(manifest.protected_refs)
+    moved |= {name for name, oid in manifest.forge_refs.items() if forge_now.get(name) != oid}
     out = sorted(moved)
     if digest != manifest.status_digest:
         out.append("status")
+    if snapshot_index(repo) != manifest.index_digest:
+        out.append("index")
     return tuple(out)
 
 
