@@ -146,8 +146,19 @@ def append_line(path, data: bytes) -> None:
     check and the open: this call would then create the file and skip the directory sync,
     which is the one failure the sync exists to prevent.
 
-    Observing creation does not remove the obligation that goes with it: the sync only ever
-    happens on the call that WINS the `O_EXCL`, so a log first brought into existence by a
+    The sync only ever happens on the call that WINS the `O_EXCL`, and that call therefore
+    owes it whether or not its RECORD lands. A creating call that raises — a short write, an
+    `fsync` returning EIO — has still put the file on disk, and every later call then finds it
+    and takes the `FileExistsError` branch, so a sync skipped once is skipped for the rest of
+    the run. Hence the `finally`: the failing call discharges the obligation itself rather
+    than leaving it for the next one. The next one cannot discharge it — nothing on disk
+    distinguishes a synced directory entry from an unsynced one, so a later call, and above
+    all a later PROCESS, has no way to learn the debt exists. What that leaves the caller is a
+    torn record whose file is nonetheless durably named, which `journal._drop_a_torn_tail`
+    knows how to finish; what the alternative leaves is a crash window in which the entire log
+    disappears and every partly-ran operation reads as never-started.
+
+    The obligation stops at this function's own body. A log first brought into existence by a
     route that does not sync the directory itself — a `touch`, a shell redirect, a plain
     `open(path, "w")` — has a directory entry nothing here will ever sync. `atomic_write` and
     `exclusive_write` are NOT such routes: each ends by syncing the directory.
@@ -162,19 +173,25 @@ def append_line(path, data: bytes) -> None:
             "neither of which is the record and both of which the reader treats as "
             "authoritative — the torn-tail rule discards only an unterminated LAST line, "
             "and these are terminated.")
-    created = True
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
     except FileExistsError:
         created = False
         fd = os.open(path, os.O_WRONLY | os.O_APPEND, 0o600)
+    else:
+        # Set HERE and not before the open: an open that fails for any other reason created
+        # nothing, and syncing the parent then raises out of a directory that may not exist —
+        # replacing the error naming the log with one naming its parent.
+        created = True
     try:
-        _write_exactly(fd, data + b"\n", path)
-        os.fsync(fd)
+        try:
+            _write_exactly(fd, data + b"\n", path)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
-    if created:
-        _fsync_dir(path.parent)
+        if created:
+            _fsync_dir(path.parent)
 
 
 def new_run_id() -> str:

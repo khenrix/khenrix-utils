@@ -345,6 +345,56 @@ def test_append_line_reports_a_torn_record_rather_than_completing_it(tmp_path, m
     assert not log.read_bytes().endswith(b"\n"), "the fixture did not tear anything"
 
 
+def test_append_line_syncs_the_directory_when_the_creating_call_FAILS(tmp_path, monkeypatch):
+    """Creating the file is what obliges this call to sync the directory, and a torn record
+    does not discharge it: the file is on disk either way, and the entry pointing at it is
+    what a crash would otherwise lose.
+
+    Skipping it is not one missed sync but a PERMANENT one — every later `append_line` finds
+    the file present, takes the `FileExistsError` branch, and skips the directory for the rest
+    of the run. Measured: after a torn creating call, two further `journal.Journal.record`
+    calls produced three fsyncs on `events.jsonl` and none on its directory — a journal whose
+    bytes are durable and whose NAME is not, so a power loss drops the whole log and turns
+    every partly-ran operation into never-started.
+
+    Asserted on the syscall, because the file reads back byte-identical with no directory
+    fsync at all — spec §10.1's example, reached from the test side.
+    """
+    spy = _SyscallSpy(monkeypatch)
+    log = tmp_path / "events.jsonl"
+    real_write = os.write
+    monkeypatch.setattr(os, "write", lambda fd, data: real_write(fd, data[:-3]))
+    with pytest.raises(storage.StorageError):
+        storage.append_line(log, b'{"event":"a"}')
+    monkeypatch.setattr(os, "write", real_write)
+
+    assert log.exists(), "the fixture created no file, so there is no unsynced entry to find"
+    on_failure = spy.synced()
+    assert os.path.realpath(tmp_path) in on_failure, (
+        "the creating call failed and left the log's directory entry unsynced")
+    # and the obligation is discharged, not deferred: the next call finds the file present and
+    # must not pay a second fsync for a name that is already durable
+    storage.append_line(log, b'{"event":"b"}')
+    assert os.path.realpath(tmp_path) not in spy.synced()[len(on_failure):]
+
+
+def test_append_line_does_not_sync_a_directory_it_never_created_a_file_in(tmp_path):
+    """An `os.open` that fails for any reason OTHER than the file already existing created
+    nothing, so there is no entry owed a sync.
+
+    Pinned against one measured spelling of the fix above and not against the idea of it:
+    hoisting `created = True` before the open AND widening the same `try/finally` to cover the
+    open makes a missing run directory raise out of `_fsync_dir` instead, replacing the error
+    that names the LOG with one naming its parent — and sending the reader after the wrong
+    missing thing. That mutant is caught here and survives every other `append_line` test.
+    """
+    missing = tmp_path / "no-such-run-dir" / "events.jsonl"
+    with pytest.raises(FileNotFoundError) as e:
+        storage.append_line(missing, b'{"event":"a"}')
+    assert str(missing) in str(e.value), \
+        f"the refusal named {e.value!r} rather than the log it could not open"
+
+
 def test_git_readonly_preset_reaches_the_child(tmp_path):
     # A `!`-alias is the only way to see what git's own child process was handed; asserting
     # that rev-parse merely succeeded would pass just as well with env_extra ignored.
