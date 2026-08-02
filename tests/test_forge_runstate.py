@@ -408,7 +408,7 @@ def test_a_ref_the_run_may_not_claim_as_its_own_is_refused(tmp_path):
 
 
 def test_a_declaration_handed_in_as_one_string_is_refused(tmp_path):
-    """`frozenset("refs/heads/forge/r1/x")` is twenty-one one-character names, none of which
+    """`frozenset("refs/heads/forge/r1/x")` is twelve one-character names, none of which
     matches a ref — so the declaration would silently do nothing and forge's own baseline
     would read as the user's work on the first check."""
     repo = make_repo(tmp_path)
@@ -916,8 +916,16 @@ def test_the_index_digest_ignores_the_users_path_quoting_preference(tmp_path):
     repo = make_repo(tmp_path)
     write(repo, "café.txt", "x\n")
     _git(repo, "add", "café.txt")
+
+    # The premise, in-test: without -z the preference DOES move the listing. Asserted rather
+    # than assumed, so a git whose default quoting changed would fail here instead of leaving
+    # the assertion below true for a reason this test never measured.
+    def _unzipped():
+        return _git(repo, "ls-files", "-v", "-s", "--full-name", "--", ":/").stdout
+    quoted = _unzipped()
     before = runstate.snapshot_index(repo)
     _git(repo, "config", "core.quotePath", "false")
+    assert _unzipped() != quoted, "core.quotePath no longer moves an unzipped listing"
     assert runstate.snapshot_index(repo) == before
 
 
@@ -1940,3 +1948,28 @@ def test_a_reconstruction_without_a_manifest_stops_before_it_reads_anything_else
     (run / "seat-claude.json").write_bytes(b'{"phase": "buil')
     with pytest.raises(runstate.ManifestError):
         runstate.reconstruct(run, repo)
+
+
+def test_the_index_digest_executes_nothing_the_repository_supplies(tmp_path):
+    """`snapshot_index` runs at t0 AND on every drift check, on the USER'S repository, so
+    §5 step 1's "no arbitrary project setup code runs before authorization" binds it harder
+    than a one-shot read.
+
+    `core.fsmonitor` is the one that is easy to miss: git runs it on the caller's behalf,
+    and it lives in the repository's own `.git/config`, which the /dev/null global and
+    system pins do not reach. Measured — the `ls-files` call here executes it without
+    `NO_DAEMON_CACHE` and does not with it.
+    """
+    repo = make_repo(tmp_path)
+    ran = tmp_path / "FSMONITOR-RAN"
+    program = tmp_path / "fsmonitor.sh"
+    program.write_text(f"#!/bin/sh\ntouch {ran}\nexit 1\n")
+    program.chmod(0o755)
+    _git(repo, "config", "core.fsmonitor", str(program))
+    # The fixture must be one git would really run, or the silence below measures nothing.
+    _git(repo, "-c", "core.untrackedCache=false", "status", "--porcelain")
+    assert ran.exists(), "the fixture program does not run under a plain git; re-check it"
+    ran.unlink()
+
+    runstate.snapshot_index(repo)
+    assert not ran.exists(), "snapshot_index ran a program the repository supplied"

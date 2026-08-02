@@ -377,13 +377,18 @@ def _declared(forge_refs) -> frozenset:
     """The exact ref names a run says are its own, refusing any this run may not claim.
 
     A `str` is refused before anything else on `_texts`' argument, one level up from where it
-    makes it: `frozenset("refs/heads/x")` is eleven single-character ref names, none of which
+    makes it: `frozenset("refs/heads/x")` is nine single-character ref names, none of which
     matches anything, so the whole declaration would silently do nothing and every forge ref
     would read as the user's.
 
     The ceiling is checked HERE rather than only in the decoder because this is the surface
     that removes refs from protection, and it is reached by callers that never wrote a
     manifest — the §5 gate takes the t0 snapshot before there is one to read back.
+
+    The RUN-ID half of §9's whitelist is the decoder's, not this function's: a `Manifest`
+    built by hand with another run's forge ref passes here and is caught at `_decode`. That
+    split is deliberate — every manifest that reached disk went through the decoder — but it
+    means this function enforces the namespace ceiling alone.
     """
     if isinstance(forge_refs, (str, bytes)):
         raise ManifestError(
