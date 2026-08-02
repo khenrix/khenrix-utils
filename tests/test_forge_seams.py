@@ -675,12 +675,21 @@ def _answered(**kw):
 
 
 def test_the_manifest_records_the_commands_the_gate_confirmed(tmp_path, monkeypatch):
-    """SEAM: `gate` and `runstate`. §5.1's four per-step fields survive the round trip, so a
+    """SEAM: `gate` and `runstate`. `verify.Step`'s four fields survive the round trip, so a
     resume runs what the human agreed to rather than what a reader supplied.
 
-    Every field is given a NON-DEFAULT value, which is what makes the claim checkable: with
-    `Step`'s own defaults on both sides, a manifest that dropped the cwd, the env and the
-    timeout and let `read_manifest` rebuild them would satisfy an equality test exactly.
+    FOUR IS WHAT `Step` HAS, not what §5.1 asks for. §5.1 also makes a per-step `retryable`
+    mark contractual and nothing implements it, which for a run this gate opens is permanent
+    rather than pending — §5 step 5 forbids re-asking, §14.2 forbids rewriting the manifest,
+    and `read_manifest` refuses a step record carrying a key it does not know. So the round
+    trip below is complete for the record that exists, and the record is short one field §12.3
+    was promised. See `gate.Confirmation`'s docstring.
+
+    The first verify step and the setup step give every field a NON-DEFAULT value, which is
+    what makes the claim checkable: with `Step`'s own defaults on both sides, a manifest that
+    dropped the cwd, the env and the timeout and let `read_manifest` rebuild them would
+    satisfy an equality test exactly. The second verify step is all defaults on purpose — the
+    ordinary shape has to survive the same trip.
 
     The second half is the seam the first cannot reach: a manifest is read back by a process
     that never saw the confirmation, so what `--collect` compares against is `read_manifest`'s

@@ -426,6 +426,48 @@ def test_materialize_aborts_when_the_index_moves_mid_snapshot(tmp_path):
                       check=False).returncode != 0, "the abort published a ref anyway"
 
 
+def test_building_b_never_runs_the_repositorys_fsmonitor_program(tmp_path):
+    """`core.fsmonitor` is a PROGRAM the repository names in its own config, and git runs it
+    for whoever loads an index. B is built out of the user's repository, so every index-loading
+    call here is one that would run it.
+
+    BOTH sites, and the second is the one a narrower rule loses. `ls-files -z` is cached-only —
+    no `--others` — and runs the monitor anyway, because loading the index is what triggers it.
+    `write-tree` runs under GIT_INDEX_FILE pointed at B's private copy, and runs the monitor
+    anyway, because the PROGRAM comes from the repository's config and not from the index. Only
+    a dirty repository reaches the second, so the fixture is dirty and the clean case is checked
+    beside it.
+
+    The control fires the same monitor under an ordinary `git status`, and the equality below
+    is the second half of the claim: the flags suppress a cache, so B must come out identical.
+    """
+    repo = make_repo(tmp_path)
+    hook = write(repo, "fsmonitor.sh", f"#!/bin/sh\n: > {repo}/HOOK-RAN\nprintf ''\n")
+    hook.chmod(0o755)
+    write(repo, "tracked.txt", "committed\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "tracked")
+    _git(repo, "config", "core.fsmonitor", str(hook))
+
+    clean = tmp_path / "clean"; clean.mkdir()
+    baseline.materialize(repo, clean, finspect.repo_facts(repo), [], "r-clean")
+    assert not (repo / "HOOK-RAN").exists(), "a clean baseline ran the repository's fsmonitor"
+
+    write(repo, "tracked.txt", "the user's uncommitted work\n")
+    write(repo, "new.txt", "selected and untracked\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), ["new.txt"], "r1")
+    assert b.dirty, "the premise: this run reaches write-tree"
+    assert not (repo / "HOOK-RAN").exists(), "a dirty baseline ran the repository's fsmonitor"
+    assert _tree_paths(repo, b.tracked_tree_oid) == {"seed.txt", "tracked.txt", "new.txt",
+                                                     "fsmonitor.sh"}, \
+        "the flags changed what the tree holds, which is not what suppressing a cache may do"
+
+    _git(repo, "status", "--porcelain")
+    assert (repo / "HOOK-RAN").exists(), \
+        "the control failed: this fsmonitor does nothing even when an ordinary git runs it"
+
+
 def test_the_drift_check_finds_the_real_index_in_a_linked_worktree(tmp_path):
     """Drift is CAUGHT here, and caught by reading the index this worktree actually uses.
 

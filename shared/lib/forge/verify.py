@@ -1527,12 +1527,19 @@ def _enumerate(root: Path) -> tuple[str, ...]:
 
     `NO_DAEMON_CACHE` is load-bearing on the ONE tree this function is also read over that
     the engine did not build: `gate.must_show` resolves the surface against the USER's
-    worktree at §5 step 2, which is before the user has authorized anything. Measured on git
-    2.53.0, with `core.fsmonitor` pointed at a script that touches a file, this command
-    without the flags RUNS that script — `--others` has to decide what is untracked, so
-    unlike `rev-parse --show-toplevel` it consults the monitor. §5 step 1 admits no
-    repository-supplied code before authorization, and a surface computed by running the
+    worktree at §5 step 2, which is before the user has authorized anything. §5 step 1 admits
+    no repository-supplied code before authorization, and a surface computed by running the
     repository's own program is the one measurement that cannot claim it.
+
+    LOADING THE INDEX IS WHAT RUNS THE MONITOR — not the flags, and not `--others`. Measured
+    on git 2.53.0 with `core.fsmonitor` pointed at a script that touches a file: `ls-files`
+    ran it in EVERY form, `-z` and `--cached` alone included, alongside `status`, `diff`,
+    `add`, `write-tree`, `check-attr` and `update-index --refresh`; `rev-parse`, `show-ref`,
+    `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`,
+    `clone` and `apply --numstat` did not. The rule is the index, so the flags belong on any
+    call here that reads one — the narrower rule "`--others` has to decide what is untracked"
+    was this comment's second wrong mechanism, and it reads a cached-only `ls-files` as safe,
+    which is how `baseline.materialize` kept the hole after this call was fixed.
     """
     out = gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-z", "--cached", "--others",
                      "--exclude-standard", env_extra=gitcmd.READONLY, binary=True).stdout

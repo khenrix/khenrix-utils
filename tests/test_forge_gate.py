@@ -6,10 +6,12 @@ is paired with a discrimination check — a command differing in exactly the pro
 refusal names, and admitted — since a fixture odd enough to trip one rule is odd enough to
 trip another, and a non-empty tuple says nothing about which.
 """
+import dataclasses
 import itertools
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -822,10 +824,10 @@ def test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied(t
     BEFORE the operator answers — so the rule still binds here.
 
     `core.fsmonitor` is the supplier, because git runs it on the caller's behalf. Measured on
-    git 2.53.0: `ls-files --cached --others` consults the monitor and DOES run the program,
-    unlike `rev-parse --show-toplevel`, so the surface read is the second call in this package
-    to have needed `NO_DAEMON_CACHE` for a reason that is not caching. The control shows the
-    same hook firing under an ordinary git.
+    git 2.53.0: LOADING AN INDEX runs the program, so `ls-files` does in every form and
+    `rev-parse --show-toplevel` does not — the surface read is one of several calls in this
+    package to have needed `NO_DAEMON_CACHE` for a reason that is not caching. The control
+    shows the same hook firing under an ordinary git.
     """
     repo = make_repo(tmp_path)
     hook = write(repo, "fsmonitor.sh", f"#!/bin/sh\n: > {repo}/HOOK-RAN\nprintf ''\n")
@@ -1125,21 +1127,32 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
     process that collected them. They are journaled rather than carried in the manifest —
     §14.2's manifest is the repository, B's identity, the selection and the commands, and
     `events.jsonl` is one of the six sources it names — so this is where a resume reads them.
+
+    TWO runs, disjoint in every recorded value. One run cannot tell a field that was carried
+    from a field a writer hardcoded to whatever that run happened to answer — the hole row 18
+    of the mutation table found in the manifest assertions, which is the same hole here and
+    was not fixed here at the time. Nothing constant satisfies both rows, so each assertion
+    discriminates on its own.
     """
     _state(monkeypatch, tmp_path)
     r, q = _report_and_quote(tmp_path)
-    c = gate.confirm(r, q, _answers(on_calibration_failure="degraded", strategy="fusion",
-                                    accepted_gaps=[gate.GATE_SURFACE_EMPTY]))
-    run = gate.open_run(r, c, "r1")
+    sheets = [
+        ("r1", dict(on_calibration_failure="degraded", strategy="fusion",
+                    accepted_gaps=[gate.GATE_SURFACE_EMPTY])),
+        ("r2", dict(on_calibration_failure="abort", strategy="base-and-port",
+                    accepted_gaps=[gate.GC_UNBUILT, gate.REMOTES_AND_CONFIGURATION])),
+    ]
+    for run_id, sheet in sheets:
+        run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id)
 
-    events = journal.Journal(storage.journal_path(run)).read()
-    done = [e for e in events if e.event == journal.done("confirm")]
-    assert len(done) == 1, [e.event for e in events]
-    assert done[0].data["on_calibration_failure"] == "degraded"
-    assert done[0].data["strategy"] == "fusion"
-    assert done[0].data["accepted_gaps"] == [gate.GATE_SURFACE_EMPTY]
-    assert journal.orphans(events) == (), \
-        "the write-ahead pair is closed, so a crash inside open_run stays distinguishable"
+        events = journal.Journal(storage.journal_path(run)).read()
+        done = [e for e in events if e.event == journal.done("confirm")]
+        assert len(done) == 1, [e.event for e in events]
+        assert done[0].data["on_calibration_failure"] == sheet["on_calibration_failure"]
+        assert done[0].data["strategy"] == sheet["strategy"]
+        assert done[0].data["accepted_gaps"] == sheet["accepted_gaps"]
+        assert journal.orphans(events) == (), \
+            "the write-ahead pair is closed, so a crash inside open_run stays distinguishable"
 
 
 def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch):
@@ -1152,3 +1165,139 @@ def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch
         gate.open_run(r.facts, _confirmation(), "r1")
     with pytest.raises(gate.GateError):
         gate.open_run(r, _confirmation(), "")
+
+
+def test_an_answer_key_this_gate_does_not_ask_is_refused(tmp_path):
+    """§5 step 2 is asked once, so a key nobody reads is an answer silently discarded.
+
+    `accepted_gaps` is the whole subject and the fixture says so. A misspelled REQUIRED key
+    cannot reach this check — the misspelling leaves the real key absent and the missing-key
+    refusal fires first, which is the second assertion — while `accepted_gaps` is the one key
+    whose absence is legal, so its misspelling passes every other check and is read as
+    "accepted none". Without this refusal an operator's acceptance would be dropped from the
+    record with nothing raised, which is the one direction a handover cannot recover from.
+    """
+    r, q = _report_and_quote(tmp_path)
+    with pytest.raises(gate.GateError, match="does not ask"):
+        gate.confirm(r, q, _answers(acccepted_gaps=[gate.GC_UNBUILT]))
+    with pytest.raises(gate.GateError, match="unanswered"):
+        gate.confirm(r, q, {**{k: v for k, v in _answers().items() if k != "strategy"},
+                            "startegy": "fusion"})
+    assert gate.confirm(r, q, _answers(accepted_gaps=[gate.GC_UNBUILT])).accepted_gaps \
+        == (gate.GC_UNBUILT,), "the discrimination check: the correctly spelled key is taken"
+
+
+def test_the_manifest_records_the_selection_the_run_was_opened_over(tmp_path, monkeypatch):
+    """§14.2 names the selected paths among what the manifest holds, and §2.2's selection is
+    what decides which untracked files enter B at all — so a manifest that recorded none of
+    them describes a run over a different tree than the one that was built.
+
+    Every other `open_run` test here selects nothing, where `()` and "the selection, dropped"
+    are the same tuple. The assertion is against B's own tree rather than against the input,
+    because agreeing with the argument is what a hardcoded `()` would also do once the
+    argument was `()`.
+    """
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path, "selected-repo")
+    write(repo, "wanted.txt", "the user asked for this one\n")
+    write(repo, "ignored.txt", "and not this one\n")
+    r = preflight.inspect_repo(repo, ["wanted.txt"])
+
+    m = runstate.read_manifest(gate.open_run(r, _confirmation(), "r1"))
+    assert m.selected_paths == ("wanted.txt",)
+    tree = _git(repo, "ls-tree", "-r", "--name-only", m.tracked_tree_oid).stdout.split()
+    assert "wanted.txt" in tree and "ignored.txt" not in tree, \
+        "B was built over the selection, so the manifest that omitted it would misdescribe B"
+
+
+def test_the_manifest_records_the_contract_the_report_carried(tmp_path, monkeypatch):
+    """§7.2's contract decides which verify-origin rewrites a run may admit without failing
+    the candidate, and §14.2 records it once — so a manifest carrying a contract nobody
+    confirmed is a licence the operator never gave.
+
+    The report is REPLACED rather than found, and that is the finding rather than a shortcut:
+    `inspect.detect_generators` returns the empty contract for every repository it can read, so
+    a substitution of the empty contract for `report.contract` is an equivalent mutant against
+    every fixture in this suite and the field is unpinnable from a real repository. Both
+    directions are measured — a declared relation reaches the manifest, and an undeclared
+    report does not gain one — because a writer hardcoding either constant satisfies one.
+    """
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    assert r.contract.relations == (), "the premise: no repository yields a non-empty contract"
+    declared = dataclasses.replace(
+        r, contract=r.contract.__class__(id="render-x", relations=(("src/*", "gen/*"),)))
+
+    m = runstate.read_manifest(gate.open_run(declared, gate.confirm(r, q, _answers()), "r1"))
+    assert m.generator_contract.id == "render-x"
+    assert m.generator_contract.relations == (("src/*", "gen/*"),)
+    plain = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r2"))
+    assert plain.generator_contract.relations == (), \
+        "a report that declared no relation gained one on the way to the manifest"
+
+
+def test_the_manifest_says_when_the_run_was_opened(tmp_path, monkeypatch):
+    """`created_at` is the only field in the manifest nothing else in the run can reconstruct:
+    B's commit carries forge's own committer date only when the tree was dirty, and a clean
+    run reuses the user's base commit. §15's `--gc` and every handover that has to say which
+    of two runs came first read this and nothing else."""
+    _state(monkeypatch, tmp_path)
+    r, q = _report_and_quote(tmp_path)
+    before = datetime.now(timezone.utc)
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r1"))
+    after = datetime.now(timezone.utc)
+
+    stamp = datetime.fromisoformat(m.created_at)
+    assert stamp.tzinfo is not None, "a naive stamp cannot be compared across machines"
+    assert before <= stamp <= after, (m.created_at, before, after)
+
+
+def test_nothing_before_the_operators_answer_runs_the_repositorys_own_program(tmp_path,
+                                                                              monkeypatch):
+    """§5 step 1 binds the three gate functions the operator answers BEFORE, and not the
+    fourth — `open_run` is reached with the answer in hand. The line is drawn by measurement
+    here rather than asserted in prose, because it moved once already: it was written for the
+    detector alone and then widened to "the whole module" at the moment `open_run` was added.
+
+    TWO suppliers, because `core.fsmonitor` is not the only program a repository hands git.
+    `update-ref` runs `reference-transaction` and an index write runs `post-index-change`,
+    both out of the repository's own hooks directory, and `open_run` fires both through
+    `baseline.materialize` — which is what makes the scope statement real rather than
+    decorative, and is its own control: a suite that armed hooks git never fires would read
+    an unreachable claim as a kept promise.
+
+    The fsmonitor is the half that is closed on BOTH sides of the line, since
+    `baseline.materialize` carries the flags on every call of its own that loads an index.
+    """
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path, "armed")
+    write(repo, "Makefile", "verify:\n\t@true\n")
+    mon = write(repo, "fsmonitor.sh", f"#!/bin/sh\n: > {repo}/HOOK-RAN\nprintf ''\n")
+    mon.chmod(0o755)
+    commit_all(repo, "a gate and a monitor")
+    _git(repo, "config", "core.fsmonitor", str(mon))
+    fired = tmp_path / "fired"
+    fired.mkdir()
+    for name in ("reference-transaction", "post-index-change"):
+        h = repo / ".git" / "hooks" / name
+        h.write_text(f"#!/bin/sh\n: > {fired}/{name}\nexit 0\n")
+        h.chmod(0o755)
+
+    write(repo, "seed.txt", "uncommitted, so B is a commit of its own\n")
+    r = preflight.inspect_repo(repo)
+    cmd = verify.Command.parse([["make", "verify"]])
+    q = gate.quote(r)
+    gate.must_show(r, q, cmd)
+    c = gate.confirm(r, q, _answers(verify=[["make", "verify"]]))
+    assert not (repo / "HOOK-RAN").exists() and not list(fired.iterdir()), \
+        "something before the operator's answer ran a program the repository supplied"
+
+    gate.open_run(r, c, "r1")
+    assert not (repo / "HOOK-RAN").exists(), \
+        "materialize dropped NO_DAEMON_CACHE from a call that loads the index"
+    assert {p.name for p in fired.iterdir()} == {"reference-transaction", "post-index-change"}, \
+        "the control failed: these hooks do not fire even when open_run makes B"
+
+    _git(repo, "status", "--porcelain")
+    assert (repo / "HOOK-RAN").exists(), \
+        "the control failed: this fsmonitor does nothing even when an ordinary git runs it"

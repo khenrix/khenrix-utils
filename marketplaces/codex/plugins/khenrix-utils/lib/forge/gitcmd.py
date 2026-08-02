@@ -23,9 +23,22 @@ NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnu
 # fsmonitor/untracked-cache are daemon state; a baseline must not depend on them. The
 # fsmonitor half also carries a second, stronger reason, so dropping this from a call is not
 # a caching decision: the value is a PROGRAM git runs, set in the repository's own
-# `.git/config`, and §5 step 1 admits no repository-supplied code before authorization —
-# measured through `ls-files --eol` and `check-attr` in `inspect`, which ran one until they
-# carried these flags.
+# `.git/config`, and §5 step 1 admits no repository-supplied code before authorization.
+#
+# WHICH CALLS NEED IT: the ones that LOAD AN INDEX. Measured on git 2.53.0 against a monitor
+# script that touches a file — `ls-files` in every form (`--cached` alone, no `--others`),
+# `status`, `diff`, `add`, `write-tree`, `check-attr`, `update-index` all ran it;
+# `rev-parse`, `show-ref`, `for-each-ref`, `symbolic-ref`, `cat-file`, `config`,
+# `update-ref`, `commit-tree`, `clone` and `apply --numstat` did not. GIT_INDEX_FILE does NOT
+# exempt a call: `write-tree` over `baseline`'s private index copy still ran the monitor,
+# because the program comes from the repository's config and not from the index. Three
+# separate calls in this package have been missed by a narrower rule than this one.
+#
+# It does not cover git's HOOKS, which are the repository's other program: `update-ref` runs
+# `reference-transaction` and an index write runs `post-index-change`, both from the
+# repository's own hooks directory. `baseline.materialize` runs all three, and is reached
+# only after §5 step 2 is answered — see `gate`'s module docstring, which states that scope
+# rather than claiming the package runs nothing.
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
 # Ambient values that decide which repository, index, object store or ref namespace a call

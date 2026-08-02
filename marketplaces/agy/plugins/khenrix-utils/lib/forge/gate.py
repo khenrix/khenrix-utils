@@ -61,21 +61,33 @@ the parent's objects, and where setup never runs.
 
 THE DETECTOR IS STATIC AND READS ONLY. §5 step 1 admits no repository-supplied code before
 authorization, and a detector whose job is "would this command spend provider calls" is exactly
-the one tempted to find out by running it. THE WHOLE MODULE is bound by that rule, not only
-the detector, because `must_show` runs at §5 step 2 and the operator has still not answered.
-Nothing here executes a Makefile, a recipe, a script or a `make -n`. The detector's own git
-call is `rev-parse --show-toplevel`, which carries `NO_DAEMON_CACHE` even though it does not
-need it: measured on git 2.53.0, with `core.fsmonitor` pointed at a script that touches a
-file, `git status` runs the script and `git rev-parse --show-toplevel` does not, because the
-second refreshes no index. The flags are on it so the guarantee holds for whatever git call is
-added here next, which is the direction this package has already lost the property in once —
-see `gitcmd.NO_DAEMON_CACHE`'s own note on the `ls-files --eol` and `check-attr` calls in
-`inspect`. That prediction has since been paid: `must_show` reaches `verify.gate_surface`,
-whose `ls-files --cached --others` DOES run the monitor, and the flags went on it for this
-reason rather than for caching. `test_the_detector_runs_nothing_the_repository_supplied` and
-`test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied` pin both halves
-against controls showing the same recipe does run under `make` and the same hook does run
-under `git status`.
+the one tempted to find out by running it. It executes no Makefile, no recipe, no script and no
+`make -n`. The detector's own git call is `rev-parse --show-toplevel`, which carries
+`NO_DAEMON_CACHE` even though it does not need it: measured on git 2.53.0, with `core.fsmonitor`
+pointed at a script that touches a file, `git status` runs the script and `git rev-parse
+--show-toplevel` does not, because the second loads no index. The flags are on it so the
+guarantee holds for whatever git call is added here next, which is the direction this package
+has already lost the property in three times — see `gitcmd.NO_DAEMON_CACHE`'s own note for the
+measured rule and the sites. That prediction has since been paid: `must_show` reaches
+`verify.gate_surface`, whose `ls-files` DOES run the monitor, and the flags went on it for this
+reason rather than for caching.
+
+THE RULE BINDS EVERYTHING UP TO THE ANSWER, WHICH IS NOT THE WHOLE MODULE. `quote`, `must_show`
+and `confirm` all run before the operator has answered, and all three run nothing the repository
+supplied — measured by arming `core.fsmonitor` and the repository's whole hooks directory and
+watching neither fire. `open_run` is the other side of that line: it is reached only with the
+answer in hand, and through `baseline.materialize` it runs the user's `reference-transaction`
+hook (`update-ref` creating forge's own ref) and, on a dirty repository, `post-index-change`
+(the private index copy being written). Those are the user's own policy over their own
+repository, invoked after they authorized a run — so they are stated here rather than
+suppressed, and §5 step 1 is unaffected because it governs what happens BEFORE the answer. The
+scope is spelled function by function rather than as "this module", because a function added
+later joins a module silently and joins a named list only deliberately.
+`test_the_detector_runs_nothing_the_repository_supplied`,
+`test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied` and
+`test_nothing_before_the_operators_answer_runs_the_repositorys_own_program` pin the three halves
+against controls showing the same recipe does run under `make`, the same hook does run under
+`git status`, and the same hooks do fire once `open_run` is reached.
 
 A DETECTOR THAT MUST BE EXHAUSTIVE CANNOT BE, so the bound is declared instead of implied, and
 every place the reader ran out is EMITTED rather than dropped. Findings carry one of three
@@ -865,9 +877,12 @@ def provider_invoking_verify(repo, command) -> tuple[str, ...]:
 # §5 step 2: the one question, and the record its answer writes.
 
 # The gaps a run may be asked to accept, as IDS rather than as sentences. `Confirmation`
-# records the id, so a handover cites a name that resolves to a line `must_show` emitted
+# records the id, so a handover cites a name that resolves to a line `must_show` CAN emit
 # rather than a paraphrase of one, and a caller can tell the empty-surface condition from the
-# other three without matching prose that is free to be reworded.
+# other three without matching prose that is free to be reworded. "can emit" is the bound and
+# not a hedge: `confirm` checks the id against this tuple, never that the line was raised for
+# the repository at hand — see its own docstring for why the narrower check is not available
+# there. A recorded gap is therefore evidence of what was accepted, never of what was shown.
 GATE_SURFACE_EMPTY = "gate-surface-empty"
 REMOTES_AND_CONFIGURATION = "remotes-and-configuration-unrecorded"
 GC_UNBUILT = "gc-unbuilt"
@@ -905,10 +920,20 @@ _REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy")
 class Confirmation:
     """The answer to §5 step 2, in the shape the manifest records it.
 
-    `setup` and `verify` are `verify.Step` tuples — §5.1's record whole, all four fields —
-    and they are the manifest's own type so `open_run` performs no conversion. A conversion
-    here is where a `cwd` or a `timeout` would go missing between what a human agreed to and
-    what a resume runs.
+    `setup` and `verify` are `verify.Step` tuples — the manifest's own type, so `open_run`
+    performs no conversion. A conversion here is where a `cwd` or a `timeout` would go
+    missing between what a human agreed to and what a resume runs.
+
+    WHAT A `Step` DOES NOT CARRY, and why that is permanent rather than pending. `Step` has
+    four fields (`argv`, `cwd`, `env`, `timeout`). §5.1 also makes a per-step `retryable`
+    mark contractual — "part of the contract, not an implementation choice", feeding §12.3's
+    failure classification — and nothing in this package implements it. For a run THIS gate
+    opens that cannot be repaired later: §5 step 5 forbids re-asking, §14.2 forbids rewriting
+    the manifest, and `runstate.read_manifest` refuses a step record carrying a key it does
+    not know (`test_a_step_record_that_is_not_section_5_1s_shape_is_refused`, the
+    `unknown-field` case, is exactly `retryable=True`). So every step of every run opened here
+    aborts its sequence on a nonzero exit, and §12.3 classifies a contention-class failure for
+    these runs without the input §5.1 promises it.
 
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
     constructor supplies is a fact nobody answered for. `confirm` is where an omitted
@@ -1001,7 +1026,7 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
         "rewrites no tracked file, whatever this repository's own generators do",
     ]
     lines += list(quote_.lines)
-    lines += list(provider_invoking_verify(report.repo, command))
+    lines += list(provider_invoking_verify(report.facts.root, command))
     return tuple(lines)
 
 
@@ -1059,9 +1084,13 @@ def confirm(report, quote_, answers) -> Confirmation:
     the operator takes it. `accepted_gaps` is the single omissible answer and its silence
     reads as "accepted none", which is the reading that cannot later be cited as agreement.
 
-    An UNKNOWN answer key is refused rather than ignored: a caller that spells a policy
-    slightly wrong would otherwise have it silently defaulted by the missing-key check it
-    just passed.
+    An UNKNOWN answer key is refused rather than ignored, and its only real subject is
+    `accepted_gaps`. A misspelled REQUIRED key cannot reach it — the misspelling leaves the
+    real key absent, so the missing-key check above raises first. `accepted_gaps` is the one
+    key whose absence is legal, so `acccepted_gaps` passes every other check and is read as
+    "accepted none": a gap the operator did accept, dropped from the record, with nothing
+    raised. Spelled as a whole-key check rather than a special case for that one name,
+    because the next optional answer would arrive with the same hole.
 
     WHAT `accepted_gaps` IS CHECKED FOR is that each id is one this engine can raise —
     `ACCEPTABLE_GAPS` — and not that `must_show` raised it for THIS repository. The narrower
@@ -1139,18 +1168,23 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     ORDER, AND WHAT EACH STEP MAKES TRUE. The two refusals come first, so a run that is not
     going to happen leaves nothing at all on disk — not a run directory, not an object and
     not a ref. Then the run root, which fails on a run id already taken rather than sharing a
-    directory with the run that owns it. Then B, whose ref and OID cannot be recorded any
-    earlier because §9's whitelist is "the exact OID recorded AT CREATION" and only
-    `materialize`'s return value knows it. Then t0 — §14.2 puts it at this gate, which is why
-    `preflight` deliberately takes no snapshot — with B's ref declared, so forge's own
-    baseline is not reported as the user's ref appearing. Then the manifest, once. Then the
-    receipt.
+    directory with the run that owns it. Then `journal.intent("confirm")`, before anything
+    touches the user's repository. Then B, whose ref and OID cannot be recorded any earlier
+    because §9's whitelist is "the exact OID recorded AT CREATION" and only `materialize`'s
+    return value knows it. Then t0 — §14.2 puts it at this gate, which is why `preflight`
+    deliberately takes no snapshot — with B's ref declared, so forge's own baseline is not
+    reported as the user's ref appearing. Then the manifest, once. Then
+    `journal.done("confirm")`, which closes the write-ahead pair; §14.1's completion receipt
+    belongs to the run and not to this gate.
 
     WRITE-ONCE IS TWO KERNEL REFUSALS, neither of which is a check this function performs: a
     second `open_run` for the same run id meets `mkdir`'s, and a second manifest inside one
-    run meets `os.link`'s. The first is what a repeated call actually hits, because B's ref
-    is created with a compare-and-swap against "must not already exist" and would refuse
-    before the manifest was reached at all.
+    run meets `os.link`'s. `mkdir`'s is what a repeated call actually hits, for the ordinary
+    reason that it comes first in this function. What that ordering buys is that the SECOND
+    refusal is never needed: were the run root shared instead, B's ref is created with a
+    compare-and-swap against "must not already exist" and would refuse before the manifest
+    was reached at all, so no arrangement of this function reaches `os.link`'s refusal by
+    repeating a call. It is exercised directly instead.
 
     THE POLICIES ARE JOURNALED, not in the manifest — §14.2's list of what the manifest holds
     is the repository, `base_commit`, B's identity, the selected paths and the confirmed
@@ -1178,7 +1212,8 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
             f"preflight refuses this repository, so there is nothing to agree to: {list(blocked)}. "
             "§2.3 fails closed before a run starts, and a manifest opened over one of these "
             "would record an agreement about a repository the engine said it could not handle.")
-    spends = [f for f in provider_invoking_verify(report.repo, verify.Command(confirmation.verify))
+    spends = [f for f in provider_invoking_verify(report.facts.root,
+                                                  verify.Command(confirmation.verify))
               if f.startswith(SPENDS)]
     if spends:
         # §5.2's own disposition of the three classes: a verify command that reaches a

@@ -224,7 +224,11 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     name, email = _resolve_author(repo, author) if dirty else (None, None)
 
     manifest = {}
-    for rel in gitcmd.git(repo, "ls-files", "-z", env_extra=gitcmd.READONLY).stdout.split("\0"):
+    # NO_DAEMON_CACHE on a CACHED-ONLY `ls-files`: loading the index is what runs the
+    # repository's `core.fsmonitor` program, and `--others` has nothing to do with it. See
+    # the constant's own note for the measured list.
+    for rel in gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-z",
+                          env_extra=gitcmd.READONLY).stdout.split("\0"):
         # `is_file()` FOLLOWS a link, so this loop used to give a tracked symlink the digest
         # of its target's CONTENT — the one thing `_walk_selected` refuses to do for a
         # selected directory, in the same manifest, for the reason that it "must not
@@ -302,7 +306,11 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
                    f"--pathspec-from-file={spec}", "--pathspec-file-nul",
                    env_extra={**env, "GIT_LITERAL_PATHSPECS": "1"})
 
-    tree = gitcmd.git(repo, "write-tree", env_extra=env).stdout.strip()
+    # The flags here for the same reason they are on the two `add` calls above, and pointing
+    # GIT_INDEX_FILE at a private copy does not stand in for them: `core.fsmonitor` is read
+    # from the REPOSITORY's config, so `write-tree` over the copy still ran the user's
+    # monitor. Measured: the tree OID is identical with and without.
+    tree = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "write-tree", env_extra=env).stdout.strip()
 
     msg = ("forge: snapshot of your uncommitted working tree\n\n"
            "This commit is yours, not forge's. It exists so every seat starts from the "
