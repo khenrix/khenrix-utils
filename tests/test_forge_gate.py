@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from forge import baseline, gate, journal, preflight, runstate, storage, verify  # noqa: E402
+from forge import inspect as finspect  # noqa: E402
 from forge_fixtures import (GLOBAL_IDENTITY, commit_all, git as _git,  # noqa: E402
                             global_identity, make_repo, write)
 
@@ -1331,6 +1332,62 @@ def test_a_run_shape_the_manifest_will_not_record_reaches_nothing_of_the_users(t
         "the discrimination check: an ordinary shape does make the ref the rows above must not"
 
 
+# The same four fields, one door further in than `_NOT_A_STEP` in the verify suite: these are
+# the values that reached `write_manifest` through `confirm` with no hand-built record, and
+# `cwd=5` is the one that did not even get that far — it raised a bare AttributeError out of
+# `open_run`'s spends detector, where every other refusal is a GateError.
+_A_STEP_THE_MANIFEST_REFUSES = ({"timeout": True}, {"timeout": 1.5}, {"env": {"A": 1}},
+                                {"cwd": 5})
+
+
+@pytest.mark.parametrize("key", ["setup", "verify"])
+def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, tmp_path,
+                                                                         monkeypatch):
+    """THE SECOND PROPERTY, AND A SEPARATE ONE, on `…run_shape…`'s precedent: not that the
+    step is refused, but that the refusal costs the user nothing.
+
+    Measured, because the exception alone said nothing about it: `write_manifest` raised
+    `ManifestError` for each row above AFTER `storage.run_root`, `journal.intent`, B1 and
+    `update-ref` had run. All four leftovers are asserted by name and the REF is the reason
+    the list is spelled out — it is the one that escapes the run directory, so a test
+    asserting only on the run dir passes while the real damage stands in the user's own
+    repository.
+
+    DIRTY, so B1 is a commit of its own and the ref is really created; and both the setup and
+    the verify command, because `_confirmed_steps` is called twice and the earlier defect was
+    reproduced on both.
+    """
+    state = _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path, "step")
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+    r = preflight.inspect_repo(repo)
+    assert r.facts.unstaged, "the premise: dirty, so an opened run authors B1 and writes a ref"
+    q = gate.quote(r)
+
+    for i, bad in enumerate(_A_STEP_THE_MANIFEST_REFUSES):
+        with pytest.raises((gate.GateError, verify.VerifyError)):
+            # The whole sequence inside the raises, because WHERE it is refused is exactly
+            # what this wave moved: the value refuses itself now, so `confirm` is never
+            # reached — and a test pinned to `confirm` would have to be rewritten to say so.
+            step = verify.Step(argv=("true",), **bad)
+            gate.open_run(r, gate.confirm(r, q, _answers(**{key: [step]})), f"refused{i}")
+    assert not state.exists(), "a run that will not happen left a directory behind"
+    assert not list(state.rglob("baseline.index")), "…and the index copy B1 is built through"
+    assert not list(state.rglob("events.jsonl")), "…and a journal for a run that never opened"
+    assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
+        "…and a ref in the USER's own repository, which is the leftover that escapes the run dir"
+
+    ok = verify.Step(argv=("true",), cwd="", env={"CI": "1"}, timeout=45)
+    run = gate.open_run(r, gate.confirm(r, q, _answers(**{key: [ok]})), "ok")
+    # The discrimination check names the same four things: without it a fixture pointed at
+    # the wrong state directory would pass every assertion above while measuring nothing, and
+    # `baseline.index` in particular was reported ABSENT by the last wave.
+    assert (run / "baseline.index").is_file() and (run / "events.jsonl").is_file()
+    assert getattr(runstate.read_manifest(run), key) == (ok,)
+    assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 1, \
+        "the discrimination check: an ordinary step does make the ref the rows above must not"
+
+
 def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):
     """§5.2's disposition of the three classes, which is why they are three. A `spends:` is
     "detected and refused"; a `remedy:` is what the same sentence prices "as its own explicit
@@ -1492,6 +1549,128 @@ def test_the_record_normalizes_what_it_takes_so_a_route_in_cannot_decide_the_sha
     assert dataclasses.replace(c, seats=5).seats == 5, "and replace() re-enters the same door"
     with pytest.raises(gate.GateError):
         dataclasses.replace(c, seats=True)
+
+
+# Values chosen for what they are NOT. Every one of them was accepted by some door of this
+# gate and refused by a later one at least once on this branch, or is the immediate neighbour
+# of one that was — `True` for `seats`, `True` and `1.5` for a step's timeout, a non-string
+# env value, a non-string cwd, a bare string where a sequence was meant. They are applied to
+# EVERY field the walk below reaches rather than to the field each was measured on, because
+# the point of the walk is that the next field is covered before anyone writes a row for it.
+_HOSTILE = (True, 0, -1, 1.5, "3", b"x", None, (), [], {}, {"A": 1}, {1: "A"}, ("x", 2),
+            ["ok"], object())
+
+
+def _below(value):
+    """(label, rebuild) for every dataclass field reachable BELOW `value`.
+
+    `rebuild(x)` returns a value of the same shape with that one leaf replaced by `x`, built
+    through `dataclasses.replace` so every constructor on the way back up runs its own
+    `__post_init__`. Driven off `dataclasses.fields` rather than a list of the types this
+    package holds today: an enumeration is the thing that has now failed three times, and a
+    field added to `verify.Step` — or a new record hung off `Confirmation` — has to be
+    covered by the walk before anybody remembers to write a row for it.
+    """
+    if dataclasses.is_dataclass(value):
+        for f in dataclasses.fields(value):
+            yield f".{f.name}", lambda x, n=f.name, v=value: dataclasses.replace(v, **{n: x})
+            for label, rebuild in _below(getattr(value, f.name)):
+                yield (f".{f.name}{label}",
+                       lambda x, n=f.name, v=value, rb=rebuild:
+                       dataclasses.replace(v, **{n: rb(x)}))
+    elif isinstance(value, tuple):
+        for i, item in enumerate(value):
+            for label, rebuild in _below(item):
+                yield (f"[{i}]{label}",
+                       lambda x, i=i, v=value, rb=rebuild: v[:i] + (rb(x),) + v[i + 1:])
+
+
+def _manifest(**kw):
+    """A `runstate.Manifest` every other field of which `write_manifest` takes, so the only
+    thing a row below can be refused for is the field it replaced."""
+    fields = dict(run_id="r1", repo_path="/repo", base_commit="a" * 40,
+                  baseline_ref="refs/khenrix-forge/r1/base", baseline_commit="b" * 40,
+                  tracked_tree_oid="c" * 40, selected_paths=(),
+                  generator_contract=finspect.GeneratorContract(), setup=(),
+                  verify=(verify.Step(argv=("true",)),), protected_refs={},
+                  forge_refs={"refs/khenrix-forge/r1/base": "b" * 40}, status_digest="d",
+                  index_digest="e", created_at="2026-08-02T00:00:00+00:00", seats=3,
+                  attempts=3)
+    return runstate.Manifest(**{**fields, **kw})
+
+
+def test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse(tmp_path):
+    """THE CLASS, rather than the third instance of it.
+
+    Three times now the same defect: a predicate spelled at the gate and again in
+    `runstate`, disagreeing, with `write_manifest` raising after the run directory,
+    `baseline.index`, `events.jsonl` and a forge ref in the user's own repository already
+    existed — the identity `baseline` required, then `seats`/`attempts`, then §5.1's three
+    step fields that were not `argv`. Each fix closed one value.
+
+    So the property is stated over the RECORD instead: every field a `Confirmation` shares
+    with the `Manifest` — by name intersection, so a field added to both is covered without
+    anyone editing this test — and every dataclass field below it, substituted with a value
+    that is not what the field is for. Each substitution must either be REFUSED where it costs
+    nothing, or produce a manifest `write_manifest` takes. There is no third outcome, and the
+    third outcome is the defect.
+
+    A refusal must also arrive in this package's vocabulary. `cwd=5` did not: it passed
+    `confirm` and raised a bare `AttributeError` out of `open_run`'s spends detector, which is
+    a refusal no caller of this module is catching.
+
+    WHAT MAKES THIS A CLOSURE and not a fourth list of rows: the manifest half runs the real
+    `write_manifest`, decoder and round-trip check included. A rule added to `runstate._steps`
+    and not to `verify.Step` fails here — and that is the direction all three instances came
+    from, `runstate` deciding something about a value the gate had already accepted.
+
+    WHAT THIS CANNOT SEE, stated because a closure test that silently covers less than it
+    claims is worse than none: it walks dataclasses and tuples, so a field holding a dict is
+    fuzzed as a whole value (`{"A": 1}`, `{1: "A"}`) and not key by key, and it fuzzes
+    CONSTRUCTION only — a mutable field mutated after the fact, `step.env["A"] = 1`, is the
+    boundary `verify.Step` and `Confirmation` both state rather than close.
+    """
+    shared = [f.name for f in dataclasses.fields(gate.Confirmation)
+              if f.name in {g.name for g in dataclasses.fields(runstate.Manifest)}]
+    assert sorted(shared) == ["attempts", "seats", "setup", "verify"], \
+        "the two records' shared fields moved; the rows below decide what this test measures"
+    c = _confirmation()
+    targets = [(f".{n}", lambda x, n=n: dataclasses.replace(c, **{n: x})) for n in shared]
+    targets += [(f".{n}{label}", lambda x, n=n, rb=rb: dataclasses.replace(c, **{n: rb(x)}))
+                for n in shared for label, rb in _below(getattr(c, n))]
+    assert {t[0] for t in targets} >= {".seats", ".verify", ".verify[0].timeout",
+                                       ".verify[0].env", ".verify[0].cwd", ".verify[0].argv"}, \
+        "the walk stopped short of the fields three waves of this defect were found in"
+
+    refused = admitted = 0
+    for label, rebuild in targets:
+        for hostile in _HOSTILE:
+            try:
+                fuzzed = rebuild(hostile)
+            except (gate.GateError, verify.VerifyError):
+                refused += 1
+                continue
+            except Exception as e:
+                raise AssertionError(
+                    f"{label} = {hostile!r} was refused as {type(e).__name__}: {e}. Every "
+                    "refusal on this path is a GateError or a VerifyError; a caller of this "
+                    "gate has no name for anything else.") from e
+            run = tmp_path / f"run{refused}-{admitted}"
+            run.mkdir()
+            try:
+                runstate.write_manifest(run, _manifest(
+                    **{n: getattr(fuzzed, n) for n in shared}))
+            except runstate.ManifestError as e:
+                raise AssertionError(
+                    f"{label} = {hostile!r} built a Confirmation the manifest then refuses: "
+                    f"{e}. `open_run` reaches `write_manifest` with the run directory, "
+                    "`baseline.index`, `events.jsonl` and a forge ref in the user's own "
+                    "repository already written.") from e
+            admitted += 1
+    # Both branches, because an assertion nothing reaches is not one: if every substitution
+    # were refused the loop would prove only that the gate refuses everything, and if none
+    # were the manifest half would never have been exercised.
+    assert refused and admitted, f"refused={refused} admitted={admitted}"
 
 
 def test_an_answer_key_this_gate_does_not_ask_is_refused(tmp_path):

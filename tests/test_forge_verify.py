@@ -140,6 +140,90 @@ def test_parse_refuses_a_program_name_that_is_really_a_command_line():
         verify.Command.parse("make")
 
 
+# §5.1's four fields, and one value per field that `runstate._steps` refuses on the way back
+# out of a manifest. Every row was reproduced through `gate.confirm` with no hand-built
+# record, so none of them is a shape only this test can reach.
+_NOT_A_STEP = [
+    # `isinstance(True, int)`, so this passed a magnitude-free type test and became a
+    # one-second budget every real gate fails under.
+    {"timeout": True},
+    {"timeout": 1.5},
+    {"timeout": "600"},
+    {"timeout": None},
+    {"env": {"A": 1}},
+    # JSON has one key type: `{1: "A"}` serializes as `{"1": "A"}` and reads back as a dict
+    # that compares unequal, so the manifest refuses it on the round trip rather than here.
+    {"env": {1: "A"}},
+    {"env": ()},
+    {"env": None},
+    {"cwd": 5},
+    {"cwd": None},
+    {"cwd": b"sub"},
+    # A string argv passes every argv check there was — it iterates into one-character
+    # strings, none of them shellish — and reaches the manifest as the one shape §5.1
+    # rejects rather than reinterprets.
+    {"argv": "make verify"},
+    {"argv": "make"},
+    {"argv": 42},
+    {"argv": ("make", 1)},
+    {"argv": ()},
+]
+
+
+@pytest.mark.parametrize("bad", _NOT_A_STEP, ids=lambda b: f"{next(iter(b))}-{next(iter(b.values()))!r}")
+def test_a_step_the_manifest_will_not_record_cannot_be_constructed(bad):
+    """All four of §5.1's fields are decided by the value, not by argv alone.
+
+    THE FINDING THIS REPLACES is the third instance of one defect on this branch:
+    `verify.Step` validated `argv` and `runstate._steps` validated `cwd`, `env` and `timeout`,
+    so every row above passed `gate.confirm` and was refused by `write_manifest` — after the
+    run directory, `baseline.index`, `events.jsonl` and a forge ref in the USER's own
+    repository already existed. A run that will not happen must leave nothing behind, so the
+    predicate lives on the value and every door inherits the one copy.
+
+    The fixture is deliberately unrealistic. `timeout=True` reads as an ordinary answer and is
+    precisely the input that got through; a fixture built only of plausible values reaches no
+    guard that exists for implausible ones.
+    """
+    with pytest.raises(verify.VerifyError):
+        verify.Step(**{"argv": ("true",), **bad})
+
+
+def test_a_step_materializes_its_argv_rather_than_leaving_it_to_the_manifest():
+    """The discrimination check for the refusals above, and a fourth instance of the same
+    defect in its own right: a LIST argv passes every check there is and then reads back off
+    the manifest as a tuple, so `write_manifest`'s round-trip comparison refuses the record —
+    four writes into a run. The value settles the shape, on `gate.Confirmation`'s precedent,
+    so no route in can decide it."""
+    s = verify.Step(argv=["make", "verify"], cwd="frontend", env={"CI": "1"}, timeout=45)
+    assert s.argv == ("make", "verify")
+    assert (s.cwd, s.env, s.timeout) == ("frontend", {"CI": "1"}, 45)
+    assert verify.Step(argv=iter(("make",))).argv == ("make",)
+    assert verify.Step(argv=("true",)).timeout == 600, "the default is still a step's default"
+
+
+def test_parse_and_a_step_cannot_disagree_about_what_an_argv_is():
+    """`parse` spells argv's rules a second time so its refusals can name the step INDEX, and
+    two spellings of one predicate is the defect this whole wave is about. They are held to
+    each other by measurement rather than collapsed, because the index is the part of those
+    messages a caller reads and `Step` has no index to name.
+
+    The accepted rows matter as much as the refused ones: an agreement in which both doors
+    refuse everything is the same assertion as no door at all."""
+    def refused(build):
+        try:
+            build()
+        except verify.VerifyError:
+            return True
+        return False
+
+    for raw in ("make", "make verify", ["make verify"], [], ["make", 1], ["~/bin/tool"],
+                ["./run;rm"], 42, ["make", "verify"], ["grep", "-E", "a|b"], ["./build.sh~"]):
+        assert refused(lambda: verify.Command.parse([raw])) \
+            == refused(lambda: verify.Step(argv=raw)), \
+            f"`parse` and `Step` disagree about {raw!r}, so one door admits what the other refuses"
+
+
 def test_a_sabotaged_test_runner_does_not_cross_into_the_verifier(tmp_path):
     """The headline property: a check the builder could rig is not a check.
 

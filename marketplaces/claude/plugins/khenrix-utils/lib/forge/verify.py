@@ -217,6 +217,30 @@ class Step:
     is merged over the hardened base `run_command` builds, so a step can add a variable
     without a caller having to reconstruct the base; the merged result is re-hardened, so
     a step cannot re-admit a git redirector the base had dropped.
+
+    ALL FOUR FIELDS ARE DECIDED HERE, not `argv` alone, and the three that joined it are the
+    third instance of one defect. `runstate._steps` decides the same four questions on the way
+    back out of a manifest; while argv was decided here and the other three only there, the
+    two disagreed, and `Step(argv=("true",), timeout=True)`, `timeout=1.5`, `env={"A": 1}` and
+    `cwd=5` each passed `gate.confirm` and were refused by `write_manifest` — after the run
+    directory, `baseline.index`, `events.jsonl` and a forge ref in the USER's own repository
+    already existed. A run that will not happen must leave nothing behind, so the VALUE holds
+    the predicate and `parse`, `gate.Confirmation` and `write_manifest` inherit one copy each
+    rather than spelling several that are free to drift apart.
+
+    `argv` is MATERIALIZED as well as checked, on `gate.Confirmation`'s precedent that a
+    record settles its own shape. A list argv passes every check below and then reads back off
+    the manifest as a tuple, so `write_manifest`'s round-trip comparison refuses the record
+    four writes in; a string argv passed them too — it iterates into one-character strings,
+    none of them shellish — and reached the manifest as the one shape §5.1 rejects rather than
+    reinterprets.
+
+    WHAT IS NOT DECIDED HERE is what needs the verifier: `_step_cwd` refuses a cwd that LEAVES
+    the root, which is a fact about a root this value has never seen. Nor is MUTATION — `env`
+    is a dict, so `step.env["A"] = 1` after construction still reaches the manifest
+    unvalidated. That is the boundary `gate.Confirmation` states for `object.__setattr__` and
+    it is the same one: the caller at this door is trusted, and what is closed is every state
+    a caller can CONSTRUCT.
     """
     argv: tuple[str, ...]
     cwd: str = ""
@@ -224,24 +248,60 @@ class Step:
     timeout: int = 600
 
     def __post_init__(self):
+        # A STRING IS NOT AN ARGV, refused before anything iterates one — `Command.parse`
+        # makes the same refusal one level up for a whole spec that is one string, and for
+        # the same reason: iterating `"make verify"` yields characters, every one of which
+        # passes the checks below.
+        if isinstance(self.argv, (str, bytes)):
+            raise VerifyError(
+                f"a verify step's argv is a LIST of words, not one string: {self.argv!r}. "
+                'Nothing here runs a shell — write ["make", "verify"].')
+        try:
+            argv = tuple(self.argv)
+        except TypeError as e:
+            raise VerifyError(
+                f"a verify step's argv is not a sequence of words: {self.argv!r}") from e
+        object.__setattr__(self, "argv", argv)
         # `Popen([])` raises IndexError from inside subprocess, which is neither this
         # module's failure type nor a message naming the step at fault. `Step` is public and
         # the brief's own timeout case constructs one directly, so the guard belongs here
         # rather than only in `parse`.
-        if not self.argv:
+        if not argv:
             raise VerifyError("a verify step names no program: argv is empty")
         # The SAME argument, applied to the same rule `Command.parse` enforces on argv[0]:
         # a `Step` built directly used to accept `("make verify",)` and fail at gate time
         # with an ENOENT naming a program nobody meant to run. Both of parse's preconditions
         # come with it — `_shellish` iterates its argument, so a non-string argv[0] would
         # raise a raw TypeError out of the one path whose whole job is a named refusal.
-        if not all(isinstance(t, str) for t in self.argv):
-            raise VerifyError(f"a verify step has a non-string argument: {self.argv!r}")
-        why = _shellish(self.argv[0])
+        if not all(isinstance(t, str) for t in argv):
+            raise VerifyError(f"a verify step has a non-string argument: {argv!r}")
+        why = _shellish(argv[0])
         if why:
             raise VerifyError(
-                f"a verify step names a program that cannot exist: {self.argv[0]!r} {why}. "
+                f"a verify step names a program that cannot exist: {argv[0]!r} {why}. "
                 "Nothing here runs a shell, so it would be exec'd under that literal name.")
+        # §5.1's other three fields, on `runstate._steps`' rules. Not merely "the manifest
+        # will refuse it anyway": that refusal arrives four writes into a run, and `cwd=5`
+        # never even reached it — it raised a bare AttributeError out of `gate.open_run`'s
+        # spends detector, where every other refusal is a GateError.
+        if not isinstance(self.cwd, str):
+            raise VerifyError(
+                f"a verify step's cwd is a path relative to the verifier root, not "
+                f"{self.cwd!r}; it is joined to that root and read as a directory name")
+        if not isinstance(self.env, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in self.env.items()):
+            raise VerifyError(
+                f"a verify step's env is an object of strings, not {self.env!r}; it is "
+                "spliced into a process environment, where anything else raises at spawn "
+                "time, and JSON has one key type so a non-string key does not survive the "
+                "manifest either")
+        # `isinstance(True, int)`, so the type test is not defensiveness: `timeout=True` is a
+        # ONE-SECOND budget every real gate fails under, arriving out of a field nobody wrote
+        # a number in. `2.0` and `"600"` read as the right number to everything that never
+        # compares them.
+        if isinstance(self.timeout, bool) or not isinstance(self.timeout, int):
+            raise VerifyError(
+                f"a verify step's timeout is a whole number of seconds, not {self.timeout!r}")
 
 
 @dataclass(frozen=True)

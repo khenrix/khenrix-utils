@@ -1037,19 +1037,34 @@ class Confirmation:
     `accepted_gaps` KEY becomes the empty tuple, because that is a reading of a silent answer
     sheet; every other normalization is below, where the record itself does it.
 
-    THE VALUE ENFORCES ITS OWN INVARIANTS, and both halves of why were measured on this
-    class. It is a public frozen dataclass, so one assembled beside `confirm` carried none of
-    `confirm`'s checks: `Confirmation(author=None)` raised `BaselineError` out of
-    `materialize` with a run directory and an `events.jsonl` already orphaned, and
-    `author=("Ada <x>", "a@b\\ninvalid")` opened a run whose B1 reads `Ada x|a@binvalid`,
-    because git 2.53 strips those characters rather than refusing them. Meanwhile `seats` was
-    decided by a magnitude test here and by `runstate.count` in the manifest, and the two
-    disagreed on `True`.
+    THE VALUE ENFORCES ITS OWN INVARIANTS, AND SO DOES EVERY VALUE IT HOLDS, which is the
+    part that took three findings to get right. All of it was measured on this class. It is a
+    public frozen dataclass, so one assembled beside `confirm` carried none of `confirm`'s
+    checks: `Confirmation(author=None)` raised `BaselineError` out of `materialize` with a run
+    directory and an `events.jsonl` already orphaned, and `author=("Ada <x>", "a@b\\ninvalid")`
+    opened a run whose B1 reads `Ada x|a@binvalid`, because git 2.53 strips those characters
+    rather than refusing them. Then `seats` was decided by a magnitude test here and by
+    `runstate.count` in the manifest, and the two disagreed on `True`. Then — with this class
+    validating all eight of its own fields — the `Step`s in `setup` and `verify` did not:
+    `timeout=True`, `timeout=1.5`, `env={"A": 1}` and `cwd=5` passed `confirm` and were
+    refused by `write_manifest`, with B1's ref already in the user's repository.
 
-    So the checks live in `__post_init__` rather than in the caller. `confirm`, `open_run` and
-    `write_manifest` then inherit ONE predicate per field instead of spelling three that are
-    free to drift apart — which is the defect above, twice — and `open_run`'s `isinstance`
-    check becomes a real one: a value of this type cannot be a run the gate would have refused.
+    So the checks live in `__post_init__` rather than in the caller, at every level rather
+    than at this one. `confirm`, `open_run` and `write_manifest` then inherit ONE predicate
+    per field instead of spelling three that are free to drift apart — which is the defect
+    above, three times — and `open_run`'s `isinstance` check becomes a real one: a value of
+    this type cannot be a run the gate would have refused, down to the fields of the steps it
+    carries. The closure is checked rather than asserted, and by a walk over
+    `dataclasses.fields` rather than a list of today's types, since the list is what was wrong
+    each time: `test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse`.
+
+    TWO STATES THAT SENTENCE DOES NOT COVER, both deliberate and neither closed. A caller can
+    reach past a constructor — `object.__new__` plus `object.__setattr__`, an unpickle that
+    restores `__dict__`, a SUBCLASS overriding `__post_init__` (which `open_run`'s isinstance
+    admits), or mutating the dict a `Step` holds in `env` after the fact. And this class is
+    the ANSWER to §5 step 2, so the operator at this door is trusted by construction; what the
+    gate exists to refuse is a wrong answer, not a caller who has decided to forge one. The
+    boundary is chosen, and it is stated here so the next reader knows it was not missed.
     """
     setup: tuple
     verify: tuple
@@ -1203,6 +1218,13 @@ def _confirmed_steps(name: str, value) -> tuple:
     in two directories — is unconfirmable through it. The argv route is still the ordinary
     one, and it reaches `parse` whole rather than step by step so its refusals keep naming
     the index of the step at fault.
+
+    WHOLE means the same thing here as `open_run`'s type check means one level up, and it did
+    not before: a `Step` now decides all four of §5.1's fields in its own `__post_init__`, so
+    accepting one whole imports its refusals rather than skipping them. While `cwd`, `env` and
+    `timeout` were decided only by `runstate._steps`, this line let `timeout=True`,
+    `timeout=1.5`, `env={"A": 1}` and `cwd=5` through `confirm` into a run that
+    `write_manifest` then refused — four writes and one ref in the user's repository later.
 
     A MIXED sequence is refused rather than handled. The two routes differ in what they
     settle: a `Step` carries a cwd, an env and a timeout the caller chose, while an argv list
@@ -1377,16 +1399,20 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     every later `drift` as a repository this run was not recorded against.
 
     ORDER, AND WHAT EACH STEP MAKES TRUE. Every refusal comes before every write, so a run
-    that is not going to happen leaves nothing at all on disk — not a run directory, not an
-    object and not a ref. That is a claim about VALIDATION COMPLETING first, not merely about
-    where these two `raise`s sit, and it has been false twice for the same structural reason:
-    a predicate spelled once here and again downstream, disagreeing. `seats=True` passed a
-    magnitude test at `confirm` and met `runstate`'s type test inside `write_manifest`, four
-    writes later, with the ref already in the user's repository; before that, B1's author was
-    resolved inside `materialize` and raised two writes in. Neither is a refusal this function
-    performs today, and their absence is the point: both are invariants of the `Confirmation`
-    it is handed, checked when that value was constructed, so a run this function cannot
-    finish cannot be started. The remaining two — a repository preflight refuses, and a verify
+    that is not going to happen leaves nothing at all on disk — not a run directory, not
+    `baseline.index`, not an `events.jsonl`, not an object and, above all, not a ref in the
+    user's own repository. That is a claim about VALIDATION COMPLETING first, not merely about
+    where these two `raise`s sit, and it has been false three times for the same structural
+    reason: a predicate spelled once here and again downstream, disagreeing. B1's author was
+    resolved inside `materialize` and raised two writes in. `seats=True` passed a magnitude
+    test at `confirm` and met `runstate`'s type test inside `write_manifest`, four writes
+    later, with the ref already made. Then a `Step`'s `cwd`, `env` and `timeout` were decided
+    only by `runstate._steps`, so `timeout=True` reached the same place by the same route —
+    and `cwd=5` reached the spends detector below and raised a bare `AttributeError` out of
+    it. None of the three is a refusal this function performs today, and their absence is the
+    point: all are invariants of the `Confirmation` it is handed and of the `verify.Step`s
+    that record holds, checked when those values were constructed, so a run this function
+    cannot finish cannot be started. The remaining two — a repository preflight refuses, and a verify
     command that spends — are re-decided here because they are facts about the REPOSITORY and
     the command rather than about the answer, and both are read before anything is created.
     Then the run root, which fails on a run id already taken rather than sharing a directory
@@ -1425,10 +1451,17 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}")
     if not isinstance(confirmation, Confirmation):
-        # The type IS the check: a `Confirmation` validates every field in `__post_init__`, so
-        # this refuses the only shape left — a mapping or a stand-in that never went through
-        # that door. It was once a check on the class alone with no field behind it, which is
-        # how a hand-built one carrying `author=None` reached `materialize`.
+        # The type IS the check: a `Confirmation` validates every field in `__post_init__` and
+        # every `verify.Step` it holds validates its own four, so this refuses the only shape
+        # left — a mapping or a stand-in that never went through that door. It was once a
+        # check on the class alone with no field behind it, which is how a hand-built one
+        # carrying `author=None` reached `materialize`.
+        #
+        # `isinstance` and not `type(...) is`, so a SUBCLASS overriding `__post_init__` passes
+        # here carrying nothing. Deliberate: this value is the operator's own answer to §5
+        # step 2 and the operator is trusted at this gate — see `Confirmation` for the two
+        # other ways past a constructor and why none of them is closed. The refusal is aimed
+        # at a caller who assembled the wrong thing, never at one who set out to forge one.
         raise GateError(
             f"a Confirmation is required, not {type(confirmation).__name__}; the manifest is "
             "written once and never rewritten, so what it records has to be what a human "
