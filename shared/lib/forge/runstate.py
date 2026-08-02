@@ -60,17 +60,25 @@ of. Without one the only alternative available here is to record forge's refs as
 and that is worse in the direction that matters: the run creates refs after t0, so each would
 read as a ref the user made and every run would diverge from itself.
 
-THE CONTENT BEHIND A SKIP BIT is a second question from the index move above, and a different
-answer: not a gap of this file's, but a floor it shares with B. Measured with the bit set and
-the path clean, both bits alike — the user's own later edit moves neither the porcelain nor the
-digest, and `git add -u` skips it on the same comparison, so `baseline.materialize` does not
-carry that content into B either, while the user's own `git status`, `git diff` and `git stash`
-are equally blind (`stash` answers "No local changes to save" and leaves the edit where it
-was). Both ways out are ones this file already has, measured for both bits: a path that was
-DIRTY at t0 leaves the porcelain when the bit is set, which moves the digest, and a SELECTED
-path stays in the content set whatever the porcelain says. The selected case is also where the
-sharing stops — `add -f` does not carry the hidden edit into B while the digest does see it, so
-the two disagree in the direction that stops the run rather than the one that hands over.
+THE CONTENT BEHIND `--assume-unchanged` is a second question from the index move above, and a
+different answer: not a gap of this file's, but a floor it shares with B. Measured with the bit
+set and the path clean, the user's own later edit moves neither the porcelain nor the digest,
+and `git add -u` skips it on the same comparison, so `baseline.materialize` does not carry that
+content into B either, while the user's own `git status`, `git diff` and `git stash` are equally
+blind (`stash` answers "No local changes to save" and leaves the edit where it was). Two ways
+out are ones this file already has: a path that was DIRTY at t0 leaves the porcelain when the
+bit is set, which moves the digest, and a SELECTED path stays in the content set whatever the
+porcelain says. The selected case is where the sharing stops — `add -f` does not carry the
+hidden edit into B while the digest does see it, so the two disagree in the direction that stops
+the run rather than the one that hands over.
+
+`--skip-worktree` is NOT that floor and must not be read as its twin. `inspect.rejections`
+refuses the repository outright at preflight — the index tag is `S`, `facts.sparse` is True, and
+spec §2.3 lists skip-worktree state among the conditions that fail closed before a run starts —
+so there is no B to share a floor with. Forced past preflight it does not degrade quietly
+either: `baseline.materialize`'s `git add -u -- :/` exits nonzero on git's sparse-checkout
+advice. The only live case for that bit is one set MID-RUN, which the index-move class above
+already covers.
 
 What IS recorded is `protected_refs`, name-to-OID for every ref that is not forge's, and
 `status_digest`, over the four parts of the checkout state that move independently:
