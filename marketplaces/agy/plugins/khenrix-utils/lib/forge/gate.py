@@ -40,8 +40,10 @@ PEAK DISK IS COUNTED IN CLONES, NOT IN FLEETS. §5.2 gives one figure — "three
 clones plus three dependency trees is plausibly 6-10 GB" — and it prices the BUILDER FLEET at
 three seats. Quoting that as the peak understates it by the whole rest of the run, in the
 operator's favour: §8.1 preserves a failed retry's clone as partial input rather than resetting
-in place, §6 gives every candidate a FRESH verifier clone, and §15's automatic cleanup covers
-"known-failed temporary clones only", so none of those is removed while the run is alive. The
+in place, and §6 gives every candidate a FRESH verifier clone. §15's automatic cleanup covers
+"known-failed temporary clones only" and would reclaim the failed retries — but §8.1 preserves
+those specifically, as partial input, so the specific rule wins and none is removed while the
+run is alive. The
 spec's own upper bound is therefore divided by the fleet it was stated for — 10 GB / 3 clones —
 and multiplied by every clone the worst case builds: calibration (§5 step 3), builders
 (seats × attempts), and verifiers. That is 17 clones at the wired settings, not 3. Left out and
@@ -241,9 +243,11 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
         f"'three no-hardlink clones plus three dependency trees' divided by the fleet it "
         f"prices. The {clones} are calibration {_CALIBRATION_CLONES} (§5 step 3) + builders "
         f"{builders} (§8.1 preserves a failed attempt's clone rather than resetting in place) "
-        f"+ verifiers {verifier_runs} (§6, fresh per candidate); §15 auto-removes known-failed "
-        "temporary clones ONLY, so the rest coexist until `--gc`. Not counted: the synthesis "
-        "worktree, which §4 keeps a worktree so it shares the parent's objects",
+        f"+ verifiers {verifier_runs} (§6, fresh per candidate). §8.1's \"preserved as partial "
+        "input\" is the SPECIFIC rule and wins over §15's general auto-removal of known-failed "
+        "temporary clones, which would otherwise reclaim the retries; nothing reclaims the rest "
+        "until `--gc`. Not counted: the synthesis worktree, which §4 keeps a worktree so it "
+        "shares the parent's objects",
         "wall clock: not quoted — the setup and verify commands are named at §5 step 2 and "
         "this report has no gate surface to time (preflight leaves gate_surface None)",
         "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
@@ -315,7 +319,10 @@ _MAKE_REMEDY = re.compile(r"\bmake\s+([A-Za-z][A-Za-z0-9_.-]*)")
 # (`cd frontend && npm ci`). `_CD_LEAD` consumes a leading one; `_CD_ANY` finds one at any
 # later program position, where following it would need the shell this module refuses to run.
 _CD_LEAD = re.compile(r"\s*cd\s+([^\s;&|()`]+)\s*(?:&&|;|\|\|)?\s*")
-_CD_ANY = re.compile(r"(?:^|[;&|(`])\s*cd\s")
+# `\s` alone missed a BARE `cd` — no argument, which moves to $HOME — because nothing
+# follows it but a separator. Contrived inside a Makefile, and the one hole left in this
+# family once the rest is closed, so it is matched rather than left to a later reader.
+_CD_ANY = re.compile(r"(?:^|[;&|(`])\s*cd(?:\s|;|$|&|\|)")
 
 _ASSIGN = re.compile(r"^([A-Za-z_.][A-Za-z0-9_.]*)\s*(::=|:=|\?=|\+=|=)\s*(.*)$")
 _RULE = re.compile(r"^([^\t#][^:=]*?)\s*::?\s*(.*)$")
@@ -783,6 +790,12 @@ class _Resolver:
             # itself: `scripts/lib/checks.py` names `make verify` while being reached BY `make
             # verify`, and reporting that reads as a chain nobody followed when it is the one
             # already reported above.
+            # ORDER-DEPENDENT, and declared rather than left to be rediscovered: whether a
+            # target was already walked depends on prerequisite order, so `verify: a b` and
+            # `verify: b a` can differ in whether this remedy is reported. Nothing is LOST —
+            # the stronger `spends:` finding is present either way, which is why this is
+            # noise rather than the refusal-deciding order dependence `_scan_file` guards
+            # against — but a caller diffing two findings tuples should know.
             if target not in mk.recipes or (mk.cwd, target) in self.seen_targets:
                 continue
             sub = _Resolver(self.root, follow_remedies=False)

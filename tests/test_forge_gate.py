@@ -718,3 +718,24 @@ def test_this_repositorys_own_precommit_reaches_the_council(tmp_path):
         assert not [f for f in found if f.startswith("spends:")], (target, found)
     assert any(f.startswith("spends:") for f in _found(ROOT, ["make", "eval"])), \
         "the target the remedy names does spend, or the remedy line above means nothing"
+
+
+def test_a_remedy_findings_order_dependence_never_loses_the_spending_finding(tmp_path):
+    """Whether a remedy is reported depends on prerequisite order — declared at the guard.
+
+    What must NOT depend on order is the finding that decides a refusal. Both spellings are
+    asserted here so the day someone makes the walk order-independent, the weaker claim is
+    what changes and the stronger one is already pinned.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scripts/spend.py", "# run_council\n")
+    for order, name in ((("a", "b"), "ab"), (("b", "a"), "ba")):
+        write(repo, "Makefile",
+              f"verify: {order[0]} {order[1]}\n"
+              "a:\n\t@python3 scripts/gate.py\n"
+              "b:\n\t@python3 scripts/spend.py\n")
+        write(repo, "scripts/gate.py", "# remedy: run 'make b'\n")
+        commit_all(repo, f"order {name}")
+        found = gate.provider_invoking_verify(repo, verify.Command.parse([["make", "verify"]]))
+        spends = [f for f in found if f.startswith(gate.SPENDS)]
+        assert len(spends) == 1, (name, found)
