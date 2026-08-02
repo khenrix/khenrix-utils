@@ -600,7 +600,7 @@ def _manifest_for(repo, base=None):
         baseline_ref=base.ref if base else "refs/khenrix-forge/r1/base",
         baseline_commit=base.commit if base else "b" * 40,
         tracked_tree_oid=base.tracked_tree_oid if base else "c" * 40,
-        selected_paths=(), generator_contract={},
+        selected_paths=(), generator_contract=finspect.GeneratorContract(),
         setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./check.sh",)),),
         protected_refs=refs, status_digest=digest, created_at="2026-08-01T00:00:00Z")
 

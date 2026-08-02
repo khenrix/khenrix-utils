@@ -72,13 +72,22 @@ porcelain says. The selected case is where the sharing stops — `add -f` does n
 hidden edit into B while the digest does see it, so the two disagree in the direction that stops
 the run rather than the one that hands over.
 
-`--skip-worktree` is NOT that floor and must not be read as its twin. `inspect.rejections`
-refuses the repository outright at preflight — the index tag is `S`, `facts.sparse` is True, and
-spec §2.3 lists skip-worktree state among the conditions that fail closed before a run starts —
-so there is no B to share a floor with. Forced past preflight it does not degrade quietly
-either: `baseline.materialize`'s `git add -u -- :/` exits nonzero on git's sparse-checkout
-advice. The only live case for that bit is one set MID-RUN, which the index-move class above
-already covers.
+`--skip-worktree` IS that floor and the very same one, which is the opposite of what this
+paragraph claimed until it was measured. On git 2.53.0, against every probe used above, the two
+bits are indistinguishable: with the bit set and the path clean, the user's later edit moves
+neither the porcelain nor the digest; `git add -u -- :/` exits ZERO and skips the path, so
+`baseline.materialize` succeeds and builds B without that content, reporting `dirty=False`; and
+a SELECTED path's edit moves the digest under either bit. So both ways out are the same two, and
+there is no separate case here.
+
+The reading it replaces was that preflight refuses the repository outright, and preflight
+refuses nothing. It NAMES the condition — the index tag is `S`, `facts.sparse` is True,
+`inspect.rejections` returns a line for it, and spec §2.3 lists skip-worktree state among the
+conditions that fail closed before a run starts — but `rejections` is a policy with zero
+consumers, so no repository is stopped by it, and nothing downstream stands in for it: `git add
+-u` skipping the path is the bit working as documented, not a refusal. That is a §2.3 GAP of
+the same kind as the §9 ones above, and it is the gap that makes the shared floor reachable
+rather than theoretical. The mid-run case remains the index-move class already covered.
 
 What IS recorded is `protected_refs`, name-to-OID for every ref that is not forge's, and
 `status_digest`, over the four parts of the checkout state that move independently:
@@ -184,6 +193,7 @@ import stat
 from dataclasses import dataclass
 
 from . import gitcmd, journal, storage
+from .inspect import GeneratorContract
 from .verify import Step, VerifyError
 
 
@@ -232,6 +242,17 @@ class Manifest:
     than a record this module invents, so there is no conversion between what is written and
     what the gate runs for a field to go missing in.
 
+    `generator_contract` holds `inspect.GeneratorContract` for the same reason and it is the
+    stronger case, because this field decides which verify-origin rewrites a candidate is
+    allowed to have made and `verify.fixed_point` compares its `id` against the candidate's.
+    Carried as a free-form dict it had exactly the conversion the paragraph above rules out,
+    in all three directions: the natural `dataclasses.asdict(contract)` was REFUSED by the
+    round-trip check because `relations` is a tuple of tuples; the hand conversion callers
+    were pushed into read back as lists of lists, and rebuilding the obvious way gave a tuple
+    of LISTS that `GeneratorContract.__post_init__` accepts in silence and that compares
+    unequal to the contract confirmed at the gate; and any dict at all was a valid contract,
+    so a manifest recording `{"totally": "unrelated"}` round-tripped clean.
+
     Never a string, at any level: §5.1 rejects shell metacharacter syntax rather than
     reinterpreting it, and a manifest holding `"cd frontend && npm ci"` would hand a resume a
     command it has to re-parse — which is re-detection under another name, at the one moment
@@ -254,7 +275,7 @@ class Manifest:
     baseline_commit: str
     tracked_tree_oid: str
     selected_paths: tuple[str, ...]
-    generator_contract: dict
+    generator_contract: GeneratorContract
     setup: tuple[Step, ...]
     verify: tuple[Step, ...]
     protected_refs: dict
@@ -277,18 +298,16 @@ def write_manifest(run_dir, manifest: Manifest) -> None:
         raise ManifestError(f"the manifest carries a value json cannot serialize: {e}") from e
     restored = _decode(json.loads(blob), path)
     if restored != manifest:
-        # The check JSON's own types cannot make for the caller. A tuple nested inside the
-        # free-form `generator_contract` serializes happily and reads back a list, as does a
-        # sequence field handed in as a list where the type says tuple — after which the
-        # manifest on disk stops equalling the one in memory, and nothing says so until a
-        # resume hours later compares them. The differing fields are named because "it does
-        # not round trip" sends the caller looking through every field there is.
+        # The check JSON's own types cannot make for the caller. A sequence field handed in as
+        # a list where the type says tuple serializes happily and reads back a list, after
+        # which the manifest on disk stops equalling the one in memory and nothing says so
+        # until a resume hours later compares them. The differing fields are named because "it
+        # does not round trip" sends the caller looking through every field there is.
         differing = [f.name for f in dataclasses.fields(Manifest)
                      if getattr(restored, f.name) != getattr(manifest, f.name)]
         raise ManifestError(
             f"this manifest does not survive its own round trip; {differing} come back as a "
-            "different type. JSON has one sequence type: pass the declared tuples as tuples, "
-            "and store nothing but lists, strings and numbers inside generator_contract.")
+            "different type. JSON has one sequence type: pass the declared tuples as tuples.")
     try:
         storage.exclusive_write(path, blob)
     except FileExistsError as e:
@@ -437,8 +456,16 @@ def _carried_digest(root: bytes, porcelain: bytes, selected_paths) -> bytes:
 
 
 def _path_digest(path: bytes) -> bytes:
-    """One path's content identity — total over every shape a path can have, and raising for
-    none of them.
+    """One path's content identity — total over every shape the OS will answer about, and
+    raising for none of THOSE.
+
+    The totality stops at paths the OS refuses to be asked about, and deliberately. A NUL in a
+    `selected_paths` entry survives `write_manifest`/`read_manifest` intact and raises
+    `ValueError: embedded null character` out of `os.lstat` before any of the branches below
+    run — measured, and it escapes `drift` and `reconstruct`. Catching it here would be worse
+    than the crash: the value returned would be identical at t0 and at every later check, so a
+    selected path that CANNOT exist would read as "nothing moved" for the life of the run.
+    That is the fail-open direction of the one question this digest exists to answer.
 
     NEVER READ THROUGH A LINK, and never OPEN what is not a regular file. A symlink is its
     target TEXT on `baseline._sha256_link`'s argument: following it would put content from
@@ -583,6 +610,44 @@ def _mapping(name, value, source):
     return value
 
 
+def _contract(name, value, source):
+    """Rebuild `inspect.GeneratorContract` from the object json made of it.
+
+    Every field this decoder does NOT check would be a way for the run's own record of what a
+    candidate may rewrite to differ from what the gate confirmed, and nothing would notice
+    until a resume compared them. So the keys are exactly the contract's — an extra one is a
+    fact this engine would drop, a missing one is a fact it would have to invent — and
+    `relations` is rebuilt as a tuple of PAIRS rather than passed through as the lists json
+    returns. A tuple of lists satisfies `__post_init__` in silence and compares unequal to the
+    contract itself, which is this field's whole failure mode reached one step later.
+    """
+    if not isinstance(value, dict):
+        raise ManifestError(f"{source}: {name} must be an object, not {value!r}")
+    names = {f.name for f in dataclasses.fields(GeneratorContract)}
+    if set(value) != names:
+        raise ManifestError(
+            f"{source}: {name} must carry exactly {sorted(names)}, not {sorted(value)}; it "
+            "records which verify-origin rewrites this run admits, and a dict that merely "
+            "parses is not a contract")
+    relations = value["relations"]
+    if not isinstance(relations, list):
+        raise ManifestError(
+            f"{source}: {name}.relations must be an array, not {relations!r}")
+    for r in relations:
+        if not isinstance(r, list):
+            raise ManifestError(
+                f"{source}: {name} relation {r!r} must be an array of two globs")
+    try:
+        return GeneratorContract(id=_text(f"{name}.id", value["id"], source),
+                                 relations=tuple(tuple(r) for r in relations))
+    except ValueError as e:
+        # `GeneratorContract` refuses a relation that is not a pair of non-empty-output globs,
+        # and relations without an id. Re-raised in this module's vocabulary for the same
+        # reason `_steps` re-raises VerifyError: a record `read_manifest` will not stand behind
+        # reaches the resume as a ManifestError or the resume has no name for it.
+        raise ManifestError(f"{source}: {name}: {e}") from e
+
+
 # One decoder per field, by name. A field added to `Manifest` and not named here makes the
 # next read fail loudly, which is the point: the alternative is that it arrives as whatever
 # JSON made of it and compares unequal to what was written, silently, on a resume.
@@ -594,7 +659,7 @@ _DECODERS = {
     "baseline_commit": _text,
     "tracked_tree_oid": _text,
     "selected_paths": _texts,
-    "generator_contract": _mapping,
+    "generator_contract": _contract,
     "setup": _steps,
     "verify": _steps,
     "protected_refs": _mapping,
@@ -731,6 +796,20 @@ def write_seat(run_dir, name: str, payload: dict) -> None:
 
     Refused BEFORE anything is published, on all four counts below, so a rejected record
     leaves the seat's last good one exactly where a resume will look for it.
+
+    NO SCHEMA, AND THE SPEC PUTS ONE HERE. This is a decision left open, not an oversight, and
+    it is stated because the next reader is the orchestrator's author and silence would read as
+    "any payload is fine". §14.2 gives the SEAT the status tuple — status, four inventories,
+    setup/verify logs and hashes, prompt fingerprints — while §14's five dimensions are the
+    RUN's phase. This module has it the other way round: `write_state`/`_decode_state` enforce
+    `_STATE_FIELDS` exactly, refusing a missing field, an unknown one and a wrong type, and
+    everything above is all a seat record is ever checked for. Measured: a seat writing
+    `{"phse": "biulding"}` is written, read and reconstructed with no complaint.
+
+    Deliberately not closed in this wave: nothing produces a seat record yet, so any field set
+    named here would be invented rather than observed, and a schema guessed ahead of its
+    producer is the fail-CLOSED-looking version of the same silence — it would refuse the
+    fields the orchestrator turns out to need and admit the ones it does not.
     """
     path = storage.seat_state_path(run_dir, name)
     if not isinstance(payload, dict):
@@ -1021,8 +1100,16 @@ class Reconstruction:
 
 
 def reconstruct(run_dir, repo) -> Reconstruction:
-    """Everything `--collect` knows, read from `run_dir` — and judged against the repository
-    the manifest names, not the one the caller believes in.
+    """The manifest, the run's position, every seat record and the journal — read from
+    `run_dir` and judged against the repository the manifest names, not the one the caller
+    believes in.
+
+    Enumerated rather than summarised as "everything `--collect` knows", which would be false
+    in the direction that matters. §14.2 lists SIX sources and three of them are read here;
+    the ledger with its content-addressed rows, the synthesis branch HEAD with its dirty
+    filesystem inventory, and `git log` for the checkpoint sequence and last verify-passing
+    OID have no producer in this wave and so no reader here. A resume built on this record
+    alone knows where the run got to, not what it had made.
 
     `repo` is the one argument that does not come out of the run directory, and the manifest
     records it too: `drift` refuses a repository that is not the recorded one, so a caller
@@ -1034,6 +1121,10 @@ def reconstruct(run_dir, repo) -> Reconstruction:
     file this engine could not have written. Unwrapped, on the precedent this package sets
     for `SeatError` and `BundleError` — a resume repairs those differently, and one class
     over all of them would say only that the run is unreadable.
+
+    Not exhaustive, and the gap is named because the list above reads as though it were: a
+    manifest path carrying a NUL reaches `os.lstat` through `drift` and raises ValueError,
+    which is not one of the four. See `_path_digest` for why that is left to raise.
     """
     manifest = read_manifest(run_dir)
     return Reconstruction(

@@ -26,7 +26,8 @@ def _manifest(repo, **kw):
     refs, digest = runstate.snapshot_refs(repo, selected)
     base = dict(run_id="r1", repo_path=str(repo), base_commit="a" * 40,
                 baseline_ref="refs/khenrix-forge/r1/base", baseline_commit="b" * 40,
-                tracked_tree_oid="c" * 40, selected_paths=(), generator_contract={},
+                tracked_tree_oid="c" * 40, selected_paths=(),
+                generator_contract=repo_inspect.GeneratorContract(),
                 setup=(Step(argv=("true",)),), verify=(Step(argv=("./check.sh",)),),
                 protected_refs=refs, status_digest=digest, created_at="2026-08-01T00:00:00Z")
     return runstate.Manifest(**{**base, **kw})
@@ -86,7 +87,8 @@ def test_a_manifest_round_trips_every_field(tmp_path):
     repo = make_repo(tmp_path)
     run = _run_dir(tmp_path)
     m = _manifest(repo, selected_paths=("scratch",),
-                  generator_contract={"id": "g1", "relations": [["src/*", "gen/*"]]})
+                  generator_contract=repo_inspect.GeneratorContract(
+                      id="g1", relations=(("src/*", "gen/*"),)))
     runstate.write_manifest(run, m)
     assert runstate.read_manifest(run) == m
 
@@ -142,7 +144,8 @@ def test_a_step_recorded_as_a_bare_argv_list_is_refused_at_write(tmp_path):
 
 
 def test_a_payload_that_would_not_survive_the_round_trip_is_refused_at_write(tmp_path):
-    """The one field JSON cannot type-check for the caller is the free-form contract dict.
+    """`protected_refs` is the remaining free-form mapping, and JSON cannot type-check it for
+    the caller.
 
     A tuple nested inside it serializes happily and reads back a list, so the manifest on
     disk stops equalling the one in memory — and nothing would say so until a resume hours
@@ -150,10 +153,61 @@ def test_a_payload_that_would_not_survive_the_round_trip_is_refused_at_write(tmp
     """
     repo = make_repo(tmp_path)
     run = _run_dir(tmp_path)
-    m = _manifest(repo, generator_contract={"relations": (("src/*", "gen/*"),)})
-    with pytest.raises(runstate.ManifestError):
+    m = _manifest(repo, protected_refs={"refs/heads/main": ("a" * 40, "b" * 40)})
+    with pytest.raises(runstate.ManifestError, match="protected_refs"):
         runstate.write_manifest(run, m)
     assert not storage.manifest_path(run).exists()
+
+
+def test_the_contract_survives_as_pairs_and_not_as_lists_of_lists(tmp_path):
+    """The field that decides what a candidate is ALLOWED to have rewritten, and the one the
+    manifest's own "no conversion between what is written and what the gate runs" argument did
+    not reach until now.
+
+    Carried as a free-form dict it failed in three directions, all measured: the natural
+    `dataclasses.asdict(contract)` was refused because `relations` is a tuple of tuples;
+    the hand conversion callers were forced into read back as lists of lists, and rebuilding
+    it the obvious way gave a tuple of LISTS that `__post_init__` accepts in silence and that
+    compares UNEQUAL to the contract `verify.fixed_point` checks a candidate against.
+
+    So the pair-ness is asserted directly rather than only through `==`: the equality is what
+    a future decoder change would keep passing while handing the gate a shape it accepts.
+    """
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    c = repo_inspect.GeneratorContract(
+        id="render-v1", relations=(("shared/**", "marketplaces/**"), ("a/*", "b/*")))
+    runstate.write_manifest(run, _manifest(repo, generator_contract=c))
+
+    back = runstate.read_manifest(run).generator_contract
+    assert isinstance(back, repo_inspect.GeneratorContract)
+    assert back == c
+    assert all(isinstance(r, tuple) for r in back.relations), \
+        f"relations came back as {[type(r).__name__ for r in back.relations]}, not pairs"
+
+
+@pytest.mark.parametrize("recorded", [
+    {"totally": "unrelated"},                       # a dict that merely parses
+    {},                                             # the empty dict, once a valid contract
+    {"id": "g1"},                                   # a key short
+    {"id": "g1", "relations": [], "extra": 1},      # a key over
+    {"id": "g1", "relations": [["src/*"]]},         # a relation that is not a pair
+    {"id": "g1", "relations": [["src/*", ""]]},     # an output glob matching no path
+    {"id": "", "relations": [["src/*", "gen/*"]]},  # relations without an id to carry them
+    {"id": "g1", "relations": "src/*"},             # a string, which unpacks into characters
+])
+def test_a_recorded_contract_that_is_not_one_is_refused_at_read(tmp_path, recorded):
+    """`_mapping` accepted any object at all, so a manifest recording `{"totally":
+    "unrelated"}` as the run's generator contract round-tripped as valid — in the field
+    `verify.fixed_point` reads to decide which verify-origin rewrites a candidate may have
+    made. Refused at read, because the resume is where a manifest nobody can vouch for gets
+    believed."""
+    repo = make_repo(tmp_path)
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, _manifest(repo))
+    _tamper(run, lambda row: row.update({"generator_contract": recorded}))
+    with pytest.raises(runstate.ManifestError):
+        runstate.read_manifest(run)
 
 
 def test_a_declared_tuple_handed_in_as_a_list_is_refused_and_the_field_is_named(tmp_path):
@@ -287,7 +341,7 @@ def test_a_manifest_that_is_not_an_object_at_all_is_refused(tmp_path, document):
 @pytest.mark.parametrize("field, value", [
     ("run_id", 5),                    # _text
     ("base_commit", None),            # _text
-    ("generator_contract", ["g1"]),   # _mapping
+    ("generator_contract", ["g1"]),   # _contract
     ("protected_refs", "HEAD"),       # _mapping
 ])
 def test_a_manifest_field_of_the_wrong_type_is_refused(tmp_path, field, value):
