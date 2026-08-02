@@ -848,7 +848,8 @@ would have to either report that run as though it had been reviewed or leave it 
 outcome accounts for. §9's condition is worse than early — it is **continuous**. The user's
 checkout and their protected refs can move at any moment the run is out, which is every moment
 from `confirmed` onward, so the phase that observes the move is the phase the transition has
-to leave from. Terminals themselves gain nothing: a run that reported an outcome and then went
+to leave from. It is declared from `created` as well, where there is no baseline to diverge
+from yet — a rule with no exceptions is one no later reader has to re-derive the exception for. Terminals themselves gain nothing: a run that reported an outcome and then went
 on to change it is the failure this whole tuple exists to make impossible.
 
 ### 14.2 Worked crash: SIGKILL during a post-round-2 fix

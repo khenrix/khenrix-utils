@@ -994,12 +994,19 @@ def test_every_non_terminal_phase_can_reach_failed_and_source_diverged(tmp_path)
     """§14 as amended. A terminal reachable from one phase cannot record where a run died,
     and §9 checks its condition continuously rather than at review.
 
-    Both targets are spelled out here rather than taken from `_UNIVERSAL`, so the constant
-    the widening check below subtracts is not also the constant that says which two endings
-    §14 names — a typo in it would otherwise excuse itself.
+    Both targets are spelled out here rather than taken from `_UNIVERSAL`, so the two
+    constants can disagree and be caught doing it. Not because drawing them from `_UNIVERSAL`
+    would let a typo excuse itself — measured, it would not: a mistyped name makes THIS test
+    fail first, because `advance` refuses the undeclared target, and a dropped one fails
+    three tests elsewhere that subtract `_UNIVERSAL` against literal expectations. The reason
+    is narrower: a reader comparing §14 to this file should find the two endings written out
+    where §14 names them, not resolved through a constant defined for a different purpose.
     """
     for phase in runstate.PHASES:
-        if phase in runstate.TERMINAL:
+        # _DECLARED_TERMINALS, not the derived TERMINAL: a non-terminal whose successors were
+        # forgotten reads as terminal in the derived set and would be SKIPPED here — the same
+        # blind spot `test_no_terminal_phase_admits_any_successor_at_all` was repaired for.
+        if phase in _DECLARED_TERMINALS:
             continue
         s = _state(phase)
         assert runstate.advance(s, "failed").phase == "failed", phase
@@ -1013,10 +1020,12 @@ def test_the_universal_edges_did_not_widen_anything_else(tmp_path):
 
     A phase added to §14 and not to `_DECLARED_SPINE` raises KeyError here rather than
     passing, which is the direction that matters: the missing entry is the spec fact nobody
-    wrote down.
+    wrote down. That holds for a phase added WITH successors; one whose successors were
+    forgotten is caught by the terminal-set test instead, which is why this loop skips on
+    the declared terminals rather than the derived ones.
     """
     for phase in runstate.PHASES:
-        if phase in runstate.TERMINAL:
+        if phase in _DECLARED_TERMINALS:
             continue
         got = _successors(phase)
         assert _UNIVERSAL <= got, phase
