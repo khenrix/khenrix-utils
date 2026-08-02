@@ -237,10 +237,11 @@ class Step:
 
     WHAT IS NOT DECIDED HERE is what needs the verifier: `_step_cwd` refuses a cwd that LEAVES
     the root, which is a fact about a root this value has never seen. Nor is MUTATION — `env`
-    is a dict, so `step.env["A"] = 1` after construction still reaches the manifest
-    unvalidated. That is the boundary `gate.Confirmation` states for `object.__setattr__` and
-    it is the same one: the caller at this door is trusted, and what is closed is every state
-    a caller can CONSTRUCT.
+    is a dict, so `step.env["A"] = 1` after construction is still refused by `write_manifest`
+    and nowhere earlier, which is the late refusal everything above exists to move. That is
+    the boundary `gate.Confirmation` states for `object.__setattr__` and it is the same one:
+    the caller at this door is trusted, and what is closed is every state a caller can
+    CONSTRUCT.
     """
     argv: tuple[str, ...]
     cwd: str = ""
