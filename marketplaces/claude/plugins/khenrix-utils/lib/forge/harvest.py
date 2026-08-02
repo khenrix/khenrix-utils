@@ -166,9 +166,16 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
         # included. Measured: a seat that sets the key has its program run by THIS call, by the
         # engine, after the agent's own process is gone. The flags suppress a cache, so the
         # patch bytes are unchanged.
+        #
+        # NO_DIFF_DRIVERS closes the same window through the keys that name a program to run
+        # DURING a diff — `diff.external`, and `diff.<d>.command`/`diff.<d>.textconv` selected
+        # by the seat's own `.gitattributes`. Measured at this call site, all three ran; and
+        # unlike the cache flags these change the bytes when they are missing, `diff.external`
+        # emptying the patch at exit 0. `filter.<d>.clean` still runs — git offers no flag for
+        # it — so this call is hardened, not program-free.
         diff_text = gitcmd.git(
-            seat_path, *gitcmd.NO_DAEMON_CACHE, "diff", "--binary", baseline_commit, "--",
-            *(_literal(p) for p in paths),
+            seat_path, *gitcmd.NO_DAEMON_CACHE, "diff", *gitcmd.NO_DIFF_DRIVERS,
+            "--binary", baseline_commit, "--", *(_literal(p) for p in paths),
             env_extra=gitcmd.READONLY, binary=True).stdout.decode("utf-8", "surrogateescape")
     return ArtifactSet(paths=paths, origin=origin, setup_overlap=overlap,
                        tracked_diff=diff_text, verify_overlap=verify_overlap)

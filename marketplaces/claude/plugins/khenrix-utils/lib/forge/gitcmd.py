@@ -7,7 +7,9 @@ NO_USER_CONFIG is applied to EVERY call rather than offered as an opt-in: an emp
 dir does NOT neutralise a global core.hooksPath or url.*.insteadOf (spec §4.1), and a
 preset a caller can forget is a preset that will be forgotten. It stays exported because
 it is a published interface and because callers that build their own environment for a
-non-git subprocess still need it. One env preset remains opt-in:
+non-git subprocess still need it. It reaches the GLOBAL and SYSTEM files only; a
+repository's own config is read by the git that runs in it, which is what the three argv
+presets below are for. One env preset remains opt-in:
 
   READONLY       describe-only calls; GIT_OPTIONAL_LOCKS=0 stops read-oriented commands
                  opportunistically refreshing the USER's real index (spec §2.2).
@@ -67,7 +69,41 @@ NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=fals
 # `verify._hooks_pin` does to a tree forge BUILT, and the same thing done here would mutate
 # the user's `.git/config` — one of §9's seven protected items, and the one `gate.must_show`
 # says `drift` cannot speak for.
+#
+# The flag form is also the only form that WORKS on a builder seat, which is the other tree
+# this package runs git in. `-c` enters at command-line precedence, above the local file the
+# agent owns; a `config --local` pin there is undone by the agent's next `git config --unset`
+# (measured, git 2.53: the same `update-ref` fires the seat's hook one command after the pin).
+# `fleet` therefore writes no pin at all and says why.
+#
+# No engine call into a seat is hook-firing TODAY — `diff` and `apply --numstat` are not,
+# measured in both config scopes with and without READONLY — so this tuple appears at no seat
+# call site. `test_every_hook_firing_call_carries_the_hooks_pin` is what puts it on the first
+# one that is.
 NO_HOOKS = ("-c", f"core.hooksPath={os.devnull}")
+
+# The repository's THIRD program, and the one neither preset above reaches: a DIFF DRIVER.
+# `diff.external` names a command for every path; `diff.<d>.command` and `diff.<d>.textconv`
+# name one for the paths an in-tree `.gitattributes` marks `diff=<d>` — and both halves of
+# that pair are the seat's to write. Measured on git 2.53.0, on this package's own invocation
+# (`diff --binary <B> -- :(literal)…` under READONLY and NO_DAEMON_CACHE) in a builder seat:
+# all three ran the seat's program, and `core.hooksPath=/dev/null` stopped none of them.
+#
+# LOAD-BEARING FOR THE PATCH, not only for the engine. Same measurement, reading the bytes:
+# textconv yielded the converted text and `diff.<d>.command` the driver's own output, where an
+# unrigged seat yields the real patch — and `diff.external` yielded ZERO BYTES AT EXIT 0, the
+# silent empty candidate `--binary` and `:(literal)` are already spent preventing. With the
+# flags the bytes are byte-identical to the unrigged seat's, so this cannot cost a legitimate
+# patch anything.
+#
+# WHAT IT DOES NOT CLOSE, and no argv can: `filter.<d>.clean`. A diff against the WORKING TREE
+# must convert worktree content into git's form, so a seat naming a clean filter has that
+# program run too (measured). `git diff` has no flag to refuse it and the driver name is the
+# seat's to choose, so `-c filter.<d>.clean=` cannot be spelled in advance.
+#
+# A SUBCOMMAND OPTION, unlike the two above: it is splatted AFTER `"diff"`, because a diff
+# option in front of the subcommand is an error.
+NO_DIFF_DRIVERS = ("--no-ext-diff", "--no-textconv")
 
 # Ambient values that decide which repository, index, object store or ref namespace a call
 # resolves against — they win over `-C <repo>`. A hook, `git rebase --exec` or `git bisect

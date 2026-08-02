@@ -555,7 +555,13 @@ def _status_digest(repo, head: str, selected_paths) -> str:
     # a text-mode read of it raises before any digest exists.
     root = gitcmd.git(repo, "rev-parse", "--show-toplevel", env_extra=gitcmd.READONLY,
                       binary=True).stdout.strip()
-    porcelain = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "status", "--porcelain=v1", "-z",
+    # NO_HOOKS although READONLY is what already stops this: `GIT_OPTIONAL_LOCKS=0` keeps the
+    # index from being rewritten, and `post-index-change` only fires on a rewrite (measured,
+    # both ways). This runs in the USER's repository, where firing their hooks for forge's
+    # bookkeeping is the thing the decision refuses, so the suppression is not left resting on
+    # a second argument that a later editor of `env_extra` would not know they were carrying.
+    porcelain = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                           "status", "--porcelain=v1", "-z",
                            "--untracked-files=all", "--no-renames",
                            env_extra=gitcmd.READONLY, binary=True).stdout
     # `--untracked-files=all` is required, not tuning: git's default collapses an untracked

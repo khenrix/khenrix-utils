@@ -246,10 +246,15 @@ def _rediff(seat: Path, base_commit: str, paths) -> bytes:
     Deliberately mirrors `harvest.artifact_set`'s invocation, flag for flag, and the
     reasons are all recorded there: `--binary` (a `-diff` file yields no content at exit
     0), `:(literal)` (a pathspec is a glob with magic), `check=True` (git exits 0 for a
-    pathspec matching nothing, so nonzero is a real failure), `NO_DAEMON_CACHE` (the seat's
-    own config names the program a `diff` runs). Bytes are taken raw rather
+    pathspec matching nothing, so nonzero is a real failure), `NO_DAEMON_CACHE` and
+    `NO_DIFF_DRIVERS` (the seat's own config names two kinds of program a `diff` runs).
+    Bytes are taken raw rather
     than decoded and re-encoded — the round trip is exact, but not performing it cannot be
     wrong.
+
+    Only a BANNED-LINK candidate reaches this function, so no fixture that carries a clean
+    patch enters it at all — which is why the flags are held here by the call-site closure in
+    `tests/test_forge_seams.py` rather than by this module's own tests.
 
     The empty guard is load-bearing, not tidiness: `git diff <B> --` with NO pathspec diffs
     the whole tree, so a candidate whose every path was banned would hand back the seat's
@@ -257,8 +262,8 @@ def _rediff(seat: Path, base_commit: str, paths) -> bytes:
     """
     if not paths:
         return b""
-    return gitcmd.git(seat, *gitcmd.NO_DAEMON_CACHE, "diff", "--binary", base_commit, "--",
-                      *(f":(literal){p}" for p in paths),
+    return gitcmd.git(seat, *gitcmd.NO_DAEMON_CACHE, "diff", *gitcmd.NO_DIFF_DRIVERS,
+                      "--binary", base_commit, "--", *(f":(literal){p}" for p in paths),
                       env_extra=gitcmd.READONLY, binary=True).stdout
 
 
@@ -538,12 +543,15 @@ def materialize(bundle, dest) -> tuple[str, ...]:
             # path whose mode came from the patch is not the same thing as the patch's mode.
             # It is also what makes this the one `apply` in the package that opens an index —
             # measured, a bare `apply` and `--numstat` run no `core.fsmonitor` and this form
-            # does — so NO_DAEMON_CACHE belongs on it. Nothing repository-supplied can have
-            # reached `dest`'s config yet: the clone is built under an empty template and the
-            # sidecar loop below refuses a `.git` path. The flags are the latch that still
-            # holds if that ORDER changes, not a hole being closed.
-            r = gitcmd.git(dest, *gitcmd.NO_DAEMON_CACHE, "apply", "--index", "--binary",
-                           str(f), check=False, binary=True)
+            # does, and it fires `post-index-change` where they do not — so NO_DAEMON_CACHE and
+            # NO_HOOKS both belong on it. Nothing repository-supplied can have reached `dest`'s
+            # config yet: the clone is built under an empty template and the sidecar loop below
+            # refuses a `.git` path. The flags are the latch that still holds if that ORDER
+            # changes, not a hole being closed — and this function takes any `dest`, so it
+            # cannot rest on `verify._hooks_pin`, which covers only the tree verify itself
+            # passes in.
+            r = gitcmd.git(dest, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS, "apply", "--index",
+                           "--binary", str(f), check=False, binary=True)
             if r.returncode != 0:
                 raise BundleError(
                     "the tracked patch does not apply to the verifier clone: "

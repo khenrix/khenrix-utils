@@ -267,7 +267,11 @@ def repo_facts(repo) -> RepoFacts:
                            env_extra=gitcmd.READONLY).stdout.strip())
 
     def g(*args):
-        return gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, *args,
+        # NO_HOOKS for the reason `runstate._status_digest` gives at its own `status`: this is
+        # the user's repository, READONLY is what actually keeps the index unwritten, and the
+        # helper takes any subcommand its callers add — so the pin rides on the helper rather
+        # than on a reading of every present and future `*args`.
+        return gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS, *args,
                           env_extra=gitcmd.READONLY).stdout
 
     git_dir = Path(g("rev-parse", "--absolute-git-dir").strip())

@@ -1233,7 +1233,7 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
         "and §6.2's PASS, not the weaker one a bare Run earns"
 
 
-# --- the call-site closure over `gitcmd`'s two argv presets ---------------------------------
+# --- the call-site closure over `gitcmd`'s three argv presets -------------------------------
 #
 # A BEHAVIOURAL TEST ONLY COVERS THE PATHS ITS FIXTURE REACHES, which is how the fsmonitor
 # hole survived every wave that closed part of it, each site found only after the last was
@@ -1258,15 +1258,17 @@ _APPLY_INDEX = "--index"
 # `status` is in the set although `GIT_OPTIONAL_LOCKS=0` is what actually keeps it from
 # rewriting the index — a call added without READONLY would fire the hook, so the closure
 # fails closed and asks for the flags rather than reasoning about a second call's env.
+# `apply` decides by `--index` here for the same reason it does above, and on the same
+# measurement: that form wrote the index and fired `post-index-change`, the other two did not.
 _HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status"})
 
-# The one module that WRITES to the user's own repository — objects, a private index copy and
-# a ref — and so the only one the hooks decision binds. `runstate` and `inspect` also run git
-# there, but only under `GIT_OPTIONAL_LOCKS=0`, which is what keeps their `status` from
-# rewriting the index and therefore from firing `post-index-change` (measured: the same
-# command fires it without READONLY and not with it). Everything else works in a clone forge
-# built under an empty template, which has no hooks directory at all.
-_HOOKS_BOUND = "baseline.py"
+# What runs a DIFF DRIVER — the repository's THIRD program, after `core.fsmonitor` and its
+# hooks. `diff.external` needs nothing but the config; `diff.<d>.command` and
+# `diff.<d>.textconv` are selected by an in-tree `.gitattributes`, which a seat also writes.
+# Measured on git 2.53.0 for `diff`, the only one this package runs; the rest are here so a
+# site added to one of them fails until someone measures it, and all nine accept both flags.
+_DIFF_DRIVING = frozenset({"diff", "log", "show", "format-patch", "diff-tree", "diff-index",
+                           "diff-files", "range-diff", "blame"})
 
 
 @dataclass(frozen=True)
@@ -1347,6 +1349,22 @@ def _loads_an_index(call: _GitCall) -> bool:
     return call.sub in _INDEX_LOADING
 
 
+def _fires_a_hook(call: _GitCall) -> bool:
+    if not call.sub:
+        return True
+    if call.sub == "apply":
+        return _APPLY_INDEX in call.flags
+    return call.sub in _HOOK_FIRING
+
+
+def _runs_a_diff_driver(call: _GitCall) -> bool:
+    """Unresolved reads as YES here too, but it cannot be answered by adding the flags:
+    `NO_DIFF_DRIVERS` is a SUBCOMMAND option, and `rev-parse --no-ext-diff` is an error. So an
+    unresolved call is cleared by an exemption naming what it actually runs, which is the same
+    fail-closed direction reached through the one door that exists for it."""
+    return not call.sub or call.sub in _DIFF_DRIVING
+
+
 # Every call site allowed to load an index WITHOUT the flags, and the reason it is allowed.
 # Keyed by module, function and subcommand rather than by line, so the entry survives an edit
 # above it and still names one call. Set equality in both directions below: an entry whose
@@ -1366,6 +1384,31 @@ _DAEMON_CACHE_EXEMPT = {
         "reads the verifier or calibration clone around the commands the engine runs in it",
     "verify.py:_checkpoint:add":
         "stages what those same commands produced, in that same clone",
+}
+
+# The hooks rule is the whole package's, not one module's, and the reason it USED to be
+# `baseline.py` alone no longer holds: that scoping said a seat clone is built under an empty
+# template "with no hooks directory to fire", which is true of the clone and not of the tree an
+# agent then owns for its entire run. Measured — a seat that mkdirs `.git/hooks`, or points
+# `core.hooksPath` at a directory it wrote, has those hooks run by an ordinary git in that tree.
+# No engine call into a seat fires one TODAY, because `diff` and `apply --numstat` are not
+# hook-firing subcommands (measured, both config scopes, with and without READONLY). This
+# closure is what makes the first one that is fail on the day it is written.
+_HOOKS_EXEMPT = {
+    "verify.py:_checkpoint:add":
+        "the verifier is pinned by `_hooks_pin` and the pin is read back by "
+        "`_assert_hooks_pinned`; a hook surviving that is one the engine's own setup or gate "
+        "command installed, which is code the engine granted itself by running them",
+}
+
+# A diff of a tree whose config the engine did not write runs a program that tree names, and
+# `NO_DIFF_DRIVERS` is the only thing that stops it — the other two presets do not reach it.
+# The one entry is an unresolved call, not a diff; both diffs this package runs read a BUILDER
+# SEAT and carry the flags.
+_DIFF_DRIVER_EXEMPT = {
+    "inspect.py:g:<unresolved>":
+        "a local helper for `rev-parse`, `status` and `check-attr` in the user's own "
+        "repository; it runs no diff producer, and the flags are not options those accept",
 }
 
 
@@ -1389,6 +1432,21 @@ def test_the_git_call_reader_sees_a_new_call_site():
     assert _loads_an_index(one('gitcmd.git(r, *gitcmd.NO_DAEMON_CACHE, *args)')), \
         "an unresolved subcommand must read as needing the flags, not as clear"
     assert not _loads_an_index(one('gitcmd.git(r, "rev-parse", "HEAD")'))
+    assert _fires_a_hook(one('gitcmd.git(r, "apply", "--index", f)')), \
+        "the hooks rule reads `apply` by flag too: that form writes the index"
+    assert not _fires_a_hook(one('gitcmd.git(r, "apply", "--numstat", f)'))
+    assert not _fires_a_hook(one('gitcmd.git(r, "diff", "--binary", c)')), \
+        "a diff fires no hook in any config scope (measured); the closure must not say it does"
+    # A preset splatted AFTER the subcommand is still a preset, and does not take the
+    # subcommand slot: `NO_DIFF_DRIVERS` can only be passed there, since a diff option before
+    # `"diff"` is an error.
+    assert one('gitcmd.git(r, "diff", *gitcmd.NO_DIFF_DRIVERS, "--binary", c)').sub == "diff"
+    assert one('gitcmd.git(r, "diff", *gitcmd.NO_DIFF_DRIVERS, "--binary", c)').presets == \
+        {"gitcmd.NO_DIFF_DRIVERS"}
+    assert _runs_a_diff_driver(one('gitcmd.git(r, "log", "-p")'))
+    assert not _runs_a_diff_driver(one('gitcmd.git(r, "rev-parse", "HEAD")'))
+    assert _runs_a_diff_driver(one('gitcmd.git(r, *args)')), \
+        "an unresolved subcommand must read as needing an exemption, not as clear"
     assert one('def f(r):\n    gitcmd.git(r, "status")\n').func == "f"
     assert _git_calls(b'git(r, "status")\n', "gitcmd.py"), \
         "gitcmd calls its own function unqualified; a site added there must still be read"
@@ -1424,7 +1482,7 @@ def test_every_index_loading_call_carries_the_daemon_cache_flags():
     assert all(_DAEMON_CACHE_EXEMPT.values()), "an exemption must say why"
 
 
-def test_every_hook_firing_call_into_the_users_repository_carries_the_hooks_pin():
+def test_every_hook_firing_call_carries_the_hooks_pin():
     """The user's decision — forge does not fire the user's hooks for its own bookkeeping —
     held as a closure for the same reason as the one above, and with a sharper need for it:
     only a DIRTY fixture reaches the two `add`s and the `write-tree`, and only a CLEAN one
@@ -1432,15 +1490,64 @@ def test_every_hook_firing_call_into_the_users_repository_carries_the_hooks_pin(
     fixture covers all five sites, and the two that do exist would each go on passing if the
     branch they do not enter lost its pin.
 
-    Scoped to the one module that writes to the USER's repository. A seat or verifier clone is
-    a tree forge built under an empty template, with no hooks directory to fire.
+    PACKAGE-WIDE, so it also covers the trees the user does not own. A BUILDER SEAT is the
+    tree with no pin available at all: `verify._hooks_pin` works because a verifier has
+    exactly one writer between the pin and `_assert_hooks_pinned`, while a seat's agent writes
+    to `.git/config` continuously until harvest and can unset a clone-time pin with one
+    command (measured). What defends the engine there is what the engine passes on its own
+    calls, so this closure is where a seat-facing `add`, `status`, `update-ref` or
+    `apply --index` is required to carry the flags — on the day it is written, not after a
+    fixture happens to reach it.
     """
-    bound = [c for c in _forge_git_calls() if c.module == _HOOKS_BOUND]
-    assert bound, f"{_HOOKS_BOUND} no longer runs git; this closure now guards nothing"
+    calls = _forge_git_calls()
+    assert calls, "this package no longer runs git; the closure now guards nothing"
     missing = sorted(f"{c.module}:{c.line} {c.func} git {c.sub or '*args'}"
-                     for c in bound
-                     if (not c.sub or c.sub in _HOOK_FIRING)
-                     and "gitcmd.NO_HOOKS" not in c.presets)
+                     for c in calls
+                     if _fires_a_hook(c)
+                     and "gitcmd.NO_HOOKS" not in c.presets
+                     and c.where not in _HOOKS_EXEMPT)
     assert not missing, (
-        "these calls write an index or a ref in the user's own repository and would fire "
-        f"their hooks: {missing}. Splat `*gitcmd.NO_HOOKS` into each.")
+        "these calls write an index or a ref and would fire the hooks of whichever "
+        f"repository they run in: {missing}. Splat `*gitcmd.NO_HOOKS` into each, or add it "
+        "to _HOOKS_EXEMPT with the reason a hook there is one the engine authorized.")
+
+    claimed = {c.where for c in calls
+               if _fires_a_hook(c) and "gitcmd.NO_HOOKS" not in c.presets}
+    assert claimed == set(_HOOKS_EXEMPT), \
+        "an exemption whose call site is gone: the allow-list no longer describes the code"
+    assert all(_HOOKS_EXEMPT.values()), "an exemption must say why"
+
+
+def test_every_diff_producing_call_disables_the_repositorys_diff_drivers():
+    """A diff driver is the repository's third program, and the two presets above do not reach
+    it: `diff.external` alone, or `diff.<d>.command`/`diff.<d>.textconv` picked out by an
+    in-tree `.gitattributes`, names a command git runs while producing the diff. Measured on
+    git 2.53.0 in a builder seat, on this package's own invocation: all three ran the seat's
+    program, and `core.hooksPath=/dev/null` stopped none of them.
+
+    Both sites this binds today read a SEAT, which is the tree whose `.git/config` the agent
+    owned for its whole run — the same tree, and the same two calls, where `core.fsmonitor`
+    was found running the seat's program after the agent's process was gone.
+
+    The flags are load-bearing for the PATCH as well as for the engine: the same measurement
+    gave 278 bytes of textconv output and 206 of driver output where an honest seat gives 311,
+    and `diff.external` gave zero bytes at exit 0 — the silent, empty-candidate loss
+    `--binary` and `:(literal)` are already spent on.
+    """
+    calls = _forge_git_calls()
+    missing = sorted(f"{c.module}:{c.line} {c.func} git {c.sub or '*args'}"
+                     for c in calls
+                     if _runs_a_diff_driver(c)
+                     and "gitcmd.NO_DIFF_DRIVERS" not in c.presets
+                     and c.where not in _DIFF_DRIVER_EXEMPT)
+    assert not missing, (
+        "these calls produce a diff and would run a program the repository's own config "
+        f"names: {missing}. Splat `*gitcmd.NO_DIFF_DRIVERS` in AFTER the subcommand — they "
+        "are diff options, not `-c` ones — or add the call to _DIFF_DRIVER_EXEMPT with the "
+        "reason it reads a tree whose config the engine wrote.")
+
+    claimed = {c.where for c in calls
+               if _runs_a_diff_driver(c) and "gitcmd.NO_DIFF_DRIVERS" not in c.presets}
+    assert claimed == set(_DIFF_DRIVER_EXEMPT), \
+        "an exemption whose call site is gone: the allow-list no longer describes the code"
+    assert all(_DIFF_DRIVER_EXEMPT.values()), "an exemption must say why"

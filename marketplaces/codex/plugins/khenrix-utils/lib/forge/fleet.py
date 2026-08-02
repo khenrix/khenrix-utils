@@ -13,6 +13,21 @@ Seats therefore get real clones. Two details do the actual work:
 Never `--local`/hardlinks: against git's own operations hardlinked objects are safe
 (content-addressed, mode 444), but forge's whole premise is a process that may write
 outside git's rules, and a truncate through a shared inode corrupts the user's repository.
+
+WHAT THE CLONE DOES WITH THE CONFIG IS MOVE IT, NOT REMOVE IT. The seat's `.git/config` is
+no longer the user's — and it is the AGENT's, for the whole run. The keys in it that name a
+PROGRAM (`core.fsmonitor`, `diff.external`, `diff.<d>.textconv`, `core.hooksPath`) are read
+by whichever git the ENGINE later runs in that tree, which is at harvest, after the agent's
+own process has exited. `clone_seat` deliberately writes no pin against them, and the reason
+is a difference between two trees that looks like a difference of care: `verify._hooks_pin`
+can promise something because a verifier has exactly one writer between the pin and
+`_assert_hooks_pinned`, whereas a seat's agent writes continuously and undoes a
+`config --local` pin with one command (measured, git 2.53 — the hook fires again on the very
+next call). A pin here would look like that defence and make none of its claim. What defends
+the engine is what the engine passes on its OWN calls: `gitcmd`'s `-c` presets, which enter
+above the local file, held to every call site by the closures in `tests/test_forge_seams.py`.
+The empty `--template=` below decides the seat's STARTING state — measured, under it no hook
+fires during `clone_seat` itself — and binds nothing the agent does afterwards.
 """
 import hashlib
 import os

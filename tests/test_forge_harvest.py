@@ -14,7 +14,8 @@ from forge import gitcmd, harvest, snapshot, storage  # noqa: E402
 # `git bisect run`) a bare `git -C <seat>` reads and WRITES the developer's real repository.
 # Measured: `git -C seat rev-parse HEAD` returned the outer repo's HEAD, and
 # `git -C seat commit -a` committed the outer repo's staged file.
-from forge_fixtures import _env as _hermetic_env, commit_all, make_repo, write  # noqa: E402
+from forge_fixtures import (_env as _hermetic_env, commit_all, git, make_repo,  # noqa: E402
+                            write)
 
 
 def _head(repo) -> str:
@@ -310,3 +311,86 @@ def test_an_unwalkable_seat_propagates_the_snapshot_error(tmp_path):
     RuntimeError, so a second layer would only hide which tree failed."""
     with pytest.raises(snapshot.SnapshotError, match="cannot walk"):
         harvest.record(tmp_path / "never-created")
+
+
+@pytest.mark.parametrize("vector", ["diff.external", "driver.command", "driver.textconv"])
+def test_harvesting_never_runs_a_program_the_seats_own_config_names(tmp_path, vector):
+    """A diff driver is a command git runs while producing the diff, named in the repository's
+    own config — the same shape as `core.fsmonitor`, at the same call site, and reached
+    through a key that pin did not cover. `diff.external` needs the config alone; the other
+    two are selected by an in-tree `.gitattributes`, which the seat also writes.
+
+    THE WHOLE CHAIN, not the config value: the seat writes its config as any agent would, and
+    then the ENGINE harvests it — which happens after the agent's own process has exited, so
+    a program that runs here runs in the trusted parent with nothing left to attribute it to.
+
+    The patch is asserted too, and it is not a second-order concern: measured before the fix,
+    textconv gave the file's converted text, a driver `command` gave the driver's own output,
+    and `diff.external` gave NOTHING at exit 0 — a candidate that silently carries no content,
+    which is what `--binary` and `:(literal)` are already spent preventing.
+    """
+    seat = make_repo(tmp_path, "seat")
+    write(seat, "app.py", "v1\n")
+    base = commit_all(seat, "extra")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: write(seat, "app.py", "v2-AGENT-WORK\n"),
+                verify=lambda: None)
+    honest = harvest.artifact_set(p, seat, base)
+    assert honest.paths == ("app.py",)
+    assert "v2-AGENT-WORK" in honest.tracked_diff
+
+    ran = Path(tmp_path) / "PROGRAM-RAN"
+    prog = write(seat, "rig.sh", f"#!/bin/sh\n: > {ran}\ncat \"$1\" 2>/dev/null\n")
+    prog.chmod(0o755)
+    # Written with an ordinary git, never through `gitcmd`: the party doing this is the agent
+    # inside its own clone, and routing it through the engine's hardened wrapper would hide
+    # whether the property survives the config an ordinary `git config` leaves behind.
+    if vector == "diff.external":
+        git(seat, "config", "--local", "diff.external", str(prog))
+    else:
+        write(seat, ".gitattributes", "app.py diff=rigged\n")
+        git(seat, "config", "--local", f"diff.rigged.{vector.split('.')[1]}", str(prog))
+
+    rigged = harvest.artifact_set(p, seat, base)
+    assert not ran.exists(), "the engine ran a program the seat's own config named"
+    assert rigged.tracked_diff == honest.tracked_diff, \
+        "the seat's config changed the bytes the candidate carries"
+
+    # The control, and the test asserts nothing without it: an ordinary git in that same tree
+    # must run the program, or the fixture proved only that the rigging never worked.
+    ran.unlink(missing_ok=True)
+    git(seat, "diff", "--binary", base, "--", "app.py")
+    assert ran.exists(), \
+        "the control failed: this rigging does not run even for an unhardened git"
+
+
+def test_a_seat_named_clean_filter_is_the_reach_the_flags_do_not_close(tmp_path):
+    """The residual, pinned so the sentence recording it cannot rot into a false one.
+
+    A diff against the WORKING TREE has to put worktree content into git's form, so
+    `filter.<d>.clean` — a program named in the seat's own config, selected by the seat's own
+    `.gitattributes` — runs on this call, and git has no flag that refuses it. There is no
+    fixed key to `-c` away either: the driver NAME is the seat's to choose.
+
+    What that costs is stated exactly: the program runs, and the bytes the candidate carries
+    are the filter's output rather than the file's. It is not a way into the engine's own
+    state beyond running the program, and it is not closed here; a future close should turn
+    the two assertions below round rather than delete them.
+    """
+    seat = make_repo(tmp_path, "seat")
+    write(seat, "app.py", "v1\n")
+    base = commit_all(seat, "extra")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: write(seat, "app.py", "v2-AGENT-WORK\n"),
+                verify=lambda: None)
+
+    ran = Path(tmp_path) / "FILTER-RAN"
+    prog = write(seat, "rig.sh", f"#!/bin/sh\n: > {ran}\nsed s/AGENT-WORK/FILTERED/\n")
+    prog.chmod(0o755)
+    write(seat, ".gitattributes", "app.py filter=rigged\n")
+    git(seat, "config", "--local", "filter.rigged.clean", str(prog))
+
+    a = harvest.artifact_set(p, seat, base)
+    assert ran.exists(), "a clean filter no longer runs here — this residual may be closable"
+    assert "v2-FILTERED" in a.tracked_diff, \
+        "the filter ran but did not reach the patch; the cost recorded above is now wrong"
