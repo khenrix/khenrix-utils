@@ -19,6 +19,17 @@ command pass against the UNMUTATED file.
 Exit 0 when the mutant is CAUGHT (a green suite went red), 1 when it SURVIVED, 2 on a usage
 or application error — including a baseline that was not green. The source file is restored
 from the bytes read at start, always.
+
+CHECK `git status` BEFORE YOU TRUST A RUN, AND AGAIN AFTER. "Always" above means the `finally`
+below, and a `finally` only runs if this process reaches it: a SIGKILL, a session torn down
+mid-run, or a machine that goes away leaves the mutant on disk. It has happened here —
+`gate.py` was found still carrying mutant #9 (`user_config=True` stripped from
+`propose_identity`) after an agent's teardown, with the next suite green because the mutation
+was in a call site nothing had pinned yet. That is the FALSE CAUGHT this file is written
+against, arriving by the one route it cannot close from inside. `git status` costs nothing and
+is the only thing that sees it; a new mechanism here would be a second `finally` with the same
+hole. `git checkout -- <file>` restores, and purge `__pycache__` after (see `_purge_bytecode`)
+or the stale bytecode outlives the source.
 """
 import argparse
 import os

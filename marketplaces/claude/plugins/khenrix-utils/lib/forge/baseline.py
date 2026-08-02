@@ -28,8 +28,19 @@ attribution that outlives the run in `git log`, `git blame` and `--author` filte
 signal at the point it was decided. A missing author is recoverable; a wrong one is not.
 
 The caller resolves identity once at the consent gate, and `gate.propose_identity` is that
-caller: a single deliberate read outside this hardened path, DISPLAYED as part of what the
-user consents to and recorded as an answer by `gate.confirm`. It reads `config --get` on
+caller: a single deliberate read outside this hardened path, whose answer `gate.confirm`
+records and `gate.Confirmation` refuses to hold in an unusable shape.
+
+DISPLAYING it is an obligation nothing in this package discharges, said here because this
+paragraph asserted the opposite and a comment claiming a defence that does not exist is worse
+than no comment. `gate.must_show` renders the price, the gaps and the gate surface and no
+identity at all — it is handed no author to render — so the operator can consent to a commit
+in their own name without having been shown the name. What would enforce it is a `must_show`
+line carrying `propose_identity`'s answer, which is a SECOND `user_config=True` call site and
+so a second entry in the seam suite's `_USER_CONFIG_ALLOWED` with its own measurement. Until
+that exists the display is the front end's to do, not this engine's to claim.
+
+`propose_identity` reads `config --get` on
 both halves rather than `git var GIT_AUTHOR_IDENT`, which this file recommended until the
 guess was measured against what it costs here: with `user.name` set and no `user.email`,
 git 2.53.0 returns `Configured <khenrix@Surface-Book-2.localdomain>` at rc=0, the email
