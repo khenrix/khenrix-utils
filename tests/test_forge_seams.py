@@ -1264,16 +1264,25 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
 # does, or has not been looked at. `ls-files` in every form ran it — `--cached` alone
 # included — as did `status`, `diff`, `add`, `write-tree`, `check-attr`, `update-index` and
 # `checkout -b`, which writes the index on its way to moving HEAD.
+#
+# ONLY VERBS THIS PACKAGE CALLS, on all three lists, and
+# `test_every_verb_the_allow_lists_clear_is_one_this_package_calls` holds them to it.
+# `cat-file`, `for-each-ref` and `var` were cleared on all three with no call site anywhere in
+# the package: a clearance nobody could check against a caller, which is the enumeration
+# problem in the inversion's clothes. `gitcmd.py` still records their measurement in prose —
+# that is a measurement, and a measurement is not a clearance until a call needs one. The
+# reader who adds such a call re-measures the argv form it actually uses, which is how `apply`
+# came to decide by flag and `remote` to be read by its first word.
 _INDEX_SAFE = frozenset({
     # Six forms measured between them: `--show-toplevel`, `HEAD`, `--absolute-git-dir`,
     # `--git-common-dir`, `--verify HEAD` and `<c>^{tree}`. None opens an index.
     "rev-parse",
-    "show-ref", "symbolic-ref", "for-each-ref", "cat-file",
+    "show-ref", "symbolic-ref",
     # All four forms this package runs: `--get`, `--get-regexp`, and the two WRITES
     # (`config user.name X` and `config --local core.hooksPath /dev/null`).
     "config",
     "check-ref-format",   # measured with this inversion; the only verb in use nobody had
-    "commit-tree", "update-ref", "var",
+    "commit-tree", "update-ref",
     # `remote` and `remote remove origin` alike, the latter against a clone that HAS a fetch
     # refspec — the condition that makes it touch refs at all.
     "remote",
@@ -1317,7 +1326,7 @@ _APPLY_INDEX = "--index"
 # `status` without READONLY, `checkout -q -b` (`post-checkout`, `post-index-change`,
 # `reference-transaction`) and `clone` (the same three, out of the DESTINATION's template).
 _HOOK_SAFE = frozenset({
-    "rev-parse", "show-ref", "symbolic-ref", "for-each-ref", "cat-file", "var",
+    "rev-parse", "show-ref", "symbolic-ref",
     "config",             # all four forms, the two writes included
     "check-ref-format", "check-attr",
     "ls-files",           # every form: `-z`, `--eol`, `-v -s -z`, `--cached --others`
@@ -1337,7 +1346,7 @@ _HOOK_SAFE = frozenset({
 # An unmeasured verb is therefore cleared by measuring it onto this list or by an exemption
 # naming what it actually runs.
 _DIFF_DRIVER_SAFE = frozenset({
-    "rev-parse", "show-ref", "symbolic-ref", "for-each-ref", "cat-file", "var",
+    "rev-parse", "show-ref", "symbolic-ref",
     "config", "check-ref-format", "check-attr", "ls-files", "status",
     "add", "write-tree", "commit-tree", "update-ref", "checkout", "clone", "remote",
     "apply",              # both forms: `--numstat -z` and `--index --binary`
@@ -1402,8 +1411,21 @@ def _git_calls(source: bytes, module: str) -> list:
                     sub = arg.value
         # A KEYWORD, not a positional: `user_config=True` is the one door out of the /dev/null
         # pin on the user's global config, and a door nothing reads is a door.
-        user_config = any(k.arg == "user_config" and getattr(k.value, "value", None) is True
-                          for k in node.keywords)
+        #
+        # FAIL CLOSED LIKE THE THREE SETS ABOVE, and this is the closure where that matters
+        # most: it guards a DELIBERATE hole in the defence they are all built from. A literal
+        # `False` is the only spelling that reads as closed, because `git()` branches on
+        # `if not user_config` — so `1`, a named constant and an expression all open the pin at
+        # runtime while a `value is True` reader called every one of them closed. `**kwargs`
+        # counts too: the keyword set is unreadable, and unreadable is the same answer an
+        # unresolved subcommand already gets.
+        user_config = False
+        for k in node.keywords:
+            # Monotone on purpose: once something opens the pin, a later keyword cannot close
+            # it again — `git(..., **kw, user_config=False)` still passes whatever `kw` holds.
+            if k.arg is None or (k.arg == "user_config" and not (
+                    isinstance(k.value, ast.Constant) and k.value.value is False)):
+                user_config = True
         # The innermost enclosing def, so a nested helper is named rather than its parent.
         func = min((s for s in scopes if s[0] <= node.lineno <= s[1]),
                    key=lambda s: s[1] - s[0], default=(0, 0, "<module>"))[2]
@@ -1565,11 +1587,50 @@ def test_the_git_call_reader_sees_a_new_call_site():
     assert not one('gitcmd.git(r, "config", "--get", "user.name")').user_config
     assert one('gitcmd.git(r, "config", "--get", "user.name", user_config=True)').user_config, \
         "the door out of the /dev/null pin is a keyword, and the reader has to see it"
+    # THE FOURTH CLOSURE FAILS CLOSED LIKE THE THREE ABOVE IT, and it is the one guarding a
+    # DELIBERATE hole in the defence the other three are built from, so it is the last place
+    # an unrecognized spelling may read as clear. `git()` tests the parameter with
+    # `if not user_config`, so every one of these opens the pin at runtime while a
+    # `value is True` reader called each of them closed.
+    assert one('gitcmd.git(r, "config", user_config=1)').user_config, \
+        "`1` opens the door at runtime: git() branches on truth, not on identity with True"
+    assert one('gitcmd.git(r, "config", user_config=OPEN_THE_PIN)').user_config, \
+        "a named constant is unreadable here, and unreadable must mean open"
+    assert one('gitcmd.git(r, "config", **kw)').user_config, \
+        "`**kwargs` can carry the keyword, so the reader cannot say it does not"
+    assert not one('gitcmd.git(r, "config", user_config=False)').user_config, \
+        "the discrimination check: a literal False is the one spelling that is closed"
     assert one('def f(r):\n    gitcmd.git(r, "status")\n').func == "f"
     assert _git_calls(b'git(r, "status")\n', "gitcmd.py"), \
         "gitcmd calls its own function unqualified; a site added there must still be read"
     assert not _git_calls(b'git(r, "status")\n', "verify.py"), \
         "elsewhere a bare `git` is somebody's local helper, not this one"
+
+
+def test_every_verb_the_allow_lists_clear_is_one_this_package_calls():
+    """The allow-lists describe THIS package's calls, and an entry with no call site is the
+    enumeration problem wearing the inversion's clothes.
+
+    A name here is a measurement, and a measurement is only ever needed by a caller. Cleared
+    without one it grows the exempt set with nothing to check it against: `cat-file`,
+    `for-each-ref` and `var` sat on all three lists with no call site anywhere in the package,
+    so the day one was written it would have inherited a clearance nobody re-measured against
+    the argv form that call actually uses — which is how `apply` came to need a flag rule and
+    `remote` to be read by its first word only.
+
+    Both directions already run on the three EXEMPT dicts, for the same reason and in the same
+    words ("a stale exemption is how an allow-list turns into the decoration it was written to
+    replace"). This is that rule for the SAFE sets. The other direction — a call site with no
+    entry — is the three closures below.
+    """
+    verbs = {c.sub for c in _forge_git_calls() if c.sub}
+    assert verbs, "this package no longer runs git; the closure now guards nothing"
+    for name, allowed in (("_INDEX_SAFE", _INDEX_SAFE), ("_HOOK_SAFE", _HOOK_SAFE),
+                          ("_DIFF_DRIVER_SAFE", _DIFF_DRIVER_SAFE)):
+        assert allowed <= verbs, (
+            f"{name} clears {sorted(allowed - verbs)}, which this package never calls. Delete "
+            "the name, or add the call site the measurement was taken for — an entry justified "
+            "by a measurement nobody needed cannot be checked against a caller.")
 
 
 def test_every_index_loading_call_carries_the_daemon_cache_flags():
