@@ -36,16 +36,20 @@ def test_a_clean_repository_has_no_refusals(tmp_path):
 
 
 def test_skip_worktree_is_refused_at_preflight(tmp_path):
-    """§2.3 lists it, and `git add -u -- :/` exits 0 while SILENTLY SKIPPING such a path, so
-    `baseline.materialize` builds B without the user's hidden edit and reports `dirty=False`
-    — measured in this repository's `runstate` docstring and re-measured for this task.
+    """§2.3 lists it, and what it costs is the BIT hiding an edit from the porcelain rather
+    than any one git command. Measured on this exact fixture, git 2.53.0: the porcelain is
+    empty, so `baseline.materialize` reports `dirty=False`, takes its clean early-return and
+    makes B HEAD itself — B lacks the hidden edit because of that, and `add` is never invoked
+    at all. A selection that makes the run dirty does reach `git add -u -- :/`, and that
+    command exits ONE on such a path ("paths ... exist outside of your sparse-checkout
+    definition"), so `materialize` raises `GitError`.
 
-    What does NOT hold is that nothing downstream sees it. Measured on this exact fixture:
-    `fleet.clone_seat` raises `SeatError: seat content differs from the baseline manifest`,
-    because B's manifest hashes the raw worktree bytes (which carry the hidden edit) while
-    B's tree does not. That is the §4 shape a refusal exists to avoid rather than an argument
-    against one — an infrastructure failure three stages later, attributed to the seat, in
-    place of a sentence naming a bit the user can clear.
+    What does NOT hold either way is that nothing downstream sees it. Measured: on the clean
+    branch `fleet.clone_seat` raises `SeatError: seat content differs from the baseline
+    manifest`, because B's manifest hashes the raw worktree bytes (which carry the hidden
+    edit) while B's tree does not. That is the §4 shape a refusal exists to avoid rather than
+    an argument against one — an infrastructure failure three stages later, attributed to the
+    seat, in place of a sentence naming a bit the user can clear.
     """
     repo = make_repo(tmp_path)
     _git(repo, "update-index", "--skip-worktree", "seed.txt")
@@ -189,8 +193,10 @@ def test_the_screen_reads_the_selection_and_not_the_tree_around_it(tmp_path):
     """The scoping half of §2.3's paragraph, on §3's side of the fence.
 
     Measured, and it is why an unscoped sweep is not the safer default:
-    `screen_tree(<this repository>, ["."])` returns `files: 5740 > 5000` — one breach, no
-    findings — so a whole-tree screen refuses forge's first run here on the file cap alone.
+    `screen_tree(<this repository>, ["."])` returns one breach and no findings,
+    `files: <n> > 5000`, several hundred past `Quota.default()`'s cap (5750 on 2026-08-02;
+    a bound rather than a count, since it moves with every commit) — so a whole-tree screen
+    refuses forge's first run here on the file cap alone.
 
     This test asserts a BOUNDARY, and the module docstring names what falls outside it: a
     credential in a tracked file, including an uncommitted edit to one, is not screened here.
@@ -239,6 +245,69 @@ def test_preflight_executes_nothing_the_repository_supplies(tmp_path):
     assert not ran.exists(), "preflight ran a program the repository named"
 
 
+def test_a_subdirectory_caller_screens_the_repository_the_baseline_is_built_from(tmp_path):
+    """`Report` blesses a subdirectory `repo`, and a selection is worktree-ROOT-relative —
+    so the two roots must not be mixed.
+
+    Measured with the screen joined onto the caller's `repo` instead: this fixture returned
+    no secrets, no breaches and NO REFUSALS, while `baseline.materialize(<repo>/sub, …,
+    ["scratch"], …)` put `scratch/.env` into B's manifest. A clean screen in front of a
+    baseline carrying the credential is the §3 outcome the screen exists to prevent, and it
+    is worse than no screen because a clean result is what the gate shows a human.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/.env", "AWS_SECRET_ACCESS_KEY=" + "A" * 40 + "\n")
+    write(repo, "sub/scratch/notes.md", "harmless\n")
+
+    r = preflight.inspect_repo(repo / "sub", ("scratch",))
+    assert r.repo == repo / "sub" and r.facts.root == repo, \
+        "the two roots really do differ here, or this fixture proves nothing"
+    assert [f.path for f in r.secrets] == ["scratch/.env"]
+    assert "scratch/.env: high-risk-filename" in preflight.refusals(r)
+
+
+def test_a_subdirectory_caller_does_not_report_a_present_path_as_missing(tmp_path):
+    """The same mixing degrades into a FALSE SENTENCE when the subdirectory has no copy of
+    the selected path: `scratch: not screened — selected path does not exist`, about a path
+    that exists. A breach naming the wrong reason sends the user to look for the wrong thing.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/notes.md", "harmless\n")
+    write(repo, "sub/other.md", "x\n")
+    r = preflight.inspect_repo(repo / "sub", ("scratch",))
+    assert r.breaches == () and preflight.refusals(r) == ()
+
+    gone = preflight.inspect_repo(repo / "sub", ("nowhere",))
+    assert gone.breaches == ("nowhere: not screened — selected path does not exist",), \
+        "and a selection that really is absent still breaches, so the fix is not blanket silence"
+
+
+def test_a_subdirectory_caller_sees_a_condition_set_at_the_root(tmp_path):
+    """`repo_facts` is the other half of the same root question, and it was the fail-OPEN
+    half: `ls-files` reports relative to the CWD and lists only what is under it, so from
+    `<repo>/sub` a root-level `--skip-worktree` bit came back `sparse=False` with
+    `rejections()` empty — §2.3's headline condition, silently unmet.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "sub/inner.txt", "i\n")
+    commit_all(repo, "sub")
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+
+    from_root = preflight.inspect_repo(repo)
+    from_sub = preflight.inspect_repo(repo / "sub")
+    assert from_sub.facts.sparse is True
+    assert preflight.refusals(from_sub) == preflight.refusals(from_root) != ()
+
+
+def test_the_same_subdirectory_without_the_bit_is_admitted(tmp_path):
+    """The discrimination check for the case above: reading the whole repository from a
+    subdirectory must not refuse an ordinary one."""
+    repo = make_repo(tmp_path)
+    write(repo, "sub/inner.txt", "i\n")
+    commit_all(repo, "sub")
+    assert preflight.refusals(preflight.inspect_repo(repo / "sub")) == ()
+
+
 def test_the_report_does_not_claim_a_gate_surface_it_could_not_measure(tmp_path):
     """`gate_surface` needs a confirmed verify command, which preflight does not have yet.
     None is "nobody looked"; () would say "this repository defines no gate", which is a
@@ -272,7 +341,14 @@ def test_refusals_will_not_answer_for_something_that_is_not_a_report():
 
 def test_preflight_writes_nothing_in_the_repository(tmp_path):
     """Read-only is also a claim about the INDEX, which §9 protects and which an ordinary
-    `git status` over stale stat data will rewrite unless every call is pinned."""
+    `git status` over stale stat data will rewrite unless every call is pinned.
+
+    The mtimes are COMPARED BY VALUE, not merely by key. `os.utime` backdates the file so
+    that a refresh is exactly what an unpinned call would do, and a rewrite that reproduced
+    the same bytes — or one to any other file under `.git` — moves an mtime and nothing else.
+    Key-set equality alone would answer only "created or removed", which is the weaker half
+    of the two the index comparison below already covers.
+    """
     repo = make_repo(tmp_path)
     write(repo, "dirty.txt", "untracked\n")
     _git(repo, "add", "dirty.txt")
@@ -284,4 +360,5 @@ def test_preflight_writes_nothing_in_the_repository(tmp_path):
 
     after = {p: p.stat().st_mtime_ns for p in (Path(repo) / ".git").rglob("*") if p.is_file()}
     assert set(after) == set(before), "preflight created or removed a file under .git"
+    assert after == before, "preflight wrote to a file under .git"
     assert (Path(repo) / ".git" / "index").read_bytes() == index

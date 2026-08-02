@@ -4,16 +4,38 @@ place a refusal can stop a run before anybody is asked to authorize one.
 This is the first consumer `inspect.rejections` and `screen.screen_tree` have ever had. Both
 computed §2.3 and §3 in full and returned into a void, and
 `test_forge_seams.py::test_preflight_consults_both_refusals_and_what_they_name_it_refuses` is
-where that stopped being true. What it cost is the sharpest argument for this file:
-`--skip-worktree` is one of §2.3's conditions, `rejections` names it, and with nothing reading
-that answer `git add -u -- :/` exits ZERO and silently skips the path, so
-`baseline.materialize` builds B without the user's hidden edit and reports `dirty=False`.
+where that stopped being true. What it costs to leave them unread is the sharpest argument
+for this file, and it is the BIT rather than any one git command. `--skip-worktree` is one of
+§2.3's conditions, `rejections` names it, and its whole effect is to hide an edit from the
+porcelain — which is the input `baseline.materialize` decides everything from. Measured on
+git 2.53.0, bit set on an edited `seed.txt`: the porcelain is empty, so `dirty` is False, the
+clean early-return fires and B IS HEAD. B lacks the edit because of that, not because
+anything skipped it — `add` is never invoked on that repository at all
+(`rev-parse, rev-parse, ls-files, rev-parse, update-ref, rev-parse`). A selection that does
+make the run dirty reaches `git add -u -- :/`, and that command exits ONE on such a path —
+"paths ... exist outside of your sparse-checkout definition" — so `materialize` raises
+`GitError`. Neither branch is a silent skip.
 
-That failure is LOUD three stages later rather than silent, which is the §4 shape a refusal
-exists to replace and not an argument against one. Measured on that repository: `clone_seat`
-raises `SeatError: seat content differs from the baseline manifest`, because B's manifest
-hashes the raw worktree bytes and B's tree does not carry them. An infrastructure failure
-attributed to a seat, hours in, stands in for a sentence naming a bit the user can clear.
+Both failures are LOUD and LATE rather than silent, which is the §4 shape a refusal exists to
+replace and not an argument against one. On the clean-tree branch the loud one is three
+stages further on: B's manifest hashes the raw worktree bytes while B's tree does not carry
+them, so `clone_seat` raises `SeatError: seat content differs from the baseline manifest`. An
+infrastructure failure attributed to a seat, hours in, stands in for a sentence naming a bit
+the user can clear.
+
+EVERY REPO-RELATIVE PATH HERE IS RESOLVED AGAINST `facts.root`, git's answer, never against
+the `repo` the caller named. The two differ whenever the caller passes a subdirectory, which
+`Report` documents as supported and which `baseline.materialize` builds from `facts.root`
+regardless. Joining the selection onto `repo` instead was measured: with `scratch/.env` at
+the root and a clean `sub/scratch/`, `inspect_repo(<repo>/sub, ("scratch",))` returned no
+secrets, no breaches and no refusals, while `materialize(<repo>/sub, …, ["scratch"], …)` put
+`scratch/.env` into B's manifest. A clean screen in front of a baseline carrying the
+credential is worse than no screen, because a clean result is what the gate shows a human.
+With the subdirectory copy merely absent it degraded into a false sentence instead:
+"scratch: not screened — selected path does not exist", about a path that does.
+`baseline.materialize` guards the same disagreement by refusing a `repo` and a `facts` that
+name different repositories, and `inspect.repo_facts` resolves the root before its own index
+reads for the same reason.
 
 STATIC AND READ-ONLY IS A CLAIM ABOUT EXECUTION, not only about writes. §5: "No arbitrary
 project setup code runs before authorization." Nothing here runs a program the repository
@@ -23,11 +45,13 @@ caller running it. See `inspect`'s third hard rule for that measurement.
 
 THE SCREEN IS SCOPED TO THE SELECTION, and the reason is measured rather than inherited.
 §2.3's scoping paragraph is about REJECTIONS, so it does not settle §3 — but the whole-tree
-alternative fails on its own terms: `screen_tree(<this repository>, ["."])` returned
-`files: 5740 > 5000`, one breach and no findings, so an unscoped screen would refuse forge's
-first run here on the cap alone. No quota is passed, so `screen_tree` applies
-`Quota.default()` — the pre-launch screen's own question, and deliberately not
-`Quota.for_harvest()`'s, which sizes a seat holding a dependency tree.
+alternative fails on its own terms: `screen_tree(<this repository>, ["."])` returned one
+breach and no findings, `files: <n> > 5000` — several hundred past `Quota.default()`'s cap,
+and stated as a bound rather than a count because the number moves with every commit (5750
+on 2026-08-02). So an unscoped screen would refuse forge's first run here on the cap alone.
+No quota is passed, so `screen_tree` applies `Quota.default()` — the pre-launch screen's own
+question, and deliberately not `Quota.for_harvest()`'s, which sizes a seat holding a
+dependency tree.
 
 WHAT THAT LEAVES UNSCREENED is named because the scoping above reads as though §3 were
 satisfied. §3 asks for "the entire selected baseline", and the baseline is tracked content
@@ -140,7 +164,14 @@ def inspect_repo(repo, selected_untracked=()) -> Report:
             contained.append(rel)
 
     facts = inspect.repo_facts(repo)
-    findings, breaches = screen.screen_tree(repo, contained)
+    # `facts.root`, not `repo`: a selection is worktree-ROOT-relative, which is what
+    # `rejections` and `baseline.materialize` both resolve it against. See the module
+    # docstring for the measured outcome of joining it onto a caller's subdirectory instead.
+    findings, breaches = screen.screen_tree(facts.root, contained)
+    # `runstate.snapshot_refs` is deliberately NOT called, though it is the other §5 read a
+    # reader expects here: §14.2 puts t0 at the confirmation gate, so a snapshot taken now
+    # would date the run before the user agreed to it and read every action taken DURING the
+    # gate as drift. `Report` has no field for one for the same reason.
     return Report(repo=Path(repo),
                   facts=facts,
                   rejections=tuple(inspect.rejections(facts, contained)),

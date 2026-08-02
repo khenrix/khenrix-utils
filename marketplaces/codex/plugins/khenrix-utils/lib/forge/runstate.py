@@ -63,32 +63,46 @@ read as a ref the user made and every run would diverge from itself.
 THE CONTENT BEHIND `--assume-unchanged` is a second question from the index move above, and a
 different answer: not a gap of this file's, but a floor it shares with B. Measured with the bit
 set and the path clean, the user's own later edit moves neither the porcelain nor the digest,
-and `git add -u` skips it on the same comparison, so `baseline.materialize` does not carry that
-content into B either, while the user's own `git status`, `git diff` and `git stash` are equally
-blind (`stash` answers "No local changes to save" and leaves the edit where it was). Two ways
-out are ones this file already has: a path that was DIRTY at t0 leaves the porcelain when the
-bit is set, which moves the digest, and a SELECTED path stays in the content set whatever the
-porcelain says. The selected case is where the sharing stops — `add -f` does not carry the
-hidden edit into B while the digest does see it, so the two disagree in the direction that stops
-the run rather than the one that hands over.
+and `baseline.materialize` does not carry that content into B either — with nothing else dirty
+it never reaches `add` at all, since an empty porcelain makes `dirty` False and B HEAD itself,
+and when a selection does make the run dirty `git add -u -- :/` exits ZERO and skips the path
+on that same stat comparison. The user's own `git status`, `git diff` and `git stash` are
+equally blind (`stash` answers "No local changes to save" and leaves the edit where it was).
+Two ways out are ones this file already has: a path that was DIRTY at t0 leaves the porcelain
+when the bit is set, which moves the digest, and a SELECTED path stays in the content set
+whatever the porcelain says. The selected case is where the sharing stops — `add -f` does not
+carry the hidden edit into B while the digest does see it, so the two disagree in the direction
+that stops the run rather than the one that hands over.
 
-`--skip-worktree` IS that floor and the very same one, which is the opposite of what this
-paragraph claimed until it was measured. On git 2.53.0, against every probe used above, the two
-bits are indistinguishable: with the bit set and the path clean, the user's later edit moves
-neither the porcelain nor the digest; `git add -u -- :/` exits ZERO and skips the path, so
-`baseline.materialize` succeeds and builds B without that content, reporting `dirty=False`; and
-a SELECTED path's edit moves the digest under either bit. So both ways out are the same two, and
-there is no separate case here.
+`--skip-worktree` shares that floor, but the two bits are NOT INTERCHANGEABLE and nothing here
+may treat them as one. Measured on git 2.53.0: the porcelain and the digest cannot tell them
+apart, and `rejections` and `git add` can. `facts.sparse` is True under skip-worktree and
+False under assume-unchanged, so §2.3's line fires for one bit and not the other. And
+`git add -u -- :/`
+exits ONE on a skip-worktree path — "paths ... exist outside of your sparse-checkout
+definition", in ambient env, under `GIT_OPTIONAL_LOCKS=0`, and under `materialize`'s own env
+with its alternate index — where the same command exits zero and skips on an assume-unchanged
+one. So a DIRTY run raises `GitError` out of `materialize` under skip-worktree rather than
+building a B that quietly lacks the content. What the two bits do share is the clean-tree
+branch, where neither edit reaches the porcelain, and the two ways out above.
 
 The reading it replaces was that preflight refuses the repository outright, and for a while
 preflight refused nothing: it NAMED the condition — the index tag is `S`, `facts.sparse` is
 True, `inspect.rejections` returns a line for it, and spec §2.3 lists skip-worktree state
 among the conditions that fail closed before a run starts — while `rejections` was a policy
 with zero consumers. `preflight.refusals` is that consumer now, so the original reading holds
-again for any caller that runs preflight and obeys it. What is left is the caller's to get
-right rather than this file's: a run entered below preflight still meets the floor, because
-nothing downstream stands in for the refusal — `git add -u` skipping the path is the bit
-working as documented. The mid-run case remains the index-move class already covered.
+again for any caller that runs preflight and obeys it.
+
+A run entered BELOW preflight loses only what was edited AFTER the baseline was taken. An edit
+already hidden at t0 does not get through: `baseline`'s manifest hashes the raw worktree bytes
+while B's tree does not carry them, so `fleet.clone_seat` raises `SeatError: seat content
+differs from the baseline manifest` — measured under both bits on a clean tree, and under
+assume-unchanged with a selection as well. Under skip-worktree a dirty run never reaches a
+seat at all, because `materialize` raises out of `add -u -- :/` before one is cloned. So
+something downstream does stand in for the refusal; what it stands in with is a §4
+infrastructure failure attributed to a seat, which is what preflight exists to replace, not a
+reason to leave the refusal unwired. The post-t0 edit is the case nothing sees, and there the
+bit is working as documented. The mid-run case remains the index-move class already covered.
 
 What IS recorded is `protected_refs`, name-to-OID for every ref that is not forge's, and
 `status_digest`, over the four parts of the checkout state that move independently:
@@ -118,8 +132,9 @@ blob each plus the tree, unreachable until git's two-week gc grace expires. Read
 back writes nothing, so this is the read-only half of the same answer.
 
 Two boundaries follow from that domain rather than being chosen. A tracked path whose content
-moves while the porcelain does NOT list it is one git itself calls clean, so `add -u` would
-skip it on the same stat comparison — neither method sees it, and neither can. An untracked
+moves while the porcelain does NOT list it is one git itself calls clean, so `materialize`
+does not carry it into B either, by whichever of the two routes above the bit takes —
+neither method sees it, and neither can. An untracked
 path nobody selected is deliberately outside it: no tree forge writes contains it, so no merge
 of forge's work can revert it, and hashing it would put every stray editor swap file and test
 log into a drift report whose only value is that it means something.

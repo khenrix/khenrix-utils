@@ -254,18 +254,29 @@ def _escaping_links_under(root: Path, base: Path) -> list:
 
 
 def repo_facts(repo) -> RepoFacts:
+    # The root is resolved FIRST and every later read runs there, because `ls-files`,
+    # `check-attr` and `ls-files --eol` all report relative to the CWD and list only what is
+    # under it — while every path this returns is documented as root-relative and is joined
+    # onto `facts.root` by `rejections`, `preflight` and `baseline.materialize` alike. Given a
+    # subdirectory, which those callers accept, the index reads would describe that subtree
+    # alone: measured, a root-level `--skip-worktree` bit came back `sparse=False` with
+    # `rejections()` empty from `<repo>/sub`, a fail-OPEN on one of §2.3's own conditions. The
+    # porcelain needs no such care — its paths are root-relative and root-wide from any cwd —
+    # and neither does `config`, but they run at the root too so no reader has to know which.
+    root = Path(gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "rev-parse", "--show-toplevel",
+                           env_extra=gitcmd.READONLY).stdout.strip())
+
     def g(*args):
-        return gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *args,
+        return gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, *args,
                           env_extra=gitcmd.READONLY).stdout
 
-    root = Path(g("rev-parse", "--show-toplevel").strip())
     git_dir = Path(g("rev-parse", "--absolute-git-dir").strip())
 
     # A freshly `git init`-ed repository is an ordinary state, not an error: HEAD points at a
     # branch that has no commit, and `rev-parse HEAD` exits 128. A module whose contract is
     # "return a rejection list" must describe that, not raise through it, so head stays "" and
     # rejections() speaks.
-    head_r = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "rev-parse", "--verify", "HEAD",
+    head_r = gitcmd.git(root, *gitcmd.NO_DAEMON_CACHE, "rev-parse", "--verify", "HEAD",
                         env_extra=gitcmd.READONLY, check=False)
     head = head_r.stdout.strip() if head_r.returncode == 0 else ""
 
@@ -319,13 +330,13 @@ def repo_facts(repo) -> RepoFacts:
         root=root, head=head,
         index_sha=hashlib.sha256(index.read_bytes()).hexdigest() if index.is_file() else "",
         is_shallow=g("rev-parse", "--is-shallow-repository").strip() == "true",
-        is_partial=bool(_config(repo, "extensions.partialClone")) or _has_promisor_remote(repo),
+        is_partial=bool(_config(root, "extensions.partialClone")) or _has_promisor_remote(root),
         has_submodules=any(mode == "160000" for _, mode, _ in entries) or
         (root / ".gitmodules").is_file(),
-        sparse=_config(repo, "core.sparseCheckout") == "true" or skip_worktree,
+        sparse=_config(root, "core.sparseCheckout") == "true" or skip_worktree,
         unmerged=unmerged, intent_to_add=intent_to_add,
-        filtered_paths=_filtered_paths(repo, [path for _, _, path in entries]),
-        eol_mismatched_paths=_eol_mismatched_paths(repo),
+        filtered_paths=_filtered_paths(root, [path for _, _, path in entries]),
+        eol_mismatched_paths=_eol_mismatched_paths(root),
         # Mode 120000 is a symlink however the entry was created, read from the same index
         # pass that answers the gitlink and skip-worktree questions. §2.3 lists escaping
         # symlinks without restricting them to selected paths, and a TRACKED one ships to
