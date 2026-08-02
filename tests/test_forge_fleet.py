@@ -106,6 +106,21 @@ def test_clone_transfers_no_object_unreachable_from_the_baseline_ref(tmp_path):
     assert stored <= reachable, f"seat holds {len(stored - reachable)} unreachable object(s)"
 
 
+def _subcommand(a: tuple) -> tuple:
+    """The first two words after any `-c KEY=VALUE` presets.
+
+    Read by SKIPPING those pairs, never by index. `gitcmd`'s presets are splatted in FRONT of
+    the subcommand, and the hooks closure now requires that at every call site into a seat —
+    so a stub matching `a[:2]` stops intercepting the call it names the moment one is added,
+    and does it silently: the real git runs, the postcondition holds, and the test that exists
+    to prove a refusal reports DID NOT RAISE.
+    """
+    i = 0
+    while i + 1 < len(a) and a[i] == "-c":
+        i += 2
+    return tuple(a[i:i + 2])
+
+
 def test_clone_refuses_a_seat_whose_remote_survives(tmp_path, monkeypatch):
     """The postcondition is what closes the push vector, not `remote remove`'s exit code.
 
@@ -117,7 +132,7 @@ def test_clone_refuses_a_seat_whose_remote_survives(tmp_path, monkeypatch):
     real = fleet.gitcmd.git
 
     def remove_is_a_no_op(target, *a, **kw):
-        if a[:2] == ("remote", "remove"):
+        if _subcommand(a) == ("remote", "remove"):
             return subprocess.CompletedProcess(a, 0, "", "")
         return real(target, *a, **kw)
 

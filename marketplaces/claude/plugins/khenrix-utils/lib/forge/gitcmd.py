@@ -76,10 +76,13 @@ NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=fals
 # (measured, git 2.53: the same `update-ref` fires the seat's hook one command after the pin).
 # `fleet` therefore writes no pin at all and says why.
 #
-# No engine call into a seat is hook-firing TODAY — `diff` and `apply --numstat` are not,
-# measured in both config scopes with and without READONLY — so this tuple appears at no seat
-# call site. `test_every_hook_firing_call_carries_the_hooks_pin` is what puts it on the first
-# one that is.
+# WHAT DECIDES ON A SEAT IS THE AGENT'S RUN, not the subcommand. AFTER it there is nothing to
+# suppress: `diff` and `apply --numstat` fire no hook, measured in both config scopes with and
+# without READONLY. BEFORE it `clone_seat` runs two that do — its `clone`, which installs a
+# CALLER-supplied template into the destination and then runs those hooks, and its `checkout -b`
+# in the seat itself; each fired `post-checkout`, `post-index-change` and
+# `reference-transaction`, and this tuple stopped all three.
+# `test_every_hook_firing_call_carries_the_hooks_pin` is what puts it on the next one.
 NO_HOOKS = ("-c", f"core.hooksPath={os.devnull}")
 
 # The repository's THIRD program, and the one neither preset above reaches: a DIFF DRIVER.

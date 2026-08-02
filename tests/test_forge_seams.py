@@ -1242,25 +1242,45 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
 # read call SITES, so a site added tomorrow fails them tomorrow whatever any fixture reaches.
 
 # Measured on git 2.53.0 against a `core.fsmonitor` script that touches a file: every
-# subcommand here ran it, in every form — `ls-files --cached` alone included — and `rev-parse`,
-# `show-ref`, `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`
-# and `clone` did not. LOADING AN INDEX is the rule; `--others` was a narrower one that read a
-# cached-only `ls-files` as safe. See `gitcmd.NO_DAEMON_CACHE`'s own note.
+# subcommand here ran it, in every form — `ls-files --cached` alone included, and `checkout -b`,
+# which writes the index on its way to moving HEAD — while `rev-parse`, `show-ref`,
+# `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`, `remote`
+# (the listing and `remove` forms alike) and `clone` did not. LOADING AN INDEX is the rule;
+# `--others` was a narrower one that read a cached-only `ls-files` as safe. See
+# `gitcmd.NO_DAEMON_CACHE`'s own note.
 _INDEX_LOADING = frozenset({"ls-files", "status", "diff", "add", "write-tree", "check-attr",
-                            "update-index"})
+                            "update-index", "checkout"})
 # `apply` is the one subcommand that decides by FLAG rather than by name: measured, `apply
 # --index` runs the monitor and writes the index, while `apply --numstat` and a bare `apply`
 # do neither — they never open one.
 _APPLY_INDEX = "--index"
 
-# What fires a hook out of the repository's own hooks directory: `update-ref` runs
-# `reference-transaction`, and anything that WRITES an index runs `post-index-change`.
+# What fires a hook out of the hooks directory the call's own repository resolves. Measured on
+# git 2.53.0 with a full hook set planted at `.git/hooks` and, separately, at a `core.hooksPath`
+# directory the agent wrote — the two agreed on every row:
+#
+#   `update-ref`      `reference-transaction`
+#   writing an index  `post-index-change`
+#   `checkout -b`     all three of `post-checkout`, `post-index-change`, `reference-transaction`
+#   `remote remove`   `reference-transaction`, but ONLY where `remote.<n>.fetch` names refs to
+#                     delete. A `--revision=` clone is given no fetch refspec (measured: `url`
+#                     and `tagopt` only), so `fleet`'s own call deletes nothing and fires
+#                     nothing — a property of that clone's shape, not of the subcommand.
+#   `clone`           the DESTINATION's hooks, installed out of `--template`; the source
+#                     repository's are never consulted.
+#
 # `status` is in the set although `GIT_OPTIONAL_LOCKS=0` is what actually keeps it from
 # rewriting the index — a call added without READONLY would fire the hook, so the closure
 # fails closed and asks for the flags rather than reasoning about a second call's env.
 # `apply` decides by `--index` here for the same reason it does above, and on the same
 # measurement: that form wrote the index and fired `post-index-change`, the other two did not.
-_HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status"})
+#
+# Membership is read off the FIRST positional word, so one `remote` entry covers `remove` and
+# the listing form together, and the listing form pays a preset it cannot need. That is the
+# fail-closed direction and it costs one flag pair; a second-word rule would have to be right
+# about every second word anyone adds.
+_HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status",
+                          "checkout", "remote", "clone"})
 
 # What runs a DIFF DRIVER — the repository's THIRD program, after `core.fsmonitor` and its
 # hooks. `diff.external` needs nothing but the config; `diff.<d>.command` and
@@ -1391,9 +1411,11 @@ _DAEMON_CACHE_EXEMPT = {
 # template "with no hooks directory to fire", which is true of the clone and not of the tree an
 # agent then owns for its entire run. Measured — a seat that mkdirs `.git/hooks`, or points
 # `core.hooksPath` at a directory it wrote, has those hooks run by an ordinary git in that tree.
-# No engine call into a seat fires one TODAY, because `diff` and `apply --numstat` are not
-# hook-firing subcommands (measured, both config scopes, with and without READONLY). This
-# closure is what makes the first one that is fail on the day it is written.
+# No engine call into a seat AFTER THE AGENT'S RUN fires one: `diff` and `apply --numstat` are
+# not hook-firing subcommands (measured, both config scopes, with and without READONLY). The
+# calls that DO fire all sit in `clone_seat`, before the agent starts — its `clone` runs the
+# template's hooks and its `checkout -b` runs the seat's — and they carry the flags rather than
+# an entry here. This closure is what makes the next one fail on the day it is written.
 _HOOKS_EXEMPT = {
     "verify.py:_checkpoint:add":
         "the verifier is pinned by `_hooks_pin` and the pin is read back by "
@@ -1407,7 +1429,7 @@ _HOOKS_EXEMPT = {
 # SEAT and carry the flags.
 _DIFF_DRIVER_EXEMPT = {
     "inspect.py:g:<unresolved>":
-        "a local helper for `rev-parse`, `status` and `check-attr` in the user's own "
+        "a local helper for `rev-parse`, `status` and `ls-files` in the user's own "
         "repository; it runs no diff producer, and the flags are not options those accept",
 }
 
@@ -1437,6 +1459,17 @@ def test_the_git_call_reader_sees_a_new_call_site():
     assert not _fires_a_hook(one('gitcmd.git(r, "apply", "--numstat", f)'))
     assert not _fires_a_hook(one('gitcmd.git(r, "diff", "--binary", c)')), \
         "a diff fires no hook in any config scope (measured); the closure must not say it does"
+    assert _fires_a_hook(one('gitcmd.git(d, "checkout", "-q", "-b", b)')), \
+        "a checkout writes the index and moves HEAD: three hooks, measured"
+    assert _loads_an_index(one('gitcmd.git(d, "checkout", "-q", "-b", b)')), \
+        "and the same write is what runs `core.fsmonitor` (measured)"
+    assert _fires_a_hook(one('gitcmd.git(d, "remote", "remove", "origin")'))
+    assert _fires_a_hook(one('gitcmd.git(d, "remote")')), \
+        "the first word decides, so the listing form rides on `remove`'s entry"
+    assert not _loads_an_index(one('gitcmd.git(d, "remote", "remove", "origin")')), \
+        "no index is opened either way; only the hooks rule reaches this one"
+    assert _fires_a_hook(one('gitcmd.git(r, "clone", "--no-local", s, d)')), \
+        "a clone fires the DESTINATION's template hooks, which a caller can supply"
     # A preset splatted AFTER the subcommand is still a preset, and does not take the
     # subcommand slot: `NO_DIFF_DRIVERS` can only be passed there, since a diff option before
     # `"diff"` is an error.

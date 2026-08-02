@@ -171,8 +171,21 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
         # DURING a diff — `diff.external`, and `diff.<d>.command`/`diff.<d>.textconv` selected
         # by the seat's own `.gitattributes`. Measured at this call site, all three ran; and
         # unlike the cache flags these change the bytes when they are missing, `diff.external`
-        # emptying the patch at exit 0. `filter.<d>.clean` still runs — git offers no flag for
-        # it — so this call is hardened, not program-free.
+        # emptying the patch at exit 0.
+        #
+        # `filter.<d>.clean` still runs — git offers no flag for it — so this call is hardened,
+        # not program-free, and the cost is SUBSTITUTION rather than noise: measured here, the
+        # agent's own text was absent from the patch and the filter's stood in its place, at
+        # exit 0.
+        # A CONFIG READBACK HERE WOULD NOT BE `verify._assert_hooks_pinned`, whatever it looks
+        # like. That canary bounds two engine actions with one known writer between them;
+        # harvest has no closing boundary, since a permissions-bypassed agent's detached
+        # children outlive the process whose exit would be the only candidate for one. It also
+        # has nothing to pin — a canary reads back a value the ENGINE wrote, while the driver
+        # name is the seat's to choose out of an unbounded namespace — and readback and diff
+        # would be two invocations regardless. What fits is DETECTION, of the shape
+        # `inspect._filtered_paths` already runs against the user's repository: `check-attr -z
+        # filter` over `paths` names a rigged seat instead of reading a value back. Not built.
         diff_text = gitcmd.git(
             seat_path, *gitcmd.NO_DAEMON_CACHE, "diff", *gitcmd.NO_DIFF_DRIVERS,
             "--binary", baseline_commit, "--", *(_literal(p) for p in paths),

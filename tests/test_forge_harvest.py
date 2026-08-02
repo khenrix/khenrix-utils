@@ -372,10 +372,19 @@ def test_a_seat_named_clean_filter_is_the_reach_the_flags_do_not_close(tmp_path)
     `.gitattributes` — runs on this call, and git has no flag that refuses it. There is no
     fixed key to `-c` away either: the driver NAME is the seat's to choose.
 
-    What that costs is stated exactly: the program runs, and the bytes the candidate carries
-    are the filter's output rather than the file's. It is not a way into the engine's own
-    state beyond running the program, and it is not closed here; a future close should turn
-    the two assertions below round rather than delete them.
+    What that costs is stated exactly, and it is SUBSTITUTION rather than added noise: the
+    program runs, and the agent's own text is gone from the patch with the filter's in its
+    place — which is why the third assertion pins the absence and not only the presence. It is
+    not a way into the engine's own state beyond running the program, and it is not closed
+    here; a future close should turn these assertions round rather than delete them.
+
+    THE CLOSE IS DETECTION, NOT A READBACK, and the difference is worth pinning here because a
+    readback is the one that looks right. `verify._assert_hooks_pinned` can promise something
+    because it bounds two engine actions with one known writer between them; harvest has no
+    such boundary, a canary reads back a value the ENGINE wrote where the driver name is the
+    seat's out of an unbounded namespace, and a readback would be a second invocation from this
+    diff anyway. `inspect._filtered_paths` is the shape that fits — `check-attr -z filter` over
+    the harvested paths, which NAMES a rigged seat.
     """
     seat = make_repo(tmp_path, "seat")
     write(seat, "app.py", "v1\n")
@@ -394,3 +403,5 @@ def test_a_seat_named_clean_filter_is_the_reach_the_flags_do_not_close(tmp_path)
     assert ran.exists(), "a clean filter no longer runs here — this residual may be closable"
     assert "v2-FILTERED" in a.tracked_diff, \
         "the filter ran but did not reach the patch; the cost recorded above is now wrong"
+    assert "AGENT-WORK" not in a.tracked_diff, \
+        "the candidate still carries the agent's own text, so the cost is not substitution"

@@ -16,18 +16,38 @@ outside git's rules, and a truncate through a shared inode corrupts the user's r
 
 WHAT THE CLONE DOES WITH THE CONFIG IS MOVE IT, NOT REMOVE IT. The seat's `.git/config` is
 no longer the user's — and it is the AGENT's, for the whole run. The keys in it that name a
-PROGRAM (`core.fsmonitor`, `diff.external`, `diff.<d>.textconv`, `core.hooksPath`) are read
-by whichever git the ENGINE later runs in that tree, which is at harvest, after the agent's
-own process has exited. `clone_seat` deliberately writes no pin against them, and the reason
-is a difference between two trees that looks like a difference of care: `verify._hooks_pin`
-can promise something because a verifier has exactly one writer between the pin and
-`_assert_hooks_pinned`, whereas a seat's agent writes continuously and undoes a
-`config --local` pin with one command (measured, git 2.53 — the hook fires again on the very
-next call). A pin here would look like that defence and make none of its claim. What defends
-the engine is what the engine passes on its OWN calls: `gitcmd`'s `-c` presets, which enter
-above the local file, held to every call site by the closures in `tests/test_forge_seams.py`.
+PROGRAM (`core.fsmonitor`, `core.hooksPath`, `diff.external`, `diff.<d>.command`,
+`diff.<d>.textconv`, `filter.<d>.clean`) are read by whichever git the ENGINE later runs in
+that tree, which is at harvest, after the agent's own process has exited. `clone_seat`
+deliberately writes no pin against them, and the reason is a difference between two trees that
+looks like a difference of care: `verify._hooks_pin` can promise something because a verifier
+has exactly one writer between the pin and `_assert_hooks_pinned`, whereas a seat's agent
+writes continuously and undoes a `config --local` pin with one command (measured, git 2.53 —
+the hook fires again on the very next call). A pin here would look like that defence and make
+none of its claim.
+
+What defends the engine is what the engine passes on its OWN calls, held to every call site by
+the closures in `tests/test_forge_seams.py`. Two mechanisms, not one, and the difference is
+worth knowing before trusting either: `NO_DAEMON_CACHE` and `NO_HOOKS` are `-c` presets that
+win by PRECEDENCE, entering above the local file the agent owns; `NO_DIFF_DRIVERS` is a pair
+of subcommand options that turn the feature OFF, which is why it can be splatted only after
+the subcommand and why no config the seat writes reaches around it.
+
+THE LIST ABOVE IS NOT ALL COVERED. `filter.<d>.clean` runs on the harvest diff and git offers
+no flag that refuses it, so the seat's program runs and the candidate carries its output
+(`harvest.artifact_set` records the cost at the call site). Prevention is not available; what
+is, and is not built, is DETECTION of the same shape `inspect._filtered_paths` already uses
+against the user's repository — `check-attr -z filter` over the harvested paths, which names a
+rigged seat rather than reading a value back.
+
 The empty `--template=` below decides the seat's STARTING state — measured, under it no hook
-fires during `clone_seat` itself — and binds nothing the agent does afterwards.
+fires during `clone_seat` itself — and binds nothing the agent does afterwards. A caller that
+supplies its own `template_dir` gets hooks that DO fire: measured, the `clone` and the
+`checkout -b` below each ran `post-checkout`, `post-index-change` and `reference-transaction`
+out of it. So all four calls the hooks closure reads as firing — `clone`, both `remote` forms
+and `checkout -b` — carry `NO_HOOKS` instead of resting on the template being empty. The
+`remote` pair fires nothing today, and for a reason outside those calls rather than a property
+of them: a `--revision=` clone is written no fetch refspec, so it has no tracking ref to delete.
 """
 import hashlib
 import os
@@ -168,7 +188,16 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         # is ever lost — not dead weight.
         # No --no-checkout: the seat needs the working tree, and --revision already pins the
         # checkout to B1 (HEAD detached at the ref, tree populated).
-        gitcmd.git(repo, "clone", "--no-local", "--no-hardlinks", "--no-tags",
+        #
+        # NO_HOOKS reaches what the empty template below cannot: a CALLER-supplied
+        # `template_dir` carrying hooks, which `git clone` installs into the destination and
+        # then runs — measured, `post-checkout`, `post-index-change` and `reference-transaction`
+        # out of the new repository, before any config write here could exist to stop them. It
+        # is the source repository this runs in, so the user's hooks were never the risk.
+        # WHAT IT DOES NOT DO is disinfect the seat: the template's hooks are still installed at
+        # `.git/hooks` and still run for the agent's own commits (measured). The flag covers the
+        # ENGINE's process, which is the only party this module can speak for.
+        gitcmd.git(repo, *gitcmd.NO_HOOKS, "clone", "--no-local", "--no-hardlinks", "--no-tags",
                    f"--template={tmpl}", f"--revision={baseline.ref}",
                    str(repo), str(dest), env_extra=env, timeout=600)
 
@@ -176,8 +205,15 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         # runs. Tolerate a non-zero exit (a future git that clones without a remote) but
         # never a surviving remote: the property is "no push target exists", so it is
         # asserted, not assumed from an exit code.
-        gitcmd.git(dest, "remote", "remove", "origin", env_extra=env, check=False)
-        remaining = gitcmd.git(dest, "remote", env_extra=env).stdout.split()
+        # NO_HOOKS because `remote remove` deletes the remote-tracking refs named by
+        # `remote.<n>.fetch`, and a ref deletion runs `reference-transaction`. Nothing fires
+        # here today for a reason outside this call: a `--revision=` clone is written no fetch
+        # refspec at all (measured — `remote.origin.url` and `remote.origin.tagopt` only), so
+        # there is nothing to delete. That is a property of the clone above, which is exactly
+        # the kind of premise the closure exists so this call does not rest on.
+        gitcmd.git(dest, *gitcmd.NO_HOOKS, "remote", "remove", "origin",
+                   env_extra=env, check=False)
+        remaining = gitcmd.git(dest, *gitcmd.NO_HOOKS, "remote", env_extra=env).stdout.split()
         if remaining:
             raise FleetError(
                 f"seat {dest} still has remotes {remaining}: it ships a working push target "
@@ -207,7 +243,15 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         # HEAD — measured on git 2.53, `rev-parse --abbrev-ref HEAD` answers the literal
         # string `HEAD` — so without this the seat's work becomes unreachable the moment
         # anything else moves.
-        gitcmd.git(dest, "checkout", "-q", "-b", branch, env_extra=env)
+        #
+        # Both presets, because this call writes the index and moves HEAD: measured, it ran
+        # `core.fsmonitor` and fired `post-checkout`, `post-index-change` and
+        # `reference-transaction`, from `.git/hooks` and from a `core.hooksPath` directory
+        # alike. The only way a seat holds any of those this early is a caller-supplied
+        # `template_dir` — the agent has not started, and `git clone` copies no config — so
+        # the flags close the second half of a door whose first half is the clone's own.
+        gitcmd.git(dest, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                   "checkout", "-q", "-b", branch, env_extra=env)
 
         # §4 item 2: identity, written into the clone's LOCAL config. Without it a seat
         # cannot commit at all: global config is disabled by design (§4.2), so git fails
