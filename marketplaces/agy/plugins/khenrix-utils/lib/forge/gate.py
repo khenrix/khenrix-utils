@@ -1,0 +1,671 @@
+"""§5.2's cost quote, and the detector that can refuse a verify command before it is confirmed.
+
+A QUOTE IS A REFUSAL SURFACE, NOT A DISPLAY. Everything here is sized so that being wrong is
+wrong in the OPERATOR's disfavour: a worst case that reads low is a number somebody agrees to
+and then discovers at 3am, and there is no later gate to catch it — §5 step 2 asks once.
+
+THE PROVIDER-CALL ARITHMETIC, AND WHERE IT PARTS FROM §5.2's OWN SUM. §5.2 writes
+`9 + 1 + 6 = 16`: 3 builders × 3 attempts, plus one synthesis, plus two review rounds × three
+reviewers at the `--retries 0` forge wires (the council's own `--retries 2` default would make
+the review term 18 and the total 28 — quoted here as a line, since it is not what is wired).
+The same paragraph then requires that "the quote includes post-review synthesis invocations",
+and 9 + 1 + 6 has exactly ONE synthesis in it. §13's loop has two more: a round-1 blocker is
+fixed before round 2 runs at all, and "a blocker fixed after round 2 is reported *verified but
+not independently reviewed*" — so a fix happens there too, and §12.3 caps the count rather than
+forbidding it. `provider_calls` therefore adds one synthesis invocation per review round, and
+is 18 rather than 16 at the wired settings. §5.2's own sum is kept visible as its own line, so
+nothing is hidden in either direction, and §21's "worst case 16 → 10 runs" for cutting the
+retry path reads 12 here for the same reason.
+
+WHAT THE SETUP AND VERIFY COUNTS ARE FOR. §6 is the expensive clause in the design — "it costs
+one extra setup per candidate; that cost is essential, not optional hardening" — and a quote
+that folds it into the provider line is the one an operator finds wrong first, because setup is
+where the wall clock and the disk actually go. Three sources, each counted separately:
+calibration runs setup+verify TWICE (§5 step 3, so the second pass can show zero tracked
+delta); every builder clone runs setup once, and §8.1 gives a retry a FRESH clone, so the
+builder term is seats × attempts and not seats; and a fresh verifier clone runs setup+verify
+per candidate (§6) plus once after each post-review fix (§13, "re-run verify and cut a new
+checkpoint after every fix").
+
+A builder's own clone is NOT counted as a verify. §7 lists `Fverify` among a seat's four
+inventories, but §6 overrides it in as many words — "`Fverify` cannot be 'the fourth inventory
+of the builder clone' when verification happens elsewhere" — and the whole §6 argument is that
+running the gate where the builder was measures nothing.
+
+THE DETECTOR IS STATIC AND READS ONLY. §5 step 1 admits no repository-supplied code before
+authorization, and a detector whose job is "would this command spend provider calls" is exactly
+the one tempted to find out by running it. Nothing here executes a Makefile, a recipe, a script
+or a `make -n`, and the one git call is `rev-parse --show-toplevel`. That call carries
+`NO_DAEMON_CACHE` even though it does not need it: measured on git 2.53.0, with
+`core.fsmonitor` pointed at a script that touches a file, `git status` runs the script and
+`git rev-parse --show-toplevel` does not, because the second refreshes no index. The flags are
+on it so the guarantee holds for whatever git call is added here next, which is the direction
+this package has already lost the property in once — see `gitcmd.NO_DAEMON_CACHE`'s own note
+on the `ls-files --eol` and `check-attr` calls in `inspect`.
+`test_the_detector_runs_nothing_the_repository_supplied` pins both halves against controls
+showing the same recipe does run under `make` and the same hook does run under `git status`.
+
+A DETECTOR THAT MUST BE EXHAUSTIVE CANNOT BE, so the bound is declared instead of implied, and
+every place the reader ran out is EMITTED rather than dropped. Findings carry one of three
+prefixes, and §5.2's "detected and refused (or priced as its own explicit line)" is the reason
+there are three rather than one:
+
+  * `spends:`     a resolved recipe or argv runs a provider CLI, or executes a file naming a
+                  council entry point without a hermetic flag. This is the refusal.
+  * `remedy:`     a file the gate executes DOCUMENTS a `make <target>` whose own closure
+                  spends. `make` does not follow it; an operator does, and only when the gate
+                  fails. That is a price line, not a refusal — which is what keeps §5.2's
+                  steer to `make verify` coherent on the repository §5.2 names.
+  * `unresolved:` the reader could not follow the target: a recipe using a make function it
+                  does not expand, a script path the tree does not hold, an undefined target,
+                  a missing Makefile. Fail closed by SAYING SO — an unresolved target is a
+                  legitimate answer for a human to price, and a silent one is a fail-open.
+
+WHAT IT CANNOT SEE, measured on this repository rather than imagined. `make precommit` and
+`make verify` here come back with the same findings in the same classes — three `unresolved:`
+and one `remedy:`, differing only in the trail that names which target was typed — because the
+only difference between the two is `advisory=False` and `advisory=True` inside a `python3 -c`
+one-liner: the first exits 1 and sends the operator to `make eval`, the second prints a warning
+and exits 0. That is a difference in RUNTIME EXIT CODE, and no static read separates them. Both
+get the `remedy:` line, and the operator reads which target they typed. Also unread: `include` directives,
+`define`/`$(call …)` macro bodies, `$(shell …)` and the other make functions, a package.json
+script chain, and anything a container image defines — `verify.gate_surface`'s docstring names
+the same class of indirection as its own accepted gap. And a RECIPE is checked for a provider
+CLI at program position only, so `timeout 600 claude -p …` written inside one is missed; the
+loose whole-token rule is applied to the user's own argv, where the command is short and read
+whole, and not to a recipe, because this repository's Makefile passes `--providers claude` as
+an argument and a whole-line rule would refuse every flag shaped like it. The last gap is the
+one accepted deliberately: a file handed to a RUNNER as data — `pytest -q tests/x.py` — really
+is imported and run, and is not read here, because searching past the first operand refuses
+`make council-test` on `tests/test_council_characterization.py`'s stubbed `run_council`, and
+with it every `make verify`. See `test_a_file_handed_to_a_runner_as_data_is_not_read_as_the_program`.
+"""
+import re
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from . import bundle, gitcmd, preflight
+
+
+class GateError(RuntimeError):
+    """An argument the gate will not answer for — never a property of the repository or of the
+    command, which is what `Quote.lines` and `provider_invoking_verify`'s findings are for."""
+
+
+# §5 step 3: setup + verify run TWICE on the untouched baseline, so the second pass can show
+# the zero tracked delta that turns §7.2's fixed-point assumption into evidence.
+_CALIBRATION_PASSES = 2
+
+# §5.2's stated upper bound, and the seat count it was stated for. Kept as a pair because the
+# figure is only meaningful divided by the fleet it describes: "three no-hardlink clones plus
+# three dependency trees is plausibly 6-10 GB".
+_SPEC_PEAK_DISK_GB = 10.0
+_SPEC_PEAK_DISK_SEATS = 3
+
+# What the council's own CLI defaults to. Forge does not use it (§13 invokes review with
+# --retries 0), so it is quoted as the alternative §5.2 asks to be shown, never summed in.
+_COUNCIL_DEFAULT_ATTEMPTS = 3
+
+
+@dataclass(frozen=True)
+class Quote:
+    """What §5 step 2 shows before anyone agrees to anything.
+
+    `ultrareview` is a STRING and the type is the point: §13.1 prices it in usage credits
+    ($5-25) or against three one-time free runs, and an integer field would render as one more
+    call in a column of call counts — free, next to numbers that are free.
+
+    `lines` is the quote a human reads; the scalars are the same quote for something that has
+    to compare. Every line names the section it comes from, because an operator who thinks a
+    number is wrong needs the derivation, not the total.
+    """
+    provider_calls: int
+    ultrareview: str
+    setup_runs: int
+    verify_runs: int
+    peak_disk_gb: float
+    lines: tuple[str, ...]
+
+
+def quote(report, *, seats=3, attempts=3, review_rounds=2) -> Quote:
+    """Price the worst case of a run over `report`'s repository.
+
+    A `preflight.Report` is required rather than a path: the quote reads the repository's
+    SHAPE — that a static look happened, and what it already refuses — not its contents. A
+    caller who has not run preflight has not reached §5 step 2 yet.
+    """
+    if not isinstance(report, preflight.Report):
+        raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
+                        "the quote is shown at §5 step 2, after the static look")
+    if seats < 1 or attempts < 1 or review_rounds < 0:
+        raise GateError(f"seats={seats} attempts={attempts} review_rounds={review_rounds}: "
+                        "seats and attempts are at least 1, review rounds at least 0")
+
+    builders = seats * attempts
+    synthesis = 1
+    review = review_rounds * seats
+    review_fixes = review_rounds
+    calls = builders + synthesis + review + review_fixes
+
+    # One candidate per seat, plus synthesis's own; §6 gives each a fresh verifier clone, and
+    # §13 adds one more verification after each post-review fix.
+    verifier_runs = seats + 1 + review_fixes
+    setup_runs = _CALIBRATION_PASSES + builders + verifier_runs
+    verify_runs = _CALIBRATION_PASSES + verifier_runs
+    peak_disk_gb = round(seats * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
+
+    ultrareview = ("$5-25 in usage credits, or one of the 3 one-time free runs "
+                   "(§13.1); --no-ultra opts out")
+
+    blocked = preflight.refusals(report)
+    lines = []
+    if blocked:
+        lines.append(f"refused first: preflight names {len(blocked)} thing(s) that stop this "
+                     "run, so nothing below is spent until they are cleared")
+    lines += [
+        f"provider calls: {calls} worst case = builders {seats}x{attempts}={builders} "
+        f"(§8.1 gives a retry a fresh clone) + synthesis 1 + review {review_rounds} round(s) "
+        f"x {seats} reviewers = {review} + post-review synthesis {review_fixes}",
+        f"  of which §5.2 states the first three as {builders} + {synthesis} + {review} = "
+        f"{builders + synthesis + review}; the post-review synthesis invocations are the ones "
+        "the same paragraph requires the quote to include (§13's round-1 fix, and a blocker "
+        "fixed after round 2)",
+        f"  review retries: forge invokes the council with --retries 0, so each reviewer is "
+        f"asked once per round. At the council CLI's own --retries 2 the review term alone "
+        f"would be {review_rounds * seats * _COUNCIL_DEFAULT_ATTEMPTS}",
+        f"ultrareview: {ultrareview}",
+        f"setup runs: {setup_runs} = calibration {_CALIBRATION_PASSES} (§5 step 3 runs "
+        f"setup+verify twice on the untouched baseline) + one per builder clone {builders} + "
+        f"one per verifier clone {verifier_runs} (§6: a fresh verifier per candidate, plus one "
+        "after each post-review fix). §6 calls that per-candidate setup essential, not "
+        "optional hardening",
+        f"verify runs: {verify_runs} = calibration {_CALIBRATION_PASSES} + verifier "
+        f"{verifier_runs}. A builder's own clone is not verified — §6 puts every verification "
+        "in a clone the builder never had access to",
+        f"peak disk: ~{peak_disk_gb} GB under XDG_STATE_HOME — §5.2's upper bound for {seats} "
+        "no-hardlink clone(s) and their dependency trees. NOT in that figure: verifier clones "
+        "for candidates that passed, which §15 keeps until `--gc` because automatic removal "
+        "covers known-failed temporary clones only",
+        "wall clock: not quoted — the setup and verify commands are named at §5 step 2 and "
+        "this report has no gate surface to time (preflight leaves gate_surface None)",
+        "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
+        "line §13.1 prices in money. Shell-command time is the wall-clock line above",
+        "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
+        "one that reaches a provider CLI, or prices it as its own explicit line",
+    ]
+    return Quote(provider_calls=calls, ultrareview=ultrareview, setup_runs=setup_runs,
+                 verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines))
+
+
+# ---------------------------------------------------------------------------------------
+# §5.2's detector.
+
+_PROVIDER_CLIS = frozenset({"claude", "codex", "agy"})
+
+# Matched against a PROGRAM position only — start of a recipe, or just after a shell separator
+# or a command substitution. `--providers claude` is an argument to something else and must not
+# read as an invocation, and it occurs in this repository's own Makefile.
+_PROVIDER_CMD = re.compile(r"(?:^|[;&|(`]|\$\()\s*[@+-]?\s*(?:\S*/)?(claude|codex|agy)\b")
+
+_MAKE = frozenset({"make", "gmake"})
+
+# A program that takes a repo file as its operand, so the operand is what actually runs. `uvx`
+# and `uv` are here because this repository's own gate reaches pytest through them.
+_INTERPRETERS = frozenset({"python", "python2", "python3", "bash", "sh", "zsh", "dash",
+                           "node", "ruby", "perl", "uv", "uvx", "env"})
+_PYTHON_MINOR = re.compile(r"^python3\.\d+$")
+
+# Literal substrings, never regexes, and the difference is measured rather than stylistic:
+# `grep -rl "council.engine"` selects this repository's `scripts/lib/checks.py`, because the
+# dot matches the slash in the PATH `council/engine.py` that checks.py carries in a closure
+# list while spending nothing — and checks.py is executed by `make verify`. `grep -rlF` on the
+# same string does not. Across the tree the two literals select `scripts/eval_harness.py`,
+# `scripts/eval_trigger.py`, `shared/lib/council/engine.py` and llm-council's `fanout.py`
+# facade, plus council test files and plan documents, which are only opened when a recipe
+# executes them.
+_SPEND_SYMBOLS = ("run_council", "council.engine")
+
+# A flag whose presence the invoker is declaring hermetic. This repository's `make verify`
+# reaches `scripts/eval_harness.py --self-test`, which is the same file `make eval SKILL=…`
+# reaches to spend ~24 provider calls; without this the steer §5.2 makes would refuse its own
+# recommendation. The bound: a program taking one of these AND still calling out is misread.
+_HERMETIC_FLAGS = frozenset({"--self-test", "--check", "--status", "--dry-run", "--seed-receipt",
+                             "--help", "-h", "--version"})
+
+# What the reader is willing to call a script the tree should hold. A path-shaped token with
+# one of these suffixes that does not exist is `unresolved:` rather than ignored.
+_SCRIPT_SUFFIXES = frozenset({"py", "sh", "bash", "mk", "js", "ts", "mjs", "rb", "pl", "bats"})
+
+_TOKENS = re.compile(r"[A-Za-z0-9_./+-]+")
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_VARREF = re.compile(r"\$[({]([A-Za-z_.][A-Za-z0-9_.]*)[)}]")
+_UNEXPANDED = re.compile(r"\$[({][^)}]{0,60}")
+_CALL_MACRO = re.compile(r"\$[({]call\s+([A-Za-z_][A-Za-z0-9_]*)")
+# A remedy in prose or in an error message: "run `make eval SKILL=<skill>`".
+_MAKE_REMEDY = re.compile(r"\bmake\s+([A-Za-z][A-Za-z0-9_.-]*)")
+
+_ASSIGN = re.compile(r"^([A-Za-z_.][A-Za-z0-9_.]*)\s*(::=|:=|\?=|\+=|=)\s*(.*)$")
+_RULE = re.compile(r"^([^\t#][^:=]*?)\s*::?\s*(.*)$")
+_MAKEFILE_NAMES = ("GNUmakefile", "makefile", "Makefile")
+_DOLLAR = "\x00"                 # make's `$$` — a literal `$` for the shell, not a reference
+_MAX_FILE_BYTES = 4 * 1024 * 1024
+_MAX_DEPTH = 12
+
+
+def _basename(token: str) -> str:
+    return PurePosixPath(token).name
+
+
+def _logical_lines(text: str):
+    """(is_recipe, joined) per LOGICAL make line — backslash continuations folded.
+
+    Folding matters in both directions here: this repository's `FORGE_TESTS :=` spans four
+    physical lines, and its `bats-test` recipe is one continued line eighteen deep.
+    """
+    out, buf, recipe = [], None, False
+    for raw in text.splitlines():
+        if buf is None:
+            recipe, buf = raw.startswith("\t"), raw
+        else:
+            buf += " " + raw.strip()
+        if buf.endswith("\\"):
+            buf = buf[:-1]
+            continue
+        out.append((recipe, buf))
+        buf = None
+    if buf is not None:
+        out.append((recipe, buf))
+    return out
+
+
+class _Makefile:
+    """The subset of GNU make this reader claims: simple variables, rules, recipes.
+
+    `define` bodies are recorded by NAME and skipped: expanding one means running the shell
+    grammar inside it, and a `$(call …)` left unexpanded is reported rather than guessed at.
+    """
+
+    def __init__(self, path: Path, text: str):
+        self.path = path
+        self.vars: dict[str, str] = {}
+        self.recipes: dict[str, list[str]] = {}
+        self.prereqs: dict[str, list[str]] = {}
+        self.defines: set[str] = set()
+        self.includes = False
+        self.default_goal = ""
+        self.first_target = ""
+        current: list[str] = []
+        in_define = False
+        for is_recipe, line in _logical_lines(text):
+            if is_recipe:
+                if not in_define:
+                    for t in current:
+                        self.recipes.setdefault(t, []).append(line.lstrip("\t"))
+                continue
+            stripped = line.strip()
+            if in_define:
+                in_define = not stripped.startswith("endef")
+                continue
+            if stripped.startswith("define "):
+                in_define = True
+                self.defines.add(stripped.split()[1])
+                continue
+            if not stripped or stripped.startswith("#"):
+                continue
+            stripped = stripped.split("#", 1)[0].strip()
+            if not stripped:
+                continue
+            if stripped.startswith(("include ", "-include ", "sinclude ")):
+                self.includes = True
+                current = []
+                continue
+            m = _ASSIGN.match(stripped)
+            if m:
+                name, op, value = m.groups()
+                if op == "+=" and name in self.vars:
+                    self.vars[name] = f"{self.vars[name]} {value}"
+                elif op != "?=" or name not in self.vars:
+                    self.vars[name] = value
+                if name == ".DEFAULT_GOAL":
+                    self.default_goal = value.strip()
+                current = []
+                continue
+            m = _RULE.match(stripped)
+            if m:
+                current = self.expand(m.group(1))[0].split()
+                for t in current:
+                    self.prereqs.setdefault(t, []).extend(self.expand(m.group(2))[0].split())
+                    if not self.first_target and not t.startswith("."):
+                        self.first_target = t
+                continue
+            current = []
+
+    def expand(self, text: str) -> tuple[str, str]:
+        """(expanded, unresolved-reference) — the second is "" when everything resolved.
+
+        `$$` is folded out first because it is make's escape for a literal `$`: without that,
+        a recipe's own `$$(bash …)` reads as an unexpanded make reference and every shell
+        command substitution in the tree reports as unresolved.
+        """
+        text = text.replace("$$", _DOLLAR)
+        for _ in range(8):
+            new = _VARREF.sub(lambda m: self.vars.get(m.group(1), m.group(0)), text)
+            if new == text:
+                break
+            text = new
+        macro = _CALL_MACRO.search(text)
+        if macro:
+            left = (f"the make macro `{macro.group(1)}`" if macro.group(1) in self.defines
+                    else f"`$(call {macro.group(1)} …)`")
+        else:
+            m = _UNEXPANDED.search(text)
+            left = f"`{m.group(0)}…`" if m else ""
+        return text.replace(_DOLLAR, "$"), left
+
+    @property
+    def goal(self) -> str:
+        return self.default_goal or self.first_target
+
+
+class _Resolver:
+    """One static walk of what a verify command would run. Holds no state between calls."""
+
+    def __init__(self, root: Path, *, follow_remedies=True):
+        self.root = root
+        self.follow_remedies = follow_remedies
+        self.findings: list[str] = []
+        self.makefiles: dict[str, _Makefile | None] = {}
+        self.seen_targets: set[tuple[str, str]] = set()
+        self.seen_files: set[str] = set()
+
+    # -- reporting ----------------------------------------------------------------------
+    def _add(self, kind: str, trail, message: str) -> None:
+        where = " -> ".join(trail)
+        self.findings.append(f"{kind}: {where}: {message}")
+
+    @property
+    def spends(self) -> bool:
+        return any(f.startswith("spends:") for f in self.findings)
+
+    # -- paths --------------------------------------------------------------------------
+    def _contained(self, rel: str) -> str | None:
+        """The repo-relative name, or None when the token leaves the tree.
+
+        `bundle._assert_contained` is IMPORTED rather than restated, for the reason
+        `preflight` gives for importing it: this package already spells the lexical rule in
+        four places and a fifth spelling is the drift the reuse exists to avoid.
+        """
+        rel = rel.strip().strip("'\"")
+        if not rel or rel in (".", "./"):
+            return ""
+        try:
+            bundle._assert_contained(rel, "verify command")
+        except bundle.BundleError:
+            return None
+        return rel.rstrip("/")
+
+    def _join(self, base: str, rel: str) -> str | None:
+        joined = f"{base}/{rel}" if base and not rel.startswith("/") else rel
+        return self._contained(joined)
+
+    def _repo_file(self, cwd: str, token: str) -> str | None:
+        rel = self._join(cwd, token)
+        if rel is None or not rel:
+            return None
+        p = self.root / rel
+        return rel if p.is_file() else None
+
+    def _exists(self, cwd: str, name: str) -> bool:
+        rel = self._join(cwd, name)
+        return rel is not None and bool(rel) and (self.root / rel).exists()
+
+    # -- entry --------------------------------------------------------------------------
+    def scan_step(self, index: int, step) -> None:
+        argv = tuple(getattr(step, "argv", ()) or ())
+        trail = [f"verify step {index + 1} `{' '.join(argv)}`"]
+        if not argv:
+            return
+        cwd = self._contained(getattr(step, "cwd", "") or "")
+        if cwd is None:
+            self._add("unresolved", trail, "its cwd leaves the repository, so nothing under "
+                                           "it was read")
+            return
+        prog = _basename(argv[0])
+        if prog in _PROVIDER_CLIS:
+            self._add("spends", trail, f"the gate's own program is the provider CLI {prog!r}")
+            return
+        if prog in _MAKE:
+            self._scan_make(trail, cwd, list(argv[1:]))
+            return
+        self._scan_tokens(trail, cwd, list(argv), None)
+
+    # -- make ---------------------------------------------------------------------------
+    def _makefile(self, trail, cwd: str, named: str | None) -> _Makefile | None:
+        key = f"{cwd}\0{named or ''}"
+        if key in self.makefiles:
+            return self.makefiles[key]
+        names = (named,) if named else _MAKEFILE_NAMES
+        mk = None
+        for name in names:
+            rel = self._join(cwd, name)
+            if rel is None:
+                continue
+            p = self.root / rel
+            if p.is_file():
+                try:
+                    mk = _Makefile(p, p.read_text(encoding="utf-8", errors="replace"))
+                except OSError as e:
+                    self._add("unresolved", trail, f"{rel} could not be read: {e}")
+                break
+        if mk is None:
+            self._add("unresolved", trail,
+                      f"no makefile at {cwd or '.'}/{named or 'Makefile'} — what `make` would "
+                      "run here could not be read")
+        elif mk.includes:
+            self._add("unresolved", trail, f"{mk.path.name} uses `include`, and this reader "
+                                           "does not follow it")
+        self.makefiles[key] = mk
+        return mk
+
+    def _scan_make(self, trail, cwd: str, args: list) -> None:
+        named, targets, i = None, [], 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-C", "--directory") and i + 1 < len(args):
+                i += 1
+                moved = self._join(cwd, args[i])
+                if moved is None:
+                    self._add("unresolved", trail, f"`-C {args[i]}` leaves the repository")
+                    return
+                cwd = moved
+            elif a in ("-f", "--file", "--makefile") and i + 1 < len(args):
+                i += 1
+                named = args[i]
+            elif a.startswith("-") or "=" in a:
+                pass
+            else:
+                targets.append(a)
+            i += 1
+        mk = self._makefile(trail, cwd, named)
+        if mk is None:
+            return
+        for target in targets or [mk.goal]:
+            self._scan_target(trail, cwd, mk, target)
+
+    def _scan_target(self, trail, cwd: str, mk: _Makefile, target: str) -> None:
+        if not target:
+            self._add("unresolved", trail, "`make` was given no target and the makefile "
+                                           "declares no default goal")
+            return
+        key = (cwd, target)
+        if key in self.seen_targets or len(trail) > _MAX_DEPTH:
+            return
+        self.seen_targets.add(key)
+        trail = [*trail, f"target `{target}`"]
+        if target not in mk.recipes and target not in mk.prereqs:
+            if not self._exists(cwd, target):
+                self._add("unresolved", trail, f"{mk.path.name} defines no such target and the "
+                                               "tree holds no such file")
+            return
+        for prereq in mk.prereqs.get(target, []):
+            if prereq in mk.recipes or prereq in mk.prereqs:
+                self._scan_target(trail, cwd, mk, prereq)
+            elif not self._exists(cwd, prereq):
+                self._add("unresolved", trail, f"prerequisite `{prereq}` is neither a target "
+                                               "nor a file in this tree")
+        for line in mk.recipes.get(target, []):
+            self._scan_recipe(trail, cwd, mk, line)
+
+    def _scan_recipe(self, trail, cwd: str, mk: _Makefile, line: str) -> None:
+        # `@`, `-` and `+` at the head of a recipe are make's own modifiers, not part of the
+        # program. Left on, `@python3` is a program name nothing recognises and every silenced
+        # recipe in the tree reads as running something unknown.
+        expanded, left = mk.expand(line.lstrip("\t @-+"))
+        if left:
+            self._add("unresolved", trail, f"a recipe uses {left}, which this reader does not "
+                                           "expand, so what it runs is unknown")
+        found = _PROVIDER_CMD.search(expanded)
+        if found:
+            self._add("spends", trail,
+                      f"a recipe runs the provider CLI {found.group(1)!r}")
+        self._scan_tokens(trail, cwd, _TOKENS.findall(expanded), mk, raw=expanded)
+
+    # -- commands -----------------------------------------------------------------------
+    def _operand(self, cwd: str, rest: list) -> tuple[str | None, list]:
+        """The repo file an interpreter would actually run, and the arguments after it.
+
+        Stops at the first non-flag operand rather than searching on: `uvx --with pytest pytest
+        -q tests/a.py` runs `pytest`, and continuing past it would report the test files it was
+        handed as data as though the recipe executed them.
+        """
+        for i, token in enumerate(rest):
+            if token.startswith("-") or "=" in token.split("/")[0]:
+                continue
+            return self._repo_file(cwd, token), list(rest[i + 1:])
+        return None, []
+
+    def _inline_modules(self, cwd: str, tokens: list) -> list:
+        """Repo modules a `python -c` one-liner imports off a path it inserts itself.
+
+        The shape is this repository's own gate: `sys.path.insert(0,'scripts/lib'); import
+        checks`. Nothing shorter reaches `scripts/lib/checks.py`, which is where §5.2's whole
+        chain on this repository starts, and nothing here parses Python — a directory token and
+        an identifier token from the SAME command, joined and tested for existence.
+        """
+        dirs = [t for t in tokens[:80]
+                if (self._join(cwd, t) or None) and (self.root / self._join(cwd, t)).is_dir()]
+        idents = [t for t in tokens[:80] if _IDENT.match(t)]
+        out = []
+        for d in dirs[:8]:
+            for name in idents[:40]:
+                rel = self._repo_file(cwd, f"{d}/{name}.py")
+                if rel:
+                    out.append(rel)
+        return out
+
+    def _scan_tokens(self, trail, cwd: str, tokens: list, mk, raw: str = "") -> None:
+        if not tokens:
+            return
+        direct = self._repo_file(cwd, tokens[0])
+        if direct:
+            self._scan_file(trail, direct, tokens[1:], mk)
+        for i, token in enumerate(tokens):
+            base = _basename(token)
+            rest = list(tokens[i + 1:])
+            if base in _MAKE:
+                self._scan_make(trail, cwd, rest)
+                continue
+            if base in _PROVIDER_CLIS and not raw:
+                self._add("spends", trail, f"the argv names the provider CLI {base!r}")
+                continue
+            if base not in _INTERPRETERS and not _PYTHON_MINOR.match(base):
+                continue
+            if "-c" in rest[:3]:
+                for rel in self._inline_modules(cwd, tokens):
+                    self._scan_file([*trail, f"`-c` imports {rel}"], rel, rest, mk)
+                continue
+            script, args = self._operand(cwd, rest)
+            if script:
+                self._scan_file(trail, script, args, mk)
+        for token in tokens:
+            self._unresolved_script(trail, cwd, token)
+
+    def _unresolved_script(self, trail, cwd: str, token: str) -> None:
+        if "/" not in token or token.rsplit(".", 1)[-1] not in _SCRIPT_SUFFIXES:
+            return
+        rel = self._join(cwd, token)
+        if rel is None or (self.root / rel).exists():
+            return
+        self._add("unresolved", trail, f"a recipe names `{token}`, which this tree does not "
+                                       "hold, so what it does could not be read")
+
+    # -- files --------------------------------------------------------------------------
+    def _scan_file(self, trail, rel: str, args: list, mk) -> None:
+        if rel in self.seen_files:
+            return
+        trail = [*trail, rel]
+        # A hermetic reach is NOT remembered: `make verify` reaches `scripts/eval_harness.py
+        # --self-test` before anything else does, and remembering it there would mask the
+        # spending reach of the same file from a later target in the same walk.
+        if set(args) & _HERMETIC_FLAGS:
+            return
+        self.seen_files.add(rel)
+        p = self.root / rel
+        try:
+            if p.stat().st_size > _MAX_FILE_BYTES:
+                self._add("unresolved", trail, "is larger than this reader will open")
+                return
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            self._add("unresolved", trail, f"could not be read: {e}")
+            return
+        for symbol in _SPEND_SYMBOLS:
+            if symbol in text:
+                self._add("spends", trail, f"the gate executes it and it names `{symbol}` — a "
+                                           "council entry point that launches real providers")
+                break
+        if self.follow_remedies and mk is not None:
+            self._scan_remedies(trail, rel, text, mk)
+
+    def _scan_remedies(self, trail, rel: str, text: str, mk: _Makefile) -> None:
+        """`make <target>` NAMED IN a file the gate executes — §5.2's own chain on this repo.
+
+        `make` does not follow a sentence in an error message; an operator does, and only when
+        the gate fails. So this is priced rather than refused, and the finding says which.
+        """
+        for target in dict.fromkeys(_MAKE_REMEDY.findall(text)):
+            if target not in mk.recipes:
+                continue
+            sub = _Resolver(self.root, follow_remedies=False)
+            sub._scan_target([f"`make {target}`"], "", mk, target)
+            spent = [f for f in sub.findings if f.startswith("spends:")]
+            if spent:
+                self._add("remedy", trail,
+                          f"it documents `make {target}` as the remedy, and that target does "
+                          f"spend: {spent[0]}. `make` does not follow it — an operator does, "
+                          "once per failing candidate")
+
+
+def _worktree_root(repo) -> Path:
+    try:
+        out = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "rev-parse", "--show-toplevel",
+                         env_extra=gitcmd.READONLY).stdout.strip()
+    except (gitcmd.GitError, OSError, ValueError) as e:
+        raise GateError(f"{repo}: not a git worktree the detector can resolve against: {e}") from e
+    return Path(out)
+
+
+def provider_invoking_verify(repo, command) -> tuple[str, ...]:
+    """Everything about `command` that would spend provider calls, or that could not be read.
+
+    `()` means this reader followed the command to the end and found no provider spend — never
+    that the command is cheap, and the module docstring names what it does not follow.
+    """
+    steps = getattr(command, "steps", None)
+    if steps is None:
+        raise GateError(f"a verify Command is required, not {type(command).__name__}; "
+                        "parse the spec with verify.Command.parse first")
+    resolver = _Resolver(_worktree_root(repo))
+    for i, step in enumerate(steps):
+        resolver.scan_step(i, step)
+    return tuple(dict.fromkeys(resolver.findings))
