@@ -24,7 +24,9 @@ infrastructure failure attributed to a seat, hours in, stands in for a sentence 
 the user can clear.
 
 EVERY REPO-RELATIVE PATH HERE IS RESOLVED AGAINST `facts.root`, git's answer, never against
-the `repo` the caller named. The two differ whenever the caller passes a subdirectory, which
+the `repo` the caller named. One call is an exception only because it reads nothing:
+`detect_generators(repo)` takes its argument and does not use it, so the invariant currently
+rests on that rather than on construction — the day it reads the tree it needs `facts.root`. The two differ whenever the caller passes a subdirectory, which
 `Report` documents as supported and which `baseline.materialize` builds from `facts.root`
 regardless. Joining the selection onto `repo` instead was measured: with `scratch/.env` at
 the root and a clean `sub/scratch/`, `inspect_repo(<repo>/sub, ("scratch",))` returned no

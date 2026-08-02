@@ -133,8 +133,10 @@ back writes nothing, so this is the read-only half of the same answer.
 
 Two boundaries follow from that domain rather than being chosen. A tracked path whose content
 moves while the porcelain does NOT list it is one git itself calls clean, so `materialize`
-does not carry it into B either, by whichever of the two routes above the bit takes —
-neither method sees it, and neither can. An untracked
+does not carry it into B either — by the clean early return under `--assume-unchanged`, and
+under `--skip-worktree` by that same return or by `add -u -- :/` failing outright when a
+selection makes the tree dirty. Three outcomes, no fourth in which B holds the edit: neither
+method sees it, and neither can. An untracked
 path nobody selected is deliberately outside it: no tree forge writes contains it, so no merge
 of forge's work can revert it, and hashing it would put every stray editor swap file and test
 log into a drift report whose only value is that it means something.

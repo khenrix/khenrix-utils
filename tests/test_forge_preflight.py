@@ -346,8 +346,10 @@ def test_preflight_writes_nothing_in_the_repository(tmp_path):
     The mtimes are COMPARED BY VALUE, not merely by key. `os.utime` backdates the file so
     that a refresh is exactly what an unpinned call would do, and a rewrite that reproduced
     the same bytes — or one to any other file under `.git` — moves an mtime and nothing else.
-    Key-set equality alone would answer only "created or removed", which is the weaker half
-    of the two the index comparison below already covers.
+    Key-set equality alone would answer only "created or removed" — and that half is NOT
+    covered below: the index comparison reads `.git/index`'s bytes and says nothing about any
+    other file under `.git`. The two assertions cover different things, which is why both are
+    here.
     """
     repo = make_repo(tmp_path)
     write(repo, "dirty.txt", "untracked\n")

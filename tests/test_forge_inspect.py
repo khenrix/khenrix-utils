@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import pytest  # noqa: E402
 from forge import inspect as finspect  # noqa: E402
-from forge_fixtures import _env, make_repo, write  # noqa: E402
+from forge_fixtures import _env, commit_all, git as _git, make_repo, write  # noqa: E402
 
 
 def _git(repo, *args, check=True):
@@ -471,3 +471,30 @@ def test_generator_detection_proposes_nothing_it_cannot_read_from_a_declaration(
     for repo in (make_repo(tmp_path), ROOT):
         c = finspect.detect_generators(repo)
         assert (c.id, c.relations) == ("", ())
+
+
+def test_repo_facts_answers_for_the_repository_not_the_directory_it_was_asked_from(tmp_path):
+    """Every index-derived field at once, on a fixture carrying four §2.3 conditions.
+
+    `gitcmd` runs `git -C <repo>`, and `ls-files` and `check-attr` report relative to the CWD
+    AND LIST ONLY WHAT IS UNDER IT — so asking from a subdirectory once answered for a
+    fraction of the repository: measured, index entries 7 -> 1, filtered paths ['filtered.bin']
+    -> [], eol mismatches ['win.crlf'] -> []. Whole-dataclass equality pins all six fields for
+    the price of one assertion, where a fixture per field would cost four.
+    """
+    repo = make_repo(tmp_path)
+    (Path(repo) / "sub").mkdir()
+    write(repo, "sub/inner.txt", "inner\n")
+    write(repo, ".gitattributes", "filtered.bin filter=lfs\nwin.crlf eol=crlf\n")
+    write(repo, "filtered.bin", "payload\n")
+    write(repo, "win.crlf", "line\r\n")
+    (Path(repo) / "escape").symlink_to(tmp_path / "outside.txt")
+    (tmp_path / "outside.txt").write_text("host\n")
+    _git(repo, "add", "-A")
+    commit_all(repo, "four conditions")
+
+    from_root = finspect.repo_facts(repo)
+    from_sub = finspect.repo_facts(Path(repo) / "sub")
+    assert from_root.filtered_paths, "the fixture must actually carry a filter"
+    assert from_root == from_sub
+    assert finspect.rejections(from_root, []) == finspect.rejections(from_sub, [])
