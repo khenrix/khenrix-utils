@@ -823,6 +823,35 @@ def _successors(phase):
     return out
 
 
+# The two endings §14 declares out of EVERY non-terminal phase.
+_UNIVERSAL = {"failed", "source_diverged"}
+
+# §14's five endings, by name. Restated for `_DECLARED_SPINE`'s reason and one the derivation
+# makes sharper: `runstate.TERMINAL` is the phases with no successors, so it answers "which
+# phases end a run" out of the very table these tests are asking about.
+_DECLARED_TERMINALS = {"ready", "degraded", "review_blocked", "source_diverged", "failed"}
+
+# §14's spine: each non-terminal phase's successors with those two taken out. Restated by
+# hand rather than derived from `_EDGES`, because a table compared against itself holds for
+# whatever the table happens to say — measured: derived from `_EDGES` instead, `comparing`
+# pointed at `verifying` survives the widening check below, exactly as it already survives
+# the reachability walk. The per-phase chain assertions catch that one anyway, so
+# today the restatement is a second net rather than the only one; it is the only one for a
+# phase §14 adds later, whose successors no other test here names. §14's chain moving means
+# editing this copy, and that cost is the pin.
+_DECLARED_SPINE = {
+    "created": {"confirmed"},
+    "confirmed": {"setting_up"},
+    "setting_up": {"building"},
+    "building": {"harvested"},
+    "harvested": {"comparing"},
+    "comparing": {"synthesizing"},
+    "synthesizing": {"verifying"},
+    "verifying": {"synthesizing", "reviewing"},
+    "reviewing": {"synthesizing", "ready", "degraded", "review_blocked"},
+}
+
+
 def test_the_back_edge_from_reviewing_to_synthesizing_is_declared(tmp_path):
     """§14: a single enum cannot represent "fixing after review round 2". The back-edge is
     what makes the round counter mean anything."""
@@ -868,7 +897,7 @@ def test_an_undeclared_edge_is_a_refusal(tmp_path):
 
 
 def test_a_terminal_state_admits_no_successor(tmp_path):
-    for name in runstate.TERMINAL:
+    for name in _DECLARED_TERMINALS:
         s = runstate.State(phase=name, round=1, attempt=1,
                            verified_checkpoint=None, deliverable_checkpoint=None)
         with pytest.raises(runstate.TransitionError):
@@ -877,16 +906,21 @@ def test_a_terminal_state_admits_no_successor(tmp_path):
 
 def test_no_terminal_phase_admits_any_successor_at_all(tmp_path):
     """The test above names one target. A terminal that had kept an edge to anything ELSE
-    would end a run that then carries on, and nothing would say so."""
-    for name in runstate.TERMINAL:
+    would end a run that then carries on.
+
+    Iterated over §14's names and NOT over `runstate.TERMINAL`, which is derived from the
+    successor sets and so cannot hold a phase that has one — over the derived set this
+    assertion is true whatever the graph says, and a `ready` given the two universal endings
+    survives it. Measured, both ways round.
+    """
+    for name in _DECLARED_TERMINALS:
         assert _successors(name) == set(), name
 
 
 def test_every_terminal_the_spec_names_exists(tmp_path):
     """A terminal nothing can reach is the defect class this project has found in every
     plan; a terminal the spec names and the code omits is the same defect one step earlier."""
-    assert set(runstate.TERMINAL) == {
-        "ready", "degraded", "review_blocked", "source_diverged", "failed"}
+    assert set(runstate.TERMINAL) == _DECLARED_TERMINALS
 
 
 def test_the_declared_phases_are_section_14s_in_section_14s_order(tmp_path):
@@ -900,9 +934,12 @@ def test_the_declared_phases_are_section_14s_in_section_14s_order(tmp_path):
 
 
 def test_every_phase_the_graph_names_can_be_reached_from_created(tmp_path):
-    """A phase nothing can reach is a terminal the run can never report, and §14's five
-    terminals hang off one node — dropping `reviewing → failed` strands that outcome with no
-    route in.
+    """A phase nothing can reach is a terminal the run can never report. `ready`, `degraded`
+    and `review_blocked` hang off `reviewing` alone, so dropping `reviewing → degraded`
+    strands that outcome with no route in. `failed` and `source_diverged` leave every
+    non-terminal phase, so no one dropped edge can strand either and this walk says nothing
+    about them; `test_every_non_terminal_phase_can_reach_failed_and_source_diverged` is what
+    stands there instead.
 
     Reachability alone is WEAK, and measurably so: pointing `comparing` at `verifying`
     instead of `synthesizing` leaves every phase reachable, because `verifying ⇄ synthesizing`
@@ -919,7 +956,10 @@ def test_every_phase_the_graph_names_can_be_reached_from_created(tmp_path):
 
 
 def test_the_spine_is_the_single_chain_section_14_draws(tmp_path):
-    """Each phase up to `verifying` has exactly ONE successor, and this pins which.
+    """Each phase up to `verifying` has exactly one successor that CARRIES THE RUN ON, and
+    this pins which. The two universal endings are subtracted rather than listed: they are
+    every phase's, so leaving them in would make each assertion here a statement about them
+    as well, and the widening check below is where that belongs.
 
     Equality rather than membership, and per phase rather than over the whole walk: a run
     that went `comparing → verifying` would hand the verifier a synthesis nobody made, and
@@ -929,7 +969,7 @@ def test_the_spine_is_the_single_chain_section_14_draws(tmp_path):
     chain = ("created", "confirmed", "setting_up", "building", "harvested", "comparing",
              "synthesizing", "verifying")
     for phase, nxt in zip(chain, chain[1:]):
-        assert _successors(phase) == {nxt}, phase
+        assert _successors(phase) - _UNIVERSAL == {nxt}, phase
 
 
 def test_a_failed_verify_returns_to_synthesizing_and_a_passing_one_goes_to_review(tmp_path):
@@ -937,15 +977,50 @@ def test_a_failed_verify_returns_to_synthesizing_and_a_passing_one_goes_to_revie
     phase is already reachable without it, so a graph that had lost it would leave a run whose
     verify failed able to reach a fix only by routing through a review of the very candidate
     that had just failed verification."""
-    assert _successors("verifying") == {"synthesizing", "reviewing"}
+    assert _successors("verifying") - _UNIVERSAL == {"synthesizing", "reviewing"}
 
 
 def test_reviewing_is_where_the_run_chooses_its_ending(tmp_path):
-    """The one node with a fan-out, pinned exactly so an edge nobody declared cannot be added
-    to it — `reviewing → verifying` would re-verify a candidate without re-synthesizing the
-    fix the review asked for. Composed from the two facts pinned above rather than restating
-    the graph: the back-edge, and the five terminals."""
+    """The node that chooses BETWEEN the endings, pinned exactly so an edge nobody declared
+    cannot be added to it — `reviewing → verifying` would re-verify a candidate without
+    re-synthesizing the fix the review asked for. Composed from the two facts pinned above
+    rather than restating the graph: the back-edge, and the five terminals. The universal
+    endings are not subtracted here, because reaching them from `reviewing` is a review
+    choosing one, not the amendment's edge arriving from somewhere else."""
     assert _successors("reviewing") == {"synthesizing"} | set(runstate.TERMINAL)
+
+
+def test_every_non_terminal_phase_can_reach_failed_and_source_diverged(tmp_path):
+    """§14 as amended. A terminal reachable from one phase cannot record where a run died,
+    and §9 checks its condition continuously rather than at review.
+
+    Both targets are spelled out here rather than taken from `_UNIVERSAL`, so the constant
+    the widening check below subtracts is not also the constant that says which two endings
+    §14 names — a typo in it would otherwise excuse itself.
+    """
+    for phase in runstate.PHASES:
+        if phase in runstate.TERMINAL:
+            continue
+        s = _state(phase)
+        assert runstate.advance(s, "failed").phase == "failed", phase
+        assert runstate.advance(s, "source_diverged").phase == "source_diverged", phase
+
+
+def test_the_universal_edges_did_not_widen_anything_else(tmp_path):
+    """The amendment adds two targets to every non-terminal phase and nothing else — a graph
+    that gained a third would be one nobody declared, and it would be reachable from every
+    phase at once rather than from wherever a caller first wanted it.
+
+    A phase added to §14 and not to `_DECLARED_SPINE` raises KeyError here rather than
+    passing, which is the direction that matters: the missing entry is the spec fact nobody
+    wrote down.
+    """
+    for phase in runstate.PHASES:
+        if phase in runstate.TERMINAL:
+            continue
+        got = _successors(phase)
+        assert _UNIVERSAL <= got, phase
+        assert got - _UNIVERSAL == _DECLARED_SPINE[phase], phase
 
 
 def test_a_phase_name_that_does_not_exist_is_refused_and_named_as_such(tmp_path):

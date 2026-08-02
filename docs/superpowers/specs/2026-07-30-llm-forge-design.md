@@ -834,8 +834,22 @@ represent "fixing after review round 2."
 ```
 created → confirmed → setting_up → building → harvested → comparing
         → synthesizing ⇄ verifying → reviewing → ready | degraded | review_blocked
-                                                       | source_diverged | failed
+
+From ANY non-terminal phase:
+        → failed             (an unrecoverable error, including §5's confirmed `abort`)
+        → source_diverged    (§9: the user's checkout or a protected ref moved)
 ```
+
+Those last two are **universal edges, not two named ones**, and the difference is what the
+graph is for. A terminal reachable from a single phase cannot record where a run actually
+died: §5's calibration-failure policy is confirmed at the gate and its `abort` branch fires
+inside `setting_up`, hours before any review, and a graph that could only end at `reviewing`
+would have to either report that run as though it had been reviewed or leave it in a phase no
+outcome accounts for. §9's condition is worse than early — it is **continuous**. The user's
+checkout and their protected refs can move at any moment the run is out, which is every moment
+from `confirmed` onward, so the phase that observes the move is the phase the transition has
+to leave from. Terminals themselves gain nothing: a run that reported an outcome and then went
+on to change it is the failure this whole tuple exists to make impossible.
 
 ### 14.2 Worked crash: SIGKILL during a post-round-2 fix
 

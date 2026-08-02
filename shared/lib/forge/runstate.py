@@ -181,9 +181,10 @@ forge's own baseline cannot arrive as a ref the user made — a `drift` reading 
 `show-ref` instead would report every run as diverging from itself.
 
 Naming it is where this file stops. `reconstruct` reports what moved; §9's transition and its
-refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14's
-graph declares `source_diverged` only out of `reviewing` — see the comment below on what that
-graph cannot express, and why the missing edges are not invented here.
+refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14
+declares `source_diverged` out of every non-terminal phase, so that sequencer can make the
+transition from wherever the run had got to when the move was seen, rather than having to
+carry the fact as far as `reviewing` first — see `_EDGES`.
 """
 import dataclasses
 import hashlib
@@ -216,17 +217,6 @@ class TransitionError(RuntimeError):
 # `refs/heads/forgery-experiments` is theirs, and dropping it here would leave a moved ref
 # with nothing to compare against — the fail-OPEN direction of the same decision.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
-
-# WHAT THIS GRAPH CANNOT EXPRESS, recorded because the next reader reads the code and not a
-# report. §14's diagram reaches every terminal only from `reviewing`, and two other sections
-# need endings it cannot draw: §5's confirmed calibration-failure policy has an `abort`
-# branch, and calibration runs inside `setting_up`; §9 says a checkout or protected branch
-# moving "during the run" transitions to `source_diverged`, at whatever phase the run is in.
-# The edges are NOT invented here. `advance` refusing an undeclared move names the legal
-# successors and stops at the first caller that tries one, which is the fail-CLOSED
-# direction; a graph quietly wider than the spec is the other one, and no test could tell an
-# invented edge from a declared one. The amendment is a spec question, and it belongs to the
-# whole class rather than to whichever single edge a caller hits first.
 
 
 @dataclass(frozen=True)
@@ -698,15 +688,29 @@ def _decode(row, source) -> Manifest:
 # says no. The chain is §14's wrapped line straightened out: `comparing → synthesizing` is
 # the joint the wrap hides, `synthesizing ⇄ verifying` is two edges, and `reviewing →
 # synthesizing` is the back-edge §14 declares in prose beside the diagram.
+#
+# `failed` and `source_diverged` are §14's UNIVERSAL endings, and each non-terminal phase
+# carries both. They are universal because a terminal reachable from one phase cannot record
+# where a run actually died: §5's confirmed calibration-failure policy has an `abort` branch
+# and calibration runs inside `setting_up`, hours before any review, and §9's condition is
+# continuous rather than checked at review — the user's checkout and their protected refs can
+# move at any moment the run is out, so the transition has to leave from the phase that saw
+# it. Spelled out per phase rather than folded in by a rule over the non-terminals, so this
+# mapping stays the graph itself and not a computation over a second table — PHASES and
+# TERMINAL are already read out of it, and a rule would put §14's chain somewhere else while
+# leaving them looking as though it were here. What that costs is nine hand-copies of one
+# pair, and `test_every_non_terminal_phase_can_reach_failed_and_source_diverged` is what
+# stands where one going missing would. Terminals get neither: a run that reported an outcome
+# and then left it is what the empty successor sets below refuse.
 _EDGES = {
-    "created": frozenset({"confirmed"}),
-    "confirmed": frozenset({"setting_up"}),
-    "setting_up": frozenset({"building"}),
-    "building": frozenset({"harvested"}),
-    "harvested": frozenset({"comparing"}),
-    "comparing": frozenset({"synthesizing"}),
-    "synthesizing": frozenset({"verifying"}),
-    "verifying": frozenset({"synthesizing", "reviewing"}),
+    "created": frozenset({"confirmed", "failed", "source_diverged"}),
+    "confirmed": frozenset({"setting_up", "failed", "source_diverged"}),
+    "setting_up": frozenset({"building", "failed", "source_diverged"}),
+    "building": frozenset({"harvested", "failed", "source_diverged"}),
+    "harvested": frozenset({"comparing", "failed", "source_diverged"}),
+    "comparing": frozenset({"synthesizing", "failed", "source_diverged"}),
+    "synthesizing": frozenset({"verifying", "failed", "source_diverged"}),
+    "verifying": frozenset({"synthesizing", "reviewing", "failed", "source_diverged"}),
     "reviewing": frozenset({"synthesizing", "ready", "degraded", "review_blocked",
                             "source_diverged", "failed"}),
     "ready": frozenset(),
