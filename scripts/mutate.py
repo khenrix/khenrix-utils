@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """Run one mutation and report whether the suite catches it.
 
-Checked in rather than re-authored per task. The guard below was present in five harnesses
-written on one day and absent from twelve written the next, and its absence manufactures a
-FALSE SURVIVED — the most expensive verdict a mutation table can carry, because a survivor is
-what makes someone add a test or declare an equivalent mutant.
+Checked in rather than re-authored per task. The bytecode guard below was present in five
+harnesses written on one day and absent from twelve written the next, and its absence
+manufactures a FALSE SURVIVED: a verdict that costs the reader work, because a survivor is
+what makes someone add a test or argue the mutant is equivalent.
+
+The opposite verdict is the cheaper one to produce and the more expensive one to hold. A
+FALSE CAUGHT makes someone NOT add a test, and it leaves nothing behind to re-examine — the
+row reads covered and the hole stays. So `rc != 0` is not by itself evidence that the suite
+noticed anything, and this script refuses to call it CAUGHT until it has watched the same
+command pass against the UNMUTATED file.
 
     scripts/mutate.py --file shared/lib/forge/verify.py \
         --old 'VERIFIER_NAME = "verify"' --new 'VERIFIER_NAME = "claude"' \
         -- uvx pytest tests/test_forge_seams.py -q
 
-Exit 0 when the mutant is CAUGHT (the suite failed), 1 when it SURVIVED, 2 on a usage or
-application error. The source file is restored from the bytes read at start, always.
+Exit 0 when the mutant is CAUGHT (a green suite went red), 1 when it SURVIVED, 2 on a usage
+or application error — including a baseline that was not green. The source file is restored
+from the bytes read at start, always.
 """
 import argparse
 import os
@@ -43,6 +50,28 @@ def _purge_bytecode(roots) -> int:
             shutil.rmtree(d, ignore_errors=True)
             n += 1
     return n
+
+
+class _CannotRun(RuntimeError):
+    """The test command never started, which is a fact about the command and not a verdict."""
+
+
+# pytest's documented exit codes. Only 5 is acted on; the rest are here so a refusal can say
+# what the runner reported instead of printing a bare integer.
+_PYTEST_RC = {1: "tests failed", 2: "interrupted, e.g. an error during collection",
+              3: "internal error", 4: "usage error", 5: "no tests were collected"}
+_NOTHING_COLLECTED = 5
+
+
+def _run(cmd, env) -> int:
+    try:
+        return subprocess.run(cmd, cwd=ROOT, env=env).returncode
+    except OSError as e:
+        # A command that cannot START is a usage error, and it has to be told apart from a
+        # verdict HERE. The uncaught traceback exits 1, and 1 is the machine-readable spelling
+        # of SURVIVED — so a harness building a mutation table off exit codes records a
+        # survivor for a typo'd test command.
+        raise _CannotRun(f"mutate: cannot run the test command {cmd[0]!r}: {e}") from e
 
 
 def main() -> int:
@@ -90,6 +119,27 @@ def main() -> int:
     purge = args.purge or [ROOT / "shared" / "lib", ROOT / "tests"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
+    # The baseline run, and it is not optional. CAUGHT is a claim about a DIFFERENCE, and
+    # `rc != 0` alone measures only one side of it: a suite already red for an unrelated
+    # reason, a `-k` that selects nothing, a runner refusing its own arguments, all report
+    # nonzero without executing the mutant at all — and then every CAUGHT in the table is
+    # manufactured. Measured on this repo's suites the extra run costs 0.45s to 4.1s per
+    # mutant, against a verdict nobody re-examines once it is written down.
+    # Purged first because a stale __pycache__ from an earlier interrupted mutation would
+    # otherwise decide what the baseline runs.
+    _purge_bytecode(purge)
+    try:
+        base_rc = _run(cmd, env)
+    except _CannotRun as e:
+        print(e, file=sys.stderr)
+        return 2
+    if base_rc != 0:
+        why = _PYTEST_RC.get(base_rc, "unrecognized exit status")
+        print(f"mutate: the UNMUTATED suite exits {base_rc} ({why}), so a nonzero exit under "
+              f"the mutation would say nothing about the mutation", file=sys.stderr)
+        return 2
+    print("mutate: baseline green", file=sys.stderr)
+
     mutant = text.replace(args.old, args.new).encode("utf-8")
     try:
         path.write_bytes(mutant)
@@ -106,19 +156,22 @@ def main() -> int:
         print(f"mutate: applied to {args.file}, purged {purged} __pycache__ dir(s)",
               file=sys.stderr)
         try:
-            rc = subprocess.run(cmd, cwd=ROOT, env=env).returncode
-        except OSError as e:
-            # A command that cannot START is a usage error, and it has to say so HERE. The
-            # uncaught traceback exits 1, and 1 is the machine-readable spelling of SURVIVED
-            # — so a harness building a mutation table off exit codes records a survivor for
-            # a typo'd test command, which is the false SURVIVED this script exists to
-            # prevent, reached by a different route.
-            print(f"mutate: cannot run the test command {cmd[0]!r}: {e}", file=sys.stderr)
+            rc = _run(cmd, env)
+        except _CannotRun as e:
+            print(e, file=sys.stderr)
             return 2
     finally:
         path.write_bytes(original)
         _purge_bytecode(purge)
 
+    if rc == _NOTHING_COLLECTED:
+        # The baseline collected tests, so reaching this means the mutation changed what gets
+        # collected — mutating a test file so that `-k` no longer selects it, say. Nothing
+        # ran, so there is nothing to have caught. Refused rather than reported, because by
+        # here a nonzero exit is otherwise indistinguishable from a failure.
+        print(f"mutate: the mutated run collected no tests (exit {rc}), so nothing was "
+              f"measured — not a verdict", file=sys.stderr)
+        return 2
     verdict = "CAUGHT" if rc != 0 else "SURVIVED"
     print(f"mutate: {verdict} (test command exit {rc})", file=sys.stderr)
     return 0 if rc != 0 else 1
