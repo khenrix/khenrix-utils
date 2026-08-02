@@ -719,18 +719,32 @@ def _text(name, value, source):
     return value
 
 
-def _count(name, value, source):
-    """A whole count of at least one — the shape `seats` and `attempts` have to survive in.
+def count(name, value, source, *, floor=1):
+    """A whole count of at least `floor` — the shape a run's own numbers have to survive in.
+
+    PUBLIC, AND CALLED RATHER THAN RE-SPELLED, which is the whole of what it is for. `gate`
+    decides this about the same two fields at two earlier doors, and while it spelled its own
+    version the two disagreed: the gate tested magnitude, this tested magnitude AND type, and
+    `seats=True` therefore passed `quote`, passed `confirm`, opened a run directory, wrote
+    `events.jsonl` and created a ref in the USER's repository before meeting this floor inside
+    `write_manifest`. A run that will not happen must leave nothing behind, and two spellings
+    of one predicate is how it left three things.
 
     `isinstance(True, int)`, so the bool test is not defensiveness: a JSON `true` would launch
     a one-seat fleet out of a field nobody wrote a number in. The floor is checked HERE and
     not only at the gate because `write_manifest` decodes what it is about to write, so a
     zero-seat run cannot reach the disk from either direction.
+
+    `floor` is a parameter because `gate.quote` prices a THIRD number with the same type rule
+    and a different bound: zero review rounds is a run, zero seats is not. It is deliberately
+    not a second function — the type half is where every one of these values got in.
     """
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+    if isinstance(value, bool) or not isinstance(value, int) or value < floor:
         raise ManifestError(
-            f"{source}: {name} is a whole count of at least 1, not {value!r}; a run with no "
-            "seat is not a run and an attempt budget below one is not a retry policy")
+            f"{source}: {name} is a whole count of at least {floor}, not {value!r}. The type "
+            "is checked with the magnitude because `isinstance(True, int)` — a boolean would "
+            'launch a fleet out of a field nobody wrote a number in, and `2.0` and `"3"` read '
+            "as the right number to everything downstream that never compares them.")
     return value
 
 
@@ -884,8 +898,8 @@ _DECODERS = {
     "status_digest": _text,
     "index_digest": _text,
     "created_at": _text,
-    "seats": _count,
-    "attempts": _count,
+    "seats": count,
+    "attempts": count,
 }
 
 

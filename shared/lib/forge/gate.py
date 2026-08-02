@@ -213,6 +213,26 @@ class Quote:
     attempts: int
 
 
+def _confirmed_count(name, value, source, *, floor=1) -> int:
+    """`runstate`'s own predicate for a run-shape count, raised in this module's vocabulary.
+
+    CALLED, NEVER RE-SPELLED, and the failure that argues for it was measured at this gate:
+    `quote` and `confirm` both tested `< 1` and nothing else, so `seats=True` — an `int`
+    subclass, and what a boolean-ish config parse leaves behind — priced a run, opened a run
+    directory, wrote `events.jsonl`, authored B1 and created a ref in the USER's repository,
+    and only then met `runstate`'s own floor inside `write_manifest`. The gate's contract is
+    that a run which will not happen leaves nothing behind; two spellings of one predicate is
+    what made it leave three things, and a third spelling here would only move the seam.
+
+    Re-raised as a `GateError` on `_confirmed_steps`' precedent: this module's documented
+    refusal is a GateError, and a caller at §5 step 2 has no other name for this.
+    """
+    try:
+        return runstate.count(name, value, source, floor=floor)
+    except runstate.ManifestError as e:
+        raise GateError(str(e)) from e
+
+
 def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> Quote:
     """Price the worst case of a run over `report`'s repository.
 
@@ -227,9 +247,15 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
                         "the quote is shown at §5 step 2, after the static look")
-    if seats < 1 or attempts < 1 or review_rounds < 0:
-        raise GateError(f"seats={seats} attempts={attempts} review_rounds={review_rounds}: "
-                        "seats and attempts are at least 1, review rounds at least 0")
+    # A run with no seat is not a run and an attempt budget below one is not a retry policy;
+    # zero review rounds IS a run, which is the only reason the third floor differs. All three
+    # go through the predicate `runstate` owns rather than a comparison spelled here — a
+    # magnitude test alone let `seats=True` through to `write_manifest` and answered
+    # `seats="3"` with a bare `TypeError`, where every other refusal on this path is a
+    # `GateError`.
+    seats = _confirmed_count("seats", seats, "§5.2's quote")
+    attempts = _confirmed_count("attempts", attempts, "§5.2's quote")
+    review_rounds = _confirmed_count("review_rounds", review_rounds, "§5.2's quote", floor=0)
 
     builders = seats * attempts
     synthesis = 1
@@ -1008,8 +1034,22 @@ class Confirmation:
 
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
     constructor supplies is a fact nobody answered for. `confirm` is where an omitted
-    `accepted_gaps` becomes the empty tuple, because that is a normalization of an answer
-    sheet and this is the record.
+    `accepted_gaps` KEY becomes the empty tuple, because that is a reading of a silent answer
+    sheet; every other normalization is below, where the record itself does it.
+
+    THE VALUE ENFORCES ITS OWN INVARIANTS, and both halves of why were measured on this
+    class. It is a public frozen dataclass, so one assembled beside `confirm` carried none of
+    `confirm`'s checks: `Confirmation(author=None)` raised `BaselineError` out of
+    `materialize` with a run directory and an `events.jsonl` already orphaned, and
+    `author=("Ada <x>", "a@b\\ninvalid")` opened a run whose B1 reads `Ada x|a@binvalid`,
+    because git 2.53 strips those characters rather than refusing them. Meanwhile `seats` was
+    decided by a magnitude test here and by `runstate.count` in the manifest, and the two
+    disagreed on `True`.
+
+    So the checks live in `__post_init__` rather than in the caller. `confirm`, `open_run` and
+    `write_manifest` then inherit ONE predicate per field instead of spelling three that are
+    free to drift apart — which is the defect above, twice — and `open_run`'s `isinstance`
+    check becomes a real one: a value of this type cannot be a run the gate would have refused.
     """
     setup: tuple
     verify: tuple
@@ -1019,6 +1059,42 @@ class Confirmation:
     author: tuple[str, str]
     seats: int
     attempts: int
+
+    def __post_init__(self):
+        # NORMALIZING as well as refusing, through the same helpers `confirm` used to call:
+        # an argv list becomes `verify.Step`s and an author is stripped HERE, so the answer to
+        # "what does this field hold" is one answer rather than one per construction route.
+        # `open_run` performs no conversion, and this is what lets it not have to.
+        object.__setattr__(self, "setup", _confirmed_steps("setup", self.setup))
+        steps = _confirmed_steps("verify", self.verify)
+        if not steps:
+            # An empty SETUP is an ordinary repository that needs none. An empty VERIFY is a
+            # gate that decides nothing, and §6.2's outcomes are all read off its exit code —
+            # so every candidate would pass, including one that deleted the tests.
+            raise GateError(
+                "the verify command names no step, so the gate would decide nothing and every "
+                "candidate would pass it. §6.2 reads every outcome off this command.")
+        object.__setattr__(self, "verify", steps)
+
+        if self.on_calibration_failure not in CALIBRATION_POLICIES:
+            raise GateError(
+                f"on_calibration_failure is {self.on_calibration_failure!r}; §5 step 2 offers "
+                f"{list(CALIBRATION_POLICIES)} — abort the run when the untouched baseline "
+                "fails its own gate, or continue and carry the run to §14's `degraded` ending")
+        if self.strategy not in STRATEGY_RULES:
+            raise GateError(
+                f"strategy is {self.strategy!r}; §12's rule is confirmed here and applied to "
+                f"measured artifact size later, so it is one of {list(STRATEGY_RULES)}. "
+                "`partition` is deliberately absent: §12.1 admits one only where stable seams "
+                "exist, which is §10.1's non-mechanical criterion and cannot be "
+                "pre-committed to.")
+        object.__setattr__(self, "author", _confirmed_author(self.author))
+        object.__setattr__(self, "accepted_gaps", _confirmed_gaps(self.accepted_gaps))
+        # Returned values discarded: there is nothing to normalize about a whole number, and
+        # the call is here for the refusal. §5.2 priced the run BY these two, so the record
+        # cannot hold a shape the manifest will not take.
+        _confirmed_count("seats", self.seats, "§5 step 2")
+        _confirmed_count("attempts", self.attempts, "§5 step 2")
 
 
 def must_show(report, quote_, command) -> tuple[str, ...]:
@@ -1190,6 +1266,31 @@ def _confirmed_author(value) -> tuple[str, str]:
     return name.strip(), email.strip()
 
 
+def _confirmed_gaps(value) -> tuple[str, ...]:
+    """The accepted gaps as ids, or a GateError naming the one that resolves to no line.
+
+    WHAT IS CHECKED is that each id is one this engine can raise — `ACCEPTABLE_GAPS` — and
+    not that `must_show` raised it for THIS repository. The narrower check needs the command
+    the surface was measured with, and a `Confirmation` is the answer to a question its caller
+    rendered. So accepting a gap nobody raised is recorded rather than refused; it is noise in
+    a handover, never a licence.
+    """
+    if isinstance(value, (str, bytes)):
+        raise GateError(
+            f"accepted_gaps is {value!r}, a single string; iterating one yields its "
+            "characters, so a run would record acceptance of a list of letters")
+    try:
+        gaps = tuple(value)
+    except TypeError as e:
+        raise GateError(f"accepted_gaps is not a sequence of gap ids: {value!r}") from e
+    stray = sorted(set(gaps) - set(ACCEPTABLE_GAPS))
+    if stray:
+        raise GateError(
+            f"accepted_gaps names {stray}, which `must_show` cannot raise. An accepted gap has "
+            f"to resolve to a line the operator was shown; the ids are {list(ACCEPTABLE_GAPS)}.")
+    return gaps
+
+
 def confirm(report, quote_, answers) -> Confirmation:
     """§5 step 2's answer, validated into the record §14.2 writes once.
 
@@ -1212,26 +1313,28 @@ def confirm(report, quote_, answers) -> Confirmation:
     raised. Spelled as a whole-key check rather than a special case for that one name,
     because the next optional answer would arrive with the same hole.
 
-    THE AUTHOR IS VALIDATED HERE, WHICH IS WHERE THE COST OF REFUSING IT IS NOTHING. B1
-    cannot be authored from what this package can see — `gitcmd` pins the global config to
-    /dev/null on every call, so a repository whose identity is in `~/.gitconfig` has none as
-    far as `baseline._resolve_author` is concerned. Validating at `open_run` instead would
-    refuse after a run directory and a journalled intent already existed, which is the orphan
-    §14.1 reserves for a crash; validating here means the answer sheet is either usable or
-    rejected before anything is created. `propose_identity` is what an operator's front end
-    fills the field from, and it is deliberately not called here: this function records an
-    answer and a value it went and fetched is not one.
+    WHAT THIS FUNCTION DECIDES IS WHICH QUESTIONS WERE ANSWERED; `Confirmation` decides
+    whether an answer is usable. The split is not stylistic: every value check used to live
+    here, so it held for a record reached THROUGH this function and for no other — and
+    `Confirmation` is a public frozen dataclass, so one assembled beside it carried none of
+    them. Its `__post_init__` is where they are now, which is the only placement that makes
+    `open_run`'s type check a real check. What is left here is what only an answer SHEET can
+    be wrong about: a missing key, a key nobody asked for, and a caller who has not reached
+    this gate.
+
+    THE ANSWER IS REFUSED WHERE REFUSING IT COSTS NOTHING, which is still this call. B1 cannot
+    be authored from what this package can see — `gitcmd` pins the global config to /dev/null
+    on every call, so a repository whose identity is in `~/.gitconfig` has none as far as
+    `baseline._resolve_author` is concerned. Refusing at `open_run` instead would refuse after
+    a run directory and a journalled intent already existed, which is the orphan §14.1 reserves
+    for a crash. `propose_identity` is what an operator's front end fills the field from, and it
+    is deliberately not called here: this function records an answer, and a value it went and
+    fetched is not one.
 
     `seats` and `attempts` are read OFF THE QUOTE and are not answer keys. §5.2 prices the run
     by them, and a second route in is a run whose recorded shape and quoted shape are two
     numbers a reader has to compare — so there is one number, and the only way to change it is
     to price the change first.
-
-    WHAT `accepted_gaps` IS CHECKED FOR is that each id is one this engine can raise —
-    `ACCEPTABLE_GAPS` — and not that `must_show` raised it for THIS repository. The narrower
-    check needs the command the surface was measured with, and a `Confirmation` is the answer
-    to a question its caller rendered. So accepting a gap nobody raised is recorded rather
-    than refused; it is noise in a handover, never a licence.
     """
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}")
@@ -1250,51 +1353,15 @@ def confirm(report, quote_, answers) -> Confirmation:
     if unknown:
         raise GateError(f"§5 step 2 does not ask {unknown}; it asks {list(_ANSWERS)}")
 
-    verify_steps = _confirmed_steps("verify", answers["verify"])
-    if not verify_steps:
-        # An empty SETUP is an ordinary repository that needs none. An empty VERIFY is a gate
-        # that decides nothing, and §6.2's outcomes are all read off its exit code — so every
-        # candidate would pass, including one that deleted the tests.
-        raise GateError(
-            "the verify command names no step, so the gate would decide nothing and every "
-            "candidate would pass it. §6.2 reads every outcome off this command.")
-
-    policy = answers["on_calibration_failure"]
-    if policy not in CALIBRATION_POLICIES:
-        raise GateError(
-            f"on_calibration_failure is {policy!r}; §5 step 2 offers {list(CALIBRATION_POLICIES)} "
-            "— abort the run when the untouched baseline fails its own gate, or continue and "
-            "carry the run to §14's `degraded` ending")
-    rule = answers["strategy"]
-    if rule not in STRATEGY_RULES:
-        raise GateError(
-            f"strategy is {rule!r}; §12's rule is confirmed here and applied to measured "
-            f"artifact size later, so it is one of {list(STRATEGY_RULES)}. `partition` is "
-            "deliberately absent: §12.1 admits one only where stable seams exist, which is "
-            "§10.1's non-mechanical criterion and cannot be pre-committed to.")
-
-    author = _confirmed_author(answers["author"])
-    if quote_.seats < 1 or quote_.attempts < 1:
-        # `quote()` refuses these at its own door; this is the floor under a `Quote` built by
-        # hand, which is the shape that reaches the manifest without ever passing that door.
-        raise GateError(
-            f"the quote prices {quote_.seats} seat(s) x {quote_.attempts} attempt(s): a run "
-            "with no seat is not a run and an attempt budget below one is not a retry policy")
-
-    gaps = answers.get("accepted_gaps", ())
-    if isinstance(gaps, (str, bytes)):
-        raise GateError(
-            f"accepted_gaps is {gaps!r}, a single string; iterating one yields its characters, "
-            "so a run would record acceptance of a list of letters")
-    gaps = tuple(gaps)
-    stray = sorted(set(gaps) - set(ACCEPTABLE_GAPS))
-    if stray:
-        raise GateError(
-            f"accepted_gaps names {stray}, which `must_show` cannot raise. An accepted gap has "
-            f"to resolve to a line the operator was shown; the ids are {list(ACCEPTABLE_GAPS)}.")
-    return Confirmation(setup=_confirmed_steps("setup", answers["setup"]), verify=verify_steps,
-                        on_calibration_failure=policy, strategy=rule, accepted_gaps=gaps,
-                        author=author, seats=quote_.seats, attempts=quote_.attempts)
+    # Every value below goes to `Confirmation` as it was answered. `accepted_gaps` is the one
+    # key whose ABSENCE is legal, and reading that silence as "accepted none" is a fact about
+    # the sheet rather than about the record, so it is read here.
+    return Confirmation(setup=answers["setup"], verify=answers["verify"],
+                        on_calibration_failure=answers["on_calibration_failure"],
+                        strategy=answers["strategy"],
+                        accepted_gaps=answers.get("accepted_gaps", ()),
+                        author=answers["author"],
+                        seats=quote_.seats, attempts=quote_.attempts)
 
 
 def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
@@ -1309,16 +1376,21 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     a `report.repo` that is not the toplevel, and a manifest recording it would be refused by
     every later `drift` as a repository this run was not recorded against.
 
-    ORDER, AND WHAT EACH STEP MAKES TRUE. The two refusals come first, so a run that is not
-    going to happen leaves nothing at all on disk — not a run directory, not an object and
-    not a ref. The THIRD thing that can stop a run is not checked here at all, and its absence
-    is the point: B1's author is settled at `confirm`, so the one input `materialize` used to
-    raise on — a repository with no LOCAL identity, which is the ordinary repository, since
-    every call this package makes is blind to `~/.gitconfig` — cannot reach this function.
-    While it could, it raised below the two writes that follow, which made the ordinary case
-    leave the orphan §14.1 reserves for a crash. Then the run root, which fails on a run id
-    already taken rather than sharing a directory with the run that owns it. Then
-    `journal.intent("confirm")`, before anything
+    ORDER, AND WHAT EACH STEP MAKES TRUE. Every refusal comes before every write, so a run
+    that is not going to happen leaves nothing at all on disk — not a run directory, not an
+    object and not a ref. That is a claim about VALIDATION COMPLETING first, not merely about
+    where these two `raise`s sit, and it has been false twice for the same structural reason:
+    a predicate spelled once here and again downstream, disagreeing. `seats=True` passed a
+    magnitude test at `confirm` and met `runstate`'s type test inside `write_manifest`, four
+    writes later, with the ref already in the user's repository; before that, B1's author was
+    resolved inside `materialize` and raised two writes in. Neither is a refusal this function
+    performs today, and their absence is the point: both are invariants of the `Confirmation`
+    it is handed, checked when that value was constructed, so a run this function cannot
+    finish cannot be started. The remaining two — a repository preflight refuses, and a verify
+    command that spends — are re-decided here because they are facts about the REPOSITORY and
+    the command rather than about the answer, and both are read before anything is created.
+    Then the run root, which fails on a run id already taken rather than sharing a directory
+    with the run that owns it. Then `journal.intent("confirm")`, before anything
     touches the user's repository. Then B, whose ref and OID cannot be recorded any earlier
     because §9's whitelist is "the exact OID recorded AT CREATION" and only `materialize`'s
     return value knows it. Then t0 — §14.2 puts it at this gate, which is why `preflight`
@@ -1340,7 +1412,8 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     is the repository, `base_commit`, B's identity, the selected paths and the confirmed
     commands, and `events.jsonl` is one of the six sources it names for a resume. What that
     costs is that no decoder type-checks them on the way back in, the way `read_manifest`
-    does for every field it carries; `confirm` is the only thing that ever validated them.
+    does for every field it carries; `Confirmation.__post_init__` is the only thing that ever
+    validated them.
     `seats` and `attempts` go the OTHER way and are in the manifest, because a launcher reads
     them to decide how many providers to spend — see `runstate.Manifest` for why that one is
     not a policy — and `read_manifest` type-checks them on the way back.
@@ -1352,6 +1425,10 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}")
     if not isinstance(confirmation, Confirmation):
+        # The type IS the check: a `Confirmation` validates every field in `__post_init__`, so
+        # this refuses the only shape left — a mapping or a stand-in that never went through
+        # that door. It was once a check on the class alone with no field behind it, which is
+        # how a hand-built one carrying `author=None` reached `materialize`.
         raise GateError(
             f"a Confirmation is required, not {type(confirmation).__name__}; the manifest is "
             "written once and never rewritten, so what it records has to be what a human "

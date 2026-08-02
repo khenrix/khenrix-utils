@@ -769,10 +769,11 @@ def _answers(**kw):
 
 
 def _confirmation(**kw):
-    return gate.Confirmation(setup=(verify.Step(argv=("true",)),),
-                             verify=(verify.Step(argv=("true",)),),
-                             on_calibration_failure="abort", strategy="size-gated",
-                             accepted_gaps=(), author=AUTHOR, seats=3, attempts=3, **kw)
+    """A complete `Confirmation`, with any single field replaced by `kw`."""
+    fields = dict(setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("true",)),),
+                  on_calibration_failure="abort", strategy="size-gated", accepted_gaps=(),
+                  author=AUTHOR, seats=3, attempts=3)
+    return gate.Confirmation(**{**fields, **kw})
 
 
 def test_a_repository_whose_gate_cannot_be_seen_is_shown_to_the_human(tmp_path):
@@ -1254,16 +1255,80 @@ def test_the_seats_and_attempts_the_quote_priced_are_what_the_manifest_records(t
             "and the price the operator read was computed from the same two numbers"
 
 
-def test_a_quote_naming_no_seat_never_becomes_a_record(tmp_path):
-    """`quote` refuses these at its own door, so the floor at `confirm` is about the Quote
-    nobody built there — a frozen dataclass is public and constructible, and the manifest is
-    written once with no later gate to correct it."""
+@pytest.mark.parametrize("value", [0, -1, True, 2.0, "3", None])
+@pytest.mark.parametrize("field", ["seats", "attempts"])
+def test_a_quote_whose_shape_is_not_a_count_never_becomes_a_record(tmp_path, field, value):
+    """The gate and the manifest decide the same thing about the same two fields, so they
+    decide it with the same predicate — `runstate.count`, called rather than re-spelled.
+
+    THE ROWS THAT ARE NOT MAGNITUDES ARE THE FINDING. `confirm` used to test `< 1` alone while
+    `runstate.count` tested the floor AND the type, and the two disagreed on exactly `True`
+    and `2.0`: both passed the gate, opened a run, created a ref in the user's repository, and
+    died in `write_manifest`. `True` is not contrived — it is what `seats=True` looks like
+    after any boolean-ish config parse, and `bool` subclasses `int`, so every naive
+    `isinstance(x, int)` admits it. `"3"` is the row a magnitude test cannot even reach: it
+    raised a bare `TypeError` out of a comparison, where every other refusal on this path is a
+    `GateError`.
+
+    Both doors are measured, because the Quote reaching `confirm` need not have come through
+    `quote` — a frozen dataclass is public and constructible, and the manifest is written once
+    with no later gate to correct it.
+    """
     r, q = _report_and_quote(tmp_path)
-    for seats, attempts in ((0, 3), (3, 0), (-1, 3)):
-        with pytest.raises(gate.GateError):
-            gate.confirm(r, dataclasses.replace(q, seats=seats, attempts=attempts), _answers())
     with pytest.raises(gate.GateError):
-        gate.quote(r, seats=0)
+        gate.confirm(r, dataclasses.replace(q, **{field: value}), _answers())
+    with pytest.raises(gate.GateError):
+        gate.quote(r, **{field: value})
+
+
+@pytest.mark.parametrize("value", [-1, True, 2.0, "2", None])
+def test_the_round_count_the_quote_prices_is_refused_the_same_way(tmp_path, value):
+    """`review_rounds` is priced by the same line and is not a seat count: zero rounds is a
+    run, so its floor is 0 while `seats` and `attempts` are at least 1. What it shares is the
+    TYPE half — `"2"` raised the same bare `TypeError` and `True` priced a one-round review out
+    of a boolean — so it reaches the same predicate at a different floor rather than a second
+    spelling of it. Zero is the discrimination check below."""
+    r = _report(tmp_path)
+    with pytest.raises(gate.GateError):
+        gate.quote(r, review_rounds=value)
+    assert gate.quote(r, review_rounds=0).provider_calls < gate.quote(r).provider_calls, \
+        "the discrimination check: the floor is 0 and a run priced there is a real run"
+
+
+def test_a_run_shape_the_manifest_will_not_record_reaches_nothing_of_the_users(tmp_path,
+                                                                               monkeypatch):
+    """THE SECOND PROPERTY, AND A SEPARATE ONE: not that the bad value is refused, but that
+    the refusal costs the user nothing. Measured rather than reasoned about, because the
+    failure it replaces was invisible from the exception alone — `write_manifest` raised
+    `ManifestError` for `seats=True` AFTER `storage.run_root`, `journal.intent`, B1 and
+    `update-ref` had all run, leaving a run directory, an `events.jsonl` and one forge ref in
+    the user's own repository, for a run that never opened.
+
+    DIRTY, so B1 is a commit of its own and the ref is really created: over a clean tree the
+    baseline is the base commit and the expensive half of the ordering never runs. The
+    discrimination check is the same repository and the same sheet with an ordinary shape —
+    without it a fixture pointed at the wrong state directory would pass every assertion here
+    while measuring nothing.
+    """
+    state = _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path, "shape")
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+    r = preflight.inspect_repo(repo)
+    assert r.facts.unstaged, "the premise: dirty, so an opened run authors B1 and writes a ref"
+    q = gate.quote(r)
+
+    for i, seats in enumerate((True, 2.0, "3")):
+        with pytest.raises(gate.GateError):
+            gate.open_run(r, gate.confirm(r, dataclasses.replace(q, seats=seats), _answers()),
+                          f"refused{i}")
+    assert not state.exists(), "a run that will not happen left a directory behind"
+    assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
+        "and a ref in the user's own repository"
+
+    run = gate.open_run(r, gate.confirm(r, q, _answers()), "ok")
+    assert runstate.read_manifest(run).seats == q.seats
+    assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 1, \
+        "the discrimination check: an ordinary shape does make the ref the rows above must not"
 
 
 def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):
@@ -1350,6 +1415,83 @@ def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch
         gate.open_run(r.facts, _confirmation(), "r1")
     with pytest.raises(gate.GateError):
         gate.open_run(r, _confirmation(), "")
+
+
+# Every field of a `Confirmation`, and one value the gate would have refused if the answer
+# sheet had carried it. Named rather than generated: each row is a measured failure or the
+# guard that stopped one, and the whole point is that a fixture of realistic values reaches
+# none of them.
+_UNCONFIRMABLE = [
+    # `open_run` reproduced verbatim: `materialize` raised BaselineError over the ordinary
+    # repository (identity in ~/.gitconfig, which this package is blind to), after the run
+    # directory and `events.jsonl` existed.
+    {"author": None},
+    # Measured: git 2.53.0 STRIPS these rather than failing, so B1 read `Ada x|a@binvalid`
+    # and the run opened. An author is written into a commit header, so `<`, `>` and a
+    # newline are structural.
+    {"author": ("Ada <x>", "a@b.invalid")},
+    {"author": ("Ada", "a@b.invalid\nname")},
+    # The string that does not fail on arity: it unpacks into two non-empty characters.
+    {"author": "ab"},
+    {"author": ("Ada", "")},
+    {"on_calibration_failure": "maybe"},
+    # §12.1 admits a partition only where stable seams exist, which cannot be pre-committed to.
+    {"strategy": "partition"},
+    # §6.2 reads every outcome off the verify command, so a gate with no step passes every
+    # candidate, including one that deleted the tests.
+    {"verify": ()},
+    {"verify": ("make verify",)},
+    {"setup": [verify.Step(argv=("a",)), ["b"]]},
+    {"accepted_gaps": ("the-disk-is-fine",)},
+    {"accepted_gaps": gate.GC_UNBUILT},
+    {"seats": True},
+    {"attempts": 2.0},
+    {"seats": 0},
+]
+
+
+@pytest.mark.parametrize("bad", _UNCONFIRMABLE, ids=lambda b: next(iter(b)))
+def test_a_confirmation_cannot_exist_in_a_state_the_gate_would_not_have_taken(bad, tmp_path,
+                                                                              monkeypatch):
+    """`open_run` type-checks this class and validates no field of it, and that is only honest
+    if the TYPE cannot hold a field the gate would have refused.
+
+    THE FINDING THIS REPLACES was that the narrowing was real but not what was claimed: every
+    check lived in `confirm`, so it held for a `Confirmation` reached THROUGH `confirm` and
+    for no other. `Confirmation` is a public frozen dataclass with no defaults, and one
+    assembled beside `confirm` carried none of it — `author=None` orphaned a run directory in
+    `materialize`, and an author git strips rather than refuses reached B1 intact.
+
+    Validating in `__post_init__` is what closes it without a third copy of each predicate:
+    the value refuses itself, so `confirm`, `open_run` and `write_manifest` inherit one rule
+    each instead of spelling three that are free to disagree — which is exactly how `seats`
+    came to be checked two ways.
+
+    THE STATE DIRECTORY IS ASSERTED because a refusal's cost is a separate property from the
+    refusal: the failures above all raised, and all of them raised too late.
+    """
+    state = _state(monkeypatch, tmp_path)
+    with pytest.raises(gate.GateError):
+        _confirmation(**bad)
+    assert not state.exists(), "an unusable agreement still reached the disk"
+
+
+def test_the_record_normalizes_what_it_takes_so_a_route_in_cannot_decide_the_shape(tmp_path):
+    """The discrimination check for the refusals above, and the reason they are in the value
+    rather than in `confirm`: the same two helpers that refuse also NORMALIZE, so an argv list
+    becomes `verify.Step`s and an author is stripped whichever route built the record.
+    `open_run` performs no conversion, so a route that skipped one would put a bare list where
+    the manifest expects a step."""
+    c = _confirmation(setup=[["make", "setup"]], verify=[["make", "verify"]],
+                      author=("  Ada Lovelace  ", " ada@example.invalid "),
+                      accepted_gaps=[gate.GC_UNBUILT])
+    assert c.verify == (verify.Step(argv=("make", "verify")),)
+    assert c.setup == (verify.Step(argv=("make", "setup")),)
+    assert c.author == AUTHOR
+    assert c.accepted_gaps == (gate.GC_UNBUILT,)
+    assert dataclasses.replace(c, seats=5).seats == 5, "and replace() re-enters the same door"
+    with pytest.raises(gate.GateError):
+        dataclasses.replace(c, seats=True)
 
 
 def test_an_answer_key_this_gate_does_not_ask_is_refused(tmp_path):
