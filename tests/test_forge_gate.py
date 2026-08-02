@@ -86,16 +86,18 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
     """§5.2's terms, each derived on its own rather than compared against one total.
 
     The sum §5.2 itself writes is `9 + 1 + 6 = 16`, and the fourth term below is why the
-    quote is 18 instead: the same paragraph requires that "the quote includes post-review
-    synthesis invocations", and `9 + 1 + 6` contains exactly one synthesis. §13's loop has
-    two more — a round-1 blocker is fixed before round 2 runs, and a blocker fixed after
-    round 2 is reported "verified but not independently reviewed" — so a quote stopping at 16
-    is wrong by two, in the operator's favour, which is the direction that matters.
+    quote is 19 instead: the same paragraph requires that "the quote includes post-review
+    synthesis invocations", and `9 + 1 + 6` contains exactly one synthesis. Three more exist —
+    a round-1 blocker is fixed before round 2 runs, a blocker fixed after round 2 is reported
+    "verified but not independently reviewed" (§13), and §13.1's ultrareview findings "follow
+    the exact post-round-2 rule above: fix -> fresh-verifier verify -> checkpoint". A quote
+    stopping at 16 is wrong by three, in the operator's favour, which is the direction that
+    matters.
     """
     q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
-    builders, synthesis, review, fixes = 3 * 3, 1, 2 * 3, 2
-    assert (builders, synthesis, review, fixes) == (9, 1, 6, 2)
-    assert q.provider_calls == builders + synthesis + review + fixes == 18, q.lines
+    builders, synthesis, review, fixes = 3 * 3, 1, 2 * 3, 2 + 1
+    assert (builders, synthesis, review, fixes) == (9, 1, 6, 3)
+    assert q.provider_calls == builders + synthesis + review + fixes == 19, q.lines
     assert any("9 + 1 + 6 = 16" in line for line in q.lines), \
         "§5.2's own sum stays visible, or the difference is a silent correction"
 
@@ -103,18 +105,42 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
 def test_a_review_round_costs_a_reviewer_each_and_one_synthesis_fix(tmp_path):
     """The discrimination check for the term above: only the review terms may move with it."""
     rounds = [gate.quote(_report(tmp_path), review_rounds=n).provider_calls for n in (0, 1, 2)]
-    assert rounds == [10, 14, 18], rounds
-    assert rounds[0] == 3 * 3 + 1, "with no review, only builders and synthesis are left"
+    assert rounds == [11, 15, 19], rounds
+    assert rounds[0] == 3 * 3 + 1 + 1, \
+        "with no review, only builders, synthesis and ultrareview's own fix are left"
     assert [b - a for a, b in zip(rounds, rounds[1:])] == [4, 4], \
         "a round is 3 reviewers plus the one synthesis invocation that answers it"
 
 
+def test_ultrareviews_own_fix_is_an_invocation_the_quote_cannot_leave_out(tmp_path):
+    """§13.1 is titled "default on" and its findings take the post-round-2 treatment: "fix ->
+    fresh-verifier verify -> checkpoint". §5.2 prices the ultrareview RUN in money and says
+    nothing about the fix it triggers, so a quote that priced only the run is low by one
+    invocation, one setup and one verify — with no exclusion line, which is the shape §5.2's
+    own `9 + 1 + 6` has.
+
+    `--no-ultra` is the discrimination check and the answer to "then make it optional": it is
+    a parameter, and turning it off must move exactly those three scalars and nothing else.
+    """
+    on = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, ultrareview=False)
+    assert (on.provider_calls, on.setup_runs, on.verify_runs) == (19, 18, 9), on.lines
+    assert (off.provider_calls, off.setup_runs, off.verify_runs) == (18, 17, 8), off.lines
+    assert "$" in on.ultrareview and "$" not in off.ultrareview
+    assert "--no-ultra" in on.ultrareview, "the opt-out is named in the quote that includes it"
+
+
 def test_the_council_default_retry_setting_is_shown_but_never_summed(tmp_path):
     """§5.2 asks for whichever is wired, and forge wires `--retries 0` (§13). The 28-call
-    variant exists only if review retries ever return, so it is a line and not the total."""
-    q = gate.quote(_report(tmp_path))
-    assert any("18" in line and "--retries 2" in line for line in q.lines), q.lines
-    assert q.provider_calls != 9 + 1 + 18
+    variant exists only if review retries ever return, so it is a line and not the total —
+    pinned by differencing the review term OUT of the total, which is the only way to show
+    which of the two numbers the total was built from.
+    """
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    assert any(str(2 * 3 * 3) in line and "--retries 2" in line for line in q.lines), q.lines
+    no_review = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=0)
+    assert q.provider_calls - no_review.provider_calls == 2 * 3 + 2, \
+        "two rounds cost 6 reviewer calls and 2 fixes — the wired --retries 0 term, not 18"
 
 
 def test_ultrareview_is_quoted_as_money_not_as_a_count(tmp_path):
@@ -134,9 +160,9 @@ def test_the_quote_names_the_per_candidate_setup_it_cannot_avoid(tmp_path):
     retry gets a FRESH clone (§8.1), so the builder term is seats x attempts.
     """
     q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
-    calibration, builders, verifiers = 2, 3 * 3, 3 + 1 + 2
-    assert q.setup_runs == calibration + builders + verifiers == 17, q.lines
-    assert q.setup_runs >= 5, "the plan's floor holds, but at a third of the real figure"
+    calibration, builders, verifiers = 2, 3 * 3, 3 + 1 + 2 + 1
+    assert q.setup_runs == calibration + builders + verifiers == 18, q.lines
+    assert q.setup_runs >= 5, "the plan's floor holds, but at under a third of the real figure"
 
 
 def test_a_builder_retry_is_a_fresh_clone_and_so_a_fresh_setup(tmp_path):
@@ -153,18 +179,49 @@ def test_the_builders_own_clone_is_not_counted_as_a_verification(tmp_path):
     words: verification runs in a clone the builder never had, so running the gate where the
     builder was is not one of these runs."""
     q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
-    assert q.verify_runs == 2 + (3 + 1 + 2) == 8, q.lines
+    assert q.verify_runs == 2 + (3 + 1 + 2 + 1) == 9, q.lines
     assert q.verify_runs < q.setup_runs, "setup also runs in every builder clone"
 
 
-def test_peak_disk_is_quoted_and_says_what_it_leaves_out(tmp_path):
-    """§5.2 states 6-10 GB for three no-hardlink clones plus three dependency trees. The
-    upper bound is the quote; §15's retention of passing verifier clones is not in it and is
-    named rather than dropped."""
-    q = gate.quote(_report(tmp_path), seats=3)
-    assert q.peak_disk_gb == 10.0
-    assert gate.quote(_report(tmp_path), seats=1).peak_disk_gb == pytest.approx(3.3, abs=0.05)
+def test_peak_disk_is_every_clone_that_coexists_not_the_builder_fleet(tmp_path):
+    """§5.2's disk figure — "three no-hardlink clones plus three dependency trees is plausibly
+    6-10 GB" — prices ONE FLEET at three seats, and the run holds several fleets at once: §8.1
+    preserves a failed retry's clone rather than resetting in place, §6 gives every candidate a
+    fresh verifier clone, and §15's automatic cleanup covers "known-failed temporary clones
+    only". Quoting the fleet as the peak is a scalar wrong by ~5x in the operator's favour, and
+    a line naming the exclusion does not rescue a field something else compares.
+    """
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    per_clone = 10.0 / 3           # §5.2's own upper bound, over the fleet it was stated for
+    clones = 1 + 3 * 3 + (3 + 1 + 2 + 1)
+    assert clones == 17
+    assert q.peak_disk_gb == pytest.approx(round(clones * per_clone, 1), abs=0.05)
+    assert q.peak_disk_gb != 10.0, "§5.2's fleet figure is one term of the peak, not the peak"
     assert any("--gc" in line for line in q.lines), q.lines
+
+
+def test_a_preserved_retry_clone_is_disk_the_peak_has_to_carry(tmp_path):
+    """The discrimination check for the term above, on the input §8.1 governs: "every retry
+    attempt gets a fresh clone. The failed attempt is PRESERVED as partial input." So two
+    extra attempts per seat is six more clones on disk — and not one more verify, since a
+    builder clone is never the tree a candidate is verified in (§6).
+    """
+    one = gate.quote(_report(tmp_path), seats=3, attempts=1)
+    three = gate.quote(_report(tmp_path), seats=3, attempts=3)
+    assert three.peak_disk_gb - one.peak_disk_gb == pytest.approx(6 * 10.0 / 3, abs=0.05)
+    assert three.verify_runs == one.verify_runs
+
+
+def test_every_line_of_the_quote_names_the_section_it_came_from(tmp_path):
+    """`Quote`'s own docstring promises it, and the promise is the point: an operator who
+    thinks a number is wrong needs the derivation. Run over the refused shape too, because the
+    conditional first line is the one that had no citation."""
+    repo = make_repo(tmp_path)
+    _git(repo, "update-index", "--skip-worktree", "seed.txt")
+    for q in (gate.quote(_report(tmp_path)), gate.quote(preflight.inspect_repo(repo))):
+        assert q.lines
+        missing = [line for line in q.lines if "§" not in line]
+        assert missing == [], missing
 
 
 def test_wall_clock_is_declined_rather_than_invented(tmp_path):
@@ -222,6 +279,120 @@ def test_the_same_repositorys_advisory_target_is_not_flagged(tmp_path):
     operator to `make verify`, so a detector that refuses both has refused its own remedy."""
     repo = _repo_shaped_like_this_one(tmp_path)
     assert _found(repo, ["make", "verify"]) == ()
+
+
+def test_the_remedy_line_carries_the_steer_and_not_only_the_chain(tmp_path):
+    """§5.2 is one sentence with two halves — "greps the resolved target for council/eval entry
+    points, STEERS THE OPERATOR TO `make verify` (receipts advisory)" — and the grep half alone
+    tells an operator what is wrong without telling them what to gate on instead. Paired with a
+    tree that declares no advisory target, where naming one would be an invention.
+    """
+    repo = _repo_shaped_like_this_one(tmp_path)
+    remedy = [f for f in _found(repo, ["make", "precommit"]) if f.startswith(gate.REMEDY)]
+    assert len(remedy) == 1 and "`make verify` (receipts advisory)" in remedy[0], remedy
+
+    bare = make_repo(tmp_path, "no-advisory")
+    write(bare, "Makefile", "gate:\n\t@python3 check.py\neval:\n\t@python3 spend.py\n")
+    write(bare, "check.py", "print('stale — run `make eval`')\n")
+    write(bare, "spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(bare, "gates")
+    other = [f for f in _found(bare, ["make", "gate"]) if f.startswith(gate.REMEDY)]
+    assert len(other) == 1 and "does not declare" in other[0], other
+
+
+def test_the_three_finding_classes_are_exported_rather_than_spelled_by_callers(tmp_path):
+    """Telling a refusal from a price is the whole reason to call this, and a caller writing
+    `"spends:"` by hand is one rename away from reading every refusal as a price."""
+    assert (gate.SPENDS, gate.REMEDY, gate.UNRESOLVED) == ("spends:", "remedy:", "unresolved:")
+    repo = _repo_shaped_like_this_one(tmp_path)
+    classes = {f.split(":")[0] + ":" for f in _found(repo, ["make", "eval"])}
+    assert classes <= {gate.SPENDS, gate.REMEDY, gate.UNRESOLVED} and gate.SPENDS in classes
+
+
+def test_a_remedy_chain_under_make_C_is_followed_from_the_directory_make_moved_to(tmp_path):
+    """`-C` moves the directory every path in that makefile resolves against, including the
+    paths inside the remedy target the recipe's own file documents. Resolved against the
+    repository root instead, the sub-walk finds nothing, and BOTH backstops go quiet at once:
+    no `spends:` to price and no `unresolved:` to say the chain went unread.
+
+    Two controls in the same tree — the remedy target reached DIRECTLY under the same `-C`
+    still spends, and the identical shape laid out at the repository root still reports the
+    remedy — so the miss is the `-C` and not a fixture that resolves to nothing.
+    """
+    repo = make_repo(tmp_path, "sub")
+    write(repo, "tools/Makefile", "verify:\n\t@python3 gate.py\neval:\n\t@python3 spend.py\n")
+    write(repo, "tools/gate.py", "print('receipt stale — run `make eval`')\n")
+    write(repo, "tools/spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(repo, "gates")
+    found = _found(repo, ["make", "-C", "tools", "verify"])
+    assert [f for f in found if f.startswith(gate.REMEDY)], found
+    assert "tools/spend.py" in found[0], "the finding names the file that spends, not the hop"
+    assert [f.split(":")[0] for f in _found(repo, ["make", "-C", "tools", "eval"])] == ["spends"]
+
+    flat = make_repo(tmp_path, "flat")
+    write(flat, "Makefile", "verify:\n\t@python3 gate.py\neval:\n\t@python3 spend.py\n")
+    write(flat, "gate.py", "print('receipt stale — run `make eval`')\n")
+    write(flat, "spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(flat, "gates")
+    assert [f.split(":")[0] for f in _found(flat, ["make", "verify"])] == ["remedy"]
+
+
+def test_a_documented_remedy_this_reader_cannot_follow_is_unresolved_not_dropped(tmp_path):
+    """The second backstop, on its own. A remedy whose closure could not be read is not a
+    remedy that is free — and filtering the sub-walk to `spends:` threw its `unresolved:` away
+    with everything else. Paired with the same remedy written so it resolves.
+    """
+    repo = make_repo(tmp_path, "opaque")
+    write(repo, "Makefile",
+          "define RUN\n\t@python3 $(1)\nendef\n"
+          "verify:\n\t@python3 gate.py\n"
+          "eval:\n\t$(call RUN,spend.py)\n")
+    write(repo, "gate.py", "print('stale — run `make eval`')\n")
+    write(repo, "spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(repo, "gates")
+    found = _found(repo, ["make", "verify"])
+    assert [f.split(":")[0] for f in found] == ["unresolved"], found
+    assert "make eval" in found[0] and "could not be read" in found[0], found
+
+    write(repo, "Makefile", "verify:\n\t@python3 gate.py\neval:\n\t@python3 spend.py\n")
+    commit_all(repo, "written-out")
+    assert [f.split(":")[0] for f in _found(repo, ["make", "verify"])] == ["remedy"]
+
+
+def test_a_target_that_documents_itself_is_not_reported_as_its_own_remedy(tmp_path):
+    """`scripts/lib/checks.py` names `make verify` while being reached BY `make verify`, which
+    is a real shape on this repository. A target this walk already resolved directly has been
+    reported on its own terms; a second, weaker account of it reads as a chain nobody followed
+    when it is the one already above. The `make eval` remedy in the same file must survive.
+    """
+    repo = make_repo(tmp_path, "selfref")
+    write(repo, "Makefile",
+          "verify:\n\t@python3 gate.py\n\t@python3 missing/thing.py\n"
+          "eval:\n\t@python3 spend.py\n")
+    write(repo, "gate.py", "print('see `make verify`; when stale run `make eval`')\n")
+    write(repo, "spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(repo, "gates")
+    found = _found(repo, ["make", "verify"])
+    assert len([f for f in found if f.startswith(gate.REMEDY)]) == 1, found
+    assert len([f for f in found if f.startswith(gate.UNRESOLVED)]) == 1, found
+    assert not any("`make verify` as the remedy" in f for f in found), found
+
+
+def test_a_remedy_is_still_found_when_an_earlier_step_already_opened_the_file(tmp_path):
+    """`seen_files` answers "have I opened this", and `_scan_remedies` asks a different
+    question — "which makefile's targets does it document" — that a step running the file
+    DIRECTLY arrives with no makefile to answer. Memoizing the two together let step order
+    decide the verdict: the same tree, the same second step, and a clean `()`.
+    """
+    repo = make_repo(tmp_path, "twostep")
+    write(repo, "Makefile", "verify:\n\t@python3 gate.py\neval:\n\t@python3 spend.py\n")
+    write(repo, "gate.py", "print('stale — run `make eval`')\n")
+    write(repo, "spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(repo, "gates")
+    alone = _found(repo, ["make", "verify"])
+    after = _found(repo, ["python3", "gate.py"], ["make", "verify"])
+    assert [f.split(":")[0] for f in alone] == ["remedy"], alone
+    assert [f.split(":")[0] for f in after] == ["remedy"], after
 
 
 def test_a_plain_verify_command_is_not_flagged(tmp_path):
@@ -382,6 +553,74 @@ def test_a_recipe_this_reader_cannot_expand_is_unresolved(tmp_path):
     found = _found(repo, ["make", "macro"])
     assert [f.split(":")[0] for f in found] == ["unresolved"], found
     assert "RUN_IT" in found[0]
+    assert _found(repo, ["make", "plain"]) == ()
+
+
+def test_an_automatic_make_variable_fails_closed_like_every_other_unexpanded_one(tmp_path):
+    """`$<` is ordinary make and `python3 $<` is a recipe that runs something. The reader
+    resolves neither, and the asymmetry is what made it a fail-OPEN rather than a declared
+    bound: `$(NOPE)` reports unresolved, while `$<` matched no unexpanded-reference pattern AND
+    no path token, so the recipe read as running nothing at all.
+
+    Three shapes in one tree, each the same recipe: the automatic variable, the undefined
+    `$(…)` reference that already failed closed, and the prerequisite written out — which
+    resolves to the file that spends, so the fixture is known to be capable of a finding.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "Makefile",
+          "SCRIPT := scripts/spend.py\n"
+          "auto: $(SCRIPT)\n\t@python3 $<\n"
+          "undef:\n\t@python3 $(NOPE)\n"
+          "plain:\n\t@python3 scripts/spend.py\n")
+    write(repo, "scripts/spend.py", "import fanout\nfanout.run_council([])\n")
+    commit_all(repo, "gates")
+    auto = _found(repo, ["make", "auto"])
+    assert [f.split(":")[0] for f in auto] == ["unresolved"], auto
+    assert "$<" in auto[0], auto
+    assert [f.split(":")[0] for f in _found(repo, ["make", "undef"])] == ["unresolved"]
+    assert [f.split(":")[0] for f in _found(repo, ["make", "plain"])] == ["spends"]
+
+
+def test_a_recipe_that_changes_directory_is_followed_where_make_C_is(tmp_path):
+    """§5.1 names `cd frontend && npm ci` as the shape real monorepos have, and a recipe's `cd`
+    moves what every path after it means exactly as `make -C` does. Resolved against the
+    unmoved directory the script simply is not there, and a token with no `/` in it is not even
+    reported missing — so the recipe came back clean.
+
+    Controls: the same file reached without the `cd` is refused, and a `cd` appearing later in
+    the shell line — where following it needs the shell this module will not run — is reported
+    rather than guessed at.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "Makefile",
+          "lead:\n\tcd tools && python3 spend.py\n"
+          "flat:\n\t@python3 tools/spend.py\n"
+          "mid:\n\t@python3 ok.py; cd tools && python3 spend.py\n"
+          "gone:\n\tcd nowhere && python3 spend.py\n")
+    write(repo, "tools/spend.py", "import fanout\nfanout.run_council([])\n")
+    write(repo, "ok.py", "print('fine')\n")
+    commit_all(repo, "gates")
+    assert [f.split(":")[0] for f in _found(repo, ["make", "lead"])] == ["spends"]
+    assert [f.split(":")[0] for f in _found(repo, ["make", "flat"])] == ["spends"]
+    mid = _found(repo, ["make", "mid"])
+    assert [f.split(":")[0] for f in mid] == ["unresolved"], mid
+    assert "part-way through" in mid[0], mid
+    gone = _found(repo, ["make", "gone"])
+    assert [f.split(":")[0] for f in gone] == ["unresolved"], gone
+    assert "cd nowhere" in gone[0], gone
+
+
+def test_a_provider_cli_after_a_cd_is_still_the_program_that_runs(tmp_path):
+    """The `cd` above consumes the head of the line, and the provider check must not be reading
+    what is left of it. Paired with the flag-shaped argument this repository's own Makefile
+    carries, which must stay admitted."""
+    repo = make_repo(tmp_path)
+    write(repo, "Makefile",
+          "gate:\n\tcd tools && claude -p 'review'\n"
+          "plain:\n\tcd tools && ./run.sh --providers claude\n")
+    write(repo, "tools/run.sh", "#!/bin/sh\nexit 0\n")
+    commit_all(repo, "gates")
+    assert [f.split(":")[0] for f in _found(repo, ["make", "gate"])] == ["spends"]
     assert _found(repo, ["make", "plain"]) == ()
 
 

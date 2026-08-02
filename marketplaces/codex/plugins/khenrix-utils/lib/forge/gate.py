@@ -12,10 +12,14 @@ The same paragraph then requires that "the quote includes post-review synthesis 
 and 9 + 1 + 6 has exactly ONE synthesis in it. §13's loop has two more: a round-1 blocker is
 fixed before round 2 runs at all, and "a blocker fixed after round 2 is reported *verified but
 not independently reviewed*" — so a fix happens there too, and §12.3 caps the count rather than
-forbidding it. `provider_calls` therefore adds one synthesis invocation per review round, and
-is 18 rather than 16 at the wired settings. §5.2's own sum is kept visible as its own line, so
-nothing is hidden in either direction, and §21's "worst case 16 → 10 runs" for cutting the
-retry path reads 12 here for the same reason.
+forbidding it. §13.1's ultrareview is DEFAULT ON and its findings "follow the exact
+post-round-2 rule above: fix → fresh-verifier verify → checkpoint", which is a third one: §5.2
+prices the ultrareview RUN in money and says nothing about the FIX it triggers.
+`provider_calls` therefore adds one synthesis invocation per review round and one for
+ultrareview, and is 19 rather than 16 at the wired settings. `--no-ultra` is a PARAMETER here
+rather than a reason to leave the term out of the default quote. §5.2's own sum is kept visible
+as its own line, so nothing is hidden in either direction, and §21's "worst case 16 → 10 runs"
+for cutting the retry path reads 13 here for the same reason.
 
 WHAT THE SETUP AND VERIFY COUNTS ARE FOR. §6 is the expensive clause in the design — "it costs
 one extra setup per candidate; that cost is essential, not optional hardening" — and a quote
@@ -25,12 +29,24 @@ calibration runs setup+verify TWICE (§5 step 3, so the second pass can show zer
 delta); every builder clone runs setup once, and §8.1 gives a retry a FRESH clone, so the
 builder term is seats × attempts and not seats; and a fresh verifier clone runs setup+verify
 per candidate (§6) plus once after each post-review fix (§13, "re-run verify and cut a new
-checkpoint after every fix").
+checkpoint after every fix", and §13.1 for ultrareview's).
 
 A builder's own clone is NOT counted as a verify. §7 lists `Fverify` among a seat's four
 inventories, but §6 overrides it in as many words — "`Fverify` cannot be 'the fourth inventory
 of the builder clone' when verification happens elsewhere" — and the whole §6 argument is that
 running the gate where the builder was measures nothing.
+
+PEAK DISK IS COUNTED IN CLONES, NOT IN FLEETS. §5.2 gives one figure — "three no-hardlink
+clones plus three dependency trees is plausibly 6-10 GB" — and it prices the BUILDER FLEET at
+three seats. Quoting that as the peak understates it by the whole rest of the run, in the
+operator's favour: §8.1 preserves a failed retry's clone as partial input rather than resetting
+in place, §6 gives every candidate a FRESH verifier clone, and §15's automatic cleanup covers
+"known-failed temporary clones only", so none of those is removed while the run is alive. The
+spec's own upper bound is therefore divided by the fleet it was stated for — 10 GB / 3 clones —
+and multiplied by every clone the worst case builds: calibration (§5 step 3), builders
+(seats × attempts), and verifiers. That is 17 clones at the wired settings, not 3. Left out and
+said so in the line: the synthesis WORKTREE, which §4 makes a worktree precisely so it shares
+the parent's objects, and where setup never runs.
 
 THE DETECTOR IS STATIC AND READS ONLY. §5 step 1 admits no repository-supplied code before
 authorization, and a detector whose job is "would this command spend provider calls" is exactly
@@ -54,12 +70,25 @@ there are three rather than one:
                   council entry point without a hermetic flag. This is the refusal.
   * `remedy:`     a file the gate executes DOCUMENTS a `make <target>` whose own closure
                   spends. `make` does not follow it; an operator does, and only when the gate
-                  fails. That is a price line, not a refusal — which is what keeps §5.2's
-                  steer to `make verify` coherent on the repository §5.2 names.
-  * `unresolved:` the reader could not follow the target: a recipe using a make function it
-                  does not expand, a script path the tree does not hold, an undefined target,
-                  a missing Makefile. Fail closed by SAYING SO — an unresolved target is a
-                  legitimate answer for a human to price, and a silent one is a fail-open.
+                  fails. That is a price line, not a refusal — and it carries §5.2's steer to
+                  `make verify` (receipts advisory), which is the half of that sentence an
+                  operator can act on: the grep alone only names the chain.
+  * `unresolved:` the reader could not follow the target: a recipe using a make function or
+                  automatic variable it does not expand, a `cd` part-way through a shell line,
+                  a script path the tree does not hold, an undefined target, a missing
+                  Makefile, a documented remedy whose own closure could not be read. Fail
+                  closed by SAYING SO — an unresolved target is a legitimate answer for a
+                  human to price, and a silent one is a fail-open.
+
+The three prefixes are EXPORTED (`SPENDS`, `REMEDY`, `UNRESOLVED`), because telling a refusal
+from a price is the caller's whole reason for calling and a caller spelling `"spends:"` by hand
+is one rename away from reading every refusal as a price.
+
+`cd` inside a recipe is followed for the same reason `make -C` is: §5.1 names `cd frontend &&
+npm ci` as the shape real monorepos have, and resolving the rest of the recipe against the
+wrong directory finds nothing and says nothing. Only a LEADING `cd` is followed; one appearing
+later in the same shell line truncates the read there and is reported, since everything after
+it is relative to a directory this reader did not track.
 
 WHAT IT CANNOT SEE, measured on this repository rather than imagined. `make precommit` and
 `make verify` here come back with the same findings in the same classes — three `unresolved:`
@@ -92,15 +121,27 @@ class GateError(RuntimeError):
     command, which is what `Quote.lines` and `provider_invoking_verify`'s findings are for."""
 
 
+# The three classes a finding from `provider_invoking_verify` can carry, as the module
+# docstring defines them. Public: `SPENDS` is the refusal and the other two are prices, and a
+# caller cannot act on the difference without a name for it.
+SPENDS = "spends:"
+REMEDY = "remedy:"
+UNRESOLVED = "unresolved:"
+
 # §5 step 3: setup + verify run TWICE on the untouched baseline, so the second pass can show
 # the zero tracked delta that turns §7.2's fixed-point assumption into evidence.
 _CALIBRATION_PASSES = 2
 
 # §5.2's stated upper bound, and the seat count it was stated for. Kept as a pair because the
-# figure is only meaningful divided by the fleet it describes: "three no-hardlink clones plus
-# three dependency trees is plausibly 6-10 GB".
+# figure prices ONE FLEET and the run holds several at once: "three no-hardlink clones plus
+# three dependency trees is plausibly 6-10 GB" is 10/3 GB per clone-and-its-dependencies, and
+# that quotient is the only per-clone figure the spec gives.
 _SPEC_PEAK_DISK_GB = 10.0
 _SPEC_PEAK_DISK_SEATS = 3
+
+# The sacrificial clone §5 step 3 calibrates in. Counted against the peak because §15 removes
+# known-failed temporary clones only, and a calibration pass that succeeded is not one.
+_CALIBRATION_CLONES = 1
 
 # What the council's own CLI defaults to. Forge does not use it (§13 invokes review with
 # --retries 0), so it is quoted as the alternative §5.2 asks to be shown, never summed in.
@@ -116,8 +157,9 @@ class Quote:
     call in a column of call counts — free, next to numbers that are free.
 
     `lines` is the quote a human reads; the scalars are the same quote for something that has
-    to compare. Every line names the section it comes from, because an operator who thinks a
-    number is wrong needs the derivation, not the total.
+    to compare — so a scalar that reads low is not rescued by a line naming what it left out.
+    Every line names the section it comes from, because an operator who thinks a number is
+    wrong needs the derivation, not the total.
     """
     provider_calls: int
     ultrareview: str
@@ -127,12 +169,16 @@ class Quote:
     lines: tuple[str, ...]
 
 
-def quote(report, *, seats=3, attempts=3, review_rounds=2) -> Quote:
+def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> Quote:
     """Price the worst case of a run over `report`'s repository.
 
     A `preflight.Report` is required rather than a path: the quote reads the repository's
     SHAPE — that a static look happened, and what it already refuses — not its contents. A
     caller who has not run preflight has not reached §5 step 2 yet.
+
+    `ultrareview` defaults True because §13.1 is titled "default on"; `--no-ultra` sets it
+    False. It moves three scalars and not just the money line, because §13.1's findings get
+    the post-round-2 treatment — a fix, and a fresh verifier setup+verify to check the fix.
     """
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
@@ -144,36 +190,44 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2) -> Quote:
     builders = seats * attempts
     synthesis = 1
     review = review_rounds * seats
-    review_fixes = review_rounds
+    ultra_fixes = 1 if ultrareview else 0
+    review_fixes = review_rounds + ultra_fixes
     calls = builders + synthesis + review + review_fixes
 
     # One candidate per seat, plus synthesis's own; §6 gives each a fresh verifier clone, and
-    # §13 adds one more verification after each post-review fix.
+    # §13/§13.1 add one more verification after each post-review fix.
     verifier_runs = seats + 1 + review_fixes
     setup_runs = _CALIBRATION_PASSES + builders + verifier_runs
     verify_runs = _CALIBRATION_PASSES + verifier_runs
-    peak_disk_gb = round(seats * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
+    clones = _CALIBRATION_CLONES + builders + verifier_runs
+    peak_disk_gb = round(clones * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
 
-    ultrareview = ("$5-25 in usage credits, or one of the 3 one-time free runs "
-                   "(§13.1); --no-ultra opts out")
+    ultra_line = ("$5-25 in usage credits, or one of the 3 one-time free runs (§13.1, default "
+                  "on); --no-ultra opts out. Its fix is one of the post-review synthesis "
+                  "invocations counted above"
+                  if ultrareview else
+                  "not run — --no-ultra (§13.1 is default on, so this is the opted-out quote); "
+                  "no money, and no post-review fix for it above")
 
     blocked = preflight.refusals(report)
     lines = []
     if blocked:
         lines.append(f"refused first: preflight names {len(blocked)} thing(s) that stop this "
-                     "run, so nothing below is spent until they are cleared")
+                     "run, so nothing below is spent until they are cleared (§5 step 1's "
+                     "static look is what found them)")
     lines += [
         f"provider calls: {calls} worst case = builders {seats}x{attempts}={builders} "
         f"(§8.1 gives a retry a fresh clone) + synthesis 1 + review {review_rounds} round(s) "
         f"x {seats} reviewers = {review} + post-review synthesis {review_fixes}",
         f"  of which §5.2 states the first three as {builders} + {synthesis} + {review} = "
         f"{builders + synthesis + review}; the post-review synthesis invocations are the ones "
-        "the same paragraph requires the quote to include (§13's round-1 fix, and a blocker "
-        "fixed after round 2)",
-        f"  review retries: forge invokes the council with --retries 0, so each reviewer is "
-        f"asked once per round. At the council CLI's own --retries 2 the review term alone "
-        f"would be {review_rounds * seats * _COUNCIL_DEFAULT_ATTEMPTS}",
-        f"ultrareview: {ultrareview}",
+        "the same paragraph requires the quote to include (§13's round-1 fix, a blocker fixed "
+        f"after round 2, and §13.1's ultrareview fix = {review_fixes})",
+        f"  review retries: §13 has forge invoke the council with --retries 0, so each reviewer "
+        f"is asked once per round; §5.2 asks for whichever is wired. At the council CLI's own "
+        f"--retries 2 the review term alone would be "
+        f"{review_rounds * seats * _COUNCIL_DEFAULT_ATTEMPTS}",
+        f"ultrareview: {ultra_line}",
         f"setup runs: {setup_runs} = calibration {_CALIBRATION_PASSES} (§5 step 3 runs "
         f"setup+verify twice on the untouched baseline) + one per builder clone {builders} + "
         f"one per verifier clone {verifier_runs} (§6: a fresh verifier per candidate, plus one "
@@ -182,18 +236,24 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2) -> Quote:
         f"verify runs: {verify_runs} = calibration {_CALIBRATION_PASSES} + verifier "
         f"{verifier_runs}. A builder's own clone is not verified — §6 puts every verification "
         "in a clone the builder never had access to",
-        f"peak disk: ~{peak_disk_gb} GB under XDG_STATE_HOME — §5.2's upper bound for {seats} "
-        "no-hardlink clone(s) and their dependency trees. NOT in that figure: verifier clones "
-        "for candidates that passed, which §15 keeps until `--gc` because automatic removal "
-        "covers known-failed temporary clones only",
+        f"peak disk: ~{peak_disk_gb} GB under XDG_STATE_HOME = {clones} clones x "
+        f"{_SPEC_PEAK_DISK_GB}/{_SPEC_PEAK_DISK_SEATS} GB, which is §5.2's upper bound for "
+        f"'three no-hardlink clones plus three dependency trees' divided by the fleet it "
+        f"prices. The {clones} are calibration {_CALIBRATION_CLONES} (§5 step 3) + builders "
+        f"{builders} (§8.1 preserves a failed attempt's clone rather than resetting in place) "
+        f"+ verifiers {verifier_runs} (§6, fresh per candidate); §15 auto-removes known-failed "
+        "temporary clones ONLY, so the rest coexist until `--gc`. Not counted: the synthesis "
+        "worktree, which §4 keeps a worktree so it shares the parent's objects",
         "wall clock: not quoted — the setup and verify commands are named at §5 step 2 and "
         "this report has no gate surface to time (preflight leaves gate_surface None)",
         "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
         "line §13.1 prices in money. Shell-command time is the wall-clock line above",
         "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
-        "one that reaches a provider CLI, or prices it as its own explicit line",
+        "one that reaches a provider CLI, or prices it as its own explicit line, and steers "
+        "the operator to `make verify` (receipts advisory) rather than the gate whose "
+        "documented remedy is what spends",
     ]
-    return Quote(provider_calls=calls, ultrareview=ultrareview, setup_runs=setup_runs,
+    return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines))
 
 
@@ -240,9 +300,22 @@ _TOKENS = re.compile(r"[A-Za-z0-9_./+-]+")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _VARREF = re.compile(r"\$[({]([A-Za-z_.][A-Za-z0-9_.]*)[)}]")
 _UNEXPANDED = re.compile(r"\$[({][^)}]{0,60}")
+# Every OTHER `$` make can still be holding. `$$` is folded out before this runs, so what is
+# left is an automatic variable (`$<`, `$@`, `$^`, `$*`, `$?`, `$+`, `$|`, `$%`) or a
+# one-letter name — none of which reach `_TOKENS`, so without this the token does not merely
+# fail to resolve, it disappears, and `@python3 $<` reads as a recipe running nothing. The
+# rule is "any `$` this reader did not resolve" rather than the list somebody remembered,
+# because a list is how `$(UNDEFINED)` came to fail closed while `$<` failed open.
+_UNEXPANDED_SHORT = re.compile(r"\$.?")
 _CALL_MACRO = re.compile(r"\$[({]call\s+([A-Za-z_][A-Za-z0-9_]*)")
 # A remedy in prose or in an error message: "run `make eval SKILL=<skill>`".
 _MAKE_REMEDY = re.compile(r"\bmake\s+([A-Za-z][A-Za-z0-9_.-]*)")
+
+# A recipe's own working directory, which §5.1 names as the shape real monorepos have
+# (`cd frontend && npm ci`). `_CD_LEAD` consumes a leading one; `_CD_ANY` finds one at any
+# later program position, where following it would need the shell this module refuses to run.
+_CD_LEAD = re.compile(r"\s*cd\s+([^\s;&|()`]+)\s*(?:&&|;|\|\|)?\s*")
+_CD_ANY = re.compile(r"(?:^|[;&|(`])\s*cd\s")
 
 _ASSIGN = re.compile(r"^([A-Za-z_.][A-Za-z0-9_.]*)\s*(::=|:=|\?=|\+=|=)\s*(.*)$")
 _RULE = re.compile(r"^([^\t#][^:=]*?)\s*::?\s*(.*)$")
@@ -283,10 +356,18 @@ class _Makefile:
 
     `define` bodies are recorded by NAME and skipped: expanding one means running the shell
     grammar inside it, and a `$(call …)` left unexpanded is reported rather than guessed at.
+
+    `cwd` is the repo-relative directory MAKE WAS RUNNING IN when this file was read, which is
+    not the directory the file sits in: `-C sub` moves both, `-f sub/build.mk` moves only the
+    latter. Every path in a recipe resolves against the former, so it travels with the parsed
+    makefile rather than being re-derived by each caller — the re-derivation is what
+    `_scan_remedies` got wrong, resolving a `-C sub` remedy chain against the repository root
+    and reporting the clean `()` that a chain which spends must never produce.
     """
 
-    def __init__(self, path: Path, text: str):
+    def __init__(self, path: Path, cwd: str, text: str):
         self.path = path
+        self.cwd = cwd
         self.vars: dict[str, str] = {}
         self.recipes: dict[str, list[str]] = {}
         self.prereqs: dict[str, list[str]] = {}
@@ -357,9 +438,12 @@ class _Makefile:
         if macro:
             left = (f"the make macro `{macro.group(1)}`" if macro.group(1) in self.defines
                     else f"`$(call {macro.group(1)} …)`")
+        elif (m := _UNEXPANDED.search(text)):
+            left = f"`{m.group(0)}…`"           # cut at the closing paren this did not reach
+        elif (m := _UNEXPANDED_SHORT.search(text)):
+            left = f"`{m.group(0)}`"
         else:
-            m = _UNEXPANDED.search(text)
-            left = f"`{m.group(0)}…`" if m else ""
+            left = ""
         return text.replace(_DOLLAR, "$"), left
 
     @property
@@ -376,16 +460,19 @@ class _Resolver:
         self.findings: list[str] = []
         self.makefiles: dict[str, _Makefile | None] = {}
         self.seen_targets: set[tuple[str, str]] = set()
-        self.seen_files: set[str] = set()
+        # rel -> the text read from it, so a file reached twice is opened and reported once
+        # while a SECOND reach that arrived through a makefile can still be asked the question
+        # the first one had no makefile to answer — see `_scan_file`.
+        self.seen_files: dict[str, str] = {}
+        self.seen_remedies: set[tuple[str, str, str]] = set()
 
     # -- reporting ----------------------------------------------------------------------
     def _add(self, kind: str, trail, message: str) -> None:
         where = " -> ".join(trail)
-        self.findings.append(f"{kind}: {where}: {message}")
+        self.findings.append(f"{kind} {where}: {message}")
 
-    @property
-    def spends(self) -> bool:
-        return any(f.startswith("spends:") for f in self.findings)
+    def _of(self, findings, kind: str) -> list:
+        return [f for f in findings if f.startswith(kind)]
 
     # -- paths --------------------------------------------------------------------------
     def _contained(self, rel: str) -> str | None:
@@ -419,6 +506,12 @@ class _Resolver:
         rel = self._join(cwd, name)
         return rel is not None and bool(rel) and (self.root / rel).exists()
 
+    def _repo_dir(self, cwd: str, token: str) -> str | None:
+        rel = self._join(cwd, token)
+        if rel is None or not rel:
+            return None
+        return rel if (self.root / rel).is_dir() else None
+
     # -- entry --------------------------------------------------------------------------
     def scan_step(self, index: int, step) -> None:
         argv = tuple(getattr(step, "argv", ()) or ())
@@ -427,12 +520,12 @@ class _Resolver:
             return
         cwd = self._contained(getattr(step, "cwd", "") or "")
         if cwd is None:
-            self._add("unresolved", trail, "its cwd leaves the repository, so nothing under "
-                                           "it was read")
+            self._add(UNRESOLVED, trail, "its cwd leaves the repository, so nothing under "
+                                         "it was read")
             return
         prog = _basename(argv[0])
         if prog in _PROVIDER_CLIS:
-            self._add("spends", trail, f"the gate's own program is the provider CLI {prog!r}")
+            self._add(SPENDS, trail, f"the gate's own program is the provider CLI {prog!r}")
             return
         if prog in _MAKE:
             self._scan_make(trail, cwd, list(argv[1:]))
@@ -453,17 +546,17 @@ class _Resolver:
             p = self.root / rel
             if p.is_file():
                 try:
-                    mk = _Makefile(p, p.read_text(encoding="utf-8", errors="replace"))
+                    mk = _Makefile(p, cwd, p.read_text(encoding="utf-8", errors="replace"))
                 except OSError as e:
-                    self._add("unresolved", trail, f"{rel} could not be read: {e}")
+                    self._add(UNRESOLVED, trail, f"{rel} could not be read: {e}")
                 break
         if mk is None:
-            self._add("unresolved", trail,
+            self._add(UNRESOLVED, trail,
                       f"no makefile at {cwd or '.'}/{named or 'Makefile'} — what `make` would "
                       "run here could not be read")
         elif mk.includes:
-            self._add("unresolved", trail, f"{mk.path.name} uses `include`, and this reader "
-                                           "does not follow it")
+            self._add(UNRESOLVED, trail, f"{mk.path.name} uses `include`, and this reader "
+                                         "does not follow it")
         self.makefiles[key] = mk
         return mk
 
@@ -475,7 +568,7 @@ class _Resolver:
                 i += 1
                 moved = self._join(cwd, args[i])
                 if moved is None:
-                    self._add("unresolved", trail, f"`-C {args[i]}` leaves the repository")
+                    self._add(UNRESOLVED, trail, f"`-C {args[i]}` leaves the repository")
                     return
                 cwd = moved
             elif a in ("-f", "--file", "--makefile") and i + 1 < len(args):
@@ -494,8 +587,8 @@ class _Resolver:
 
     def _scan_target(self, trail, cwd: str, mk: _Makefile, target: str) -> None:
         if not target:
-            self._add("unresolved", trail, "`make` was given no target and the makefile "
-                                           "declares no default goal")
+            self._add(UNRESOLVED, trail, "`make` was given no target and the makefile "
+                                         "declares no default goal")
             return
         key = (cwd, target)
         if key in self.seen_targets or len(trail) > _MAX_DEPTH:
@@ -504,15 +597,15 @@ class _Resolver:
         trail = [*trail, f"target `{target}`"]
         if target not in mk.recipes and target not in mk.prereqs:
             if not self._exists(cwd, target):
-                self._add("unresolved", trail, f"{mk.path.name} defines no such target and the "
-                                               "tree holds no such file")
+                self._add(UNRESOLVED, trail, f"{mk.path.name} defines no such target and the "
+                                             "tree holds no such file")
             return
         for prereq in mk.prereqs.get(target, []):
             if prereq in mk.recipes or prereq in mk.prereqs:
                 self._scan_target(trail, cwd, mk, prereq)
             elif not self._exists(cwd, prereq):
-                self._add("unresolved", trail, f"prerequisite `{prereq}` is neither a target "
-                                               "nor a file in this tree")
+                self._add(UNRESOLVED, trail, f"prerequisite `{prereq}` is neither a target "
+                                             "nor a file in this tree")
         for line in mk.recipes.get(target, []):
             self._scan_recipe(trail, cwd, mk, line)
 
@@ -522,13 +615,44 @@ class _Resolver:
         # recipe in the tree reads as running something unknown.
         expanded, left = mk.expand(line.lstrip("\t @-+"))
         if left:
-            self._add("unresolved", trail, f"a recipe uses {left}, which this reader does not "
-                                           "expand, so what it runs is unknown")
+            self._add(UNRESOLVED, trail, f"a recipe uses {left}, which this reader does not "
+                                         "expand, so what it runs is unknown")
+        # The whole line, before any `cd` is consumed: `cd tools && claude -p …` still runs a
+        # provider, and `_PROVIDER_CMD` reads the `&&` as the program position it is.
         found = _PROVIDER_CMD.search(expanded)
         if found:
-            self._add("spends", trail,
+            self._add(SPENDS, trail,
                       f"a recipe runs the provider CLI {found.group(1)!r}")
-        self._scan_tokens(trail, cwd, _TOKENS.findall(expanded), mk, raw=expanded)
+        moved = self._chdir(trail, cwd, expanded)
+        if moved is None:
+            return
+        cwd, body = moved
+        self._scan_tokens(trail, cwd, _TOKENS.findall(body), mk, raw=body)
+
+    def _chdir(self, trail, cwd: str, expanded: str):
+        """`(cwd, body)` after following the recipe's leading `cd`, or None when it cannot be.
+
+        Returning the truncated body rather than refusing the whole line keeps what came
+        BEFORE a mid-line `cd` resolved — the part that really does run in `cwd`.
+        """
+        for _ in range(_MAX_DEPTH):
+            m = _CD_LEAD.match(expanded)
+            if not m:
+                break
+            moved = self._repo_dir(cwd, m.group(1))
+            if moved is None:
+                self._add(UNRESOLVED, trail, f"a recipe runs `cd {m.group(1)}`, which is not a "
+                                             "directory in this tree, so what it runs there "
+                                             "could not be read")
+                return None
+            cwd, expanded = moved, expanded[m.end():]
+        later = _CD_ANY.search(expanded)
+        if later:
+            self._add(UNRESOLVED, trail, "a recipe changes directory part-way through a shell "
+                                         "line; this reader follows only a leading `cd`, so "
+                                         "everything after it went unread")
+            expanded = expanded[:later.start()]
+        return cwd, expanded
 
     # -- commands -----------------------------------------------------------------------
     def _operand(self, cwd: str, rest: list) -> tuple[str | None, list]:
@@ -576,7 +700,7 @@ class _Resolver:
                 self._scan_make(trail, cwd, rest)
                 continue
             if base in _PROVIDER_CLIS and not raw:
-                self._add("spends", trail, f"the argv names the provider CLI {base!r}")
+                self._add(SPENDS, trail, f"the argv names the provider CLI {base!r}")
                 continue
             if base not in _INTERPRETERS and not _PYTHON_MINOR.match(base):
                 continue
@@ -596,35 +720,44 @@ class _Resolver:
         rel = self._join(cwd, token)
         if rel is None or (self.root / rel).exists():
             return
-        self._add("unresolved", trail, f"a recipe names `{token}`, which this tree does not "
-                                       "hold, so what it does could not be read")
+        self._add(UNRESOLVED, trail, f"a recipe names `{token}`, which this tree does not "
+                                     "hold, so what it does could not be read")
 
     # -- files --------------------------------------------------------------------------
     def _scan_file(self, trail, rel: str, args: list, mk) -> None:
-        if rel in self.seen_files:
-            return
         trail = [*trail, rel]
         # A hermetic reach is NOT remembered: `make verify` reaches `scripts/eval_harness.py
         # --self-test` before anything else does, and remembering it there would mask the
         # spending reach of the same file from a later target in the same walk.
         if set(args) & _HERMETIC_FLAGS:
             return
-        self.seen_files.add(rel)
-        p = self.root / rel
-        try:
-            if p.stat().st_size > _MAX_FILE_BYTES:
-                self._add("unresolved", trail, "is larger than this reader will open")
+        if rel in self.seen_files:
+            # Read once, but asked the remedy question again, because "have I opened this" and
+            # "have I asked which makefile's targets it documents" are different questions and
+            # only the first is a property of the file. A step running the file DIRECTLY
+            # arrives with `mk is None` and can answer neither; memoizing on the first question
+            # alone made `[[python3, gate.py], [make, verify]]` come back clean on a tree where
+            # `[[make, verify]]` alone reports the remedy.
+            text = self.seen_files[rel]
+        else:
+            p = self.root / rel
+            try:
+                if p.stat().st_size > _MAX_FILE_BYTES:
+                    self.seen_files[rel] = ""
+                    self._add(UNRESOLVED, trail, "is larger than this reader will open")
+                    return
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                self.seen_files[rel] = ""
+                self._add(UNRESOLVED, trail, f"could not be read: {e}")
                 return
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            self._add("unresolved", trail, f"could not be read: {e}")
-            return
-        for symbol in _SPEND_SYMBOLS:
-            if symbol in text:
-                self._add("spends", trail, f"the gate executes it and it names `{symbol}` — a "
-                                           "council entry point that launches real providers")
-                break
-        if self.follow_remedies and mk is not None:
+            self.seen_files[rel] = text
+            for symbol in _SPEND_SYMBOLS:
+                if symbol in text:
+                    self._add(SPENDS, trail, f"the gate executes it and it names `{symbol}` — a "
+                                             "council entry point that launches real providers")
+                    break
+        if text and self.follow_remedies and mk is not None:
             self._scan_remedies(trail, rel, text, mk)
 
     def _scan_remedies(self, trail, rel: str, text: str, mk: _Makefile) -> None:
@@ -632,18 +765,41 @@ class _Resolver:
 
         `make` does not follow a sentence in an error message; an operator does, and only when
         the gate fails. So this is priced rather than refused, and the finding says which.
+
+        The sub-resolver walks the remedy from `mk.cwd`, which is where an operator typing
+        `make <target>` after reading that sentence would be — not the repository root. And its
+        `unresolved:` findings are carried out rather than filtered away with everything that
+        is not a spend: a remedy whose own closure could not be read is the case where BOTH
+        backstops would otherwise be silent, and silence here reads as a chain that is free.
         """
+        key = (rel, str(mk.path), mk.cwd)
+        if key in self.seen_remedies:
+            return
+        self.seen_remedies.add(key)
+        steer = ("`make verify` (receipts advisory)" if "verify" in mk.recipes
+                 else "the repository's advisory gate, which this makefile does not declare")
         for target in dict.fromkeys(_MAKE_REMEDY.findall(text)):
-            if target not in mk.recipes:
+            # A target this walk already resolved directly needs no second, weaker account of
+            # itself: `scripts/lib/checks.py` names `make verify` while being reached BY `make
+            # verify`, and reporting that reads as a chain nobody followed when it is the one
+            # already reported above.
+            if target not in mk.recipes or (mk.cwd, target) in self.seen_targets:
                 continue
             sub = _Resolver(self.root, follow_remedies=False)
-            sub._scan_target([f"`make {target}`"], "", mk, target)
-            spent = [f for f in sub.findings if f.startswith("spends:")]
+            sub._scan_target([f"`make {target}`"], mk.cwd, mk, target)
+            spent = self._of(sub.findings, SPENDS)
             if spent:
-                self._add("remedy", trail,
+                self._add(REMEDY, trail,
                           f"it documents `make {target}` as the remedy, and that target does "
                           f"spend: {spent[0]}. `make` does not follow it — an operator does, "
-                          "once per failing candidate")
+                          f"once per failing candidate. §5.2 steers that operator to {steer} "
+                          "rather than to this gate")
+                continue
+            unread = self._of(sub.findings, UNRESOLVED)
+            if unread:
+                self._add(UNRESOLVED, trail,
+                          f"it documents `make {target}` as the remedy, and whether that target "
+                          f"spends could not be read: {unread[0]}")
 
 
 def _worktree_root(repo) -> Path:
