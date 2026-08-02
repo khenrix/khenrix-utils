@@ -895,6 +895,16 @@ Two deliverable classes:
 - **Git deliverables** — committed to `forge/<run-id>/synthesis`, created with
   `git worktree add -b` (**never `--detach`**: a detached HEAD leaves commits unreachable and
   the next `git gc` deletes them).
+
+  > **Implementation note (measured 2026-08-03).** This call runs against the **user's own**
+  > repository, and after Plan G inverted `gitcmd`'s call-site closures to allow-lists it
+  > currently **fails all three** — by design, because `worktree` was never measured. Measured:
+  > `git worktree add -b` fires `core.fsmonitor` **twice** plus `post-index-change` and
+  > `post-checkout`; `NO_DAEMON_CACHE` and `NO_HOOKS` together are **necessary and sufficient**
+  > to silence all four. It also needs an explicit **diff-rule exemption** rather than
+  > `NO_DIFF_DRIVERS`: `--no-ext-diff` is **not** an option `worktree` accepts and returns
+  > **rc=129 in either argv position**. Add the allow-list entries with these measurements
+  > beside them; do not re-derive them.
 - **Out-of-band deliverables** — ignored artifacts retained in the synthesis tree and run
   directory with hashes and an explicit copy command. **Never force-added**: that violates the
   originating skill's contract and would put `node_modules` in the object store forever.
@@ -947,6 +957,15 @@ header will otherwise be read as the stronger claim.
 Move **mechanism**, keep **policy**. `shared/lib/council/` as a package;
 `shared/skills/llm-council/scripts/fanout.py` becomes an executable compatibility façade.
 
+> **Citation note (2026-08-03): every `fanout.py:<line>` reference in this document is
+> pre-move and no longer resolves.** The move has landed: `fanout.py` is now 23 lines of
+> façade and the engine is `shared/lib/council/engine.py`. Treat those line numbers as
+> historical pointers, not addresses — locate the symbol by name in `engine.py` instead.
+> One consequence worth stating, because §13 reasons from it: §13's claim that
+> `build_real_spec` "never sets a cwd" is **falsified** — `ProviderSpec.cwd` exists
+> (`engine.py:654`). §13's *conclusion* still holds, because `parse_args` still has no
+> `--cwd`, so nothing on the CLI path can set it; but the premise as written is wrong.
+
 | Shared core | Council-specific | Forge-specific |
 |---|---|---|
 | provider argv adapters, structured-output parsers | `MODES`, `MODE_TIMEOUT` | composite baseline |
@@ -995,11 +1014,18 @@ Known breakages:
    changes. Requires `SKILL_EXTRA_DIRS` entries for **both** skills, mirroring wikisync
    (checks.py:190–194). Tighten the closure self-test at checks.py:369 from a filename match
    (`any("fanout.py" in r …)`) to a full relative path, so it actually asserts location.
-2. `eval_harness.py:52–55` hardcodes `sys.path.insert(.../llm-council/scripts)` +
+2. ~~`eval_harness.py:52–55` hardcodes `sys.path.insert(.../llm-council/scripts)` +
    `import fanout`; `_write_receipt` (line 445) shells `FANOUT_DIR / "fanout.py" --self-test`.
    **`checks.model_crosscheck` does the same import — and it is wired into `make verify`**
    via `render.check()` → `checks.run_all`, so the façade breaks every commit in the repo
-   until its `sys.path` is fixed, **in a separate commit before the move**.
+   until its `sys.path` is fixed, **in a separate commit before the move**.~~
+
+   **This breakage never occurred — do not re-plan it (verified 2026-08-03).** Plan A landed
+   the move; neither `eval_harness.py` nor `checks.py` was changed and nothing broke. The
+   prediction assumed the façade would work like `import *`, but it swaps `sys.modules`, which
+   **preserves module identity** — so `import fanout` keeps resolving to the same object. The
+   separate pre-move commit this item mandated is unnecessary work, and an author who reads
+   only the struck text will spend a task on it.
    `eval_trigger.py` is a third hardcoded consumer. All three join the characterization
    suite.
 3. **`--self-test` works in the rendered plugin today** — `ignore_patterns(…, "tests")` at
@@ -1058,9 +1084,11 @@ the dangerous mechanics untouched.
   `DETERMINISTIC_GATED`. Putting the heavy subset in `verify` would make `make verify` —
   the obvious confirmed verify command for this very repo — spawn clone fleets four-plus
   times per forge run inside verifier clones, inflating wall clock and manufacturing
-  `FLAKY` verdicts under §6's contended execution. (Today `verify` runs only
-  `council-test`; the full self-test is under `make test`, and `_write_receipt` invokes the
-  self-test but does not enforce a live smoke.) The forge `DETERMINISTIC_GATED` entry uses
+  `FLAKY` verdicts under §6's contended execution. (**Corrected 2026-08-03:** `verify` now runs six
+  targets — `render doctor-test audit-test bats-test council-test eval-test` (`Makefile:84`) —
+  not `council-test` alone as this paragraph originally claimed. The full self-test is under
+  `make test`, and `_write_receipt` invokes the self-test but still does not enforce a live
+  smoke, so the point this parenthetical was making survives its own correction.) The forge `DETERMINISTIC_GATED` entry uses
   `sys.executable`, not a hardcoded `"python3"` — the existing entries hardcode it while
   `_write_receipt` already gets this right — and the verifier clone pins the same
   interpreter calibration ran with (this machine's `python3` is 3.14 against a stated 3.11
@@ -1160,7 +1188,7 @@ proves too large.
 | Partitioned from-scratch above the size gate | the least-verified path in the design | needs seam claims (§12.2) to be sound |
 | Conditional agreement labelling | ceremony — nothing downstream acts on the label | §11 keeps the per-seat fingerprints regardless |
 | General skill-closure translation (§20) | "its own product" per round 2 | full portability for Claude-only skills |
-| `--gc` / keep-last-N | quota + documented path would suffice | disk hygiene |
+| ~~`--gc` / keep-last-N~~ **(superseded — see §15)** | ~~quota + documented path would suffice~~ | disk hygiene |
 
 ---
 
@@ -1211,3 +1239,31 @@ written, rather than wrong *decisions* — but every round so far has found its 
 the seams of the previous round's fixes, and revision 4 adds seams of its own. The first
 implementation commit is fixed either way: §17's consumer-path fixes (`checks.py`,
 `eval_harness.py`, `eval_trigger.py`), landed before any code moves.
+
+### 23.1 Corrections made during implementation (2026-08-03)
+
+Recorded here because this project's most persistent defect shape is **temporal prose** — a
+sentence true when written and falsified by a later change, or by an addition *beside* it.
+This document is not exempt, and a plan authored from a stale claim inherits it.
+
+1. **`--gc` is mandatory, not a candidate cut.** §21's cut table listed it; §15 and the code
+   (`storage.py:77`, `storage.py:114`, `gate.py:1171`) require it. §21's row is struck. The
+   feature is still **unbuilt** — mandatory and missing is a debt, not a resolution.
+2. **Every `fanout.py:<line>` citation is pre-move and no longer resolves** (11 of them). The
+   engine is `shared/lib/council/engine.py`; `fanout.py` is a 23-line façade. Locate symbols by
+   name. §13's premise that `build_real_spec` "never sets a cwd" is falsified —
+   `ProviderSpec.cwd` exists at `engine.py:654` — though its conclusion survives, because
+   `parse_args` still exposes no `--cwd`.
+3. **§17's known breakage 2 never occurred.** The façade swaps `sys.modules`, which preserves
+   module identity, so `import fanout` kept resolving and neither consumer needed changing. The
+   pre-move commit it mandated is struck; re-planning it would spend a task on nothing.
+4. **§18's "today `verify` runs only `council-test`" was wrong** — it runs six targets
+   (`Makefile:84`). The paragraph's actual point (no live smoke is enforced) survives.
+5. **§16's mandated `git worktree add -b` currently fails all three `gitcmd` closures**, by
+   design, after Plan G inverted them to allow-lists. The exemption is measured and written
+   into §16 as an implementation note; it was not built.
+
+**The pattern across all five:** four are claims that were true when written, and the fifth
+(§21 vs §15) is two sections of the *same* document disagreeing because one was updated and the
+other was not. Neither shape is caught by any test. The only thing that has caught them here is
+re-measuring a load-bearing claim with the exact command before building on it.
