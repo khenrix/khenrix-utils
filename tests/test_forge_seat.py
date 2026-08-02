@@ -5,7 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
+import json  # noqa: E402
+
 import pytest  # noqa: E402
+from council import engine  # noqa: E402
 from forge import seat  # noqa: E402
 
 # The base case used by several tests: every dimension at its strongest reading, so a single
@@ -143,3 +146,72 @@ def test_status_is_frozen():
     s = seat.classify_seat(**_BASE)
     with pytest.raises(AttributeError):
         s.forge = "no_change"
+
+
+# --------------------------------------------------------------------------- #
+# forge_spec / read_proof -- section 8.1's live defect: council's validity policy
+# (MIN_SUBSTANTIVE_CHARS=400 + a sentinel check), run unmodified against a forge seat,
+# scores a real forty-minute effort `non_substantive` on its one-line sign-off and
+# re-runs the same argv IN THE SAME CWD, on top of the seat's own half-finished work.
+#
+# The two tests below are corrected from the plan's draft, which called
+# `spec.validator(text, token)` and read a dict back via `.get("valid")`. The real
+# injection point (council/engine.py:1167, run_provider) calls
+# `spec.validator(exit_code, stdout, stderr, spec)` and reads `evaluate`'s own 4-tuple
+# `(valid, reason, result_text, structured)` (council/engine.py:1064-65) -- calling the
+# real validator with two positional args raises TypeError before any assertion runs,
+# and even fixing the arity, "Done -- `make verify` passes." is not valid raw stdout
+# for either provider's extractor (claude expects a JSON envelope, codex expects
+# NDJSON events), so it would score `parse_failure` regardless of the fix this task
+# makes. Fixed to call the validator the way `run_provider` actually does, with raw
+# stdout shaped the way each provider's real CLI emits it.
+# --------------------------------------------------------------------------- #
+def test_a_short_but_complete_seat_is_not_invalidated():
+    """§8.1's live defect: a seat that works for forty minutes and signs off in one line
+    scores `non_substantive` and gets re-run IN THE SAME CWD on its own half-finished work."""
+    spec = seat.forge_spec("claude", "do the thing", 900)
+    assert spec.min_chars == 0
+    assert spec.validator is not None
+    stdout = json.dumps({"result": "Done — `make verify` passes."})
+    valid, reason, result_text, structured = spec.validator(0, stdout, "", spec)
+    assert valid is True
+    assert reason == "ok"
+    assert result_text == "Done — `make verify` passes."
+
+
+def test_the_sentinel_is_recorded_and_cannot_invalidate():
+    """The precise reading: the token check is RECORDED (via `read_proof`, on the same
+    `result_text` the validator returns) and stripped of its power to invalidate. No
+    sentinel at all would make `proven read` unmeasurable instead."""
+    token = engine.make_sentinel()
+    assert seat.read_proof(f"I read the task. {token}", token) is True
+    assert seat.read_proof("I read the task.", token) is False
+
+    spec = seat.forge_spec("codex", engine.apply_sentinel("p", token), 900)
+    # `forge_spec` never populates `.sentinel` itself, so ALSO wire it up here the way
+    # a caller reasonably could -- `ProviderSpec.sentinel` exists for exactly this in
+    # council's own codepath. If the validator's neutralization is real rather than an
+    # accident of `.sentinel` starting unset, invalidation must still not fire.
+    spec.sentinel = token
+    stdout = "\n".join([
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "no token here"}}),
+        json.dumps({"type": "turn.completed"}),
+    ])
+    valid, reason, result_text, structured = spec.validator(0, stdout, "", spec)
+    assert valid is True, "a missing token must not invalidate"
+    assert reason == "ok"
+    # Recorded, not vetoed: proven_read reads the same text independently and is False,
+    # while `valid` above stayed True -- the exact split section 8.1 asks for.
+    assert seat.read_proof(result_text, token) is False
+
+
+def test_read_proof_fails_closed_on_a_missing_token():
+    """No token configured is a measurement not taken, not a free pass -- deliberately
+    the opposite of `council.engine._cites_sentinel`, which treats an absent token as
+    "nothing to prove" and returns True. That is the right default for a council
+    question (was a check even configured); `proven_read` asks a different question
+    (was reading proven) and section 8 already has a status for "not measured":
+    `partial`, never `completed`."""
+    assert seat.read_proof("anything at all", None) is False
+    assert seat.read_proof("", "SENTINEL-abc") is False

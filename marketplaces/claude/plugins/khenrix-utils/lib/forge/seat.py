@@ -57,7 +57,10 @@ none above it already decided `forge`:
 7. Otherwise -> `completed`. `verify`'s value is never read above this line -- rule 3,
    enforced by omission rather than by a branch that would have to be kept in step with it.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from council import engine
 
 _PROCESS = ("valid", "invalid")
 _ARTIFACTS = ("usable", "unusable")
@@ -156,3 +159,78 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
     assert forge in _FORGE, forge  # every branch above must land in the declared set
     return Status(process=process, artifacts=artifacts, proven_read=proven_read,
                   forge=forge, setup=setup, verify=verify)
+
+
+# --------------------------------------------------------------------------- #
+# Section 8.1's live defect: the council engine's own validity policy, run unmodified
+# against a forge seat, scores a real forty-minute effort `non_substantive` on its
+# one-line sign-off and re-runs the same argv IN THE SAME CWD, on top of the seat's own
+# half-finished work. `council.engine.evaluate()` -- what `run_provider` falls back to
+# when `ProviderSpec.validator` is None -- enforces MIN_SUBSTANTIVE_CHARS=400 plus a
+# sentinel citation because a COUNCIL seat's whole job is to answer in one turn, so a
+# short or unproven reply there really does mean the seat did nothing. A forge seat's
+# job is the opposite: open-ended edits across a whole clone, where a terse sign-off is
+# normal and re-running it destroys evidence rather than collecting it.
+# --------------------------------------------------------------------------- #
+def _forge_validator(exit_code, stdout: str, stderr: str, spec) -> tuple:
+    """`ProviderSpec.validator`'s real contract, not the one its field names suggest.
+    `run_provider` calls `(spec.validator or evaluate)(exit_code, stdout, stderr, spec)`
+    (council/engine.py:1167) and reads back `evaluate`'s own signature (:1064-65):
+    `(valid, reason, result_text, structured)` -- a 4-tuple keyed by position, not a
+    `validator(text, token) -> {"valid": ...}` dict a caller could otherwise guess from
+    `min_chars`/`sentinel` alone.
+
+    Delegates to `evaluate()` on a COPY of `spec` with `min_chars` forced to 0 and
+    `sentinel` forced to None, regardless of what either field carries on the `spec`
+    actually passed in -- so a real process failure (nonzero exit, a parse failure, a
+    provider's own structured error, truly empty output) still invalidates the seat,
+    and neither the length floor nor a missing sentinel can. "No sentinel invalidation"
+    is a property of THIS function, not of `forge_spec` merely leaving two fields
+    unset: `ProviderSpec.sentinel` exists precisely so a caller can wire it up, and a
+    caller who later sets it on a forge spec (reasonably expecting that to be how the
+    sentinel gets used) must not silently reopen the retry-on-half-finished-work bug
+    this validator exists to close. The sentinel is not discarded -- `read_proof` reads
+    the same `result_text` this returns, independently -- only its power to fail this
+    validator is.
+    """
+    neutral = replace(spec, min_chars=0, sentinel=None)
+    return engine.evaluate(exit_code, stdout, stderr, neutral)
+
+
+def forge_spec(name: str, prompt: str, timeout: int, **kw) -> engine.ProviderSpec:
+    """The `ProviderSpec` a forge seat runs with: the real per-provider argv from
+    `council.engine.build_real_spec`, with council's council-only validity policy
+    (section 8.1) replaced by `_forge_validator` so a seat that worked for forty
+    minutes and signed off in one line is not re-run on top of itself.
+
+    `cfg` (provider -> {"model", "thinking"}) and `workdir` (where agy's log file
+    lands) are `build_real_spec`'s own remaining parameters; pass them via
+    `cfg=`/`workdir=` when a seat needs a specific model/tier or a real run directory.
+    Left at their defaults (no model override, the current directory) they are
+    harmless at spec-construction time -- neither is touched until the spec is run.
+    """
+    cfg = kw.pop("cfg", {})
+    workdir = kw.pop("workdir", Path("."))
+    spec = engine.build_real_spec(name, prompt, timeout, cfg, workdir)
+    spec.min_chars = 0
+    spec.validator = _forge_validator
+    return spec
+
+
+def read_proof(output: str, token: str | None) -> bool:
+    """Whether `output` demonstrably quotes the per-run sentinel `token` -- the ONLY
+    place forge consults the sentinel, and the sole input to section 8's `proven_read`
+    dimension. Deliberately separate from `_forge_validator`: `proven_read` reads the
+    token, `forge_spec`'s validity never does -- recorded, and stripped of the power to
+    invalidate, exactly as section 8.1 asks; the other reading (no sentinel at all)
+    would make `proven_read` unmeasurable instead.
+
+    A missing token fails closed: returns False, not True. This is deliberately NOT
+    `council.engine._cites_sentinel`, which treats a missing token as "nothing to
+    prove" and returns True -- correct for ITS question (was a check even configured
+    for this council run) but wrong for this one. Section 8 already has a rule for a
+    measurement that was never taken: `partial`, not a free pass to `completed`.
+    """
+    if not token:
+        return False
+    return token.lower() in (output or "").lower()
