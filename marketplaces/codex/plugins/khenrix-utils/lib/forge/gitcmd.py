@@ -27,19 +27,47 @@ NO_USER_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnu
 #
 # WHICH CALLS NEED IT: the ones that LOAD AN INDEX. Measured on git 2.53.0 against a monitor
 # script that touches a file — `ls-files` in every form (`--cached` alone, no `--others`),
-# `status`, `diff`, `add`, `write-tree`, `check-attr`, `update-index` all ran it;
-# `rev-parse`, `show-ref`, `for-each-ref`, `symbolic-ref`, `cat-file`, `config`,
-# `update-ref`, `commit-tree`, `clone` and `apply --numstat` did not. GIT_INDEX_FILE does NOT
-# exempt a call: `write-tree` over `baseline`'s private index copy still ran the monitor,
-# because the program comes from the repository's config and not from the index. Three
-# separate calls in this package have been missed by a narrower rule than this one.
+# `status`, `diff` (including `diff <commit> -- <pathspec>`), `add`, `write-tree`,
+# `check-attr`, `update-index` and `apply --index` all ran it; `rev-parse`, `show-ref`,
+# `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`, `clone`,
+# a bare `apply` and `apply --numstat` did not. GIT_INDEX_FILE does NOT exempt a call:
+# `write-tree` over `baseline`'s private index copy still ran the monitor, because the program
+# comes from the repository's config and not from the index. Nor is the USER's repository the
+# only tree this matters in: a builder SEAT's `.git/config` is the agent's to write, and until
+# the flags went on `harvest.artifact_set` a seat that set the key had its program run by the
+# engine, at harvest, after the agent's own process was gone.
 #
-# It does not cover git's HOOKS, which are the repository's other program: `update-ref` runs
-# `reference-transaction` and an index write runs `post-index-change`, both from the
-# repository's own hooks directory. `baseline.materialize` runs all three, and is reached
-# only after §5 step 2 is answered — see `gate`'s module docstring, which states that scope
-# rather than claiming the package runs nothing.
+# Every call site is held to the rule by
+# `test_every_index_loading_call_carries_the_daemon_cache_flags`, which reads call SITES and
+# not behaviour. That is the shape it has to be: the rule has been lost in every wave that
+# touched it, at more sites than any one fixture reached, and one of those sites sat behind a
+# CLEAN fixture for two waves because only a dirty tree takes the branch that reaches it.
+#
+# It does not cover git's HOOKS, which are the repository's OTHER program — NO_HOOKS below.
 NO_DAEMON_CACHE = ("-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
+
+# The repository's own hooks, suppressed on the calls this package makes into the USER's
+# repository. Measured on git 2.53.0: `update-ref` runs `reference-transaction`, and `add`
+# and `write-tree` run `post-index-change` — GIT_INDEX_FILE does NOT exempt those two,
+# because writing the private copy is still an index write. `status` runs it as well unless
+# GIT_OPTIONAL_LOCKS=0 keeps the index from being rewritten at all, which is why the
+# READONLY describe calls need nothing from this.
+#
+# WHY ALL FIVE SITES IN `baseline.materialize` AND NOT THREE. The three `post-index-change`
+# firings are plainly false: the user's hook is told their index moved when the only index
+# written was `run_dir/baseline.index`. The two `update-ref` ones are the contested half —
+# a ref really is created in the user's repository, so suppressing them silences a
+# notification that is TRUE, which is the reviewer's argument for leaving them. The decision
+# is the ref's NAMESPACE: `refs/khenrix-forge/<run-id>/base` is forge's own bookkeeping by
+# name, and §9 lists it under "explicitly allowed" precisely because it is not the user's.
+# Reversing that half is deleting this tuple from the two `update-ref` calls and nothing
+# else.
+#
+# The `-c` FLAG form, never `config --local core.hooksPath`: the config write is what
+# `verify._hooks_pin` does to a tree forge BUILT, and the same thing done here would mutate
+# the user's `.git/config` — one of §9's seven protected items, and the one `gate.must_show`
+# says `drift` cannot speak for.
+NO_HOOKS = ("-c", f"core.hooksPath={os.devnull}")
 
 # Ambient values that decide which repository, index, object store or ref namespace a call
 # resolves against — they win over `-C <repo>`. A hook, `git rebase --exec` or `git bisect

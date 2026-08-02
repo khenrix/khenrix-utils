@@ -1531,7 +1531,7 @@ def _enumerate(root: Path) -> tuple[str, ...]:
     no repository-supplied code before authorization, and a surface computed by running the
     repository's own program is the one measurement that cannot claim it.
 
-    LOADING THE INDEX IS WHAT RUNS THE MONITOR — not the flags, and not `--others`. Measured
+    LOADING THE INDEX IS WHAT RUNS THE MONITOR — not `--others`. Measured
     on git 2.53.0 with `core.fsmonitor` pointed at a script that touches a file: `ls-files`
     ran it in EVERY form, `-z` and `--cached` alone included, alongside `status`, `diff`,
     `add`, `write-tree`, `check-attr` and `update-index --refresh`; `rev-parse`, `show-ref`,

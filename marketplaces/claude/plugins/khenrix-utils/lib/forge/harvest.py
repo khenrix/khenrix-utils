@@ -160,8 +160,14 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
         # `tracked_diff.encode("utf-8", "surrogateescape")`, which reproduces git's bytes
         # exactly. A plain `.encode()` raises UnicodeEncodeError on the surrogates, and
         # "replace" would have produced a patch that no longer applies.
+        # NO_DAEMON_CACHE because the tree this reads is the SEAT. `diff` loads an index, and
+        # `core.fsmonitor` is read from the config of whichever repository the call runs in —
+        # here a directory the agent had write access to for the whole of its run, `.git/config`
+        # included. Measured: a seat that sets the key has its program run by THIS call, by the
+        # engine, after the agent's own process is gone. The flags suppress a cache, so the
+        # patch bytes are unchanged.
         diff_text = gitcmd.git(
-            seat_path, "diff", "--binary", baseline_commit, "--",
+            seat_path, *gitcmd.NO_DAEMON_CACHE, "diff", "--binary", baseline_commit, "--",
             *(_literal(p) for p in paths),
             env_extra=gitcmd.READONLY, binary=True).stdout.decode("utf-8", "surrogateescape")
     return ArtifactSet(paths=paths, origin=origin, setup_overlap=overlap,

@@ -1231,3 +1231,216 @@ def test_a_repo_preflight_admits_reaches_a_clean_pass(tmp_path):
     assert outcome == verify.PASS, reason
     assert "rewrote no tracked path outside the generator contract" in reason, \
         "and §6.2's PASS, not the weaker one a bare Run earns"
+
+
+# --- the call-site closure over `gitcmd`'s two argv presets ---------------------------------
+#
+# A BEHAVIOURAL TEST ONLY COVERS THE PATHS ITS FIXTURE REACHES, which is how the fsmonitor
+# hole survived every wave that closed part of it, each site found only after the last was
+# fixed — and how `baseline.materialize`'s `write-tree` hid for two waves behind a CLEAN
+# fixture, since the clean branch returns before the tree is ever built. The closures below
+# read call SITES, so a site added tomorrow fails them tomorrow whatever any fixture reaches.
+
+# Measured on git 2.53.0 against a `core.fsmonitor` script that touches a file: every
+# subcommand here ran it, in every form — `ls-files --cached` alone included — and `rev-parse`,
+# `show-ref`, `for-each-ref`, `symbolic-ref`, `cat-file`, `config`, `update-ref`, `commit-tree`
+# and `clone` did not. LOADING AN INDEX is the rule; `--others` was a narrower one that read a
+# cached-only `ls-files` as safe. See `gitcmd.NO_DAEMON_CACHE`'s own note.
+_INDEX_LOADING = frozenset({"ls-files", "status", "diff", "add", "write-tree", "check-attr",
+                            "update-index"})
+# `apply` is the one subcommand that decides by FLAG rather than by name: measured, `apply
+# --index` runs the monitor and writes the index, while `apply --numstat` and a bare `apply`
+# do neither — they never open one.
+_APPLY_INDEX = "--index"
+
+# What fires a hook out of the repository's own hooks directory: `update-ref` runs
+# `reference-transaction`, and anything that WRITES an index runs `post-index-change`.
+# `status` is in the set although `GIT_OPTIONAL_LOCKS=0` is what actually keeps it from
+# rewriting the index — a call added without READONLY would fire the hook, so the closure
+# fails closed and asks for the flags rather than reasoning about a second call's env.
+_HOOK_FIRING = frozenset({"add", "write-tree", "update-ref", "status"})
+
+# The one module that WRITES to the user's own repository — objects, a private index copy and
+# a ref — and so the only one the hooks decision binds. `runstate` and `inspect` also run git
+# there, but only under `GIT_OPTIONAL_LOCKS=0`, which is what keeps their `status` from
+# rewriting the index and therefore from firing `post-index-change` (measured: the same
+# command fires it without READONLY and not with it). Everything else works in a clone forge
+# built under an empty template, which has no hooks directory at all.
+_HOOKS_BOUND = "baseline.py"
+
+
+@dataclass(frozen=True)
+class _GitCall:
+    module: str
+    func: str
+    line: int
+    sub: str            # the resolved subcommand, or "" when no literal one is reachable
+    flags: frozenset    # literal option strings passed positionally
+    presets: frozenset  # dotted names splatted in, e.g. "gitcmd.NO_DAEMON_CACHE"
+
+    @property
+    def where(self) -> str:
+        return f"{self.module}:{self.func}:{self.sub or '<unresolved>'}"
+
+
+def _git_calls(source: bytes, module: str) -> list:
+    """Every `gitcmd.git(...)` in one module, with its subcommand and its splatted presets.
+
+    Parsed rather than grepped, for the reason the module's `_references_the_policy` gives one
+    section up: the strings this looks for appear in prose in every one of these files, and a
+    text search cannot tell a call from a comment about a call.
+
+    The SUBCOMMAND is the first positional string literal after `repo`. That holds because
+    `-c` options only ever arrive as a splatted preset here, never spelled at a call site —
+    which is itself the property the tests below pin, since a hand-spelled `"-c"` would take
+    this slot and read as an unknown subcommand rather than as a preset.
+
+    A call whose subcommand cannot be resolved (`*args`) yields `sub=""`, and the tests treat
+    that as needing the flags: an unresolved call is exactly the one no reader can clear.
+
+    A BARE `git(...)` counts inside `gitcmd.py` and nowhere else. That module calls its own
+    function unqualified, so a `status` added to `zero_oid`'s neighbour would otherwise be the
+    one call site in the package this closure cannot see — and the one holding the rule.
+    """
+    calls = []
+    tree = ast.parse(source)
+    scopes = [(n.lineno, n.end_lineno, n.name) for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        qualified = (isinstance(f, ast.Attribute) and f.attr == "git"
+                     and isinstance(f.value, ast.Name) and f.value.id == "gitcmd")
+        own = module == "gitcmd.py" and isinstance(f, ast.Name) and f.id == "git"
+        if not (qualified or own):
+            continue
+        sub, flags, presets = "", set(), set()
+        for arg in node.args[1:]:
+            if isinstance(arg, ast.Starred):
+                presets.add(ast.unparse(arg.value))
+            elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                if arg.value.startswith("-"):
+                    flags.add(arg.value)
+                elif not sub:
+                    sub = arg.value
+        # The innermost enclosing def, so a nested helper is named rather than its parent.
+        func = min((s for s in scopes if s[0] <= node.lineno <= s[1]),
+                   key=lambda s: s[1] - s[0], default=(0, 0, "<module>"))[2]
+        calls.append(_GitCall(module=module, func=func, line=node.lineno, sub=sub,
+                              flags=frozenset(flags), presets=frozenset(presets)))
+    return calls
+
+
+def _forge_git_calls() -> list:
+    out = []
+    for p in sorted((ROOT / "shared" / "lib" / "forge").glob("*.py")):
+        out.extend(_git_calls(p.read_bytes(), p.name))
+    return out
+
+
+def _loads_an_index(call: _GitCall) -> bool:
+    if not call.sub:
+        return True
+    if call.sub == "apply":
+        return _APPLY_INDEX in call.flags
+    return call.sub in _INDEX_LOADING
+
+
+# Every call site allowed to load an index WITHOUT the flags, and the reason it is allowed.
+# Keyed by module, function and subcommand rather than by line, so the entry survives an edit
+# above it and still names one call. Set equality in both directions below: an entry whose
+# call is gone fails just as loudly as a call with no entry, because a stale exemption is how
+# an allow-list turns into the decoration it was written to replace.
+#
+# BOTH of these read a tree the ENGINE built, and every caller was traced to confirm it: a
+# verifier or calibration clone, cloned under an empty template so it carries no hooks
+# directory, with `_hooks_pin` asserted over it and `bundle.materialize` refusing a sidecar
+# under `.git`. Nothing the repository supplied can name a program in that config before the
+# engine itself runs the setup and gate commands there — and once it has run them, a
+# `core.fsmonitor` they left behind is code the engine already granted itself by running them.
+# The seat is the tree where that argument does NOT hold, which is why `harvest.artifact_set`
+# and `bundle._rediff` carry the flags rather than an entry here.
+_DAEMON_CACHE_EXEMPT = {
+    "verify.py:_tracked:ls-files":
+        "reads the verifier or calibration clone around the commands the engine runs in it",
+    "verify.py:_checkpoint:add":
+        "stages what those same commands produced, in that same clone",
+}
+
+
+def test_the_git_call_reader_sees_a_new_call_site():
+    """The closure's own eyesight, since a closure that cannot see is not one.
+
+    Each line below is a shape that has actually appeared in this package, and the last two are
+    the ones a naive reader gets wrong: `apply` decides by flag, and a splatted `*args` hides
+    the subcommand entirely.
+    """
+    def one(src):
+        c = _git_calls(src.encode(), "x.py")
+        assert len(c) == 1, c
+        return c[0]
+
+    assert one('gitcmd.git(repo, "write-tree")').sub == "write-tree"
+    assert one('gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-z")').presets == \
+        {"gitcmd.NO_DAEMON_CACHE"}
+    assert _loads_an_index(one('gitcmd.git(r, "apply", "--index", f)'))
+    assert not _loads_an_index(one('gitcmd.git(r, "apply", "--numstat", f)'))
+    assert _loads_an_index(one('gitcmd.git(r, *gitcmd.NO_DAEMON_CACHE, *args)')), \
+        "an unresolved subcommand must read as needing the flags, not as clear"
+    assert not _loads_an_index(one('gitcmd.git(r, "rev-parse", "HEAD")'))
+    assert one('def f(r):\n    gitcmd.git(r, "status")\n').func == "f"
+    assert _git_calls(b'git(r, "status")\n', "gitcmd.py"), \
+        "gitcmd calls its own function unqualified; a site added there must still be read"
+    assert not _git_calls(b'git(r, "status")\n', "verify.py"), \
+        "elsewhere a bare `git` is somebody's local helper, not this one"
+
+
+def test_every_index_loading_call_carries_the_daemon_cache_flags():
+    """§5 step 1 admits no repository-supplied code before authorization, and `core.fsmonitor`
+    is a PROGRAM named in the repository's own config that git runs for whoever loads an index.
+    GIT_INDEX_FILE does not exempt a call — the program comes from the config, not the index —
+    so the only thing that suppresses it is the flags being at the call site.
+
+    THIS IS A CLOSURE, NOT A SAMPLE. Every behavioural test in this repository covers the paths
+    one fixture reaches, and every site this rule has been lost at was found only after the
+    previous one was fixed. Reading the call sites is what makes the next one fail on the day
+    it is written.
+    """
+    missing = sorted(f"{c.module}:{c.line} {c.func} git {c.sub or '*args'}"
+                     for c in _forge_git_calls()
+                     if _loads_an_index(c)
+                     and "gitcmd.NO_DAEMON_CACHE" not in c.presets
+                     and c.where not in _DAEMON_CACHE_EXEMPT)
+    assert not missing, (
+        "these calls load an index and would run the repository's `core.fsmonitor`: "
+        f"{missing}. Splat `*gitcmd.NO_DAEMON_CACHE` into each, or add it to "
+        "_DAEMON_CACHE_EXEMPT with the reason it reads a tree the engine already ran code in.")
+
+    claimed = {c.where for c in _forge_git_calls()
+               if _loads_an_index(c) and "gitcmd.NO_DAEMON_CACHE" not in c.presets}
+    assert claimed == set(_DAEMON_CACHE_EXEMPT), \
+        "an exemption whose call site is gone: the allow-list no longer describes the code"
+    assert all(_DAEMON_CACHE_EXEMPT.values()), "an exemption must say why"
+
+
+def test_every_hook_firing_call_into_the_users_repository_carries_the_hooks_pin():
+    """The user's decision — forge does not fire the user's hooks for its own bookkeeping —
+    held as a closure for the same reason as the one above, and with a sharper need for it:
+    only a DIRTY fixture reaches the two `add`s and the `write-tree`, and only a CLEAN one
+    reaches the `update-ref` that returns before the tree is built. No single behavioural
+    fixture covers all five sites, and the two that do exist would each go on passing if the
+    branch they do not enter lost its pin.
+
+    Scoped to the one module that writes to the USER's repository. A seat or verifier clone is
+    a tree forge built under an empty template, with no hooks directory to fire.
+    """
+    bound = [c for c in _forge_git_calls() if c.module == _HOOKS_BOUND]
+    assert bound, f"{_HOOKS_BOUND} no longer runs git; this closure now guards nothing"
+    missing = sorted(f"{c.module}:{c.line} {c.func} git {c.sub or '*args'}"
+                     for c in bound
+                     if (not c.sub or c.sub in _HOOK_FIRING)
+                     and "gitcmd.NO_HOOKS" not in c.presets)
+    assert not missing, (
+        "these calls write an index or a ref in the user's own repository and would fire "
+        f"their hooks: {missing}. Splat `*gitcmd.NO_HOOKS` into each.")

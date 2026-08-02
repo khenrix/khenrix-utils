@@ -468,6 +468,52 @@ def test_building_b_never_runs_the_repositorys_fsmonitor_program(tmp_path):
         "the control failed: this fsmonitor does nothing even when an ordinary git runs it"
 
 
+def test_building_b_never_fires_the_repositorys_own_hooks(tmp_path):
+    """The user's decision: forge does not fire the user's hooks for its own bookkeeping.
+
+    A hook is the repository's OTHER program, and unlike `core.fsmonitor` it is not one git
+    runs behind the caller's back — it is the user's own policy, invoked because forge really
+    did write something. Suppressed anyway, on the ref's namespace: `refs/khenrix-forge/…` and
+    `run_dir/baseline.index` are forge's bookkeeping by name, and a hook told the user's index
+    moved when a private copy was written is being told something false about their repository.
+
+    BOTH branches, because they fire different hooks and only one of them is reachable from
+    either fixture: a clean tree returns after a single `update-ref` and never reaches
+    `_build_tree`, which is exactly how a call inside the dirty branch hid behind a clean
+    fixture for two waves. Dirty adds two `add`s and a `write-tree`, all of which write the
+    private index.
+
+    The control fires the same hooks under an ordinary git, so a suite that armed hooks git
+    would never have run cannot read an unreachable claim as a kept promise.
+    """
+    repo = make_repo(tmp_path)
+    fired = tmp_path / "fired"
+    fired.mkdir()
+    for name in ("reference-transaction", "post-index-change", "pre-commit", "post-checkout"):
+        h = repo / ".git" / "hooks" / name
+        h.write_text(f"#!/bin/sh\n: > {fired}/{name}\nexit 0\n")
+        h.chmod(0o755)
+
+    clean = tmp_path / "clean"; clean.mkdir()
+    b0 = baseline.materialize(repo, clean, finspect.repo_facts(repo), [], "r-clean")
+    assert not b0.dirty, "the premise: this run takes the clean branch"
+    assert not list(fired.iterdir()), "a clean baseline fired the repository's hooks"
+
+    write(repo, "seed.txt", "the user's uncommitted work\n")
+    write(repo, "new.txt", "selected and untracked\n")
+    run = tmp_path / "run"; run.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), ["new.txt"], "r1")
+    assert b.dirty, "the premise: this run reaches the two adds and write-tree"
+    assert not list(fired.iterdir()), "a dirty baseline fired the repository's hooks"
+    assert _tree_paths(repo, b.tracked_tree_oid) == {"seed.txt", "new.txt"}, \
+        "suppressing hooks changed what the tree holds, which is not what a hooks pin may do"
+
+    _git(repo, "update-ref", "refs/heads/control", b.base_commit)
+    _git(repo, "add", "-A")
+    assert {p.name for p in fired.iterdir()} == {"reference-transaction", "post-index-change"}, \
+        "the control failed: these hooks do not fire even when an ordinary git runs them"
+
+
 def test_the_drift_check_finds_the_real_index_in_a_linked_worktree(tmp_path):
     """Drift is CAUGHT here, and caught by reading the index this worktree actually uses.
 

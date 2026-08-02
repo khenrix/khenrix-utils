@@ -1252,22 +1252,23 @@ def test_the_manifest_says_when_the_run_was_opened(tmp_path, monkeypatch):
     assert before <= stamp <= after, (m.created_at, before, after)
 
 
-def test_nothing_before_the_operators_answer_runs_the_repositorys_own_program(tmp_path,
-                                                                              monkeypatch):
-    """§5 step 1 binds the three gate functions the operator answers BEFORE, and not the
-    fourth — `open_run` is reached with the answer in hand. The line is drawn by measurement
-    here rather than asserted in prose, because it moved once already: it was written for the
-    detector alone and then widened to "the whole module" at the moment `open_run` was added.
+def test_nothing_in_this_module_runs_the_repositorys_own_program(tmp_path, monkeypatch):
+    """§5 step 1 binds the three functions the operator answers BEFORE, and the claim now
+    reaches past it: `open_run` is on the far side of the answer and still runs nothing the
+    repository supplied. The line is drawn by measurement rather than asserted in prose,
+    because it has moved twice — written for the detector alone, widened to the module when
+    `open_run` arrived, then narrowed again to exempt the two hooks `baseline.materialize`
+    fired. `gitcmd.NO_HOOKS` closed that exemption on the user's decision, so the measurement
+    is what says which shape is live.
 
-    TWO suppliers, because `core.fsmonitor` is not the only program a repository hands git.
+    TWO suppliers, because `core.fsmonitor` is not the only program a repository hands git:
     `update-ref` runs `reference-transaction` and an index write runs `post-index-change`,
-    both out of the repository's own hooks directory, and `open_run` fires both through
-    `baseline.materialize` — which is what makes the scope statement real rather than
-    decorative, and is its own control: a suite that armed hooks git never fires would read
-    an unreachable claim as a kept promise.
+    both out of the repository's own hooks directory.
 
-    The fsmonitor is the half that is closed on BOTH sides of the line, since
-    `baseline.materialize` carries the flags on every call of its own that loads an index.
+    THE CONTROLS ARE THE WHOLE COST OF SUPPRESSING SOMETHING. Once nothing fires on either
+    side of the answer, an armed program git would never have run and a suppressed one read
+    identically, so both are fired deliberately at the end — a suite that could not tell those
+    apart would report an unreachable claim as a kept promise.
     """
     _state(monkeypatch, tmp_path)
     repo = make_repo(tmp_path, "armed")
@@ -1295,9 +1296,13 @@ def test_nothing_before_the_operators_answer_runs_the_repositorys_own_program(tm
     gate.open_run(r, c, "r1")
     assert not (repo / "HOOK-RAN").exists(), \
         "materialize dropped NO_DAEMON_CACHE from a call that loads the index"
-    assert {p.name for p in fired.iterdir()} == {"reference-transaction", "post-index-change"}, \
-        "the control failed: these hooks do not fire even when open_run makes B"
+    assert not list(fired.iterdir()), \
+        "materialize dropped NO_HOOKS from a call that writes an index or a ref"
 
     _git(repo, "status", "--porcelain")
     assert (repo / "HOOK-RAN").exists(), \
         "the control failed: this fsmonitor does nothing even when an ordinary git runs it"
+    _git(repo, "update-ref", "refs/heads/control", "HEAD")
+    _git(repo, "add", "-A")
+    assert {p.name for p in fired.iterdir()} == {"reference-transaction", "post-index-change"}, \
+        "the control failed: these hooks do nothing even when an ordinary git runs them"

@@ -67,27 +67,28 @@ the one tempted to find out by running it. It executes no Makefile, no recipe, n
 pointed at a script that touches a file, `git status` runs the script and `git rev-parse
 --show-toplevel` does not, because the second loads no index. The flags are on it so the
 guarantee holds for whatever git call is added here next, which is the direction this package
-has already lost the property in three times — see `gitcmd.NO_DAEMON_CACHE`'s own note for the
-measured rule and the sites. That prediction has since been paid: `must_show` reaches
-`verify.gate_surface`, whose `ls-files` DOES run the monitor, and the flags went on it for this
-reason rather than for caching.
+keeps losing the property in — see `gitcmd.NO_DAEMON_CACHE`'s own note for the measured rule
+and `test_every_index_loading_call_carries_the_daemon_cache_flags` for the closure that now
+fails on a new site the day it is added instead of the wave after. No running count is kept
+here: this sentence has already carried two wrong mechanisms and one wrong number, each of
+them falsified by a fix that landed somewhere else.
 
-THE RULE BINDS EVERYTHING UP TO THE ANSWER, WHICH IS NOT THE WHOLE MODULE. `quote`, `must_show`
-and `confirm` all run before the operator has answered, and all three run nothing the repository
-supplied — measured by arming `core.fsmonitor` and the repository's whole hooks directory and
-watching neither fire. `open_run` is the other side of that line: it is reached only with the
-answer in hand, and through `baseline.materialize` it runs the user's `reference-transaction`
-hook (`update-ref` creating forge's own ref) and, on a dirty repository, `post-index-change`
-(the private index copy being written). Those are the user's own policy over their own
-repository, invoked after they authorized a run — so they are stated here rather than
-suppressed, and §5 step 1 is unaffected because it governs what happens BEFORE the answer. The
-scope is spelled function by function rather than as "this module", because a function added
-later joins a module silently and joins a named list only deliberately.
+THE RULE BINDS THE WHOLE MODULE, INCLUDING THE FUNCTION PAST THE ANSWER. `quote`, `must_show`
+and `confirm` all run before the operator has answered, and `open_run` runs only after — and
+all four run nothing the repository supplied, measured by arming `core.fsmonitor` and the
+repository's whole hooks directory and watching neither fire. `open_run` is the one that had to
+be brought back inside the line rather than being there already: through `baseline.materialize`
+it writes a private index copy and creates forge's own ref, which fired the user's
+`post-index-change` and `reference-transaction` hooks until `gitcmd.NO_HOOKS` went on those
+calls — the user's decision, argued at that constant. §5 step 1 was never the reason for it,
+since that clause governs what happens BEFORE the answer. The scope is spelled function by
+function rather than as "this module", because a function added later joins a module silently
+and joins a named list only deliberately.
 `test_the_detector_runs_nothing_the_repository_supplied`,
 `test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied` and
-`test_nothing_before_the_operators_answer_runs_the_repositorys_own_program` pin the three halves
-against controls showing the same recipe does run under `make`, the same hook does run under
-`git status`, and the same hooks do fire once `open_run` is reached.
+`test_nothing_in_this_module_runs_the_repositorys_own_program` pin the three halves against
+controls showing the same recipe does run under `make`, and the same monitor and the same hooks
+do run under an ordinary git.
 
 A DETECTOR THAT MUST BE EXHAUSTIVE CANNOT BE, so the bound is declared instead of implied, and
 every place the reader ran out is EMITTED rather than dropped. Findings carry one of three

@@ -246,7 +246,8 @@ def _rediff(seat: Path, base_commit: str, paths) -> bytes:
     Deliberately mirrors `harvest.artifact_set`'s invocation, flag for flag, and the
     reasons are all recorded there: `--binary` (a `-diff` file yields no content at exit
     0), `:(literal)` (a pathspec is a glob with magic), `check=True` (git exits 0 for a
-    pathspec matching nothing, so nonzero is a real failure). Bytes are taken raw rather
+    pathspec matching nothing, so nonzero is a real failure), `NO_DAEMON_CACHE` (the seat's
+    own config names the program a `diff` runs). Bytes are taken raw rather
     than decoded and re-encoded — the round trip is exact, but not performing it cannot be
     wrong.
 
@@ -256,7 +257,7 @@ def _rediff(seat: Path, base_commit: str, paths) -> bytes:
     """
     if not paths:
         return b""
-    return gitcmd.git(seat, "diff", "--binary", base_commit, "--",
+    return gitcmd.git(seat, *gitcmd.NO_DAEMON_CACHE, "diff", "--binary", base_commit, "--",
                       *(f":(literal){p}" for p in paths),
                       env_extra=gitcmd.READONLY, binary=True).stdout
 
@@ -535,8 +536,14 @@ def materialize(bundle, dest) -> tuple[str, ...]:
             # --index so the verifier's index moves with its worktree: §7.2 requires the
             # engine to be able to CHECKPOINT admitted generator output, and `git add` of a
             # path whose mode came from the patch is not the same thing as the patch's mode.
-            r = gitcmd.git(dest, "apply", "--index", "--binary", str(f),
-                           check=False, binary=True)
+            # It is also what makes this the one `apply` in the package that opens an index —
+            # measured, a bare `apply` and `--numstat` run no `core.fsmonitor` and this form
+            # does — so NO_DAEMON_CACHE belongs on it. Nothing repository-supplied can have
+            # reached `dest`'s config yet: the clone is built under an empty template and the
+            # sidecar loop below refuses a `.git` path. The flags are the latch that still
+            # holds if that ORDER changes, not a hole being closed.
+            r = gitcmd.git(dest, *gitcmd.NO_DAEMON_CACHE, "apply", "--index", "--binary",
+                           str(f), check=False, binary=True)
             if r.returncode != 0:
                 raise BundleError(
                     "the tracked patch does not apply to the verifier clone: "

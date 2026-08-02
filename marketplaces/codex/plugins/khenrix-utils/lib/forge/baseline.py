@@ -11,9 +11,11 @@ saying exactly what it is — because the synthesis branch is rooted here, and m
 deliverable would otherwise commit their scratch work as forge's (spec §2.1).
 
 This is the first module allowed to write: it creates objects and one ref. It still never
-writes the USER's index. `git write-tree` takes index.lock unconditionally and rewrites a
-stale cache-tree extension — and "stale" is precisely the dirty tree forge exists for — so
-every index-touching command here runs under GIT_INDEX_FILE pointing at a private copy.
+writes the USER's index, and never fires their hooks — every call below that writes an index
+or a ref carries `gitcmd.NO_HOOKS`, on the decision recorded there. `git write-tree` takes
+index.lock unconditionally and rewrites a stale cache-tree extension — and "stale" is
+precisely the dirty tree forge exists for — so every index-touching command here runs under
+GIT_INDEX_FILE pointing at a private copy.
 `gitcmd.git` applies `env_extra` LAST, after scrubbing the redirecting variables, which is
 what makes that override both possible and safe.
 
@@ -263,7 +265,11 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
 
     if not dirty:
         ref = f"refs/khenrix-forge/{run_id}/base"
-        gitcmd.git(repo, "update-ref", ref, base_commit, gitcmd.zero_oid(repo))
+        # NO_HOOKS on every call below that writes an index or a ref: forge does not fire the
+        # user's hooks for its own bookkeeping. The constant carries the argument, including
+        # the half of it a later reader may want to reverse.
+        gitcmd.git(repo, *gitcmd.NO_HOOKS, "update-ref", ref, base_commit,
+                   gitcmd.zero_oid(repo))
         tree = gitcmd.git(repo, "rev-parse", f"{base_commit}^{{tree}}",
                           env_extra=gitcmd.READONLY).stdout.strip()
         return Baseline(base_commit=base_commit, tracked_tree_oid=tree,
@@ -293,7 +299,8 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
 
     # `:/` is pathspec MAGIC (repo-root-relative) — it must not fall inside the literal
     # scope below, or `add -u` would look for a directory named ":/".
-    gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "add", "-u", "--", ":/", env_extra=env)
+    gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS, "add", "-u", "--", ":/",
+               env_extra=env)
 
     if selected_untracked:
         # Literal pathspecs from a NUL file: globs, leading dashes and newlines in names
@@ -302,15 +309,17 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
         # that also matches `weird1.txt`, sweeping an UNSELECTED file into the baseline.
         spec = run_dir / "selected.pathspec"
         spec.write_bytes(b"\0".join(p.encode() for p in selected_untracked) + b"\0")
-        gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "add", "-f",
+        gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS, "add", "-f",
                    f"--pathspec-from-file={spec}", "--pathspec-file-nul",
                    env_extra={**env, "GIT_LITERAL_PATHSPECS": "1"})
 
-    # The flags here for the same reason they are on the two `add` calls above, and pointing
-    # GIT_INDEX_FILE at a private copy does not stand in for them: `core.fsmonitor` is read
-    # from the REPOSITORY's config, so `write-tree` over the copy still ran the user's
-    # monitor. Measured: the tree OID is identical with and without.
-    tree = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "write-tree", env_extra=env).stdout.strip()
+    # Both tuples here for the reason they are on the two `add` calls above, and pointing
+    # GIT_INDEX_FILE at a private copy stands in for neither: `core.fsmonitor` and
+    # `core.hooksPath` are read from the REPOSITORY's config, so `write-tree` over the copy
+    # still ran the user's monitor and still fired their `post-index-change`. Measured: the
+    # tree OID is identical with and without.
+    tree = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS, "write-tree",
+                      env_extra=env).stdout.strip()
 
     msg = ("forge: snapshot of your uncommitted working tree\n\n"
            "This commit is yours, not forge's. It exists so every seat starts from the "
@@ -327,7 +336,7 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     ref = f"refs/khenrix-forge/{run_id}/base"
     # update-ref immediately: until the ref exists the commit is unreachable and a
     # concurrent `git gc --prune=now` can drop it.
-    gitcmd.git(repo, "update-ref", ref, commit, gitcmd.zero_oid(repo))
+    gitcmd.git(repo, *gitcmd.NO_HOOKS, "update-ref", ref, commit, gitcmd.zero_oid(repo))
 
     return Baseline(base_commit=base_commit, tracked_tree_oid=tree, commit=commit,
                     ref=ref, dirty=True, filesystem_manifest=manifest)
