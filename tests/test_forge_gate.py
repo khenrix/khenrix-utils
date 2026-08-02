@@ -1501,6 +1501,14 @@ _UNCONFIRMABLE = [
     {"setup": [verify.Step(argv=("a",)), ["b"]]},
     {"accepted_gaps": ("the-disk-is-fine",)},
     {"accepted_gaps": gate.GC_UNBUILT},
+    # ZERO characters, and the row that makes the bare-string guard load-bearing rather than
+    # cosmetic. The last wave called dropping that guard an equivalent mutant, on the ground
+    # that every gap id is multi-character so any string decomposes into single characters the
+    # stray check refuses — vacuously true at length zero, where `tuple("")` and `tuple(b"")`
+    # are both `()` and read as "accepted none". That is an acceptance silently DROPPED, which
+    # is the one direction a handover cannot recover from, arriving with nothing raised.
+    {"accepted_gaps": ""},
+    {"accepted_gaps": b""},
     {"seats": True},
     {"attempts": 2.0},
     {"seats": 0},
