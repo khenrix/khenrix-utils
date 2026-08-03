@@ -243,7 +243,20 @@ Write the fixtures and the remaining bodies yourself; `_fake(fn)` should be a la
 
 **Files:** Modify `shared/lib/forge/runner.py`, `tests/test_forge_runner.py`.
 
-**Interfaces produced:** `runner.verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity, contract, calibration=None) -> tuple[str, str, verify.Verifier]`.
+**Interfaces produced:** `runner.verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity, calibration) -> tuple[str, str, verify.Verifier, verify.SetupResult | None]`.
+
+> **Corrected 2026-08-03 after the task landed — the line above previously described an interface
+> that was never built.** Two changes the implementer made and independent review upheld:
+> **`contract` is gone**, sourced from `manifest.generator_contract`, because `build_verifier`
+> compares contract **IDs only** — so a second contract sharing a non-empty id while carrying
+> different `relations` clears the check and silently changes what `fixed_point` admits.
+> **`calibration` is required, not `None`-able**: there is no honest default, since `classify`
+> reads `baseline_run` only after the candidate's gate has failed, so a fabricated green `Run`
+> claims a NEW failure nothing measured and a fabricated red one claims §6.2's baseline-red
+> outcome on the evidence of no calibration — both reading cleaner than their evidence, in
+> opposite directions. The return is a **4-tuple**; the fourth element is the verifier's own
+> setup result, so a caller can record a failed verifier setup's exit code rather than only its
+> sentence.
 
 **Why.** §6 lists five steps and the engine currently orders exactly one of them. Verbatim: *"1. Harvest the seat (§7) — **before** verification. 2. Materialize the harvested candidate in a brand-new clone built through the same path as §4. 3. Run the confirmed setup command there. 4. Run the confirmed verify command there. 5. Repository hooks and any post-seat git configuration are disabled in verifier clones."*
 
