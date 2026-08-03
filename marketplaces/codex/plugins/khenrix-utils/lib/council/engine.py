@@ -1117,9 +1117,18 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
 # --------------------------------------------------------------------------- #
 # Execution.
 # --------------------------------------------------------------------------- #
-def child_env() -> dict:
-    """Child env with the recursion-depth guard incremented."""
-    env = dict(os.environ)
+def child_env(base=None) -> dict:
+    """Child env with the recursion-depth guard incremented, over `base` or this process's own.
+
+    `base` COMPOSES RATHER THAN REPLACES. A caller that has already SCRUBBED an environment
+    passes it here and gets the council's guard applied ON TOP of that scrub; reading
+    `os.environ` unconditionally would hand the child back every name the caller removed. The
+    caller this exists for is `forge.fleet.forge_child_env`, which strips `gitcmd.HOSTILE_ENV`,
+    pins config discovery to /dev/null and increments `LLM_FORGE_DEPTH` — three defences that
+    a seat launched through `run_provider` would otherwise never receive, because
+    `LLM_COUNCIL_DEPTH` guards the council and bars nothing about `/llm-forge`.
+    """
+    env = dict(os.environ if base is None else base)
     cur = int(env.get("LLM_COUNCIL_DEPTH", "0") or "0")
     env["LLM_COUNCIL_DEPTH"] = str(cur + 1)
     return env
@@ -1134,8 +1143,13 @@ def _coerce_text(v) -> str:
 
 
 def run_provider(spec: ProviderSpec, retries: int, timeout: int,
-                 backoff: float, workdir: Path) -> dict:
-    """Run one provider through its bounded attempt loop and return its record."""
+                 backoff: float, workdir: Path, *, env=None) -> dict:
+    """Run one provider through its bounded attempt loop and return its record.
+
+    `env` is the environment the provider's child process runs under, BEFORE this function's
+    own depth guard is applied to it; `None` keeps the previous behaviour exactly
+    (`os.environ` plus the guard). Keyword-only and defaulted, so no existing caller changes.
+    """
     attempt_log: list = []
     final = {"stdout": "", "stderr": "", "exit_code": None,
              "reason": "unknown", "result_text": "", "valid": False, "structured": False,
@@ -1146,7 +1160,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         t0 = time.monotonic()
         try:
             cp = run_member(spec.argv, stdin=spec.stdin, timeout=timeout,
-                            env=child_env(), cwd=spec.cwd)
+                            env=child_env(env), cwd=spec.cwd)
         except FileNotFoundError:
             dur = round(time.monotonic() - t0, 2)
             attempt_log.append({"attempt": n, "reason": "not_installed",
