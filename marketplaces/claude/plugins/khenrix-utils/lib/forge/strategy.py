@@ -471,10 +471,19 @@ def classify_failure(outcome: str, *, report) -> tuple:
     if not isinstance(report, coverage.Report):
         raise StrategyError(f"a coverage.Report or None is required, "
                             f"not {type(report).__name__}")
-    if not report.results:
-        return None, ("this coverage report holds no results at all, so it says nothing about "
-                      "any claim; an empty report reading as a clean one is §10.1's own "
-                      "failure shape")
+    # THE TWO TRIGGER BRANCHES COME FIRST, AND `rubric._read_report` IS WHY. That function
+    # answers §12.4's question about this same evidence, and it reads the trigger ahead of
+    # every "nobody finished looking" branch — §12.4 fires "regardless of verify", so a report
+    # that names a contradiction has named one whatever else it failed to say. The other order
+    # stood here and the two disagreed: measured, `Report((), ("…contradiction…",), (), ())`
+    # answered `triggered` in `rubric.fallback_trigger` and `None` here, on the same bytes.
+    # `Report.__post_init__` re-derives `unsatisfied` and `unresolved` from the results and so
+    # cannot hold either beside an empty result list, but it does NOT derive `contradictions`,
+    # and `Report`'s docstring says outright that §12.4's consumer populates one by hand — so
+    # the shape is buildable rather than hypothetical. `coverage.check` cannot emit it (a
+    # ledger with no rows is refused there, and every row yields at least one result), which
+    # is why nothing had noticed. Reading it as "this report says nothing" is the reading that
+    # is wrong: a contradiction is something.
     if report.contradictions:
         return REQUIREMENT_GAP, (
             f"{len(report.contradictions)} ledger contradiction(s): {report.contradictions[0]}")
@@ -482,6 +491,10 @@ def classify_failure(outcome: str, *, report) -> tuple:
         return REQUIREMENT_GAP, (
             f"{len(report.unsatisfied)} accepted claim(s) were checked and are not satisfied: "
             f"{report.unsatisfied[0]}")
+    if not report.results:
+        return None, ("this coverage report holds no results at all, so it says nothing about "
+                      "any claim; an empty report reading as a clean one is §10.1's own "
+                      "failure shape")
     if report.unresolved:
         return None, (
             f"{len(report.unresolved)} criterion/criteria are unresolved — nobody could check "

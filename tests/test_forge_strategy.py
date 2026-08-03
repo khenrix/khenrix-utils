@@ -364,6 +364,40 @@ def test_a_contradicted_ledger_is_a_requirement_gap_whatever_the_criteria_say():
     assert cls == strategy.REQUIREMENT_GAP
 
 
+def test_the_two_readers_of_one_report_never_disagree_about_it():
+    """§12.3's classifier and §12.4's trigger read the SAME evidence, and read it in the same
+    order or they answer differently about identical bytes. They did: measured,
+    `Report((), ("…contradiction…",), (), ())` answered `triggered` in
+    `rubric.fallback_trigger` and `None` here — this function checked "no results at all"
+    before the contradiction, and reading a named contradiction as "this report says nothing"
+    is the reading that is wrong.
+
+    `Report.__post_init__` re-derives `unsatisfied` and `unresolved` from the results, so
+    neither can appear beside an empty result list; `contradictions` is NOT derived, and
+    `Report`'s own docstring says §12.4's consumer populates one by hand — so the shape is
+    buildable rather than hypothetical. `coverage.check` cannot emit it, which is why nothing
+    had noticed."""
+    from forge import rubric
+    contradiction = ("row b contradicts a unanimous rejection",)
+    cases = [
+        coverage.Report((), contradiction, (), ()),               # the divergence itself
+        coverage.Report((_ok(),), contradiction, (), ()),
+        coverage.Report((), (), (), ()),
+        coverage.Report((_ok(),), (), (), ()),
+        _report(_ok(), _bad("b")),
+        _report(_ok(), _unknown("b")),
+        None,
+    ]
+    for r in cases:
+        cls, _ = strategy.classify_failure(verify.FAIL, report=r)
+        answer, _ = rubric.fallback_trigger(r)
+        assert (cls == strategy.REQUIREMENT_GAP) == (answer == rubric.TRIGGERED), (r, cls,
+                                                                                   answer)
+        assert (cls is None) == (answer == rubric.TRIGGER_UNDECIDABLE), (r, cls, answer)
+        assert (cls == strategy.SYNTHESIS_INTRODUCED) == (answer == rubric.NOT_TRIGGERED), \
+            (r, cls, answer)
+
+
 def test_a_passing_outcome_has_no_failure_to_classify():
     cls, why = strategy.classify_failure(verify.PASS, report=_report(_ok()))
     assert cls is None and "not a failure" in why
