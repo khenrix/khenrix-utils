@@ -31,15 +31,19 @@ and that running the confirmed command in the seat's own clone "measures nothing
 can replace `.venv/bin/pytest` with a program that exits zero. `gate.quote` prices the same
 division: `setup_runs` counts the builders, `verify_runs` does not. So `Phases.fverify` is
 handed `fwork` here, which is the true statement that nothing moved in this tree after the
-agent exited, and `verify` stays `"not-run"` on every `Status` this module produces —
-INCLUDING after `verify_candidate` has run. That verdict is `classify`'s `(outcome, reason)`
-and it is returned, not written back onto the seat: §8's `verify` dimension and §6.2's
-outcome are different vocabularies over different trees, and nothing in this plan re-runs
-`classify_seat` with the answer. WHAT THAT COSTS IS STATED RATHER THAN HIDDEN: §8's
-`no_change` needs `verify == "pass"`, so no seat this package produces can reach it, and an
-argued zero-diff seat stays `partial` however green its candidate's gate came back. Closing
-that is a re-classification step nothing in this package has an interface for; see
-`verify_candidate`.
+agent exited, and `verify` stays `"not-run"` on every `Status` `run_seat` produces.
+
+THAT IS NOT WHERE A SEAT'S STATUS ENDS, and it used to be. §8's `no_change` needs
+`verify == "pass"`, so while §6's answer was only RETURNED by `verify_candidate` and never
+fed back, no seat this package could produce ever reached `no_change` at all: every argued
+zero-diff seat sat at `partial` permanently and §8's dimension was decorative.
+`reclassify_seat` is the step that closes it — the one place §6.2's outcome is translated
+into §8's `verify` dimension and `classify_seat` is asked again. It is deliberately NOT
+inside `verify_candidate`: that function measures a tree, this one revises a verdict, and the
+two vocabularies are different on purpose (see `_verify_dim` for what does and does not
+translate). WHAT IS NOT HERE is the SEQUENCING — the caller that runs one, then the other,
+for every seat in the fleet. That belongs to the run loop, which has no implementation in
+this module; what this module owes it is the step, not the order it is called in.
 
 WHAT NEVER HAPPENS HERE (§8.1, verbatim): *"Every retry attempt gets a fresh clone. The
 failed attempt is preserved as partial input. Never a reset-and-rerun in place."* `attempt`
@@ -50,7 +54,7 @@ so reclaiming one would make the number the operator agreed to a lie in the othe
 """
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from council import engine
@@ -82,21 +86,39 @@ class SeatResult:
     status about a tree that does not exist is a verdict with no evidence under it. Every
     result this module returns therefore has a `Seat`.
 
+    `status` is typed optional on the SAME rule, one failure over: the record written for a
+    seat that could not be classified carries `None` there, because no verdict was reached
+    and inventing one would be the fabricated pass this module refuses everywhere else.
+    `run_seat` never RETURNS such a result — it writes the record and raises.
+
     `launch_result` is the provider record exactly as the injected adapter returned it, and
     `None` means the provider was never invoked — the state a seat whose setup failed is in.
     It is carried rather than reduced to the two dimensions read off it, because `status`
     holds a verdict and this holds the evidence, and §8's whole argument is that those two
     must stay separable.
+
+    `token` is the per-seat sentinel, carried rather than left as a local. §8's rationale is
+    the answer MINUS this value, so a holder of the result who cannot see the token cannot
+    recompute what was measured — and `reclassify_seat` has to recompute exactly that. It
+    was a `_record` parameter before, which is the same fact stated in the shape of a
+    function nobody could call twice with the same answer.
+
+    `verification` is §6.2's `(outcome, reason)` once one has been taken, and `None` until
+    then. §6.2's vocabulary, not §8's: `status.verify` holds the translation and this holds
+    what was actually decided, because `_verify_dim` is lossy in the direction that matters
+    and a record carrying only the translation would lose which of four non-verdicts it was.
     """
     name: str
     attempt: int
     seat: fleet.Seat | None
-    status: seatmod.Status
+    status: seatmod.Status | None
     artifacts: harvest.ArtifactSet
     candidate: bundle.CandidateBundle
     run: verify.Run | None
     path: Path
+    token: str
     launch_result: object = None
+    verification: tuple[str, str] | None = None
 
 
 def seat_dir(run_dir, name: str, attempt: int) -> Path:
@@ -110,10 +132,15 @@ def seat_dir(run_dir, name: str, attempt: int) -> Path:
     Kept clear of `storage.seat_state_path`'s `seat-<name>.json` by the `seats/` component,
     so a clone and the record describing it can never land on one name.
 
-    Validates `attempt` even though `run_seat` already has: this is public, and a caller
-    handing it `True` would otherwise get a directory called `attempt-True` — the count
-    predicate `runstate.count` exists to refuse, called rather than re-spelled.
+    Validates BOTH components even though `run_seat` already has, because this is public and
+    each one becomes a path component: a caller handing it `True` would otherwise get a
+    directory called `attempt-True`, and one handing it `../escape` would put a seat's clone
+    outside the run directory entirely — reproduced, at this helper. `runstate.count` and
+    `storage.seat_state_path` are the two predicates, called rather than re-spelled. The
+    second refuses a name for what it does to a FILENAME and is reused here for what it does
+    to a DIRECTORY name, which is the same rule about the same character set.
     """
+    _named(run_dir, name)
     return Path(run_dir) / "seats" / name / f"attempt-{_count('attempt', attempt)}"
 
 
@@ -131,7 +158,11 @@ def verifier_dir(run_dir, name: str) -> Path:
     same seat is a run the operator was never quoted, and it lands on a directory that
     already exists — which `verify_candidate` refuses by name and `clone_seat` would refuse
     anyway, since `git clone` will not populate a non-empty destination.
+
+    `name` is validated for `seat_dir`'s reason and by the same predicate: a public helper
+    that builds a path out of an argument is the one that has to refuse a separator in it.
     """
+    _named(run_dir, name)
     return Path(run_dir) / "verifiers" / name
 
 
@@ -209,7 +240,7 @@ def _result_text(result) -> str:
 
 
 def _rationale(answer: str, token: str) -> str:
-    """The seat's own argument: its answer with the sentinel it was ORDERED to quote removed.
+    """The seat's own argument: its answer with the text FORGE supplied removed.
 
     MEASURED, and it defeats §8's rule outright without this. `make_sentinel` returns
     `SENTINEL-` plus twelve hex characters — 21 — and `seat._MIN_RATIONALE_CHARS` is 10, so
@@ -218,6 +249,17 @@ def _rationale(answer: str, token: str) -> str:
     substantive bar on the strength of a token the ENGINE told it to print. §8 asks for an
     argued conclusion; text forge itself demanded is not the seat's argument, and counting it
     is a verdict reading cleaner than its evidence.
+
+    THE TOKEN WAS NEVER THE ONLY SUCH TEXT. `engine.apply_sentinel` prefixes the task with
+    `SENTINEL_NOTE`, 280-odd characters of instruction, and a seat that quotes the
+    instruction back clears a 10-character floor on nothing it wrote — the same finding at
+    the paragraph the token arrived wrapped in. The note is removed FIRST, because it
+    contains the token: strip the token first and the note no longer matches itself.
+
+    WHAT THIS DOES NOT DO, so the next reader does not assume it: it removes the note's
+    EXACT text as `apply_sentinel` writes it. A reflowed or paraphrased echo survives, and no
+    10-character floor is a plagiarism detector. It closes the one echo the engine's own
+    instruction makes free, which is the one every seat is invited to make.
 
     Case-insensitively, because `seat.read_proof` folds case when it looks for the same
     token: if a differently-cased echo counts as proof, it has to count as the engine's text
@@ -229,7 +271,9 @@ def _rationale(answer: str, token: str) -> str:
     """
     if not token:
         return answer
-    return re.sub(re.escape(token), "", answer, flags=re.IGNORECASE)
+    for supplied in (engine.SENTINEL_NOTE.format(token=token), token):
+        answer = re.sub(re.escape(supplied), "", answer, flags=re.IGNORECASE)
+    return answer
 
 
 def _process(result) -> str:
@@ -260,8 +304,23 @@ def _artifacts_usable(candidate: bundle.CandidateBundle) -> str:
     return "usable" if (candidate.tracked_patch or candidate.sidecars) else "unusable"
 
 
-def _record(result: SeatResult, token: str) -> dict:
-    """The seat's status tuple as §14.2's per-seat atomic file wants it.
+# How much of one text field reaches the record. A seat record is read by a human working
+# out what a run did, and an `npm ci` log is megabytes of it — but a field silently cut to
+# length is a record reading cleaner than its evidence, so every clipped field is written
+# beside its true length in characters. The TAIL is kept for both kinds of text this holds:
+# a command's failure is at the end of its output, and an agent's conclusion — the sentence
+# §8 measures as the rationale — is at the end of its answer.
+_MAX_RECORDED_CHARS = 20_000
+
+
+def _clip(text) -> tuple:
+    """`text` capped at `_MAX_RECORDED_CHARS`, and how long it really was."""
+    text = text if isinstance(text, str) else ""
+    return text[-_MAX_RECORDED_CHARS:], len(text)
+
+
+def _record(result: SeatResult) -> dict:
+    """ONE ATTEMPT at one seat, as §14.2's per-seat atomic file wants it.
 
     Lists, never tuples: `write_seat` decodes what it is about to write and refuses a payload
     that comes back a different type, and every sequence on an `ArtifactSet` or a
@@ -272,21 +331,47 @@ def _record(result: SeatResult, token: str) -> dict:
     `gate_surface` re-creates the half-record `bundle.with_gate_measurement` refuses), so
     this file says what the candidate was, and the seat clone beside it is where the bytes
     still are.
+
+    WHAT EACH TEXT FIELD IS DOING HERE, because the rule that put them here is the one this
+    record kept failing: any conclusion that survives in a `SeatResult` has to survive in the
+    record, since the record is what a later phase and a `--collect` reconstruction actually
+    read. `result_text` is §8's rationale — the seat's ARGUMENT that the task needs no edit,
+    which §8 says must not be discarded and which this file used to omit entirely, discarding
+    it on disk instead of in memory. The setup run's `stdout`/`stderr` are the other half:
+    `setup == "fail"` is one of the two ways §8 lands a seat on `failed`, a command's output
+    is not a file it leaves in the tree, so a record holding only the exit code sends a
+    reader to a clone that never had the answer. `sentinel` is beside `result_text` because
+    the rationale is the answer MINUS the token and neither is recomputable alone.
+
+    WHAT IS DELIBERATELY NOT HERE: F0 and Fsetup. Their only consumer downstream is the
+    `Fsetup -> Fwork` difference they were taken to produce, which IS recorded — as
+    `artifacts.paths`, per attempt, for every attempt. Persisting two inventories of a tree
+    `Quota.for_harvest` sizes at 200,000 files to re-derive a path set already written would
+    be the expensive way to hold the same fact.
     """
     s, a, c = result.status, result.artifacts, result.candidate
+    answer, answer_chars = _clip(
+        result.launch_result.get("result_text")
+        if isinstance(result.launch_result, dict) else None)
+    out, out_chars = _clip(result.run.stdout if result.run else None)
+    err, err_chars = _clip(result.run.stderr if result.run else None)
     return {
-        "name": result.name,
         "attempt": result.attempt,
         "path": str(result.path),
         "branch": result.seat.branch if result.seat else None,
-        "sentinel": token,
-        "status": {"process": s.process, "artifacts": s.artifacts,
-                   "proven_read": s.proven_read, "forge": s.forge,
-                   "setup": s.setup, "verify": s.verify},
+        "sentinel": result.token,
+        "status": None if s is None else {
+            "process": s.process, "artifacts": s.artifacts,
+            "proven_read": s.proven_read, "forge": s.forge,
+            "setup": s.setup, "verify": s.verify},
+        "verification": None if result.verification is None else {
+            "outcome": result.verification[0], "reason": result.verification[1]},
         "setup_run": None if result.run is None else {
             "exit_code": result.run.exit_code,
             "step_index": result.run.step_index,
             "duration_sec": _scalar(result.run.duration_sec),
+            "stdout": out, "stdout_chars": out_chars,
+            "stderr": err, "stderr_chars": err_chars,
         },
         "artifacts": {
             "paths": list(a.paths),
@@ -303,11 +388,68 @@ def _record(result: SeatResult, token: str) -> dict:
             "generator_contract_id": c.generator_contract_id,
         },
         "launch": None if not isinstance(result.launch_result, dict) else {
-            k: _scalar(result.launch_result.get(k))
-            for k in ("status", "reason", "valid", "structured", "exit_code",
-                      "duration_sec", "attempts")
+            **{k: _scalar(result.launch_result.get(k))
+               for k in ("status", "reason", "valid", "structured", "exit_code",
+                         "duration_sec", "attempts")},
+            "result_text": answer, "result_text_chars": answer_chars,
         },
     }
+
+
+def _prior_attempts(run_dir: Path, name: str, attempt: int) -> list:
+    """Every attempt this seat has already recorded, and a refusal if `attempt` is among them.
+
+    READ BEFORE ANYTHING IS BUILT, which is what makes the append below safe to write. §8.1
+    requires the failed attempt "preserved as partial input", and the seat's record is keyed
+    by NAME — one file per seat, which `storage.seat_names` enumerates and
+    `runstate.reconstruct` reads — so a retry that rewrote it would erase its predecessor's
+    path set and patch size, the only description of a clone a later phase can interpret. The
+    file therefore holds every attempt rather than the latest, and this reads what is there.
+
+    KEYED BY ATTEMPT INSIDE ONE FILE, not spread across a file per attempt, and the choice is
+    the reader's rather than the writer's: `seat_names` globs `seat-*.json` and `reconstruct`
+    reads exactly one record per seat, so a second file would be evidence NOTHING enumerates
+    — the failure mode this whole fix exists to close, rebuilt one directory over. One file
+    also means one atomic publish per attempt, so there is no window in which two records of
+    the same seat disagree.
+
+    A DAMAGED PRIOR RECORD IS A REFUSAL, and taking it here is what keeps that from costing
+    the current attempt: at this point nothing has been cloned and no provider has been paid,
+    so the refusal is free. Read after the work, it would have forced a choice between losing
+    attempt 1 and losing attempt 2.
+
+    An `attempt` already recorded is refused for the reason its clone directory is: nothing
+    in this module deletes, so an overwrite is the one way §8.1's evidence can still be lost.
+    The clone check answers the TREE and this answers the RECORD; they are the same rule at
+    two layers, and a tree moved out from under the run passes the first and not this one.
+    """
+    try:
+        row = runstate.read_seat(run_dir, name)
+    except runstate.StateError as e:
+        raise RunnerError(
+            f"seat {name!r} has a record that cannot be read, so an attempt appended to it "
+            f"would silently drop what it already held: {e}") from e
+    if row is None:
+        return []
+    priors = row.get("attempts")
+    if not isinstance(priors, list) or not all(isinstance(x, dict) for x in priors):
+        raise RunnerError(
+            f"seat {name!r} has a record this module did not write: its 'attempts' is "
+            f"{type(priors).__name__}, not a list of attempt objects. Appending to it would "
+            "publish a record whose earlier half nothing can read.")
+    if any(x.get("attempt") == attempt for x in priors):
+        raise RunnerError(
+            f"attempt {attempt} of seat {name!r} is already recorded at "
+            f"{storage.seat_state_path(run_dir, name)}. §8.1 preserves the failed attempt as "
+            "partial input, so a record is appended and never replaced — pass the next "
+            "attempt number.")
+    return priors
+
+
+def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
+    """Publish the seat's record: everything it had already recorded, plus this attempt."""
+    runstate.write_seat(run_dir, result.name,
+                        {"name": result.name, "attempts": [*priors, _record(result)]})
 
 
 def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) -> SeatResult:
@@ -353,6 +495,9 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
             f"attempt {attempt} of seat {name!r} already has a clone at {path}. §8.1 gives "
             "every retry a fresh clone and preserves the failed attempt as partial input, so "
             "this is never cleared and reused — pass the next attempt number.")
+    # The same rule about the record rather than the tree, and read here so the append at the
+    # end of this function cannot be the thing that discovers a problem — see `_prior_attempts`.
+    priors = _prior_attempts(run_dir, name, attempt)
 
     repo = manifest.repo_path
     st = fleet.clone_seat(repo, baseline, path, name=name, identity=identity)
@@ -395,6 +540,9 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
                              contract=manifest.generator_contract)
 
     answer = _result_text(result)
+    common = dict(name=name, attempt=attempt, seat=st, artifacts=artifacts,
+                  candidate=candidate, run=run, path=path, token=token,
+                  launch_result=result)
     try:
         status = seatmod.classify_seat(
             process=_process(result),
@@ -413,21 +561,138 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
             # answer whole, because the token is exactly what it is looking for.
             rationale=_rationale(answer, token))
     except seatmod.SeatStatusError as e:
+        # WRITTEN BEFORE THE RAISE, because a refusal is exactly when someone needs the
+        # evidence and this message sends them to go and read it. The seat is refused over
+        # what it SAID, and what it said is the provider's answer — which is nowhere in the
+        # clone, so the older form of this message named a tree that had never held the
+        # thing it was pointing at. `status` is None: no verdict was reached and none is
+        # invented.
+        _write(run_dir, priors, SeatResult(status=None, **common))
         raise RunnerError(
             f"seat {name!r} attempt {attempt} cannot be classified: {e}. Its clone is at "
-            f"{path} and nothing has been deleted, so the evidence is still there to be "
-            "read.") from e
+            f"{path}, its answer and sentinel are recorded at "
+            f"{storage.seat_state_path(run_dir, name)}, and nothing has been deleted, so "
+            "the evidence is still there to be read.") from e
 
-    result_ = SeatResult(name=name, attempt=attempt, seat=st, status=status,
-                         artifacts=artifacts, candidate=candidate, run=run, path=path,
-                         launch_result=result)
+    result_ = SeatResult(status=status, **common)
     # AFTER the harvest, and that ordering is the whole point of writing it at all: §14.2
     # lists the per-seat file among `--collect`'s inputs, and a record written before the
     # inventories would describe a seat mid-run and then be believed by a resume that finds
     # no process behind it. `write_seat` publishes by rename, so a reader arriving during
     # this call sees the previous record whole rather than a prefix of this one.
-    runstate.write_seat(run_dir, name, _record(result_, token))
+    _write(run_dir, priors, result_)
     return result_
+
+
+# §6.2's six outcomes against §8's three values for `verify`, and the map is not onto.
+# Only PASS confirms the candidate and only FAIL refutes it. Each of the other four says the
+# measurement produced NO VERDICT ABOUT THIS CANDIDATE: §6.2 calls HARVEST_INCOMPLETE a
+# harvesting gap "not a candidate defect", BASELINE_RED_… "degraded rather than an
+# equivalence", GATE_CHANGED is a fact about the gate, and FLAKY is the gate disagreeing with
+# itself over a pair §6.2 refuses to convert to a pass. They are absent from this table and
+# `_verify_dim` answers "not-run" for them — §8's own value for a measurement not taken.
+_VERIFY_DIM = {verify.PASS: "pass", verify.FAIL: "fail"}
+
+
+def _verify_dim(outcome) -> str:
+    """§8's `verify` dimension for a §6.2 outcome, or a refusal for something that is neither.
+
+    FAIL-CLOSED ON THE INPUT SIDE FIRST: an outcome this engine does not produce must not
+    fall through to the default, because "not-run" is a plausible-looking answer and a typo
+    would be read as "no verdict yet" forever.
+
+    THE TRANSLATION IS LOSSY AND THE RECORD IS NOT. Reading one of the four non-verdicts as
+    "pass" would promote a seat on evidence nobody has; reading it as "fail" would make
+    `classify_seat` refuse a `changed=False` seat over a contradiction that was never
+    measured — §8's rule 3 raises for a verification that was TAKEN and refuted the claim,
+    which none of them is. "not-run" is the only honest cell, and it is why `SeatResult`
+    carries `verification` beside `status`: §6.2's own word for what happened is written to
+    the record, so `verify: "not-run"` is never all the record says.
+    """
+    if outcome not in verify.OUTCOMES:
+        raise RunnerError(
+            f"{outcome!r} is not one of §6.2's outcomes {verify.OUTCOMES}; §8's verify "
+            "dimension is only ever set from a verdict this engine actually took")
+    return _VERIFY_DIM.get(outcome, "not-run")
+
+
+def reclassify_seat(run_dir, result: SeatResult, outcome: str, reason: str) -> SeatResult:
+    """Re-run §8's classification with the verification §6 took, and record the result.
+
+    THE STEP WITHOUT WHICH §8's `no_change` IS UNREACHABLE. `run_seat` classifies with
+    `verify="not-run"` because §6 verifies in a tree the builder never had, and §8's rule 3
+    needs `verify == "pass"`. While nothing fed §6's answer back, every argued zero-diff seat
+    stayed `partial` permanently — §8 exists to stop *"a correct conclusion that the task
+    needs no edit"* being discarded, and a verdict that can never be reached discards it just
+    as thoroughly as deleting it would.
+
+    WHY HERE AND NOT IN `verify_candidate`. That function measures a TREE and answers in
+    §6.2's vocabulary; this one revises a VERDICT in §8's. Keeping them apart is what lets
+    `_verify_dim` be explicit about a translation that is lossy, and `verify_candidate`
+    carries neither a `Status` nor an `attempt`, so it cannot even name the record that has
+    to be rewritten. WHY HERE AND NOT IN THE RUN LOOP: the loop's job is sequencing — call
+    one, then the other — and a mapping between two spec vocabularies is not sequencing. It
+    belongs beside the only other caller of `classify_seat`, which is this module.
+
+    THE INPUTS ARE THE ORIGINAL ONES, re-read rather than re-derived. `changed` and
+    `rationale` are not fields on `Status` (deliberately — see `seat`'s module docstring), so
+    they come off the same `ArtifactSet` and the same answer `run_seat` used, with the same
+    `_rationale` applied to them. A second, looser reading of either here would be a seat
+    classified twice by two rules.
+
+    Raises `RunnerError` for an outcome that is not §6.2's, for a seat whose record this
+    cannot find, and for a re-classification §8 refuses — a `changed=False` claim the gate
+    positively REFUTED is a contradiction in the caller's own measurements, and the record is
+    left carrying the pre-verification verdict rather than rewritten to something nothing
+    decided.
+    """
+    run_dir = Path(run_dir)
+    if not isinstance(result, SeatResult) or result.status is None:
+        raise RunnerError(
+            "re-classification revises a status this module already took; a seat with none "
+            "was never classified in the first place")
+    dim = _verify_dim(outcome)
+    answer = _result_text(result.launch_result)
+    try:
+        status = seatmod.classify_seat(
+            process=result.status.process,
+            artifacts=result.status.artifacts,
+            proven_read=result.status.proven_read,
+            changed=bool(result.artifacts.paths),
+            setup=result.status.setup,
+            verify=dim,
+            rationale=_rationale(answer, result.token))
+    except seatmod.SeatStatusError as e:
+        raise RunnerError(
+            f"seat {result.name!r} attempt {result.attempt} cannot be re-classified under "
+            f"verify={dim!r} from §6.2's {outcome}: {e}. Its record still carries the "
+            "verdict taken before verification, which is the one its evidence supports."
+        ) from e
+
+    out = replace(result, status=status, verification=(outcome, reason))
+    try:
+        row = runstate.read_seat(run_dir, result.name)
+    except runstate.StateError as e:
+        # Wrapped for `_prior_attempts`'s reason and by its rule: a caller of this module
+        # names one class for a record it cannot act on, and a damaged one is exactly that.
+        raise RunnerError(
+            f"seat {result.name!r} has a record that cannot be read, so a promotion written "
+            f"over it would drop what it already held: {e}") from e
+    attempts = row.get("attempts") if isinstance(row, dict) else None
+    if not isinstance(attempts, list) or not any(
+            isinstance(x, dict) and x.get("attempt") == result.attempt for x in attempts):
+        raise RunnerError(
+            f"seat {result.name!r} has no recorded attempt {result.attempt} to revise at "
+            f"{storage.seat_state_path(run_dir, result.name)}; a promotion written where no "
+            "seat wrote would be a verdict with no run under it")
+    # The attempt is REPLACED in place rather than appended: this is the same attempt saying
+    # more, not another one. Every other attempt is carried through untouched, so §8.1's
+    # preserved predecessors survive a promotion exactly as they survive a retry.
+    runstate.write_seat(run_dir, result.name, {
+        "name": result.name,
+        "attempts": [_record(out) if x.get("attempt") == result.attempt else x
+                     for x in attempts]})
+    return out
 
 
 def _with_setup_caveat(reason: str, setup_run) -> str:
@@ -452,15 +717,22 @@ def _with_setup_caveat(reason: str, setup_run) -> str:
 
 
 def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
-                     calibration) -> tuple[str, str, verify.Verifier]:
+                     calibration) -> tuple:
     """Run §6's five steps over one harvested candidate, in the order §6 gives them.
 
-    Returns `classify`'s `(outcome, reason)` and the `Verifier` the verdict was taken in.
+    Returns `classify`'s `(outcome, reason)`, the `Verifier` the verdict was taken in, and
+    the verifier's own `SetupResult` — `None` when the confirmation named no setup command.
     The `Verifier` rather than the path, because `Verifier.candidate` is NOT the bundle
     passed in: it is that bundle with §6.1's whole measurement — `gate_delta` and the
     `gate_surface` it ranged over — filled from the two trees `build_verifier` had. A caller
     that keeps the input bundle instead holds `gate_delta is None`, which `classify` reads as
     UNKNOWN and answers `GATE_CHANGED`.
+
+    THE SETUP RESULT IS RETURNED RATHER THAN ONLY DESCRIBED. `run_setup` returns a failing
+    setup instead of raising, so before this it existed nowhere a caller could reach: the
+    exit code reached an operator as prose inside `reason` and no later phase could put it in
+    a record. A `Run` that survives in the function and not in the value is the same class of
+    defect as a rationale that survives in memory and not on disk.
 
     §6'S FIVE STEPS, AND WHERE EACH ONE IS:
 
@@ -482,8 +754,15 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
          clones."* `build_verifier` pins `core.hooksPath` to /dev/null before the candidate
          is laid down and asserts it again afterwards, `clone_seat` builds under an empty
          template, and every `gitcmd` call pins the global and system config to /dev/null.
-         Nothing is added here, because a second pin in this function would be a second place
-         for the property to be true and would hide the loss of the first.
+         THAT WAS NOT ENOUGH, and this function is where the gap was: `build_verifier`'s
+         assertion is taken when the candidate is the only writer so far, and step 3 runs
+         AFTER it, in the candidate's own tree, through a script the candidate may own.
+         Measured — a candidate that rewrote `./setup.sh` to `git config --local
+         core.hooksPath .githooks` had the gate run under hooks it supplied, and the run came
+         back PASS. `verify.assert_hooks_pinned` below is that closed. It is a second READ,
+         never a second pin: re-pinning would restore the property and destroy the evidence
+         it had been lost, which is the loss this paragraph used to cite as the reason for
+         adding nothing at all. An assertion detects, which is what the reasoning called for.
 
     THE HASH VALIDATION RUNS ON BOTH PATHS, and only one of the two is delegated. §6: *"The
     materialized candidate is hash-validated against the bundle before setup runs."*
@@ -499,11 +778,16 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     contract argument here would be a second place for one run to disagree with itself: the
     run has exactly one generator contract, `manifest` is the record of the human confirming
     it at the §5 gate, and `run_seat` already builds the bundle from
-    `manifest.generator_contract`. `build_verifier` compares the candidate's
-    contract ID against what it is handed, so a contract argument that shared the empty ID and
-    carried different RELATIONS would pass that check and change what `fixed_point` admits —
+    `manifest.generator_contract`. `build_verifier` compares the candidate's contract ID
+    against what it is handed, so a contract argument sharing the candidate's ID while
+    carrying different RELATIONS would pass that check and change what `fixed_point` admits —
     the manifest-records-X-while-the-gate-admitted-Y shape, reachable by one wrong argument.
-    Sourcing it here from the manifest removes the argument rather than checking it.
+    THE EMPTY ID IS NOT THAT CASE, though this paragraph used to say it was:
+    `inspect.GeneratorContract.__post_init__` raises for relations under an empty id, so the
+    empty-id-with-relations contract it named cannot be built at all. A shared NON-EMPTY id
+    with different relations is constructible, is what makes the argument dangerous, and is
+    what this says now. Sourcing it from the manifest removes the argument rather than
+    checking it.
 
     `calibration` IS REQUIRED, and it is a `verify.Calibration` rather than a `Run`. It
     carries no `None` default because there is no honest value to run with when it is
@@ -526,13 +810,12 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     every candidate is a cost the operator was never shown. §6.2's fail->pass rerun therefore
     has no caller yet; `classify` takes `rerun` and this passes none.
 
-    WHAT THIS DOES NOT DO IS UPDATE THE SEAT'S §8 STATUS. The outcome is returned, and
-    `runstate.write_seat`'s record still reads `verify: "not-run"` for this seat afterwards.
-    §8's `no_change` requires `verify == "pass"`, so re-classification is what would let an
-    argued zero-diff seat stop being `partial` — and this signature cannot do it: it carries
-    no `Status` in or out, and no `attempt`, so it cannot even name the record that would
-    have to be rewritten. Stated here rather than left for a reader to discover from a
-    verdict that never lands.
+    WHAT THIS DOES NOT DO IS UPDATE THE SEAT'S §8 STATUS, and that is a division of labour
+    rather than the gap it used to be. The outcome is RETURNED, and the seat's record still
+    reads `verify: "not-run"` until `reclassify_seat` is handed this outcome — which is the
+    call that lets an argued zero-diff seat stop being `partial`. This signature could not do
+    it if it wanted to: it carries no `Status` in or out and no `attempt`, so it cannot name
+    the record that has to be rewritten. It measures a tree; the other revises a verdict.
 
     Raises `RunnerError` for an argument this function will not act on. `fleet.SeatError`,
     `bundle.BundleError`, `verify.VerifyError` and its subclasses — `ContractMismatch` for a
@@ -573,11 +856,18 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
 
     setup = verify.Command(steps=manifest.setup)
     if setup.steps:
-        setup_run = verify.run_setup(v, setup, env=child_env).run
+        setup_result = verify.run_setup(v, setup, env=child_env)
     else:
         verify.validate_materialized(v)
-        setup_run = None
+        setup_result = None
+
+    # §6 step 5, re-read between step 3 and step 4 — see the step list above. This is the
+    # only point in the run where the confirmed setup command has already executed in the
+    # candidate's tree and the gate has not yet started, which is exactly the window a
+    # candidate-owned setup script can move `core.hooksPath` in.
+    verify.assert_hooks_pinned(v)
 
     fp = verify.fixed_point(v.path, gate, v.contract, env=child_env)
     outcome, reason = verify.classify(fp, calibration.run, v.candidate)
-    return outcome, _with_setup_caveat(reason, setup_run), v
+    setup_run = setup_result.run if setup_result else None
+    return outcome, _with_setup_caveat(reason, setup_run), v, setup_result
