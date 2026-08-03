@@ -18,7 +18,7 @@ WHY NOT `fleet.clone_seat(template_dir=...)`, WHICH IS THE OBVIOUS HOOK. Measure
   2. MODES ARE NORMALIZED, NOT PRESERVED. A 0600 template file arrives 0644 (git applies
      0666/0777 by the executable bit, masked by umask). Only +x survives.
   3. IT DISARMS AN EXISTING DEFENCE. `clone_seat` computes `engine_owned = not
-     template_dir` (`fleet.py:177`); passing a directory flips it False, skipping the
+     template_dir` (`fleet.py:188`); passing a directory flips it False, skipping the
      pre-clean and installing the directory as a real git template — git READS a template
      `config` (a malformed one aborted a clone outright) and installs a template `hooks/`
      that then runs for the agent's own commits.
@@ -35,6 +35,30 @@ sentence and the record calls it an INSTRUCTION ISSUED. It is not a mechanical b
 report must never say it is; if a per-CLI settings toggle exists, it has to be measured
 before it is claimed.
 
+MEASURED (2026-08-03): CLI ACCESS TO THE TASK DIRECTORY. Whether a CLI's file-reading tools
+will open a path under the git directory was an open question this module could not answer by
+construction, so it was probed once, by hand, outside the suite: `git init`, a sentinel at
+`.git/khenrix-forge/task/SKILL.md`, and each CLI asked headlessly to read it and quote the
+word.
+
+  * claude (Claude Code, `-p --output-format json`): READS IT. Quoted the sentinel,
+    `is_error: false`, `permission_denials: []`.
+  * codex (`exec --dangerously-bypass-approvals-and-sandbox`, v0.145.0): READS IT. Quoted the
+    sentinel; the transcript shows it opening the path directly.
+  * agy (v1.1.10): **NOT MEASURED, and NOT a refusal.** Both the plan-mode and JSON forms
+    answered `{"status":"ERROR","error":"timeout waiting for response"}` with `total_tokens: 0`
+    — it never reached a model. The CONTROL is what makes that readable rather than a guess: an
+    identical prompt against an ordinary WORKTREE file failed the same way, same error, same
+    zero tokens. So this measures agy's transport on this machine (see `headless-invocation.md`
+    on the mid-2026 consumer-OAuth wind-down), not its willingness to read under `.git`. The
+    question stays open for agy and must be re-probed before anything relies on it.
+
+WHAT THE TWO YESES DO NOT LICENSE. Nothing in Plan I puts this path into a prompt, so no step
+here rests on the probe either way. Plan J is the first plan that hands a seat the pointer, and
+it may not wire agy's seat to it on two measurements out of three. A seat that cannot read its
+entrypoint cannot quote the sentinel and scores `failed`, which is the fail-closed direction —
+the run stays honest, but the reason string is unmapped.
+
 EMPTY DIRECTORIES ARE NOT CARRIED, and that is the same ceiling `snapshot.Entry` declares:
 directories are not inventoried, so a bundle that means to hand a seat an empty `output/`
 cannot. Say so to the author rather than materializing something the manifest cannot check.
@@ -47,7 +71,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 
 from . import bundle as bundlemod
-from . import snapshot, storage
+from . import gitcmd, snapshot, storage
 
 VERSION = 1
 
@@ -98,19 +122,25 @@ class TaskBundle:
     max_total_bytes: int
 
 
-def _rel(root: Path, p: Path) -> str:
-    """The canonical POSIX relative path, refused if it could name anything but a bundle path."""
-    rel = PurePosixPath(p.relative_to(root)).as_posix()
+def _check_rel(rel: str) -> str:
+    """A path this module is willing to READ INTO a bundle or LAY DOWN from one, or a refusal.
+
+    Split out of `_rel` because it has a second caller that does not come from `os.walk`:
+    `materialize` is handed a `TaskBundle`, and `_decode` type-checks entry fields without
+    ever validating `path` — so the recorded manifest `read_task_bundle` returns is a route
+    to a write whose path `_rel` never stood in front of. `bundle._safe_rel` composes the
+    same two rules one module over, for the symmetric reason.
+    """
     # One spelling of the rule, imported rather than re-inlined: `bundle.py:191` re-inlined
     # `harvest._literal` and that divergence route is on this project's open-defect list.
     #
     # Wrapped rather than left to propagate: `_assert_contained` raises `bundle.BundleError`,
-    # a type this module's own contract does not promise. UNREACHABLE through `_rel`'s two
-    # call sites today — `p` always comes from `os.walk` under `root` (see `_walk`), and
-    # `os.walk` never yields a literal `..` component, which is the only way a successful
-    # `relative_to` above could still leave one for `_assert_contained` to catch. The wrap
-    # costs nothing and means that invariant is enforced here rather than leaned on by every
-    # future caller of `_rel`.
+    # a type this module's own contract does not promise. Still unreachable through `_rel` —
+    # `p` always comes from `os.walk` under `root` (see `_walk`), and `os.walk` never yields a
+    # literal `..` component, which is the only way a successful `relative_to` could leave one
+    # for `_assert_contained` to catch — but LIVE through `materialize`, whose paths come off a
+    # `TaskBundle` that may have been decoded rather than scanned. That is the whole reason the
+    # wrap is here rather than leaned on by each caller.
     try:
         bundlemod._assert_contained(rel, "a task bundle path")
     except bundlemod.BundleError as e:
@@ -120,6 +150,11 @@ def _rel(root: Path, p: Path) -> str:
             f"a task bundle may not carry git's own directory: {rel!r}. A `.git/config` "
             "laid into a clone takes its hooks pin and its identity, and both are §4.1's.")
     return rel
+
+
+def _rel(root: Path, p: Path) -> str:
+    """The canonical POSIX relative path, refused if it could name anything but a bundle path."""
+    return _check_rel(PurePosixPath(p.relative_to(root)).as_posix())
 
 
 def _entry(root: Path, p: Path, quota: storage.Quota) -> BundleEntry:
@@ -329,3 +364,200 @@ def read_task_bundle(run_dir) -> TaskBundle:
         return _decode(json.loads(raw), path)
     except ValueError as e:
         raise TaskBundleError(f"{path} is not readable as JSON: {e}") from e
+
+
+def task_dir(seat_path) -> Path:
+    """Where a seat's bundle lives: `<git-dir>/khenrix-forge/task`, with git asked for the git dir.
+
+    ASKED, NEVER JOINED. `Path(seat) / ".git"` is a directory in an ordinary clone and a
+    FILE in a linked worktree, so the join is right by luck and wrong the moment §16's
+    synthesis worktree exists. `rev-parse --absolute-git-dir` is measured safe on all three
+    of this package's git closures — it loads no index, fires no hook and runs no diff
+    driver — so it needs `READONLY` and nothing else.
+    """
+    out = gitcmd.git(seat_path, "rev-parse", "--absolute-git-dir",
+                     env_extra=gitcmd.READONLY).stdout.strip()
+    if not out:
+        raise TaskBundleError(f"git named no git directory for {seat_path}")
+    return Path(out) / "khenrix-forge" / "task"
+
+
+def materialize(b: TaskBundle, source_root, seat_path) -> Path:
+    """Lay `b`'s bytes down inside `seat_path`'s git directory, preserving mode and kind.
+
+    ENGINE-OWNED COPIER, NOT `shutil.copytree` AND NOT `git clone --template`. The template
+    path drops every dot-name at every level and normalizes modes (see the module
+    docstring). `copytree` would be closer but still walks the SOURCE, and what must be laid
+    down is what the MANIFEST says — otherwise a file added to the source between `scan` and
+    here arrives in the seat unhashed and unnamed.
+
+    A REFUSAL, NOT AN OVERWRITE, when the directory already exists. §8.1 gives every retry a
+    fresh clone and this module contains no delete of any kind: a second materialization into
+    a live seat would be the reset-and-rerun-in-place §8.1 forbids, one directory over.
+    """
+    # EVERY PATH RE-CHECKED, BEFORE ANYTHING IS CREATED. `scan` routes each path through
+    # `_rel`, so a scanned bundle cannot carry a `..` or a `.git` component — but a bundle
+    # does not have to have been scanned in this process. `_decode` type-checks entry fields
+    # and never validates `path`, so the manifest `read_task_bundle` hands back, which is what
+    # §8.1's fresh-clone retry re-materializes from, reaches this write with whatever string
+    # was on disk. `dest / "../../x"` escapes without Path complaining. Checked ahead of the
+    # `mkdir` so a refused bundle leaves nothing behind: `dest.exists()` is the refusal above,
+    # and a half-created directory would wedge the very retry that is meant to recover.
+    for e in b.entries:
+        _check_rel(e.path)
+    dest = task_dir(seat_path)
+    if dest.exists():
+        raise TaskBundleError(
+            f"{dest} already holds a task bundle. §8.1 gives a retry a FRESH clone; "
+            "re-materializing into a live seat is a reset-and-rerun in place.")
+    source_root = Path(source_root)
+    dest.mkdir(parents=True)
+    for e in b.entries:
+        target = dest / e.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        src = source_root / e.path
+        if e.kind == "symlink":
+            os.symlink(os.readlink(src), target)
+        else:
+            # Bytes then mode, in that order: a 0400 file written mode-first cannot be
+            # written to. `chmod` after `write_bytes` is the only ordering that works for
+            # every mode the manifest can carry.
+            target.write_bytes(src.read_bytes())
+            os.chmod(target, e.mode)
+    return dest
+
+
+def verify_materialized(b: TaskBundle, seat_path) -> None:
+    """Re-derive the manifest FROM THE SEAT and refuse any difference from the authored one.
+
+    THE ONLY STEP THAT TURNS A SILENT LOSS INTO A REFUSAL. A copier that runs and returns is
+    not evidence the bytes arrived — `fleet.Seat.verified` makes exactly this argument about
+    an empty `filesystem_manifest` making a check "vacuous and still answer True", which is
+    why the trusted parent recomputes readiness from primary evidence. Everything git's
+    template path loses (dot names, 0600, the +x-only mode rule) is a difference here.
+
+    Compared through `bundle_hash` AND field by field: the hash is what §11 records, and the
+    per-entry diff is what a human reading the refusal can act on. A message naming only "the
+    hashes differ" sends the reader through the whole closure by hand.
+    """
+    dest = task_dir(seat_path)
+    if not dest.is_dir():
+        raise TaskBundleError(f"{dest} holds no task bundle; nothing was materialized")
+    # RE-DERIVED UNDER THE CAPS THAT WERE ACTUALLY APPLIED, reconstructed from the bundle
+    # rather than re-read from `Quota.for_task_bundle()`. That is what recording them on the
+    # value was for: a re-derivation under today's caps could refuse a bundle that legitimately
+    # fit yesterday's, and the refusal would name the wrong failure.
+    quota = storage.Quota(max_files=b.max_files, max_file_bytes=b.max_file_bytes,
+                          max_total_bytes=b.max_total_bytes)
+    seen = TaskBundle(b.version, b.entrypoint, tuple(_walk(dest, quota)),
+                      b.max_files, b.max_file_bytes, b.max_total_bytes)
+    if bundle_hash(seen) == bundle_hash(b):
+        return
+    authored = {e.path: e for e in b.entries}
+    found = {e.path: e for e in seen.entries}
+    lost = sorted(set(authored) - set(found))
+    extra = sorted(set(found) - set(authored))
+    changed = sorted(p for p in set(authored) & set(found) if authored[p] != found[p])
+    raise TaskBundleError(
+        f"the bundle in {dest} does not match the authored manifest: missing={lost} "
+        f"unexpected={extra} altered={changed}. §20 requires it materialized IDENTICALLY in "
+        "every clone, and a manifest that lists a file the seat does not have is the one "
+        "failure no later check can see.")
+
+
+# The three live installed plugin paths. DUPLICATED from `scripts/refresh.py:INSTALL_GLOBS`
+# rather than imported, because `shared/lib/` is importable by three CLIs and `scripts/` is
+# this repository's own tooling — the import would invert the layering. Two spellings of one
+# fact eventually disagree, so `tests/test_forge_seams.py` asserts they are equal.
+INSTALL_GLOBS = {
+    "claude": ["~/.claude/plugins/cache/khenrix-claude-marketplace/khenrix-utils/*"],
+    "codex": ["~/.codex/plugins/cache/khenrix-codex-marketplace/khenrix-utils/*"],
+    "agy": ["~/.gemini/config/plugins/khenrix-utils"],
+}
+
+
+def _install_dirs(cli: str) -> list:
+    """Mirrors `refresh.installed_dirs`. Seam-tested against it; see INSTALL_GLOBS."""
+    out = []
+    for g in INSTALL_GLOBS[cli]:
+        base = Path(g.replace("~", str(Path.home())))
+        if "*" in g:
+            out += [p for p in base.parent.glob(base.name) if p.is_dir()]
+        elif base.is_dir():
+            out.append(base)
+    return sorted(out)
+
+
+def installed_closure(cli: str) -> str | None:
+    """The hash of `cli`'s LIVE INSTALLED plugin closure, or None because it is not installed.
+
+    THE INSTALLED COPY, NEVER THE REPO SOURCE, and the reason is mechanical rather than
+    stylistic: `refresh.sync` does `copytree(src, d, dirs_exist_ok=True)`, an ADDITIVE
+    overwrite that never removes a stale file. An installed copy can therefore be a strict
+    superset of the repo source, so `checks.source_hash` provably cannot stand in for it —
+    which is exactly §20's distinction between byte-identical source and three current,
+    identical installed copies.
+
+    PATHS ARE NOT HASHED. The three CLIs install to three different absolute paths by
+    construction; a hash carrying the path would make §20's "all three hash identically"
+    rule unsatisfiable for a reason that has nothing to do with the closures.
+
+    None, NEVER an empty-manifest hash, AND NEVER A RAISE. `refresh.installed_dirs` returns []
+    for a CLI that is not installed, and hashing [] gives every uninstalled CLI the SAME
+    value — three seats "hashing identically", which is precisely §20's licence to rely on an
+    ambient skill, manufactured out of three absences. `seat.read_proof`'s rule, one module
+    over: a missing measurement fails closed.
+
+    THE SECOND HALF IS NOT DECORATION. `_walk` walks the LIVE INSTALLED directories and refuses
+    a `.git` component, an escaping symlink, a special file and a cap breach. Those refusals
+    are right for an AUTHORED bundle, where the author is present and wrong. The installed
+    plugin cache is not authored — `refresh.sync` is an additive `copytree` over whatever is on
+    disk — so a stale `.git` or a symlink under `~/.claude/plugins/cache/...` would turn a
+    provenance hash into a RUN-ENDING exception out of a function whose declared type is
+    `str | None`. It already defines the fail-closed value; use it. The refusal is not lost:
+    `None` fails `ambient_verdict` exactly as "not installed" does, which is the same verdict
+    for the same reason — this closure could not be described.
+
+    `OSError` IS CAUGHT ALONGSIDE, or the paragraph above would be false. `_walk` reaches
+    `snapshot._digest`, which OPENS every regular file, and a plugin cache is a tree this
+    engine did not write: one unreadable file there raises `PermissionError` — an `OSError`,
+    not a `TaskBundleError` — straight out of a `str | None`. Same verdict for the same
+    reason, since a closure that could not be read is a closure that could not be described.
+
+    `for_harvest`'s caps, not `for_task_bundle`'s: this is a tree this engine did not choose,
+    which is the question `for_harvest` was sized for. A breach still answers `None`.
+    """
+    dirs = _install_dirs(cli)
+    if not dirs:
+        return None
+    rows = []
+    try:
+        for d in dirs:
+            rows += _rows(_walk(d, storage.Quota.for_harvest()))
+    except (TaskBundleError, OSError):
+        return None
+    return hashlib.sha256(json.dumps(sorted(rows), sort_keys=True).encode()).hexdigest()
+
+
+def ambient_verdict(closures: dict) -> bool:
+    """§20's bar: a named skill may be relied on only when ALL THREE hash identically.
+
+    A `None` anywhere is False, and that is the whole point — see `installed_closure`. Both
+    halves are recorded by the caller, never just this verdict: a record holding only the
+    boolean cannot show what it compared.
+    """
+    values = [closures.get(c) for c in ("claude", "codex", "agy")]
+    return all(v is not None for v in values) and len(set(values)) == 1
+
+
+def ambient_note(skill: str) -> str:
+    """§20's "bar ambient invocation of the same skill", as the instruction it actually is.
+
+    THIS IS NOT A MECHANICAL BAR and the report must never present it as one. The only
+    mechanism in reach is a sentence in the prompt; a seat that ignores it is not stopped by
+    anything. Recorded in the register §10.1 reserves for `manual_trace_confirmed` — an
+    instruction issued, not a property enforced. If a per-CLI settings toggle that really
+    does bar it exists, it has to be MEASURED before any code here claims it.
+    """
+    return (f"Do not invoke the ambient `{skill}` skill. The task bundle materialized for "
+            "this run is the only copy you may read; an ambient copy may differ from it.")

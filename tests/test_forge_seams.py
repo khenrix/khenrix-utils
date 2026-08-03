@@ -1850,3 +1850,34 @@ def test_only_a_measured_call_reads_the_users_own_config():
         "`user_config=True`, or add the call to _USER_CONFIG_ALLOWED with the measurement "
         "showing that subcommand runs none of the programs that file can name.")
     assert all(_USER_CONFIG_ALLOWED.values()), "an entry must say what was measured"
+
+
+def test_the_installed_plugin_paths_have_one_spelling():
+    """`taskbundle.INSTALL_GLOBS` duplicates `refresh.INSTALL_GLOBS` because `shared/lib/`
+    may not import `scripts/`. Two spellings of one predicate eventually disagree — and the
+    disagreement here would be silent: a stale glob hashes a directory that is not the one
+    `make khenrix-refresh` writes, and §20's identity rule would compare the wrong closures.
+
+    THE VACUITY THIS GUARDS. For a CLI that is not installed BOTH enumerations answer `[]`,
+    so on a machine with none installed every assertion below passes over three empty lists
+    and proves nothing about a producible hash — the same "a check over an empty manifest is
+    vacuous and still answers True" shape `fleet.Seat.verified` is written against. So the
+    equality is asserted for every CLI, and the producibility is asserted for the installed
+    ones, with an explicit skip rather than a silent pass when there are none.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "scripts"))
+    import refresh  # noqa: PLC0415
+
+    from forge import taskbundle  # noqa: PLC0415
+    assert taskbundle.INSTALL_GLOBS == refresh.INSTALL_GLOBS
+    for cli in refresh.CLIS:
+        assert taskbundle._install_dirs(cli) == sorted(refresh.installed_dirs(cli)), \
+            f"{cli}: the two enumerations disagree about what is installed"
+    installed = [c for c in refresh.CLIS if refresh.installed_dirs(c)]
+    if not installed:
+        pytest.skip("no CLI is installed here: the two enumerations agree over three empty "
+                    "lists, which is agreement about nothing")
+    for cli in installed:
+        assert taskbundle.installed_closure(cli) is not None, \
+            f"{cli} is installed and its closure hash must be producible"
