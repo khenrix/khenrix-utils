@@ -229,6 +229,14 @@ def state_path(run_dir) -> Path:
     return Path(run_dir) / "state.json"
 
 
+def task_bundle_path(run_dir) -> Path:
+    return Path(run_dir) / "task-bundle.json"
+
+
+def ledger_path(run_dir) -> Path:
+    return Path(run_dir) / "ledger.json"
+
+
 # Runs of lowercase letters and digits, joined by SINGLE hyphens: `a-b` passes and `a--b`,
 # `-a` and `a-` do not. A seat is named for a provider, so this is not a narrowing anyone
 # will notice — and the alternative is that a separator or a `..` in the name silently
@@ -298,6 +306,25 @@ class Quota:
         """
         return cls(max_files=200_000, max_file_bytes=512 * 1024 * 1024,
                    max_total_bytes=8 * 1024 * 1024 * 1024)
+
+    @classmethod
+    def for_task_bundle(cls) -> "Quota":
+        """What §20's INSTRUCTION CLOSURE may weigh — a third question from the two above.
+
+        `default` sizes the user's whole selected baseline and `for_harvest` a seat that
+        has run `npm ci`. A task bundle is neither: it is a skill's resolved closure,
+        materialized identically into three clones and hashed to prove it. Measured on
+        this machine (2026-08-03): the entire installed claude plugin closure is 76 files
+        / 1 257 929 bytes with a 134 044-byte largest file, and the largest directory in
+        `shared/skills/` is `skill-tuneup` at 8 files / 149 149 bytes / 91 382 max. These
+        caps are ~26x that by count and ~50x by bytes, which separates a closure from a
+        runaway without admitting a dependency tree by accident.
+
+        Fail-closed like its siblings: `breach` returns a description and the caller
+        RAISES. Nothing here truncates.
+        """
+        return cls(max_files=2000, max_file_bytes=4 * 1024 * 1024,
+                   max_total_bytes=64 * 1024 * 1024)
 
     def breach(self, *, files: int, file_bytes: int, total_bytes: int):
         """Return a human-readable breach description, or None when within limits."""
