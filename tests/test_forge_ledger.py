@@ -461,13 +461,36 @@ def test_a_relation_the_vocabulary_does_not_name_is_refused(tmp_path):
 
 
 def test_a_relation_the_vocabulary_does_not_name_is_not_silently_dropped_from_the_graph():
-    """`edges` matches `requires` and `blocks` by name and IGNORES anything else, so an
-    unknown relation is an ordering constraint that vanishes. `_check` refuses it before the
-    sort ever runs — this pins that the refusal, not the silent drop, is what a caller sees,
-    because `edges` alone would answer `()` for a graph that says otherwise."""
+    """THE NAME WAS TRUE OF `_check` AND FALSE OF THIS FUNCTION, and the body asserted the
+    silence: `edges` matched `requires` and `blocks` by name and dropped anything else, so an
+    unknown relation was an ordering constraint that vanished — and `topological_order` is
+    PUBLIC, with §12.2's partitioned synthesis holding a `Ledger` that never met a decoder.
+
+    The drop is not a missing constraint, it is the WRONG ORDER stated confidently: measured,
+    `A supersedes B` emitted `(A, B)` where the same pair spelled `requires` emits `(B, A)`,
+    and a cycle expressed half in an unknown relation came back as a clean order. Fusion reads
+    that order, so both halves are pinned here rather than only the vocabulary."""
     a, b = _row("R1", "alpha"), _row("R2", "beta")
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "supersedes"),)})
-    assert ledger.edges([a2, b]) == ()
+    for fn in (ledger.edges, ledger.topological_order):
+        with pytest.raises(ledger.LedgerError, match="relation is one of"):
+            fn([a2, b])
+    # Non-vacuity: the same pair under a relation the vocabulary DOES name sorts, and sorts
+    # the other way round — which is what the silent drop was answering instead.
+    good = ledger.Row(**{**a.__dict__,
+                         "dependencies": (ledger.Dependency(b.id, "requires"),)})
+    assert ledger.topological_order([good, b]) == (b.id, a.id)
+
+
+def test_a_cycle_expressed_half_in_an_unknown_relation_is_not_emitted_as_an_order():
+    """The other half of the same drop, and the more dangerous one: a dropped edge cannot
+    close a cycle, so the length check that is `topological_order`'s whole point passes over
+    a graph that has one."""
+    a, b = _row("R1", "alpha"), _row("R2", "beta")
+    a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "requires"),)})
+    b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "precedes"),)})
+    with pytest.raises(ledger.LedgerError, match="relation is one of"):
+        ledger.topological_order([a2, b2])
 
 
 def test_a_symbol_criterion_must_carry_structured_fields_not_a_sentence(tmp_path):
@@ -958,3 +981,37 @@ def test_a_file_that_is_not_json_is_a_ledger_error(tmp_path):
     storage.ledger_path(tmp_path).write_bytes(b"{not json")
     with pytest.raises(ledger.LedgerError, match="not readable as JSON"):
         ledger.read_ledger(tmp_path)
+
+
+def test_the_hash_and_the_write_refuse_the_same_ledger(tmp_path):
+    """I3: THE TWO PATHS OUT OF `_payload` DISAGREED ABOUT WHAT COULD BE WRITTEN DOWN.
+
+    `write_ledger` passed `allow_nan=False` and wrapped `TypeError`; `ledger_hash` passed
+    neither and ran `bool(l.degraded)`. Measured, all three showed only in the hash:
+    `degraded="false"` was coerced and hashed IDENTICALLY to `degraded=True`, so §14.1's
+    checkpoint value could not tell a degraded spec from an undegraded one; a NaN
+    `union_diff_bytes` hashed cleanly through json's non-standard `NaN` literal, which no other
+    JSON reader can parse; and a value json could not serialize left the module as a bare
+    `TypeError`. A hash and a write of the same ledger must not answer differently about
+    whether that ledger can be written down.
+    """
+    good = _led([_row()])
+    assert ledger.ledger_hash(good) and ledger.write_ledger(tmp_path, good) is None
+    for kw, why in (({"degraded": "false"}, "True or False"),
+                    ({"degraded": 1}, "True or False"),
+                    ({"union_diff_bytes": float("nan")}, "int"),
+                    ({"union_diff_bytes": 100.0}, "int")):
+        bad = _led([_row()], **kw)
+        for fn in (ledger.ledger_hash, lambda x: ledger.write_ledger(tmp_path, x)):
+            with pytest.raises(ledger.LedgerError, match=why):
+                fn(bad)
+
+
+def test_a_degraded_flag_that_is_not_a_bool_cannot_hash_as_one_that_is():
+    """The measurement behind the refusal above, kept as its own line because the coercion is
+    invisible: `bool("false")` is True, so the ledger that says it is NOT degraded hashed
+    exactly like the one that says it is."""
+    a = _led([_row()], union_diff_bytes=100, degraded=False)
+    b = _led([_row()], union_diff_bytes=100, degraded=True)
+    assert ledger.ledger_hash(a) != ledger.ledger_hash(b), \
+        "non-vacuity: the flag is in the payload, so the two real ledgers hash differently"

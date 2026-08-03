@@ -322,9 +322,15 @@ def edges(rows) -> tuple:
     "fixes" that test instead of this function locks an inverted synthesis order in under a
     green suite, and Plan I2's partitioned synthesis is its first consumer.
 
-    A RELATION THIS DOES NOT NAME PRODUCES NO EDGE, which is only safe because `_check` refuses
-    one before any sort runs. Read on its own this function answers `()` for a graph that
-    declares an ordering, so the refusal there is what makes the silence here honest.
+    A RELATION THIS DOES NOT NAME IS A `LedgerError` HERE, NOT A DROPPED EDGE. It used to be
+    dropped, on the argument that `_check` refuses one before any sort runs — but this function
+    is PUBLIC and §12.2's partitioned synthesis holds a `Ledger` that never met a decoder, and
+    the silence is not a missing constraint, it is the WRONG ANSWER stated confidently.
+    Measured: two rows where A `preceeds` B produced `edges() == ()` and an order of
+    `(A, B)` — the exact reverse of the `(B, A)` the same pair spelled `requires` produces —
+    and a cycle expressed half in an unknown relation was emitted as a clean order with no
+    refusal. Fusion reads this order, and this is the same public-surface argument the
+    dangling-edge refusal in `topological_order` makes about a `KeyError`.
 
     `conflicts` IS NOT HERE. It is symmetric — `_check` refuses a one-sided one — and not an
     ordering; a "cycle" of conflicts is meaningless. Whether two conflicting rows may both be
@@ -334,6 +340,12 @@ def edges(rows) -> tuple:
     out = []
     for r in rows:
         for d in r.dependencies:
+            if d.relation not in RELATIONS:
+                raise LedgerError(
+                    f"row {r.id} declares {d.relation!r} on {d.id!r}, and a relation is one of "
+                    f"{list(RELATIONS)}. An ordering computed as though the constraint were "
+                    "absent is not a weaker ordering, it is a different one — and fusion "
+                    "reads it.")
             if d.relation == "requires":
                 out.append((d.id, r.id))
             elif d.relation == "blocks":
@@ -527,13 +539,14 @@ def _check(l: Ledger) -> None:
     if not isinstance(l, Ledger):
         raise LedgerError(f"a Ledger is required, not {type(l).__name__}")
     _check_rows(l.rows)
+    _check_scalars(l)
     if l.version != VERSION:
         raise LedgerError(f"this engine writes ledger version {VERSION}, not {l.version!r}")
     if l.degrade_threshold_bytes != DEGRADE_UNION_DIFF_BYTES:
         raise LedgerError(
             f"the recorded degradation threshold is {l.degrade_threshold_bytes} and this "
             f"engine applies {DEGRADE_UNION_DIFF_BYTES}; record the one that was applied")
-    if (l.union_diff_bytes > l.degrade_threshold_bytes) != bool(l.degraded):
+    if (l.union_diff_bytes > l.degrade_threshold_bytes) != l.degraded:
         raise LedgerError(
             f"this ledger measured a {l.union_diff_bytes}-byte union diff against a "
             f"{l.degrade_threshold_bytes}-byte threshold and records degraded={l.degraded}. "
@@ -610,14 +623,52 @@ def _row_row(r: Row) -> dict:
     return d
 
 
+def _check_scalars(l: Ledger) -> None:
+    """The four non-row fields hold the types their meanings need.
+
+    SEPARATE FROM `_check` FOR `_payload`'S SAKE, which is `_check_rows`' own argument applied
+    to the other half of the record: `ledger_hash` never runs `_check`, so every rule stated
+    only there was a rule the hash did not have. The three that were missing were each visible
+    in the hash and nowhere else — `degraded="false"` was `bool()`-coerced and hashed
+    IDENTICALLY to `degraded=True` (measured), and a float `union_diff_bytes` is a byte count
+    that is not a count.
+    """
+    for n in ("version", "union_diff_bytes", "degrade_threshold_bytes"):
+        v = getattr(l, n)
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise LedgerError(f"a ledger's {n} is an int, not {v!r}")
+    if not isinstance(l.degraded, bool):
+        raise LedgerError(
+            f"a ledger's degraded is True or False, not {l.degraded!r}. Coercing it made "
+            "'false' and True the same ledger to every hash §14.1 records.")
+
+
 def _payload(l: Ledger) -> dict:
     # `ledger_hash` reaches here WITHOUT `_check` — §14.1 hashes a ledger it already holds —
     # and `dataclasses.asdict` answers `TypeError` for anything that is not a dataclass. The
     # shape check is in the one function that serializes, so both callers get it.
     _check_rows(l.rows)
+    _check_scalars(l)
     return {"version": l.version, "union_diff_bytes": l.union_diff_bytes,
             "degrade_threshold_bytes": l.degrade_threshold_bytes,
-            "degraded": bool(l.degraded), "rows": [_row_row(r) for r in l.rows]}
+            "degraded": l.degraded, "rows": [_row_row(r) for r in l.rows]}
+
+
+def _blob(l: Ledger, **kw) -> bytes:
+    """The bytes of a ledger, as the ONE serialization `ledger_hash` and `write_ledger` share.
+
+    THEY WERE TWO, AND THE TWO DISAGREED. `write_ledger` passed `allow_nan=False` and wrapped
+    `TypeError`; `ledger_hash` passed neither, so a NaN anywhere in the payload hashed to a
+    clean-looking value through json's non-standard `NaN` literal — a value no other JSON
+    reader can parse — and a payload json could not serialize left this module as a bare
+    `TypeError`, the error class `_check`'s own first line exists to keep out. A hash and a
+    write of the same value must not be able to answer differently about whether that value
+    can be written down.
+    """
+    try:
+        return json.dumps(_payload(l), sort_keys=True, allow_nan=False, **kw).encode("utf-8")
+    except (TypeError, ValueError) as e:
+        raise LedgerError(f"this ledger carries a value json cannot serialize: {e}") from e
 
 
 def _sub(cls, row, where):
@@ -721,8 +772,7 @@ def ledger_hash(l: Ledger) -> str:
     """
     if not isinstance(l, Ledger):
         raise LedgerError(f"a Ledger is required, not {type(l).__name__}")
-    return hashlib.sha256(
-        json.dumps(_payload(l), sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(_blob(l)).hexdigest()
 
 
 def write_ledger(run_dir, l: Ledger) -> None:
@@ -734,11 +784,7 @@ def write_ledger(run_dir, l: Ledger) -> None:
     """
     _check(l)
     path = storage.ledger_path(run_dir)
-    try:
-        blob = json.dumps(_payload(l), sort_keys=True, indent=2,
-                          allow_nan=False).encode("utf-8") + b"\n"
-    except (TypeError, ValueError) as e:
-        raise LedgerError(f"this ledger carries a value json cannot serialize: {e}") from e
+    blob = _blob(l, indent=2) + b"\n"
     restored = _decode(json.loads(blob), path)
     if restored != l:
         differing = [f.name for f in fields(Ledger)
