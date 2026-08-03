@@ -414,18 +414,19 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, round_: int, enabled: 
     `review.Finding` carrying round 0 can be written into NO record: `review.round_dir`
     refuses anything below 1, so `review.write_round` cannot store it, and
     `review.terminal_from_record` iterates `range(1, rounds_run + 1)` and would never read it.
-    A defaulted 0 therefore made §13.1's findings unreachable by the terminal that this plan's
-    headline decision assigns them — the resolution had no mechanism at all. With a real round
-    number the types line up end to end: this returns `Finding`s whose `round` a `Round`
-    record accepts, and the terminal reads them like any other round's.
+    A defaulted 0 therefore made §13.1's findings unreachable by the terminal Contradiction 6
+    assigns them to — the resolution had no mechanism at all. With a real round number the
+    types line up end to end: this returns `Finding`s whose `round` a `Round` record accepts,
+    and the terminal reads them like any other round's.
 
     §13.1'S FINDINGS GET THE POST-ROUND-2 TREATMENT AND THIS FUNCTION DOES NOT APPLY IT: fix →
     fresh-verifier verify → checkpoint → `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, with
     the terminal decided by `review.terminal_from_record` (a fixed-but-unreviewed blocker is
     `degraded`, an unresolved one is `review_blocked`). No new loop and no new state, exactly
-    as §13.1 says — the record and the transition are `review`'s. WHO writes these findings
-    into a `review.Round` and re-reads the terminal is PLAN J: nothing in this plan calls
-    `run_ultra`, and no test here exercises that wiring.
+    as §13.1 says — the record and the transition are `review`'s. THAT WIRING DOES NOT EXIST
+    YET, and the gap is named as a missing mechanism rather than left implied: no caller
+    invokes `run_ultra`, nothing writes what it returns into a `review.Round`, and no test
+    covers the hand-off. Until something does, this function's findings reach no terminal.
     """
     if not isinstance(round_, int) or isinstance(round_, bool) or round_ < 1:
         raise UltraError(

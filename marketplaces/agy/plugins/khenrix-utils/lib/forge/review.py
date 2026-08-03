@@ -969,6 +969,17 @@ def read_resolutions(run_dir, round_: int):
 #     check that always fires is not a check. The reviewer inputs and §20's task bundle live
 #     there too. `test_git_doing_what_the_bundle_asks_does_not_disturb_the_checkout` pins both
 #     halves of that trade.
+#     INDEX CHURN IS THE REASON, NOT THE RISK. What the exclusion actually leaves open is
+#     `.git/hooks/`: a write-capable reviewer can drop an executable there, and it outlives
+#     the round — every later git command in this checkout is the repository's OTHER program
+#     running. What bounds that is `gitcmd.NO_HOOKS`, the `-c core.hooksPath=/dev/null` preset
+#     every hook-firing call in this package carries before its subcommand (`gitcmd.py:89`,
+#     held to by `test_every_hook_firing_call_carries_the_hooks_pin`). So the exclusion is
+#     bounded by a defence rather than merely accepted — for FORGE's git calls. It bounds
+#     nothing run outside that convention: the reviewer's own `git diff`, and the operator's
+#     commands in this checkout afterwards, still fire whatever is there.
+#   * TOOL CACHES ARE NOT MEASURED EITHER — see `_TOOL_CACHE_DIRS`, which states what that
+#     buys, what it costs, and why the list is four literal names rather than a rule.
 #   * A WRITE OUTSIDE THE CHECKOUT is invisible. A reviewer has a shell and a whole
 #     filesystem; this answers one question about one tree.
 #   * A WRITE THAT WAS UNDONE byte-for-byte before the panel returned leaves nothing behind.
@@ -981,6 +992,30 @@ WORKTREE_KIND = "review_worktree"
 # How many changed paths the completion record carries. The list is a SAMPLE for the sentence
 # and never the verdict — see `record_worktree_after`.
 _CHANGED_SAMPLE = 20
+
+# The tool caches a reviewer creates BY DOING WHAT IT WAS ASKED. Running the suite is the
+# cheapest and likeliest thing a reviewer does with the shell §13 gives it, and `pytest` writes
+# `__pycache__` beside every module it imports and `.pytest_cache` at the rootdir. Without this
+# the bracket reads that as a reviewer editing the tree and discards a three-provider panel
+# §5.2 paid for, over bytes no reviewer wrote by hand and no diff would show.
+#
+# NAMED, NOT DERIVED, and "every path git ignores" is the rule this deliberately refuses. §7
+# does not trust `.gitignore` — agent output routinely lands in ignored paths, which is why
+# harvest scans rather than asks git — so skipping what git ignores would hand a write-capable
+# reviewer a laundered place to write inside the tree it is reviewing, chosen by a file that
+# same tree contains. Four literal names stay auditable, and widening the guard has to be an
+# edit here rather than an edit to a `.gitignore`.
+#
+# WHAT IT COSTS, written down because a guard whose gaps are unstated is read as covering them:
+# a write UNDER one of these names is invisible to the bracket, exactly as a write under `.git`
+# is. It narrows THIS measurement only — `assert_ledger_is_out_of_reach` walks these
+# directories like any other, so a ledger copied into `__pycache__` is still caught by its
+# bytes.
+_TOOL_CACHE_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+
+# `snapshot.take`'s default plus the caches above. Matched by NAME at every depth, which is
+# `snapshot.take`'s own rule (`snapshot.py:159`) and not a property of this tuple.
+_SKIP_DIRS = (".git", *_TOOL_CACHE_DIRS)
 
 
 def _inventory_digest(entries: dict) -> str:
@@ -1005,8 +1040,9 @@ def worktree_identity(checkout, quota) -> tuple:
     `snapshot.take` IS THE MEASUREMENT, rather than a fourth way to describe a tree. §7.3's
     change predicate is already content-hash + mode + size and explicitly never mtime, already
     prunes `.git`, already refuses a subtree it could not list, and already ships `diff`
-    beside it. The two nearer candidates do not fit: the baseline's filesystem manifest is
-    built inside `materialize`, which also writes a ref into the USER's repository, and
+    beside it. What this call adds to that default is `_TOOL_CACHE_DIRS`, and the tradeoff it
+    buys is stated there. The two nearer candidates do not fit: the baseline's filesystem
+    manifest is built inside `materialize`, which also writes a ref into the USER's repo, and
     `verify.gate_surface` answers gate-defining NAMES only — a reviewer editing the source
     under review would not appear in it at all, which is the fail-open direction.
 
@@ -1020,7 +1056,7 @@ def worktree_identity(checkout, quota) -> tuple:
     undisturbed on the strength of two scans that inventoried nothing.
     """
     try:
-        entries, breaches = snapshot.take(checkout, quota=quota, skip_dirs=(".git",))
+        entries, breaches = snapshot.take(checkout, quota=quota, skip_dirs=_SKIP_DIRS)
     except (snapshot.SnapshotError, OSError) as e:
         raise ReviewError(
             f"{checkout} could not be inventoried whole ({e}), so whether a reviewer wrote "
@@ -1134,13 +1170,27 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
         same evidence.
       * `ready` — every blocker resolved and re-reviewed, and every round's panel whole.
 
-    WHAT IT DOES NOT ASSERT: that the checkout was measured at all. `loop` is what brackets a
-    round with `worktree_identity`, and a record written by any other route carries no such
-    pair — so an absent pair is read here as an absent CLAIM, not as a clean one. Everything
-    the record does say about a checkout is refused above.
+    THE BRACKET IS REQUIRED, NOT MERELY BELIEVED. Every round from 1 to `rounds_run` has to
+    carry a completed `WORKTREE_KIND` pair on the journal, and a round that carries none is a
+    refusal here rather than a round with nothing said against it. The version that only
+    refused what the journal DID say was true by call-site discipline — `loop` was the sole
+    writer of these records, so the pair was always there — which is a guarantee held up by
+    there being one caller rather than by anything the function checks. A `--collect` resume
+    reads these records without having run the loop, and at that point "only `loop` writes
+    it" stops being a fact about the program. Put as the two questions this package asks of
+    every guard: a round nobody measured left the same record as a round measured clean, and
+    "the bracket did not run" compared equal to "the bracket ran and the tree held".
+
+    WHAT IT STILL DOES NOT ASSERT is that the pair on the journal was taken around THIS round's
+    panel rather than around nothing — the journal is forge's own append-only record and this
+    reads it at face value. The four things the bracket itself cannot see are listed at
+    `WORKTREE_KIND`.
     """
     if not isinstance(rounds_run, int) or isinstance(rounds_run, bool) or rounds_run < 1:
         raise ReviewError(f"a review ran at least one round, not {rounds_run!r}")
+    # Materialised once: three separate scans follow, and a generator would be empty for the
+    # second and third — which is the fail-open direction for two of them.
+    events = tuple(events)
     orphaned = [e for e in journalmod.orphans(events)
                 if e.event == journalmod.intent(COUNCIL_KIND)]
     if orphaned:
@@ -1157,6 +1207,17 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
             "them writing in it, so findings taken over a tree that moved underneath them "
             "describe a state that no longer exists. A terminal chosen here would be the "
             "check the reviewed party could have rigged, with the reviewer holding the pen.")
+    measured = {e.operation_id for e in events
+                if e.event == journalmod.done(WORKTREE_KIND)}
+    unmeasured = [n for n in range(1, rounds_run + 1)
+                  if _worktree_operation(n) not in measured]
+    if unmeasured:
+        raise ReviewError(
+            f"round(s) {unmeasured} reached a terminal with no completed checkout measurement "
+            f"on the journal (expected {[_worktree_operation(n) for n in unmeasured]}). §13's "
+            "reviewers are write-capable and share the synthesis checkout, so a round nobody "
+            "bracketed cannot say its findings describe a tree that stood still — and without "
+            "this it would leave exactly the record a round measured clean leaves.")
     blocked, degraded = [], []
     for n in range(1, rounds_run + 1):
         r = read_round(run_dir, n)               # raises when the record is missing
@@ -1217,6 +1278,16 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
     return READY, (f"{rounds_run} round(s), every panel whole and no blocker left open")
 
 
+def _persist(run_dir, state, terminal: str):
+    """§14's edge, taken and written down. `runstate.advance` refuses an undeclared one, so a
+    caller that is not in `reviewing` fails here rather than recording a phase it never
+    reached."""
+    from . import runstate                       # local: runstate imports nothing from here
+    new = runstate.advance(state, terminal)
+    runstate.write_state(run_dir, new)
+    return new
+
+
 def settle(run_dir, state, *, rounds_run: int, events) -> tuple:
     """Read the record, take §14's edge, and persist the new position.
 
@@ -1224,11 +1295,8 @@ def settle(run_dir, state, *, rounds_run: int, events) -> tuple:
     include all three terminals, so this adds no graph — it adds the rule that the terminal
     comes from the record.
     """
-    from . import runstate                       # local: runstate imports nothing from here
     terminal, why = terminal_from_record(run_dir, rounds_run=rounds_run, events=events)
-    new = runstate.advance(state, terminal)
-    runstate.write_state(run_dir, new)
-    return new, why
+    return _persist(run_dir, state, terminal), why
 
 
 def _tree_of(checkout, commit):
@@ -1244,8 +1312,29 @@ def _tree_of(checkout, commit):
     return out if r.returncode == 0 and out else None
 
 
-def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_tree: str,
-         artifact_manifest, log, manifest, fix, other_clones, run=None) -> tuple:
+def _stop(run_dir, state, *, rounds_run: int, events, note: str) -> tuple:
+    """The two exits `loop` reaches by its own control flow, taken off the record anyway.
+
+    Both have just written `unresolved` rows for every one of that round's blockers, so
+    `review_blocked` is what the record says and the loop's sentence — which names the cap or
+    the failed verify, facts the record cannot carry — is APPENDED to the record's rather than
+    substituted for it. The disagreement is refused rather than reported: a terminal chosen
+    here that the record does not also reach would be a verdict reading cleaner, or merely
+    differently, than the rows this loop had just finished writing.
+    """
+    terminal, why = terminal_from_record(run_dir, rounds_run=rounds_run, events=events)
+    if terminal != REVIEW_BLOCKED:
+        raise ReviewError(
+            f"{note} — and the record then classified {terminal!r}. This loop wrote every one "
+            "of that round's blockers `unresolved` immediately before reading it back, so the "
+            "two disagree about the same rows and neither may be reported over the other.")
+    _persist(run_dir, state, terminal)
+    return terminal, f"{why}; {note}"
+
+
+def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
+         baseline_tree: str, artifact_manifest, log, manifest, fix, other_clones,
+         run=None) -> tuple:
     """§13's bounded review loop. NOT a convergence loop, and it never buys a third round.
 
     §13: "Round-1 blocker → fix, verify, checkpoint, round 2. Round-2 blocker → terminal state
@@ -1274,6 +1363,21 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
     inadmissible, so nothing may be spent acting on them — and the refusal itself is left to
     `terminal_from_record`, which reads the pair back off the journal. A crash between the
     write and the verdict therefore reaches the same answer.
+
+    THE PHASE IS PERSISTED ON EVERY EXIT THAT RETURNS ONE. `state` is §14's position on the way
+    in — `reviewing`, or `advance` refuses the edge — and each of the three returns below goes
+    through `settle` or `_stop`, both of which write the new phase before answering. A loop
+    that classified a run and left it recorded as still `reviewing` is the resume hazard the
+    bracket contract is about one field over: `--collect` would find a position that says the
+    review had not finished and a findings record that says it had. The RETURN VALUE is still
+    the terminal string rather than the new `State`, on this module's standing rule that the
+    return value is a convenience and the record is the fact — a caller that needs the other
+    four dimensions reads `runstate.read_state`.
+
+    A REFUSAL LEAVES THE PHASE ALONE, and that is deliberate. Every raise below and in
+    `terminal_from_record` is a run whose terminal is not known; §14.1 calls that
+    `outcome_unknown` and it is not one of `reviewing`'s declared successors, so there is no
+    phase to move to and `reviewing` is the honest position to be found in.
     """
     from . import progress                       # local: progress imports nothing from here
     runner = run or run_round
@@ -1310,9 +1414,9 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
         if remaining <= 0:
             write_resolutions(run_dir, n, tuple(
                 Resolution(f.id, "unresolved", None, False) for f in blockers))
-            return REVIEW_BLOCKED, (
+            return _stop(run_dir, state, rounds_run=n, events=log.read(), note=(
                 f"round {n} raised {len(blockers)} blocker(s) and §12.3's synthesis-fix cap "
-                "is exhausted, so no fix was attempted")
+                "is exhausted, so no fix was attempted"))
         op = f"review-fix-{n}"
         progress.record_fix_start(log, operation_id=op, tree_oid=_tree_of(checkout, current))
         new_checkpoint, verified = fix(tuple(blockers), current)
@@ -1323,10 +1427,11 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
         if not verified or not new_checkpoint:
             write_resolutions(run_dir, n, tuple(
                 Resolution(f.id, "unresolved", None, False) for f in blockers))
-            return REVIEW_BLOCKED, (
+            return _stop(run_dir, state, rounds_run=n, events=log.read(), note=(
                 f"round {n}'s fix did not pass verify, so it was reverted and its "
-                f"{len(blockers)} blocker(s) are reported unresolved (§13)")
+                f"{len(blockers)} blocker(s) are reported unresolved (§13)"))
         write_resolutions(run_dir, n, tuple(
             Resolution(f.id, "fixed", new_checkpoint, True) for f in blockers))
         current = new_checkpoint
-    return terminal_from_record(run_dir, rounds_run=n, events=log.read())
+    new, why = settle(run_dir, state, rounds_run=n, events=log.read())
+    return new.phase, why
