@@ -763,17 +763,21 @@ AUTHOR = ("Ada Lovelace", "ada@example.invalid")
 
 
 def _answers(**kw):
-    """A complete answer sheet for §5 step 2 — both commands, both policies, the author."""
+    """A complete answer sheet for §5 step 2 — both commands, both policies, the author, and
+    §13.1's opt-in. `ultrareview=True` matches the quote every helper here builds, because
+    `gate.quote` defaults §13.1 on and `confirm` refuses an answer that contradicts the price
+    the operator was shown."""
     return {"setup": [["true"]], "verify": [["true"]],
             "on_calibration_failure": "abort", "strategy": "size-gated",
-            "author": AUTHOR, **kw}
+            "author": AUTHOR, "ultrareview": True, **kw}
 
 
 def _confirmation(**kw):
     """A complete `Confirmation`, with any single field replaced by `kw`."""
     fields = dict(setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("true",)),),
                   on_calibration_failure="abort", strategy="size-gated", accepted_gaps=(),
-                  author=AUTHOR, seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3)
+                  author=AUTHOR, seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3,
+                  ultrareview=True)
     return gate.Confirmation(**{**fields, **kw})
 
 
@@ -1859,5 +1863,55 @@ def test_a_cap_below_the_rounds_it_must_cover_is_refused():
     with pytest.raises(gate.GateError):
         gate.Confirmation(setup=(), verify=(verify.Step(argv=("true",)),),
                           on_calibration_failure="abort", strategy="size-gated",
-                          accepted_gaps=(), author=("A", "a@b.invalid"),
+                          accepted_gaps=(), author=("A", "a@b.invalid"), ultrareview=True,
                           seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=1)
+
+
+def test_the_ultrareview_decision_is_answered_once_and_must_match_what_was_priced(tmp_path,
+                                                                                  monkeypatch):
+    """§13.1's --no-ultra moves three scalars on the quote AND decides whether a cloud review
+    runs an hour later, in another process. Two spellings of one decision will disagree, so it
+    is a §5 step 2 ANSWER recorded once — and `confirm` refuses an answer that contradicts the
+    Quote the operator was shown, which is the invariant living in the value."""
+    _state(monkeypatch, tmp_path)
+    report = _report(tmp_path)
+    priced_on = gate.quote(report)
+    priced_off = gate.quote(report, ultrareview=False)
+    assert priced_on.provider_calls > priced_off.provider_calls
+
+    answers = _answers(ultrareview=True)
+    assert gate.confirm(report, priced_on, answers).ultrareview is True
+    assert gate.confirm(report, priced_off,
+                        dict(answers, ultrareview=False)).ultrareview is False
+
+    with pytest.raises(gate.GateError) as e:
+        gate.confirm(report, priced_off, answers)           # priced off, answered on
+    assert "priced" in str(e.value)
+    with pytest.raises(gate.GateError):
+        gate.confirm(report, priced_on, dict(answers, ultrareview=False))
+    with pytest.raises(gate.GateError):
+        gate.confirm(report, priced_on, {k: v for k, v in answers.items()
+                                         if k != "ultrareview"})
+    with pytest.raises(gate.GateError):
+        gate.confirm(report, priced_on, dict(answers, ultrareview="yes"))
+
+
+def test_the_ultrareview_answer_is_journalled_where_collect_will_look_for_it(tmp_path,
+                                                                            monkeypatch):
+    """The other half of the decision, and the half `--collect` spends money on. The answer is
+    recorded on the `confirm` done record — the manifest holds no policy — under the FIELD
+    NAME, which is the name `runner._confirmed_policy` reads `on_calibration_failure` back by
+    and the one `cli._confirmed_ultrareview` reads this by. A policy written under one name
+    and read under another is silence one field over.
+
+    Both values, because a key that is always `True` is a key whose reader cannot be wrong.
+    """
+    _state(monkeypatch, tmp_path)
+    for run_id, on in (("ultra-on", True), ("ultra-off", False)):
+        r = _report(tmp_path)
+        q = gate.quote(r, ultrareview=on)
+        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id)
+        done = [e for e in journal.Journal(storage.journal_path(run)).read()
+                if e.event == journal.done("confirm")]
+        assert len(done) == 1, done
+        assert done[0].data["ultrareview"] is on, done[0].data

@@ -959,8 +959,9 @@ STRATEGY_RULES = ("size-gated", "fusion", "base-and-port")
 # the point: either calibration policy is an ACTION a later phase takes, so silence there has
 # no safe reading, while silence about a gap means the operator accepted none — which is the
 # reading that cannot later be cited as agreement.
-_ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "author", "accepted_gaps")
-_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy", "author")
+_ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "author",
+            "accepted_gaps", "ultrareview")
+_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy", "author", "ultrareview")
 
 # What git's ident line cannot hold: `<` and `>` delimit the email and a newline ends the
 # header. Refused HERE because git does not refuse it — measured on git 2.53.0, `commit-tree`
@@ -1043,6 +1044,14 @@ class Confirmation:
     run's shape and §5.2 priced the run BY them, so the alternative — a launcher passing its
     own — is a fleet nobody costed.
 
+    `ultrareview` goes the OTHER way and is an ANSWER, though `quote` also prices it. The two
+    are not the same reading: the four numbers above are computed BY `quote` and have no
+    second source, while §13.1's opt-out is the operator's own decision, made once, spent an
+    hour later in another process by `ultra.run_ultra(enabled=…)`. Recorded here rather than
+    read back off `Quote.ultrareview`, which is a SENTENCE for a human (§13.1 prices the
+    review in usage credits, not in calls) and not a value another process may branch on.
+    `confirm` is where the answer and the price are checked against each other.
+
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
     constructor supplies is a fact nobody answered for. `confirm` is where an omitted
     `accepted_gaps` KEY becomes the empty tuple, because that is a reading of a silent answer
@@ -1087,6 +1096,7 @@ class Confirmation:
     attempts: int
     review_rounds: int
     synthesis_fix_cap: int
+    ultrareview: bool
 
     def __post_init__(self):
         # NORMALIZING as well as refusing, through the same helpers `confirm` used to call:
@@ -1116,6 +1126,10 @@ class Confirmation:
                 "`partition` is deliberately absent: §12.1 admits one only where stable seams "
                 "exist, which is §10.1's non-mechanical criterion and cannot be "
                 "pre-committed to.")
+        if not isinstance(self.ultrareview, bool):
+            raise GateError(
+                f"ultrareview is §13.1's opt-in/out and is a bool, not {self.ultrareview!r}. "
+                "A truthy string here would price one run and collect another.")
         object.__setattr__(self, "author", _confirmed_author(self.author))
         object.__setattr__(self, "accepted_gaps", _confirmed_gaps(self.accepted_gaps))
         # Returned values discarded: there is nothing to normalize about a whole number, and
@@ -1400,6 +1414,23 @@ def confirm(report, quote_, answers) -> Confirmation:
     if unknown:
         raise GateError(f"§5 step 2 does not ask {unknown}; it asks {list(_ANSWERS)}")
 
+    # THE INVARIANT LIVES IN THE VALUE, not in a second check downstream. `quote` prices
+    # §13.1 on or off and moves three scalars doing it; `ultra.run_ultra` obeys the decision
+    # an hour later in another process. If those were two readings of one intent they would
+    # eventually disagree, and the disagreement is money: a run priced without the cloud
+    # review that then requests one, or the reverse — a user shown $5-25 they were never
+    # charged and a review they were told they would get.
+    #
+    # `Quote.ultrareview` is a STRING by design (§13.1 prices it in usage credits, not calls),
+    # so the comparison is against what `quote` recorded rather than a second boolean field.
+    priced_on = not quote_.ultrareview.startswith("not run")
+    if bool(answers["ultrareview"]) is not priced_on:
+        raise GateError(
+            f"this run was priced with ultrareview {'ON' if priced_on else 'OFF'} and the "
+            f"answer says {'ON' if answers['ultrareview'] else 'OFF'}. §5 step 5 forbids "
+            "re-asking, so the quote the operator saw is the one this run may spend — "
+            "re-price with `quote(..., ultrareview=...)` and show it again.")
+
     # Every value below goes to `Confirmation` as it was answered. `accepted_gaps` is the one
     # key whose ABSENCE is legal, and reading that silence as "accepted none" is a fact about
     # the sheet rather than about the record, so it is read here.
@@ -1408,6 +1439,7 @@ def confirm(report, quote_, answers) -> Confirmation:
                         strategy=answers["strategy"],
                         accepted_gaps=answers.get("accepted_gaps", ()),
                         author=answers["author"],
+                        ultrareview=answers["ultrareview"],
                         seats=quote_.seats, attempts=quote_.attempts,
                         review_rounds=quote_.review_rounds,
                         synthesis_fix_cap=quote_.synthesis_fix_cap)
@@ -1470,14 +1502,17 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     `materialize` and no record, so a clean-tree run — where B1 is the user's own base commit
     and forge writes no commit of its own — left nothing on disk saying whose name the
     operator agreed forge could work under. `runner.run` still takes it as an argument and
-    does not yet read it back.
+    does not yet read it back. `ultrareview` is here for the same reason one process over:
+    §13.1's cloud review is requested by `--collect`, an hour later and in another process,
+    and this record is the only copy of what the operator agreed to spend on it.
     The run's four shape numbers go the OTHER way and are in the manifest, because a launcher
     reads them to decide how many providers to spend — see `runstate.Manifest` for why those
     are not a policy — and `read_manifest` type-checks them on the way back. That launcher is
     `runner.run`: `seats` resolves to that many of `council.engine`'s providers and `attempts`
     is the per-seat retry budget; `review_rounds` and `synthesis_fix_cap` bound §12.3's
     post-review loop, which `progress.cap_remaining` reads back off the manifest. `on_calibration_failure` is read back from HERE, off this
-    record, which is the only copy of it — see `runner._confirmed_policy`.
+    record, which is the only copy of it — see `runner._confirmed_policy`, and
+    `cli._confirmed_ultrareview` beside it for §13.1's.
 
     The record is WRITE-AHEAD around everything that touches the user's repository, so a
     crash between the two halves leaves the orphan §14.1 requires rather than a run directory
@@ -1578,5 +1613,13 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
                # Journalled beside the other three for the reason `open_run` gives them:
                # this record is where §5 step 2's answers live. A list because a tuple comes
                # back from json as one, and one spelling on disk beats two.
-               author=list(confirmation.author))
+               author=list(confirmation.author),
+               # §13.1's opt-out, keyed by the FIELD NAME exactly as the three above are, so
+               # `cli._confirmed_ultrareview` reads it back under the name this writes —
+               # `runner._confirmed_policy`'s rule, and a policy read back by a name the
+               # writer does not use is the same silence one field over. It is here rather
+               # than in the manifest for the reason the other three are: §14.2 lists what the
+               # manifest holds and a policy is not among them, and `read_manifest` refuses a
+               # field it does not know.
+               ultrareview=confirmation.ultrareview)
     return run_dir
