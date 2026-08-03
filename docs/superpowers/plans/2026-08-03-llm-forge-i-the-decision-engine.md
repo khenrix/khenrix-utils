@@ -29,6 +29,60 @@ The brief asked for §20 → §10 → §10.1 → §11 → §12 → §13 → §13
 
 ---
 
+## Revisions — 2026-08-03, after an adversarial review
+
+This document was reviewed against the code before execution rather than after, because §10's
+ledger exists nowhere and there was no partial implementation to correct against. **Task 1 has
+since landed** (commit `2fef627`); everything below Task 1 is unbuilt. What this pass changed,
+so an implementer reading one task knows the document was corrected and where:
+
+- **Task 3 — the ordering edge was backwards.** `edges()` emitted `requires` on X naming Y as
+  `X -> Y`, so Kahn's algorithm put the *requirer* first and the plan's own ordering test
+  asserted the opposite. Measured by transcribing the draft: it produced `('AAA','BBB')` where
+  the test wants `('BBB','AAA')`. The **test was right**; `edges` now emits dependency →
+  dependent (`Y -> X` for `requires`, `A -> B` for `blocks`). Cycle detection is
+  direction-agnostic, so every cycle test passed either way — which is why this had to be
+  caught by reading rather than by running.
+- **Task 6 — the launcher dropped `fleet.forge_child_env`.** The draft accepted `env` and
+  ignored it, and said so in a docstring that read as a contract nicety. Measured:
+  `engine.run_provider` has no `env` seam and `engine.child_env()` is `os.environ` plus a
+  council-depth bump, so every real seat would have lost `LLM_FORGE_DEPTH` and the
+  `gitcmd.HOSTILE_ENV` scrub. Plan I now **takes the council-engine change** (new Steps 7–8 in
+  Task 6, committed on their own) rather than recording a debt: `child_env(base=None)` and
+  `run_provider(..., env=None)`.
+- **Task 6 — the schema check was installed at one of two writers (I6).** `_write` is not the
+  only writer; `_revise` calls `runstate.write_seat` directly and is the writer on the
+  verification path Task 6's own headline test drives. Both now go through one `_payload`
+  builder that validates, so the class is closed rather than the call site.
+- **Task 6 — the recovered measurement could end the fleet (I3).** `_measured` moved into the
+  `except` handler, where nothing catches it. It is now contained, and the seat keeps its
+  pre-verification verdict with the dropped measurement named in `verification_refused`.
+- **Tasks 3 and 4 — three fail-opens got a guard AND a test that kills it.** `ledger._decode`
+  accepted `"rows": []` and silently defaulted three of `Row`'s sixteen fields;
+  `coverage._symbol`/`_hash` joined an unchecked `Criterion.path` onto the tree.
+  `taskbundle._decode` already gets the empty-list case right and is now the spelling both
+  follow.
+- **Task 2 — two pieces of draft code could not run.** `_seat()` passed the string `"HEAD"`
+  where `clone_seat` reads `baseline.ref`/`.commit`/`.filesystem_manifest`, and one test
+  splatted git's top-level `-c` presets *after* the subcommand (measured: `error: unknown
+  switch 'c'`, rc 129).
+- **Task 2 could not run against the Task 1 that actually landed.** The review measured Task 2
+  against the plan's *draft* of Task 1; the committed one (`d7bbdf0`) gives `_walk`/`_entry` a
+  `quota` parameter, so Task 2's `_walk(dest)` / `_walk(d)` raised `TypeError` in five of its
+  ten tests. Both call sites now pass one, for different reasons, and `installed_closure` no
+  longer raises out of a `str | None` contract (review I5).
+- **Citations and counts.** Eight stale line citations corrected (`engine_owned` is
+  `fleet.py:188`, `info/exclude` is `fleet.py:253-258`, `clone_seat` is `:128`, `run_seat` is
+  `runner.py:501`, `make_sentinel` is `:580`, the strip order is `:269-303`, agy's changelog
+  routing is `inventory.py:50`, the hooks rig is `test_forge_runner.py:951`); `fleet.Seat`'s
+  real field order is `path, replayed, branch, verified`; four "Expected: N passed" counts were
+  wrong and are re-derived from the draft bodies.
+- **What this plan produces and nothing yet calls, now stated rather than claimed as covered.**
+  See "Produced here, consumed nowhere yet" below the Self-Review. §11's `agreement_label` has
+  exactly one reachable value in production until a caller supplies `bundle_sha256`.
+
+---
+
 ## Global Constraints
 
 Every task's requirements implicitly include this section.
@@ -50,7 +104,7 @@ Every task's requirements implicitly include this section.
 
 ## Decisions already taken. Build on these; do not reopen them.
 
-1. **§20's task bundle must NOT use `fleet.clone_seat`'s `template_dir`.** Measured on git 2.53.0: git's clone-template copy **silently drops every dot-name at every level** (`.claude/` vanished, rc 0, no output), **rewrites 0600 → 0644**, and passing a directory flips `engine_owned = not template_dir` to False (`fleet.py:177`), which skips the pre-clean and installs the directory as a real git template — disarming Plan G's empty-template hook defence. Copy post-clone into the seat's own git dir and **re-verify from the seat's filesystem**.
+1. **§20's task bundle must NOT use `fleet.clone_seat`'s `template_dir`.** Measured on git 2.53.0: git's clone-template copy **silently drops every dot-name at every level** (`.claude/` vanished, rc 0, no output), **rewrites 0600 → 0644**, and passing a directory flips `engine_owned = not template_dir` to False (`fleet.py:188`), which skips the pre-clean and installs the directory as a real git template — disarming Plan G's empty-template hook defence. Copy post-clone into the seat's own git dir and **re-verify from the seat's filesystem**.
 2. **§13's codex reviewer uses `codex exec --json`, not `codex review`** — a deliberate, recorded deviation from §13's text. `codex review` has **no `--json`** (measured), so the engine's existing `extract_codex_json` turns every review into a silent `parse_failure` and "found nothing" becomes indistinguishable from "could not be read". Forge supplies the review framing itself. **This lands in Plan I₂ Task 4, but it is recorded here because the deviation must not be re-litigated by whoever writes it.**
 3. **The fingerprint type is `PromptIdentity`, never `identity`.** `fleet.clone_seat(..., identity=…)` and `runner.run_seat(..., identity=…)` already mean the git author `(name, email)` pair. Conflating them is a trap with a six-week fuse.
 4. **§13.1's `claude ultrareview --timeout` is in MINUTES** (measured; default 30). Every other timeout in forge and the council is seconds. Plan I₂ Task 6 owns this; it is recorded here so it is not lost.
@@ -59,7 +113,7 @@ Every task's requirements implicitly include this section.
 
 ## Debts this plan closes, inherited from Plan H
 
-- **`forge_spec` has no production caller.** §8.1's validator has never run outside the suite. **Task 6 wires the real `launch` adapter and must wire `forge_spec` with it** — otherwise seats run under the council's own validity policy, which is the exact defect that module exists to close.
+- **`forge_spec` has no production caller.** §8.1's validator has never run outside the suite. **Task 6 wires the real `launch` adapter and must wire `forge_spec` with it** — otherwise seats run under the council's own validity policy, which is the exact defect that module exists to close. **This debt comes out HALF-CLOSED and the plan says so:** `make_launcher` wires `forge_spec`, and nothing calls `make_launcher` until Plan J's CLI, so §8.1's validator still does not run outside a suite when Plan I lands. What Task 6 removes is the *absence of an adapter*; what remains is the absence of a caller, and it is assigned (see "Produced here, consumed nowhere yet").
 - **The seat record has no schema.** `runstate.write_seat` enforces none, deliberately (`runstate.py:1062-1076`): §14.2 assigns the record's fields to the *orchestrator*, so `runstate` refuses to be the authority on a record it does not own. **Plan I is the first real reader, so Task 6 adds the schema beside the reader** — in a new module, leaving `write_seat` unchanged.
 - **The third "a measurement that was taken must reach the record"**, inside `runner.verify_candidate` (documented at `runner.py:862` and `runner.py:1365`): `build_verifier` fills §6.1's `gate_delta`/`gate_surface` and `run_setup` returns a `SetupResult`, then any later refusal drops both as locals. Measured through `runner.run` with the hooks-rig candidate: the record comes back `gate_delta: null, gate_surface: null, verifier_setup: null` for a verifier clone that was built, measured and paid for. **Task 6 closes it.**
 
@@ -80,7 +134,7 @@ Recorded here because §10–§13 and §20 contradict themselves or the code in 
 | 5 | §11 says a text-only `prompt_sha256` is insufficient; `run_council`'s manifest records exactly that, once per run. | `PromptIdentity` carries four values and is built by the launcher, which is the only party that knows the prompt (Tasks 5, 6). |
 | 6 | §20's "materialize it identically in every clone" vs `template_dir` as the insertion point. | See Decision 1 (Task 2). |
 | 7 | §20 says "bar ambient invocation of the same skill". The only mechanism in reach is a sentence in the prompt. | Recorded as *an instruction issued*, never as a mechanical bar (Task 2). |
-| 8 | `scripts/lib/inventory.py:48` routes agy through `agy changelog` because `--version` was believed absent. | Measured this machine: `agy --version` → `1.1.9`, rc 0. **`inventory.version` is not reused** — it swallows every failure into a *string*, and two unreadable versions then compare equal (Task 5). |
+| 8 | `scripts/lib/inventory.py:50` routes agy through `agy changelog` because `--version` was believed absent. | Measured this machine: `agy --version` → `1.1.9`, rc 0. **`inventory.version` is not reused** — it swallows every failure into a *string*, and two unreadable versions then compare equal (Task 5). |
 
 ---
 
@@ -92,7 +146,7 @@ Verify each against the code before relying on it. **The plan's own draft code h
 - `runstate.Manifest` (17 frozen fields), `write_manifest`/`read_manifest`, `_DECODERS`/`_decode` (the strict-decoder precedent), `write_seat(run_dir, name, payload: dict)` / `read_seat(run_dir, name) -> dict | None`, `State`, `advance`, `PHASES`, `TERMINAL`, `ManifestError`, `StateError`.
 - `snapshot.Entry(path, digest, mode, size, kind)` — `kind` ∈ `{"file","symlink","special"}`; `_digest(p)`; `_symlink_entry(p, rel)` digests the **target text** with `surrogateescape`; mode and size are a fabricated 0 for a link; a special file is never opened.
 - `bundle._names_dotgit(rel)`, `bundle._assert_contained(rel, what)`, `bundle._safe_rel(rel, what)`, `bundle.SidecarEntry`, `bundle.CandidateBundle` (`gate_delta`/`gate_surface` are `None` = "nobody looked"), `bundle.BundleError`.
-- `fleet.clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat(path, branch, verified, replayed)`, `fleet.forge_child_env(repo, env=None)`, `fleet.SeatError`.
+- `fleet.clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat` (`fleet.py:128`), where `Seat`'s field order is **`path, replayed, branch, verified`** (`fleet.py:105-108`; `replayed` has `default_factory=tuple`, `branch=""`, `verified=False`) — nothing in this plan constructs one positionally, and nothing later should start. `fleet.forge_child_env(repo, env=None)` (`fleet.py:426`), `fleet.SeatError`.
 - `verify.Run(exit_code, stdout, stderr, duration_sec, step_index)`, `verify.SetupResult`, `verify.build_verifier`, `verify.run_setup`, `verify.OUTCOMES`, `verify.VerifyError`.
 - `seat.classify_seat(...) -> Status`, `seat.Status(process, artifacts, proven_read, forge, setup, verify)`, `seat.forge_spec(name, prompt, timeout, **kw) -> engine.ProviderSpec` (takes only `cfg=` and `workdir=`; anything else raises `SeatStatusError`), `seat.read_proof(output, token)`, `seat.SeatStatusError`.
 - `runner.run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) -> SeatResult`, `runner.verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity, calibration) -> (outcome, reason, Verifier, SetupResult|None)`, `runner.reclassify_seat`, `runner._record(result) -> dict`, `runner._measured(result, candidate, verifier_setup)`, `runner.run(run_dir, repo, *, identity, launch) -> tuple`, `runner.RunnerError`. **The injected launch contract is `launch(*, name, seat_path, token, env) -> Mapping`.**
@@ -120,6 +174,20 @@ Verify each against the code before relying on it. **The plan's own draft code h
 ---
 
 ### Task 1: The task-bundle manifest — paths, modes, kinds, and one hash
+
+> **ALREADY LANDED**, as `2fef627` plus the follow-up `d7bbdf0`. Read the file, not this task.
+> Two things differ from the draft below and both matter to Task 2:
+>
+> - **It ships 15 tests**, not the 12 the draft claimed (the draft bodies are 13; `d7bbdf0`
+>   added `test_an_oversized_file_is_refused_before_it_is_read` and
+>   `test__rel_wraps_a_bundle_error_as_a_task_bundle_error`).
+> - **`_walk` and `_entry` now take a `quota`.** `d7bbdf0` moved the per-file cap check ahead of
+>   `snapshot._digest`, because a 300 MB file under a 1 KB cap was fully hashed before `scan`
+>   raised. Task 2's draft called `_walk(dest)` and `_walk(d)`; both now pass a quota, and the
+>   reasons for which one differ — see Task 2 Step 3.
+>
+> One thing in it is wrong and Task 2 fixes it: the module docstring cites
+> `engine_owned = not template_dir` at `fleet.py:177`; it is `fleet.py:188`.
 
 **Files:**
 - Create: `shared/lib/forge/taskbundle.py`
@@ -372,7 +440,7 @@ WHY NOT `fleet.clone_seat(template_dir=...)`, WHICH IS THE OBVIOUS HOOK. Measure
   2. MODES ARE NORMALIZED, NOT PRESERVED. A 0600 template file arrives 0644 (git applies
      0666/0777 by the executable bit, masked by umask). Only +x survives.
   3. IT DISARMS AN EXISTING DEFENCE. `clone_seat` computes `engine_owned = not
-     template_dir` (`fleet.py:177`); passing a directory flips it False, skipping the
+     template_dir` (`fleet.py:188`); passing a directory flips it False, skipping the
      pre-clean and installing the directory as a real git template — git READS a template
      `config` (a malformed one aborted a clone outright) and installs a template `hooks/`
      that then runs for the agent's own commits.
@@ -662,7 +730,7 @@ def read_task_bundle(run_dir) -> TaskBundle:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_taskbundle.py`
-Expected: PASS — 12 passed.
+Expected: PASS — the draft bodies above are **13**, not the 12 originally claimed. As landed the file holds **15**; see the note at the top of this task.
 
 - [ ] **Step 6: Re-run the new tests under scrambled names**
 
@@ -742,7 +810,7 @@ EOF
 ### Task 2: Materialize the bundle into a seat, re-derive it from the seat, and hash the three installed closures
 
 **Files:**
-- Modify: `shared/lib/forge/taskbundle.py` (add `task_dir`, `materialize`, `verify_materialized`, `INSTALL_GLOBS`, `installed_closure`, `ambient_verdict`, `ambient_note`)
+- Modify: `shared/lib/forge/taskbundle.py` (add `task_dir`, `materialize`, `verify_materialized`, `INSTALL_GLOBS`, `installed_closure`, `ambient_verdict`, `ambient_note`; **and correct Task 1's `fleet.py:177` citation to `fleet.py:188`**)
 - Modify: `tests/test_forge_taskbundle.py`
 - Modify: `tests/test_forge_seams.py` (one new seam)
 
@@ -771,22 +839,37 @@ EOF
 
 **The fail-open to avoid, named:** `refresh.installed_dirs` returns `[]` for a CLI that is not installed. An empty list hashed as an empty manifest gives every uninstalled CLI the *same* hash, so three uninstalled CLIs "hash identically" and §20's rule licenses an ambient skill none of them have. **Not-installed is `None`, and `None` fails the equality test.**
 
-> **ONE MEASUREMENT THIS PLAN HAS NOT TAKEN, and it must not be claimed as taken.** Whether each CLI's file-reading tools will open a path under the git directory is **unmeasured**. If one refuses, that seat cannot read its entrypoint, cannot quote the sentinel, and scores `failed` — which is the fail-closed direction, so the run stays honest, but the reason string will be unmapped. **Step 8 below is a one-off manual probe, outside the suite, that costs a fraction of one provider call.** If you decline to run it, record in the module docstring that the measurement was NOT taken; do not write a sentence claiming the path works. If a CLI does refuse, the recorded fallback is a second copy at `<seat>/.forge-task/` named in `.git/info/exclude` — but `clone_seat` overwrites `info/exclude` (`fleet.py:242-247`), so that fallback is a `fleet` change with its own blast radius and belongs in its own task, not smuggled in here.
+> **ONE MEASUREMENT THIS PLAN HAS NOT TAKEN, and it must not be claimed as taken.** Whether each CLI's file-reading tools will open a path under the git directory is **unmeasured**. If one refuses, that seat cannot read its entrypoint, cannot quote the sentinel, and scores `failed` — which is the fail-closed direction, so the run stays honest, but the reason string will be unmapped. **Step 8 below is a one-off manual probe, outside the suite, that costs a fraction of one provider call.** If you decline to run it, record in the module docstring that the measurement was NOT taken; do not write a sentence claiming the path works.
+>
+> **What the probe does and does not gate, stated honestly.** *Nothing in Plan I reads the entrypoint* — no task puts the task-dir path into a prompt, so declining the probe blocks no step here and the honesty is cheap. **It stops being cheap in Plan J**, which is the first plan that hands a seat the path; that plan may not wire the pointer into a prompt on an unmeasured assumption. Recorded there rather than left floating.
+>
+> **The fallback, and who owns it.** If a CLI does refuse, the recorded fallback is a second copy at `<seat>/.forge-task/` named in `.git/info/exclude` — but `clone_seat` **overwrites** `info/exclude` from the source repository's own (`fleet.py:253-258`), so the fallback is a `fleet` change with its own blast radius. **It is assigned to Plan J**, alongside the pointer that would need it; it belongs to no task in this plan and must not be smuggled into one.
 
 - [ ] **Step 1: Write the failing tests**
 
 Append to `tests/test_forge_taskbundle.py`:
 
 ```python
-from forge import fleet, gitcmd  # noqa: E402
+from forge import baseline, fleet, gitcmd, inspect as finspect  # noqa: E402
 from forge_fixtures import make_repo  # noqa: E402
 
 
 def _seat(tmp_path):
-    """A real clone, built the way §4 builds one, so the git-dir question is a real one."""
-    repo = make_repo(tmp_path / "repo")
-    dest = tmp_path / "seat"
-    s = fleet.clone_seat(repo, "HEAD", dest, name="claude",
+    """A real clone, built the way §4 builds one, so the git-dir question is a real one.
+
+    `clone_seat` takes a `Baseline`, NOT a rev string: it reads `baseline.ref` (and requires
+    the `refs/khenrix-forge/<run-id>/base` shape — `fleet.py:157` splits on `/` and takes
+    element 2), `baseline.commit` (`fleet.py:288`) and `baseline.filesystem_manifest`
+    (`fleet.py:290`). Passing `"HEAD"` raises `AttributeError` before any assertion in this
+    file. This is `tests/test_forge_fleet.py:22`'s `_mk_baseline` spelling, restated here
+    rather than imported because a test module importing another test module's private
+    helper is a coupling neither file declares.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"
+    run.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    s = fleet.clone_seat(repo, b, tmp_path / "seat", name="claude",
                          identity=("Forge", "forge@example.invalid"))
     return repo, s
 
@@ -821,7 +904,14 @@ def test_the_bundle_is_invisible_to_the_seats_worktree(tmp_path):
     _tree(src)
     _, s = _seat(tmp_path)
     taskbundle.materialize(taskbundle.scan(src, entrypoint="SKILL.md"), src, s.path)
-    porcelain = gitcmd.git(s.path, "status", "--porcelain", *gitcmd.NO_DAEMON_CACHE,
+    # THE PRESETS GO BEFORE THE SUBCOMMAND. `NO_DAEMON_CACHE` is `("-c", "core.fsmonitor=false",
+    # "-c", "core.untrackedCache=false")` (`gitcmd.py:50`) — git's TOP-LEVEL options, which must
+    # precede the verb. Measured: `git -C <repo> status --porcelain -c core.fsmonitor=false`
+    # answers `error: unknown switch 'c'`, rc 129, and `gitcmd.git` defaults `check=True`, so the
+    # splat-last form is a `GitError` rather than a `""` that would satisfy this assertion by
+    # accident. Every real call site splats first (`bundle.py:553`, `fleet.py:271`); the closure
+    # seam tests scan `shared/lib/forge/*.py` only, so a test-file call site is not covered there.
+    porcelain = gitcmd.git(s.path, *gitcmd.NO_DAEMON_CACHE, "status", "--porcelain",
                            env_extra=gitcmd.READONLY).stdout
     assert porcelain == "", \
         "a bundle the agent can commit is a bundle that can be harvested as its work"
@@ -897,6 +987,42 @@ def test_the_closure_hash_is_stable_and_path_independent(tmp_path, monkeypatch):
     assert taskbundle.installed_closure("claude") == taskbundle.installed_closure("codex")
 
 
+def test_re_verification_applies_the_caps_the_bundle_recorded_not_todays(tmp_path):
+    """THE REASON THE CAPS ARE ON THE VALUE. A bundle authored under a more permissive quota
+    must re-derive under THAT quota: re-reading `Quota.for_task_bundle()` here would refuse a
+    bundle that legitimately fit when it was written, and the refusal would name the wrong
+    failure — a cap change reinterpreting an old bundle."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "SKILL.md").write_text("entry\n")
+    # Over `for_task_bundle`'s 4 MiB per-file cap, under the quota this bundle records.
+    (src / "big.bin").write_bytes(b"\0" * (5 * 1024 * 1024))
+    roomy = storage.Quota(max_files=2000, max_file_bytes=8 * 1024 * 1024,
+                          max_total_bytes=64 * 1024 * 1024)
+    _, s = _seat(tmp_path)
+    b = taskbundle.scan(src, entrypoint="SKILL.md", quota=roomy)
+    assert b.max_file_bytes > storage.Quota.for_task_bundle().max_file_bytes, \
+        "non-vacuity: the two cap sets must actually differ for this file"
+    taskbundle.materialize(b, src, s.path)
+    taskbundle.verify_materialized(b, s.path)          # must not raise
+
+
+def test_an_unhashable_installed_closure_is_none_not_an_exception(tmp_path, monkeypatch):
+    """The declared type is `str | None` and `_walk` refuses a `.git` component, an escaping
+    symlink, a special file and a cap breach. Those refusals are right for an AUTHORED bundle;
+    the installed plugin cache is not authored — `refresh.sync` is an additive copytree over
+    whatever is on disk — so a stale `.git` there would turn a provenance hash into a
+    run-ending exception. `None` is the value this function already defines for 'could not be
+    described', and `ambient_verdict` fails on it exactly as it does on 'not installed'."""
+    d = tmp_path / "installed"
+    (d / ".git").mkdir(parents=True)
+    (d / ".git" / "config").write_text("[core]\n")
+    (d / "SKILL.md").write_text("body\n")
+    monkeypatch.setattr(taskbundle, "_install_dirs", lambda cli: [d])
+    assert taskbundle.installed_closure("claude") is None
+    assert taskbundle.ambient_verdict({"claude": None, "codex": "a", "agy": "a"}) is False
+
+
 def test_the_ambient_note_is_an_instruction_never_a_bar():
     note = taskbundle.ambient_note("chunk-map")
     assert "chunk-map" in note
@@ -912,7 +1038,11 @@ Expected: FAIL — `AttributeError: module 'forge.taskbundle' has no attribute '
 
 - [ ] **Step 3: Add the materialization half to `taskbundle.py`**
 
-Append to `shared/lib/forge/taskbundle.py`:
+First, one correction to what Task 1 committed: its module docstring cites `engine_owned = not
+template_dir` at `fleet.py:177`. Measured, it is **`fleet.py:188`**. A load-bearing citation that
+lands on unrelated code is the argument evaporating for the next reader; fix the number.
+
+Then append to `shared/lib/forge/taskbundle.py`:
 
 ```python
 def task_dir(seat_path) -> Path:
@@ -982,7 +1112,19 @@ def verify_materialized(b: TaskBundle, seat_path) -> None:
     dest = task_dir(seat_path)
     if not dest.is_dir():
         raise TaskBundleError(f"{dest} holds no task bundle; nothing was materialized")
-    seen = TaskBundle(b.version, b.entrypoint, tuple(_walk(dest)),
+    # RE-DERIVED UNDER THE CAPS THAT WERE ACTUALLY APPLIED, reconstructed from the bundle
+    # rather than re-read from `Quota.for_task_bundle()`. That is what recording them on the
+    # value was for: a re-derivation under today's caps could refuse a bundle that legitimately
+    # fit yesterday's, and the refusal would name the wrong failure.
+    #
+    # NOTE FOR THE IMPLEMENTER: `_walk` takes a quota, because Task 1 as COMMITTED moved the
+    # per-file cap check ahead of `snapshot._digest` (a 300 MB file under a 1 KB cap was fully
+    # hashed before `scan` raised). This plan's earlier draft of Task 2 called `_walk(dest)`
+    # and would have raised `TypeError` in five of this task's ten tests. Read the signature
+    # in the file, not in this plan.
+    quota = storage.Quota(max_files=b.max_files, max_file_bytes=b.max_file_bytes,
+                          max_total_bytes=b.max_total_bytes)
+    seen = TaskBundle(b.version, b.entrypoint, tuple(_walk(dest, quota)),
                       b.max_files, b.max_file_bytes, b.max_total_bytes)
     if bundle_hash(seen) == bundle_hash(b):
         return
@@ -1035,18 +1177,34 @@ def installed_closure(cli: str) -> str | None:
     construction; a hash carrying the path would make §20's "all three hash identically"
     rule unsatisfiable for a reason that has nothing to do with the closures.
 
-    None, NEVER an empty-manifest hash. `refresh.installed_dirs` returns [] for a CLI that
-    is not installed, and hashing [] gives every uninstalled CLI the SAME value — three
-    seats "hashing identically", which is precisely §20's licence to rely on an ambient
-    skill, manufactured out of three absences. `seat.read_proof`'s rule, one module over:
-    a missing measurement fails closed.
+    None, NEVER an empty-manifest hash, AND NEVER A RAISE. `refresh.installed_dirs` returns []
+    for a CLI that is not installed, and hashing [] gives every uninstalled CLI the SAME
+    value — three seats "hashing identically", which is precisely §20's licence to rely on an
+    ambient skill, manufactured out of three absences. `seat.read_proof`'s rule, one module
+    over: a missing measurement fails closed.
+
+    THE SECOND HALF IS NOT DECORATION. `_walk` walks the LIVE INSTALLED directories and refuses
+    a `.git` component, an escaping symlink, a special file and a cap breach. Those refusals
+    are right for an AUTHORED bundle, where the author is present and wrong. The installed
+    plugin cache is not authored — `refresh.sync` is an additive `copytree` over whatever is on
+    disk — so a stale `.git` or a symlink under `~/.claude/plugins/cache/...` would turn a
+    provenance hash into a RUN-ENDING exception out of a function whose declared type is
+    `str | None`. It already defines the fail-closed value; use it. The refusal is not lost:
+    `None` fails `ambient_verdict` exactly as "not installed" does, which is the same verdict
+    for the same reason — this closure could not be described.
+
+    `for_harvest`'s caps, not `for_task_bundle`'s: this is a tree this engine did not choose,
+    which is the question `for_harvest` was sized for. A breach still answers `None`.
     """
     dirs = _install_dirs(cli)
     if not dirs:
         return None
     rows = []
-    for d in dirs:
-        rows += _rows(_walk(d))
+    try:
+        for d in dirs:
+            rows += _rows(_walk(d, storage.Quota.for_harvest()))
+    except TaskBundleError:
+        return None
     return hashlib.sha256(json.dumps(sorted(rows), sort_keys=True).encode()).hexdigest()
 
 
@@ -1077,7 +1235,7 @@ def ambient_note(skill: str) -> str:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_taskbundle.py`
-Expected: PASS — 22 passed.
+Expected: PASS — **27 passed** (Task 1's 15 as landed, plus this step's 12). Verified by transcribing both halves against the current `taskbundle.py` and running them, not by inspection.
 
 - [ ] **Step 5: Add the cross-module seam**
 
@@ -1089,6 +1247,13 @@ def test_the_installed_plugin_paths_have_one_spelling():
     may not import `scripts/`. Two spellings of one predicate eventually disagree — and the
     disagreement here would be silent: a stale glob hashes a directory that is not the one
     `make khenrix-refresh` writes, and §20's identity rule would compare the wrong closures.
+
+    THE VACUITY THIS GUARDS. For a CLI that is not installed BOTH enumerations answer `[]`,
+    so on a machine with none installed every assertion below passes over three empty lists
+    and proves nothing about a producible hash — the same "a check over an empty manifest is
+    vacuous and still answers True" shape `fleet.Seat.verified` is written against. So the
+    equality is asserted for every CLI, and the producibility is asserted for the installed
+    ones, with an explicit skip rather than a silent pass when there are none.
     """
     import sys as _sys
     _sys.path.insert(0, str(ROOT / "scripts"))
@@ -1099,9 +1264,16 @@ def test_the_installed_plugin_paths_have_one_spelling():
     for cli in refresh.CLIS:
         assert taskbundle._install_dirs(cli) == sorted(refresh.installed_dirs(cli)), \
             f"{cli}: the two enumerations disagree about what is installed"
+    installed = [c for c in refresh.CLIS if refresh.installed_dirs(c)]
+    if not installed:
+        pytest.skip("no CLI is installed here: the two enumerations agree over three empty "
+                    "lists, which is agreement about nothing")
+    for cli in installed:
+        assert taskbundle.installed_closure(cli) is not None, \
+            f"{cli} is installed and its closure hash must be producible"
 ```
 
-> `ROOT` is already defined at the top of `tests/test_forge_seams.py`; verify that before relying on it and define it locally if it is not.
+> Verified present at the top of `tests/test_forge_seams.py`: `pytest` (`:30`) and `ROOT` (`:32`). Confirm both before relying on them and define them locally if they have moved.
 
 - [ ] **Step 6: Run the seam test**
 
@@ -1122,7 +1294,7 @@ scripts/mutate.py --file shared/lib/forge/taskbundle.py \
   -- uvx --with pytest pytest -q tests/test_forge_taskbundle.py
 
 scripts/mutate.py --file shared/lib/forge/taskbundle.py \
-  --old 'seen = TaskBundle(b.version, b.entrypoint, tuple(_walk(dest)),' \
+  --old 'seen = TaskBundle(b.version, b.entrypoint, tuple(_walk(dest, quota)),' \
   --new 'seen = TaskBundle(b.version, b.entrypoint, b.entries,' \
   -- uvx --with pytest pytest -q tests/test_forge_taskbundle.py
 
@@ -1130,9 +1302,21 @@ scripts/mutate.py --file shared/lib/forge/taskbundle.py \
   --old '            os.chmod(target, e.mode)' \
   --new '            pass' \
   -- uvx --with pytest pytest -q tests/test_forge_taskbundle.py
+
+# `installed_closure` must not raise out of a `str | None` contract.
+scripts/mutate.py --file shared/lib/forge/taskbundle.py \
+  --old '    except TaskBundleError:\n        return None' \
+  --new '    except ZeroDivisionError:\n        return None' \
+  -- uvx --with pytest pytest -q tests/test_forge_taskbundle.py
+
+# The re-derivation must use the caps the bundle RECORDED, not today's.
+scripts/mutate.py --file shared/lib/forge/taskbundle.py \
+  --old '    quota = storage.Quota(max_files=b.max_files, max_file_bytes=b.max_file_bytes,\n                          max_total_bytes=b.max_total_bytes)' \
+  --new '    quota = storage.Quota.for_task_bundle()' \
+  -- uvx --with pytest pytest -q tests/test_forge_taskbundle.py
 ```
 
-Expected: all four exit 0 (CAUGHT). `git status` clean afterwards.
+Expected: all six exit 0 (CAUGHT). The sixth is killed by `test_re_verification_applies_the_caps_the_bundle_recorded_not_todays`, whose fixture carries a 5 MiB file specifically so the two cap sets disagree about it — without that file both quotas accept everything and the mutation survives silently. `git status` clean afterwards.
 
 - [ ] **Step 8: The one-off provider probe (manual, outside the suite)**
 
@@ -1227,7 +1411,9 @@ EOF
 
 **The check that keeps the value honest:** `write_ledger` recomputes `row_id` for every row and refuses any row whose stored `id` differs. Without it, an editor that changes the claim text and leaves the id is *exactly* the failure §10 names, and it is invisible — the ledger stays well-formed while coverage keeps comparing a stale identity under a stable-looking key.
 
-**`requires` and `blocks` are one edge with two names.** This is the first real defect in §10's row spec, and it is dangerous rather than cosmetic: a cycle checker walking only `requires` misses every cycle a writer expressed with `blocks`, and passes. Normalize at decode: `requires` on row X naming Y is the edge `X → Y`; `blocks` on row A naming B is `B → A` — the same edge `{"id": A, "relation": "requires"}` on row B would produce. `conflicts` is **symmetric and not part of the ordering graph**; a "cycle" of conflicts is meaningless.
+**`requires` and `blocks` are one edge with two names.** This is the first real defect in §10's row spec, and it is dangerous rather than cosmetic: a cycle checker walking only `requires` misses every cycle a writer expressed with `blocks`, and passes. Normalize both into one edge set. `conflicts` is **symmetric and not part of the ordering graph**; a "cycle" of conflicts is meaningless.
+
+**The edge runs DEPENDENCY → DEPENDENT, and getting this backwards is silently correct-looking.** The edge means *"the tail must be synthesized before the head"*: `requires` on row X naming Y is the edge **`Y → X`** (X cannot be synthesized before what it requires), and `blocks` on row A naming B is **`A → B`** — the same edge `{"id": A, "relation": "requires"}` on row B would produce. An earlier draft of this plan had both arrows reversed; measured, it emitted `('AAA','BBB')` for a fixture whose test asserts `('BBB','AAA')`. **Cycle detection is direction-agnostic**, so all four cycle tests pass under either direction and only the one ordering test fails — which is exactly the pressure that makes an implementer "fix" the test and lock the inverted order in under a green suite. §12.2 decides it: *"topological ordering is a precondition of partitioned synthesis"*, and you cannot synthesize a claim before the claim it requires. **The test is right; if the order comes out reversed, the edge is wrong.**
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1323,12 +1509,25 @@ def test_a_cycle_written_with_blocks_is_caught(tmp_path):
         ledger.write_ledger(tmp_path, _led([a2, b2]))
 
 
-def test_a_cycle_mixing_the_two_spellings_is_caught(tmp_path):
+def test_a_cycle_written_with_requires_is_caught(tmp_path):
     a, b = _row("R1", "alpha"), _row("R2", "beta")
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "requires"),)})
     b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "requires"),)})
     with pytest.raises(ledger.LedgerError, match="cycle"):
         ledger.write_ledger(tmp_path, _led([a2, b2]))
+
+
+def test_a_cycle_mixing_the_two_spellings_is_caught(tmp_path):
+    """Genuinely mixed, unlike its earlier draft, which used `requires` on both rows and so
+    tested nothing the test above did not: one row that both REQUIRES and BLOCKS the same
+    partner is a two-node cycle written in both vocabularies at once, and a checker walking
+    either relation name alone sees only half of it."""
+    a, b = _row("R1", "alpha"), _row("R2", "beta")
+    a2 = ledger.Row(**{**a.__dict__,
+                       "dependencies": (ledger.Dependency(b.id, "requires"),
+                                        ledger.Dependency(b.id, "blocks"))})
+    with pytest.raises(ledger.LedgerError, match="cycle"):
+        ledger.write_ledger(tmp_path, _led([a2, b]))
 
 
 def test_the_cycle_refusal_names_the_path_and_clips_the_claims(tmp_path):
@@ -1381,14 +1580,34 @@ def test_a_self_conflict_is_refused_as_nonsense(tmp_path):
 
 def test_the_order_covers_every_row_or_there_is_no_order():
     """Kahn's algorithm stops early on a cycle; a caller reading the emitted list without
-    comparing its length to the row count synthesizes the partitions it happened to emit."""
+    comparing its length to the row count synthesizes the partitions it happened to emit.
+
+    THIS IS ALSO THE ONLY TEST THAT PINS THE EDGE DIRECTION. Every cycle test above passes
+    with `edges` reversed, so if this one fails the fix is in `edges`, NEVER here: §12.2 makes
+    the ordering a precondition of partitioned synthesis, and a required claim cannot be
+    synthesized after the claim requiring it."""
     a, b = _row("R1", "alpha"), _row("R2", "beta")
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "requires"),)})
+    assert ledger.edges([a2, b]) == ((b.id, a2.id),), \
+        "an edge runs dependency -> dependent; `a2 requires b` is `b -> a2`"
     order = ledger.topological_order([a2, b])
     assert order == (b.id, a2.id)
     b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "requires"),)})
     with pytest.raises(ledger.LedgerError, match="cycle"):
         ledger.topological_order([a2, b2])
+
+
+def test_blocks_and_requires_produce_the_same_edge_from_opposite_rows():
+    """§10's two names for one constraint, pinned as one edge rather than argued in prose:
+    "A blocks B" written on A and "B requires A" written on B must be indistinguishable."""
+    a, b = _row("R1", "alpha"), _row("R2", "beta")
+    from_a = ledger.edges([ledger.Row(**{**a.__dict__,
+                                         "dependencies": (ledger.Dependency(b.id, "blocks"),)}),
+                           b])
+    from_b = ledger.edges([a,
+                           ledger.Row(**{**b.__dict__,
+                                         "dependencies": (ledger.Dependency(a.id, "requires"),)})])
+    assert from_a == from_b == ((a.id, b.id),)
 
 
 def test_a_relation_the_vocabulary_does_not_name_is_refused(tmp_path):
@@ -1462,6 +1681,65 @@ def test_a_missing_ledger_raises_rather_than_reading_as_no_claims(tmp_path):
     """An empty ledger is a run with no claims, which the coverage check reports as fully
     covered."""
     with pytest.raises(ledger.LedgerError, match="does not exist"):
+        ledger.read_ledger(tmp_path)
+
+
+def test_a_present_but_empty_rows_list_is_refused_exactly_as_a_missing_file_is(tmp_path):
+    """THE HALF THE ABSENCE CHECK DOES NOT COVER, and the one that actually ships: only a
+    MISSING `rows` key raises through the missing-field list. A present `[]` used to decode
+    cleanly — `topological_order(())` returns `()`, `_check` counts nothing — and the ledger
+    came back with no rows, over which `coverage.check` produces zero results, zero
+    `unsatisfied`, zero `unresolved` and zero contradictions. `taskbundle._decode` refuses the
+    same shape for `entries`; these two must agree."""
+    ledger.write_ledger(tmp_path, _led([_row()]))
+    p = storage.ledger_path(tmp_path)
+    raw = json.loads(p.read_text())
+    raw["rows"] = []
+    p.write_text(json.dumps(raw))
+    with pytest.raises(ledger.LedgerError, match="non-empty"):
+        ledger.read_ledger(tmp_path)
+
+
+@pytest.mark.parametrize("key", ["acceptance_criteria", "seat_evidence", "dependencies"])
+def test_a_row_that_omits_a_nested_list_is_refused_not_read_as_empty(tmp_path, key):
+    """Each of these three used to be assigned into the decode body UNCONDITIONALLY, via
+    `r.get(key, [])`, BEFORE the missing-field check ran — so the check could never see them
+    absent, and each absence fails open in its own direction: no `acceptance_criteria` is a row
+    that reports fully covered with nothing checked; no `seat_evidence` makes the
+    unanimous-rejection finding unreachable (`len(...) < 2` -> `continue`), dropping §10's most
+    valuable signal on a missing key; no `dependencies` is an unconstrained node the cycle check
+    then passes over, which is the other route into the graph
+    `test_a_dangling_dependency_is_refused_not_skipped` exists to forbid. Absent must reach
+    `_sub`."""
+    ledger.write_ledger(tmp_path, _led([_row()]))
+    p = storage.ledger_path(tmp_path)
+    raw = json.loads(p.read_text())
+    del raw["rows"][0][key]
+    p.write_text(json.dumps(raw))
+    with pytest.raises(ledger.LedgerError, match="missing"):
+        ledger.read_ledger(tmp_path)
+
+
+def test_a_criterion_path_that_leaves_the_tree_is_refused_at_write(tmp_path):
+    """`coverage` joins this onto the candidate tree, and `Path(tree) / "/abs"` IS "/abs". A
+    criterion naming a host file would be reported as a MECHANICAL check on something the
+    ledger describes nothing about."""
+    for escaping in ("../../etc/passwd", "/etc/passwd"):
+        bad = _row(acceptance_criteria=(_crit(kind="hash", text="p is unchanged",
+                                              path=escaping, sha256="0" * 64),))
+        with pytest.raises(ledger.LedgerError, match="escapes"):
+            ledger.write_ledger(tmp_path, _led([bad]))
+
+
+def test_a_non_integer_union_diff_size_is_a_ledger_error_not_a_type_error(tmp_path):
+    """An error escaping this module's declared class is one no caller of it knows to catch:
+    a string here used to raise `TypeError` out of `_check`'s `>` comparison."""
+    ledger.write_ledger(tmp_path, _led([_row()]))
+    p = storage.ledger_path(tmp_path)
+    raw = json.loads(p.read_text())
+    raw["union_diff_bytes"] = "lots"
+    p.write_text(json.dumps(raw))
+    with pytest.raises(ledger.LedgerError, match="union_diff_bytes"):
         ledger.read_ledger(tmp_path)
 
 
@@ -1544,6 +1822,7 @@ import json
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from . import bundle as bundlemod
 from . import storage
 
 VERSION = 1
@@ -1703,8 +1982,18 @@ def edges(rows) -> tuple:
     spec, and it is dangerous rather than cosmetic — a cycle checker that walks only `requires`
     misses every cycle a writer expressed with `blocks`, and PASSES.
 
-    Direction: `requires` on row X naming Y is `X -> Y`; `blocks` on row A naming B is `B -> A`,
-    which is the same edge `{"id": A, "relation": "requires"}` on row B would produce.
+    AN EDGE HERE READS "THE TAIL MUST BE SYNTHESIZED BEFORE THE HEAD", which is the direction
+    Kahn's algorithm below needs and the ONLY one §12.2 admits: "topological ordering is a
+    precondition of partitioned synthesis", and no claim can be synthesized before the claim it
+    requires. So `requires` on row X naming Y is `Y -> X`, and `blocks` on row A naming B is
+    `A -> B` — the same edge `{"id": A, "relation": "requires"}` on row B would produce.
+
+    REVERSING THIS IS SILENTLY CORRECT-LOOKING, which is why the direction is argued here rather
+    than assumed. Cycle DETECTION is direction-agnostic: every cycle test in this file passes
+    under either arrow, `_check` calls `topological_order` only for its raise, and the sole
+    signal is `test_the_order_covers_every_row_or_there_is_no_order`. An implementer who
+    "fixes" that test instead of this function locks an inverted synthesis order in under a
+    green suite, and Plan I2's partitioned synthesis is its first consumer.
 
     `conflicts` IS NOT HERE. It is symmetric and not an ordering; a "cycle" of conflicts is
     meaningless. Whether two conflicting rows may both be accepted is a coverage assertion, not
@@ -1714,9 +2003,9 @@ def edges(rows) -> tuple:
     for r in rows:
         for d in r.dependencies:
             if d.relation == "requires":
-                out.append((r.id, d.id))
-            elif d.relation == "blocks":
                 out.append((d.id, r.id))
+            elif d.relation == "blocks":
+                out.append((r.id, d.id))
     return tuple(out)
 
 
@@ -1757,7 +2046,12 @@ def topological_order(rows) -> tuple:
 
 
 def _render_cycle(succ, remaining, claims) -> str:
-    """One concrete cycle as `a1b2c3 (claim…) -> d4e5f6 (claim…) -> a1b2c3`."""
+    """One concrete cycle as `a1b2c3 (claim…) -> d4e5f6 (claim…) -> a1b2c3`.
+
+    `succ` is `edges`' own adjacency, so the arrow reads "MUST BE SYNTHESIZED BEFORE" — not
+    "requires". Reversing `edges` without re-reading this renders the path backwards while
+    every cycle test stays green, which is the same blind spot argued there.
+    """
     start = sorted(remaining)[0]
     path, seen, node = [], set(), start
     while node not in seen:
@@ -1808,6 +2102,21 @@ def _check_criterion(c: Criterion, where: str) -> None:
             f"{where}: a trace may hang only on {list(_TRACEABLE)}, not on {c.kind!r}. On a "
             "mechanical kind the predicate is the evidence, and a human note beside it that "
             "could flip the method to `manual_trace_confirmed` is §10.1's manufactured green.")
+    if c.path is not None:
+        # A CRITERION PATH NAMES A FILE IN THE TREE THE LEDGER DESCRIBES, OR IT NAMES NOTHING
+        # THIS ENGINE WILL LOOK AT. `coverage` joins it onto the candidate tree, and
+        # `Path(tree) / "/etc/passwd"` IS `/etc/passwd` while `../../` walks straight out — so
+        # an unchecked path turns a MECHANICAL check into a report about a host file the ledger
+        # claims nothing about. Ledger rows are authored from three fallible seats' claims, so
+        # this is in reach rather than theoretical. One spelling of the rule, imported: this is
+        # the same guard `taskbundle._rel` applies, and `bundle.py:191`'s re-inlining of
+        # `harvest._literal` is on this project's open-defect list for taking the other route.
+        # `coverage` guards again at the join, because a `Ledger` built in-process never passed
+        # through here.
+        try:
+            bundlemod._assert_contained(c.path, f"{where}: a criterion path")
+        except bundlemod.BundleError as e:
+            raise LedgerError(str(e)) from e
     if not c.text:
         raise LedgerError(f"{where}: a criterion carries the human sentence it stands for")
 
@@ -1908,11 +2217,35 @@ def _sub(cls, row, where):
     return cls(**{n: row[n] for n in names})
 
 
+# The nested lists on a Row, and the type each element decodes to. Named so the loop below
+# can tell "this key is absent" from "this key is an empty list", which are different records.
+_ROW_LISTS = (("dependencies", Dependency), ("seat_evidence", SeatEvidence),
+              ("acceptance_criteria", Criterion))
+
+
 def _decode(raw, source) -> Ledger:
     """Missing refused, unknown refused, vocabulary refused — `runstate._decode`'s precedent.
 
-    `rows` DOES NOT DEFAULT TO `[]`. An empty ledger is a run with no claims, which the coverage
-    check reports as fully covered; absence must raise.
+    `rows` IS NEITHER DEFAULTED NOR ALLOWED TO BE EMPTY, and the second half is the one that
+    was missing. An absent `rows` raises through the `missing` list; a PRESENT-but-empty one
+    used to sail through — `for i, r in enumerate([])` yields nothing, `_check` counts no rows,
+    `topological_order(())` returns `()` cleanly, and `read_ledger` handed back a `Ledger` over
+    which `coverage.check` produces zero results, zero `unsatisfied`, zero `unresolved` and zero
+    contradictions: a run reported as fully covered having checked nothing. That is §10.1's own
+    failure shape one level up. `taskbundle._decode` refuses the equivalent `entries` case and
+    this is the same refusal, spelled the same way.
+
+    THE THREE NESTED LISTS ARE ONLY SUBSTITUTED WHEN THEY ARE PRESENT. Assigning them into
+    `body` unconditionally — `r.get("dependencies", [])` — makes `_sub`'s missing-field check
+    structurally unreachable for exactly the three fields whose absence is most dangerous:
+    a row with no `acceptance_criteria` decodes as "no criteria" and `coverage.check` produces
+    zero results for it, so the row reports as fully covered with nothing checked; a row with no
+    `seat_evidence` makes `_contradictions`' unanimous-rejection finding unreachable
+    (`len(...) < 2` -> `continue`), dropping §10's "most valuable signal in the run" on a missing
+    key rather than on a measurement; and a row with no `dependencies` is an unconstrained node
+    the cycle check then passes over — precisely what
+    `test_a_dangling_dependency_is_refused_not_skipped` forbids on the other route. Absent stays
+    absent here, so `_sub` refuses it.
     """
     if not isinstance(raw, dict):
         raise LedgerError(f"{source}: a ledger is an object, not {type(raw).__name__}")
@@ -1923,21 +2256,34 @@ def _decode(raw, source) -> Ledger:
         raise LedgerError(f"{source} is missing {missing}")
     if unknown:
         raise LedgerError(f"{source} carries fields this engine does not know: {unknown}")
+    # Typed on the way in, so a string `union_diff_bytes` becomes a LedgerError rather than a
+    # TypeError out of `_check`'s `>` comparison — an error escaping this module's declared
+    # class is one no caller of it knows to catch. `taskbundle._decode` type-checks its ints.
+    for n in ("version", "union_diff_bytes", "degrade_threshold_bytes"):
+        if not isinstance(raw[n], int) or isinstance(raw[n], bool):
+            raise LedgerError(f"{source}: {n} is an int, not {raw[n]!r}")
+    if not isinstance(raw["degraded"], bool):
+        raise LedgerError(
+            f"{source}: degraded is a bool, not {raw['degraded']!r}. `bool(\"false\")` is True, "
+            "so a string here would read a degraded ledger's own denial as an admission.")
+    if not isinstance(raw["rows"], list) or not raw["rows"]:
+        raise LedgerError(
+            f"{source}: rows is a non-empty list. An empty one reads as a run with no claims, "
+            "which the coverage check reports as fully covered having checked nothing.")
     rows = []
     for i, r in enumerate(raw["rows"]):
         where = f"{source}: row {i}"
         if not isinstance(r, dict):
             raise LedgerError(f"{where}: expected an object, not {type(r).__name__}")
         body = dict(r)
-        body["dependencies"] = tuple(
-            _sub(Dependency, d, f"{where} dependency {j}")
-            for j, d in enumerate(r.get("dependencies", [])))
-        body["seat_evidence"] = tuple(
-            _sub(SeatEvidence, e, f"{where} seat_evidence {j}")
-            for j, e in enumerate(r.get("seat_evidence", [])))
-        body["acceptance_criteria"] = tuple(
-            _sub(Criterion, c, f"{where} criterion {j}")
-            for j, c in enumerate(r.get("acceptance_criteria", [])))
+        for key, cls in _ROW_LISTS:
+            if key not in r:
+                continue          # left ABSENT so `_sub`'s missing-field check can refuse it
+            if not isinstance(r[key], list):
+                raise LedgerError(
+                    f"{where}: {key} is a list, not {type(r[key]).__name__}")
+            body[key] = tuple(_sub(cls, x, f"{where} {key} {j}")
+                              for j, x in enumerate(r[key]))
         rows.append(_sub(Row, body, where))
     l = Ledger(raw["version"], tuple(rows), raw["union_diff_bytes"],
                raw["degrade_threshold_bytes"], raw["degraded"])
@@ -1977,7 +2323,12 @@ def write_ledger(run_dir, l: Ledger) -> None:
 
 
 def read_ledger(run_dir) -> Ledger:
-    """What is currently claimed. Raises if absent — never an empty ledger."""
+    """What is currently claimed.
+
+    Raises if absent AND if present-but-empty — never an empty ledger by either route. Both
+    refusals are `_decode`'s argument: a ledger with no rows is a run the coverage check
+    reports as fully covered having checked nothing.
+    """
     path = storage.ledger_path(run_dir)
     try:
         raw = path.read_bytes()
@@ -1994,7 +2345,7 @@ def read_ledger(run_dir) -> Ledger:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_ledger.py`
-Expected: PASS — 21 passed.
+Expected: PASS — **31 passed** (29 test functions; the nested-list parametrize contributes three).
 
 - [ ] **Step 5: Re-run under scrambled names**
 
@@ -2007,13 +2358,38 @@ Expected: PASS, same count. **Restore the names.**
 
 ```bash
 scripts/mutate.py --file shared/lib/forge/ledger.py \
-  --old '            elif d.relation == "blocks":\n                out.append((d.id, r.id))' \
+  --old '            elif d.relation == "blocks":\n                out.append((r.id, d.id))' \
   --new '            elif d.relation == "blocks":\n                pass' \
+  -- uvx --with pytest pytest -q tests/test_forge_ledger.py
+
+# THE DIRECTION MUTATION. Every cycle test survives it; only the ordering test and the two
+# edge-shape assertions kill it. If this one SURVIVES, the plan's C1 defect has been
+# reintroduced and nothing else in the suite will say so.
+scripts/mutate.py --file shared/lib/forge/ledger.py \
+  --old '            if d.relation == "requires":\n                out.append((d.id, r.id))' \
+  --new '            if d.relation == "requires":\n                out.append((r.id, d.id))' \
   -- uvx --with pytest pytest -q tests/test_forge_ledger.py
 
 scripts/mutate.py --file shared/lib/forge/ledger.py \
   --old '    if len(order) != len(ids):' \
   --new '    if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_ledger.py
+
+# The three fail-opens the decoder used to have. Each mutation restores exactly the shape
+# that shipped in the draft, so a SURVIVED row means the guard has no test.
+scripts/mutate.py --file shared/lib/forge/ledger.py \
+  --old '    if not isinstance(raw["rows"], list) or not raw["rows"]:' \
+  --new '    if not isinstance(raw["rows"], list):' \
+  -- uvx --with pytest pytest -q tests/test_forge_ledger.py
+
+scripts/mutate.py --file shared/lib/forge/ledger.py \
+  --old '            if key not in r:\n                continue' \
+  --new '            if key not in r:\n                body[key] = ()\n                continue' \
+  -- uvx --with pytest pytest -q tests/test_forge_ledger.py
+
+scripts/mutate.py --file shared/lib/forge/ledger.py \
+  --old '            bundlemod._assert_contained(c.path, f"{where}: a criterion path")' \
+  --new '            pass' \
   -- uvx --with pytest pytest -q tests/test_forge_ledger.py
 
 scripts/mutate.py --file shared/lib/forge/ledger.py \
@@ -2037,7 +2413,7 @@ scripts/mutate.py --file shared/lib/forge/ledger.py \
   -- uvx --with pytest pytest -q tests/test_forge_ledger.py
 ```
 
-Expected: all six exit 0 (CAUGHT). `git status` clean afterwards.
+Expected: all ten exit 0 (CAUGHT). `git status` clean afterwards.
 
 - [ ] **Step 7: Add to the Makefile and commit**
 
@@ -2097,8 +2473,10 @@ EOF
 | Kind | Evaluates | Fails closed to | The fail-open it exists to prevent |
 |---|---|---|---|
 | `test` | The named pytest node id, **selected and observed**, in the verifier tree | collected-count ≠ 1 → `unresolved`; rc 4 → `unresolved`; no pytest runner wired → `unresolved` | **Treating "the run's verify gate exited 0" as satisfying every test-ID criterion.** `verify.Run` holds only `exit_code`/`stdout`/`stderr` — forge has **no per-test result parser anywhere** — so "the suite passed, so the named test passed" is one line of code and is the manufactured green §10.1 exists to forbid. |
-| `symbol` | stdlib `ast` over the candidate tree; the dotted name resolved through `ClassDef`/`FunctionDef`/`AsyncFunctionDef`/module-level assignment targets | `SyntaxError` → `unresolved` (never "absent"); non-Python path → `unresolved`; missing file → `(mechanically_checked, False)` | **grep.** `grep -n "def atomic_write"` matches a docstring, a comment, a string literal and prose — and this repository's modules are majority comment by line count, so grep-based symbol checking here is *more* wrong than average. A grep fallback would have to be reported `unresolved`, not as a check. |
-| `hash` | sha256 recomputed over the path in the candidate tree | missing path → `(mechanically_checked, False)`; special file where a regular one was expected → `(mechanically_checked, False)`; `OSError` → `unresolved` | **Hashing through a symlink** (`open()` follows it), so the invariant describes content from outside the tree the ledger claims to describe. `fleet.clone_seat` already learned this; do not re-learn it. |
+| `symbol` | stdlib `ast` over the candidate tree; the dotted name resolved through `ClassDef`/`FunctionDef`/`AsyncFunctionDef`/module-level assignment targets | path leaving the tree → `unresolved`; `SyntaxError` → `unresolved` (never "absent"); non-Python path → `unresolved`; missing file → `(mechanically_checked, False)` | **grep.** `grep -n "def atomic_write"` matches a docstring, a comment, a string literal and prose — and this repository's modules are majority comment by line count, so grep-based symbol checking here is *more* wrong than average. A grep fallback would have to be reported `unresolved`, not as a check. |
+| `hash` | sha256 recomputed over the path in the candidate tree | path leaving the tree → `unresolved`; missing path → `(mechanically_checked, False)`; special file where a regular one was expected → `(mechanically_checked, False)`; `OSError` → `unresolved` | **Hashing through a symlink** (`open()` follows it), so the invariant describes content from outside the tree the ledger claims to describe. `fleet.clone_seat` already learned this; do not re-learn it. |
+
+**Both file predicates check containment before they join, and this is a fix the review of this plan forced.** `ledger.Criterion.path` is a bare `str`, `ledger._check_criterion` only tested it for truthiness, and both predicates did `Path(tree) / c.path` — so `path="../../etc/passwd"`, or an absolute path (`Path(x) / "/abs"` **is** `/abs`), resolved outside the tree and came back reported as a *mechanical* check on a file "the ledger claims to describe" while the ledger described nothing of the sort. `lstat` does not close it either: it declines to follow the **final** component and says nothing about an intermediate symlink one. `coverage._inside` closes both, `ledger._check_criterion` refuses the string forms at write, and the answer for an escaping path is **`unresolved`** — "the invariant is false" would itself be a measurement nobody took.
 | `schema` | Nothing. There is no database and no schema in this repository, and no evaluator should be invented for one. | always `("unresolved", None)`, reason `"no schema evaluator is wired in this repository"` | **Falling through to `manual_trace_confirmed`**, which asserts a human traced it — an unwritten evaluator producing a value that reads as human diligence. `unresolved` is the honest word for "nobody looked". |
 | `prose` | The recorded human trace, if any | no trace → `("unresolved", None)` | Calling a natural-language row "checked". §10.1: *a generic walk over natural-language rows is systematic review, not deterministic coverage.* |
 
@@ -2306,6 +2684,40 @@ def test_a_special_file_fails_a_hash_invariant_without_being_opened(tmp_path):
     assert (r.method, r.satisfied) == ("mechanically_checked", False)
 
 
+@pytest.mark.parametrize("escaping", ["../outside.py", "/etc/passwd", "a/../../outside.py"])
+def test_a_path_that_leaves_the_tree_is_never_reported_as_checked(tmp_path, escaping):
+    """`Path(tree) / "/abs"` IS "/abs", and `../` walks straight out. Reporting either as a
+    MECHANICAL check makes the coverage line describe a host file the ledger claims nothing
+    about — and `unresolved` rather than `False`, because "the invariant is unsatisfied" is
+    itself a measurement, and none was taken."""
+    tree = tmp_path / "cand"
+    (tree / "a").mkdir(parents=True)
+    (tmp_path / "outside.py").write_text("def x():\n    return 1\n")
+    for c in (_crit(kind="symbol", text="defines x", path=escaping, symbol="x"),
+              _crit(kind="hash", text="unchanged", path=escaping, sha256="0" * 64)):
+        r = coverage.evaluate(c, row_id="a1", index=0, tree=tree)
+        assert (r.method, r.satisfied) == ("unresolved", None), c.kind
+
+
+def test_an_intermediate_symlink_component_cannot_leave_the_tree(tmp_path):
+    """The escape no string check can see: `lstat` declines to follow the FINAL component and
+    says nothing about the ones before it."""
+    tree = tmp_path / "cand"
+    tree.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "m.py").write_text("def x():\n    return 1\n")
+    os.symlink(outside, tree / "link")
+    r = coverage.evaluate(_crit(kind="symbol", text="link/m.py defines x",
+                                path="link/m.py", symbol="x"),
+                          row_id="a1", index=0, tree=tree)
+    assert (r.method, r.satisfied) == ("unresolved", None)
+    r2 = coverage.evaluate(_crit(kind="hash", text="link/m.py", path="link/m.py",
+                                 sha256="0" * 64),
+                           row_id="a1", index=0, tree=tree)
+    assert (r2.method, r2.satisfied) == ("unresolved", None)
+
+
 def test_there_is_no_schema_evaluator_and_it_says_so(tmp_path):
     r = coverage.evaluate(_crit(kind="schema", text="the users table has a seq column"),
                           row_id="a1", index=0, tree=tmp_path)
@@ -2430,6 +2842,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import bundle as bundlemod
 from . import snapshot
 
 METHODS = ("mechanically_checked", "manual_trace_confirmed", "unresolved")
@@ -2446,9 +2859,16 @@ class CoverageError(RuntimeError):
 class Result:
     """One criterion's outcome, on both axes.
 
-    `satisfied` is None whenever `method != "mechanically_checked"`, and that is an invariant
-    the constructor below enforces rather than a convention: a `manual_trace_confirmed` result
-    carrying `satisfied=True` would be a human's word rendered in the shape of a measurement.
+    `satisfied` is None whenever `method != "mechanically_checked"`: a `manual_trace_confirmed`
+    result carrying `satisfied=True` would be a human's word rendered in the shape of a
+    measurement.
+
+    THE INVARIANT IS ENFORCED BY THE `_result` FACTORY, NOT BY THIS CLASS. This is a plain
+    frozen dataclass with no `__post_init__`, so `Result(...)` built directly bypasses the
+    check — which is why nothing in this module builds one directly and every construction
+    goes through `_result`. Said plainly because the earlier draft of this docstring claimed
+    "the constructor below enforces", and a comment asserting something the code does not do
+    is the defect this package refuses everywhere else.
     """
     row_id: str
     criterion_index: int
@@ -2480,6 +2900,50 @@ def _result(row_id, index, method, satisfied, detail) -> Result:
             "check produces an answer, and a human's word in a measurement's shape is the "
             "manufactured green §10.1 exists to forbid")
     return Result(row_id, index, method, satisfied, detail)
+
+
+def _inside(tree, rel):
+    """The path `rel` names INSIDE `tree`, or None because it names something outside it.
+
+    THE JOIN IS WHERE A CRITERION STOPS DESCRIBING THE CANDIDATE. `ledger.Criterion.path` is a
+    bare `str` authored from three fallible seats' claims, and `Path(tree) / "/etc/passwd"` IS
+    `/etc/passwd` while `../../` walks straight out — so an unchecked join reports a MECHANICAL
+    check on a host file the ledger claims nothing about, which is a verdict reading cleaner
+    than its evidence in the most literal available way. `taskbundle._rel` applies the same
+    guard for the same reason and `ledger._check_criterion` refuses these at write; this is the
+    second gate, because a `Ledger` value built in-process never passed through the first.
+
+    TWO ESCAPES, AND ONLY ONE OF THEM IS VISIBLE IN THE STRING. `bundle._assert_contained`
+    catches the absolute and `..` forms. It cannot see an INTERMEDIATE SYMLINK COMPONENT —
+    `link/f.py` where `link -> /etc` — so the parent is resolved and compared against the
+    resolved tree. The FINAL component is deliberately never resolved: a symlink leaf is a
+    legal entry whose TARGET TEXT is what `_hash` digests, and resolving it would reintroduce
+    the hash-through-the-link fail-open `_hash` exists to close.
+    """
+    try:
+        bundlemod._assert_contained(rel, "a coverage criterion path")
+    except bundlemod.BundleError:
+        return None
+    p = Path(tree) / rel
+    root = os.path.realpath(tree)
+    parent = os.path.realpath(p.parent)
+    if parent != root and not parent.startswith(root + os.sep):
+        return None
+    return p
+
+
+def _escaped(c, *, row_id, index) -> Result:
+    """The one answer an escaping path may have: nobody looked.
+
+    NOT `(mechanically_checked, False)`. "The invariant is definitively unsatisfied" is a
+    measurement, and no measurement was taken here — the path names a file this engine
+    declined to open. `unresolved` is the honest word, and it keeps the row out of
+    `Report.unsatisfied`, which §12.4 acts on.
+    """
+    return _result(row_id, index, "unresolved", None,
+                   f"{c.path!r} does not name a path inside the candidate tree, so no "
+                   "predicate was run: a criterion that leaves the tree describes content "
+                   "the ledger does not claim to describe")
 
 
 def _test(c, *, row_id, index, tree, pytest_argv, run) -> Result:
@@ -2583,7 +3047,9 @@ def _symbol(c, *, row_id, index, tree) -> Result:
     A `SyntaxError` is `unresolved`, NEVER "symbol absent": an unparseable file is one nobody
     could look in, and reporting absence would be a measurement nobody took.
     """
-    p = Path(tree) / c.path
+    p = _inside(tree, c.path)
+    if p is None:
+        return _escaped(c, row_id=row_id, index=index)
     if p.suffix != ".py":
         return _result(row_id, index, "unresolved", None,
                        f"{c.path!r} is not Python; no symbol evaluator is wired for it")
@@ -2616,8 +3082,13 @@ def _hash(c, *, row_id, index, tree) -> Result:
     A missing path and a special file where a regular one was expected are both
     `(mechanically_checked, False)`: the invariant is definitively unsatisfied. An `OSError`
     reading a regular file is `unresolved` — nobody managed to look.
+
+    A path that LEAVES the tree is neither: see `_inside`. `lstat` alone does not close it —
+    it declines to follow the FINAL component and says nothing about an intermediate one.
     """
-    p = Path(tree) / c.path
+    p = _inside(tree, c.path)
+    if p is None:
+        return _escaped(c, row_id=row_id, index=index)
     try:
         st = p.lstat()
     except FileNotFoundError:
@@ -2729,7 +3200,7 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_coverage.py`
-Expected: PASS — 22 passed.
+Expected: PASS — **27 passed** (25 test functions; the escaping-path parametrize contributes three).
 
 - [ ] **Step 5: Re-run under scrambled names, then mutate**
 
@@ -2765,9 +3236,21 @@ scripts/mutate.py --file shared/lib/forge/coverage.py \
   --old '    if method != "mechanically_checked" and satisfied is not None:' \
   --new '    if False:' \
   -- uvx --with pytest pytest -q tests/test_forge_coverage.py
+
+# The two halves of the containment guard, mutated apart: the string check and the resolved
+# parent check catch different escapes and a test covering only one would let the other back.
+scripts/mutate.py --file shared/lib/forge/coverage.py \
+  --old '        bundlemod._assert_contained(rel, "a coverage criterion path")' \
+  --new '        pass' \
+  -- uvx --with pytest pytest -q tests/test_forge_coverage.py
+
+scripts/mutate.py --file shared/lib/forge/coverage.py \
+  --old '    if parent != root and not parent.startswith(root + os.sep):\n        return None' \
+  --new '    if False:\n        return None' \
+  -- uvx --with pytest pytest -q tests/test_forge_coverage.py
 ```
 
-Expected: all six exit 0 (CAUGHT). `git status` clean afterwards.
+Expected: all eight exit 0 (CAUGHT). `git status` clean afterwards.
 
 - [ ] **Step 6: Add to the Makefile and commit**
 
@@ -2828,15 +3311,17 @@ EOF
   fingerprint.creditable(label: str) -> bool
   ```
 
-**The name.** Not `identity`. `fleet.clone_seat(..., identity=…)` (`fleet.py:117`) and `runner.run_seat(..., identity=…)` (`runner.py:460`) already mean the git author `(name, email)` pair, refused when either half is empty because a seat that cannot commit is unusable. Reusing the word is how the two get conflated in a review six weeks from now.
+**The name.** Not `identity`. `fleet.clone_seat(..., identity=…)` (`fleet.py:128`) and `runner.run_seat(..., identity=…)` (`runner.py:501`) already mean the git author `(name, email)` pair, refused when either half is empty because a seat that cannot commit is unusable. Reusing the word is how the two get conflated in a review six weeks from now.
 
-**Why the nonce-stripped hash is the only one that can answer §11's question.** `engine.make_sentinel` is called **per seat, per attempt** (`runner.py:526`), not once per run — so the three seats' *exact* prompt hashes can never match, by construction. Any code that compares exact hashes to decide "identically prompted" answers "differently prompted" 100% of the time and labels every agreement weaker. The semantic hash is the comparison that means something. **The exact hash is still recorded** — it is the provenance of what was actually sent.
+**Why the nonce-stripped hash is the only one that can answer §11's question.** `engine.make_sentinel` is called **per seat, per attempt** (`runner.py:580`), not once per run — so the three seats' *exact* prompt hashes can never match, by construction. Any code that compares exact hashes to decide "identically prompted" answers "differently prompted" 100% of the time and labels every agreement weaker. The semantic hash is the comparison that means something. **The exact hash is still recorded** — it is the provenance of what was actually sent.
 
-**And the strip order is load-bearing.** `engine.SENTINEL_NOTE` is ~280 characters of engine text *containing the token*. Strip the token first and the note no longer matches itself — measured and documented at `runner.py:258-267`. The note is removed **first**, then the bare token, case-insensitively (because `seat.read_proof` folds case when it looks for the same token; if a differently-cased echo counts as proof it has to count as engine text here too). **This is `runner._rationale`'s existing recipe, and this task factors it out rather than re-spelling it** — two spellings of one predicate eventually disagree.
+**And the strip order is load-bearing.** `engine.SENTINEL_NOTE` is ~280 characters of engine text *containing the token*. Strip the token first and the note no longer matches itself — measured and documented in `runner._rationale`'s docstring (`runner.py:269-303`; the strip itself is `:301-303`). The note is removed **first**, then the bare token, case-insensitively (because `seat.read_proof` folds case when it looks for the same token; if a differently-cased echo counts as proof it has to count as engine text here too). **This is `runner._rationale`'s existing recipe, and this task factors it out rather than re-spelling it** — two spellings of one predicate eventually disagree.
 
 **`inventory.version` is NOT reused, and this is the one that will be got wrong.** `scripts/lib/inventory.py:55-65` ignores the return code, falls back from stdout to stderr, swallows every exception into the string `"(unavailable: …)"`, and returns `"(unknown)"` for empty output. **Those are strings.** Two seats whose versions could not be read both record `"(unknown)"` and **compare equal** — an unread version manufacturing an identity match, which is precisely §11's "agreement is provenance" being fabricated. Record `str | None`, `None` on rc≠0 / timeout / `FileNotFoundError`. `seat.read_proof`'s "a missing token fails closed: returns False, not True" is the precedent to name.
 
-*(Measured on this machine, 2026-08-03: `claude --version` → `2.1.220 (Claude Code)`, `codex --version` → `codex-cli 0.145.0`, `agy --version` → `1.1.9`, all rc 0. This contradicts `scripts/lib/inventory.py:48`, which routes agy through `agy changelog` because `--version` was believed absent.)*
+*(Measured on this machine, 2026-08-03: `claude --version` → `2.1.220 (Claude Code)`, `codex --version` → `codex-cli 0.145.0`, `agy --version` → `1.1.9`, all rc 0. This contradicts `scripts/lib/inventory.py:50`, which routes agy through `agy changelog` because `--version` was believed absent.)*
+
+**What `probe_cli` costs in production, declared rather than discovered.** `fingerprint.build`'s `run` defaults to `subprocess.run`, and `launch.make_launcher` (Task 6) injects `probe=fingerprint.build` **without** threading a `run=` through — so **every real seat launch spawns one `<cli> --version` subprocess**, bounded at `_VERSION_TIMEOUT` (20 s) and failing closed to `None`. That is cheap and safe, and it is stated here because an undeclared subprocess in a launch path is the kind of thing a later reader finds by strace. If a caller ever needs to suppress it, the seam is `probe=`, which already takes the whole builder.
 
 **Model is two fields, not one.** `ProviderSpec.model` is what forge *requested*. `model_reported` comes from the provider's own envelope where one exists (`extract_claude_json`, `extract_agy_json`) and is `None` where it does not. Collapsing them records a request as an observation.
 
@@ -2893,7 +3378,8 @@ def test_the_semantic_hash_of_three_identically_prompted_seats_matches():
 
 
 def test_stripping_the_token_first_leaves_the_note_behind():
-    """MEASURED at runner.py:258-267: the note CONTAINS the token, so token-first leaves ~280
+    """MEASURED, and argued in `runner._rationale`'s docstring (runner.py:269-303; the strip
+    itself is :301-303): the note CONTAINS the token, so token-first leaves ~280
     characters of engine text that still varies per seat — and a plan that then sees three
     different hashes concludes the seats were differently prompted when they were not."""
     tok = engine.make_sentinel()
@@ -3119,7 +3605,8 @@ class PromptIdentity:
 def without_engine_text(text: str, token: str) -> str:
     """`text` with the text FORGE supplied removed — the nonce-stripping rule, spelled once.
 
-    THE ORDER IS LOAD-BEARING AND MEASURED (`runner.py:258-267`). `engine.SENTINEL_NOTE` is
+    THE ORDER IS LOAD-BEARING AND MEASURED (`runner._rationale`, `runner.py:269-303`; the
+    strip itself is `:301-303` — `:258-267` is `_result_text`). `engine.SENTINEL_NOTE` is
     ~280 characters of instruction CONTAINING the token; strip the token first and the note no
     longer matches itself, leaving a "semantic" hash that still varies per seat — and a caller
     that then sees three different hashes concludes the seats were differently prompted when
@@ -3167,7 +3654,7 @@ def probe_cli(name: str, *, run=subprocess.run) -> tuple:
 
     Measured on this machine (2026-08-03): `claude --version` -> "2.1.220 (Claude Code)",
     `codex --version` -> "codex-cli 0.145.0", `agy --version` -> "1.1.9", all rc 0. That
-    contradicts `scripts/lib/inventory.py:48`, which routes agy through `agy changelog` because
+    contradicts `scripts/lib/inventory.py:50`, which routes agy through `agy changelog` because
     `--version` was believed absent.
     """
     path = shutil.which(name)
@@ -3397,7 +3884,9 @@ EOF
 - Create: `shared/lib/forge/launch.py`
 - Create: `shared/lib/forge/seatrecord.py`
 - Create: `tests/test_forge_launch.py`, `tests/test_forge_seatrecord.py`
-- Modify: `shared/lib/forge/runner.py` (`_record` carries `prompt_identity`; `verify_candidate` gains a measurement sink; `_verify_a_seat` binds it)
+- Modify: `shared/lib/council/engine.py` (`child_env` takes a base; `run_provider` takes `env=`) — **see Step 7, and read the receipt note there before touching this file**
+- Modify: `tests/test_council_seams.py` (the env seam)
+- Modify: `shared/lib/forge/runner.py` (one payload builder both writers use; `_record` carries `prompt_identity`; `verify_candidate` gains a measurement sink; `_verify_a_seat` binds it and contains what it recovers)
 - Modify: `tests/test_forge_runner.py`
 - Modify: `Makefile`
 
@@ -3405,9 +3894,13 @@ EOF
 
 - **Consumes (Task 5):** `fingerprint.PromptIdentity`, `fingerprint.build`, `fingerprint.as_row`, `fingerprint.from_row`, `fingerprint.FingerprintError`.
 - **Consumes (Task 2):** `taskbundle.installed_closure`.
-- **Consumes (Plan H):** `seat.forge_spec(name, prompt, timeout, **kw)`, `engine.run_provider(spec, retries, timeout, backoff, workdir)`, `engine.apply_sentinel(prompt, token)`, `runner.SeatResult`, `runner._record`, `runner._measured`, `runner.verify_candidate`, `verify.SetupResult`, `bundle.CandidateBundle`.
+- **Consumes (Plan H):** `seat.forge_spec(name, prompt, timeout, **kw)`, `engine.apply_sentinel(prompt, token)`, `fleet.forge_child_env(repo)`, `runner.SeatResult`, `runner._record`, `runner._measured`, `runner._revise`, `runner.verify_candidate`, `verify.SetupResult`, `bundle.CandidateBundle`.
 - **Produces:**
   ```python
+  # council.engine, changed — additive, keyword-only, existing callers unaffected:
+  engine.child_env(base=None) -> dict
+  engine.run_provider(spec, retries, timeout, backoff, workdir, *, env=None) -> dict
+
   launch.LaunchError(RuntimeError)
   launch.make_launcher(*, prompt: str, timeout: int, cfg: dict | None = None,
                        bundle_sha256: str | None = None, retries: int = 0,
@@ -3424,6 +3917,7 @@ EOF
   seatrecord.identities(rec: SeatRecord) -> tuple[fingerprint.PromptIdentity | None, ...]
 
   # runner, changed:
+  runner._payload(name, attempts) -> dict     # the ONE shape a seat record is written in
   runner.verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
                           calibration, on_measurement=None) -> tuple
   ```
@@ -3436,7 +3930,13 @@ EOF
 
 **Why the launcher owns the fingerprint.** `runner.run_seat` never sees the prompt: it mints the token and calls `launch(name=, seat_path=, token=, env=)`. For codex the prompt is `ProviderSpec.stdin`; for claude and agy it is buried inside `argv`. Recovering "the prompt" from a spec is per-provider guesswork, so the launcher — the only party that knows it — returns the `PromptIdentity` in its record.
 
-**Closing `runner.verify_candidate`'s measurement loss without changing what it raises.** The docstring commits to `VerifyError` propagating unwrapped and a test pins that. A keyword-only `on_measurement` callback is invoked the instant each measurement exists — the same write-ahead discipline `journal.intent` applies to an operation, applied to a value. `_verify_a_seat` binds what the sink hands it and its existing handler puts it through `_measured`, whose candidate-identity check still governs admission: *a candidate that is not this seat's is a measurement that must not reach this seat's record at all.*
+**The scrubbed environment must REACH the provider, and that costs a council-engine change.** `run_seat` builds `child_env = fleet.forge_child_env(repo)` (`runner.py:550`) and hands it to `launch(..., env=child_env)` (`runner.py:583`). An earlier draft of this task accepted `env` and dropped it, with a docstring framing the drop as a contract nicety — which is both the "defence pinned at build time, silently undone one step later" shape and a comment asserting a property the code does not have. Measured, the drop is not cosmetic: `engine.run_provider` has **no `env` parameter** and hardcodes `env=child_env()` (`engine.py:1149`), where `child_env` (`engine.py:1120-1124`) is `os.environ.copy()` plus an `LLM_COUNCIL_DEPTH` increment and nothing else. Every real seat would therefore lose all three of the things `forge_child_env`'s own docstring exists for: **`LLM_FORGE_DEPTH` never set** (and `LLM_COUNCIL_DEPTH` does not bar `/llm-forge`, so one seat reaching for it spawns three more write-enabled seats, each of which can spawn three more); **`gitcmd.HOSTILE_ENV` not stripped**, so an inherited `GIT_CONFIG_COUNT=1 / KEY_0=core.hooksPath` re-enables hooks for every git the seat runs — undoing the empty `--template=` `clone_seat` spends to keep them out — and an ambient absolute `GIT_DIR` puts a write-enabled agent on a repository that is not its clone; and **`gitcmd.NO_USER_CONFIG` not pinned**.
+
+There is no way to close this inside `launch.py`: the seam does not exist. **Step 7 adds it** — `child_env(base=None)` and `run_provider(..., env=None)` — as a strictly additive, keyword-only change with its own commit, because it touches `shared/lib/council/engine.py` and that has a receipt consequence Step 7 states. Composing rather than replacing matters: `child_env` applies the council's depth increment **on top of** whatever base it is given, so a forge seat gets forge's scrub *and* the council's guard rather than one instead of the other.
+
+**Closing `runner.verify_candidate`'s measurement loss without changing what it raises.** The docstring commits to `VerifyError` propagating unwrapped and a test pins that. A keyword-only `on_measurement` callback is invoked the instant each measurement exists — the same write-ahead discipline `journal.intent` applies to an operation, applied to a value. `_verify_a_seat` binds what the sink hands it and its refusal handler puts it through `_measured`, whose candidate-identity check still governs admission: *a candidate that is not this seat's is a measurement that must not reach this seat's record at all.* **But that call now sits INSIDE an `except`, where nothing catches it** — today `_measured` runs in the `try` and its `RunnerError` lands in the same handler, which is what contains it. A raise from the handler would propagate out of `_verify_a_seat` into `runner.run` and end the fleet, reopening the closed Critical *on the refusal path*: "while this half re-raised, ONE seat's refused verification ended the whole run, with every provider already paid and the seats behind this one never verified at all." Step 11 therefore contains it, and the seat keeps its pre-verification verdict with the dropped measurement named in `verification_refused` — a verdict that never reads cleaner than its evidence.
+
+**One writer, not two, or the schema check covers nothing that matters.** `_write` (`runner.py:495-498`) is not the only writer. `_revise` (`runner.py:678`) calls `runstate.write_seat` directly at `runner.py:704-706` with its own inline payload, and `_revise` is the writer on **every** post-verification path: `reclassify_seat`'s success path (`runner.py:814`), `_verify_a_seat`'s refusal path (`runner.py:1399`) and its post-`reclassify` refusal path (`runner.py:1412`). `:1412` is the exact path this task's headline test drives — so a check installed only at `_write` would leave **this task's own deliverable**, the record carrying the recovered `gate_delta`/`gate_surface`/`verifier_setup`, written unvalidated. A validation added at one writer while a second writer exists is not a validation. Both go through one `_payload` builder (Step 9), which is where the check lives.
 
 - [ ] **Step 1: Write the failing tests for the record schema**
 
@@ -3726,7 +4226,9 @@ from forge import fingerprint, launch, seat  # noqa: E402
 
 
 def _fake_provider(seen):
-    def run_provider(spec, retries, timeout, backoff, workdir):
+    # The signature MIRRORS `engine.run_provider` after Step 7, `env=` included. A fake that
+    # omitted it would let a launcher that drops `env` pass this whole file.
+    def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
         seen.append(spec)
         return {"status": "ok", "reason": "", "valid": True, "structured": True,
                 "exit_code": 0, "duration_sec": 1.0, "attempts": 1,
@@ -3790,7 +4292,7 @@ def test_the_record_carries_the_fingerprint_beside_the_provider_record(tmp_path)
 def test_the_launcher_never_overwrites_a_provider_field(tmp_path):
     """A provider that one day returns its own `prompt_identity` must not be silently
     replaced — nor silently win."""
-    def run_provider(spec, retries, timeout, backoff, workdir):
+    def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
         return {"valid": True, "result_text": "x", "prompt_identity": {"rogue": 1}}
     fn = launch.make_launcher(prompt="p", timeout=60,
                               run_provider=run_provider, probe=_probe())
@@ -3801,7 +4303,7 @@ def test_the_launcher_never_overwrites_a_provider_field(tmp_path):
 def test_retries_default_to_zero_because_the_gate_priced_them_that_way(tmp_path):
     seen = {}
 
-    def run_provider(spec, retries, timeout, backoff, workdir):
+    def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
         seen["retries"] = retries
         return {"valid": True, "result_text": "x"}
     launch.make_launcher(prompt="p", timeout=60, run_provider=run_provider,
@@ -3811,15 +4313,42 @@ def test_retries_default_to_zero_because_the_gate_priced_them_that_way(tmp_path)
 
 
 def test_a_provider_record_that_is_not_a_mapping_is_refused(tmp_path):
-    def run_provider(spec, retries, timeout, backoff, workdir):
+    def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
         return "ok"
     fn = launch.make_launcher(prompt="p", timeout=60, run_provider=run_provider,
                               probe=_probe())
     with pytest.raises(launch.LaunchError, match="mapping"):
         fn(name="claude", seat_path=tmp_path, token="SENTINEL-abc", env={})
+
+
+def test_the_scrubbed_environment_reaches_the_provider(tmp_path):
+    """`fleet.forge_child_env` sets LLM_FORGE_DEPTH, strips `gitcmd.HOSTILE_ENV` and pins
+    `NO_USER_CONFIG`. A launcher that ACCEPTED `env` and dropped it would undo all three for
+    every real seat, and nothing downstream could see it: the record would look identical."""
+    seen = {}
+
+    def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
+        seen["env"] = env
+        return {"valid": True, "result_text": "x"}
+    scrubbed = {"LLM_FORGE_DEPTH": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
+    launch.make_launcher(prompt="p", timeout=60, run_provider=run_provider,
+                         probe=_probe())(name="claude", seat_path=tmp_path,
+                                         token="SENTINEL-abc", env=scrubbed)
+    assert seen["env"] == scrubbed, \
+        "the seat's scrubbed environment is what the provider must run under"
+
+
+def test_the_launcher_calls_a_provider_that_can_take_an_environment(tmp_path):
+    """NON-VACUITY for the test above, and the reason Step 7 exists: the real
+    `engine.run_provider` must ACCEPT `env=`. Without this, a fake with `env=` in its
+    signature would keep the suite green over a production call that raises TypeError."""
+    import inspect as _inspect  # noqa: PLC0415
+    from council import engine as eng  # noqa: PLC0415
+    assert "env" in _inspect.signature(eng.run_provider).parameters, \
+        "Step 7's council-engine seam is not in place"
 ```
 
-Append to `tests/test_forge_runner.py`. **These use the helpers that file already defines** — `_open`, `_fake`, `_edit`, `_per_seat`, `_attempt`, `_confirmed`, `GATE`, `IDENT`, `write`, `commit_all` — verified present at `tests/test_forge_runner.py:36, 79, 139, 1157, 1175, 1179`:
+Append to `tests/test_forge_runner.py`. **These use the helpers that file already defines** — `_fake:36`, `_open:79`, `_attempt:139`, `_confirmed:1157`, `_edit:1175`, `_per_seat:1179`, plus `GATE`, `IDENT` and `write`/`commit_all` from `forge_fixtures` — all re-verified against the file:
 
 ```python
 def test_the_record_always_carries_the_prompt_identity_key(tmp_path):
@@ -3856,7 +4385,7 @@ def test_a_measurement_taken_before_a_refusal_still_reaches_the_record(tmp_path)
 
     THE RIG IS THE ADVERSARIAL ONE, not a lookalike. It is the same candidate
     `test_a_candidate_that_repoints_the_hooks_path_through_setup_does_not_reach_the_gate`
-    uses (`tests/test_forge_runner.py:950`) — a `./setup.sh` that repoints
+    uses (`tests/test_forge_runner.py:951`) — a `./setup.sh` that repoints
     `core.hooksPath` — driven through `runner.run` so `_verify_a_seat` runs and the record
     is written. A fixture built only of realistic-looking answers cannot reach the guard
     that exists for unrealistic ones.
@@ -3885,6 +4414,85 @@ def test_a_measurement_taken_before_a_refusal_still_reaches_the_record(tmp_path)
     assert entry["verifier_setup"] is not None and \
         entry["verifier_setup"]["exit_code"] == 0, \
         "the verifier's setup ran and exited 0 — the very fact explaining how the hooks moved"
+
+
+def test_the_revision_writer_validates_its_payload_too(tmp_path, monkeypatch):
+    """THE SECOND WRITER. `_write` is not the only one: `_revise` calls `runstate.write_seat`
+    directly, and it is the writer on `reclassify_seat`'s success path (runner.py:814) and BOTH
+    of `_verify_a_seat`'s refusal paths (runner.py:1399, runner.py:1412) — including the one the
+    test above drives. A schema check installed only at `_write` would leave every
+    verification-phase record, this task's whole deliverable, written unvalidated.
+
+    Driven through the same hooks rig so it is the real path and not a lookalike: a key is
+    dropped from `_record`'s output, and the run must refuse at the writer rather than publish."""
+    def seed(repo):
+        write(repo, "gate.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        write(repo, "setup.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        commit_all(repo, "gate and setup")
+
+    setup = (verify.Step(argv=("./setup.sh",)),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=seed, seats=1, attempts=1)
+    _confirmed(run)
+
+    real_record = runner._record
+    state = {"n": 0}
+
+    def lossy(result):
+        # Whole on the way in (so `run_seat`'s own write succeeds and there is an attempt to
+        # revise), damaged on the revision — which is the writer this test is about.
+        out = real_record(result)
+        state["n"] += 1
+        if state["n"] > 1:
+            out.pop("verifier_setup")
+        return out
+    monkeypatch.setattr(runner, "_record", lossy)
+
+    def rig(name, n, p):
+        write(p, "setup.sh", "#!/bin/sh\ngit config --local core.hooksPath .githooks\n"
+                             "exit 0\n").chmod(0o755)
+        return True
+
+    with pytest.raises(runner.RunnerError, match="verifier_setup"):
+        runner.run(run, repo, identity=IDENT, launch=_per_seat(rig))
+
+
+def test_a_recovered_measurement_that_is_not_this_seats_does_not_end_the_fleet(tmp_path,
+                                                                              monkeypatch):
+    """CONTAINMENT, on the path the recovery added. `_measured` refuses a candidate that is not
+    this seat's, and that refusal is right — but it now runs INSIDE the `except`, where nothing
+    catches it. Uncontained, ONE seat's refused verification ends the whole run with every
+    provider already paid, which is the Critical `_verify_a_seat`'s docstring records as closed.
+
+    The seat must keep its pre-verification verdict, and the record must SAY the measurement
+    was dropped: a refusal that read as if nothing had been measured would be cleaner than its
+    evidence."""
+    def seed(repo):
+        write(repo, "gate.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        write(repo, "setup.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        commit_all(repo, "gate and setup")
+
+    setup = (verify.Step(argv=("./setup.sh",)),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=seed, seats=1, attempts=1)
+    _confirmed(run)
+
+    def refusing(result, candidate, verifier_setup):
+        raise runner.RunnerError("that candidate is not this seat's")
+    monkeypatch.setattr(runner, "_measured", refusing)
+
+    def rig(name, n, p):
+        write(p, "setup.sh", "#!/bin/sh\ngit config --local core.hooksPath .githooks\n"
+                             "exit 0\n").chmod(0o755)
+        return True
+
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(rig))      # must not raise
+    entry = _attempt(run, "claude", 1)
+    refused = entry["verification_refused"]
+    assert refused and "core.hooksPath" in refused
+    assert "not this seat" in refused, \
+        "the dropped measurement is named, not silently absent"
+    assert entry["candidate"]["gate_surface"] is None and \
+        entry["verifier_setup"] is None, \
+        "nothing unadmitted reached the record; the seat kept its pre-verification verdict"
 ```
 
 > **Verify the seat name before relying on it.** `_per_seat` answers for whichever seats `runner.run` drives, and `_attempt(run, "claude", 1)` assumes `claude` is among them. Read `runner._fleet` and the manifest `_open` writes; if the fleet's names differ, use the name the loop actually drove. **Do not** change `seats=1` to make an assertion pass — a one-seat fleet is chosen here so exactly one record exists to read.
@@ -3892,9 +4500,120 @@ def test_a_measurement_taken_before_a_refusal_still_reaches_the_record(tmp_path)
 - [ ] **Step 6: Run them to verify they fail**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_launch.py tests/test_forge_runner.py`
-Expected: FAIL — `ImportError: cannot import name 'launch' from 'forge'`, and the three new runner tests failing on the missing key.
+Expected: FAIL — `ImportError: cannot import name 'launch' from 'forge'`, and the **five** new runner tests failing: two on the missing `prompt_identity` key, one on the dropped measurement, one because `_revise` does not yet validate, and one because the recovered measurement is not yet contained.
 
-- [ ] **Step 7: Write `launch.py`**
+- [ ] **Step 7: Give the council engine an environment seam, and commit it on its own**
+
+**Read this whole step before touching the file.** `shared/lib/council/engine.py` is in
+`llm-council`'s eval source closure (`scripts/lib/checks.py:SKILL_EXTRA_DIRS["llm-council"] =
+["shared/lib/council"]`, and `checks.py`'s own self-test asserts that membership), so editing it
+**stales `evals/llm-council/receipt.json`** and `make precommit` will fail with
+`receipt: llm-council changed since last eval`. That cost is why this is its own commit, and why
+the change is the smallest one that closes the hole.
+
+In `shared/lib/council/engine.py`, replace `child_env` (`engine.py:1120-1124`):
+
+```python
+def child_env(base=None) -> dict:
+    """Child env with the recursion-depth guard incremented, over `base` or this process's own.
+
+    `base` COMPOSES RATHER THAN REPLACES. A caller that has already SCRUBBED an environment
+    passes it here and gets the council's guard applied ON TOP of that scrub; reading
+    `os.environ` unconditionally would hand the child back every name the caller removed. The
+    caller this exists for is `forge.fleet.forge_child_env`, which strips `gitcmd.HOSTILE_ENV`,
+    pins config discovery to /dev/null and increments `LLM_FORGE_DEPTH` — three defences that
+    a seat launched through `run_provider` would otherwise never receive, because
+    `LLM_COUNCIL_DEPTH` guards the council and bars nothing about `/llm-forge`.
+    """
+    env = dict(os.environ if base is None else base)
+    cur = int(env.get("LLM_COUNCIL_DEPTH", "0") or "0")
+    env["LLM_COUNCIL_DEPTH"] = str(cur + 1)
+    return env
+```
+
+and change `run_provider`'s signature (`engine.py:1136`) and its one `run_member` call
+(`engine.py:1149`):
+
+```python
+def run_provider(spec: ProviderSpec, retries: int, timeout: int,
+                 backoff: float, workdir: Path, *, env=None) -> dict:
+    """Run one provider through its bounded attempt loop and return its record.
+
+    `env` is the environment the provider's child process runs under, BEFORE this function's
+    own depth guard is applied to it; `None` keeps the previous behaviour exactly
+    (`os.environ` plus the guard). Keyword-only and defaulted, so no existing caller changes.
+    """
+```
+
+```python
+            cp = run_member(spec.argv, stdin=spec.stdin, timeout=timeout,
+                            env=child_env(env), cwd=spec.cwd)
+```
+
+Append to `tests/test_council_seams.py`:
+
+```python
+def test_the_depth_guard_composes_with_a_scrubbed_environment():
+    """`child_env(base)` must apply the council's guard ON TOP of what it is given. Reading
+    `os.environ` regardless would hand a forge seat back every name `fleet.forge_child_env`
+    removed — `gitcmd.HOSTILE_ENV`, an ambient absolute `GIT_DIR` — while looking correct."""
+    from council import engine as eng  # noqa: PLC0415
+    out = eng.child_env({"LLM_FORGE_DEPTH": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
+    assert out["LLM_COUNCIL_DEPTH"] == "1"
+    assert out["LLM_FORGE_DEPTH"] == "1" and out["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert "PATH" not in out, \
+        "a scrubbed base is the WHOLE environment, not a patch applied over os.environ"
+
+
+def test_the_default_is_byte_identical_to_the_previous_behaviour(monkeypatch):
+    """The change is additive: `child_env()` with no base must still be os.environ plus the
+    guard, or every existing council run has quietly moved."""
+    from council import engine as eng  # noqa: PLC0415
+    monkeypatch.setenv("LLM_COUNCIL_DEPTH", "2")
+    monkeypatch.setenv("A_MARKER", "kept")
+    out = eng.child_env()
+    assert out["LLM_COUNCIL_DEPTH"] == "3" and out["A_MARKER"] == "kept"
+```
+
+Then gate and commit **this change alone**, following `docs/skill-eval-process.md`'s
+llm-council exception — its receipt is earned by the deterministic wiring check plus a live
+smoke, not by the judge harness:
+
+```bash
+uvx --with pytest pytest -q tests/test_council_seams.py tests/test_council_facade.py \
+    tests/test_council_characterization.py tests/test_council_seat_validity.py
+python3 shared/skills/llm-council/scripts/fanout.py --self-test; echo "self-test rc=$?"
+```
+
+Then run the live `--smoke` the process doc requires and inspect the manifest's
+`model`/`thinking` and `[mode: …]`. **Only then** re-seed the receipt:
+
+```bash
+python3 scripts/eval_harness.py --seed-receipt
+make render
+git add shared/lib/council/engine.py tests/test_council_seams.py evals marketplaces
+make verify; echo "verify rc=$?"
+make precommit; echo "precommit rc=$?"
+```
+
+> **Why a re-seed rather than a full judge run is defensible here, stated so it is a decision
+> and not a shortcut:** the default path through `child_env()` is byte-identical to what it
+> replaced (the test above pins that), `run_provider`'s new parameter is keyword-only with a
+> `None` default and no existing caller passes it, so `llm-council`'s behaviour is unchanged by
+> construction. If the smoke shows *any* difference, that reasoning is wrong — run the full
+> `make eval SKILL=llm-council` and do not seed.
+
+```bash
+git commit -m "$(cat <<'EOF'
+feat(council): run_provider takes the environment its caller scrubbed
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01UiV66Pt8cZVMq9t8WEAhpN
+EOF
+)"
+```
+
+- [ ] **Step 8: Write `launch.py`**
 
 Create `shared/lib/forge/launch.py`:
 
@@ -3946,13 +4665,30 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
                   probe=fingerprint.build):
     """A callable satisfying `runner`'s contract: `launch(*, name, seat_path, token, env)`.
 
-    `env` is `fleet.forge_child_env`'s scrubbed environment. It is NOT passed to
-    `run_provider`, which builds its own child environment — it is accepted because the
-    contract declares it, and ignoring a declared parameter silently would be worse than
-    saying so here.
+    `env` IS `fleet.forge_child_env`'s scrubbed environment AND IT IS PASSED THROUGH. Accepting
+    it and dropping it — which an earlier draft did, with a docstring calling the drop a
+    contract nicety — undoes three defences a previous plan paid for, in the one direction
+    nothing downstream can see, because the record comes back identical either way:
+
+      1. `LLM_FORGE_DEPTH` is never set. Without a forge guard, a seat that reaches for
+         /llm-forge spawns three more write-enabled seats, each of which can spawn three more.
+         `LLM_COUNCIL_DEPTH` guards the council and bars nothing about /llm-forge.
+      2. `gitcmd.HOSTILE_ENV` is not stripped. An inherited
+         `GIT_CONFIG_COUNT=1 / KEY_0=core.hooksPath` re-enables hooks for every git the seat
+         runs, undoing the empty `--template=` `clone_seat` spends to keep them out; an ambient
+         absolute `GIT_DIR` puts a write-enabled agent on a repository that is not its clone.
+      3. `gitcmd.NO_USER_CONFIG` is not pinned.
+
+    `engine.run_provider` grew a keyword-only `env=` for exactly this (see Task 6 Step 7); it
+    applies the council's own depth guard ON TOP of what it is given rather than instead of it.
 
     The adapter owns the model and the TIMEOUT: §19 forbids a second timeout mechanism, so
     there is deliberately no timeout parameter on the returned callable.
+
+    NO PRODUCTION CALLER YET. Nothing in Plan I calls `make_launcher`; `runner.run(..., launch=)`
+    is injected and the CLI is Plan J. So `seat.forge_spec`'s "production caller" is itself
+    uncalled in production until then, and `bundle_sha256` is `None` for every seat a caller
+    does not supply one for — see "Produced here, consumed nowhere yet".
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise LaunchError("a seat is launched with a task, and this prompt is empty")
@@ -3968,7 +4704,7 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
         # token separately through `seat.read_proof`.
         spec.sentinel = token
         spec.cwd = str(seat_path)
-        record = run_provider(spec, retries, timeout, backoff, Path(seat_path))
+        record = run_provider(spec, retries, timeout, backoff, Path(seat_path), env=env)
         if not isinstance(record, dict):
             raise LaunchError(
                 f"{name}: a provider record is a mapping, not {type(record).__name__}; §8's "
@@ -3998,9 +4734,16 @@ def _reported(record) -> str | None:
     return v if isinstance(v, str) and v else None
 ```
 
-- [ ] **Step 8: Change `runner._record` to carry the fingerprint**
+- [ ] **Step 9: Change `runner._record` to carry the fingerprint**
 
-In `shared/lib/forge/runner.py`, add `seatrecord` to the package import list, then add this key to the dict `_record` returns, immediately after `"launch"`:
+In `shared/lib/forge/runner.py`, extend the package import list — Task 5 already added `fingerprint`, and this task adds `seatrecord`:
+
+```python
+from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
+               runstate, seat as seatmod, seatrecord, storage, verify)
+```
+
+then add this key to the dict `_record` returns, immediately after `"launch"`:
 
 ```python
         # §11's four values, ALWAYS PRESENT AS A KEY. `None` is a launch that returned no
@@ -4030,16 +4773,61 @@ def _prompt_identity(launch_result):
         raise RunnerError(f"this launch returned an unreadable prompt_identity: {e}") from e
 ```
 
-Then, at the end of `_write` (or immediately before `runstate.write_seat` is called in it), prove the payload decodes:
+Then route **both** writers through one validating payload builder. **`_write` has no `payload`
+local** — it inlines the dict into the `write_seat` call — and it is not the only writer, so a
+check bolted onto it would miss every record this task exists to fix. Add the builder beside
+`_write`:
 
 ```python
-    # THE WRITER PROVES ITS OWN OUTPUT DECODES. `runstate.write_seat` enforces no schema by
-    # design; `seatrecord` is the reader's, and running it here fails a dropped or renamed
-    # field at the writer rather than hours later on a resume.
-    seatrecord.decode(payload)
+def _payload(name: str, attempts: list) -> dict:
+    """The ONE shape a seat record is written in, proved to decode before it is published.
+
+    BOTH WRITERS COME THROUGH HERE, and that is the whole point. `runstate.write_seat` enforces
+    no schema by design — §14.2 assigns the record's fields to the orchestrator, so that module
+    refuses to be the authority on a record it does not own — and `seatrecord` is the reader's
+    schema, so running it at the writer fails a dropped or renamed field where the producer is
+    still present rather than hours later on a resume.
+
+    A check installed at `_write` alone would validate nothing that matters. `_revise` is the
+    writer on `reclassify_seat`'s success path and on BOTH of `_verify_a_seat`'s refusal paths,
+    which is every post-verification record — including the one carrying §6.1's recovered gate
+    measurement and the verifier's setup. A validation added at one writer while a second
+    writer exists is not a validation.
+
+    `SeatRecordError` is WRAPPED. `_drive_a_seat` catches `RunnerError` alone and this module's
+    callers are documented as facing that one class for a record it will not act on; a new
+    exception type escaping `run_seat` and `_verify_a_seat` would pass straight through the
+    containment both of them rely on, ending a run over one seat's damaged record.
+    """
+    payload = {"name": name, "attempts": attempts}
+    try:
+        seatrecord.decode(payload)
+    except seatrecord.SeatRecordError as e:
+        raise RunnerError(
+            f"seat {name!r}: this module built a record its own reader refuses: {e}") from e
+    return payload
 ```
 
-- [ ] **Step 9: Close the measurement loss in `verify_candidate`**
+and make both call sites use it — `_write`:
+
+```python
+def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
+    """Publish the seat's record: everything it had already recorded, plus this attempt."""
+    runstate.write_seat(run_dir, result.name,
+                        _payload(result.name, [*priors, _record(result)]))
+```
+
+and the `write_seat` call inside `_revise`:
+
+```python
+    runstate.write_seat(run_dir, out.name, _payload(out.name, [
+        _record(out) if x.get("attempt") == out.attempt else x for x in attempts]))
+```
+
+> Also add one sentence to `run_seat`'s and `_verify_a_seat`'s raises-lists: a record this
+> module's own reader refuses is now a `RunnerError`. Nothing new escapes.
+
+- [ ] **Step 10: Close the measurement loss in `verify_candidate`**
 
 In `shared/lib/forge/runner.py`, change the signature:
 
@@ -4069,23 +4857,38 @@ Add this paragraph to the docstring, **replacing** the one beginning *"ON THE RE
     admission rule stays in `_measured`, where it already is.
 ```
 
-Immediately after `build_verifier` returns and before the next statement that can raise:
+The body's current order, read rather than guessed: `build_verifier` at `runner.py:999`,
+`run_setup` at `:1004` (inside `if setup.steps:`, with an `else` that calls
+`verify.validate_materialized(v)` — which can raise — and sets `setup_result = None`),
+`assert_hooks_pinned` at `:1013`, then `fixed_point` and `classify`. So the two sink calls go
+here, and the shape must survive both branches:
 
 ```python
+    v = verify.build_verifier(manifest.repo_path, baseline, candidate, dest,
+                              identity=identity, contract=contract, command=command)
+    # THE FIRST MEASUREMENT EXISTS NOW. §6.1's gate_delta/gate_surface are on `v.candidate`
+    # from this line onward, and everything below can refuse. Handing it over here is
+    # `journal.intent`'s write-ahead discipline applied to a value.
     if on_measurement is not None:
         on_measurement(v.candidate, None)
+
+    setup = verify.Command(steps=manifest.setup)
+    if setup.steps:
+        setup_result = verify.run_setup(v, setup, env=child_env)
+        # BEFORE `assert_hooks_pinned`, which is the step the adversarial rig is refused at.
+        if on_measurement is not None:
+            on_measurement(v.candidate, setup_result)
+    else:
+        verify.validate_materialized(v)
+        setup_result = None
 ```
 
-and immediately after `run_setup` returns its `SetupResult`:
+> Read the function body before editing and confirm those line numbers still hold. The sink
+> must fire before the *next* statement that can raise, not at the end of a block — in the
+> `else` branch there is no `SetupResult` to hand over and the first call has already run,
+> which is why nothing is added there.
 
-```python
-    if on_measurement is not None:
-        on_measurement(v.candidate, setup_result)
-```
-
-> Read the function body before editing. The two call sites are wherever `build_verifier` and `run_setup` actually return in the current code — **do not** guess line numbers; the sink must fire before the *next* statement that can raise, not at the end of a block.
-
-- [ ] **Step 10: Bind the sink in `_verify_a_seat`**
+- [ ] **Step 11: Bind the sink in `_verify_a_seat`**
 
 In `_verify_a_seat`, replace the `try` block's first statement group with:
 
@@ -4109,7 +4912,9 @@ In `_verify_a_seat`, replace the `try` block's first statement group with:
                            verification=(outcome, reason))
 ```
 
-and in the `except (RunnerError, verify.VerifyError)` handler, put what the sink caught through the same admission rule before recording:
+and in the `except (RunnerError, verify.VerifyError)` handler, put what the sink caught through
+the same admission rule before recording — **and contain that call**, which is the half an
+earlier draft of this step got wrong:
 
 ```python
     except (RunnerError, verify.VerifyError) as e:
@@ -4117,25 +4922,45 @@ and in the `except (RunnerError, verify.VerifyError)` handler, put what the sink
                    refused=str(e))
         # WHAT WAS MEASURED SURVIVES THE REFUSAL, and it goes through `_measured` rather than
         # around it: a candidate that is not this seat's is a measurement that must not reach
-        # this seat's record at all, which is the whole of what that check is for. `_measured`
-        # raising here would be that check doing its job, so it is not caught.
-        kept = _measured(result, taken["candidate"], taken["setup"])
-        return _revise(run_dir, replace(kept, verification_refused=str(e)))
+        # this seat's record at all, which is the whole of what that check is for.
+        #
+        # CONTAINED, because this call is INSIDE the handler and nothing above it catches. In
+        # the `try` above, `_measured` raising lands in this very handler — that is what
+        # contains it, and it is why the docstring can call the raise deliberate. Here there is
+        # no handler left: an uncaught RunnerError would leave `_verify_a_seat`, leave
+        # `runner.run`, and end the fleet over ONE seat's refused verification with every
+        # provider already paid and the seats behind this one never verified — the Critical
+        # this half's docstring records as closed, reopened on the refusal path.
+        #
+        # The seat then keeps its PRE-VERIFICATION verdict and the refusal NAMES the dropped
+        # measurement. Recording only `e` would read as a seat whose verification simply
+        # refused, which is cleaner than the evidence: something was measured and this run
+        # declined to file it.
+        try:
+            kept, refused = _measured(result, taken["candidate"], taken["setup"]), str(e)
+        except RunnerError as bad:
+            kept, refused = result, f"{e}; a measurement was taken and not admitted: {bad}"
+        return _revise(run_dir, replace(kept, verification_refused=refused))
 ```
 
-> **Read `_verify_a_seat` in full before editing.** Its two `except` blocks and their ordering are the subject of a closed Critical; preserve them. Verify that `_measured` raising inside this handler is acceptable — the docstring at `runner.py:1365` says the sibling case (`_revise` failing inside `reclassify_seat`) stays open because swallowing it would fail open, and the same argument applies here.
+> **Read `_verify_a_seat` in full before editing.** Its two `except` blocks and their ordering
+> are the subject of a closed Critical; preserve them. The sibling case the docstring at
+> `runner.py:1365` leaves open is **not** this one: there, `_revise` failing inside
+> `reclassify_seat` is a record that cannot be written, and containing it would mean writing it
+> somewhere. Here the record CAN be written — only the recovered measurement is in doubt — so
+> containment costs nothing and buys the fleet.
 
-- [ ] **Step 11: Run everything**
+- [ ] **Step 12: Run everything**
 
-Run: `uvx --with pytest pytest -q tests/test_forge_launch.py tests/test_forge_seatrecord.py tests/test_forge_runner.py tests/test_forge_seams.py`
-Expected: PASS — all four suites green, including the pre-existing runner tests that pin `VerifyError` propagating unwrapped.
+Run: `uvx --with pytest pytest -q tests/test_forge_launch.py tests/test_forge_seatrecord.py tests/test_forge_runner.py tests/test_forge_seams.py tests/test_council_seams.py`
+Expected: PASS — all five suites green, including the pre-existing runner tests that pin `VerifyError` propagating unwrapped, and `test_forge_launch.py`'s **9**.
 
 Then the whole forge suite:
 
 Run: `uvx --with pytest pytest -q tests/`
 Expected: PASS — the full count (1067 at Plan H's close, plus this plan's additions).
 
-- [ ] **Step 12: Re-run under scrambled names, then mutate**
+- [ ] **Step 13: Re-run under scrambled names, then mutate**
 
 Rename every new `test_*` in `tests/test_forge_launch.py` and `tests/test_forge_seatrecord.py` to `test_zz0`…`test_zzN`, re-run, confirm the same count, **restore the names**. Then:
 
@@ -4166,14 +4991,39 @@ scripts/mutate.py --file shared/lib/forge/seatrecord.py \
   -- uvx --with pytest pytest -q tests/test_forge_seatrecord.py
 
 scripts/mutate.py --file shared/lib/forge/runner.py \
-  --old '        kept = _measured(result, taken["candidate"], taken["setup"])' \
-  --new '        kept = result' \
+  --old '            kept, refused = _measured(result, taken["candidate"], taken["setup"]), str(e)' \
+  --new '            kept, refused = result, str(e)' \
+  -- uvx --with pytest pytest -q tests/test_forge_runner.py
+
+# The env passthrough. Without a mutation here the launcher could silently go back to dropping
+# `env` and only a production run would notice.
+scripts/mutate.py --file shared/lib/forge/launch.py \
+  --old '        record = run_provider(spec, retries, timeout, backoff, Path(seat_path), env=env)' \
+  --new '        record = run_provider(spec, retries, timeout, backoff, Path(seat_path))' \
+  -- uvx --with pytest pytest -q tests/test_forge_launch.py
+
+# The SECOND writer. Mutating only `_write` would leave this one green, which is the finding.
+scripts/mutate.py --file shared/lib/forge/runner.py \
+  --old '    runstate.write_seat(run_dir, out.name, _payload(out.name, [' \
+  --new '    runstate.write_seat(run_dir, out.name, {"name": out.name, "attempts": [' \
+  -- uvx --with pytest pytest -q tests/test_forge_runner.py
+
+# The containment. A SURVIVED row here means one seat's unadmitted measurement can still end
+# the fleet.
+scripts/mutate.py --file shared/lib/forge/runner.py \
+  --old '        except RunnerError as bad:' \
+  --new '        except ZeroDivisionError as bad:' \
   -- uvx --with pytest pytest -q tests/test_forge_runner.py
 ```
 
-Expected: all six exit 0 (CAUGHT). `git status` clean afterwards.
+Expected: all nine exit 0 (CAUGHT). `git status` clean afterwards.
 
-- [ ] **Step 13: Add to the Makefile and commit**
+> The second of these mutates a line whose replacement must stay syntactically valid — check
+> the closing bracket in the surrounding statement and adjust the `--new` text if `_revise`'s
+> call was reflowed differently. `scripts/mutate.py` refuses pytest's exit 5, so a mutation
+> that breaks collection reports as an error rather than as CAUGHT.
+
+- [ ] **Step 14: Add to the Makefile and commit**
 
 Append `tests/test_forge_launch.py` and `tests/test_forge_seatrecord.py` to `FORGE_TESTS`, then:
 
@@ -4186,7 +5036,7 @@ make verify; echo "verify rc=$?"
 make precommit; echo "precommit rc=$?"
 ```
 
-Expected: both `rc=0`. Then:
+Expected: both `rc=0`. `shared/lib/council/engine.py` and `tests/test_council_seams.py` are **not** in this list — Step 7 committed them, with the receipt re-seeded there. Then:
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -4206,7 +5056,7 @@ Everything that **decides**. §12's size gate, failure classification, progress 
 
 Also out, and carried forward rather than lost:
 
-- **§16/§16.1 handover and provenance header, §15's `--gc`, the CLI (`--start`/`--collect`/`--gc`/`--no-ultra`), §18's `evals/llm-forge/`, §19's three council-engine items** — Plan J.
+- **§16/§16.1 handover and provenance header, §15's `--gc`, the CLI (`--start`/`--collect`/`--gc`/`--no-ultra`), §18's `evals/llm-forge/`, §19's three council-engine items** — Plan J. **Plan J also owns the three uncalled things this plan builds** — the bundle's materialization into a seat, `make_launcher`'s first caller, and the `bundle_sha256` that makes §11's label reachable — plus Task 2 Step 8's provider probe, which becomes blocking there, and the `<seat>/.forge-task/` + `info/exclude` fallback if the probe fails. See "Produced here, consumed nowhere yet".
 - **§22 Q5's memory measurement.** No concurrency cap exists; `gate.py` prices peak disk and nothing measures memory. A one-off: run a three-seat load, derive a concurrent-seat cap (plausibly 2 on this ~7.9 GB box), and make sure an OOM classifies as an **infrastructure** failure so §12.3 never reads it as non-progress.
 - **The five carried debts** (§9's unrecorded remotes/config, `--gc`, `PASS` never reading `baseline_run`, nothing serializing `CandidateBundle`, `filter.<d>.clean`). None is on this plan's seam.
 - **`fleet.clone_seat` does not pin `core.hooksPath` for a builder seat** the way `verify._hooks_pin` does for a verifier — same exploitable class as the fsmonitor hole, and a fleet change with its own blast radius.
@@ -4222,7 +5072,7 @@ Run against the spec (§10, §10.1, §11, §20) and the design pass with fresh e
 | Requirement | Task |
 |---|---|
 | §20 task-bundle manifest: canonical relative paths, byte hashes, type, mode, symlink target, size caps, an entrypoint | 1 (`scan`, `BundleEntry`, `Quota.for_task_bundle`) |
-| §20 materialize identically in every clone, modes preserved | 2 (`materialize` + `verify_materialized`) |
+| §20 materialize identically in every clone, modes preserved | 2 (`materialize` + `verify_materialized`) — **built and tested, called by nothing in Tasks 1–6.** No seat receives a bundle in this plan. See "Produced here, consumed nowhere yet". |
 | §20 resolve and hash the live installed closures; named skill only when all three hash identically | 2 (`installed_closure`, `ambient_verdict`) |
 | §20 bar ambient invocation | 2 (`ambient_note`, recorded as an instruction issued, **not** a mechanical bar) |
 | §20 persist the resolved instruction + hashes for `--collect` | 1 (`write_task_bundle` / `read_task_bundle`) |
@@ -4234,14 +5084,40 @@ Run against the spec (§10, §10.1, §11, §20) and the design pass with fresh e
 | §10.1 the three-valued method enum | 4 (`METHODS`), paired with `satisfied` |
 | §10 coverage asserts no accepted row contradicts a unanimous rejection | 4 (`_contradictions`, with the semantic reading explicitly declared unreachable) |
 | §11 four per-seat values | 5 (`PromptIdentity`) |
-| §11 classification conditioned on prompt identity; agreement across differently-prompted seats labelled weaker | 5 (`agreement_label`, `creditable`) — **the label is produced here; nothing consumes it until Plan I₂'s rubric.** §21 records that conditional agreement labelling was a candidate cut precisely because "nothing downstream acts on the label"; the owner kept it, and §11's last line keeps the fingerprints regardless. |
-| The seat-record schema carrying §11's fingerprints | 6 (`seatrecord`) |
-| `forge_spec` gets a production caller | 6 (`launch.make_launcher`) |
-| `runner.verify_candidate`'s dropped measurements | 6 (`on_measurement`) |
+| §11 classification conditioned on prompt identity; agreement across differently-prompted seats labelled weaker | 5 (`agreement_label`, `creditable`) — **NOT satisfiable as built, and this is stated rather than claimed.** `bundle_sha256` is in `_COMPARED` and nothing in this plan supplies one, so `agreement_label` returns `not-comparable` and `creditable` is `False` for **every** real fleet: two of three `LABELS` are unreachable outside the unit tests. §21 records that conditional agreement labelling was a candidate cut precisely because "nothing downstream acts on the label"; the owner kept it, and §11's last line keeps the fingerprints regardless. See "Produced here, consumed nowhere yet". |
+| The seat-record schema carrying §11's fingerprints | 6 (`seatrecord`) — validated at **both** writers via `runner._payload` |
+| `forge_spec` gets a production caller | 6 (`launch.make_launcher`) — **half-closed.** `make_launcher` wires `forge_spec`, and nothing calls `make_launcher` until Plan J, so §8.1's validator still never runs outside a suite. |
+| `runner.verify_candidate`'s dropped measurements | 6 (`on_measurement`), with the recovery contained so it cannot end the fleet |
+| The seat's scrubbed environment reaching the provider | 6 Step 7 (`engine.child_env(base)` / `run_provider(..., env=)`) — not a spec line; a defence this plan would otherwise have undone |
 
 **Gap found and closed by this review:** §20's preflight refusal for irreducibly provider-specific workflows has no task here. It is *not* silently dropped — it is named in the table above and in "Deliberately out of scope", with the reason (it needs a front end that does not exist) and the destination (Plan J).
 
-**2. Placeholder scan.** One real defect was found and fixed inline: Task 6 Step 5's runner tests originally called a helper `_a_seat_result_with_launch` that **exists in no task and no file** — the skill's own "references to functions not defined in any task" failure. Rewritten against the helpers `tests/test_forge_runner.py` actually defines, each cited by line (`_open:79`, `_fake:36`, `_attempt:139`, `_confirmed:1157`, `_edit:1175`, `_per_seat:1179`), and the hooks-rig test it reuses is cited at `:950`. All three test bodies are now complete code. No `TBD`, no "add appropriate error handling", no "similar to Task N", no step that describes without showing, and no ellipsis anywhere in the plan.
+### Produced here, consumed nowhere yet
+
+Plan H's lesson #1 — *"an approved rule with no caller is an untested rule, however well
+argued"* — is the argument Task 6 uses against `forge_spec`, and this plan reproduces it three
+times. Named here rather than left for a reader to discover, because two of the three change
+what a §11 label MEANS in production:
+
+- **`taskbundle.materialize` / `verify_materialized`** (Task 2) have no caller in Tasks 1–6. No
+  seat receives a bundle; nothing puts a task-dir path into a prompt.
+- **`launch.make_launcher`** (Task 6) has no caller — `runner.run(..., launch=)` is injected and
+  the CLI is Plan J. So `forge_spec`'s "production caller" is itself uncalled in production.
+- **Therefore `bundle_sha256` is `None` for every real seat**, and `bundle_sha256` is in
+  `fingerprint._COMPARED` — so `agreement_label` returns `not-comparable` for **every** real
+  fleet and `creditable` is `False` always. §11's three-state label has exactly one reachable
+  value in production. This is the mirror of "a status nothing can produce", and dropping
+  `bundle_sha256` from `_COMPARED` to make the other two reachable would be the wrong repair:
+  it would credit agreement between seats whose bundles were never compared.
+
+**What closes it, and where.** **Plan J** owns all of it, as one requirement rather than three
+loose ends: its CLI materializes the bundle into each seat, re-verifies it from the seat, passes
+`bundle_sha256=taskbundle.bundle_hash(b)` into `make_launcher`, and — only after Task 2 Step 8's
+probe has actually been run — puts the entrypoint pointer into the prompt. The
+`<seat>/.forge-task/` + `info/exclude` fallback (`fleet.py:253-258`) belongs to that same task.
+**Until then §11's label is inert, and no report may present it as a measurement.**
+
+**2. Placeholder scan.** One real defect was found and fixed inline: Task 6 Step 5's runner tests originally called a helper `_a_seat_result_with_launch` that **exists in no task and no file** — the skill's own "references to functions not defined in any task" failure. Rewritten against the helpers `tests/test_forge_runner.py` actually defines, each cited by line (`_fake:36`, `_open:79`, `_attempt:139`, `_confirmed:1157`, `_edit:1175`, `_per_seat:1179` — all six re-verified in the revision pass), and the hooks-rig test it reuses is at `:951` (the plan said `:950`). All five test bodies are now complete code. No `TBD`, no "add appropriate error handling", no "similar to Task N", no step that describes without showing, and no ellipsis anywhere in the plan.
 
 **3. Type consistency.** Checked across tasks:
 - `taskbundle.bundle_hash` (Task 1) → `fingerprint.build(bundle_sha256=…)` (Task 5) → `launch.make_launcher(bundle_sha256=…)` (Task 6). One `str | None` throughout.
@@ -4249,7 +5125,8 @@ Run against the spec (§10, §10.1, §11, §20) and the design pass with fresh e
 - `ledger.Criterion` (Task 3) fields `kind/text/path/symbol/node_id/sha256/trace` are exactly what `coverage.evaluate` reads (Task 4) — including `trace`, which Task 3 adds and Task 4 consumes for `prose`/`schema` only.
 - `ledger.CRITERION_KINDS` (Task 3) and `coverage.evaluate`'s branches (Task 4) cover the same five names; `evaluate` raises `CoverageError` on any sixth, so adding a kind in Task 3 without an evaluator fails loudly.
 - `fingerprint.as_row` / `from_row` (Task 5) are the pair `launch` writes (Task 6) and `seatrecord._attempt` reads (Task 6). Same eight keys.
-- `runner._record`'s new `"prompt_identity"` key (Task 6) is in `seatrecord.Attempt`'s field list (Task 6), and `_write` proves it by decoding.
+- `runner._record`'s new `"prompt_identity"` key (Task 6) is in `seatrecord.Attempt`'s field list (Task 6), and **both** writers prove it by decoding — `_write` and `_revise` share `runner._payload`, because `_revise` is the writer on every post-verification path and a check at `_write` alone would validate none of the records this task exists to fix.
+- `engine.run_provider`'s new `env=` (Task 6 Step 7) is what `launch.make_launcher` passes `runner.run_seat`'s `fleet.forge_child_env(repo)` through. One dict, three hops, no copy.
 - `coverage.METHODS` uses §10.1's exact spellings — `mechanically_checked`, `manual_trace_confirmed`, `unresolved`.
 
 **4. Naming traps checked.** `PromptIdentity` is never `identity`; `runner`/`fleet`'s `identity` parameter is untouched. `taskbundle` is never `bundle` — `bundle.py` is the *candidate* bundle, flowing the opposite direction, and both are imported in Task 1 (`from . import bundle as bundlemod`).
@@ -4258,7 +5135,8 @@ Run against the spec (§10, §10.1, §11, §20) and the design pass with fresh e
 
 ## Execution Handoff
 
-Plan complete. Two execution options:
+Plan complete and revised (see "Revisions" at the top). **Task 1 has already landed** as commit
+`2fef627`; start at Task 2. Two execution options:
 
 1. **Subagent-Driven (recommended)** — a fresh subagent per task, with a two-stage review between tasks. This project's eight prior plans all ran this way, **strictly sequential** (never two implementers in flight: `make render` reads the working tree, so a concurrent edit lands in another agent's rendered output even with disjoint file sets).
 2. **Inline Execution** — execute the tasks in one session using `superpowers:executing-plans`, with checkpoints for review.
