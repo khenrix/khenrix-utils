@@ -68,8 +68,16 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
     NO PRODUCTION CALLER YET. Nothing in this plan calls `make_launcher`; `runner.run(...,
     launch=)` is injected and the CLI is a later plan. So `seat.forge_spec`'s "production
     caller" is itself uncalled in production until then, and `bundle_sha256` is `None` for
-    every seat a caller does not supply one for — which makes `fingerprint.agreement_label`
-    answer `not-comparable` for every real fleet until that caller exists.
+    every seat a caller does not supply one for.
+
+    WHAT THAT `None` DOES NOT DO, stated because this docstring said the opposite and the
+    opposite was measured false: it does NOT make `fingerprint.agreement_label` answer
+    `not-comparable`. That label is what a `None` produces only when nothing else DIFFERS, and
+    a real fleet is three CLIs on three models — `cli_version` and `model_requested` differ for
+    every run forge performs, and `agreement_label` returns `differently-prompted` the moment a
+    compared field differs, ahead of any absence. `differently-prompted` is §11's "labelled
+    weaker", which is the correct reading of a real fleet; the unhashed bundle is a measurement
+    this run did not take, and it is not what decides the label.
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise LaunchError("a seat is launched with a task, and this prompt is empty")
@@ -79,11 +87,13 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
         seat_prompt = engine.apply_sentinel(prompt, token)
         spec = seatmod.forge_spec(name, seat_prompt, timeout, cfg=cfg,
                                   workdir=Path(seat_path))
-        # §13 plants the proof token in a bundle for a REVIEWER; a builder seat's token is in
-        # the prompt, as `apply_sentinel` put it. `spec.sentinel` is set for provenance only —
-        # `_forge_validator` neutralizes it deliberately, and §8's `proven_read` reads the
-        # token separately through `seat.read_proof`.
-        spec.sentinel = token
+        # `spec.sentinel = token` USED TO BE HERE, described as provenance. It was not
+        # provenance and it was not anything else: `_forge_validator` hands `evaluate` a
+        # `replace(spec, sentinel=None)` copy, which is the only reader of the field
+        # (`council/engine.py:1109`), and `run_provider`'s returned record carries no
+        # `sentinel` key — so the assignment had no reader at all. The token's real provenance
+        # is `runner._record`, which writes it as the attempt's `sentinel`, and §8's
+        # `proven_read` reads it separately through `seat.read_proof`.
         spec.cwd = str(seat_path)
         record = run_provider(spec, retries, timeout, backoff, Path(seat_path), env=env)
         if not isinstance(record, dict):
@@ -96,20 +106,21 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
                 f"{name}: the provider record already carries `prompt_identity`. This adapter "
                 "is the only party that knows the prompt, so a second one would mean two "
                 "answers to §11's question with nothing saying which was measured.")
+        # `model_reported=None`, ALWAYS, AND IT IS A MEASUREMENT RATHER THAN A GAP. This used
+        # to read `record.get("model")` through a `_reported` helper whose docstring said it
+        # was "the model the PROVIDER named" and that `None` was "honest for codex, whose
+        # record carries no model field". Both halves are false: `engine.run_provider` builds
+        # its record with `"model": spec.model` (`council/engine.py:1267`) for EVERY provider,
+        # which is the model this adapter REQUESTED. So the helper returned either `None` (no
+        # `cfg`, so `spec.model` is None) or exactly `model_requested` — never an observation.
+        # `fingerprint.PromptIdentity` keeps the two fields apart precisely so a request is not
+        # recorded as an observation; filling the second from the first is that collapse
+        # performed one field later. No provider envelope this package reads names a model, so
+        # nobody measured one, and `None` is §11's only spelling of that.
         pi = probe(prompt=seat_prompt, token=token, cli=name,
                    bundle_sha256=bundle_sha256,
                    model_requested=spec.model,
-                   model_reported=_reported(record))
+                   model_reported=None)
         return {**record, "prompt_identity": fingerprint.as_row(pi)}
 
     return launch
-
-
-def _reported(record) -> str | None:
-    """The model the PROVIDER named, or None where its envelope names none.
-
-    Recorded apart from `model_requested` because collapsing them records a request as an
-    observation. `None` here is honest for codex, whose record carries no model field.
-    """
-    v = record.get("model")
-    return v if isinstance(v, str) and v else None

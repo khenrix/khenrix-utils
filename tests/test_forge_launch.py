@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import hashlib  # noqa: E402
+import inspect  # noqa: E402
 import pytest  # noqa: E402
 from council import engine  # noqa: E402
 from forge import fingerprint, launch, seat  # noqa: E402
@@ -163,18 +164,41 @@ def test_the_launcher_calls_a_provider_that_can_take_an_environment(tmp_path):
         "the council-engine seam is not in place"
 
 
-def test_the_model_the_provider_named_is_recorded_apart_from_the_one_requested(tmp_path):
+def test_no_provider_names_a_model_so_model_reported_is_the_absence_it_is(tmp_path):
     """§11 keeps `model_requested` and `model_reported` apart because collapsing them records
-    a request as an observation. `None` is honest for a provider whose envelope names none."""
+    a request as an observation — and this adapter used to perform that collapse one field
+    later, by reading `record["model"]`.
+
+    THE OLD FIXTURE COULD NOT REACH THE REAL SHAPE, WHICH IS WHY IT LOOKED MEASURED: it
+    returned `{"model": "opus-5-actual"}`, a record no provider in this repository produces.
+    `engine.run_provider` builds ITS record with `"model": spec.model` — the value this adapter
+    just ASKED for — so the helper returned either `None` or exactly `model_requested`, never
+    an observation. The seam below is what keeps this test honest about the source of that
+    fact rather than restating it.
+    """
     seen = []
 
     def run_provider(spec, retries, timeout, backoff, workdir, *, env=None):
         seen.append(spec)
-        return {"valid": True, "result_text": "x", "model": "opus-5-actual"}
+        return {"valid": True, "result_text": "x", "model": spec.model}
     fn = launch.make_launcher(prompt="p", timeout=60,
                               cfg={"claude": {"model": "opus-5-asked"}},
                               run_provider=run_provider, probe=_probe())
     pi = fingerprint.from_row(
         fn(name="claude", seat_path=tmp_path, token="SENTINEL-abc", env={})["prompt_identity"])
-    assert pi.model_requested == "opus-5-asked" and pi.model_reported == "opus-5-actual"
+    assert pi.model_requested == "opus-5-asked", "the request is recorded as a request"
+    assert pi.model_reported is None, \
+        "nobody measured a model, and §11's only spelling of that is None"
     assert seen[0].model == "opus-5-asked", "and the cfg reached the real spec builder"
+
+
+def test_the_council_record_names_the_model_that_was_asked_for_not_one_observed():
+    """The measurement the test above rests on, taken from the producer rather than assumed.
+
+    Read off the source because the alternative is running a provider, which no test here may
+    do. If `engine.run_provider` ever grows a genuinely observed model, this fails and the
+    `model_reported=None` beside it becomes wrong in the same commit.
+    """
+    src = inspect.getsource(engine.run_provider)
+    assert '"model": spec.model' in src, \
+        "run_provider's record carries the REQUESTED model; nothing here observes one"
