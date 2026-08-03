@@ -35,7 +35,10 @@ caller composes: nothing here stops `fixed_point` running in a tree setup never 
 exception it looks like; it sequences the same calls over §5's UNTOUCHED BASELINE and builds
 its own empty bundle rather than receiving a builder's, so no candidate's §6 run is ordered by
 anything in this module. Sequencing
-those is the caller's job, named as such rather than implied by the order they appear in.
+those is the caller's job, and THAT CALLER NOW EXISTS: `runner.verify_candidate` composes the
+five in §6's order for one candidate, and `runner.run` calls it once per seat. It is named
+here so the next reader finds the ordering rather than re-deriving that this file does not
+make it — which is still the fact, and is why the joint above stays where it is.
 
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
 the two options the plan offered are NOT equivalent:

@@ -33,8 +33,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from forge import (baseline, bundle, fleet, gate, gitcmd, harvest, journal,  # noqa: E402
-                   inspect as finspect, preflight, runstate, screen, snapshot, storage,
-                   verify)
+                   inspect as finspect, preflight, runner, runstate, screen, snapshot,
+                   storage, verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -751,6 +751,107 @@ def test_a_repository_preflight_refuses_never_reaches_a_run_directory(tmp_path, 
     assert preflight.refusals(admitted) == ()
     assert runstate.read_manifest(gate.open_run(admitted, confirmation, "r1")).run_id == "r1", \
         "the discrimination check: one bit is the whole difference"
+
+
+def _a_run_to_drive(tmp_path, *, gate_body="exit 0"):
+    """A repository whose gate lives in the baseline, plus a run directory `runner.run` drives.
+
+    The gate is a TRACKED script committed before B is taken, because §6 lets a gate come from
+    the baseline and nowhere else — a candidate that supplied its own would be measured
+    against a gate it wrote. One seat, one attempt: these two cases are about the loop's
+    records, and a fleet of three would pay for three clones to say the same thing.
+    """
+    repo = make_repo(tmp_path)
+    script = write(repo, "gate.sh", f"#!/bin/sh\n{gate_body}\n")
+    script.chmod(0o755)
+    commit_all(repo, "gate")
+    run = tmp_path / "run"; run.mkdir()
+    b = _baseline(repo, run)
+    refs, digest = runstate.snapshot_refs(repo, (), forge_refs={b.ref: b.commit})
+    runstate.write_manifest(run, runstate.Manifest(
+        run_id="r1", repo_path=str(repo), base_commit=b.base_commit, baseline_ref=b.ref,
+        baseline_commit=b.commit, tracked_tree_oid=b.tracked_tree_oid, selected_paths=(),
+        generator_contract=finspect.GeneratorContract(),
+        setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./gate.sh",)),),
+        protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
+        index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
+        seats=1, attempts=1))
+    return repo, run
+
+
+def _launch(fn):
+    """A `runner.run` launch adapter: run `fn(seat_path)`, answer as a provider would.
+
+    NO REAL PROVIDER, here or anywhere in these suites — §5.2 prices a fleet in provider
+    calls and a suite that spends them is one nobody runs. The answer clears
+    `seat._MIN_RATIONALE_CHARS` once the sentinel is stripped, which is what keeps these
+    cases about the seam rather than about §8's rationale rule.
+    """
+    def launch(*, name, seat_path, token, env):
+        fn(Path(seat_path))
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"the retry already backs off; adding one would "
+                               f"double-sleep\n{token}"}
+    return launch
+
+
+def test_the_loops_own_write_ahead_record_reconstructs_as_an_orphan(tmp_path):
+    """SEAM: `runner` and `journal`. The write-ahead pair is only worth anything if the
+    records the LOOP writes are the ones `reconstruct` reads back as `outcome_unknown`.
+
+    The seam above this one pins the same property with a hand-written journal record, which
+    cannot fail if `runner` names its operations something `orphans` never pairs, records the
+    receipt before the work, or writes one id for two attempts. Here the intent is the
+    runner's own and the process dies inside `launch` — where a real one dies — so the orphan
+    that comes back is evidence about the loop and not about the fixture.
+
+    Both halves are asserted: the crashed operation is an orphan, and the operation that
+    completed before it is NOT. A loop whose ids did not identify one operation each would
+    satisfy the first and fail the second.
+    """
+    repo, run = _a_run_to_drive(tmp_path)
+
+    def die(seat_path):
+        raise RuntimeError("SIGKILL stands in for itself")
+
+    with pytest.raises(RuntimeError, match="SIGKILL"):
+        runner.run(run, repo, identity=IDENT, launch=_launch(die))
+
+    r = runstate.reconstruct(run, repo)
+    assert [(e.event, e.operation_id) for e in r.orphans] == \
+        [(journal.intent("seat"), "r1/claude/attempt-1")]
+    assert r.orphans[0].data["pid"] == os.getpid(), \
+        "with the identity §14.1's liveness question needs, not just an id"
+    events = journal.Journal(storage.journal_path(run)).read()
+    assert journal.done("calibration") in [e.event for e in events], \
+        "the premise: the operation that finished first closed, so the orphan is the pairing"
+
+
+def test_the_phase_the_loop_wrote_is_one_the_graph_declares(tmp_path):
+    """SEAM: `runner` and `runstate`. §14's graph lives in `runstate._EDGES` and `advance` is
+    the only thing that knows it; a loop that moved the phase by assignment would hold a graph
+    the spec does not, and every per-module suite would still pass.
+
+    Read back through `read_state` rather than off the returned value, because what a resume
+    consults is the FILE — a phase that reached the dataclass and not the disk is a position
+    the next process cannot see. Then the whole route is replayed through `advance` from
+    `confirmed`, so what is asserted is that the graph admits it rather than that this test
+    agrees with it.
+    """
+    repo, run = _a_run_to_drive(tmp_path)
+    runner.run(run, repo, identity=IDENT,
+               launch=_launch(lambda p: write(p, "work.py", "the agent's edit\n")))
+
+    state = runstate.read_state(run)
+    assert state.phase == "comparing", "where a run with nothing left to fuse stops"
+    at = runstate.State(phase="confirmed", round=0, attempt=0, verified_checkpoint=None,
+                        deliverable_checkpoint=None)
+    for phase in ("setting_up", "building", "harvested", "comparing"):
+        at = runstate.advance(at, phase)
+    assert at.phase == state.phase
+    assert (state.round, state.attempt) == (0, 0), \
+        "`advance` moves the phase and nothing else, so the loop spent no round and no retry"
 
 
 # --------------------------------------------------------------------------- #

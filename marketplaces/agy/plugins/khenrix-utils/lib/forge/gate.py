@@ -1442,7 +1442,10 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     validated them.
     `seats` and `attempts` go the OTHER way and are in the manifest, because a launcher reads
     them to decide how many providers to spend — see `runstate.Manifest` for why that one is
-    not a policy — and `read_manifest` type-checks them on the way back.
+    not a policy — and `read_manifest` type-checks them on the way back. That launcher is
+    `runner.run`: `seats` resolves to that many of `council.engine`'s providers and `attempts`
+    is the per-seat retry budget. `on_calibration_failure` is read back from HERE, off this
+    record, which is the only copy of it — see `runner._confirmed_policy`.
 
     The record is WRITE-AHEAD around everything that touches the user's repository, so a
     crash between the two halves leaves the orphan §14.1 requires rather than a run directory

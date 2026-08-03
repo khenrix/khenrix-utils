@@ -1,11 +1,15 @@
-"""One builder seat, driven end to end, and then verified somewhere it never was (spec §4,
-§6, §7, §8, §8.1).
+"""The fleet, driven end to end: three builder seats, each verified somewhere it never was
+(spec §4, §5 step 3, §6, §7, §8, §8.1, §9, §14.1).
 
 Seven plans built the pieces; this is the first caller that composes them. `run_seat` chains
 clone -> F0 -> setup -> Fsetup -> launch -> Fwork -> artifact set -> candidate, classifies
 what came out through §8's four dimensions, and writes the seat's record where §14.2 says a
 `--collect` will look for it. `verify_candidate` then takes that candidate to a tree the
-builder never had and runs §6's five steps there, in §6's order.
+builder never had and runs §6's five steps there, in §6's order. `reclassify_seat` feeds §6's
+answer back into §8. `run` is the loop that calls all three, in that order, for every seat the
+§5 gate priced — journalled write-ahead, driven off the run directory and nothing else, and
+stopping at three verified candidates with NOTHING CHOOSING BETWEEN THEM: §10 through §13 have
+no implementation, so the phase after `comparing` would be one with nothing in it.
 
 **`launch` IS INJECTED, AND NOTHING IN THIS PACKAGE'S SUITE INVOKES A REAL PROVIDER.** Every
 test passes a fake that writes into the seat and hands back a provider-shaped record, so the
@@ -41,9 +45,9 @@ zero-diff seat sat at `partial` permanently and §8's dimension was decorative.
 into §8's `verify` dimension and `classify_seat` is asked again. It is deliberately NOT
 inside `verify_candidate`: that function measures a tree, this one revises a verdict, and the
 two vocabularies are different on purpose (see `_verify_dim` for what does and does not
-translate). WHAT IS NOT HERE is the SEQUENCING — the caller that runs one, then the other,
-for every seat in the fleet. That belongs to the run loop, which has no implementation in
-this module; what this module owes it is the step, not the order it is called in.
+translate). THE SEQUENCING is `run`'s, at the bottom of this file: one call, then the other,
+for every seat — because an order is not a mapping between two spec vocabularies and does not
+belong beside one.
 
 WHAT NEVER HAPPENS HERE (§8.1, verbatim): *"Every retry attempt gets a fresh clone. The
 failed attempt is preserved as partial input. Never a reset-and-rerun in place."* `attempt`
@@ -59,7 +63,8 @@ from pathlib import Path
 
 from council import engine
 
-from . import bundle, fleet, harvest, runstate, seat as seatmod, storage, verify
+from . import (baseline as baselinemod, bundle, fleet, gate, harvest, journal, runstate,
+               seat as seatmod, storage, verify)
 
 
 class RunnerError(RuntimeError):
@@ -848,11 +853,14 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     # `run_seat`'s and `calibrate`'s: `classify` differences this run against the calibration,
     # so a candidate measured in a different environment is differencing two machines.
     contract = manifest.generator_contract
-    gate = verify.Command(steps=manifest.verify)
+    # `command`, not `gate`: this module imports `gate` for §5 step 2's policy names, and a
+    # local of that name would shadow it inside this function only — the shape where the two
+    # meanings read identically at every call site and differ at exactly one.
+    command = verify.Command(steps=manifest.verify)
     child_env = fleet.forge_child_env(manifest.repo_path)
 
     v = verify.build_verifier(manifest.repo_path, baseline, candidate, dest,
-                              identity=identity, contract=contract, command=gate)
+                              identity=identity, contract=contract, command=command)
 
     setup = verify.Command(steps=manifest.setup)
     if setup.steps:
@@ -867,7 +875,458 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     # candidate-owned setup script can move `core.hooksPath` in.
     verify.assert_hooks_pinned(v)
 
-    fp = verify.fixed_point(v.path, gate, v.contract, env=child_env)
+    fp = verify.fixed_point(v.path, command, v.contract, env=child_env)
     outcome, reason = verify.classify(fp, calibration.run, v.candidate)
     setup_run = setup_result.run if setup_result else None
     return outcome, _with_setup_caveat(reason, setup_run), v, setup_result
+
+
+# --------------------------------------------------------------------------- #
+# The run loop: §5 step 3, then §7 for every seat, then §6 for every candidate.
+# --------------------------------------------------------------------------- #
+
+# WHICH providers a seat count names. §5.2 prices a run by a NUMBER and `gate.confirm`
+# records that number, because that is what an operator can be quoted; a number is not a
+# fleet. The list is `council.engine`'s own rather than a second one spelled here: the
+# adapter `launch` wraps is `engine.run_provider`, so a name invented in this module is one
+# no provider answers to. Its ORDER is the fleet's order, which is why the tuple is taken
+# whole rather than through a set.
+_SEATS = tuple(engine.DEFAULT_PROVIDERS)
+
+# §14's chain, as far as this plan drives it. `synthesizing` is the next edge and it is
+# fusion, which this module deliberately does not reach — §10 through §13 have no
+# implementation, so a loop that entered `synthesizing` would be claiming a phase with
+# nothing in it. It is the ROUTE and not the graph: `runstate._EDGES` is still the only
+# statement of what follows what, `advance` is what refuses a step this route got wrong, and
+# all `_reach` reads here is whether a phase is on the route at all.
+_SPINE = ("confirmed", "setting_up", "building", "harvested", "comparing")
+
+# §14.1's write-ahead pairs, one kind per operation this loop performs. `gate.open_run`
+# already uses `confirm` for the operation that opened the run; these three are disjoint from
+# it, which is what lets `_refuse_a_second_pass` tell this loop's own records from the gate's.
+_CALIBRATION = "calibration"
+_SEAT = "seat"
+_VERIFICATION = "verification"
+_OPERATIONS = (_CALIBRATION, _SEAT, _VERIFICATION)
+
+# The kind `gate.open_run` records the §5 gate under, and the field it carries. Spelled here
+# because `gate` exports neither — `open_run` writes `journal.intent("confirm")` inline — and
+# the alternative is reading the operator's answer out of a name this module guessed at
+# silently. `_confirmed_policy` fails closed when it is not found, so a rename over there is a
+# refusal here rather than a policy quietly ignored.
+_CONFIRM = "confirm"
+_CALIBRATION_POLICY = "on_calibration_failure"
+
+
+def _op(manifest, *parts) -> str:
+    """One operation's id: the run, then what inside it. Never the run id alone — `orphans`
+    pairs a start with a done on (kind, operation_id), so an id naming a whole seat rather
+    than one attempt would let attempt 2's done close attempt 1's start."""
+    return "/".join((manifest.run_id, *parts))
+
+
+def _fleet(manifest) -> tuple:
+    """The seat names this run's agreed COUNT resolves to.
+
+    Refused rather than truncated when the count exceeds the providers that exist: §5.2
+    priced `seats * attempts` provider calls and the operator agreed to that number, so
+    running fewer is a run they did not confirm — and running the same provider twice under
+    two seat names would put two records where §14.2 has one file per seat.
+    """
+    if manifest.seats > len(_SEATS):
+        raise RunnerError(
+            f"this run agreed to {manifest.seats} seats and there are {len(_SEATS)} providers "
+            f"to fill them ({list(_SEATS)}). §5.2 priced the run by that count, so neither "
+            "running fewer nor giving one provider two seats is the run that was confirmed.")
+    return _SEATS[:manifest.seats]
+
+
+def _advance(run_dir: Path, state, phase: str):
+    """One DECLARED edge, taken and recorded. `advance` is the refusal, not a check here."""
+    try:
+        nxt = runstate.advance(state, phase)
+    except runstate.TransitionError as e:
+        raise RunnerError(
+            f"this run cannot move from {state.phase!r} to {phase!r}: {e}") from e
+    runstate.write_state(run_dir, nxt)
+    return nxt
+
+
+def _reach(run_dir: Path, state, phase: str):
+    """`state` at `phase`, by the one edge §14 declares between them — or already there.
+
+    THROUGH `advance`, never by assignment: §14's graph is `runstate._EDGES` and the only
+    thing that knows it is `advance`, so a loop that set `phase` directly would hold a graph
+    the spec does not and nothing would say so. Every phase this function writes was therefore
+    a transition §14 declares — including the ones it gets WRONG, which `advance` refuses
+    rather than this function re-deriving them from `_SPINE`.
+
+    ONE EDGE, not a walk to an arbitrary target, because the gap is always one: `run` reaches
+    each phase of `_SPINE` in turn, and the only position it can be resumed from is one where
+    the phase was written and the next operation was not yet journalled — which is `setting_up`
+    and nothing else, since every later phase is followed immediately by a record that
+    `_refuse_a_second_pass` then sees. That equal case is the no-op below and is the whole of
+    what a second call can legitimately pick up.
+
+    A phase OFF the route is refused here rather than at `advance`: `reviewing` and the five
+    terminals are real phases §14 declares, so `advance` would answer about the GRAPH ("no edge
+    from `ready`") for a run whose actual problem is that this loop drives no route through it.
+    """
+    if state.phase == phase:
+        return state
+    if state.phase not in _SPINE:
+        raise RunnerError(
+            f"this run is at {state.phase!r}, which is not on the route this loop drives "
+            f"({list(_SPINE)}); §14 declares it, and what follows it belongs to a phase with "
+            "no implementation here.")
+    return _advance(run_dir, state, phase)
+
+
+def _at_confirmed():
+    """The position a run directory holding a manifest and no state record is in.
+
+    DERIVED, not defaulted. §14.2 writes the manifest AT `confirmed` and never rewrites it,
+    so a directory with one and no `state.json` has reached exactly that phase and no
+    further — `gate.open_run` writes no state at all. The counters are zero for the same
+    reason and not as a fallback: no round and no attempt have been spent by a run that has
+    not started. `State` deliberately has no defaults so that this reasoning has to be
+    written down somewhere, and this is where.
+    """
+    return runstate.State(phase="confirmed", round=0, attempt=0,
+                          verified_checkpoint=None, deliverable_checkpoint=None)
+
+
+def _source_diverged(run_dir: Path, state, moved) -> None:
+    """§9: the user's repository moved, so record that and stop. Always raises.
+
+    THE TRANSITION IS TAKEN BEFORE THE REFUSAL, which is the half a `raise` alone would lose:
+    §9 says the run "transitions to `source_diverged` and does not continue to handover
+    automatically", and a run that only raised would be left at whatever phase it had reached
+    — a position a later reader resumes from, into the very handover §9 stopped.
+
+    §14 declares the edge out of every non-terminal phase, so it can be taken from wherever
+    the run was standing. From a terminal it cannot, and is not: a run already reported ended
+    is not moved, and the refusal below still names what moved.
+    """
+    if state.phase in runstate.PHASES and state.phase not in runstate.TERMINAL:
+        _advance(run_dir, state, "source_diverged")
+    raise RunnerError(
+        f"this run's repository has moved since it was agreed: {list(moved)}. §9 transitions "
+        "to `source_diverged` and does not continue to handover automatically, because a "
+        "clean merge can silently revert the user's own subsequent work on any hunk forge "
+        "also touched.")
+
+
+def _refuse_an_unknown_outcome(orphans) -> None:
+    """§14.1: an operation that started and left no receipt is `outcome_unknown`, and it is
+    NEVER SILENTLY RETRIED.
+
+    Retrying is exactly what this loop would otherwise do — it is the only thing it knows how
+    to do — and the operation may have completed: a seat whose provider ran for forty minutes
+    and whose `_done` never landed has a clone, a record and a spent provider call behind it.
+    So the run stops and says which operation it cannot classify. `runstate.reconstruct` is
+    where a reader goes next; the identity fields on each event are the half of "is it still
+    running" that cannot be re-derived later.
+    """
+    named = ", ".join(f"{e.event} {e.operation_id!r} (pid {e.data.get('pid')})"
+                      for e in orphans)
+    raise RunnerError(
+        f"this run has {len(orphans)} operation(s) that started and recorded no result, which "
+        f"§14.1 names {runstate.OUTCOME_UNKNOWN} and never silently retries: {named}. Read "
+        "the run with `runstate.reconstruct` and decide; this loop will not guess whether "
+        "they ran.")
+
+
+def _refuse_a_second_pass(events) -> None:
+    """Refuse a run directory this loop has already driven, whatever the outcome was.
+
+    NOT A TIDINESS RULE, and the honest version of a resume rather than a substitute for one.
+    §14.1 concedes at the top that exactly-once is not deliverable and asks instead for a
+    record in which never-started, partly-ran and completed are DISTINGUISHABLE — which the
+    journal delivers. What it does not deliver is the ability to CONTINUE: the two values a
+    second pass would need are `verify.Calibration` and `bundle.CandidateBundle`, and nothing
+    in this package serializes either. `_record` says so of the bundle in as many words, and
+    `harvest`'s F0/Fsetup are not persisted, so it cannot be rebuilt from the surviving clone
+    either.
+
+    So a second pass could only re-take the operations it cannot carry forward: another
+    calibration clone into a directory that already holds one, and another provider call per
+    seat that §5.2 priced once. `run_seat` refuses its own half of that (the attempt is
+    already recorded) and this is the whole of it, refused before anything is spent rather
+    than three clones in.
+
+    What a caller actually wants here is `runstate.reconstruct`, which reads the run whole.
+    """
+    mine = [e for e in events
+            if any(e.event in (journal.intent(k), journal.done(k)) for k in _OPERATIONS)]
+    if mine:
+        raise RunnerError(
+            f"this run directory already records {len(mine)} operation(s) from a previous "
+            f"pass, the last being {mine[-1].event} {mine[-1].operation_id!r}. Nothing here "
+            "serializes a Calibration or a CandidateBundle, so a second pass cannot continue "
+            "the first — it could only re-spend the provider calls §5.2 quoted once. Read the "
+            "run with `runstate.reconstruct` instead.")
+
+
+def _confirmed_policy(events, manifest) -> str:
+    """The operator's §5 step 2 answer for a baseline that fails its own gate.
+
+    IT IS IN THE JOURNAL AND NOT THE MANIFEST — `gate.open_run` says so, and records it on the
+    `confirm` operation's own done record. That is the only copy, so this reads it there, and
+    FAILS CLOSED when it is missing or is not one of §5 step 2's two branches: neither has a
+    safe default, `gate.confirm` refuses to invent one, and a loop that carried on past a red
+    baseline because it could not find the answer would be making the operator's decision
+    quietly and in the direction that spends money.
+    """
+    done = journal.done(_CONFIRM)
+    for e in reversed(events):
+        if e.event == done and e.operation_id == manifest.run_id:
+            policy = e.data.get(_CALIBRATION_POLICY)
+            if policy in gate.CALIBRATION_POLICIES:
+                return policy
+            raise RunnerError(
+                f"this run's {done} record carries {_CALIBRATION_POLICY}={policy!r}, which is "
+                f"not one of §5 step 2's {list(gate.CALIBRATION_POLICIES)}")
+    raise RunnerError(
+        f"this run's journal has no {done} record for {manifest.run_id!r}, so what the "
+        "operator answered about a baseline that fails its own gate is not recorded anywhere. "
+        "§5 step 2 has no safe default, so this loop will not choose one.")
+
+
+def _calibrate(run_dir: Path, manifest, base, log, *, identity, env):
+    """§5 step 3, journalled: the confirmed commands on the untouched baseline.
+
+    The ORDER is `run`'s and not this function's, and it is what §5 step 3 is for: calibrating
+    before a provider spends a token means a gate with no fixed point stops the run at the cost
+    of one clone rather than after three providers have been paid.
+    """
+    op = _op(manifest, _CALIBRATION)
+    log.record(journal.intent(_CALIBRATION), operation_id=op)
+    cal = verify.calibrate(manifest.repo_path, base, run_dir / "calibration",
+                           identity=identity, contract=manifest.generator_contract,
+                           setup=verify.Command(steps=manifest.setup),
+                           command=verify.Command(steps=manifest.verify), env=env)
+    log.record(journal.done(_CALIBRATION), operation_id=op,
+               exit_code=cal.run.exit_code,
+               setup_exit_code=None if cal.setup is None else cal.setup.exit_code,
+               unexplained=list(cal.unexplained))
+    return cal
+
+
+def _obey_the_calibration_policy(run_dir: Path, state, manifest, events, cal) -> None:
+    """Abort or carry on, as §5 step 2 was answered. Raises on `abort`.
+
+    THE GATE'S OWN EXIT CODE IS THE SUBJECT, literally: §5 step 2 asks what to do "when the
+    untouched baseline fails its own gate". A calibration whose SETUP exited non-zero is a
+    different fact and is deliberately not read here — it is carried on `Calibration.setup`,
+    and reading it as a gate failure would abort runs the operator never agreed to abort.
+    That leaves it unread by this loop, which is stated rather than implied.
+
+    `failed` and not `degraded`: §14's `degraded` is the ending of a run that CONTINUED and
+    reached a review, and `reviewing` is the only phase that declares an edge to it. A run
+    that stopped in `setting_up` never got there, so `failed` is the ending it actually had.
+    """
+    if cal.run.exit_code == 0:
+        return
+    if _confirmed_policy(events, manifest) != "abort":
+        return
+    _advance(run_dir, state, "failed")
+    raise RunnerError(
+        f"the untouched baseline fails its own confirmed gate (exit {cal.run.exit_code}) and "
+        "this run's operator answered `abort` at §5 step 2. Nothing has been spent on a "
+        f"provider; the calibration clone is at {cal.path}.")
+
+
+def _drive_a_seat(run_dir: Path, manifest, base, log, *, name, identity, launch):
+    """Every attempt this seat is allowed, until one settles. The result, or None.
+
+    §8.1, and each half is somewhere: *"Every retry attempt gets a fresh clone"* is
+    `run_seat`'s `attempt` parameter and `seat_dir`'s path component; *"the failed attempt is
+    preserved as partial input"* is that nothing in this module deletes; *"never a
+    reset-and-rerun in place"* is the refusal `run_seat` raises for a repeated attempt. This
+    function is only the budget — `manifest.attempts`, which §5.2 priced as
+    `builders = seats * attempts` and the operator agreed to.
+
+    A RETRY IS SPENT ON `failed` AND NOTHING ELSE. §8 lands a seat there for an invalid
+    process or a setup failure, which are the two states where the seat produced nothing
+    trustworthy; `partial` is a seat whose work §8 explicitly keeps ("a correct conclusion
+    that the task needs no edit must not be discarded"), so retrying one would pay a second
+    provider call to replace evidence the spec asked be kept.
+
+    A CLASSIFICATION REFUSAL IS A KNOWN OUTCOME, not an orphan, and that is why `RunnerError`
+    is the one exception caught here. `run_seat` writes the seat's record BEFORE it raises —
+    the answer, the sentinel, the path set, everything the refusal was taken on — so the
+    operation ended in a way this loop observed and the journal says so. Everything else
+    (`SeatError`, `HarvestError`, `VerifyError`, whatever `launch` raises) propagates with the
+    intent record still open, which is §14.1's `outcome_unknown` and the truthful record of a
+    process that stopped without saying how the operation ended.
+
+    A REFUSED ATTEMPT DOES NOT ERASE A VERDICT AN EARLIER ONE REACHED. `settled` is only
+    replaced by a result, so `failed` on attempt 1 followed by a refusal on attempt 2 still
+    hands back attempt 1's status — the best-described thing that happened to this seat. `None`
+    is reserved for the seat that reached no verdict at ALL, which is the one case where the
+    loop has nothing to say and says nothing rather than the last thing it heard.
+    """
+    settled = None
+    for attempt in range(1, manifest.attempts + 1):
+        op = _op(manifest, name, f"attempt-{attempt}")
+        log.record(journal.intent(_SEAT), operation_id=op, seat=name, attempt=attempt)
+        try:
+            result = run_seat(manifest, run_dir, base, name=name, attempt=attempt,
+                              identity=identity, launch=launch)
+        except RunnerError as e:
+            log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,
+                       refused=str(e))
+            continue
+        settled = result
+        log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,
+                   forge=settled.status.forge)
+        if settled.status.forge != "failed":
+            break
+    return settled
+
+
+def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, calibration):
+    """§6 for one candidate, then §8's re-classification with what §6 found.
+
+    A `failed` SEAT IS NOT VERIFIED, and that is a division rather than a shortcut. §8's rules
+    1 and 2 fix that verdict on the process and the setup, so `classify_seat` returns `failed`
+    for any value of `verify` — the run would buy a verifier clone §5.2 priced to change an
+    answer that cannot move. Every other seat IS verified, including the zero-diff one, which
+    is the only route by which §8's `no_change` is reachable at all.
+
+    The two calls are ONE journalled operation because they are one question: §6.2's outcome
+    with no re-classification behind it leaves the seat's record saying `verify: "not-run"`
+    for a measurement that was taken.
+    """
+    if result.status.forge == "failed":
+        return result
+    op = _op(manifest, result.name)
+    log.record(journal.intent(_VERIFICATION), operation_id=op, seat=result.name)
+    try:
+        outcome, reason, _v, _s = verify_candidate(
+            manifest, run_dir, base, result.candidate, name=result.name, identity=identity,
+            calibration=calibration)
+        out = reclassify_seat(run_dir, result, outcome, reason)
+    except (RunnerError, verify.VerifyError) as e:
+        # Recorded and re-raised, for `_drive_a_seat`'s reason: this loop watched the
+        # operation end, so leaving the intent open would report `outcome_unknown` for an
+        # outcome it knows. The run still stops — a candidate §6 refused is not one this
+        # module has a verdict for.
+        log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
+                   refused=str(e))
+        raise
+    log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
+               outcome=outcome, forge=out.status.forge)
+    return out
+
+
+def run(run_dir, repo, *, identity, launch) -> tuple:
+    """Drive one run: calibrate, build every seat, then verify every candidate.
+
+    EVERY FACT ABOUT THE RUN COMES OFF THE DISK, which §14 makes a requirement rather than a
+    style: resuming "always from disk and never from conversation state ... makes compaction
+    and restart indistinguishable, one code path instead of two". So the commands, the
+    baseline, the generator contract, the seat count and the retry budget are all read from
+    `run_dir`, and the three arguments that are not are the three the directory does not hold
+    — `repo`, which `drift` refuses unless it is the recorded one; `identity`; and `launch`,
+    which is a callable and could not be recorded at all.
+
+    `identity` IS A GAP RATHER THAN A CHOICE, and it is named here because "everything comes
+    off the disk" would otherwise read as though it were complete. `gate.confirm` makes the
+    author a required answer and `gate.open_run` records neither the manifest field nor a
+    journal key for it — it journals `on_calibration_failure`, `strategy` and `accepted_gaps`
+    and passes the author straight to `baseline.materialize`. So the only surviving copy is
+    B1's own author, and only for a run whose tree was DIRTY; over a clean tree B1 is the
+    user's own base commit and nothing in the run directory says who the operator confirmed.
+    This loop therefore takes it, and a caller that supplies a different one gets seats and
+    verifiers attributed to a name the §5 gate never saw.
+
+    THE ORDER, and each step's phase:
+
+      `setting_up`  §5 step 3 — calibrate on the untouched baseline, before a provider
+                    spends anything. `on_calibration_failure` is obeyed here.
+      `building`    §7 — every seat, up to `manifest.attempts` fresh clones each.
+      `harvested`   every seat's `Fsetup -> Fwork` difference has been taken; `run_seat`
+                    harvests as part of building, so this is the boundary rather than work.
+      `comparing`   §6 — one verifier clone per surviving seat, then §8's re-classification.
+
+    IT STOPS AT `comparing`, with the fleet's candidates verified on disk and NOTHING CHOOSING
+    BETWEEN THEM. §10 through §13 — the claim ledger, the agreement rule, the strategy and the
+    review — have no implementation, so the next edge is a phase with nothing in it. The
+    returned tuple is one `SeatResult` per seat that produced one, which is not always
+    `manifest.seats` of them: a seat every one of whose attempts was REFUSED has no verdict to
+    return, and the loop reports that by absence rather than by inventing one. Its record is
+    still on disk, one attempt object per attempt.
+
+    WRITE-AHEAD, on every operation (§14.1): `journal.intent(kind)` before, `journal.done(kind)`
+    after. A crash between them leaves an ORPHAN, which §14.1 names `outcome_unknown` and says
+    is never silently retried — so a later call refuses the run rather than re-running an
+    operation that may have completed and spent a provider call doing it. Exactly-once is not
+    on offer here and §14.1 opens by conceding it is not deliverable; DISTINGUISHABILITY is,
+    and that is what this discipline buys.
+
+    A SECOND PASS IS REFUSED whatever the first one did — see `_refuse_a_second_pass`. Nothing
+    in this package serializes a `Calibration` or a `CandidateBundle`, so a second pass cannot
+    carry the first one's products forward and could only re-spend what §5.2 quoted once.
+    `runstate.reconstruct` is what reads a run that has already been driven.
+
+    Raises `RunnerError` for a run this loop will not drive — drifted, orphaned, already
+    driven, at a phase off its route, or aborted by the operator's own calibration policy.
+    `ManifestError` for a directory that records no run or a repository that is not the
+    recorded one, and every failure a seat or a verifier raises, propagate as they do from
+    `run_seat` and `verify_candidate`.
+
+    NOTHING HERE PROVES THE REAL PROVIDER PATH WORKS — see the module docstring. `launch` is
+    injected and the whole suite passes a fake.
+    """
+    run_dir = Path(run_dir)
+    # The one read that takes no fact from the caller the directory already holds: the
+    # manifest, the position, every seat's record, the journal's orphans, and `drift`'s answer
+    # about the repository the MANIFEST names rather than the one the caller believes in.
+    recon = runstate.reconstruct(run_dir, repo)
+    manifest = recon.manifest
+    state = recon.state or _at_confirmed()
+    log = journal.Journal(storage.journal_path(run_dir))
+    events = log.read()
+
+    # §9 first: a repository that moved makes every question below moot, and the transition
+    # has to leave from the phase that saw it.
+    if recon.diverged:
+        _source_diverged(run_dir, state, recon.diverged)
+    if recon.orphans:
+        _refuse_an_unknown_outcome(recon.orphans)
+    _refuse_a_second_pass(events)
+
+    names = _fleet(manifest)
+    for name in names:
+        # Before the calibration clone and long before a provider call: a seat whose name
+        # cannot be a filename would otherwise be discovered after the run had been paid for.
+        _named(run_dir, name)
+
+    # Rebuilt from what the run recorded, because `gate.open_run` returns only the run
+    # directory and the `Baseline` it built is gone by the time anything drives the run. The
+    # filesystem manifest comes off the disk rather than defaulting to `{}` — see
+    # `baseline.read_filesystem_manifest` for what an empty one would silently disarm.
+    base = baselinemod.restore(run_dir, base_commit=manifest.base_commit,
+                               tracked_tree_oid=manifest.tracked_tree_oid,
+                               commit=manifest.baseline_commit, ref=manifest.baseline_ref)
+    # One environment for the calibration and for everything compared against it: `classify`
+    # differences the two, so a candidate measured in another one is differencing machines.
+    child_env = fleet.forge_child_env(manifest.repo_path)
+
+    state = _reach(run_dir, state, "setting_up")
+    cal = _calibrate(run_dir, manifest, base, log, identity=identity, env=child_env)
+    _obey_the_calibration_policy(run_dir, state, manifest, events, cal)
+
+    state = _reach(run_dir, state, "building")
+    built = [r for r in (_drive_a_seat(run_dir, manifest, base, log, name=name,
+                                       identity=identity, launch=launch)
+                         for name in names)
+             if r is not None]
+
+    state = _reach(run_dir, state, "harvested")
+    state = _reach(run_dir, state, "comparing")
+    return tuple(_verify_a_seat(run_dir, manifest, base, log, r, identity=identity,
+                                calibration=cal)
+                 for r in built)

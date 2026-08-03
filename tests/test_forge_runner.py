@@ -21,8 +21,8 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import pytest  # noqa: E402
 from council import engine  # noqa: E402
-from forge import (baseline, bundle, fleet, inspect as finspect,  # noqa: E402
-                   runner, runstate, seat as seatmod, storage, verify)
+from forge import (baseline, bundle, fleet, gate, inspect as finspect,  # noqa: E402
+                   journal, runner, runstate, seat as seatmod, storage, verify)
 from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -63,7 +63,7 @@ def _fake(fn=None, *, answer=ANSWER, valid=True, quote_token=True, quote=None):
     return launch
 
 
-def _manifest(repo, b, setup, gate):
+def _manifest(repo, b, setup, gate, seats, attempts):
     refs, digest = runstate.snapshot_refs(repo, (), forge_refs={b.ref: b.commit})
     return runstate.Manifest(
         run_id="r1", repo_path=str(repo), base_commit=b.base_commit,
@@ -72,17 +72,22 @@ def _manifest(repo, b, setup, gate):
         setup=setup, verify=gate,
         protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
-        seats=3, attempts=3)
+        seats=seats, attempts=attempts)
 
 
 def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),
-          gate=(verify.Step(argv=("true",)),), name="repo", seed=None):
+          gate=(verify.Step(argv=("true",)),), name="repo", seed=None,
+          seats=3, attempts=3):
     """A repository, a run directory, B, and the manifest that agreed to them.
 
     `seed` runs against the repository before B is taken, so a fixture that needs a gate
     script in the BASELINE — the only tree §6 lets a gate come from — writes and commits it
     there. `name` keeps two whole runs apart inside one `tmp_path`, which is what a case
     that differs only in what its calibration measured needs.
+
+    `seats` and `attempts` are the run's SHAPE, which Plan G's fix wave put on the manifest
+    and `runner.run` reads rather than defaulting: a case about the fleet is a case about
+    those two numbers, so they are arguments here and not constants.
     """
     repo = make_repo(tmp_path, name)
     if seed is not None:
@@ -90,7 +95,7 @@ def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),
     run = tmp_path / f"run-{name}"
     run.mkdir(exist_ok=True)
     b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
-    m = _manifest(repo, b, setup, gate)
+    m = _manifest(repo, b, setup, gate, seats, attempts)
     runstate.write_manifest(run, m)
     return repo, run, b, m
 
@@ -1137,3 +1142,672 @@ def test_the_calibration_is_required_and_is_never_a_bare_run(tmp_path):
                                 calibration=green)
     assert not runner.verifier_dir(run, "claude").exists(), \
         "and the refusal came before a clone was paid for"
+
+
+# --------------------------------------------------------------------------- #
+# The run loop: §5 step 3, then §7 for every seat, then §6 for every candidate.
+# --------------------------------------------------------------------------- #
+
+
+def _confirmed(run, *, policy="abort"):
+    """The `confirm` pair `gate.open_run` writes, since these fixtures open a run by hand.
+
+    BOTH HALVES, because a `_done` with no `_start` is a shape `journal.orphans` refuses
+    outright — so a fixture that wrote only the record it cared about would make every
+    reconstruction raise before the case under test was reached.
+
+    The policy lives here and not in the manifest because that is where `open_run` puts it:
+    §14.2's manifest holds the commands and the baseline, and §5 step 2's two policies are
+    journalled beside the operation that agreed them.
+    """
+    log = journal.Journal(storage.journal_path(run))
+    log.record(journal.intent("confirm"), operation_id="r1")
+    log.record(journal.done("confirm"), operation_id="r1",
+               on_calibration_failure=policy, strategy="size-gated", accepted_gaps=[])
+    return log
+
+
+def _edit(p):
+    write(p, "work.py", "the agent's edit\n")
+
+
+def _per_seat(fn):
+    """A launch callable that runs `fn(name, attempt_number, seat_path)` and answers valid.
+
+    `_fake` is one behaviour for every seat; the loop hands ONE callable to all of them, so a
+    case about retries or about one seat failing needs the name and the call count that
+    `_fake` closes over rather than exposes.
+    """
+    calls = []
+
+    def launch(*, name, seat_path, token, env):
+        n = 1 + sum(1 for c in calls if c["name"] == name)
+        calls.append({"name": name, "attempt": n, "seat_path": Path(seat_path)})
+        valid = fn(name, n, Path(seat_path))
+        return {"name": name, "status": "ok" if valid else "failed", "valid": valid,
+                "reason": "ok", "exit_code": 0, "duration_sec": 1.0, "structured": False,
+                "attempts": 1, "result_text": f"{ANSWER}\n{token}"}
+
+    launch.calls = calls
+    return launch
+
+
+def test_the_loop_runs_every_seat_the_gate_priced_and_verifies_each_one(tmp_path):
+    """The whole of Plan H in one call: §5 step 3, §7 for three seats, §6 for three
+    candidates, and §8's verdict revised with what §6 found.
+
+    THREE, because that is what the manifest records — §5.2 priced the run by that number and
+    §5 step 5 forbids asking again, so a loop reading a seat count from its own default would
+    build a fleet the operator never agreed to. The names come from `council.engine`'s list
+    because a count is not a fleet.
+
+    Each seat is verified in a tree it never had, and the record says so: `verify: "pass"` on
+    disk is the §6 outcome fed back through `reclassify_seat`, which is the only route by
+    which a seat's verify dimension is ever anything but `not-run`.
+
+    NOTHING CHOOSES BETWEEN THEM, and that is the plan's stated ending rather than an
+    omission: the run stops at `comparing`, three verified candidates on disk.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"))
+    launch = _per_seat(lambda name, n, p: bool(write(p, f"{name}.py", "work\n")))
+    results = runner.run(run, repo, identity=IDENT, launch=launch)
+
+    assert [r.name for r in results] == ["claude", "codex", "agy"], \
+        "every seat the manifest priced, in the engine's own order"
+    assert [c["name"] for c in launch.calls] == ["claude", "codex", "agy"], \
+        "one provider call each — a retry is spent on `failed` and this fleet has none"
+    assert {r.status.forge for r in results} == {"completed"}
+    assert {r.verification[0] for r in results} == {verify.PASS}
+    for r in results:
+        assert r.seat.path == runner.seat_dir(run, r.name, 1)
+        assert _attempt(run, r.name, 1)["status"]["verify"] == "pass", \
+            "§6's answer reached the record, not only the returned value"
+        assert (runner.verifier_dir(run, r.name) / f"{r.name}.py").is_file(), \
+            "and the verdict was taken in a tree the builder never had"
+    assert runstate.read_state(run).phase == "comparing", \
+        "the loop ends where fusion would begin, and fusion has no implementation"
+
+
+def test_a_run_that_dies_mid_seat_reconstructs_as_outcome_unknown(tmp_path):
+    """§14.1: the engine cannot distinguish never-started from partly-ran from completed —
+    so it records enough that a READER can, and never retries what it cannot classify.
+
+    The death is inside `launch`, which is where a real one is: a provider that ran for forty
+    minutes and a process killed before its receipt landed leave the same record. What is on
+    disk afterwards is `seat_start` for codex with no `seat_done`, which is the one shape
+    §14.1 names `outcome_unknown`.
+
+    THE SECOND CALL IS THE ASSERTION. An orphan the loop retried would re-clone, re-launch and
+    re-spend a provider call for an operation that may have completed — so the refusal is
+    measured by the launch callable never being reached, not by the exception alone.
+
+    Claude's `_done` is asserted on the way past so the orphan is visibly the pairing and not
+    "the journal has records in it".
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=2)
+
+    def die(name, n, p):
+        if name == "codex":
+            raise RuntimeError("SIGKILL stands in for itself")
+        return bool(write(p, "work.py", "work\n"))
+
+    with pytest.raises(RuntimeError, match="SIGKILL"):
+        runner.run(run, repo, identity=IDENT, launch=_per_seat(die))
+
+    recon = runstate.reconstruct(run, repo)
+    (orphan,) = recon.orphans
+    assert orphan.event == journal.intent("seat")
+    assert orphan.operation_id == "r1/codex/attempt-1"
+    assert orphan.data["pid"] and orphan.data["boot_id_source"], \
+        "with the identity §14.1's liveness question needs, which nobody can re-derive later"
+    events = [e.event for e in journal.Journal(storage.journal_path(run)).read()]
+    assert events.count(journal.done("seat")) == 1, \
+        "the premise: claude's own operation closed, so the orphan is codex's alone"
+
+    retry = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match=runstate.OUTCOME_UNKNOWN):
+        runner.run(run, repo, identity=IDENT, launch=retry)
+    assert retry.calls == [], "never silently retried — not one provider call was re-spent"
+    assert not runner.seat_dir(run, "codex", 2).exists(), \
+        "and nothing was re-cloned on the way to the refusal"
+
+
+def test_a_run_refuses_to_start_when_the_users_repository_has_moved(tmp_path):
+    """§9: transition to `source_diverged` and do not continue to handover automatically.
+
+    THE TRANSITION IS THE HALF A `raise` ALONE WOULD LOSE. A loop that only refused would
+    leave the run recorded at whatever phase it was in, which a later reader resumes from —
+    into the very handover §9 stopped. So the phase on disk is asserted, not just the
+    exception.
+
+    The move is the user's own editor: `seed.txt` is tracked and clean at t0, so editing it
+    puts it in the porcelain and moves the status digest. §9's worked example is exactly this
+    — "you have since changed 4 of the files it touches" — and a clean merge over it can
+    silently revert their work on any hunk forge also touched.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    write(repo, "seed.txt", "the user kept working while the run was out\n")
+    launch = _per_seat(lambda name, n, p: True)
+
+    with pytest.raises(runner.RunnerError, match="source_diverged"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+
+    assert runstate.read_state(run).phase == "source_diverged"
+    assert launch.calls == [] and not (run / "seats").exists(), \
+        "refused before a clone was made or a provider call spent"
+    assert not (run / "calibration").exists(), \
+        "§9 is asked before §5 step 3, so not even the calibration clone was paid for"
+
+
+def test_every_phase_the_loop_enters_was_a_declared_transition(tmp_path, monkeypatch):
+    """`advance` raises on an undeclared edge, so a loop that moved the state by assignment
+    would silently hold a graph the spec does not.
+
+    Two halves, and the second is the one with teeth. The sequence is pinned because §14's
+    chain is what the plan says this loop drives; then every consecutive pair is replayed
+    through `advance` itself, so the claim is that the graph admits the route rather than
+    that this test agrees with the route. A loop that wrote `comparing` straight after
+    `setting_up` would satisfy a spelled-out list nobody re-derived and fail here.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    seen = []
+    real = runstate.write_state
+
+    def spy(run_dir, state):
+        seen.append(state.phase)
+        return real(run_dir, state)
+
+    monkeypatch.setattr(runstate, "write_state", spy)
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(lambda name, n, p: True))
+
+    assert seen == ["setting_up", "building", "harvested", "comparing"]
+    phase = "confirmed"
+    for nxt in seen:
+        runstate.advance(runstate.State(phase=phase, round=0, attempt=0,
+                                        verified_checkpoint=None,
+                                        deliverable_checkpoint=None), nxt)
+        phase = nxt
+    assert "synthesizing" in runstate.PHASES, \
+        "the premise: the loop stopped one declared edge short of fusion, not at the graph's end"
+
+
+def test_a_run_standing_at_a_phase_this_loop_does_not_drive_is_refused(tmp_path):
+    """The other side of the walk: `reviewing` and the five terminals are phases §14 declares
+    and this loop has no route through, so it refuses rather than picking the nearest edge.
+
+    Measured on `ready`, which is terminal: `advance` would raise anyway, but the refusal has
+    to come from the ROUTE rather than from the graph — a loop that asked `advance` first
+    would report "no edge from ready" for a run whose real problem is that it is finished.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    for phase in ("reviewing", "ready"):
+        runstate.write_state(run, runstate.State(
+            phase=phase, round=1, attempt=1, verified_checkpoint=None,
+            deliverable_checkpoint=None))
+        launch = _per_seat(lambda name, n, p: True)
+        with pytest.raises(runner.RunnerError, match="not on the route"):
+            runner.run(run, repo, identity=IDENT, launch=launch)
+        assert launch.calls == []
+
+
+def test_a_second_pass_over_a_run_that_was_driven_is_refused_rather_than_re_spent(tmp_path):
+    """Nothing in this package serializes a `Calibration` or a `CandidateBundle`, so a second
+    pass cannot continue the first — it could only re-take the operations whose products it
+    cannot carry forward, at §5.2's price per provider call.
+
+    §14.1 promises DISTINGUISHABILITY, not exactly-once, and concedes the second in its own
+    first sentence. `runstate.reconstruct` is what reads a run that has already been driven,
+    and it still answers here — the refusal is the loop's, not the record's.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(lambda name, n, p: True))
+
+    again = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match="previous pass"):
+        runner.run(run, repo, identity=IDENT, launch=again)
+    assert again.calls == []
+    assert runstate.reconstruct(run, repo).seats["claude"]["attempts"][0]["attempt"] == 1, \
+        "the first pass's record is still readable, which is what §14.1 actually promises"
+
+
+def test_a_failed_seat_is_retried_in_a_fresh_clone_and_its_predecessor_survives(tmp_path):
+    """§8.1: *"Every retry attempt gets a fresh clone. The failed attempt is preserved as
+    partial input. Never a reset-and-rerun in place."*
+
+    `run_seat` owns the fresh clone and the no-delete; the loop owns only the BUDGET, which
+    is `manifest.attempts` — the number §5.2 priced as `builders = seats * attempts` and the
+    operator agreed to. So what is measured here is that the budget is read from the record
+    and spent on the one state §8 says is worth respending: an invalid process is a seat that
+    produced nothing trustworthy.
+
+    Attempt 1's work is asserted present, not merely its directory: a retention policy that
+    emptied the clone would pass a bare `exists()`.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
+
+    def flaky(name, n, p):
+        write(p, f"attempt-{n}.py", "work\n")
+        return n > 1
+
+    (result,) = runner.run(run, repo, identity=IDENT, launch=_per_seat(flaky))
+
+    assert result.attempt == 2 and result.status.forge == "completed"
+    assert _attempt(run, "claude", 1)["status"]["forge"] == "failed"
+    assert (runner.seat_dir(run, "claude", 1) / "attempt-1.py").read_text() == "work\n", \
+        "the failed attempt is preserved as partial input, contents and all"
+    assert not (runner.seat_dir(run, "claude", 2) / "attempt-1.py").exists(), \
+        "and attempt 2 did not start on attempt 1's work"
+
+
+def test_a_seat_that_fails_every_attempt_is_not_verified_and_does_not_stop_the_fleet(tmp_path):
+    """§8's rules 1 and 2 fix `failed` on the process and the setup, so `classify_seat`
+    answers `failed` for every value of `verify` — a verifier clone for one would be a run
+    §5.2 priced to change an answer that cannot move.
+
+    The other seat is what makes this a division of labour rather than a swallowed failure:
+    one seat's verdict is not the fleet's, which is the whole reason §8 has four dimensions.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=2, attempts=2)
+
+    def invalid_but_productive(name, n, p):
+        # Both seats leave real work behind. §8 rule 1 is about TRUST, not about deletion, so
+        # the failing seat's files are harvested and its verdict is still `failed`.
+        write(p, "work.py", f"{name} attempt {n}\n")
+        return name != "claude"
+
+    results = runner.run(run, repo, identity=IDENT, launch=_per_seat(invalid_but_productive))
+
+    forge = {r.name: r.status.forge for r in results}
+    assert forge == {"claude": "failed", "codex": "completed"}
+    assert not runner.verifier_dir(run, "claude").exists(), \
+        "no verifier clone was bought for a verdict that cannot move"
+    assert runner.verifier_dir(run, "codex").is_dir()
+    assert _attempt(run, "claude", 2)["status"]["forge"] == "failed", \
+        "and the budget was spent — both attempts are on the record"
+
+
+def test_a_zero_diff_fleet_reaches_no_change_through_the_loops_own_sequencing(tmp_path):
+    """§8's `no_change` end to end, with nothing hand-driven.
+
+    Every step is the loop's: it harvests a seat that argued the task needs no edit, verifies
+    the claim in a clone the seat never had, and feeds §6's answer back through
+    `reclassify_seat`. §8 says such a conclusion "must not be discarded", and before the
+    sequencing existed it was: `partial` was the ceiling for every argued zero-diff seat
+    because nothing called the three in order.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    (result,) = runner.run(run, repo, identity=IDENT,
+                           launch=_per_seat(lambda name, n, p: True))
+
+    assert result.artifacts.paths == (), "the premise: the seat changed nothing"
+    assert (result.status.verify, result.status.forge) == ("pass", "no_change")
+    assert _attempt(run, "claude", 1)["verification"]["outcome"] == verify.PASS
+
+
+def test_a_baseline_that_fails_its_own_gate_stops_a_run_whose_operator_said_abort(tmp_path):
+    """§5 step 2's first policy, obeyed rather than recorded and ignored.
+
+    IT IS IN THE JOURNAL AND NOT THE MANIFEST — `gate.open_run` puts it there — so a loop that
+    only read the manifest would carry on past a red baseline in every run, silently making
+    the operator's decision for them in the direction that spends money.
+
+    BEFORE ANY PROVIDER CALL, which is why §5 step 3 calibrates where it does: the abort costs
+    one clone, not three provider calls. And the ending is `failed`, not `degraded` — §14's
+    `degraded` is the ending of a run that continued as far as a review, and `reviewing` is
+    the only phase declaring an edge to it.
+
+    Both directions, because a policy that fired whichever way it was answered is not a
+    policy: the same red baseline under `degraded` runs the fleet and reports §6.2's own word
+    for what the gate established.
+    """
+    aborting = _open(tmp_path, gate=GATE, seed=_gate("exit 1"), name="abort", seats=1)
+    repo, run, b, m = aborting
+    _confirmed(run, policy="abort")
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match="abort"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == [], "nothing was spent on a provider"
+    assert runstate.read_state(run).phase == "failed"
+    assert (run / "calibration").is_dir(), "the premise: the calibration really was taken"
+
+    repo2, run2, b2, m2 = _open(tmp_path, gate=GATE, seed=_gate("exit 1"),
+                                name="carry", seats=1)
+    _confirmed(run2, policy="degraded")
+    (carried,) = runner.run(run2, repo2, identity=IDENT,
+                            launch=_per_seat(lambda name, n, p: True))
+    assert carried.verification[0] == verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE
+    assert carried.status.verify == "not-run", \
+        "§6.2's baseline-red outcome settles nothing about this candidate, and §8 says so"
+
+
+def test_a_red_baseline_with_no_recorded_policy_is_refused_rather_than_carried(tmp_path):
+    """Fail closed on the operator's own answer. §5 step 2 has no safe default —
+    `gate.confirm` refuses to invent one in as many words — so a loop that could not find the
+    answer must not pick the branch that keeps spending.
+
+    The fixture opens its run by hand and journals no `confirm`, which is exactly what a
+    resume against a run directory written by an older gate would find.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 1"), seats=1)
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match="no confirm_done record"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == []
+
+
+def test_a_run_priced_for_more_seats_than_there_are_providers_is_refused(tmp_path):
+    """A seat COUNT is what §5.2 prices and what `gate.confirm` records; it is not a fleet.
+
+    Refused rather than truncated: running fewer seats than were agreed is a run the operator
+    never confirmed, and giving one provider two seat names would put two records where
+    §14.2 has one file per seat.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"),
+                            seats=len(runner._SEATS) + 1)
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match="providers to fill them"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == [] and not (run / "calibration").exists()
+
+
+def test_the_seat_names_are_the_engines_own_and_are_legal_records(tmp_path):
+    """Structural: the loop's fleet comes from `council.engine`, because the adapter `launch`
+    wraps is `engine.run_provider` and a name invented in `runner` is one no provider answers
+    to. Each one also has to survive `storage.seat_state_path`, which is what §14.2's per-seat
+    file is keyed by — a provider named `Claude Code` would clone happily and then be unable
+    to record anything."""
+    assert runner._SEATS == tuple(engine.DEFAULT_PROVIDERS)
+    repo, run, b, m = _open(tmp_path)
+    for name in runner._SEATS:
+        assert storage.seat_state_path(run, name).parent == run
+
+
+def test_the_baseline_the_loop_rebuilds_still_checks_what_a_seat_received(tmp_path):
+    """`gate.open_run` returns the run directory and DISCARDS the `Baseline` it built, so
+    every caller that drives a run rebuilds one from the record — and the record had no
+    filesystem manifest in it.
+
+    That is the field `fleet.clone_seat` compares a seat's content against, path by path. A
+    `Baseline` rebuilt with `filesystem_manifest={}` makes that loop range over nothing and
+    still return `Seat.verified is True`, which `verify.build_verifier` then reads as "clone
+    seat has already verified the checkout against its manifest" before it takes the baseline
+    gate surface. A premise asserted and not measured.
+
+    Measured here rather than argued: the persisted manifest is corrupted for one path, and
+    the run stops at the first clone. With `{}` there is no loop to enter and every assertion
+    about a seat's content passes vacuously.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    recorded = baseline.read_filesystem_manifest(run)
+    assert recorded == b.filesystem_manifest and "seed.txt" in recorded, \
+        "the premise: materialize measured something and it survived to disk"
+
+    baseline.filesystem_manifest_path(run).write_text(
+        '{"seed.txt": "%s"}\n' % ("0" * 64))
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(fleet.SeatError, match="differs from the baseline manifest"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == []
+
+
+def test_a_baseline_manifest_that_was_never_recorded_is_a_refusal_not_an_empty_check(tmp_path):
+    """`{}` is precisely what the disarmed check looks like, so absent and empty must not be
+    one value. A run directory missing the file cannot be driven at all."""
+    repo, run, b, m = _open(tmp_path, seats=1)
+    baseline.filesystem_manifest_path(run).unlink()
+    with pytest.raises(baseline.BaselineError, match="filesystem manifest"):
+        baseline.restore(run, base_commit=m.base_commit,
+                         tracked_tree_oid=m.tracked_tree_oid,
+                         commit=m.baseline_commit, ref=m.baseline_ref)
+    with pytest.raises(baseline.BaselineError):
+        runner.run(run, repo, identity=IDENT,
+                   launch=_per_seat(lambda name, n, p: True))
+
+
+def test_the_loop_reads_the_run_from_disk_and_takes_no_fact_the_directory_holds(tmp_path):
+    """§14: resuming "always from disk and never from conversation state ... makes compaction
+    and restart indistinguishable, one code path instead of two".
+
+    Structural, and against the signature a caller would reach for first: `run` takes no
+    manifest, no baseline, no commands and no seat count, because every one of those is in the
+    run directory and an argument would be a second answer to a settled question. The three
+    it does take are the three the directory does not hold.
+    """
+    sig = pyinspect.signature(runner.run)
+    assert list(sig.parameters) == ["run_dir", "repo", "identity", "launch"]
+    for name in ("identity", "launch"):
+        p = sig.parameters[name]
+        assert p.kind is pyinspect.Parameter.KEYWORD_ONLY
+        assert p.default is pyinspect.Parameter.empty
+
+
+def test_a_repository_that_is_not_the_one_the_run_recorded_is_refused(tmp_path):
+    """`drift` refuses a repository the manifest did not record, so a caller cannot hand the
+    loop a byte copy taken at t0 and be told nothing moved. Reached through `reconstruct`,
+    which is the loop's only read of the world."""
+    repo, run, b, m = _open(tmp_path, seats=1)
+    other = make_repo(tmp_path, "stranger")
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runstate.ManifestError):
+        runner.run(run, other, identity=IDENT, launch=launch)
+    assert launch.calls == []
+
+
+def test_a_run_whose_confirmation_named_no_setup_is_driven_end_to_end(tmp_path):
+    """An empty setup is an ordinary repository that needs no toolchain — `gate.Confirmation`
+    admits one in as many words and refuses only an empty VERIFY — and it is the input this
+    package has repeatedly mishandled at call sites no fixture reached.
+
+    Four of them were already closed one at a time: `run_command` refuses a command with no
+    steps, `run_seat` records `not-run` rather than a fabricated pass, `calibrate` would once
+    raise for every such repository, and `verify_candidate` would skip §6's hash validation
+    entirely. THE LOOP IS A FIFTH CALL SITE, and it reaches all of them in one pass — so the
+    case is driven whole rather than asserted per branch.
+    """
+    repo, run, b, m = _open(tmp_path, setup=(), gate=GATE, seed=_gate("exit 0"), seats=1)
+    (result,) = runner.run(run, repo, identity=IDENT,
+                           launch=_per_seat(lambda name, n, p: bool(write(p, "w.py", "w\n"))))
+
+    assert result.run is None and result.status.setup == "not-run", \
+        "no setup ran in the seat, and the record says so rather than reporting a pass"
+    assert result.verification[0] == verify.PASS
+    assert result.status.forge == "partial", \
+        "§8 rule 6 fails closed on a setup that was never positively confirmed, so a "\
+        "repository needing no toolchain has a `completed` ceiling of `partial` — a standing "\
+        "consequence of that rule, reached here through the whole loop rather than argued"
+    assert runstate.read_state(run).phase == "comparing"
+
+
+def test_a_seat_refused_at_classification_is_recorded_and_does_not_orphan_its_operation(
+        tmp_path):
+    """A `RunnerError` out of `run_seat` is a KNOWN outcome, and §14.1's orphan is not.
+
+    `run_seat` writes the seat's record — the answer, the sentinel, the path set — BEFORE it
+    raises, so the operation ended in a way this loop watched. Leaving the intent open would
+    report `outcome_unknown` for something nobody is unsure about, and would then refuse every
+    later call on a run whose seat merely signed off badly.
+
+    The seat below answers "ok": twenty-one characters of sentinel the engine ordered it to
+    print, and nothing it wrote. Both attempts are refused, so the seat contributes no result
+    at all — and the loop does not invent one. What happened is on disk, per attempt.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
+
+    def signs_off(*, name, seat_path, token, env):
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"ok\n{token}"}
+
+    assert runner.run(run, repo, identity=IDENT, launch=signs_off) == (), \
+        "no seat could be classified, and the loop reports that rather than a verdict"
+
+    assert runstate.reconstruct(run, repo).orphans == (), \
+        "a refusal this loop caught is not an operation whose outcome is unknown"
+    assert [a["status"] for a in runstate.read_seat(run, "claude")["attempts"]] == [None, None]
+    done = [e for e in journal.Journal(storage.journal_path(run)).read()
+            if e.event == journal.done("seat")]
+    assert len(done) == 2 and all("cannot be classified" in e.data["refused"] for e in done), \
+        "and the journal says what each attempt was refused on, not merely that it ended"
+    assert not runner.verifier_dir(run, "claude").exists()
+
+
+def test_a_candidate_section_6_refuses_stops_the_run_without_orphaning_the_verification(
+        tmp_path):
+    """§6's own refusals — `SetupOverlap` here — end the run, and the journal records that
+    they ended it rather than leaving `outcome_unknown` behind.
+
+    The setup command only overlaps WHEN THE CANDIDATE IS PRESENT, which is what makes this
+    reachable at all: on the untouched baseline it is a no-op, so §5 step 3 calibrates clean
+    and the seat's own setup passes, and only the verifier — the one tree holding both the
+    confirmed setup and the candidate — sees a tracked file move under a contract that
+    declares nothing.
+
+    The run STOPS, because §6.2 has no outcome for it and this module does not invent one.
+    """
+    setup = (verify.Step(argv=("sh", "-c", "if [ -f work.py ]; then echo x >> seed.txt; fi")),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"), seats=1)
+
+    with pytest.raises(verify.SetupOverlap):
+        runner.run(run, repo, identity=IDENT,
+                   launch=_per_seat(lambda n_, i_, p: bool(write(p, "work.py", "w\n"))))
+
+    assert runstate.reconstruct(run, repo).orphans == (), \
+        "the loop watched the verification end, so nothing here is `outcome_unknown`"
+    (done,) = [e for e in journal.Journal(storage.journal_path(run)).read()
+               if e.event == journal.done("verification")]
+    assert "seed.txt" in done.data["refused"]
+    assert _attempt(run, "claude", 1)["status"]["verify"] == "not-run", \
+        "and the seat's record still carries the verdict its evidence supports"
+
+
+def test_a_crash_after_the_phase_was_written_and_before_anything_was_journalled_resumes(
+        tmp_path):
+    """The one window a second call can legitimately pick up, and the reason `_reach` has an
+    equal case at all.
+
+    `run` writes `setting_up` and then records the calibration's intent; a process killed
+    between those two leaves a phase on disk and no operation in the journal. Nothing was
+    spent, so there is nothing to carry forward and nothing to refuse — and a loop that
+    advanced unconditionally would meet `advance`'s own refusal of a repeat and turn a
+    resumable run into a dead one.
+
+    Every LATER phase is followed immediately by a record `_refuse_a_second_pass` sees, which
+    is why this window is `setting_up` and nothing else — asserted below by the run reaching
+    `comparing` rather than by re-deriving the argument.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    runstate.write_state(run, runstate.State(
+        phase="setting_up", round=0, attempt=0, verified_checkpoint=None,
+        deliverable_checkpoint=None))
+    assert journal.Journal(storage.journal_path(run)).read() == (), \
+        "the premise: the phase was written and no operation was journalled"
+
+    (result,) = runner.run(run, repo, identity=IDENT,
+                           launch=_per_seat(lambda name, n, p: True))
+    assert result.verification[0] == verify.PASS
+    assert runstate.read_state(run).phase == "comparing"
+
+
+def test_the_calibration_is_taken_in_the_phase_section_14_puts_it_in(tmp_path, monkeypatch):
+    """`runstate._EDGES` gives `failed` an edge out of every non-terminal phase BECAUSE
+    "calibration runs inside `setting_up`, hours before any review" — so a loop that took it
+    in `building` would make that reasoning describe a graph nothing uses.
+
+    Ordering across two files (the state record and the journal) is not readable from either
+    alone, so both writes are collected into one sequence as they happen. That §5 step 3 comes
+    before any PROVIDER call is a different property with its own test; this is about which
+    phase the run is recorded in while it does.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1)
+    seen = []
+    real_state, real_calibrate = runstate.write_state, verify.calibrate
+
+    def state_spy(run_dir, state):
+        seen.append(("phase", state.phase))
+        return real_state(run_dir, state)
+
+    def calibrate_spy(*a, **kw):
+        seen.append(("calibrate",))
+        return real_calibrate(*a, **kw)
+
+    monkeypatch.setattr(runstate, "write_state", state_spy)
+    monkeypatch.setattr(verify, "calibrate", calibrate_spy)
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(lambda name, n, p: True))
+
+    assert seen[:3] == [("phase", "setting_up"), ("calibrate",), ("phase", "building")]
+
+
+def test_the_policy_is_read_off_this_runs_own_confirm_record_and_no_other(tmp_path):
+    """An `operation_id` names one operation, and §5 step 2's answer belongs to the run that
+    gave it. A reader that took the last `confirm_done` in the file whatever it was about
+    would carry a red baseline on another run's permission.
+
+    Reachable by a journal that was copied or concatenated, which is exactly the material a
+    resume is handed; the refusal costs nothing and the alternative is silent.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 1"), seats=1)
+    log = journal.Journal(storage.journal_path(run))
+    log.record(journal.intent("confirm"), operation_id="some-other-run")
+    log.record(journal.done("confirm"), operation_id="some-other-run",
+               on_calibration_failure="degraded", strategy="size-gated", accepted_gaps=[])
+
+    launch = _per_seat(lambda name, n, p: True)
+    with pytest.raises(runner.RunnerError, match="no confirm_done record"):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == []
+
+
+def test_a_provider_name_that_could_not_be_recorded_is_refused_before_any_clone(
+        tmp_path, monkeypatch):
+    """The fleet list is `council.engine`'s, so this module does not control what lands in it.
+
+    A provider added there as `Claude Code` clones happily — it is a legal branch component —
+    and then cannot be recorded at all, because §14.2's per-seat file is keyed by the name and
+    `storage.seat_state_path` refuses one with a space in it. Discovered at the first
+    `write_seat`, that costs a provider call and a clone; discovered here it costs nothing.
+
+    `_SEATS` is patched rather than the constant argued about: what is being measured is that
+    the loop asks the question before it spends, not what `engine.DEFAULT_PROVIDERS` happens
+    to hold today.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=2)
+    monkeypatch.setattr(runner, "_SEATS", ("claude", "Claude Code"))
+    launch = _per_seat(lambda name, n, p: True)
+
+    with pytest.raises(runner.RunnerError):
+        runner.run(run, repo, identity=IDENT, launch=launch)
+    assert launch.calls == [] and not (run / "calibration").exists(), \
+        "refused before the calibration clone, let alone a seat's"
+
+
+def test_a_refused_retry_does_not_erase_the_verdict_the_attempt_before_it_reached(tmp_path):
+    """Attempt 1 reached `failed` and attempt 2 reached nothing at all, and those are
+    different facts about the same seat.
+
+    Reporting the seat's ABSENCE because its last attempt was refused would throw away the one
+    verdict this seat did produce — the same class of loss as a rationale that survives in
+    memory and not on disk, one layer up. `None` stays reserved for the seat that reached no
+    verdict at any attempt, which is the case with genuinely nothing to say.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
+
+    seen = []
+
+    def fails_then_signs_off(*, name, seat_path, token, env):
+        seen.append(name)
+        first = len(seen) == 1
+        if first:
+            # Attempt 1: real work, and a provider that did not answer validly — §8 rule 1
+            # taints every other signal, so the verdict is `failed` and a retry is spent.
+            write(Path(seat_path), "work.py", "work\n")
+        # Attempt 2 changes nothing and signs off with the token the engine ordered it to
+        # print, which §8's rule 3 refuses to read as the rationale a `no_change` needs.
+        return {"name": name, "status": "ok", "valid": not first,
+                "reason": "ok", "exit_code": 0, "duration_sec": 1.0, "structured": False,
+                "attempts": 1, "result_text": ANSWER if first else f"ok\n{token}"}
+
+    (result,) = runner.run(run, repo, identity=IDENT, launch=fails_then_signs_off)
+
+    assert (result.attempt, result.status.forge) == (1, "failed")
+    assert _attempt(run, "claude", 2)["status"] is None, \
+        "the premise: attempt 2 reached no verdict, and its record says so"

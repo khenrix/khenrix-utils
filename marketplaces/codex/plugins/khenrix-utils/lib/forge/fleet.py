@@ -83,6 +83,13 @@ class Seat:
     `branch` and `verified` both default to the state a seat CANNOT be launched in — no
     branch, nothing proved — so a `Seat` built by any route other than `clone_seat` makes
     the weaker claim rather than inheriting a readiness it never established.
+
+    `verified` IS ONLY AS STRONG AS THE BASELINE IT WAS CHECKED AGAINST. `clone_seat` asserts
+    HEAD and then walks `Baseline.filesystem_manifest` path by path, so a `Baseline` carrying
+    an EMPTY manifest makes the second half vacuous and still answers True — no exception, no
+    trace. `baseline.materialize` never produces one, and `baseline.restore` refuses to build
+    one rather than defaulting the field, because a run rebuilding B from its run directory is
+    exactly the caller that would otherwise hand this an empty dict without noticing.
     """
     path: Path
     replayed: tuple = field(default_factory=tuple)

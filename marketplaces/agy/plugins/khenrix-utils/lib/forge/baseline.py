@@ -50,12 +50,13 @@ var` is not infallible in the other direction either: with no name and an empty 
 it exits 128 (`empty ident name`), so a caller cannot assume it always yields an answer.
 """
 import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitcmd
+from . import gitcmd, storage
 
 
 class BaselineError(RuntimeError):
@@ -75,6 +76,77 @@ class Baseline:
     # "nobody looked", which is the fail-OPEN reading of the two.
     sidecars: list | None = None
     filesystem_manifest: dict = field(default_factory=dict)
+
+
+_FILESYSTEM_MANIFEST = "baseline.filesystem.json"
+
+
+def filesystem_manifest_path(run_dir) -> Path:
+    """Where the manifest `materialize` measured is kept, beside `baseline.index`."""
+    return Path(run_dir) / _FILESYSTEM_MANIFEST
+
+
+def read_filesystem_manifest(run_dir) -> dict:
+    """The manifest `materialize` recorded, or a refusal.
+
+    IT IS NOT IN `runstate.Manifest`, and it cannot be: §14.2 writes that record once at
+    `confirmed` and `_decode` refuses a field it does not know, so adding one is a schema
+    change. It is not derivable from B1 either — a repository with `text=auto` or a clean
+    filter has worktree bytes that are not its blob bytes, so a manifest re-derived from the
+    tree would REFUSE a correct seat.
+
+    So it is written out here, and read back here, because the alternative is what a caller
+    reading the run directory would otherwise have to do: build a `Baseline` with
+    `filesystem_manifest={}` and hand it to `fleet.clone_seat`, whose per-path check then
+    ranges over nothing and returns `Seat.verified is True` on the HEAD assertion alone.
+    `verify.build_verifier` reads that as "clone_seat has already verified the checkout
+    against its manifest" before it takes the baseline gate surface, so an empty one is a
+    premise asserted and not measured.
+
+    Absent is a REFUSAL rather than an empty dict, for that same reason: `{}` is exactly
+    what the disarmed check looks like, and the two must not be one value.
+    """
+    path = filesystem_manifest_path(run_dir)
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        raise BaselineError(
+            f"{path} does not hold the baseline's filesystem manifest: {e}. It is what "
+            "`fleet.clone_seat` checks a seat's content against, and an empty one is not a "
+            "weaker check but no check at all.") from e
+    try:
+        row = json.loads(raw)
+    except ValueError as e:
+        raise BaselineError(f"{path} is not readable as JSON: {e}") from e
+    if not isinstance(row, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in row.items()):
+        raise BaselineError(
+            f"{path} is not a path-to-digest mapping, so nothing can be checked against it")
+    return row
+
+
+def _record_filesystem_manifest(run_dir, manifest: dict) -> None:
+    """Write the manifest where a later process can find it. See `read_filesystem_manifest`."""
+    blob = json.dumps(manifest, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    storage.atomic_write(filesystem_manifest_path(run_dir), blob)
+
+
+def restore(run_dir, *, base_commit, tracked_tree_oid, commit, ref) -> Baseline:
+    """B as `run_dir` recorded it — the object a later process rebuilds when the one
+    `materialize` returned is gone.
+
+    The four OIDs come from the caller because §14.2's manifest is where they were recorded
+    and this module does not read that record; the filesystem manifest comes from disk
+    because nothing else holds it.
+
+    `dirty` is DERIVED rather than taken: `commit == base_commit` is exactly what a clean
+    tree produces, so a caller passing it separately would be a second answer to a settled
+    question. `sidecars` stays `None` — its own field note calls `[]` the fail-OPEN reading,
+    because it would say "there are none" where the truth is that nothing recorded them.
+    """
+    return Baseline(base_commit=base_commit, tracked_tree_oid=tracked_tree_oid,
+                    commit=commit, ref=ref, dirty=commit != base_commit,
+                    filesystem_manifest=read_filesystem_manifest(run_dir))
 
 
 def _resolve_author(repo, author):
@@ -281,6 +353,11 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
                 manifest[sub] = _entry_digest(repo / sub)
         elif p.is_file():
             manifest[rel] = _sha256_file(p)
+
+    # Written on BOTH branches, and here rather than beside each return: it is what
+    # `fleet.clone_seat` checks a seat's content against, and a run loop that rebuilds B from
+    # the run directory has no other source for it. See `read_filesystem_manifest`.
+    _record_filesystem_manifest(run_dir, manifest)
 
     if not dirty:
         ref = f"refs/khenrix-forge/{run_id}/base"

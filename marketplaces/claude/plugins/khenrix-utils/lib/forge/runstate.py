@@ -218,10 +218,11 @@ namespace. Both sides now drop only the DECLARED names, so the first is still si
 second is not.
 
 Naming it is where this file stops. `reconstruct` reports what moved; §9's transition and its
-refusal to hand over are decisions, and they belong to whoever is sequencing the run. §14
-declares `source_diverged` out of every non-terminal phase, so that sequencer can make the
-transition from wherever the run had got to when the move was seen, rather than having to
-carry the fact as far as `reviewing` first — see `_EDGES`.
+refusal to hand over are decisions, and they belong to whoever is sequencing the run — which
+is `runner.run`, and it takes both: it advances to `source_diverged` and then refuses to
+carry on. §14 declares `source_diverged` out of every non-terminal phase, so that sequencer
+makes the transition from wherever the run had got to when the move was seen, rather than
+having to carry the fact as far as `reviewing` first — see `_EDGES`.
 """
 import dataclasses
 import hashlib
@@ -1067,10 +1068,12 @@ def write_seat(run_dir, name: str, payload: dict) -> None:
     everything above is all a seat record is ever checked for. Measured: a seat writing
     `{"phse": "biulding"}` is written, read and reconstructed with no complaint.
 
-    Deliberately not closed in this wave: nothing produces a seat record yet, so any field set
-    named here would be invented rather than observed, and a schema guessed ahead of its
-    producer is the fail-CLOSED-looking version of the same silence — it would refuse the
-    fields the orchestrator turns out to need and admit the ones it does not.
+    THE PRODUCER NOW EXISTS and the decision is unchanged: `runner._record` writes one attempt
+    object per attempt under `{"name", "attempts"}`, and `runner._prior_attempts` is what type-
+    checks it — on the READ side, at the one caller that appends to it, where a damaged record
+    costs nothing yet. Hoisting that shape into this writer would put the same rule in two
+    places and make this module the authority on a record whose fields §14.2 assigns to the
+    orchestrator; the argument for leaving it open was never that nobody wrote one.
     """
     path = storage.seat_state_path(run_dir, name)
     if not isinstance(payload, dict):
@@ -1172,9 +1175,11 @@ def write_state(run_dir, state: State) -> None:
     A CACHE, NOT THE AUTHORITY. §14.2 makes git the ordering of record — `--collect`
     "reconstructs the checkpoint sequence and the last verify-passing OID even if every JSON
     file is torn" — so this file is an optimisation over a derivation from the synthesis
-    branch, and the derivation is the one that must win where they disagree. Nothing derives
-    it yet; whoever writes it owns that precedence, and should not read a position here as
-    evidence against what the branch says.
+    branch, and the derivation is the one that must win where they disagree. `runner.run` is
+    the only writer, and it writes the PHASE only, one `advance` at a time; the checkpoint
+    dimensions the branch would speak for stay `None` because nothing has committed one yet.
+    Nothing derives the branch side; whoever writes it owns that precedence, and should not
+    read a position here as evidence against what the branch says.
 
     The body below is `write_seat`'s, one record over: the same publish-by-rename, the same
     refuse-before-publishing, the same round trip. They are not factored together because the
