@@ -20,13 +20,25 @@ import json
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from . import gitcmd, storage, taskbundle
+from . import (fingerprint, gitcmd, review as reviewmod, seat as seatmod, storage,
+               strategy as strategymod, taskbundle, ultra as ultramod, verify as verifymod)
 
 SYNTHESIS = "synthesis"
 
 MERGE_READY = "merge-ready-branch"
 PATCH_ONLY = "patch"
 KINDS = (MERGE_READY, PATCH_ONLY)
+
+# EVERY VOCABULARY §16.1'S HEADER VALIDATES AGAINST IS REFERENCED, NEVER RESPELLED. The module
+# that decides a value owns the strings that spell it, and a copy here is a second place to be
+# right about which strings end a review, describe a seat or name a fusion — with the copy
+# silently admitting a value nothing upstream produces, which is a header reporting a state no
+# other module can reach. `seat`'s two are private because nothing outside it had needed to
+# name them; the alias is where that reach is stated rather than buried at a use site.
+_TERMINALS = reviewmod.TERMINALS
+_REVIEW_BLOCKED = reviewmod.REVIEW_BLOCKED
+_SEAT_FORGE = seatmod._FORGE
+_SEAT_ARTIFACTS = seatmod._ARTIFACTS
 
 
 class HandoverError(RuntimeError):
@@ -454,3 +466,379 @@ def read_handover(run_dir):
     except ValueError as e:
         raise HandoverError(f"{path} is not readable as JSON: {e}") from e
     return _decode(row)
+
+
+@dataclass(frozen=True)
+class SeatLine:
+    """One seat's contribution to §16.1's first line.
+
+    `verify_outcome` is `None` for a seat that was never verified, and that is DIFFERENT from
+    every one of `verify.OUTCOMES`: §8 fixes a `failed` seat's verdict whatever §6 would find,
+    and a seat whose verification was refused keeps its pre-verification verdict. Counting
+    `None` as a non-PASS is correct for "how many passed"; reporting it as FAIL would be a
+    verdict about a gate that never ran, and the header states the two separately.
+    """
+    name: str
+    forge: str
+    artifacts: str
+    verify_outcome: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise HandoverError(
+                f"a seat row names the seat it counts, not {self.name!r}. §16.1's first line "
+                "is a count over these rows, and a row naming nobody is a seat the operator "
+                "cannot ask about — nor one this record can tell apart from another like it.")
+        if self.forge not in _SEAT_FORGE:
+            raise HandoverError(f"forge is one of {list(_SEAT_FORGE)}, not {self.forge!r}")
+        if self.artifacts not in _SEAT_ARTIFACTS:
+            raise HandoverError(
+                f"artifacts is one of {list(_SEAT_ARTIFACTS)}, not {self.artifacts!r}")
+        if self.verify_outcome is not None and self.verify_outcome not in verifymod.OUTCOMES:
+            raise HandoverError(
+                f"verify_outcome is one of {list(verifymod.OUTCOMES)} or None, not "
+                f"{self.verify_outcome!r}; None is a seat §6 never verified and is not a "
+                "seventh verdict")
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Everything §16.1's header reports, validated before a line of it is rendered.
+
+    THE VALIDATION IS THE POINT. §18 asks that "failure cannot render a success header" be
+    tested, and the only way that holds for inputs no fixture reaches is for the RECORD to
+    refuse the combination rather than for the renderer to remember not to print it.
+
+    `strongest` IS §12.5's `(seat | None, why)` PAIR AND BOTH HALVES ARE REQUIRED. `None` is
+    the ordinary answer, not an error: `coverage._schema` is `unresolved` by construction and
+    `coverage._prose` is `unresolved` for any criterion with no recorded trace, so a real
+    ledger carrying either kind makes the report incomplete and `rubric.strongest` names
+    nobody. §16.1's header therefore renders the reason as a LINE. A header that dropped the
+    line when there was no winner would read as a header with nothing to say about strength,
+    which is the fail-open this whole record exists to close one field over.
+
+    `agreement` is §11's label and is likewise always rendered. §11 makes agreement provenance
+    and never a correctness argument, so `differently-prompted` — the ordinary answer for a
+    real fleet, since three seats are three different CLIs and `cli_version` differs — is
+    information, not a defect.
+
+    `synthesis_measured` IS THE FIELD THAT KEEPS THE HEADER HONEST, and it exists because
+    §16's synthesis author is the ORCHESTRATOR and not this engine. `--collect` is handed a
+    verdict; it does not create a verifier clone for the fusion and does not run the confirmed
+    command over it. So `synthesis_outcome` has two provenances that must never render alike:
+    MEASURED by this engine, or ASSERTED by whoever fused. `header` renders them as different
+    sentences and `text` prints the "Verified means" paragraph only beside the first —
+    otherwise the one artifact whose job is to say what was verified would be the one asserting
+    a verification that never happened.
+
+    A MEASURED VERDICT CARRIES ITS MEASUREMENT AND AN UNMEASURED ONE CARRIES NO DURATION.
+    `synthesis_measured=True` with no outcome, or with no `verify_seconds`, is a record
+    claiming a measurement it cannot show, and it is the exact route by which a caller passing
+    the wrong flag would re-label an asserted verdict as a measured one. The other direction is
+    the same defect read backwards: a duration beside `synthesis_measured=False` sits under a
+    line that says in words that this engine did not run the command, so the record would be
+    timing a run it states it did not perform.
+    """
+    seats: tuple
+    synthesis_outcome: str | None
+    synthesis_measured: bool
+    verify_command: str
+    verify_seconds: float | None
+    strategy: str | None
+    strongest: tuple
+    agreement: str
+    review_terminal: str | None
+    review_rounds: int
+    unresolved_findings: int
+    ultra: object
+
+    def __post_init__(self) -> None:
+        if not self.seats:
+            raise HandoverError(
+                "a run reports the seats it ran. An empty tuple renders §16.1's first line as "
+                "'0 of 0', which reads as a completed run rather than as one nobody described.")
+        wrong = sorted({type(s).__name__ for s in self.seats if not isinstance(s, SeatLine)})
+        if wrong:
+            raise HandoverError(f"a provenance record's seats are SeatLine rows, not {wrong}")
+        names = [s.name for s in self.seats]
+        repeated = sorted({n for n in names if names.count(n) > 1})
+        if repeated:
+            raise HandoverError(
+                f"{repeated} appear more than once. §16.1's first line counts these rows, so "
+                "one seat filed twice reads as two seats — a fleet of one reporting '2 of 2 "
+                "completed' over the single clone anybody paid for.")
+        if self.agreement not in fingerprint.LABELS:
+            raise HandoverError(
+                f"agreement is one of {list(fingerprint.LABELS)}, not {self.agreement!r}")
+        if not (isinstance(self.strongest, tuple) and len(self.strongest) == 2):
+            raise HandoverError(
+                "strongest is §12.5's (seat | None, why) pair; a bare name would leave the "
+                "header unable to say why nobody was named, which is the ordinary outcome")
+        if not str(self.strongest[1]).strip():
+            raise HandoverError("§12.5's answer carries the reason it reached it")
+        if self.strongest[0] is not None and self.strongest[0] not in names:
+            raise HandoverError(
+                f"the strongest seat is {self.strongest[0]!r}, which is not one of this run's "
+                f"seats ({names}). §12.5 ranks the fleet that ran, and a header naming a seat "
+                "outside it reports a comparison over a clone this run never made.")
+        if not isinstance(self.verify_command, str) or not self.verify_command.strip():
+            raise HandoverError(
+                f"the confirmed verify command is what §16.1's header quotes and what its "
+                f"\"Verified\" sentence is about, not {self.verify_command!r}; empty backticks "
+                "in that line describe a gate with no command in it")
+        if self.strategy is not None and self.strategy not in strategymod.STRATEGIES:
+            raise HandoverError(
+                f"strategy is one of {list(strategymod.STRATEGIES)} or None because none was "
+                f"recorded, not {self.strategy!r}")
+        if self.synthesis_outcome is not None and \
+                self.synthesis_outcome not in verifymod.OUTCOMES:
+            raise HandoverError(
+                f"synthesis_outcome is one of {list(verifymod.OUTCOMES)} or None, not "
+                f"{self.synthesis_outcome!r}")
+        if not isinstance(self.synthesis_measured, bool):
+            raise HandoverError(
+                f"synthesis_measured is a bool, not {self.synthesis_measured!r}: a truthy "
+                "string here would print an asserted verdict under the Verified sentence")
+        _seconds(self.verify_seconds)
+        if self.synthesis_measured and (self.synthesis_outcome is None
+                                        or self.verify_seconds is None):
+            raise HandoverError(
+                "this record claims the synthesis verdict was MEASURED by this engine and "
+                "carries no outcome or no duration. A measurement this engine cannot show is "
+                "not one, and the Verified sentence is printed on the strength of this flag.")
+        if self.verify_seconds is not None and not self.synthesis_measured:
+            raise HandoverError(
+                f"this record times {self.verify_seconds!r}s of verifying beside a verdict it "
+                "says this engine did not measure — and both of the lines an unmeasured "
+                "verdict renders state in words that the command was not run here")
+        completed = [s for s in self.seats if s.forge == "completed"]
+        if self.synthesis_outcome is not None and not completed:
+            raise HandoverError(
+                "this record reports a synthesis verdict over a fleet in which no seat "
+                "completed. §18 asks that a failure cannot render a success header, and this "
+                "is the combination that does it.")
+        if not isinstance(self.ultra, ultramod.Ultra):
+            raise HandoverError(f"ultra is an ultra.Ultra, not {type(self.ultra).__name__}")
+        for label in ("review_rounds", "unresolved_findings"):
+            v = getattr(self, label)
+            # `bool` explicitly: `True` is an `int` and renders as a count of one, so a record
+            # answering "were there rounds?" would be printed as "1 round(s)".
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise HandoverError(f"{label} is a count, not {v!r}")
+        if self.review_terminal is not None and self.review_terminal not in _TERMINALS:
+            raise HandoverError(
+                f"review_terminal is one of {list(_TERMINALS)} or None, not "
+                f"{self.review_terminal!r}")
+        if self.review_terminal is None and (self.review_rounds or self.unresolved_findings):
+            raise HandoverError(
+                "no terminal was reached, which is the record of a review nobody convened — "
+                "and the line that renders says exactly that while printing neither number. A "
+                f"record carrying {self.review_rounds} round(s) and "
+                f"{self.unresolved_findings} unresolved finding(s) under it has its blockers "
+                "disappear from the one document the operator acts on.")
+        if self.review_terminal is not None and self.review_rounds < 1:
+            raise HandoverError(
+                f"{self.review_terminal!r} is a conclusion §13 draws from at least one round — "
+                "`review._check_rounds_run` refuses anything less on its own side — so this "
+                "record reports a review's verdict over a review that was never convened")
+        if self.review_terminal == _REVIEW_BLOCKED and self.unresolved_findings < 1:
+            raise HandoverError(
+                "§13's `review_blocked` is a terminal a run reaches BECAUSE a blocker is "
+                "unresolved, so a record carrying it beside zero unresolved findings would "
+                "render a clean provenance header with an unresolved blocker — the one thing "
+                "§13 says must never happen")
+
+
+def _seconds(v) -> None:
+    """`verify_seconds` is a duration or nothing at all.
+
+    RENDERED THROUGH `:.0f`, which is why the type is checked rather than trusted: a `bool`
+    is an `int` and formats as `1s`, so a record answering "did it run?" would be printed as a
+    one-second verify; a string raises out of the middle of the header; and a negative reads
+    as a measurement taken backwards. All three describe a run nobody timed.
+    """
+    if v is None:
+        return
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        raise HandoverError(
+            f"verify_seconds is how long the confirmed command took, or None because nothing "
+            f"here timed it, not {v!r}")
+
+
+def _ultra_line(u) -> str:
+    """§13.1's four statuses, four renderings. §16.1's example shows only the first, and the
+    other three are not decoration: an operator reading `Ultrareview:` needs to know whether
+    the cloud review found nothing, was never asked, could not be asked, or is still running
+    somewhere with a URL they can open.
+
+    THE SKIPPED LINE READS THE RECORD'S OWN REASON RATHER THAN NAMING THE FLAG. `run_ultra`
+    skips for `--no-ultra` and for nothing else, but `skipped` is the status ANY caller writes
+    for a review it declined to request — a run with no candidate to review, for one — and a
+    line spelling `--no-ultra` over such a record tells the operator they opted out of
+    something they did not.
+
+    A STATUS THIS FUNCTION DOES NOT KNOW RAISES rather than falling through to the cheapest of
+    the four. `ultra.STATUSES` is the vocabulary; a fifth member added there would otherwise
+    render here as a review nobody requested, which is the collapse the branches exist for.
+    """
+    if u.status == ultramod.RAN:
+        n = len(u.bugs)
+        return (f"Ultrareview: {n} finding(s) reported"
+                + ("" if u.diff_measured else " (over a diff whose size could not be measured)"))
+    if u.status == ultramod.UNAVAILABLE:
+        return f"Ultrareview: unavailable ({u.reason}) — the run proceeded to handover"
+    if u.status == ultramod.TIMED_OUT:
+        where = f" and can be collected at {u.session_url}" if u.session_url else \
+                " and no session URL was read from its output, so there is nothing to collect"
+        return f"Ultrareview: the local wait elapsed; the remote review is still running{where}"
+    if u.status == ultramod.SKIPPED:
+        why = u.detail.strip() if isinstance(u.detail, str) else ""
+        return (f"Ultrareview: not requested ({why})" if why else
+                "Ultrareview: not requested, and this record does not say why")
+    raise HandoverError(
+        f"{u.status!r} is not one of §13.1's four statuses, so this header has no rendering "
+        "for it. Falling through to one of the four would report an unknown state as the "
+        "review nobody asked for, which is the cheapest of them to read.")
+
+
+def header(p: Provenance) -> str:
+    """§16.1's provenance header.
+
+    §16.1'S FORBIDDEN VERB APPEARS NOWHERE IN THIS MODULE — not in the rendered text, not in a
+    docstring, and not in this sentence. It is forbidden for a seat that produced artifacts and
+    failed verify, and the enforcement is a source-level assertion over the whole file rather
+    than this function remembering which seats it may use it for: a rule that holds only on the
+    branches its author remembered is the shape this package refuses everywhere else. That
+    assertion is also why the word is described here instead of quoted.
+
+    THE FUSION AND AGREEMENT LINES ARE ALWAYS PRESENT. §12.5's `strongest` names nobody
+    whenever any seat is unrankable, and a real ledger carrying a `schema` or untraced `prose`
+    criterion makes that the ORDINARY answer. A header that printed the line only when there
+    was a winner would leave the operator reading a document with no strength claim in it and
+    no way to tell that from a tool that had not looked.
+    """
+    n = len(p.seats)
+    completed = sum(1 for s in p.seats if s.forge == "completed")
+    usable = sum(1 for s in p.seats if s.artifacts == "usable")
+    passed = sum(1 for s in p.seats if s.verify_outcome == verifymod.PASS)
+    unverified = sum(1 for s in p.seats if s.verify_outcome is None)
+    first = (f"**Forge: {completed} of {n} seats completed; {usable} artifact set(s) usable; "
+             f"{passed} of {n} passed verify")
+    if unverified:
+        # "did not pass" and "was never verified" are different facts about a paid clone, and
+        # a bare `passed/n` spells them the same way.
+        first += f" ({unverified} never verified)"
+    first += "."
+
+    strat = p.strategy or "strategy not recorded"
+    if p.synthesis_outcome is None and not completed:
+        second = ("Synthesis: no seat produced a candidate, so no synthesis was attempted and "
+                  "there is no verify result to report.")
+    elif p.synthesis_outcome is None:
+        # NO VERDICT IS NOT NO CANDIDATE. Seats completed here; nobody reported an outcome for
+        # the fusion — `--collect` was run without one. Saying "no seat produced a candidate"
+        # would be this header inventing a fleet failure out of a missing argument.
+        second = (f"Synthesis: {completed} of {n} seats produced a candidate and no verify "
+                  "verdict was reported for the fusion. This engine did not run one either, "
+                  "so there is nothing here about whether the fused work passes.")
+    elif p.synthesis_measured:
+        second = (f"Synthesis: verify {p.synthesis_outcome} (`{p.verify_command}`, "
+                  f"{p.verify_seconds:.0f}s) — {strat}.")
+    else:
+        # THE ASSERTED RENDERING, AND IT DOES NOT BORROW THE MEASURED ONE'S WORDS. §16 makes
+        # the orchestrator the synthesis author; `--collect` is handed this verdict and never
+        # creates a verifier clone for the fusion. "verify PASS" would be this engine's own
+        # vocabulary for something it ran, spent on something it did not.
+        second = (f"Synthesis: the orchestrator reports {p.synthesis_outcome} for "
+                  f"`{p.verify_command}` — {strat}; this engine did not run it: no verifier "
+                  "clone was made for the fusion, so this line is a report and not a "
+                  "verification.")
+
+    name, why = p.strongest
+    fusion = (f"Fusion: strongest seat: {name} — {why}." if name else f"Fusion: {why}.")
+    fusion += f" §11 agreement: {p.agreement}."
+
+    if p.review_terminal is None:
+        third = "Council: no review round was convened."
+    else:
+        third = (f"Council: {p.review_rounds} round(s), {p.unresolved_findings} finding(s) "
+                 f"unresolved ({p.review_terminal}).")
+
+    return "\n".join([first, second, fusion, third, _ultra_line(p.ultra) + "**"])
+
+
+_VERIFIED_MEANS = (
+    "\"Verified\" here means exactly this and no more: the confirmed verify command exited 0 "
+    "on a fresh verifier clone at the final checkpoint. It does not mean the change has no "
+    "new defects, and it is not a review."
+)
+
+# THE OTHER PARAGRAPH, AND THE REASON THERE ARE TWO. The sentence above describes a
+# measurement THIS ENGINE TOOK. A synthesis verdict reaches `--collect` from the orchestrator
+# that fused, and printing that under the sentence above would claim a verifier clone nobody
+# made. Neither paragraph is a hedge of the other: one says what a PASS is, the other says
+# who said so.
+_ASSERTED_MEANS = (
+    "This run's synthesis verdict was reported by the orchestrator that fused the candidates; "
+    "this engine did not run it: no verifier clone was made for the fusion and the confirmed "
+    "verify command was not executed here, so nothing above is a verification. To get one, run "
+    "the confirmed command yourself in a fresh clone of the synthesis branch."
+)
+
+_NO_VERDICT_MEANS = (
+    "There is no synthesis verdict here at all — not a failing one, and not one somebody else "
+    "reported. Nothing above says whether the fused work passes this repository's gate, and "
+    "the absence is not a pass: run the confirmed verify command yourself in a fresh clone of "
+    "the synthesis branch before you treat any of this as working."
+)
+
+
+def _means(p: Provenance) -> str:
+    """The one provenance paragraph this run has earned. THREE STATES, THREE RECORDS: a verdict
+    this engine measured, a verdict somebody else reported, and no verdict. Folding the third
+    into the second would say the orchestrator reported something over a run where nobody
+    reported anything."""
+    if p.synthesis_outcome is None:
+        return _NO_VERDICT_MEANS
+    return _VERIFIED_MEANS if p.synthesis_measured else _ASSERTED_MEANS
+
+
+def text(h: Handover, p: Provenance) -> str:
+    """The whole handover message: the header, what was delivered, and what merging does not do.
+
+    §16 requires the B1 file list HERE rather than only at a confirmation gate an hour earlier,
+    and it requires the sentence about out-of-band artifacts to be stated plainly rather than
+    left to be inferred from the fact that they are listed separately.
+
+    EXACTLY ONE OF THE THREE PROVENANCE PARAGRAPHS, NEVER TWO AND NEVER NONE — measured,
+    asserted, or no verdict at all. Three states, three records; collapsing the third into the
+    second would tell the user the orchestrator reported something when nobody reported
+    anything. Which one is `_means`'s decision and not this line's discretion, and `Provenance`
+    has already refused a `synthesis_measured=True` it cannot show a measurement for.
+    """
+    if not isinstance(h, Handover):
+        raise HandoverError(f"a Handover is required, not {type(h).__name__}")
+    if not isinstance(p, Provenance):
+        raise HandoverError(f"a Provenance is required, not {type(p).__name__}")
+    parts = [header(p), "", _means(p), "",
+             f"Branch: `{h.branch}` ({h.kind}) — {h.why}"]
+    if h.handover_target:
+        parts.append(f"Handed over to: {h.handover_target}")
+    elif h.accepted:
+        parts.append("Handed over: accepted by the user without a merge target — a "
+                     "patch-based handover may intentionally never merge this branch.")
+    parts += ["", "B1 — the baseline this run started from:"]
+    parts += [f"  {f}" for f in h.b1_files] or ["  (no files)"]
+    if h.baseline_owned:
+        parts += ["", "Baseline-owned — unchanged selected untracked/ignored files. These are "
+                      "yours, not forge's; only their B→S changes are forge-authored:"]
+        parts += [f"  {f}" for f in h.baseline_owned]
+    if h.out_of_band:
+        parts += ["", "Out-of-band artifacts. MERGING THE BRANCH ALONE DOES NOT INSTALL THESE "
+                      "— they are ignored files and were never added to the object store:"]
+        for o in h.out_of_band:
+            parts.append(f"  {o.path}  sha256={o.sha256}  {o.size} byte(s)")
+            parts.append(f"    {' '.join(o.copy_command)}")
+    else:
+        parts += ["", "No out-of-band artifacts: this delivery is entirely in the branch."]
+    return "\n".join(parts) + "\n"

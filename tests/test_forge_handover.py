@@ -3,6 +3,7 @@ import ast
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -436,3 +437,303 @@ def test_a_record_that_would_not_survive_its_own_round_trip_is_not_written(tmp_p
     with pytest.raises(handover.HandoverError, match="round trip"):
         handover.write_handover(run_dir, h)
     assert not storage.handover_path(run_dir).exists()
+
+
+from forge import fingerprint, seat as seatmod, strategy, ultra  # noqa: E402
+
+
+def _prov(**kw):
+    base = dict(
+        seats=(handover.SeatLine("claude", "completed", "usable", "PASS"),
+               handover.SeatLine("codex", "completed", "usable", "FAIL"),
+               handover.SeatLine("agy", "partial", "unusable", None)),
+        synthesis_outcome="PASS", synthesis_measured=True,
+        verify_command="make verify", verify_seconds=47.0, strategy="from_scratch",
+        strongest=(None, "no strongest seat can be named while agy has no measured "
+                         "requirement_coverage"),
+        agreement="differently-prompted",
+        review_terminal="review_blocked", review_rounds=2, unresolved_findings=1,
+        ultra=ultra.Ultra(ultra.RAN, None, (), None, True, "0 finding(s)"))
+    base.update(kw)
+    return handover.Provenance(**base)
+
+
+def test_the_header_is_four_lines_and_names_every_number_it_reports():
+    text = handover.header(_prov())
+    lines = [l for l in text.splitlines() if l.strip()]
+    assert len(lines) >= 4
+    assert lines[0].startswith("**Forge:")
+    assert "2 of 3 seats completed" in lines[0]
+    assert "2 artifact set(s) usable" in lines[0]     # the renderer says `set(s)`; match it
+    assert "1 of 3 passed verify" in lines[0]
+    assert text.rstrip().endswith("**")
+
+
+def test_a_seat_that_produced_artifacts_and_failed_verify_is_never_called_built():
+    """§16.1 forbids the word outright. Checked on the rendered text AND on the source, because
+    the first only covers the fixtures this test runs."""
+    text = handover.header(_prov())
+    assert "built" not in text.lower()
+    src = (ROOT / "shared" / "lib" / "forge" / "handover.py").read_text()
+    assert "built" not in src.lower().replace("rebuilt", "")
+
+
+def test_a_seat_nobody_verified_does_not_count_as_one_that_failed():
+    """The two absences §16.1's first line must not spell alike. `passed of n` on its own reads
+    a seat §6 never verified as a seat that did not pass, and one of those is a paid clone the
+    fleet has no verdict about at all."""
+    never = handover.header(_prov())
+    assert "1 of 3 passed verify (1 never verified)" in never
+    everyone = _prov(seats=(handover.SeatLine("claude", "completed", "usable", "PASS"),
+                            handover.SeatLine("codex", "completed", "usable", "FAIL"),
+                            handover.SeatLine("agy", "partial", "unusable", "FAIL")))
+    measured = handover.header(everyone)
+    assert "1 of 3 passed verify." in measured
+    assert "never verified" not in measured
+
+
+def test_a_seat_row_speaking_a_vocabulary_no_module_owns_is_refused():
+    """The three tuples belong to `seat` and `verify`. A row spelling its own carries a status
+    nothing upstream produces, and §16.1's counts are taken over these rows."""
+    for bad in (dict(forge="done"), dict(artifacts="ok"), dict(verify_outcome="PASSED"),
+                dict(name="  ")):
+        kw = dict(name="claude", forge="completed", artifacts="usable", verify_outcome="PASS")
+        kw.update(bad)
+        with pytest.raises(handover.HandoverError):
+            handover.SeatLine(**kw)
+    # `None` is the one absence that is legal, and it is not a further verdict.
+    assert handover.SeatLine("claude", "completed", "usable", None).verify_outcome is None
+    for f in seatmod._FORGE:
+        assert handover.SeatLine("claude", f, "usable", None).forge == f
+    for o in verify.OUTCOMES:
+        assert handover.SeatLine("claude", "completed", "usable", o).verify_outcome == o
+
+
+def test_a_run_in_which_nothing_completed_cannot_render_a_success_header():
+    """§18 asks for this by name: 'failure cannot render a success header'."""
+    dead = _prov(seats=(handover.SeatLine("claude", "failed", "unusable", None),
+                        handover.SeatLine("codex", "failed", "unusable", None),
+                        handover.SeatLine("agy", "failed", "unusable", None)),
+                 synthesis_outcome=None, synthesis_measured=False, verify_seconds=None,
+                 strategy=None,
+                 review_terminal=None, review_rounds=0, unresolved_findings=0,
+                 ultra=ultra.Ultra(ultra.SKIPPED, None, None, None, False, "no synthesis"))
+    text = handover.header(dead)
+    assert "0 of 3 seats completed" in text
+    assert "no seat produced a candidate" in text
+    assert "PASS" not in text
+    with pytest.raises(handover.HandoverError):
+        _prov(seats=(handover.SeatLine("claude", "failed", "unusable", None),),
+              synthesis_outcome="PASS")
+
+
+def test_a_run_with_no_reported_verdict_is_not_a_run_with_no_candidate():
+    """Two absences that must not compare equal. Seats completed and nobody reported an outcome
+    for the fusion — `--collect` run without one — is a MISSING ARGUMENT. Rendering it as "no
+    seat produced a candidate" would have the header invent a fleet failure out of it, and the
+    operator would read a working three-seat run as a dead one."""
+    quiet = _prov(synthesis_outcome=None, synthesis_measured=False, verify_seconds=None)
+    text = handover.header(quiet)
+    assert "no seat produced a candidate" not in text
+    assert "no verify verdict was reported" in text
+    assert "2 of 3 seats produced a candidate" in text
+    assert handover._VERIFIED_MEANS not in handover.text(_a_handover(), quiet)
+
+
+def test_a_run_with_no_seats_at_all_is_refused_rather_than_rendered_as_zeros():
+    """An empty seat tuple renders as a four-line header of zeros and blanks, which reads as a
+    completed clean run. It is the input that makes 'nothing' and 'nobody' the same record.
+
+    THE RECORD IS OTHERWISE VALID, and that is what makes this a test of the guard it names.
+    The obvious spelling — `_prov(seats=())` on the default fixture — raises for the SYNTHESIS
+    verdict instead, because a `PASS` over zero completed seats is refused one check further
+    down. It passes either way and says nothing about the empty tuple.
+    """
+    with pytest.raises(handover.HandoverError, match="empty tuple"):
+        _prov(seats=(), synthesis_outcome=None, synthesis_measured=False, verify_seconds=None,
+              review_terminal=None, review_rounds=0, unresolved_findings=0)
+
+
+def test_one_seat_filed_twice_is_not_two_seats():
+    """§16.1's first line counts these rows, so a duplicated row inflates every number in it —
+    '2 of 2 seats completed' over the single clone anybody paid for."""
+    with pytest.raises(handover.HandoverError, match="claude"):
+        _prov(seats=(handover.SeatLine("claude", "completed", "usable", "PASS"),
+                     handover.SeatLine("claude", "completed", "usable", "PASS")))
+
+
+def test_a_strongest_seat_nobody_could_name_is_a_LINE_and_not_a_missing_one():
+    """§12.5's `strongest` is `(None, why)` for any ledger carrying a schema or untraced-prose
+    criterion, which is the ORDINARY case. A header that omits the line when there is no winner
+    reads as a header that had nothing to say about strength."""
+    text = handover.header(_prov())
+    assert "Fusion:" in text
+    assert "no strongest seat" in text
+    assert "requirement_coverage" in text, "the reason is not carried into the header"
+    named = handover.header(_prov(strongest=("claude", "§12.5's order over 3 seats: claude, "
+                                                       "codex, agy")))
+    assert "strongest seat: claude" in named
+
+
+def test_a_strongest_seat_this_fleet_never_ran_is_refused():
+    """§12.5 ranks the seats that ran. A header naming one outside them reports a comparison
+    over a clone this run never made, and nothing else in the record contradicts it."""
+    with pytest.raises(handover.HandoverError, match="not one of this run's seats"):
+        _prov(strongest=("gemini", "§12.5's order over 3 fully measured seat(s)"))
+
+
+def test_the_agreement_label_is_always_rendered_including_when_it_is_not_comparable():
+    for label in fingerprint.LABELS:
+        text = handover.header(_prov(agreement=label))
+        assert f"agreement: {label}" in text, label
+    with pytest.raises(handover.HandoverError):
+        _prov(agreement="strong")          # not one of §11's three
+
+
+def test_the_header_names_no_strategy_no_module_upstream_chose():
+    """§12.3 owns the three, and `None` is 'nobody recorded one' — which the header says in
+    those words rather than leaving the clause blank."""
+    for s in strategy.STRATEGIES:
+        assert s in handover.header(_prov(strategy=s))
+    assert "strategy not recorded" in handover.header(_prov(strategy=None))
+    with pytest.raises(handover.HandoverError):
+        _prov(strategy="vibes")
+    with pytest.raises(handover.HandoverError, match="empty backticks"):
+        _prov(verify_command="   ")
+
+
+def test_every_ultrareview_status_renders_differently():
+    seen = set()
+    for u in (ultra.Ultra(ultra.RAN, None, (), None, True, "0 finding(s)"),
+              ultra.Ultra(ultra.UNAVAILABLE, "no_auth", None, None, True, "d"),
+              ultra.Ultra(ultra.TIMED_OUT, None, None, "https://claude.ai/x", True, "d"),
+              ultra.Ultra(ultra.SKIPPED, None, None, None, False, "--no-ultra")):
+        line = [l for l in handover.header(_prov(ultra=u)).splitlines()
+                if l.lstrip().startswith("Ultrareview:")]
+        assert len(line) == 1, u.status
+        seen.add(line[0])
+    assert len(seen) == 4, seen
+    unavailable = handover.header(_prov(
+        ultra=ultra.Ultra(ultra.UNAVAILABLE, "zdr_org", None, None, True, "d")))
+    assert "unavailable (zdr_org)" in unavailable
+
+
+def test_a_skipped_ultrareview_reports_its_own_reason_and_never_a_flag_it_invents():
+    """`run_ultra` skips for `--no-ultra` and nothing else, but `skipped` is the status any
+    caller writes for a review it declined to request. A line spelling the flag over a record
+    that says `no synthesis` tells the operator they opted out of something they did not."""
+    skipped = handover.header(_prov(
+        ultra=ultra.Ultra(ultra.SKIPPED, None, None, None, False,
+                          "no candidate was fused, so there was nothing to review")))
+    assert "no candidate was fused" in skipped
+    assert "--no-ultra" not in skipped
+
+
+def test_a_status_the_header_has_no_rendering_for_is_refused_not_read_as_the_cheapest_of_four():
+    """`ultra.STATUSES` is the vocabulary and `Ultra` refuses anything outside it, so this
+    reaches the renderer only through a stand-in — which is the point: a fifth status added
+    upstream falls through to whichever branch has no test on it, and the cheapest of these
+    four to read is 'the review nobody asked for'."""
+    fifth = SimpleNamespace(status="degraded", reason=None, bugs=None, session_url=None,
+                            diff_measured=True, detail="d")
+    with pytest.raises(handover.HandoverError, match="four statuses"):
+        handover._ultra_line(fifth)
+
+
+def test_the_verified_sentence_says_what_a_pass_is_and_no_more():
+    """Debt: `verify.classify` never reads `baseline_run` on the PASS path, so nothing proves
+    the calibration a PASS rests on came from this run's baseline. The sentence must not
+    overclaim past that."""
+    text = handover.text(_a_handover(), _prov())
+    assert ("the confirmed verify command exited 0 on a fresh verifier clone at the final "
+            "checkpoint") in text
+    assert "no new defects" in text and "does not mean" in text
+
+
+def test_an_asserted_synthesis_verdict_never_prints_the_verified_sentence():
+    """A VERDICT MUST NEVER READ CLEANER THAN ITS EVIDENCE, and this is the input that breaks
+    it in the artifact whose whole job is to say what was verified. `--collect` takes the
+    synthesis outcome from the orchestrator; nothing in this engine runs the confirmed command
+    over the fusion. Rendering that in the same words as a measured PASS, under a paragraph
+    beginning "Verified here means", asserts a verification that did not happen."""
+    asserted = _prov(synthesis_measured=False, verify_seconds=None)
+    text = handover.text(_a_handover(), asserted)
+    assert handover._VERIFIED_MEANS not in text
+    assert "reported by the orchestrator" in text
+    assert "this engine did not run it" in text
+    head = handover.header(asserted)
+    assert "verify PASS" not in head, (
+        "an asserted verdict is rendered in the words of a measured one")
+    # And the measured rendering is still the measured rendering.
+    assert handover._VERIFIED_MEANS in handover.text(_a_handover(), _prov())
+
+
+def test_a_measured_synthesis_verdict_must_carry_the_measurement():
+    """`synthesis_measured=True` is a claim that this engine ran the command, and a run it
+    timed is the evidence for that claim. A measured verdict with no duration is the record
+    saying it measured something it did not time — which is the same fail-open one field over,
+    and it is how an asserted verdict would be re-labelled as a measured one by a caller
+    passing the wrong flag."""
+    with pytest.raises(handover.HandoverError):
+        _prov(synthesis_measured=True, verify_seconds=None)
+    with pytest.raises(handover.HandoverError):
+        _prov(synthesis_measured=True, synthesis_outcome=None)
+
+
+def test_a_duration_may_not_sit_beside_a_verdict_this_engine_says_it_did_not_take():
+    """The other direction of the same field. Both unmeasured renderings state in words that
+    the confirmed command was not run here, so a record carrying a duration under one of them
+    is timing a run it says it did not perform — and `True` is an `int` that formats as `1s`,
+    which is a record answering 'did it run?' printed as a one-second verify."""
+    with pytest.raises(handover.HandoverError, match="did not measure"):
+        _prov(synthesis_measured=False, verify_seconds=12.0)
+    with pytest.raises(handover.HandoverError, match="verify_seconds"):
+        _prov(verify_seconds=True)
+    with pytest.raises(handover.HandoverError, match="verify_seconds"):
+        _prov(verify_seconds=-1.0)
+
+
+def test_a_council_terminal_and_the_numbers_beside_it_have_to_describe_one_review():
+    """"No review round was convened" is what a `review_terminal=None` record renders, and that
+    line prints NEITHER number — so a record carrying unresolved findings under it has its
+    blockers vanish from the one document the operator acts on. §13 refuses a terminal below
+    one round on its own side (`review._check_rounds_run`), and a record carrying one anyway
+    reports a review's conclusion over a review nobody convened."""
+    for bad in (dict(review_terminal=None, review_rounds=0, unresolved_findings=2),
+                dict(review_terminal=None, review_rounds=1, unresolved_findings=0),
+                dict(review_terminal="ready", review_rounds=0, unresolved_findings=0),
+                dict(review_terminal="ready", review_rounds=True, unresolved_findings=0)):
+        with pytest.raises(handover.HandoverError):
+            _prov(**bad)
+    quiet = _prov(review_terminal=None, review_rounds=0, unresolved_findings=0)
+    assert "no review round was convened" in handover.header(quiet)
+
+
+def test_a_blocked_review_beside_zero_unresolved_findings_is_refused():
+    """§13's `review_blocked` is the terminal a run reaches BECAUSE a blocker is open. Carrying
+    it beside zero unresolved findings renders '0 finding(s) unresolved (review_blocked)' — a
+    clean provenance header over an unresolved blocker, which is §13's named failure arriving
+    in the artifact that reports it."""
+    with pytest.raises(handover.HandoverError, match="review_blocked"):
+        _prov(review_terminal="review_blocked", unresolved_findings=0)
+
+
+def _a_handover():
+    return handover.Handover(
+        run_id="abc123", branch="forge/abc123/synthesis", kind=handover.PATCH_ONLY,
+        handover_target=None, accepted=True,
+        out_of_band=(handover.OutOfBand("dist/app.js", "0" * 64, 3,
+                                        ("cp", "-p", "/s/dist/app.js", "dist/app.js")),),
+        baseline_owned=("scratch/notes.md",), b1_files=("f.txt", "scratch/notes.md"),
+        why="the baseline was dirty")
+
+
+def test_the_handover_text_enumerates_b1_and_says_a_merge_does_not_install_the_out_of_band_set():
+    """§16: the B1 file list is enumerated in the handover TEXT, not only at a confirmation
+    gate an hour earlier — and 'merging the branch alone does not install out-of-band
+    artifacts' is stated plainly."""
+    text = handover.text(_a_handover(), _prov())
+    assert "f.txt" in text and "scratch/notes.md" in text
+    assert "merging the branch alone does not install" in text.lower()
+    assert "cp -p /s/dist/app.js dist/app.js" in text
+    assert "baseline-owned" in text.lower()
