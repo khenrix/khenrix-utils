@@ -150,6 +150,60 @@ def test_an_escaping_link_in_a_selection_is_named_by_two_refusals_and_stopped_by
         "the seat really can read outside the repository — hence the two refusals above"
 
 
+def test_a_subtree_neither_walk_could_list_cannot_clear_preflight(tmp_path):
+    """SEAM: the two walks over a selection, and the gate that converts them into a verdict.
+
+    The fixture above, one directory deeper. `inspect._escaping_links_under` and
+    `screen._walk` both walked with `os.walk`'s default `onerror`, which swallows a listing
+    error and yields nothing underneath — so each returned its own kind of nothing, no
+    rejection and no breach, and `preflight.refusals()` returned `()`. Measured before
+    either `onerror`: a permission error converted into "this run may start", in the one
+    place that decides whether it may.
+
+    ASSERTED AT `refusals` AND NOT AT EITHER MODULE, because the conversion is the seam. The
+    per-module suites now pin each walk's own sentence; what only this file can say is that
+    the two are independent measurements of the same subtree and that ONE of them going
+    quiet is not enough to clear the run — which is why both lines are named here rather
+    than one, and why `baseline.materialize` is asserted to refuse the same selection
+    afterwards. Preflight is read-only and minutes may pass at the §5 gate, so B's own walk
+    is the second measurement, not a duplicate of the first.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "credentials").write_text("HOST-ONLY-CONTENT\n")
+    write(repo, "scratch/a.txt", "a\n")
+    locked = Path(repo) / "scratch" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "creds").symlink_to(outside / "credentials")
+    locked.chmod(0o000)
+    run = tmp_path / "run"; run.mkdir()
+    try:
+        # The fixture is measured with the operation the walks perform, not with `os.access`
+        # or a euid comparison: root lists a mode-000 directory, and this test would then
+        # certify the fix while nothing was ever denied.
+        try:
+            os.listdir(locked)
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user lists a 0o000 directory, so the fixture denies nothing")
+        lines = preflight.refusals(preflight.inspect_repo(repo, ["scratch"]))
+        assert any(r.startswith("cannot list scratch/locked,") for r in lines), \
+            "§2.3's walk went quiet on a subtree it could not look at"
+        assert any(r.startswith("scratch/locked: not screened") for r in lines), \
+            "§3's screen certified a subtree it never opened"
+        with pytest.raises(baseline.BaselineError, match="cannot walk"):
+            baseline.materialize(repo, run, finspect.repo_facts(repo), ["scratch"], "r1")
+    finally:
+        locked.chmod(0o755)
+    # Non-vacuity: readable, this selection clears preflight and builds a B — so the three
+    # refusals above are about the unreadable directory and not about the fixture.
+    assert preflight.refusals(preflight.inspect_repo(repo, ["scratch"])) == (
+        f"symlink escapes the repository: scratch/locked/creds -> {outside / 'credentials'}",
+        "scratch/locked/creds: not screened — symlink; links are never followed")
+
+
 def test_everything_the_manifest_names_is_screenable(tmp_path):
     """SEAM: baseline's manifest vs screen's selection contract.
 

@@ -203,20 +203,14 @@ def _entry(root: Path, p: Path, quota: storage.Quota) -> BundleEntry:
     return BundleEntry(rel, "file", st.st_mode & 0o777, snapshot._digest(p), st.st_size)
 
 
-def _walk_error(err: OSError):
-    """`os.walk`'s `onerror`, which this walk did not pass and `snapshot.take` does.
-
-    ONE RULE, TWO SPELLINGS, AND THE SECOND ONE WAS SILENCE. `os.walk`'s default swallows the
-    error and yields nothing for that directory, so an unreadable subtree came back as a
-    manifest with fewer entries and NOTHING saying so — and this walk feeds three things that
-    all read a short manifest as an answer: `scan`, where it under-describes what the seat was
-    given; `verify_materialized`, where a directory that cannot be read makes the re-derived
-    manifest differ and reports it as a MISSING FILE; and `installed_closure`, where it is a
-    provenance hash over part of a closure, compared for equality against two others. This is
-    `snapshot._walk_error`'s argument verbatim, and the two are separate functions only because
-    each raises its own module's class.
-    """
-    raise TaskBundleError(f"cannot walk {err.filename}: {err.strerror}") from err
+# `snapshot.walk_error`'s rule under this module's class — one spelling, since this was
+# that argument and that f-string copied out. What is specific here is what a SHORT manifest
+# is read as, and all three callers read it as an answer: `scan`, where it under-describes
+# what the seat was given; `verify_materialized`, where a directory that cannot be read makes
+# the re-derived manifest differ and reports it as a MISSING FILE; and `installed_closure`,
+# where it is a provenance hash over part of a closure, compared for equality against two
+# others.
+_walk_error = snapshot.walk_error(TaskBundleError)
 
 
 def _walk(root: Path, quota: storage.Quota) -> list:

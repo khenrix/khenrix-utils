@@ -239,9 +239,34 @@ def _escaping_links_under(root: Path, base: Path) -> list:
     descend a linked directory and reports it in `dirnames`, never in `filenames`, so both
     lists are inspected. `_escaping_target` answers None for anything that is not a symlink,
     so the cost on an ordinary tree is one lstat per entry.
+
+    A DIRECTORY THAT CANNOT BE LISTED IS ITS OWN REJECTION, because os.walk's default
+    `onerror` swallows the error and yields nothing for that subtree — so `[]` here meant
+    both "no escaping link is nested in this selection" and "a subtree could not be looked
+    at", and `preflight.refusals` reads this list to decide the run may proceed. Measured,
+    with the default: a selected `scratch` holding a mode-000 `scratch/locked/` whose
+    `creds -> <host>/credentials` escapes gave `rejections() == []`, `screen breaches == []`
+    and `refusals() == ()` — a permission error converted into a clean safety verdict by the
+    one gate whose job is refusing unsafe runs.
+
+    RECORDED RATHER THAN RAISED, unlike `snapshot.take` and `baseline._walk_selected`, which
+    raise the same fact under their own error class. This module returns a rejection LIST and
+    its caller acts on the sentences in it — the discipline the module docstring already sets
+    for an unborn HEAD, where `rejections()` speaks instead of `repo_facts` raising through a
+    describe-only pass. A line is also the stronger answer here: it names the path a run was
+    refused over, alongside every other reason, where a raise would leave the operator a
+    traceback out of preflight.
     """
     out = []
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+
+    def unlistable(err: OSError):
+        # An UNKNOWN, spelled as a refusal — the fail-closed reading of a measurement that
+        # could not be taken. Never "there are no escaping links here".
+        out.append(f"cannot list {Path(err.filename).relative_to(root).as_posix()}, so it "
+                   f"cannot be checked for escaping symlinks: {err.strerror}")
+
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False,
+                                                onerror=unlistable):
         d = Path(dirpath)
         dirnames[:] = sorted(n for n in dirnames if n != ".git")
         for n in [*dirnames, *sorted(filenames)]:

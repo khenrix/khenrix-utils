@@ -56,7 +56,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitcmd, storage
+from . import gitcmd, snapshot, storage
 
 
 class BaselineError(RuntimeError):
@@ -208,6 +208,19 @@ def _index_sha(repo) -> str:
     return hashlib.sha256(idx.read_bytes()).hexdigest() if idx.is_file() else ""
 
 
+# `snapshot.walk_error`'s rule under this module's class, and the argument for RAISING here
+# rather than recording — which is what the two other walks over a selection do — is what
+# `read_filesystem_manifest` already argues about an empty manifest: it "is not a weaker check
+# but no check at all", because `fleet.clone_seat`'s per-path check ranges over exactly what
+# the manifest names. A SHORT one is the same disarmed check with fewer paths, and nothing
+# downstream can tell it from a selection that genuinely held less. Measured on a selected
+# `scratch` with an unreadable `scratch/locked/`: `git add -f` warns and exits 0, so the tree
+# drops the subtree too and `materialize` returned a `Baseline` that silently carried neither,
+# as success. `BaselineError` is this module's documented failure class, and the caller that
+# meets it is the one that would otherwise have started three seats on that baseline.
+_walk_error = snapshot.walk_error(BaselineError)
+
+
 def _walk_selected(base: Path, repo: Path) -> list:
     """Repo-relative leaves under a selected DIRECTORY, in `screen._walk`'s terms.
 
@@ -226,9 +239,13 @@ def _walk_selected(base: Path, repo: Path) -> list:
     so a dropped one is in the tree with nothing in the manifest describing it — the
     third-outcome gap `tests/test_forge_seams.py` exists to rule out. `_entry_digest` reads
     the link's target TEXT, so reporting it here still never opens what it points at.
+
+    A directory that cannot be LISTED raises rather than contributing nothing — see
+    `_walk_error` above, and `snapshot.walk_error` for the rule it is one spelling of.
     """
     out = []
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False,
+                                                onerror=_walk_error):
         d = Path(dirpath)
         dirnames[:] = sorted(n for n in dirnames if n != ".git")
         for n in list(dirnames):

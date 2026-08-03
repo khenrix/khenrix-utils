@@ -1,4 +1,5 @@
 """Preflight is describe-only, and its rejections are scoped to the selected baseline."""
+import errno
 import hashlib
 import os
 import subprocess
@@ -291,6 +292,55 @@ def test_rejects_an_escaping_symlink_NESTED_in_a_selected_directory(tmp_path):
         "symlink escapes the repository: scratch/linkdir -> /etc",
         "symlink escapes the repository: scratch/creds -> /etc/passwd",
     ]
+
+
+def test_a_subtree_that_cannot_be_listed_is_a_rejection_not_an_empty_safety_answer(tmp_path):
+    """`[]` here means "preflight may proceed", so it must never also mean "nobody looked".
+
+    `os.walk`'s default `onerror` SWALLOWS the listing error and yields nothing for that
+    subtree, and `preflight.refusals` reads this list to decide a run is safe to start — so a
+    permission error reached the gate as a clean safety verdict, in the one check whose whole
+    job is refusing unsafe runs. Measured on this exact fixture before the `onerror`:
+    `rejections(f, ["scratch"]) == []`, `screen` breaches `[]`, `refusals() == ()`.
+
+    The escaping link is placed UNDER the unreadable directory on purpose. The answer is then
+    not merely unavailable but WRONG, and a fixture whose hidden subtree held nothing could
+    not tell those two apart — it would pass against a walk that reported the error and
+    against one that had simply found nothing to report.
+
+    `os.strerror` rather than the literal "Permission denied", so the whole-string assertion
+    survives a non-English locale; the errno itself is what a mode-000 listing raises.
+    """
+    repo = make_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "credentials").write_text("HOST-ONLY-CONTENT\n")
+    scratch = Path(repo) / "scratch"
+    locked = scratch / "locked"
+    locked.mkdir(parents=True)
+    (scratch / "ok.txt").write_text("ordinary\n")
+    (locked / "creds").symlink_to(outside / "credentials")
+    locked.chmod(0o000)
+    try:
+        # THE FIXTURE IS MEASURED, NOT ASSUMED: root — and anyone holding
+        # CAP_DAC_READ_SEARCH — lists a mode-000 directory, and this test would then pass
+        # while denying nothing. Attempting the exact operation the walk performs is the
+        # only check that cannot be true for a different reason than the walk's.
+        try:
+            os.listdir(locked)
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user lists a 0o000 directory, so the fixture denies nothing")
+        assert finspect.rejections(finspect.repo_facts(repo), ["scratch"]) == [
+            "cannot list scratch/locked, so it cannot be checked for escaping symlinks: "
+            f"{os.strerror(errno.EACCES)}"]
+    finally:
+        locked.chmod(0o755)
+    # Non-vacuity, from the other side: with the same directory readable the same selection
+    # names the link it was hiding, so the rejection above stood in for a real one.
+    assert finspect.rejections(finspect.repo_facts(repo), ["scratch"]) == [
+        f"symlink escapes the repository: scratch/locked/creds -> {outside / 'credentials'}"]
 
 
 # The three probes below pin the parsing that had to be adapted to git 2.53's real output

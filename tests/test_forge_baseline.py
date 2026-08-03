@@ -314,6 +314,48 @@ def test_a_selected_directory_reaches_the_manifest_as_well_as_the_tree(tmp_path)
     assert b.filesystem_manifest["scratch/sub/b.txt"] == hashlib.sha256(b"b\n").hexdigest()
 
 
+def test_a_selected_directory_that_cannot_be_listed_refuses_rather_than_shortening_B(tmp_path):
+    """A short manifest is `read_filesystem_manifest`'s disarmed check with fewer paths.
+
+    `os.walk`'s default `onerror` swallows the listing error and yields nothing underneath,
+    so the subtree left the manifest with nothing saying so — and the manifest is exactly
+    what `fleet.clone_seat`'s per-path check ranges over, which is why an EMPTY one is
+    refused as "not a weaker check but no check at all". A partial one is indistinguishable
+    from a selection that genuinely held less.
+
+    GIT AGREES AND THAT IS NOT A RESCUE, which is what makes the raise the right answer
+    rather than a tree/manifest comparison: measured here, `git add -f` on the same
+    selection prints `warning: could not open directory 'scratch/locked/': Permission
+    denied` and exits ZERO. So the tree drops the subtree too, the two agree, and
+    `materialize` returned a `Baseline` silently carrying neither — as success, to a caller
+    about to start three seats on it.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/a.txt", "a\n")
+    locked = Path(repo) / "scratch" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "inside.txt").write_text("selected, and never described\n")
+    locked.chmod(0o000)
+    run = tmp_path / "run"; run.mkdir()
+    try:
+        # Measured rather than assumed: root lists a mode-000 directory, and the raise
+        # below would then simply not happen.
+        try:
+            os.listdir(locked)
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user lists a 0o000 directory, so the fixture denies nothing")
+        with pytest.raises(baseline.BaselineError, match="cannot walk"):
+            _mk(repo, run, selected=["scratch"])
+    finally:
+        locked.chmod(0o755)
+    # Non-vacuity: readable, the same selection builds a B that describes what it carries.
+    b = _mk(repo, run, selected=["scratch"])
+    assert set(b.filesystem_manifest) == {"seed.txt", "scratch/a.txt",
+                                          "scratch/locked/inside.txt"}
+
+
 def test_a_symlink_in_a_selection_is_manifested_as_its_target_text(tmp_path):
     """Walking a selection must not read what the tree never contained. git commits a
     symlink as a link; hashing it means open() FOLLOWING it, which puts content from

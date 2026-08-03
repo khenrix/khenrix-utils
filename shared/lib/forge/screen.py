@@ -77,6 +77,7 @@ def _unread(rel: str, why: str) -> str:
 
 _LINK = "symlink; links are never followed"
 _NOT_REGULAR = "not a regular file or directory"
+_UNLISTABLE = "directory could not be listed"
 
 
 def _walk(base: Path, root: Path, skip_prefixes):
@@ -112,12 +113,38 @@ def _walk(base: Path, root: Path, skip_prefixes):
     excludes was already going unread, and naming it now would be a new breach for an old,
     deliberate gap. One `lstat` answers both questions, so this costs no more syscalls than
     the `is_symlink()` it replaces.
+
+    A DIRECTORY THAT CANNOT BE LISTED IS A THIRD BREACH, and it is the shape with the widest
+    blast radius: os.walk's default `onerror` swallows the error and yields nothing for that
+    subtree, so a whole unread directory came back as `(paths, [])` — the clean verdict on
+    content a seat can still reach that the two refusals above exist to prevent, over every
+    file underneath instead of one.
+
+    RECORDED, NOT RAISED, and "a screen, never proof" is the reason rather than an excuse for
+    silence. A breach already means exactly this — "we did not read this", which
+    `screen_tree`'s docstring binds the caller to fail the run closed on, and which
+    `preflight.refusals` carries — so the honest answer is available inside the contracted
+    `(paths, breaches)` return. Raising would leave that contract through a fourth channel,
+    which is the defect the FIFO note above records as measured (`open("rb")` raising ENXIO
+    "out of a function contracted to return `(findings, breaches)`"). The distinction that
+    makes recording safe here and RAISING right in `baseline._walk_selected` is what the
+    caller does with a short answer: this one's short answer arrives with a breach beside it,
+    and B's manifest has no field for one.
     """
     def skipped(rel: str) -> bool:
         return any(rel.startswith(s) for s in skip_prefixes)
 
     out, breaches = [], []
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+
+    def unlistable(err: OSError):
+        rel = Path(err.filename).relative_to(root).as_posix()
+        # Skipped BEFORE the breach, on the leaf rule's argument one line up: a subtree the
+        # caller's scan config already excludes was never going to be read.
+        if not skipped(rel):
+            breaches.append(_unread(rel, f"{_UNLISTABLE}: {err.strerror}"))
+
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False,
+                                                onerror=unlistable):
         d = Path(dirpath)
         dirnames[:] = sorted(n for n in dirnames if n != ".git")
         for n in list(dirnames):

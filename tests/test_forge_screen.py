@@ -1,9 +1,12 @@
 """The screen runs BEFORE any provider starts — a post-harvest scan is too late."""
+import errno
 import os
 import signal
 import socket
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
@@ -192,6 +195,56 @@ def test_a_symlinked_directory_inside_a_selection_is_reported_too(tmp_path):
     findings, breaches = screen.screen_tree(repo, ["scratch"])
     assert findings == [], "must not read through a link out of the tree"
     assert breaches == ["scratch/linkdir: not screened — symlink; links are never followed"]
+
+
+def test_a_directory_that_cannot_be_listed_is_a_breach_not_a_clean_scan(tmp_path):
+    """The widest version of "we did not read this": a whole subtree, silently.
+
+    `os.walk`'s default `onerror` swallows the listing error and yields nothing underneath,
+    so the pass returned `(paths, [])` having never opened anything in there — the clean
+    verdict on unread content that the symlink and FIFO refusals above exist to prevent,
+    over every file in the directory instead of one. Measured on this fixture before the
+    `onerror`: `findings == []` and `breaches == []`, with a live token behind it.
+
+    RECORDED rather than raised, and the assertion is that the ordinary return shape still
+    holds: a breach is already the word this module has for what it did not read, and
+    `screen_tree`'s contract binds the caller to fail the run closed on one. Raising would
+    leave `(findings, breaches)` through a channel no caller handles — the defect the FIFO
+    case next door measured.
+
+    `ok.py` is asserted screened alongside, because the walk must keep reporting the part it
+    COULD read: a breach that also discarded the readable half would be a different bug
+    wearing the fix's clothes.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "scratch/ok.py", "ordinary\n")
+    locked = Path(repo) / "scratch" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "creds.py").write_text(f'K = "{TOKEN}"\n')
+    locked.chmod(0o000)
+    try:
+        # Measured, not assumed — root lists a mode-000 directory and the assertions below
+        # would then hold for a reason that has nothing to do with the walk.
+        try:
+            os.listdir(locked)
+        except PermissionError:
+            pass
+        else:
+            pytest.skip("this user lists a 0o000 directory, so the fixture denies nothing")
+        findings, breaches = screen.screen_tree(repo, ["scratch"])
+        # Both re-screened while the directory is STILL closed: restoring the mode first
+        # would let the token behind it be read, and the pair below would then measure the
+        # fixture's teardown rather than the walk.
+        write(repo, "scratch/ok.py", f'K = "{TOKEN}"\n')
+        still_scanned, still_breached = screen.screen_tree(repo, ["scratch"])
+    finally:
+        locked.chmod(0o755)
+    assert findings == [], "the token behind the unreadable directory was never read"
+    assert breaches == ["scratch/locked: not screened — directory could not be listed: "
+                        f"{os.strerror(errno.EACCES)}"]
+    assert [f.path for f in still_scanned] == ["scratch/ok.py"], \
+        "the readable half must still be screened, or the breach cost the scan"
+    assert still_breached == breaches
 
 
 def test_a_fifo_under_a_selected_directory_breaches_instead_of_blocking_forever(tmp_path):

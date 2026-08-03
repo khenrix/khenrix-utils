@@ -22,14 +22,34 @@ class SnapshotError(RuntimeError):
     """Some part of the tree could not be read, so no inventory of it would be honest."""
 
 
-def _walk_error(err: OSError):
-    """os.walk's `onerror`. Its DEFAULT is to swallow the error and yield nothing for that
-    directory, which is fail-open twice over: an unreadable root returns a clean `({}, [])`
-    that `diff` reads as "the agent deleted the tree", and an unreadable subdirectory
-    returns a partial inventory reported as complete. Raising here also covers the
-    mid-walk races — a directory removed between the top-level yield and the descent —
-    which take the same swallowed path."""
-    raise SnapshotError(f"cannot walk {err.filename}: {err.strerror}") from err
+def walk_error(raise_as):
+    """An `os.walk` `onerror` that RAISES `raise_as`, for a walk whose short answer would be
+    read as an answer.
+
+    os.walk's DEFAULT is to swallow the error and yield nothing for that directory, which is
+    fail-open twice over in `take`: an unreadable root returns a clean `({}, [])` that `diff`
+    reads as "the agent deleted the tree", and an unreadable subdirectory returns a partial
+    inventory reported as complete. Raising also covers the mid-walk races — a directory
+    removed between the top-level yield and the descent — which take the same swallowed path.
+
+    A FACTORY over the caller's own error class, because the rule is one and only the name it
+    raises under varies. `taskbundle._walk_error` was this argument and this f-string copied,
+    saying so in its own prose ("separate functions only because each raises its own module's
+    class"), and `baseline` would have been the third copy — two spellings of one rule that
+    agree today is the defect this package keeps finding.
+
+    NOT the answer at every walk. A walk whose caller is contracted to RETURN refusal lines
+    must record the error in that vocabulary instead of raising past the contract:
+    `inspect._escaping_links_under` emits a rejection line and `screen._walk` a breach, and
+    both stop the run through `preflight.refusals`. What all four share is only that the
+    listing error is never dropped.
+    """
+    def onerror(err: OSError):
+        raise raise_as(f"cannot walk {err.filename}: {err.strerror}") from err
+    return onerror
+
+
+_walk_error = walk_error(SnapshotError)
 
 
 @dataclass(frozen=True)
