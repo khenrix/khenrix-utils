@@ -1,5 +1,6 @@
 """What crosses from a seat into a verifier — and what provably does not."""
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -761,3 +762,132 @@ def test_with_gate_measurement_refuses_one_path_written_as_a_string():
     with pytest.raises(bundle.BundleError, match="gate surface is a sequence"):
         bundle.with_gate_measurement(cb, surface="Makefile", delta=("Makefile",))
     assert _measured(cb).gate_delta == ("Makefile",)
+
+
+def test_the_descent_refuses_a_component_that_is_a_symlink(tmp_path):
+    """THE MECHANISM THREE LEXICAL WAVES DID NOT HAVE. `_assert_contained` and `_escapes`
+    validate a STRING and then hand the caller a NAME; the filesystem that name is finally
+    resolved against is not the one the check reasoned about. `contained` resolves one
+    component at a time against the PREVIOUS component's open descriptor with `O_NOFOLLOW`,
+    so a link anywhere on the way is a refusal and not a redirect."""
+    (tmp_path / "tree" / "real").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "f.txt").write_text("host\n")
+    os.symlink(tmp_path / "outside", tmp_path / "tree" / "link")
+    with pytest.raises(bundle.BundleError, match="does not stay inside the tree"):
+        bundle.contained(tmp_path / "tree", "link/f.txt", "a path")
+    # Non-vacuity: the same shape through a REAL directory is accepted, so the refusal above
+    # is about the link and not about the descent refusing everything.
+    (tmp_path / "tree" / "real" / "f.txt").write_text("ours\n")
+    with bundle.contained(tmp_path / "tree", "real/f.txt", "a path") as at:
+        assert at.leaf == "f.txt"
+        fd = bundle.open_leaf(at, os.O_RDONLY, "a path")
+        try:
+            assert bundle.read_fd(fd) == b"ours\n"
+        finally:
+            os.close(fd)
+
+
+def test_creating_the_intermediate_directories_does_not_write_through_an_existing_link(
+        tmp_path):
+    """`mkdir(parents=True, exist_ok=True)` is the spelling that wrote through: a component
+    that already exists AS A LINK satisfies `exist_ok` and the write lands wherever it points.
+    Here the directory is created and then OPENED `O_NOFOLLOW`, so the existing link fails at
+    the open rather than being accepted as 'already there'."""
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "outside").mkdir()
+    os.symlink(tmp_path / "outside", tmp_path / "tree" / "sub")
+    with pytest.raises(bundle.BundleError, match="does not stay inside the tree"):
+        bundle.contained(tmp_path / "tree", "sub/f.txt", "a path", create_dirs=True)
+    assert not (tmp_path / "outside" / "f.txt").exists()
+
+
+def test_the_descent_still_refuses_a_literal_dotdot_which_needs_no_link_at_all(tmp_path):
+    """THE HALF THE DESCENT CANNOT SEE, which is why the string rule stays. `..` is a LITERAL
+    component: the kernel resolves it with no symlink involved, so `os.open("..", dir_fd=fd)`
+    walks out of the tree exactly as asked and every `O_NOFOLLOW` succeeds. Neither half
+    subsumes the other."""
+    (tmp_path / "tree").mkdir()
+    for bad in ("../escaped.txt", "a/../../escaped.txt", "/etc/passwd"):
+        with pytest.raises(bundle.BundleError, match="escapes the tree"):
+            bundle.contained(tmp_path / "tree", bad, "a path")
+
+
+def test_open_leaf_refuses_a_link_leaf_and_does_not_block_on_a_fifo(tmp_path):
+    """The descent contains the COMPONENTS; `open_leaf` is what contains the last one.
+    `O_NOFOLLOW` refuses a link there, and `O_NONBLOCK` is what keeps this from being the
+    read `snapshot._special_entry` refuses to perform — a read-open on a FIFO blocks until a
+    writer appears, and there is no timeout anywhere in these call paths."""
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "host.txt").write_text("host\n")
+    os.symlink(tmp_path / "host.txt", tmp_path / "tree" / "link.txt")
+    with bundle.contained(tmp_path / "tree", "link.txt", "a path") as at:
+        with pytest.raises(OSError):
+            os.close(bundle.open_leaf(at, os.O_RDONLY, "a path"))
+    os.mkfifo(tmp_path / "tree" / "pipe")
+    with bundle.contained(tmp_path / "tree", "pipe", "a path") as at:
+        fd = bundle.open_leaf(at, os.O_RDONLY, "a path")
+        try:
+            assert not stat.S_ISREG(os.fstat(fd).st_mode), \
+                "the open must return so the caller can refuse it, rather than hang"
+        finally:
+            os.close(fd)
+
+
+def test_a_chain_of_sidecar_links_cannot_write_outside_the_verifier(tmp_path):
+    """THE SAME ESCAPE, FOUND BY SWEEPING ONE MODULE OVER FROM `taskbundle.materialize`.
+
+    Every guard in this loop was per-entry and lexical — `_safe_rel` on the path, `_escapes`
+    on a link's target — and sidecars are written IN ORDER, so an earlier one installs the
+    filesystem a later one's NAME is resolved against. `.` and `..` escape nothing relative to
+    their own entry, which is all `_escapes` is asked. Measured before the descent: the four
+    sidecars below passed every check, `materialize` returned all four as written, and the file
+    landed TWO DIRECTORIES ABOVE THE VERIFIER, on the host — an executable at
+    `<parent>/hooks/pre-commit` in the first reproduction, which `git commit` runs.
+
+    A `CandidateBundle`'s sidecars are INPUT under the deserialize-from-a-ledger model this
+    module's own `_safe_rel` docstring is written for, so this is reachable by the same route.
+    """
+    repo = make_repo(tmp_path / "work")
+    run = tmp_path / "work" / "run"
+    run.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    seat = fleet.clone_seat(repo, b, tmp_path / "work" / "verifier", name="claude",
+                            identity=("F", "f@example.invalid"))
+    S = bundle.SidecarEntry
+    cand = bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref=b.ref, baseline_commit=b.commit,
+        tracked_patch=b"", sidecars=(S("a", "symlink", 0, b"."),
+                                     S("a/b", "symlink", 0, b".."),
+                                     S("a/b/c", "symlink", 0, b".."),
+                                     S("a/b/c/outside/OWNED.txt", "file", 0o644, b"host\n")))
+    with pytest.raises(bundle.BundleError, match="does not stay inside the tree"):
+        bundle.materialize(cand, seat.path)
+    assert not (outside / "OWNED.txt").exists(), \
+        "the write must never reach a host path, not even briefly"
+
+
+def test_a_sidecar_still_replaces_what_the_patch_left_at_its_path(tmp_path):
+    """Non-vacuity for the descent above: the loop still overwrites, still carries a mode, and
+    still replaces a DANGLING link — `lexists` was the old spelling of that and `os.unlink` at
+    a descriptor is the new one."""
+    repo = make_repo(tmp_path / "work")
+    run = tmp_path / "work" / "run"
+    run.mkdir(parents=True)
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    seat = fleet.clone_seat(repo, b, tmp_path / "work" / "verifier", name="claude",
+                            identity=("F", "f@example.invalid"))
+    (Path(seat.path) / "sub").mkdir()
+    os.symlink("nowhere", Path(seat.path) / "sub" / "tool.sh")
+    S = bundle.SidecarEntry
+    cand = bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref=b.ref, baseline_commit=b.commit,
+        tracked_patch=b"", sidecars=(S("sub/tool.sh", "file", 0o755, b"#!/bin/sh\n"),
+                                     S("sub/link", "symlink", 0, b"tool.sh")))
+    assert bundle.materialize(cand, seat.path) == ("sub/link", "sub/tool.sh")
+    tool = Path(seat.path) / "sub" / "tool.sh"
+    assert not tool.is_symlink() and tool.read_bytes() == b"#!/bin/sh\n"
+    assert tool.stat().st_mode & 0o777 == 0o755
+    assert os.readlink(Path(seat.path) / "sub" / "link") == "tool.sh"

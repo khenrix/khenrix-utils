@@ -57,16 +57,30 @@ class Entry:
     kind: str
 
 
+def digest_fd(fd: int) -> str:
+    """The same digest, over an ALREADY-OPEN descriptor.
+
+    Split out for `coverage._hash`, which must open the file `O_NOFOLLOW` relative to a
+    directory descriptor — a path-taking digest would re-resolve the name it was handed and
+    undo that. One spelling, so the two routes cannot drift: `_digest` is this function with
+    the open in front of it.
+    """
+    h = hashlib.sha256()
+    while chunk := os.read(fd, 1 << 16):
+        h.update(chunk)
+    return h.hexdigest()
+
+
 def _digest(p: Path) -> str:
     """Mirrors `baseline._sha256_file` and `fleet._sha256_file`. All three must agree
     byte-for-byte on how a file is digested: a snapshot digest is compared against a
     baseline manifest hash of the same file, and a chunk size or mode difference would
     make identical bytes disagree."""
-    h = hashlib.sha256()
-    with open(p, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    fd = os.open(p, os.O_RDONLY)
+    try:
+        return digest_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def _symlink_entry(p: Path, rel: str) -> Entry:

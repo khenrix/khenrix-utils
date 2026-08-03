@@ -5,12 +5,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
+import dataclasses  # noqa: E402
 import os  # noqa: E402
 import pytest  # noqa: E402
 from forge import baseline, fleet, gitcmd  # noqa: E402
 from forge import bundle as bundlemod  # noqa: E402
 from forge import inspect as finspect  # noqa: E402
-from forge import storage, taskbundle  # noqa: E402
+from forge import snapshot, storage, taskbundle  # noqa: E402
 from forge_fixtures import make_repo  # noqa: E402
 
 
@@ -529,3 +530,193 @@ def test_the_ambient_note_is_an_instruction_never_a_bar():
     assert taskbundle.ambient_note.__doc__ and "not a mechanical bar" in \
         taskbundle.ambient_note.__doc__.lower(), \
         "§20's 'bar ambient invocation' has no mechanism in reach; the docstring must say so"
+
+
+
+def _seat_with_run(tmp_path):
+    """`_seat`, plus the run directory it built — the C0 proof has to RECORD its forged
+    manifest, because the route §8.1's retry takes is `read_task_bundle` -> `materialize`
+    and a hand-built call would not be that route."""
+    repo, s = _seat(tmp_path)
+    return repo, tmp_path / "run", s
+
+
+def _forged(good, *entries):
+    """`good`'s caps and entrypoint, carrying exactly the entries handed in."""
+    return taskbundle.TaskBundle(good.version, good.entrypoint, tuple(entries),
+                                 good.max_files, good.max_file_bytes, good.max_total_bytes)
+
+
+def test_a_chain_of_manifest_links_cannot_land_an_executable_outside_the_task_dir(tmp_path):
+    """C0: A SANDBOX ESCAPE THAT GETS EXECUTED, through the real §8.1 retry path.
+
+    §8.1 gives a retry a FRESH clone and re-materializes from the manifest RECORDED ON DISK,
+    which is not trusted — it may have been edited between runs. Every guard on this branch
+    was LEXICAL, and a lexical guard checks a STRING and then writes to a filesystem that
+    EARLIER WRITES HAVE ALREADY CHANGED. Entries are laid down in order, so `a -> .`,
+    `a/b -> ..`, `a/b/c -> ..` and then the file `a/b/c/hooks/pre-commit` passes `_check_rel`
+    on every path (no `..` component, no `.git` component) and `bundle._escapes` on every
+    target (each normalizes to `.` or `a` RELATIVE TO ITS OWN ENTRY) — and lands an executable
+    at `<git-dir>/hooks/pre-commit`, which `git commit` runs. Measured before the fix: the
+    hook arrived 0755, `git commit` exited 0, and the hook's marker file appeared.
+
+    DRIVEN THROUGH `read_task_bundle`, not a hand-built call: the decoded manifest is the route
+    §8.1 actually takes, and `_decode` type-checks entry fields without ever validating `path`.
+    The refusal is asserted on `materialize` ALONE — `verify_materialized` catches the residue
+    afterwards by luck, and a test that also called it would pass on the unfixed code for the
+    wrong reason.
+    """
+    src = tmp_path / "deep" / "src"
+    src.mkdir(parents=True)
+    _tree(src)
+    _, run, s = _seat_with_run(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")   # scanned BEFORE the chain exists
+    # The chain lives in the SOURCE as real links, because `materialize` reads a link's target
+    # live — a `BundleEntry` carries the HASH of the target text and never the text itself.
+    # Planted after the scan, which is §8.1's own model: the source can change in between, and
+    # `scan` would refuse `b -> ..` at the TOP LEVEL while the manifest names it `a/b`, one
+    # component down, where the very same target no longer escapes anything lexically.
+    os.symlink(".", src / "a")
+    os.symlink("..", src / "b")                      # reached as `a/b`, because `a` is `.`
+    os.symlink("..", tmp_path / "deep" / "c")        # reached as `a/b/c`
+    (tmp_path / "hooks").mkdir()
+    marker = tmp_path / "the-hook-ran"
+    (tmp_path / "hooks" / "pre-commit").write_text(f"#!/bin/sh\ntouch {marker}\n")
+    E = taskbundle.BundleEntry
+    forged = _forged(good, {e.path: e for e in good.entries}["SKILL.md"],
+                     E("a", "symlink", 0, "0" * 64, 0),
+                     E("a/b", "symlink", 0, "0" * 64, 0),
+                     E("a/b/c", "symlink", 0, "0" * 64, 0),
+                     E("a/b/c/hooks/pre-commit", "file", 0o755, "0" * 64, 0))
+    taskbundle.write_task_bundle(run, forged)
+    with pytest.raises(taskbundle.TaskBundleError, match="does not stay inside the tree"):
+        taskbundle.materialize(taskbundle.read_task_bundle(run), src, s.path)
+    gitdir = taskbundle.task_dir(s.path).parent.parent
+    assert not (gitdir / "hooks" / "pre-commit").exists(), \
+        "the executable must never reach the seat's git directory, not even briefly"
+    assert not marker.exists()
+
+
+def test_the_write_half_refuses_the_same_chain_with_the_read_half_agreeing(tmp_path,
+                                                                          monkeypatch):
+    """The half of C0 the test above cannot reach, and the half that gets EXECUTED.
+
+    With the chain in the source, the descent on the READ side refuses first — so that test
+    says nothing about whether the WRITE side would have written through the links. The two
+    are separately reachable: `_read_entry` re-reads the source per entry, and §8.1's own
+    model is a source that can change between reads, so an `a` that is a link when entry 1 is
+    read and a real directory when entry 2 is read passes the read half entirely. Stubbing
+    `_read_entry` to always agree is that source, made deterministic; the write loop is then
+    the only thing standing between the manifest and `<git-dir>/hooks/pre-commit`.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")
+    E = taskbundle.BundleEntry
+    forged = _forged(good,
+                     E("a", "symlink", 0, "0" * 64, 0),
+                     E("a/b", "symlink", 0, "0" * 64, 0),
+                     E("a/b/c", "symlink", 0, "0" * 64, 0),
+                     E("a/b/c/hooks/pre-commit", "file", 0o755, "0" * 64, 0))
+    agreeable = {"a": ".", "a/b": "..", "a/b/c": ".."}
+    monkeypatch.setattr(taskbundle, "_read_entry",
+                        lambda root, e: (b"#!/bin/sh\nexit 0\n", agreeable.get(e.path)))
+    with pytest.raises(taskbundle.TaskBundleError, match="does not stay inside the tree"):
+        taskbundle.materialize(forged, src, s.path)
+    dest = taskbundle.task_dir(s.path)
+    gitdir = dest.parent.parent
+    assert not (gitdir / "hooks" / "pre-commit").exists()
+    # NON-VACUITY, and it is the assertion that says the refusal came from the descent rather
+    # than from the stub or from the first entry: `a` really was laid down as a link into the
+    # task directory, so the loop reached `a/b` with `dest/a` already redirecting — the exact
+    # state a lexical check on `"a/b"` cannot see. Nothing here asserts the directory is
+    # empty: `materialize` promises "nothing left behind" only for a refusal taken BEFORE the
+    # mkdir, and §8.1 answers a part-written seat with a fresh clone rather than a cleanup.
+    assert (dest / "a").is_symlink() and os.readlink(dest / "a") == "."
+
+
+def test_a_file_entry_reached_through_a_symlinked_directory_is_refused(tmp_path):
+    """C0b: `S_ISREG` was LEAF-ONLY, so a directory-component link read host content in.
+
+    The file branch `lstat`'d `source_root / e.path`, which answers about the LAST component.
+    When `source_root/pkg` has become a link to a host directory, the leaf really is a regular
+    file, `S_ISREG` passes, and its bytes are copied into the seat as if the bundle had
+    authored them — with `verify_materialized` CLEAN afterwards, because it re-derives what is
+    now genuinely in the seat and a forged manifest can carry that content's real hash. That
+    is why the refusal is asserted on `materialize` alone: re-verification is not the defence
+    here, it is the check the escape passes.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")   # scanned BEFORE the link exists
+    host = tmp_path / "host_pkg"
+    host.mkdir()
+    secret = host / "secret.txt"
+    secret.write_text("HOST FILE, NOT PART OF THE BUNDLE\n")
+    os.symlink(host, src / "pkg")                        # the source changes after the scan
+    forged = _forged(good, {e.path: e for e in good.entries}["SKILL.md"],
+                     taskbundle.BundleEntry("pkg/secret.txt", "file", 0o644,
+                                            snapshot._digest(secret),
+                                            secret.stat().st_size))
+    with pytest.raises(taskbundle.TaskBundleError, match="does not stay inside the tree"):
+        taskbundle.materialize(forged, src, s.path)
+    landed = taskbundle.task_dir(s.path) / "pkg" / "secret.txt"
+    assert not landed.exists(), "the host file's content must never reach the seat"
+
+
+def test_a_directory_the_walk_cannot_read_is_a_refusal_not_a_shorter_manifest(tmp_path):
+    """I6: `os.walk`'s default `onerror` SWALLOWS the error and yields nothing for that
+    directory, so an unreadable subtree came back as a manifest with fewer entries and nothing
+    saying so. `snapshot.take` passes `onerror` and refuses — two spellings of one rule, and
+    the second was silence. A short manifest is read as an answer by all three callers: `scan`
+    under-describes what the seat was given, `verify_materialized` reports it as a MISSING
+    FILE, and `installed_closure` hashes part of a closure it compares for equality."""
+    if os.geteuid() == 0:
+        pytest.skip("chmod 0 does not stop root")
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    closed = src / "locked"
+    closed.mkdir()
+    (closed / "inside.md").write_text("carried\n")
+    closed.chmod(0o000)
+    try:
+        with pytest.raises(taskbundle.TaskBundleError, match="cannot walk"):
+            taskbundle.scan(src, entrypoint="SKILL.md")
+    finally:
+        closed.chmod(0o755)
+
+
+def test_a_bundle_entry_this_engine_cannot_name_is_refused_before_anything_is_written(
+        tmp_path):
+    """`_decode` bounds `kind` and `mode` only for a bundle that came OFF DISK. A `TaskBundle`
+    built in process — every caller that did not just read one — reached `os.chmod` with any
+    int at all: 0o4755 set a setuid bit the manifest never described, and a negative one raised
+    `OverflowError`, an error class no caller of this module knows to catch. A kind that is
+    neither `file` nor `symlink` was silently laid down as a file."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")
+    entry = {e.path: e for e in good.entries}["SKILL.md"]
+    for bad, why in ((dataclasses.replace(entry, mode=0o4755), "permission triple"),
+                     (dataclasses.replace(entry, mode=-1), "permission triple"),
+                     (dataclasses.replace(entry, kind="fifo"), "kind is")):
+        with pytest.raises(taskbundle.TaskBundleError, match=why):
+            taskbundle.materialize(_forged(good, bad), src, s.path)
+        assert not taskbundle.task_dir(s.path).exists(), \
+            "a refused bundle must leave no directory behind"
+    taskbundle.materialize(good, src, s.path)          # non-vacuity: the honest one lands
+
+
+def test_a_cli_with_no_recorded_install_location_is_none_not_a_keyerror():
+    """`installed_closure`'s own docstring says NEVER A RAISE, and `INSTALL_GLOBS[cli]` raised
+    `KeyError` — out of a `str | None` whose caller is `fingerprint.build`'s record assembler.
+    The value for 'this closure could not be described' is already defined; a CLI with no
+    install location is exactly that, and `ambient_verdict` reads it as False."""
+    assert taskbundle.installed_closure("not-a-cli") is None

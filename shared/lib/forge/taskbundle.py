@@ -152,6 +152,19 @@ def _check_rel(rel: str) -> str:
     return rel
 
 
+def _contained(root, rel: str, what: str, *, create_dirs: bool = False):
+    """`bundle.contained`, wrapped into this module's declared class.
+
+    The wrap is `_check_rel`'s, for the same reason stated one function up: `BundleError` is a
+    type this module's contract does not promise, and an error class no caller of `materialize`
+    knows to catch is a refusal that reaches them as a crash.
+    """
+    try:
+        return bundlemod.contained(root, rel, what, create_dirs=create_dirs)
+    except bundlemod.BundleError as e:
+        raise TaskBundleError(str(e)) from e
+
+
 def _rel(root: Path, p: Path) -> str:
     """The canonical POSIX relative path, refused if it could name anything but a bundle path."""
     return _check_rel(PurePosixPath(p.relative_to(root)).as_posix())
@@ -189,10 +202,27 @@ def _entry(root: Path, p: Path, quota: storage.Quota) -> BundleEntry:
     return BundleEntry(rel, "file", st.st_mode & 0o777, snapshot._digest(p), st.st_size)
 
 
+def _walk_error(err: OSError):
+    """`os.walk`'s `onerror`, which this walk did not pass and `snapshot.take` does.
+
+    ONE RULE, TWO SPELLINGS, AND THE SECOND ONE WAS SILENCE. `os.walk`'s default swallows the
+    error and yields nothing for that directory, so an unreadable subtree came back as a
+    manifest with fewer entries and NOTHING saying so — and this walk feeds three things that
+    all read a short manifest as an answer: `scan`, where it under-describes what the seat was
+    given; `verify_materialized`, where a directory that cannot be read makes the re-derived
+    manifest differ and reports it as a MISSING FILE; and `installed_closure`, where it is a
+    provenance hash over part of a closure, compared for equality against two others. This is
+    `snapshot._walk_error`'s argument verbatim, and the two are separate functions only because
+    each raises its own module's class.
+    """
+    raise TaskBundleError(f"cannot walk {err.filename}: {err.strerror}") from err
+
+
 def _walk(root: Path, quota: storage.Quota) -> list:
     """Every file and symlink under `root`, sorted, never following a directory symlink."""
     out = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
+                                                onerror=_walk_error):
         d = Path(dirpath)
         # A symlink TO a directory is an entry, not a directory to descend: os.walk lists
         # it in dirnames and followlinks=False stops the descent but not the listing.
@@ -395,16 +425,29 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
     fresh clone and this module contains no delete of any kind: a second materialization into
     a live seat would be the reset-and-rerun-in-place §8.1 forbids, one directory over.
     """
-    # EVERY PATH RE-CHECKED, BEFORE ANYTHING IS CREATED. `scan` routes each path through
-    # `_rel`, so a scanned bundle cannot carry a `..` or a `.git` component — but a bundle
-    # does not have to have been scanned in this process. `_decode` type-checks entry fields
-    # and never validates `path`, so the manifest `read_task_bundle` hands back, which is what
-    # §8.1's fresh-clone retry re-materializes from, reaches this write with whatever string
-    # was on disk. `dest / "../../x"` escapes without Path complaining. Checked ahead of the
-    # `mkdir` so a refused bundle leaves nothing behind: `dest.exists()` is the refusal above,
-    # and a half-created directory would wedge the very retry that is meant to recover.
+    # EVERY PATH, KIND AND MODE RE-CHECKED, BEFORE ANYTHING IS CREATED. `scan` routes each path
+    # through `_rel`, so a scanned bundle cannot carry a `..` or a `.git` component — but a
+    # bundle does not have to have been scanned in this process. `_decode` type-checks entry
+    # fields and never validates `path`, so the manifest `read_task_bundle` hands back, which is
+    # what §8.1's fresh-clone retry re-materializes from, reaches this write with whatever
+    # string was on disk. `dest / "../../x"` escapes without Path complaining. Checked ahead of
+    # the `mkdir` so a refused bundle leaves nothing behind: `dest.exists()` is the refusal
+    # above, and a half-created directory would wedge the very retry that is meant to recover.
+    #
+    # `kind` and `mode` are re-checked for the same reason and were not: `_decode` bounds them
+    # only for a bundle that came off disk, and a `TaskBundle` built in process reaches the
+    # `os.chmod` below with any int at all — 0o4755 sets a setuid bit the manifest never
+    # described (inert on a self-owned file, but a property nothing authored), and a negative
+    # one raises `OverflowError`, an error class no caller of this module knows to catch.
     for e in b.entries:
         _check_rel(e.path)
+        if e.kind not in ("file", "symlink"):
+            raise TaskBundleError(
+                f"{e.path!r}: kind is 'file' or 'symlink', not {e.kind!r}; a bundle entry "
+                "this engine cannot name is one it must not lay down as a file by default")
+        if not isinstance(e.mode, int) or isinstance(e.mode, bool) or not 0 <= e.mode <= 0o777:
+            raise TaskBundleError(
+                f"{e.path!r}: mode is a permission triple in 0..0o777, not {e.mode!r}")
     dest = task_dir(seat_path)
     if dest.exists():
         raise TaskBundleError(
@@ -413,48 +456,88 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
     source_root = Path(source_root)
     dest.mkdir(parents=True)
     for e in b.entries:
-        target = dest / e.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        src = source_root / e.path
+        payload, link_target = _read_entry(source_root, e)
+        # BOTH SIDES DESCEND BY DESCRIPTOR, and the write side is the one that gets executed.
+        # Entries are laid down IN ORDER, so an earlier one can install a link that changes
+        # where a later one's NAME lands: `a -> .`, `a/b -> ..`, `a/b/c -> ..` and the file
+        # `a/b/c/hooks/pre-commit` passes `_check_rel` on every path and `_escapes` on every
+        # target, and used to put an executable at `<seat>/.git/hooks/pre-commit` that `git
+        # commit` ran — measured end to end through `read_task_bundle` -> `materialize`.
+        # `bundle.contained` resolves one component at a time against the previous component's
+        # open descriptor, `O_NOFOLLOW`, so there is no name left for a link to redirect.
+        with _contained(dest, e.path, "a task bundle path", create_dirs=True) as at:
+            if e.kind == "symlink":
+                os.symlink(link_target, at.leaf, dir_fd=at.fd)
+            else:
+                # `O_EXCL` because nothing in this module overwrites: `dest` was just created
+                # empty, so a leaf that already exists is a second entry claiming one path.
+                # Bytes then mode, in that order: a 0400 file created mode-first cannot be
+                # written to, so it is created 0600 and `fchmod`'d — on the DESCRIPTOR, which
+                # is also the only spelling that cannot be pointed at another file.
+                fd = bundlemod.open_leaf(
+                    at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "a task bundle path")
+                try:
+                    written = 0
+                    while written < len(payload):
+                        written += os.write(fd, payload[written:])
+                    os.fchmod(fd, e.mode)
+                finally:
+                    os.close(fd)
+    return dest
+
+
+def _read_entry(source_root: Path, e: BundleEntry) -> tuple:
+    """One entry's payload off `source_root`: `(bytes, None)` for a file, `(None, target)` for
+    a link — or a refusal, with nothing yet written into the seat.
+
+    READ LIVE, AND THAT IS NOT OPTIONAL FOR A LINK: a `BundleEntry.sha256` is the hash of the
+    TARGET TEXT (`_entry`'s own docstring), never the text itself, so this is the only place
+    the real target is available at all. `_entry` checked `_escapes` on this exact value at
+    scan time; a manifest that reaches `materialize` without passing through `scan` in this
+    process — `read_task_bundle`'s decode, which is what §8.1's retry re-materializes from —
+    never ran that check, and even a freshly scanned one is re-reading a `source_root`
+    `materialize`'s own docstring admits can change in between.
+
+    THE COMPONENTS ARE DESCENDED, NOT JOINED, and that is the half a leaf-only check missed.
+    `lstat` on `source_root / "a/b/x"` answers about the LEAF; if `source_root/a` has become a
+    symlink to `/etc`, the leaf is a perfectly regular host file, `S_ISREG` passes, and the
+    bytes are copied into the seat as if the bundle had authored them — with
+    `verify_materialized` clean afterwards, since it re-derives what is now really there.
+    `bundle.contained` refuses the intermediate link instead; `O_NOFOLLOW` on the leaf refuses
+    the one `read_bytes` used to follow, and `fstat` on the descriptor that was actually opened
+    is what says the thing read was a regular file.
+    """
+    with _contained(source_root, e.path, "a task bundle source path") as at:
         if e.kind == "symlink":
-            # Read live, off `source_root` — a `BundleEntry.sha256` is the hash of the
-            # TARGET TEXT (`_entry`'s own docstring), never the text itself, so this is the
-            # only place the real target is available at all. `_entry` checked `_escapes`
-            # on this exact value at scan time; a manifest that reaches `materialize` without
-            # ever passing through `scan` in this process (`read_task_bundle`'s decode, what
-            # §8.1's retry re-materializes from) never ran that check, and even a freshly
-            # scanned one is re-reading a `source_root` this function's own docstring already
-            # admits can change between `scan` and here. An escaping link laid down here is a
-            # live symlink INSIDE THE SEAT'S GIT DIRECTORY resolving to whatever host path was
-            # named — `verify_materialized` would catch it on its NEXT, separate call, but
-            # that is not a defence of this function: it must not return clean having written it.
-            link_target = os.readlink(src)
-            if bundlemod._escapes(e.path, link_target):
+            try:
+                target = os.readlink(at.leaf, dir_fd=at.fd)
+            except OSError as err:
                 raise TaskBundleError(
-                    f"a task bundle symlink escapes the bundle: {e.path!r} -> "
-                    f"{link_target!r}. Materializing an escaping link points a seat at a "
-                    "host path nobody authored.")
-            os.symlink(link_target, target)
-        else:
-            # The sibling check to the one above: a "file" entry is only as trustworthy as
-            # `source_root` still agrees it is a file. If that path has since become a
-            # symlink — the same source-changed-since-scan gap the branch above closes —
-            # `read_bytes()` follows it (measured: `Path.read_bytes` opens without
-            # `O_NOFOLLOW`) and would copy whatever host file it names into the seat as if
-            # the bundle had authored those bytes. `lstat`, not `stat`, for the reason
-            # `_entry` uses it at scan time: it must see the link, not what it points to.
-            st = src.lstat()
+                    f"{e.path!r} is recorded as a symlink but the source no longer names one "
+                    f"({err.strerror})") from err
+            if bundlemod._escapes(e.path, target):
+                raise TaskBundleError(
+                    f"a task bundle symlink escapes the bundle: {e.path!r} -> {target!r}. "
+                    "Materializing an escaping link points a seat at a host path nobody "
+                    "authored.")
+            return None, target
+        try:
+            fd = bundlemod.open_leaf(at, os.O_RDONLY, "a task bundle source path")
+        except OSError as err:
+            raise TaskBundleError(
+                f"{e.path!r} is recorded as a file but the source no longer names one "
+                f"({err.strerror}). Reading through whatever it now names would copy that "
+                "content into the seat as if the bundle had authored it.") from err
+        try:
+            st = os.fstat(fd)
             if not stat.S_ISREG(st.st_mode):
                 raise TaskBundleError(
                     f"{e.path!r} is recorded as a file but the source no longer names one "
                     f"(mode {oct(st.st_mode)}). Reading through whatever it now names would "
                     "copy that content into the seat as if the bundle had authored it.")
-            # Bytes then mode, in that order: a 0400 file written mode-first cannot be
-            # written to. `chmod` after `write_bytes` is the only ordering that works for
-            # every mode the manifest can carry.
-            target.write_bytes(src.read_bytes())
-            os.chmod(target, e.mode)
-    return dest
+            return bundlemod.read_fd(fd), None
+        finally:
+            os.close(fd)
 
 
 def verify_materialized(b: TaskBundle, seat_path) -> None:
@@ -562,9 +645,18 @@ def installed_closure(cli: str) -> str | None:
     not a `TaskBundleError` — straight out of a `str | None`. Same verdict for the same
     reason, since a closure that could not be read is a closure that could not be described.
 
+    A CLI THIS ENGINE HAS NO GLOBS FOR IS `None` TOO, and it was a `KeyError` — out of a
+    function whose second paragraph says NEVER A RAISE, straight through
+    `fingerprint.build`'s `closure(cli)` call and out of a record assembler. The value is
+    already defined for "this closure could not be described", and a name with no install
+    location is exactly that. It is not swallowed: `ambient_verdict` reads `None` as False for
+    the same reason it reads an uninstalled CLI that way.
+
     `for_harvest`'s caps, not `for_task_bundle`'s: this is a tree this engine did not choose,
     which is the question `for_harvest` was sized for. A breach still answers `None`.
     """
+    if cli not in INSTALL_GLOBS:
+        return None
     dirs = _install_dirs(cli)
     if not dirs:
         return None

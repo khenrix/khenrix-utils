@@ -56,7 +56,7 @@ import os
 import stat
 import tempfile
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import gitcmd
 
@@ -323,6 +323,127 @@ def _assert_contained(rel: str, what: str) -> None:
         raise BundleError(f"{what} escapes the tree: {rel!r}")
 
 
+# Every operation the descent below needs must take a `dir_fd=`, or the descent is decoration:
+# a helper that resolves the parent by descriptor and then hands the caller a NAME to open has
+# reintroduced the whole defect. Checked once, at import, so a platform without it is a loud
+# refusal rather than a silent return to path-based resolution.
+_DIR_FD_OPS = (os.open, os.mkdir, os.symlink, os.stat, os.readlink, os.unlink)
+_HAVE_DIR_FD = all(fn in os.supports_dir_fd for fn in _DIR_FD_OPS)
+
+
+class _Contained:
+    """`rel`'s parent inside `root` as an OPEN DIRECTORY DESCRIPTOR, plus the leaf name.
+
+    THE RULE THIS EXISTS TO REPLACE, AND WHY THAT RULE KEPT FAILING. `_assert_contained` and
+    `_escapes` validate a STRING and then hand the caller a NAME to write to or read from.
+    Three separate waves of this project added a guard of that shape and each declared the
+    escape class closed; each time it came back, because the filesystem the name is finally
+    resolved against is not the one the check reasoned about. `taskbundle.materialize` lays
+    entries down IN ORDER, so entry 3 can install a link that changes where entry 7's name
+    lands: a manifest carrying `a -> .`, `a/b -> ..`, `a/b/c -> ..` and the file
+    `a/b/c/hooks/pre-commit` satisfies every lexical rule in this repository — no component is
+    `..`, none is `.git`, and no link target escapes its OWN entry — and writes an executable
+    at `<seat>/.git/hooks/pre-commit`, which `git commit` then runs. Measured end to end
+    through `read_task_bundle` -> `materialize`.
+
+    SO THE CHECK AND THE USE ARE MADE ONE SYSCALL. Each directory component is opened
+    `O_NOFOLLOW|O_DIRECTORY` relative to the PREVIOUS component's descriptor, and the caller
+    performs its leaf operation with `dir_fd=` this one. A descriptor names an INODE, not a
+    path, so nothing renamed or symlinked afterwards can redirect it, and `O_NOFOLLOW` turns a
+    component that IS a symlink into an `ELOOP` refusal rather than a redirect. There is no
+    window between validating and using because nothing is validated by name — the kernel
+    resolves one component at a time and every one of them is already inside the tree.
+
+    `_assert_contained` STILL RUNS FIRST, AND IT IS NOT A FIFTH LEXICAL GUARD. `..` is a
+    LITERAL component: the kernel resolves it with no symlink involved, so `os.open("..",
+    dir_fd=fd)` walks out of the tree exactly as asked and no descent can see anything wrong.
+    The string rule is exact for the part of the problem that IS a string; the descent is what
+    sees the filesystem. Neither half subsumes the other, which is the same shape `_inside`
+    already argued one module over.
+
+    `create_dirs` makes each intermediate directory as it descends, and the ordering is the
+    same: the directory is created and then OPENED `O_NOFOLLOW`, so a component that already
+    exists as a link fails at the open instead of being written through.
+
+    USE IT AS A CONTEXT MANAGER. The descent happens in `__init__`, so a refusal is raised at
+    the call rather than on `__enter__`; `__exit__` closes the descriptor, and a caller that
+    keeps the object without a `with` leaks one.
+    """
+
+    def __init__(self, root, rel: str, what: str, *, create_dirs: bool = False):
+        if not _HAVE_DIR_FD:
+            raise BundleError(
+                f"{what}: this platform cannot open a path relative to a directory descriptor "
+                f"({[fn.__name__ for fn in _DIR_FD_OPS if fn not in os.supports_dir_fd]}), so "
+                "there is no way to lay a path down that a symlink cannot redirect")
+        _assert_contained(rel, what)
+        parts = [p for p in PurePosixPath(rel).parts if p != "."]
+        if not parts:
+            raise BundleError(f"{what} names no path at all: {rel!r}")
+        fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in parts[:-1]:
+                if create_dirs:
+                    try:
+                        os.mkdir(part, dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                try:
+                    nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                  dir_fd=fd)
+                except OSError as e:
+                    raise BundleError(
+                        f"{what} does not stay inside the tree: {rel!r} passes through "
+                        f"{part!r}, which is not a directory this engine will descend "
+                        f"({e.strerror}). A symlink there redirects the write to wherever it "
+                        "points, which is the escape no check on the NAME can see.") from e
+                os.close(fd)
+                fd = nxt
+        except BaseException:
+            os.close(fd)
+            raise
+        self.fd = fd
+        self.leaf = parts[-1]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        os.close(self.fd)
+        return False
+
+
+def contained(root, rel: str, what: str, *, create_dirs: bool = False) -> _Contained:
+    """`_Contained`, as a function so callers read as `with contained(...) as at:`."""
+    return _Contained(root, rel, what, create_dirs=create_dirs)
+
+
+def open_leaf(at: _Contained, flags: int, what: str, *, mode: int = 0o600) -> int:
+    """The leaf, opened relative to `at.fd` and NEVER through a symlink.
+
+    `O_NOFOLLOW` is the half that refuses a link at the leaf. `O_NONBLOCK` is the half that
+    keeps this from being the read `snapshot._special_entry` refuses to perform: a read-open on
+    a FIFO blocks until a writer appears, and there is no timeout anywhere in these call paths.
+    Checking the type first and opening second would be the check-then-use shape this whole
+    class of defect is made of, so the flag goes on the open and the CALLER refuses what
+    `os.fstat` then reports.
+    """
+    return os.open(at.leaf, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=at.fd)
+
+
+def read_fd(fd: int) -> bytes:
+    """Every byte behind an already-open descriptor.
+
+    A descriptor rather than a path for the whole reason `open_leaf` exists: `read_bytes()`
+    re-resolves the name it is handed, which is the resolution the descent was performed to
+    avoid. `os.read` can return short, so the loop is the read rather than a decoration on it.
+    """
+    chunks = []
+    while chunk := os.read(fd, 1 << 16):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _safe_rel(rel: str, what: str) -> str:
     """A sidecar path this module is willing to lay down, or a refusal.
 
@@ -557,19 +678,40 @@ def materialize(bundle, dest) -> tuple[str, ...]:
                     "the tracked patch does not apply to the verifier clone: "
                     f"{r.stderr.decode('utf-8', 'replace').strip()}")
 
+    # DESCENDED, NEVER JOINED, and the loop above is exactly why the per-entry checks are not
+    # enough on their own. Sidecars are written IN ORDER, so an earlier one installs the
+    # filesystem the later ones' names are resolved against — and `.` and `..` are legal link
+    # targets that escape nothing RELATIVE TO THEIR OWN ENTRY, which is all `_escapes` can ask.
+    # Measured on this function before the descent: sidecars `a -> .`, `a/b -> ..`,
+    # `a/b/c -> ..` and the file `a/b/c/hooks/pre-commit` passed `_safe_rel` and `_escapes` on
+    # every entry, `materialize` returned the four paths as written, and the executable landed
+    # OUTSIDE THE VERIFIER ENTIRELY — two directories above it, on the host. `contained`
+    # resolves one component at a time against the previous component's open descriptor with
+    # `O_NOFOLLOW`, so there is no name left for an earlier sidecar to redirect.
     for e in bundle.sidecars:
-        p = dest / e.path
-        p.parent.mkdir(parents=True, exist_ok=True)
-        # lexists, not exists: a dangling link at the path is still something to replace,
-        # and `exists()` answers False for one.
-        if os.path.lexists(p):
-            p.unlink()
-        if e.kind == "symlink":
-            os.symlink(e.payload.decode("utf-8", "surrogateescape"), p)
-        else:
-            p.write_bytes(e.payload)
-            # After the write, never before: `write_bytes` creates with the process umask,
-            # so a chmod first would be undone for a NEW file and the +x would be lost.
-            p.chmod(e.mode)
+        with contained(dest, e.path, "sidecar path", create_dirs=True) as at:
+            # A dangling link at the path is still something to replace, which is why the old
+            # spelling was `lexists` rather than `exists`; `os.unlink` at `dir_fd` says the same
+            # thing and never resolves the name a second time.
+            try:
+                os.unlink(at.leaf, dir_fd=at.fd)
+            except (FileNotFoundError, IsADirectoryError, PermissionError):
+                pass
+            if e.kind == "symlink":
+                os.symlink(e.payload.decode("utf-8", "surrogateescape"), at.leaf,
+                           dir_fd=at.fd)
+            else:
+                # `O_EXCL` is safe after the unlink and is what refuses to write through
+                # anything that reappeared in between. Bytes then mode, never the reverse: a
+                # 0400 file created mode-first cannot be written to, and `fchmod` on the
+                # descriptor cannot be pointed at another file the way a path can.
+                fd = open_leaf(at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "sidecar path")
+                try:
+                    n = 0
+                    while n < len(e.payload):
+                        n += os.write(fd, e.payload[n:])
+                    os.fchmod(fd, e.mode)
+                finally:
+                    os.close(fd)
         written.add(e.path)
     return tuple(sorted(written))
