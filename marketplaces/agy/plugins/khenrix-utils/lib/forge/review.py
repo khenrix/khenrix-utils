@@ -19,9 +19,10 @@ WHAT THIS MODULE DELIBERATELY DOES NOT CALL, each with its reason:
     An in-process caller inherits none of them. This module applies NONE of them either, so
     every reviewer carries `build_real_spec`'s bypass flag and could write into the checkout
     it is reviewing; `read_only=False` is passed to `run_council` so the council manifest
-    records that absence rather than inheriting a claim about it. What keeps a reviewer's
-    hands off the tree is `launcher_prompt`'s instruction and nothing stronger — see the
-    residual noted there.
+    records that absence rather than inheriting a claim about it. What ASKS a reviewer to
+    keep its hands off the tree is `launcher_prompt`'s instruction and nothing stronger; what
+    CHECKS afterwards is `loop`'s bracket (see `WORKTREE_KIND`), which refuses the round
+    rather than preventing the write.
   * `seat.forge_spec` — see `reviewer_specs`. Its validator neutralises the sentinel.
 
 ROUNDS RUN SEQUENTIALLY, AND THAT IS LOAD-BEARING. `engine._LIVE_PGIDS` (`engine.py:821`),
@@ -160,11 +161,12 @@ def launcher_prompt(bundle_path) -> str:
     resolved closure can still hit `E2BIG` without the raw diff — so the review instructions
     live in a file and this names it.
 
-    THE "DO NOT MODIFY" LINE IS AN INSTRUCTION, NOT A MECHANISM, and it is the only thing
-    standing between three concurrently-running reviewers and the checkout they share: this
-    module applies no read-only posture (see the module docstring), and `run_council` runs
-    its members in a thread pool, so all three are inside the synthesis checkout at once.
-    Nothing here verifies afterwards that the tree is unchanged.
+    THE "DO NOT MODIFY" LINE IS AN INSTRUCTION, NOT A MECHANISM. This module applies no
+    read-only posture (see the module docstring), and `run_council` runs its members in a
+    thread pool, so all three write-capable reviewers are inside the synthesis checkout at
+    once and nothing here PREVENTS a write. What catches one afterwards is `loop`'s bracket
+    (see `WORKTREE_KIND`), which makes a round whose tree moved inadmissible; this sentence
+    is what asks, and that measurement is what checks.
     """
     return (f"Read {bundle_path}/{_INSTRUCTIONS} and follow it exactly. Your working "
             "directory is the checkout under review. Do not modify any file; this is a "
@@ -182,9 +184,9 @@ def write_reviewer_inputs(checkout, round_: int, *, checkpoint: str, baseline_co
     directory is created by this call and refused if it already exists, so no earlier write
     can have laid a symlink where a later one lands.
 
-    AN ABSENT INPUT IS STATED, NEVER OMITTED. §16's out-of-band artifact manifest is a later
-    plan's artifact and §20's task bundle may not have been materialized; a reviewer told
-    "there is none" can weigh that, and one that simply never sees the section cannot.
+    AN ABSENT INPUT IS STATED, NEVER OMITTED. §16's out-of-band artifact manifest has no
+    producer in this package and §20's task bundle may not have been materialized; a reviewer
+    told "there is none" can weigh that, and one that simply never sees the section cannot.
     """
     for name, value in (("checkpoint", checkpoint), ("baseline_commit", baseline_commit),
                         ("baseline_tree", baseline_tree), ("token", token)):
@@ -331,8 +333,8 @@ def reviewer_roots(checkout) -> tuple:
     synthesis worktree introduces, and the one `review_dir`'s docstring is already written for
     — the git directory is `<main>/.git/worktrees/<name>`, outside the checkout entirely.
     §20's task bundle lives at `<git-dir>/khenrix-forge/task` and reviewers ARE given it, so
-    in that configuration the one directory Decision 3 names above all others sat outside
-    every root the scan looked at, and the scan certified the tree clean. Measured: with a
+    in that configuration the one directory the ledger must above all not be copied into sat
+    outside every root the scan looked at, and the scan certified the tree clean. Measured: with a
     copy of the ledger in the task bundle of a linked worktree, the two-root version of this
     check PASSED.
 
@@ -365,9 +367,10 @@ def assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None:
          what the digest sweep catches — through symlinks as well, see `_digests_under`.
 
     EVERY ROOT, AND THE LIST IS DERIVED RATHER THAN REMEMBERED. `reviewer_roots` answers the
-    two the reviewer sits in. `other_clones` is the rest of Decision 3's list — "not a seat,
-    not the synthesis checkout, not a verifier clone" — whose paths this module CANNOT derive,
-    because `fleet.clone_seat` takes its destination from its caller (`fleet.py:166`). It is
+    two the reviewer sits in. `other_clones` is the rest: §13's blindness holds only if the
+    ledger's bytes are under NO clone root — not a seat, not the synthesis checkout, not a
+    verifier clone — and those paths this module CANNOT derive, because `fleet.clone_seat`
+    takes its destination from its caller (`fleet.py:166`). It is
     a REQUIRED argument and is never defaulted: `()` is a caller stating that no other clone
     root exists at this moment, which is a claim somebody made and can be wrong out loud; an
     omitted argument is a claim nobody made and is wrong silently.
@@ -775,6 +778,7 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
         mode="deep",
         read_only=False,                # nothing here applies a read-only posture; say so
         install_signal_handler=False,   # its handler os._exit()s past the `done` record
+        env=reviewer_env(),             # no reviewer writes bytecode into the reviewed tree
     )
     findings, identities, responded, silent = [], [], [], []
     by_name = {r.get("name"): r for r in manifest.get("providers", [])}
@@ -978,8 +982,6 @@ def read_resolutions(run_dir, round_: int):
 #     bounded by a defence rather than merely accepted — for FORGE's git calls. It bounds
 #     nothing run outside that convention: the reviewer's own `git diff`, and the operator's
 #     commands in this checkout afterwards, still fire whatever is there.
-#   * TOOL CACHES ARE NOT MEASURED EITHER — see `_TOOL_CACHE_DIRS`, which states what that
-#     buys, what it costs, and why the list is four literal names rather than a rule.
 #   * A WRITE OUTSIDE THE CHECKOUT is invisible. A reviewer has a shell and a whole
 #     filesystem; this answers one question about one tree.
 #   * A WRITE THAT WAS UNDONE byte-for-byte before the panel returned leaves nothing behind.
@@ -993,29 +995,65 @@ WORKTREE_KIND = "review_worktree"
 # and never the verdict — see `record_worktree_after`.
 _CHANGED_SAMPLE = 20
 
-# The tool caches a reviewer creates BY DOING WHAT IT WAS ASKED. Running the suite is the
-# cheapest and likeliest thing a reviewer does with the shell §13 gives it, and `pytest` writes
-# `__pycache__` beside every module it imports and `.pytest_cache` at the rootdir. Without this
-# the bracket reads that as a reviewer editing the tree and discards a three-provider panel
-# §5.2 paid for, over bytes no reviewer wrote by hand and no diff would show.
+# `snapshot.take`'s default and NOTHING ELSE. This tuple used to carry `__pycache__`,
+# `.pytest_cache`, `.mypy_cache` and `.ruff_cache` as well, on the argument that running the
+# suite is the cheapest and likeliest thing a reviewer does with the shell §13 gives it and
+# that a burnt three-provider panel is too high a price for "bytes no reviewer wrote by hand
+# and no diff would show".
 #
-# NAMED, NOT DERIVED, and "every path git ignores" is the rule this deliberately refuses. §7
-# does not trust `.gitignore` — agent output routinely lands in ignored paths, which is why
-# harvest scans rather than asks git — so skipping what git ignores would hand a write-capable
-# reviewer a laundered place to write inside the tree it is reviewing, chosen by a file that
-# same tree contains. Four literal names stay auditable, and widening the guard has to be an
-# edit here rather than an edit to a `.gitignore`.
+# THAT COST WAS STATED WRONG, AND MEASURED SO. A file written into `__pycache__` is bytecode
+# Python executes IN PREFERENCE TO the untouched source beside it: an honest `.pyc` whose
+# 16-byte header still names the real source's mtime and size, with a different code object
+# marshalled in behind it, ran while `m.py` on disk said something else. So the entry was not
+# a cache exclusion; it was an allow-listed, unmeasured location FROM WHICH THE CODE UNDER
+# REVIEW COULD BE REPLACED, inside a tree three write-capable reviewers share — and the act
+# the exclusion existed to permit, running the suite, is the same act that loads the planted
+# bytecode. One reviewer poisons it, the other two get a green suite over code that is not the
+# code, and the bracket reports the round undisturbed.
 #
-# WHAT IT COSTS, written down because a guard whose gaps are unstated is read as covering them:
-# a write UNDER one of these names is invisible to the bracket, exactly as a write under `.git`
-# is. It narrows THIS measurement only — `assert_ledger_is_out_of_reach` walks these
-# directories like any other, so a ledger copied into `__pycache__` is still caught by its
-# bytes.
-_TOOL_CACHE_DIRS = ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache")
+# THE CAUSE IS FIXED INSTEAD OF THE SYMPTOM: `reviewer_env` sets `PYTHONDONTWRITEBYTECODE=1`
+# and adds `-p no:cacheprovider` to `PYTEST_ADDOPTS` in the panel's own child environment, so
+# a reviewer that runs the suite writes neither directory. Nothing then needs exempting, and a
+# cache directory that appears anyway is a fact about the round worth refusing it over.
+#
+# WHAT THAT COSTS, written down because a guard whose gaps are unstated is read as covering
+# them — and this one now states a cost in the other direction: a reviewer that runs a tool
+# whose cache this environment does NOT suppress (`mypy`, `ruff`) writes into the tree and
+# burns that round. Their caches were on the removed list with no measurement behind them —
+# the comment argued pytest and named two more — and an unmeasured writable location inside
+# the reviewed tree is the thing this whole bracket exists to notice. The round is refused,
+# never attributed (see `WORKTREE_KIND`), so the answer is to re-run the round.
+_SKIP_DIRS = (".git",)
 
-# `snapshot.take`'s default plus the caches above. Matched by NAME at every depth, which is
-# `snapshot.take`'s own rule (`snapshot.py:159`) and not a property of this tuple.
-_SKIP_DIRS = (".git", *_TOOL_CACHE_DIRS)
+
+def reviewer_env(base=None) -> dict:
+    """The environment §13's panel runs under: `base`, with the writes a reviewer's ordinary
+    tools make into the tree BY SIDE EFFECT switched off at the source.
+
+    WHY AT THE SOURCE. The bracket around each round is the only thing standing between three
+    concurrent write-capable reviewers and the checkout under review, and every name exempted
+    from it is a place inside that tree where a write leaves no record. `__pycache__` was
+    exempted and is executable (see `_SKIP_DIRS`); the exemption is gone and this is what
+    replaces it. `scripts/mutate.py` sets the same variable for the same class of problem —
+    a process whose own import would otherwise write the bytes it is about to measure.
+
+    TWO NAMES, EACH DOING ONE THING. `PYTHONDONTWRITEBYTECODE` is read by every CPython child
+    at startup and stops `__pycache__`; `-p no:cacheprovider` disables the pytest plugin that
+    writes `.pytest_cache` at the rootdir, and is APPENDED to whatever `PYTEST_ADDOPTS` the
+    caller already had rather than replacing it — an operator's `--rootdir=…` is theirs, and
+    dropping it would change what the reviewer's suite does as a side effect of a guard.
+
+    WHAT IT DOES NOT DO. It is not a scrub: `fleet.forge_child_env`'s `gitcmd.HOSTILE_ENV`
+    strip and `LLM_FORGE_DEPTH` guard are not applied here, so a reviewer inherits both. That
+    is the position before this function existed and this changes neither half of it; the
+    reviewer's council depth guard is `engine.child_env`'s, applied by `run_provider` on top
+    of whatever it is handed.
+    """
+    env = dict(os.environ if base is None else base)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    addopts = env.get("PYTEST_ADDOPTS") or ""
+    env["PYTEST_ADDOPTS"] = f"{addopts} -p no:cacheprovider".strip()
+    return env
 
 
 def _inventory_digest(entries: dict) -> str:
@@ -1040,8 +1078,10 @@ def worktree_identity(checkout, quota) -> tuple:
     `snapshot.take` IS THE MEASUREMENT, rather than a fourth way to describe a tree. §7.3's
     change predicate is already content-hash + mode + size and explicitly never mtime, already
     prunes `.git`, already refuses a subtree it could not list, and already ships `diff`
-    beside it. What this call adds to that default is `_TOOL_CACHE_DIRS`, and the tradeoff it
-    buys is stated there. The two nearer candidates do not fit: the baseline's filesystem
+    beside it. This call adds NOTHING to that default — `_SKIP_DIRS` is `snapshot.take`'s own
+    `(".git",)`, spelled here so that widening it is an edit in this module rather than a
+    changed default somewhere else; what a previous version added, and what it cost, is
+    written down there. The two nearer candidates do not fit: the baseline's filesystem
     manifest is built inside `materialize`, which also writes a ref into the USER's repo, and
     `verify.gate_surface` answers gate-defining NAMES only — a reviewer editing the source
     under review would not appear in it at all, which is the fail-open direction.
@@ -1074,6 +1114,13 @@ def _worktree_operation(round_: int) -> str:
     return f"review-worktree-{round_}"
 
 
+def _check_rounds_run(rounds_run) -> None:
+    """One spelling of "a review ran at least one round", read by `worktree_disturbances` and
+    `terminal_from_record`. `bool` is excluded for `_check_round`'s reason."""
+    if not isinstance(rounds_run, int) or isinstance(rounds_run, bool) or rounds_run < 1:
+        raise ReviewError(f"a review ran at least one round, not {rounds_run!r}")
+
+
 def record_worktree_before(log, *, round_: int, digest: str, entries: int) -> None:
     """§14.1's write-ahead half: the checkout as it stood before the panel was convened.
 
@@ -1099,18 +1146,36 @@ def record_worktree_after(log, *, round_: int, digest: str, entries: int, change
                changed=rows[:_CHANGED_SAMPLE], changed_total=len(rows))
 
 
-def worktree_disturbances(events) -> tuple:
-    """Every round whose checkout cannot be shown to have survived its own review.
+def worktree_disturbances(events, *, rounds_run: int) -> tuple:
+    """Every round in 1..`rounds_run` whose checkout cannot be shown to have survived its own
+    review.
 
-    A HALF-RECORDED PAIR IS A DISTURBANCE, and so is a digest that is absent or is not a
-    string. Both read back as `None`, and `None == None` is the fail-open this function exists
-    to close: two unmeasured halves agree, and a tree nobody looked at reports as an
-    undisturbed one.
+    `rounds_run` IS AN ARGUMENT AND IS REQUIRED, because otherwise this function's name and
+    its docstring both say "every round" while it can only answer for the rounds the journal
+    HAPPENS to mention. Measured before it took one: `worktree_disturbances(()) == ()` — a run
+    with no bracket at all, every round unmeasured, reported as having nothing against it.
+    Totality lived one level up, in `terminal_from_record`'s own scan, which made this
+    function's guarantee a fact about who called it rather than about what it checks; that is
+    the exact shape the bracket contract closed for `terminal_from_record` itself, one level
+    further up again. A caller cannot supply the round count silently: `None` and an omitted
+    argument both raise.
+
+    THREE WAYS A ROUND FAILS TO ACCOUNT FOR ITS OWN TREE, and none of them is silence:
+
+      * NO COMPLETED PAIR AT ALL. A round nobody bracketed leaves byte-for-byte the journal a
+        round measured clean leaves — nothing — so "the bracket did not run" would compare
+        equal to "the bracket ran and the tree held".
+      * A HALF-RECORDED PAIR, which `journal.orphans` finds: measured before the panel and
+        never re-measured after it.
+      * A DIGEST THAT IS ABSENT OR IS NOT A STRING. Both read back as `None`, and
+        `None == None` is the fail-open: two unmeasured halves agree, and a tree nobody looked
+        at reports as an undisturbed one.
 
     `journal.orphans` does the pairing, and it has already refused a repeated start and a
     `_done` with no `_start` by the time the second loop runs — so a completion here always
     has a start to compare against.
     """
+    _check_rounds_run(rounds_run)
     events = tuple(events)
     out = [f"round {e.data.get('round')} ({e.operation_id}): the checkout was measured before "
            "the panel and never re-measured after it, so whether a reviewer wrote into the "
@@ -1141,6 +1206,14 @@ def worktree_disturbances(events) -> tuple:
             + (f", first: {', '.join(str(s) for s in sample)}" if sample else
                " — no path at all beside two different digests is a path whose TYPE moved, "
                "which snapshot.diff does not compare"))
+    measured = {e.operation_id for e in events
+                if e.event == journalmod.done(WORKTREE_KIND)}
+    out.extend(
+        f"round {n} ({_worktree_operation(n)}): no completed checkout measurement is on the "
+        "journal at all, so this round cannot say its findings describe a tree that stood "
+        "still — and without this it leaves exactly the record a round measured clean leaves"
+        for n in range(1, rounds_run + 1)
+        if _worktree_operation(n) not in measured)
     return tuple(out)
 
 
@@ -1164,32 +1237,43 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
       * `degraded` — every blocker resolved, but something about the review is weaker than a
         clean one: a blocker fixed in the LAST round (nothing re-reviewed the fix), any round
         in which a reviewer was silent, or any round whose record names no reviewer at all.
-        `VERIFIED_NOT_INDEPENDENTLY_REVIEWED` is the phrase, and CONTRADICTION 6 is settled
-        here — the terminal follows the finding's resolution, not which reviewer raised it,
-        so §13.1's ultrareview fix and §14.2's post-round-2 fix land in the same place on the
-        same evidence.
+        `VERIFIED_NOT_INDEPENDENTLY_REVIEWED` is the phrase. §13.1 and §14.2 assign different
+        terminals to the same evidence — §14.2 makes a successful post-round-2 fix
+        `review_blocked`, while §13.1's "no new loop, no new state" lands an otherwise-clean
+        run in `ready` — and this branch is where the two are reconciled: THE TERMINAL FOLLOWS
+        THE FINDING'S RESOLUTION, NOT WHICH REVIEWER RAISED IT. An unresolved blocker is
+        `review_blocked`; one fixed and verified but not re-reviewed is `degraded`. So §13.1's
+        ultrareview fix and §14.2's post-round-2 fix land in the same place on the same
+        evidence, and `review_blocked` keeps meaning what §13's last paragraph needs it to
+        mean: a blocker is still open.
       * `ready` — every blocker resolved and re-reviewed, and every round's panel whole.
 
-    THE BRACKET IS REQUIRED, NOT MERELY BELIEVED. Every round from 1 to `rounds_run` has to
-    carry a completed `WORKTREE_KIND` pair on the journal, and a round that carries none is a
-    refusal here rather than a round with nothing said against it. The version that only
-    refused what the journal DID say was true by call-site discipline — `loop` was the sole
-    writer of these records, so the pair was always there — which is a guarantee held up by
-    there being one caller rather than by anything the function checks. A `--collect` resume
-    reads these records without having run the loop, and at that point "only `loop` writes
-    it" stops being a fact about the program. Put as the two questions this package asks of
-    every guard: a round nobody measured left the same record as a round measured clean, and
-    "the bracket did not run" compared equal to "the bracket ran and the tree held".
+    THE BRACKET IS REQUIRED, NOT MERELY BELIEVED, and the requirement is `rounds_run`'s alone
+    to state: every round from 1 to it has to carry a completed `WORKTREE_KIND` pair on the
+    journal, and a round that carries none is a refusal rather than a round with nothing said
+    against it. The version that only refused what the journal DID say was true by call-site
+    discipline — `loop` was the sole writer of these records, so the pair was always there —
+    which is a guarantee held up by there being one caller rather than by anything the
+    function checks. A `--collect` resume reads these records without having run the loop, and
+    at that point "only `loop` writes it" stops being a fact about the program. Put as the two
+    questions this package asks of every guard: a round nobody measured left the same record
+    as a round measured clean, and "the bracket did not run" compared equal to "the bracket
+    ran and the tree held".
+
+    THAT CHECK IS `worktree_disturbances`' AND NOT A SECOND ONE HERE. It was a separate scan
+    in this function while the round count was not an argument to that one, which left the
+    public function answering "every round" about only the rounds the journal mentioned — the
+    same shape one level down. Passing `rounds_run` through moves the totality into the
+    function whose name claims it, and leaves one answer rather than two that may drift.
 
     WHAT IT STILL DOES NOT ASSERT is that the pair on the journal was taken around THIS round's
     panel rather than around nothing — the journal is forge's own append-only record and this
     reads it at face value. The four things the bracket itself cannot see are listed at
     `WORKTREE_KIND`.
     """
-    if not isinstance(rounds_run, int) or isinstance(rounds_run, bool) or rounds_run < 1:
-        raise ReviewError(f"a review ran at least one round, not {rounds_run!r}")
-    # Materialised once: three separate scans follow, and a generator would be empty for the
-    # second and third — which is the fail-open direction for two of them.
+    _check_rounds_run(rounds_run)
+    # Materialised once: two separate scans follow, and a generator would be empty for the
+    # second — which is the fail-open direction for it.
     events = tuple(events)
     orphaned = [e for e in journalmod.orphans(events)
                 if e.event == journalmod.intent(COUNCIL_KIND)]
@@ -1199,25 +1283,15 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
             f"{', '.join(sorted(e.operation_id for e in orphaned))}), so whether it returned "
             "findings is unknown. §14.1 names that `outcome_unknown` and forbids retrying it "
             "silently; a terminal chosen here would be a clean header over a round nobody read.")
-    disturbed = worktree_disturbances(events)
+    disturbed = worktree_disturbances(events, rounds_run=rounds_run)
     if disturbed:
         raise ReviewError(
-            "this run's synthesis checkout did not survive its own review — "
-            + "; ".join(disturbed) + ". §13's reviewers share that checkout and nothing stops "
-            "them writing in it, so findings taken over a tree that moved underneath them "
-            "describe a state that no longer exists. A terminal chosen here would be the "
-            "check the reviewed party could have rigged, with the reviewer holding the pen.")
-    measured = {e.operation_id for e in events
-                if e.event == journalmod.done(WORKTREE_KIND)}
-    unmeasured = [n for n in range(1, rounds_run + 1)
-                  if _worktree_operation(n) not in measured]
-    if unmeasured:
-        raise ReviewError(
-            f"round(s) {unmeasured} reached a terminal with no completed checkout measurement "
-            f"on the journal (expected {[_worktree_operation(n) for n in unmeasured]}). §13's "
-            "reviewers are write-capable and share the synthesis checkout, so a round nobody "
-            "bracketed cannot say its findings describe a tree that stood still — and without "
-            "this it would leave exactly the record a round measured clean leaves.")
+            "this run's synthesis checkout cannot be shown to have survived its own review — "
+            + "; ".join(disturbed) + ". §13's reviewers are write-capable, share that checkout "
+            "and nothing stops them writing in it, so findings taken over a tree that moved "
+            "underneath them — or over one nobody measured — describe a state this run cannot "
+            "vouch for. A terminal chosen here would be the check the reviewed party could "
+            "have rigged, with the reviewer holding the pen.")
     blocked, degraded = [], []
     for n in range(1, rounds_run + 1):
         r = read_round(run_dir, n)               # raises when the record is missing
@@ -1345,10 +1419,10 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
 
     `other_clones` IS PASSED STRAIGHT THROUGH to `assert_ledger_is_out_of_reach` on every
     round, and it is required here for that function's reason: the seat and verifier clone
-    paths are the caller's, and an argument nobody had to supply is Decision 3 enforced by
-    memory.
+    paths are the caller's, and an argument nobody had to supply is §13's blindness enforced
+    by memory.
 
-    `fix` IS INJECTED AND IS PLAN J'S. Its contract is
+    `fix` IS INJECTED AND HAS NO PRODUCTION IMPLEMENTATION IN THIS PACKAGE. Its contract is
     `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool)`: apply the round's
     blockers, re-verify in a FRESH clone the builder never touched (§6), cut a checkpoint, and
     say whether verify passed. A `(None, False)` or a `(_, False)` answer is §13's "a fix that

@@ -384,11 +384,14 @@ ANSWER = ('I reviewed the diff.\n' + 'x' * 500 + '\nToken: {tok}\n'
 
 def _fake_council(tmp_path, *, answers, record):
     """A `run_council` stand-in. NO PROVIDER IS INVOKED ANYWHERE IN THIS SUITE."""
+    # The signature MIRRORS `engine.run_council`, `env=` included. A fake that omitted it
+    # would make `run_round`'s call a TypeError nothing else in this file would explain.
     def run_council(specs, *, retries, timeout, backoff, workdir, prompt=None,
-                    requested=None, mode=None, read_only=None, install_signal_handler=True):
+                    requested=None, mode=None, read_only=None, install_signal_handler=True,
+                    env=None):
         record.update(retries=retries, timeout=timeout, workdir=Path(workdir), prompt=prompt,
                       mode=mode, read_only=read_only,
-                      install_signal_handler=install_signal_handler,
+                      install_signal_handler=install_signal_handler, env=env,
                       cwds=[s.cwd for s in specs], sentinels=[s.sentinel for s in specs])
         Path(workdir).mkdir(parents=True, exist_ok=True)
         providers = []
@@ -1472,7 +1475,7 @@ def test_two_unmeasured_digests_do_not_agree_that_nothing_changed(tmp_path):
     op = "review-worktree-1"
     log.record(journal.intent(review.WORKTREE_KIND), operation_id=op, round=1)
     log.record(journal.done(review.WORKTREE_KIND), operation_id=op, round=1)
-    assert len(review.worktree_disturbances(log.read())) == 1
+    assert len(review.worktree_disturbances(log.read(), rounds_run=1)) == 1
     with pytest.raises(review.ReviewError):
         review.terminal_from_record(run, rounds_run=1, events=log.read())
 
@@ -1489,6 +1492,22 @@ def test_a_round_nobody_bracketed_is_refused_rather_than_read_as_a_clean_one(tmp
     assert "review-worktree-1" in str(e.value)
     assert review.terminal_from_record(run, rounds_run=1, events=_bracket(run))[0] \
         == review.READY, "the same record with the bracket on it classifies clean"
+
+
+def test_the_public_disturbance_check_answers_for_every_round_it_was_given():
+    """WHOSE GUARANTEE IS IT. `worktree_disturbances` says "every round", and measured before
+    it took the round count it answered `()` for an empty journal — a run with no bracket at
+    all, every round unmeasured, with nothing said against it. Totality lived one level up, in
+    `terminal_from_record`, which made this function's promise a fact about its caller. Plan J
+    is the first outside consumer, and it reads the name and the docstring."""
+    assert review.worktree_disturbances((), rounds_run=1) != ()
+    assert len(review.worktree_disturbances((), rounds_run=3)) == 3
+    for bad in (0, -1, True, "1", None):
+        with pytest.raises(review.ReviewError):
+            review.worktree_disturbances((), rounds_run=bad)
+    with pytest.raises(TypeError):
+        review.worktree_disturbances(())      # never defaulted: an omitted count is a claim
+                                              # nobody made, and is wrong silently
 
 
 def test_a_later_round_nobody_bracketed_is_refused_even_when_an_earlier_one_was(tmp_path):
@@ -1546,33 +1565,116 @@ def test_git_doing_what_the_bundle_asks_does_not_disturb_the_checkout(tmp_path):
     assert before == after
 
 
-def test_a_reviewer_that_ran_the_test_suite_does_not_burn_the_panel(tmp_path):
-    """THE FALSE-POSITIVE CONTROL for `_TOOL_CACHE_DIRS`, the same pair the `.git` exclusion
-    has. Running the suite is the cheapest and likeliest thing a reviewer does with §13's
-    shell, and `pytest` writes `__pycache__` beside every module it imports; before the
-    allowlist those bytes made the round inadmissible and discarded a paid three-provider
-    panel."""
+def test_a_planted_pyc_is_measured_rather_than_allow_listed(tmp_path):
+    """WHAT THE `__pycache__` EXEMPTION ACTUALLY COST, and the reason it is gone. A `.pyc` is
+    not inert output: Python executes it IN PREFERENCE TO the untouched source beside it, so
+    an exempted `__pycache__` was an unmeasured location inside a tree three write-capable
+    reviewers share from which the code under review could be replaced — and the act the
+    exemption existed to permit, running the suite, is the act that loads it.
+
+    Both halves are measured here: the planted bytecode really does run over unchanged source,
+    and the bracket really does now see it. The writes themselves are prevented one step
+    earlier by `reviewer_env`, which is the fix; this is what stands if one appears anyway."""
+    co = _checkout(tmp_path)
+    (Path(co) / "pkg").mkdir()
+    _write_into(co, "pkg/mod.py", 'def who():\n    return "the real source"\n')
+    quota = storage.Quota.for_harvest()
+    before, _ = review.worktree_identity(co, quota)
+
+    # An honest `.pyc` for `mod.py`, compiled from something else. The header keeps the real
+    # source's mtime and size, which is what makes CPython accept it without reading `mod.py`.
+    import importlib._bootstrap_external as bootstrap
+    import importlib.util
+    src = Path(co) / "pkg" / "mod.py"
+    st = src.stat()
+    code = compile('def who():\n    return "PLANTED BYTECODE"\n', str(src), "exec")
+    cache = Path(importlib.util.cache_from_source(str(src)))
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(bootstrap._code_to_timestamp_pyc(code, st.st_mtime, st.st_size))
+
+    ran = subprocess.run([sys.executable, "-c", "import pkg.mod; print(pkg.mod.who())"],
+                         cwd=str(co), capture_output=True, text=True)
+    assert ran.stdout.strip() == "PLANTED BYTECODE", ran.stderr
+    assert src.read_text() == 'def who():\n    return "the real source"\n', \
+        "the source was never touched, which is the whole point"
+
+    after, _ = review.worktree_identity(co, quota)
+    assert before != after, \
+        "the code under review was replaced; a bracket that reported this round undisturbed " \
+        "would be a verdict reading cleaner than its evidence"
+
+
+def test_the_reviewer_environment_stops_the_writes_the_exemption_used_to_excuse(tmp_path):
+    """THE CAUSE, FIXED INSTEAD OF THE SYMPTOM — measured on a real Python child, no provider.
+
+    The exemption existed because a reviewer running the suite writes `__pycache__` beside
+    every module it imports, and burning a three-provider panel over that is too high a price.
+    Removing the WRITE removes the need for the exemption, and leaves a cache directory that
+    appears anyway as something worth refusing the round over."""
     co = _checkout(tmp_path)
     (Path(co) / "pkg").mkdir()
     _write_into(co, "pkg/mod.py", "x = 1\n")
     quota = storage.Quota.for_harvest()
+
+    def import_it(env):
+        return subprocess.run([sys.executable, "-c", "import pkg.mod"],
+                              cwd=str(co), capture_output=True, text=True, env=env)
+
+    plain = dict(os.environ)
+    plain.pop("PYTHONDONTWRITEBYTECODE", None)
     before, _ = review.worktree_identity(co, quota)
-    for d in review._TOOL_CACHE_DIRS:
-        (Path(co) / d).mkdir()
-        (Path(co) / d / "entry").write_bytes(b"tool output\n")
-    nested = Path(co) / "pkg" / "__pycache__"          # matched at depth, not only at the root
-    nested.mkdir()
-    (nested / "mod.cpython-311.pyc").write_bytes(b"\x00compiled\n")
-    after, _ = review.worktree_identity(co, quota)
-    assert before == after
+    assert import_it(plain).returncode == 0
+    assert review.worktree_identity(co, quota)[0] != before, \
+        "the control: an ordinary child DOES write bytecode into the tree it imports from"
+
+    for p in (Path(co) / "pkg" / "__pycache__").glob("*"):
+        p.unlink()
+    (Path(co) / "pkg" / "__pycache__").rmdir()
+    before, _ = review.worktree_identity(co, quota)
+    assert import_it(review.reviewer_env(plain)).returncode == 0
+    assert review.worktree_identity(co, quota)[0] == before, \
+        "under the reviewer's environment the same import leaves the tree byte-identical"
+
+
+def test_the_reviewer_environment_composes_and_keeps_what_it_was_given():
+    """`PYTEST_ADDOPTS` is APPENDED to, never replaced: an operator's `--rootdir=…` is theirs,
+    and dropping it would change what a reviewer's suite does as a side effect of a guard."""
+    out = review.reviewer_env({"PYTEST_ADDOPTS": "--rootdir=/x", "A_MARKER": "kept"})
+    assert out["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert out["PYTEST_ADDOPTS"] == "--rootdir=/x -p no:cacheprovider"
+    assert out["A_MARKER"] == "kept"
+    assert review.reviewer_env({})["PYTEST_ADDOPTS"] == "-p no:cacheprovider", \
+        "no ambient value must not leave a leading space for pytest to parse"
+
+
+def test_the_panel_is_launched_under_that_environment(tmp_path):
+    """A SEAM CHECKED AT THE CALL, not by reading the function. `run_council` grew `env=` for
+    exactly this, and an `env` composed here but never passed would leave every real reviewer
+    writing bytecode into the tree while the record read identically."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    record = {}
+    answer = ("I read it. TOK\n" + "y" * 500 + '\n```json\n{"findings": []}\n```')
+    review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
+                     baseline_commit="b" * 40, baseline_tree="c" * 40,
+                     artifact_manifest=None, other_clones=(),
+                     log=journal.Journal(storage.journal_path(run)),
+                     run_council=_fake_council(
+                         tmp_path, answers={n: (answer, True, "ok")
+                                            for n in ("claude", "codex", "agy")},
+                         record=record),
+                     probe=_probe, make_token=lambda: "TOK")
+    assert record["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert "-p no:cacheprovider" in record["env"]["PYTEST_ADDOPTS"]
 
 
 def test_a_directory_git_ignores_is_measured_like_any_other(tmp_path):
-    """THE FALSE-NEGATIVE CONTROL, and the decision it encodes: the allowlist is four literal
-    NAMES and not "every path git ignores". §7 does not trust `.gitignore` — agent output
-    routinely lands in ignored paths, which is why harvest scans instead of asking git — so
-    deriving the skip from a file the reviewed tree contains would let a write-capable
-    reviewer choose where it may write unseen."""
+    """THE MEASUREMENT RANGES OVER THE WHOLE WORKTREE, and "every path git ignores" is the
+    rule it refuses. §7 does not trust `.gitignore` — agent output routinely lands in ignored
+    paths, which is why harvest scans instead of asking git — so deriving the skip from a file
+    the reviewed tree contains would let a write-capable reviewer choose where it may write
+    unseen. `.git` is the one exclusion left, and it is a fixed name rather than a rule."""
     co = _checkout(tmp_path)
     write(co, ".gitignore", "build/\n")
     commit_all(co, "ignore build output")
