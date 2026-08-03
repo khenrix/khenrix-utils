@@ -63,7 +63,7 @@ from pathlib import Path
 from council import engine
 
 from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
-               runstate, seat as seatmod, storage, verify)
+               runstate, seat as seatmod, seatrecord, storage, verify)
 
 
 class RunnerError(RuntimeError):
@@ -346,6 +346,21 @@ def _clip(text) -> tuple:
     return text[-_MAX_RECORDED_CHARS:], len(text)
 
 
+def _prompt_identity(launch_result):
+    """§11's fingerprint as the launcher returned it, type-checked here.
+
+    `_prior_attempts` type-checks `attempts` on the read side for the same reason: a damaged
+    record costs nothing yet at the one point where the producer is still present.
+    """
+    if not isinstance(launch_result, dict) or launch_result.get("prompt_identity") is None:
+        return None
+    try:
+        return fingerprint.as_row(
+            fingerprint.from_row(launch_result["prompt_identity"]))
+    except fingerprint.FingerprintError as e:
+        raise RunnerError(f"this launch returned an unreadable prompt_identity: {e}") from e
+
+
 def _record(result: SeatResult) -> dict:
     """ONE ATTEMPT at one seat, as §14.2's per-seat atomic file wants it.
 
@@ -439,6 +454,13 @@ def _record(result: SeatResult) -> dict:
                          "duration_sec", "attempts")},
             "result_text": answer, "result_text_chars": answer_chars,
         },
+        # §11's four values, ALWAYS PRESENT AS A KEY. `None` is a launch that returned no
+        # fingerprint — §8's `proven_read`/`partial` rule: a measurement never taken is
+        # recorded as absent, never omitted, because an omitted key and an unmeasured one read
+        # the same to `--collect` and only one of them is a run that lost a measurement.
+        # A MALFORMED one raises: "nobody measured" and "somebody wrote nonsense" are
+        # different records and only one is safe to act on.
+        "prompt_identity": _prompt_identity(result.launch_result),
     }
 
 
@@ -492,10 +514,39 @@ def _prior_attempts(run_dir: Path, name: str, attempt: int) -> list:
     return priors
 
 
+def _payload(name: str, attempts: list) -> dict:
+    """The ONE shape a seat record is written in, proved to decode before it is published.
+
+    BOTH WRITERS COME THROUGH HERE, and that is the whole point. `runstate.write_seat` enforces
+    no schema by design — §14.2 assigns the record's fields to the orchestrator, so that module
+    refuses to be the authority on a record it does not own — and `seatrecord` is the reader's
+    schema, so running it at the writer fails a dropped or renamed field where the producer is
+    still present rather than hours later on a resume.
+
+    A check installed at `_write` alone would validate nothing that matters. `_revise` is the
+    writer on `reclassify_seat`'s success path and on BOTH of `_verify_a_seat`'s refusal paths,
+    which is every post-verification record — including the one carrying §6.1's recovered gate
+    measurement and the verifier's setup. A validation added at one writer while a second
+    writer exists is not a validation.
+
+    `SeatRecordError` is WRAPPED. `_drive_a_seat` catches `RunnerError` alone and this module's
+    callers are documented as facing that one class for a record it will not act on; a new
+    exception type escaping `run_seat` and `_verify_a_seat` would pass straight through the
+    containment both of them rely on, ending a run over one seat's damaged record.
+    """
+    payload = {"name": name, "attempts": attempts}
+    try:
+        seatrecord.decode(payload)
+    except seatrecord.SeatRecordError as e:
+        raise RunnerError(
+            f"seat {name!r}: this module built a record its own reader refuses: {e}") from e
+    return payload
+
+
 def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
     """Publish the seat's record: everything it had already recorded, plus this attempt."""
     runstate.write_seat(run_dir, result.name,
-                        {"name": result.name, "attempts": [*priors, _record(result)]})
+                        _payload(result.name, [*priors, _record(result)]))
 
 
 def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) -> SeatResult:
@@ -517,8 +568,10 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
     put a verifier in front of a candidate diffed from a different tree, with nothing
     downstream able to see it.
 
-    Raises `RunnerError` for an argument this function will not act on, and for a seat that
-    cannot be classified. `fleet.SeatError`/`GitError` (the clone), `harvest.HarvestError`
+    Raises `RunnerError` for an argument this function will not act on, for a seat that
+    cannot be classified, and — through `_payload` — for a record this module's own reader
+    refuses, which is the one new way this can refuse and is still that same class.
+    `fleet.SeatError`/`GitError` (the clone), `harvest.HarvestError`
     (an inventory over quota), `verify.VerifyError` (a setup step that would not start or
     timed out) and whatever the injected `launch` raises all propagate UNWRAPPED — each
     already names the tree and the argument at fault. Past the clone the seat survives every
@@ -701,10 +754,8 @@ def _revise(run_dir: Path, out: SeatResult) -> SeatResult:
             f"seat {out.name!r} has no recorded attempt {out.attempt} to revise at "
             f"{storage.seat_state_path(run_dir, out.name)}; a revision written where no "
             "seat wrote would be a verdict with no run under it")
-    runstate.write_seat(run_dir, out.name, {
-        "name": out.name,
-        "attempts": [_record(out) if x.get("attempt") == out.attempt else x
-                     for x in attempts]})
+    runstate.write_seat(run_dir, out.name, _payload(out.name, [
+        _record(out) if x.get("attempt") == out.attempt else x for x in attempts]))
     return out
 
 
@@ -836,7 +887,7 @@ def _with_setup_caveat(reason: str, setup_run) -> str:
 
 
 def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
-                     calibration) -> tuple:
+                     calibration, on_measurement=None) -> tuple:
     """Run §6's five steps over one harvested candidate, in the order §6 gives them.
 
     Returns `classify`'s `(outcome, reason)`, the `Verifier` the verdict was taken in, and
@@ -853,18 +904,22 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     a record. A `Run` that survives in the function and not in the value is the same class of
     defect as a rationale that survives in memory and not on disk.
 
-    ON THE RETURN PATH ONLY, AND THAT IS STILL OPEN. Everything above is measured in order —
-    `build_verifier` fills §6.1's `gate_delta`/`gate_surface`, then `run_setup` runs — and a
-    refusal from any step AFTER them leaves both as locals this function drops on its way out.
-    Measured through the loop: a candidate that repoints `core.hooksPath` through its own
-    setup script is refused at `assert_hooks_pinned` below, and the seat's record comes back
-    `gate_delta: null`, `gate_surface: null`, `verifier_setup: null` for a verifier clone that
-    was built, whose gate surface WAS measured over two trees, and whose setup ran and exited
-    0 — which is the very fact explaining how the hooks moved. `_verify_a_seat` cannot close
-    it from the outside: the values never leave this frame, so closing it means this function
-    handing them back on the refusal path too, which is a change to what it raises and not a
-    narrower `except` at the call site. Left open deliberately and named here rather than
-    implied closed by the paragraph above.
+    ON THE RETURN PATH, AND NOW ALSO ON THE REFUSAL PATH. Everything here is measured in order
+    — `build_verifier` fills §6.1's `gate_delta`/`gate_surface`, then `run_setup` runs — and a
+    refusal from any step AFTER them used to leave both as locals this function dropped on its
+    way out. Measured through the loop: a candidate that repoints `core.hooksPath` through its
+    own setup script is refused at `assert_hooks_pinned`, and the seat's record came back
+    `gate_delta: null, gate_surface: null, verifier_setup: null` for a verifier clone that was
+    built, whose gate surface WAS measured over two trees, and whose setup ran and exited 0 —
+    the very fact explaining how the hooks moved.
+
+    `on_measurement` closes it WITHOUT CHANGING WHAT THIS FUNCTION RAISES. It is called
+    `on_measurement(candidate_or_None, setup_result_or_None)` the instant each measurement
+    exists, before any step that can refuse it — `journal.intent`'s write-ahead discipline,
+    applied to a value rather than to an operation. A narrower `except` at the call site cannot
+    do this: the values never leave this frame, and a handler reaching back for `v.candidate`
+    cannot distinguish "§8 refused this status" from "this candidate is not this seat's". The
+    admission rule stays in `_measured`, where it already is.
 
     §6'S FIVE STEPS, AND WHERE EACH ONE IS:
 
@@ -998,11 +1053,23 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
 
     v = verify.build_verifier(manifest.repo_path, baseline, candidate, dest,
                               identity=identity, contract=contract, command=command)
+    # THE FIRST MEASUREMENT EXISTS NOW. §6.1's gate_delta/gate_surface are on `v.candidate`
+    # from this line onward, and everything below can refuse. Handing it over here is
+    # `journal.intent`'s write-ahead discipline applied to a value.
+    if on_measurement is not None:
+        on_measurement(v.candidate, None)
 
     setup = verify.Command(steps=manifest.setup)
     if setup.steps:
         setup_result = verify.run_setup(v, setup, env=child_env)
+        # BEFORE `assert_hooks_pinned`, which is the step the adversarial rig is refused at.
+        if on_measurement is not None:
+            on_measurement(v.candidate, setup_result)
     else:
+        # NOTHING IS HANDED OVER IN THIS BRANCH, and the asymmetry is deliberate: there is no
+        # `SetupResult` to hand over, and the call above has already delivered `v.candidate`,
+        # so a second call here would repeat one value and invent nothing. `validate_materialized`
+        # can refuse, and the candidate it would drop is already in the sink's hands.
         verify.validate_materialized(v)
         setup_result = None
 
@@ -1366,9 +1433,17 @@ def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, cali
     discarded whole when §8 then refused to carry it into a `Status`. Everything §6 measured
     is therefore bound through `_measured` BEFORE the call that can refuse it, which is the
     only ordering under which the handler holds a value rather than reaching back into a
-    scope the exception left. `_measured` raising lands in the FIRST handler and carries
-    nothing, deliberately: a candidate that is not this seat's is a measurement that must not
-    reach this seat's record at all, which is the whole of what that check is for.
+    scope the exception left. `_measured` raising in the `try` lands in the FIRST handler,
+    which is what contains it: a candidate that is not this seat's is a measurement that must
+    not reach this seat's record at all, and that refusal must not cost the fleet.
+
+    THE FIRST HANDLER NOW CARRIES WHAT §6 HAD ALREADY MEASURED, through `on_measurement`. A
+    refusal from `assert_hooks_pinned` or from the gate arrives after `build_verifier` filled
+    §6.1's surface and after the verifier's own setup ran, and both used to die as locals in
+    `verify_candidate`. The sink hands each value over the instant it exists; the handler puts
+    what it caught through `_measured` — the same admission rule, not a second one — and
+    CONTAINS that call, because there is no handler left above it and an escape would end the
+    fleet on the refusal path.
 
     WHAT THE CONTAINED SEAT KEEPS IS ITS PRE-VERIFICATION VERDICT, never a promotion: the
     record still reads `verify: "not-run"` and `status.forge` is untouched, because §8 is the
@@ -1376,27 +1451,65 @@ def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, cali
     says which half would not answer — without it the seat would read exactly like one the
     loop had not reached yet, a verifier clone bought and spent, described on disk as work not
     yet begun. A record where `verification` is set and `status.verify` is `"not-run"` is the
-    §8 refusal exactly: the gate answered and the classification did not move.
+    §8 refusal exactly: the gate answered and the classification did not move. And when the
+    recovered measurement is REFUSED, `verification_refused` names that too rather than
+    reading as a seat nothing was measured for — a verdict never reads cleaner than its
+    evidence.
+
+    Raises `RunnerError` for a record this module's own reader refuses (`_payload`), which
+    `_revise` and `reclassify_seat` can both reach. That is not contained here: a seat record
+    that cannot be written is not a refusal this loop can absorb, because absorbing it means
+    writing it somewhere.
     """
     if result.status.forge == "failed":
         return result
     op = _op(manifest, result.name)
     log.record(journal.intent(_VERIFICATION), operation_id=op, seat=result.name)
+    taken = {"candidate": None, "setup": None}
+
+    def _sink(candidate, setup_result):
+        # Last write wins by design: the second call carries the same candidate plus the
+        # setup result, so a refusal between the two leaves the first call's value in place
+        # rather than nothing.
+        if candidate is not None:
+            taken["candidate"] = candidate
+        if setup_result is not None:
+            taken["setup"] = setup_result
+
     try:
         outcome, reason, v, setup_result = verify_candidate(
             manifest, run_dir, base, result.candidate, name=result.name, identity=identity,
-            calibration=calibration)
+            calibration=calibration, on_measurement=_sink)
         measured = replace(_measured(result, v.candidate, setup_result),
                            verification=(outcome, reason))
     except (RunnerError, verify.VerifyError) as e:
         # Recorded rather than re-raised, and RECORDED TWICE: in the journal, because this
         # loop watched the operation end and an open intent would report `outcome_unknown`
         # for an outcome it knows; and on the seat, because the journal is the run's log and
-        # the seat file is what §14.2 hands `--collect`. Nothing extra is carried: §6 reached
-        # no verdict here, so there is none to keep.
+        # the seat file is what §14.2 hands `--collect`.
         log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
                    refused=str(e))
-        return _revise(run_dir, replace(result, verification_refused=str(e)))
+        # WHAT WAS MEASURED SURVIVES THE REFUSAL, and it goes through `_measured` rather than
+        # around it: a candidate that is not this seat's is a measurement that must not reach
+        # this seat's record at all, which is the whole of what that check is for.
+        #
+        # CONTAINED, because this call is INSIDE the handler and nothing above it catches. In
+        # the `try` above, `_measured` raising lands in this very handler — that is what
+        # contains it, and it is why the docstring can call the raise deliberate. Here there is
+        # no handler left: an uncaught RunnerError would leave `_verify_a_seat`, leave
+        # `runner.run`, and end the fleet over ONE seat's refused verification with every
+        # provider already paid and the seats behind this one never verified — the Critical
+        # this half's docstring records as closed, reopened on the refusal path.
+        #
+        # The seat then keeps its PRE-VERIFICATION verdict and the refusal NAMES the dropped
+        # measurement. Recording only `e` would read as a seat whose verification simply
+        # refused, which is cleaner than the evidence: something was measured and this run
+        # declined to file it.
+        try:
+            kept, refused = _measured(result, taken["candidate"], taken["setup"]), str(e)
+        except RunnerError as bad:
+            kept, refused = result, f"{e}; a measurement was taken and not admitted: {bad}"
+        return _revise(run_dir, replace(kept, verification_refused=refused))
     try:
         out = reclassify_seat(run_dir, result, outcome, reason,
                               candidate=v.candidate, verifier_setup=setup_result)

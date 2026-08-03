@@ -2018,3 +2018,215 @@ def test_a_refused_retry_does_not_erase_the_verdict_the_attempt_before_it_reache
     assert (result.attempt, result.status.forge) == (1, "failed")
     assert _attempt(run, "claude", 2)["status"] is None, \
         "the premise: attempt 2 reached no verdict, and its record says so"
+
+
+def test_the_record_always_carries_the_prompt_identity_key(tmp_path):
+    """§8's proven_read/partial rule: a launch that returned no fingerprint must not produce
+    a record that OMITS the key. An omitted key and an unmeasured one read the same to
+    `--collect`, and only one of them is a run that lost a measurement."""
+    repo, run, b, m = _open(tmp_path)
+    runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                    launch=_fake(_edit))
+    entry = _attempt(run, "claude", 1)
+    assert "prompt_identity" in entry and entry["prompt_identity"] is None
+
+
+def test_a_launch_that_returned_a_fingerprint_has_it_recorded(tmp_path):
+    """The other half, and the one `_fake` cannot reach: every launch in this suite returns
+    no fingerprint, so a `_prompt_identity` that answered `None` unconditionally would keep
+    every case above green while §11's whole measurement never reached disk."""
+    from forge import fingerprint  # noqa: PLC0415
+
+    row = fingerprint.as_row(fingerprint.PromptIdentity(
+        "a" * 64, "b" * 64, None, "/usr/bin/claude", "2.1.220", "opus-5", None, None))
+
+    def launch(*, name, seat_path, token, env):
+        _edit(Path(seat_path))
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok",
+                "exit_code": 0, "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"{ANSWER}\n{token}", "prompt_identity": row}
+
+    repo, run, b, m = _open(tmp_path)
+    runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=launch)
+    assert _attempt(run, "claude", 1)["prompt_identity"] == row
+
+
+def test_a_malformed_prompt_identity_is_refused_at_the_writer(tmp_path):
+    """'Nobody measured' and 'somebody wrote nonsense' are different records, and only one
+    of them is safe to act on."""
+    def launch(*, name, seat_path, token, env):
+        _edit(Path(seat_path))
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok",
+                "exit_code": 0, "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"{ANSWER}\n{token}",
+                "prompt_identity": {"prompt_sha256": "a" * 64}}
+
+    repo, run, b, m = _open(tmp_path)
+    with pytest.raises(runner.RunnerError, match="prompt_identity"):
+        runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=launch)
+
+
+def test_a_measurement_taken_before_a_refusal_still_reaches_the_record(tmp_path):
+    """THE THIRD INSTANCE, closed. `build_verifier` fills §6.1's gate surface and `run_setup`
+    returns a SetupResult; a later refusal dropped both as locals, so a verifier clone that
+    was built, whose gate surface WAS measured over two trees, and whose setup ran and
+    exited 0 came back `gate_delta: null, gate_surface: null, verifier_setup: null`.
+
+    THE RIG IS THE ADVERSARIAL ONE, not a lookalike. It is the same candidate
+    `test_a_candidate_that_repoints_the_hooks_path_through_setup_does_not_reach_the_gate`
+    uses — a `./setup.sh` that repoints `core.hooksPath` — driven through `runner.run` so
+    `_verify_a_seat` runs and the record is written. A fixture built only of realistic-looking
+    answers cannot reach the guard that exists for unrealistic ones.
+    """
+    def seed(repo):
+        write(repo, "gate.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        write(repo, "setup.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        commit_all(repo, "gate and setup")
+
+    setup = (verify.Step(argv=("./setup.sh",)),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=seed,
+                            seats=1, attempts=1)
+    _confirmed(run)
+
+    def rig(name, n, p):
+        write(p, "setup.sh", "#!/bin/sh\ngit config --local core.hooksPath .githooks\n"
+                             "exit 0\n").chmod(0o755)
+        return True
+
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(rig))
+    entry = _attempt(run, "claude", 1)
+    assert entry["verification_refused"] and "core.hooksPath" in entry["verification_refused"]
+    assert entry["candidate"]["gate_surface"] is not None, \
+        "§6.1's surface was measured over two trees in a clone that was built and paid for"
+    assert entry["candidate"]["gate_delta"] is not None
+    assert entry["verifier_setup"] is not None and \
+        entry["verifier_setup"]["exit_code"] == 0, \
+        "the verifier's setup ran and exited 0 — the very fact explaining how the hooks moved"
+
+
+def test_the_revision_writer_validates_its_payload_too(tmp_path, monkeypatch):
+    """THE SECOND WRITER. `_write` is not the only one: `_revise` calls `runstate.write_seat`
+    directly, and it is the writer on `reclassify_seat`'s success path and BOTH of
+    `_verify_a_seat`'s refusal paths — including the one the test above drives. A schema check
+    installed only at `_write` would leave every verification-phase record, this task's whole
+    deliverable, written unvalidated.
+
+    Driven through the same hooks rig so it is the real path and not a lookalike: a key is
+    dropped from `_record`'s output, and the run must refuse at the writer rather than publish."""
+    def seed(repo):
+        write(repo, "gate.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        write(repo, "setup.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        commit_all(repo, "gate and setup")
+
+    setup = (verify.Step(argv=("./setup.sh",)),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=seed, seats=1, attempts=1)
+    _confirmed(run)
+
+    real_record = runner._record
+    state = {"n": 0}
+
+    def lossy(result):
+        # Whole on the way in (so `run_seat`'s own write succeeds and there is an attempt to
+        # revise), damaged on the revision — which is the writer this test is about.
+        out = real_record(result)
+        state["n"] += 1
+        if state["n"] > 1:
+            out.pop("verifier_setup")
+        return out
+    monkeypatch.setattr(runner, "_record", lossy)
+
+    def rig(name, n, p):
+        write(p, "setup.sh", "#!/bin/sh\ngit config --local core.hooksPath .githooks\n"
+                             "exit 0\n").chmod(0o755)
+        return True
+
+    with pytest.raises(runner.RunnerError, match="verifier_setup"):
+        runner.run(run, repo, identity=IDENT, launch=_per_seat(rig))
+
+
+def test_a_recovered_measurement_that_is_not_this_seats_does_not_end_the_fleet(tmp_path,
+                                                                              monkeypatch):
+    """CONTAINMENT, on the path the recovery added. `_measured` refuses a candidate that is not
+    this seat's, and that refusal is right — but it now runs INSIDE the `except`, where nothing
+    catches it. Uncontained, ONE seat's refused verification ends the whole run with every
+    provider already paid, which is the Critical `_verify_a_seat`'s docstring records as closed.
+
+    The seat must keep its pre-verification verdict, and the record must SAY the measurement
+    was dropped: a refusal that read as if nothing had been measured would be cleaner than its
+    evidence."""
+    def seed(repo):
+        write(repo, "gate.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        write(repo, "setup.sh", "#!/bin/sh\nexit 0\n").chmod(0o755)
+        commit_all(repo, "gate and setup")
+
+    setup = (verify.Step(argv=("./setup.sh",)),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=seed, seats=1, attempts=1)
+    _confirmed(run)
+
+    def refusing(result, candidate, verifier_setup):
+        raise runner.RunnerError("that candidate is not this seat's")
+    monkeypatch.setattr(runner, "_measured", refusing)
+
+    def rig(name, n, p):
+        write(p, "setup.sh", "#!/bin/sh\ngit config --local core.hooksPath .githooks\n"
+                             "exit 0\n").chmod(0o755)
+        return True
+
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(rig))      # must not raise
+    entry = _attempt(run, "claude", 1)
+    refused = entry["verification_refused"]
+    assert refused and "core.hooksPath" in refused
+    assert "not this seat" in refused, \
+        "the dropped measurement is named, not silently absent"
+    assert entry["candidate"]["gate_surface"] is None and \
+        entry["verifier_setup"] is None, \
+        "nothing unadmitted reached the record; the seat kept its pre-verification verdict"
+
+
+def test_the_first_writer_validates_its_payload_too(tmp_path, monkeypatch):
+    """THE OTHER WRITER. A schema check installed only at `_revise` would be the mirror of
+    the defect that put it there — `_write` publishes every pre-verification record, which is
+    every record a run that never reaches §6 has at all.
+
+    MEASURED: with `_payload` removed from `_write` alone, the whole runner suite stays green.
+    A key dropped from `_record` has to be refused where the producer is still standing, not
+    met by a resume hours later.
+    """
+    real_record = runner._record
+
+    def lossy(result):
+        out = real_record(result)
+        out.pop("prompt_identity")
+        return out
+    monkeypatch.setattr(runner, "_record", lossy)
+
+    repo, run, b, m = _open(tmp_path)
+    with pytest.raises(runner.RunnerError, match="prompt_identity"):
+        runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=_fake(_edit))
+
+
+def test_the_gate_surface_survives_a_refusal_taken_before_the_verifiers_setup_finished(
+        tmp_path):
+    """THE FIRST HAND-OVER, which the hooks rig cannot reach. That rig is refused AFTER the
+    verifier's setup ran, so the SECOND hand-over covers it and the first could be deleted
+    with every other case in this file still green — measured.
+
+    `run_setup` raising `SetupOverlap` is the path where no setup result exists yet, and
+    §6.1's surface — filled by `build_verifier` one statement earlier, over two trees, in a
+    clone the run already paid for — is dropped unless it was handed over the instant it
+    existed. The rig is the one §6's own refusal test uses: a confirmed setup that moves a
+    tracked file only when the candidate is present, so the baseline calibrates clean.
+    """
+    setup = (verify.Step(argv=("sh", "-c", "if [ -f work.py ]; then echo x >> seed.txt; fi")),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"), seats=1)
+
+    runner.run(run, repo, identity=IDENT,
+               launch=_per_seat(lambda n_, i_, p: bool(write(p, "work.py", "w\n"))))
+    row = _attempt(run, "claude", 1)
+    assert "seed.txt" in row["verification_refused"], "the premise: §6 refused at run_setup"
+    assert row["candidate"]["gate_surface"] is not None and \
+        row["candidate"]["gate_delta"] is not None, \
+        "§6.1's measurement existed before the refusal and reached the record"
+    assert row["verifier_setup"] is None, \
+        "and nothing is invented — that setup never produced a result to record"
