@@ -896,8 +896,14 @@ def test_every_gap_the_gate_shows_is_one_the_confirmation_can_cite(tmp_path):
     shown = gate.must_show(r, q, verify.Command.parse([["true"]]))
     named = {line.split(":")[0][len("gap "):] for line in shown if line.startswith("gap ")}
     assert named <= set(gate.ACCEPTABLE_GAPS), named
-    assert {gate.REMOTES_AND_CONFIGURATION, gate.GC_UNBUILT,
+    assert {gate.REMOTES_AND_CONFIGURATION,
             gate.GENERATOR_CONTRACT_EMPTY} <= named, named
+    # THE RETIRED ONE, ASSERTED ABSENT FROM BOTH. `--gc` is built, so `must_show` raises no
+    # such line and a `Confirmation` may no longer cite it: an accepted gap has to resolve to
+    # something the operator was shown. The constant stays defined for the runs that recorded
+    # it before that commit.
+    assert gate.GC_UNBUILT not in named, named
+    assert gate.GC_UNBUILT not in gate.ACCEPTABLE_GAPS
     for gap in named:
         assert gate.confirm(r, q, _answers(accepted_gaps=[gap])).accepted_gaps == (gap,)
 
@@ -1430,7 +1436,7 @@ def test_the_gate_records_what_the_operator_accepted(tmp_path, monkeypatch):
         gate.confirm(r, q, _answers(accepted_gaps=["the-disk-is-fine"]))
     with pytest.raises(gate.GateError):
         # A string iterates into its characters, so this would record acceptance of letters.
-        gate.confirm(r, q, _answers(accepted_gaps=gate.GC_UNBUILT))
+        gate.confirm(r, q, _answers(accepted_gaps=gate.REMOTES_AND_CONFIGURATION))
 
 
 def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
@@ -1452,7 +1458,8 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
                     accepted_gaps=[gate.GATE_SURFACE_EMPTY],
                     author=("Ada Lovelace", "ada@example.invalid"))),
         ("r2", dict(on_calibration_failure="abort", strategy="base-and-port",
-                    accepted_gaps=[gate.GC_UNBUILT, gate.REMOTES_AND_CONFIGURATION],
+                    accepted_gaps=[gate.GENERATOR_CONTRACT_EMPTY,
+                                   gate.REMOTES_AND_CONFIGURATION],
                     author=("Grace Hopper", "grace@example.invalid"))),
     ]
     for run_id, sheet in sheets:
@@ -1512,7 +1519,11 @@ _UNCONFIRMABLE = [
     {"verify": ("make verify",)},
     {"setup": [verify.Step(argv=("a",)), ["b"]]},
     {"accepted_gaps": ("the-disk-is-fine",)},
-    {"accepted_gaps": gate.GC_UNBUILT},
+    {"accepted_gaps": gate.REMOTES_AND_CONFIGURATION},
+    # THE RETIRED ID, as a SEQUENCE, which is the row that reads `ACCEPTABLE_GAPS` rather than
+    # the bare-string guard above it: `--gc` is built, `must_show` raises no such line, and an
+    # acceptance of it resolves to nothing the operator was ever shown.
+    {"accepted_gaps": (gate.GC_UNBUILT,)},
     # ZERO characters, and the row that makes the bare-string guard load-bearing rather than
     # cosmetic. The last wave called dropping that guard an equivalent mutant, on the ground
     # that every gap id is multi-character so any string decomposes into single characters the
@@ -1561,11 +1572,11 @@ def test_the_record_normalizes_what_it_takes_so_a_route_in_cannot_decide_the_sha
     the manifest expects a step."""
     c = _confirmation(setup=[["make", "setup"]], verify=[["make", "verify"]],
                       author=("  Ada Lovelace  ", " ada@example.invalid "),
-                      accepted_gaps=[gate.GC_UNBUILT])
+                      accepted_gaps=[gate.REMOTES_AND_CONFIGURATION])
     assert c.verify == (verify.Step(argv=("make", "verify")),)
     assert c.setup == (verify.Step(argv=("make", "setup")),)
     assert c.author == AUTHOR
-    assert c.accepted_gaps == (gate.GC_UNBUILT,)
+    assert c.accepted_gaps == (gate.REMOTES_AND_CONFIGURATION,)
     assert dataclasses.replace(c, seats=5).seats == 5, "and replace() re-enters the same door"
     with pytest.raises(gate.GateError):
         dataclasses.replace(c, seats=True)
@@ -1706,12 +1717,14 @@ def test_an_answer_key_this_gate_does_not_ask_is_refused(tmp_path):
     """
     r, q = _report_and_quote(tmp_path)
     with pytest.raises(gate.GateError, match="does not ask"):
-        gate.confirm(r, q, _answers(acccepted_gaps=[gate.GC_UNBUILT]))
+        gate.confirm(r, q, _answers(acccepted_gaps=[gate.REMOTES_AND_CONFIGURATION]))
     with pytest.raises(gate.GateError, match="unanswered"):
         gate.confirm(r, q, {**{k: v for k, v in _answers().items() if k != "strategy"},
                             "startegy": "fusion"})
-    assert gate.confirm(r, q, _answers(accepted_gaps=[gate.GC_UNBUILT])).accepted_gaps \
-        == (gate.GC_UNBUILT,), "the discrimination check: the correctly spelled key is taken"
+    assert gate.confirm(
+        r, q, _answers(accepted_gaps=[gate.REMOTES_AND_CONFIGURATION])).accepted_gaps \
+        == (gate.REMOTES_AND_CONFIGURATION,), \
+        "the discrimination check: the correctly spelled key is taken"
 
 
 def test_the_manifest_records_the_selection_the_run_was_opened_over(tmp_path, monkeypatch):

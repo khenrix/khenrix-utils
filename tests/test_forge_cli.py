@@ -262,8 +262,8 @@ def _collect_text(tmp_path, run_dir, *argv) -> str:
 # --------------------------------------------------------------------------- the parser
 
 def test_the_parser_offers_the_four_verbs_the_spec_names(capsys):
-    """--start / --collect / --gc / --no-ultra. `--gc` is built in the next task and its
-    absence here would be found by an operator rather than by this suite."""
+    """--start / --collect / --gc / --no-ultra. An absence here would be found by an operator
+    rather than by this suite."""
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     out = capsys.readouterr().out
@@ -271,12 +271,58 @@ def test_the_parser_offers_the_four_verbs_the_spec_names(capsys):
         assert flag in out, flag
 
 
-def test_the_advertised_gc_says_what_state_it_is_in_rather_than_raising(capsys):
-    """A flag `gate.py` calls mandatory at the confirmation gate, that raises AttributeError
-    when the operator takes that advice, is worse than one that says it is not built."""
-    rc = cli.main(["--gc", "abc123"])
+def test_gc_refuses_a_run_it_cannot_identify_as_a_sentence_rather_than_a_traceback(
+        tmp_path, capsys, monkeypatch):
+    """§15's refusals are `gc.GcError`, and `main`'s narrow except tuple is what turns one into
+    the line an operator reads. A class missing from that tuple leaves a traceback where a
+    sentence belongs — which is the state this flag was in when it was advertised and unbuilt.
+
+    THE STATE DIRECTORY IS ASSERTED because `storage.run_root` CREATES: a `--gc` on an id
+    nothing ever opened must not leave the directory the next `--gc all` reports as a run.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = _a_clean_repo(tmp_path)
+    rc = cli.main(["--gc", "abc123", "--repo", str(repo)])
     assert rc != 0
-    assert "not built" in capsys.readouterr().out
+    assert "no manifest" in capsys.readouterr().out
+    assert storage.run_dirs(repo) == ()
+
+
+def test_gc_all_over_a_repository_with_no_runs_says_so(tmp_path, capsys, monkeypatch):
+    """"No runs" and "this walk could not look" are different answers; `gc.usage` raises for
+    the second, so the reassurance below is only ever printed over a state directory that was
+    read."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = _a_clean_repo(tmp_path)
+    assert cli.main(["--gc", "all", "--repo", str(repo)]) == 0
+    assert "no forge runs are on disk" in capsys.readouterr().out
+
+
+def test_gc_all_prints_three_marks_because_there_are_three_licence_states(tmp_path, capsys,
+                                                                          monkeypatch):
+    """`handed_over is None` is a record this engine could not read. Printing it as "NOT handed
+    over" tells an operator that a delivery they made is unfinished work, which is the one
+    sentence that gets a deliverable deleted — and the total says in words that it excludes
+    every run whose size is unknown."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = _a_clean_repo(tmp_path)
+    for run_id, record in (("aaaaaa", None), ("bbbbbb", "handed"), ("cccccc", b"{ not json")):
+        run_dir = storage.run_root(repo, run_id)
+        storage.manifest_path(run_dir).write_bytes(b"{}")
+        if record == "handed":
+            handover.write_handover(run_dir, handover.Handover(
+                run_id=run_id, branch=handover.branch(run_id, handover.SYNTHESIS),
+                kind=handover.PATCH_ONLY, handover_target=None, accepted=True,
+                out_of_band=(), baseline_owned=(), b1_files=(), why="took the patch"))
+        elif record is not None:
+            storage.handover_path(run_dir).write_bytes(record)
+
+    assert cli.main(["--gc", "all", "--repo", str(repo)]) == 0
+    out = capsys.readouterr().out
+    assert "aaaaaa" in out and "NOT handed over" in out
+    assert re.search(r"bbbbbb.*  handed over", out), out
+    assert re.search(r"cccccc.*UNREADABLE", out), out
+    assert "total:" in out
 
 
 # --------------------------------------------------------------------------- refusals

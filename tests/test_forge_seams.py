@@ -1518,10 +1518,18 @@ _DIFF_DRIVER_SAFE = frozenset({
     "config", "check-ref-format", "check-attr", "ls-files", "status",
     "add", "write-tree", "commit-tree", "update-ref", "checkout", "clone", "remote",
     "apply",              # both forms: `--numstat -z` and `--index --binary`
-    # ONE FORM EACH, which is all that is measured and all that is called. §15's `--gc` adds
-    # `worktree list --porcelain` and `worktree remove`; each is its own argv and re-measuring
-    # is what clears it, exactly as `apply` came to decide by flag and `remote` by first word.
-    "worktree",           # `worktree add -b <branch> <dest> <at>` — see above
+    # FOUR FORMS OF `worktree`, EACH MEASURED, because each is its own argv and re-measuring
+    # is what clears one — exactly as `apply` came to decide by flag and `remote` by first
+    # word. §15's `--gc` added the last three, measured on git 2.53.0 in the same rig as the
+    # paragraph above (all three diff-driver keys planted, `.gitattributes` selecting the
+    # driver, a `core.fsmonitor` script and the full hook set): `worktree list --porcelain`
+    # and `worktree unlock <path>` fired NOTHING AT ALL — no driver, no monitor, no hook —
+    # and `worktree remove <path>` fired the monitor and `post-index-change` and no driver.
+    # The two that fire are why the verb stays off `_INDEX_SAFE` and `_HOOK_SAFE` and every
+    # `worktree` call in the package carries both presets, which costs the two read-only
+    # forms a flag pair they do not need. That is the fail-closed direction.
+    "worktree",           # `add -b <branch> <dest> <at>`, `list --porcelain`,
+                          # `unlock <path>`, `remove <path>`
     "fetch",              # `fetch --no-tags --no-write-fetch-head <path> <refspec>`
 })
 
@@ -2160,4 +2168,35 @@ def test_the_task_bundle_a_run_records_and_the_bytes_it_materializes_have_one_na
     assert "storage.task_source_path(run_dir)" in body, body
     holders = sorted(p.name for p in forge_dir.glob("*.py")
                      if 'Path(run_dir) / "task"' in p.read_text(encoding="utf-8"))
+    assert holders == ["storage.py"], holders
+
+
+def test_the_run_directory_naming_scheme_has_one_home():
+    """SEAM: `gc` walks the directories `storage` writes. A second copy of the formula in
+    `gc.py` was measured byte-identical to `storage.run_root`'s — which is exactly when a
+    duplicate is most dangerous, because nothing fails until one of them moves and then
+    `--gc all` reports an empty disk over a full one.
+
+    THE ARITHMETIC IS ASSERTED TO BE SHARED, not just absent from `gc.py`: `run_root` writes
+    the path, `run_dirs` enumerates it and `gc`'s ownership check resolves against it, so all
+    three read the same two helpers rather than three expressions that agree today.
+    """
+    forge_dir = ROOT / "shared" / "lib" / "forge"
+    gc_src = (forge_dir / "gc.py").read_text(encoding="utf-8")
+    assert "sha256" not in gc_src, "gc re-derives the run-directory digest instead of asking"
+    assert "XDG_STATE_HOME" not in gc_src, "gc re-derives the state root instead of asking"
+    assert "storage.run_dirs(" in gc_src and "storage.forge_root(" in gc_src
+
+    storage_src = (forge_dir / "storage.py").read_text(encoding="utf-8")
+    body = storage_src[storage_src.index("def run_root("):]
+    body = body[:body.index("\ndef ")]
+    assert "run_digest(" in body and "forge_root(" in body, body
+    assert "hashlib" not in body, "run_root spells the digest a second time"
+    # ONE HOLDER OF THE STATE ROOT, across the package: the walk and the writer cannot drift
+    # if neither of them owns the string. `"khenrix-forge"` is NOT asserted the same way and
+    # the reason is that it is not one name — `review._FORGE_SUBDIR` and
+    # `taskbundle` spell it as a directory under the GIT DIR, which is a different place from
+    # the state root and would be a false positive here.
+    holders = sorted(p.name for p in forge_dir.glob("*.py")
+                     if '"XDG_STATE_HOME"' in p.read_text(encoding="utf-8"))
     assert holders == ["storage.py"], holders

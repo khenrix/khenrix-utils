@@ -198,6 +198,33 @@ def new_run_id() -> str:
     return secrets.token_hex(3)   # 6 hex chars; run_root() rejects a collision, see below
 
 
+def state_root() -> Path:
+    """Where this machine keeps state that is not a cache — `XDG_STATE_HOME` or its default.
+
+    An EMPTY value falls back, which is what `or` buys over `os.environ.get(..., default)`:
+    `XDG_STATE_HOME=` set to nothing names the filesystem root once joined, and every run
+    directory on the machine would be created at `/khenrix-forge`.
+    """
+    return Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
+
+
+def forge_root() -> Path:
+    """The one directory this engine writes runs into. Named here so `run_root`, `run_dirs`
+    and `gc`'s ownership check cannot come to disagree about which directory that is."""
+    return state_root() / "khenrix-forge"
+
+
+def run_digest(repo_path) -> str:
+    """The twelve hex characters that separate one repository's runs from another's.
+
+    ONE SPELLING, READ BY THE WRITER AND BY THE WALK. `run_root` builds a path with it and
+    `run_dirs` enumerates with it, and if those were two expressions the failure mode would be
+    silent in the worst direction: the walk would find nothing, `--gc all` would report "no
+    forge runs are on disk for this repository", and every run would stay on disk unnamed.
+    """
+    return hashlib.sha256(str(Path(repo_path).resolve()).encode()).hexdigest()[:12]
+
+
 def run_root(repo_path, run_id: str, must_be_new: bool = True) -> Path:
     """Create (or reattach to) the directory holding this run's work.
 
@@ -205,13 +232,42 @@ def run_root(repo_path, run_id: str, must_be_new: bool = True) -> Path:
     same run id for the same repo raises FileExistsError instead of sharing a directory
     with the first. Reattaching to a run that already exists — collecting results the
     engine wrote earlier — must pass False.
+
+    IT CREATES, WHICH IS WHY BOTH ITS READ-ONLY CALLERS CLEAN UP AFTER IT. `cli.collect` and
+    `gc.collect` are handed a run id off the command line, and a typo would otherwise leave an
+    empty directory that the `--gc` walk then reports as a run. Each removes it with `rmdir`,
+    which only ever succeeds while it is empty.
     """
-    state = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
-    digest = hashlib.sha256(str(Path(repo_path).resolve()).encode()).hexdigest()[:12]
-    p = Path(state) / "khenrix-forge" / f"{digest}-{run_id}"
+    p = forge_root() / f"{run_digest(repo_path)}-{run_id}"
     p.mkdir(mode=0o700, parents=True, exist_ok=not must_be_new)
     p.chmod(0o700)   # mkdir's mode is masked by umask; chmod is not
     return p
+
+
+def run_dirs(repo_path) -> tuple[Path, ...]:
+    """Every run directory this engine has recorded for `repo_path`, sorted by name.
+
+    BY NAME AND NOT BY AGE: a run id is six random hex characters, so this order is stable
+    and says nothing about when a run was opened. A caller that wants oldest-first has to
+    read the manifests.
+
+    `()` FOR AN ABSENT STATE DIRECTORY AND A RAISE FOR AN UNREADABLE ONE. The first is
+    genuinely "no runs have ever been opened here"; the second is this walk not being able to
+    say, and `--gc all` has to be able to tell an operator which one it met — a summed disk
+    report that answered "nothing" for a directory it could not list is the one number they
+    would act on, silently short by every run on the machine.
+    """
+    base = forge_root()
+    try:
+        entries = sorted(base.iterdir())
+    except FileNotFoundError:
+        return ()
+    prefix = run_digest(repo_path) + "-"
+    # `is_dir()` follows a link, so a run directory that is a SYMLINK is enumerated here
+    # rather than skipped. That is deliberate: `gc` refuses to measure or delete through one
+    # and says so per run, which an operator can act on, where dropping it from the listing
+    # would leave a directory on their disk that nothing in this engine ever mentions again.
+    return tuple(p for p in entries if p.name.startswith(prefix) and p.is_dir())
 
 
 # One place that says where a run's files live, so a resume and a `--gc` walk look for the

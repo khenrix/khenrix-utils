@@ -34,6 +34,7 @@ from council import engine
 
 from . import (fingerprint, gate, gitcmd, handover, journal, launch, preflight,
                review as reviewmod, runstate, storage, taskbundle, ultra, verify)
+from . import gc as gcmod
 from . import baseline as baselinemod
 from . import runner as runnermod
 
@@ -158,8 +159,9 @@ def start(args, *, out, make_launcher=None) -> int:
     reclaims them. The one that is neither is `handover.create_synthesis_worktree`: it
     registers a worktree on a new branch and then materializes §20's bundle into it, so a
     bundle that will not materialize leaves a REGISTERED worktree and its branch standing.
-    That call's own refusal names the tree it left; removing it is `--gc`'s verb and `--gc` is
-    not built in this build, so today the operator removes it by hand.
+    That call's own refusal names the tree it left, and reclaiming it is `--gc <run-id>`'s
+    verb — which refuses a run that was never handed over, so an orphan of exactly this shape
+    needs `--gc <run-id> --force`.
     """
     mk = make_launcher or launch.make_launcher
     repo = Path(args.repo).resolve()
@@ -652,16 +654,42 @@ def collect(args, *, out) -> int:
 
 
 def _gc(args, *, out) -> int:
-    """§15's cleanup. Replaced wholesale by `gc.py`'s caller in the next task.
+    """§15's cleanup, or its disk report when the run id is `all`.
 
-    ADVERTISED AND REFUSED, rather than absent from the parser. `--gc` is in `--help` because
-    `gate.py` tells the operator at the confirmation gate that it is mandatory, and a flag
-    that raises `AttributeError` when they take that advice is worse than one that says what
-    state it is in.
+    `all` IS NOT A RUN ID ANY RUN CAN HAVE — `storage.new_run_id` draws six hex characters —
+    so the two readings of this argument cannot collide.
     """
-    return _fail(out, ["--gc is not built in this build; the run directory can be removed by "
-                       "hand, but the synthesis worktree and branch must be removed with "
-                       "`git worktree remove` and `git update-ref -d` first"])
+    repo = Path(args.repo).resolve()
+    if args.gc == "all":
+        rows = gcmod.usage(repo)
+        if not rows:
+            print("no forge runs are on disk for this repository", file=out)
+            return 0
+        total = sum(r.bytes_ for r in rows if r.bytes_ is not None)
+        unknown = [r for r in rows if r.bytes_ is None]
+        for r in rows:
+            size = "unknown" if r.bytes_ is None else f"{r.bytes_ / 1e9:.2f} GB"
+            files = "unknown" if r.files is None else f"{r.files} file(s)"
+            # THREE MARKS, BECAUSE THERE ARE THREE STATES. `handed_over is None` is a record
+            # this engine could not read, and printing it as "NOT handed over" would tell an
+            # operator that a delivery they made is unfinished work — the one sentence that
+            # gets a deliverable deleted.
+            mark = ("handed over" if r.handed_over is True else
+                    "NOT handed over" if r.handed_over is False else
+                    "handover record UNREADABLE")
+            print(f"  {r.run_id}  {size:>12}  {files:>14}  {mark}", file=out)
+            if r.why:
+                print(f"      {r.why}", file=out)
+        print(f"  total: {total / 1e9:.2f} GB over {len(rows) - len(unknown)} run(s)", file=out)
+        if unknown:
+            # THE TOTAL IS NOT THE WHOLE ANSWER AND SAYS SO. A sum that silently omitted an
+            # unwalkable run would be the one number an operator acts on, quietly short.
+            print(f"  {len(unknown)} run(s) could not be measured and are NOT in that total",
+                  file=out)
+        return 0
+    for line in gcmod.collect(repo, args.gc, force=args.force):
+        print(f"  removed: {line}", file=out)
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -713,8 +741,12 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             return start(args, out=out, make_launcher=make_launcher)
         if args.collect:
             return collect(args, out=out)
-        return _gc(args, out=out)          # replaced by gc.py's caller in the next task
+        return _gc(args, out=out)
     except (CliError, preflight.PreflightError, gate.GateError, taskbundle.TaskBundleError,
+            # §15's refusals, which are the whole of what `--gc` says when it will not delete
+            # something. Every one of them is this package declining to remove a path it
+            # cannot describe, so printing the sentence is the right end.
+            gcmod.GcError,
             handover.HandoverError, verify.VerifyError, ultra.UltraError,
             reviewmod.ReviewError, fingerprint.FingerprintError, baselinemod.BaselineError,
             # MEASURED, and the first draft of this tuple was missing all four.

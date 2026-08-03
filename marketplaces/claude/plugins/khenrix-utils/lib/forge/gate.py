@@ -932,10 +932,15 @@ def provider_invoking_verify(repo, command) -> tuple[str, ...]:
 # there. A recorded gap is therefore evidence of what was accepted, never of what was shown.
 GATE_SURFACE_EMPTY = "gate-surface-empty"
 REMOTES_AND_CONFIGURATION = "remotes-and-configuration-unrecorded"
+# RETIRED 2026-08-04, when `--gc` was built: `must_show` no longer raises this gap, so it is
+# no longer a gap a `Confirmation` may cite — `_confirmed_gaps` accepts only ids this engine
+# can raise, and an accepted gap that resolves to no line is a paraphrase again. The CONSTANT
+# stays defined because a run confirmed before that commit carries the string in its journalled
+# `accepted_gaps`, and an operator reading that record back needs the name to still mean
+# something.
 GC_UNBUILT = "gc-unbuilt"
 GENERATOR_CONTRACT_EMPTY = "generator-contract-empty"
-ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GC_UNBUILT,
-                   GENERATOR_CONTRACT_EMPTY)
+ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GENERATOR_CONTRACT_EMPTY)
 
 # §5 step 2's first policy, spelled as the two branches a later phase can act on. §5 writes
 # the second as "continue as degraded"; the value is the branch name, and `degraded` is also
@@ -1220,9 +1225,13 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
         "records five. A remote added or a repository-local config key set while the run is "
         "out leaves no t0 fact behind it, so `drift` cannot speak for either and a handover "
         "will not stop for one",
-        f"gap {GC_UNBUILT}: every interrupted write leaves a staging file nothing collects, "
-        "so `--gc` is mandatory rather than tidy — and it is not built. The peak disk below "
-        "is what accumulates until it is",
+        # NOT A `gap` LINE ANY MORE, AND THAT IS THE WHOLE OF WHAT BUILDING `--gc` CHANGED
+        # HERE. A gap is something the operator is asked to ACCEPT, and there is nothing left
+        # to accept: what remains is a standing instruction, because the peak disk below is
+        # still what accumulates for anyone who never runs it.
+        "every interrupted write leaves a staging file nothing collects, and a finished run "
+        "keeps its seats' clones, so `--gc <run-id>` is mandatory rather than tidy. The peak "
+        "disk below is what accumulates until you run it; `--gc all` reports what is held now",
     ]
     # READ OFF `report.contract`, never asserted. "The contract is empty" is true of every
     # repository `detect_generators` can read today, so a hardcoded sentence and this branch
