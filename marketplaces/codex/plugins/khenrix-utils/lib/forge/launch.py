@@ -73,11 +73,20 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
     WHAT THAT `None` DOES NOT DO, stated because this docstring said the opposite and the
     opposite was measured false: it does NOT make `fingerprint.agreement_label` answer
     `not-comparable`. That label is what a `None` produces only when nothing else DIFFERS, and
-    a real fleet is three CLIs on three models — `cli_version` and `model_requested` differ for
-    every run forge performs, and `agreement_label` returns `differently-prompted` the moment a
-    compared field differs, ahead of any absence. `differently-prompted` is §11's "labelled
-    weaker", which is the correct reading of a real fleet; the unhashed bundle is a measurement
-    this run did not take, and it is not what decides the label.
+    `cli_version` differs across a real fleet — three seats are three different CLIs — so
+    `agreement_label` returns `differently-prompted` the moment that compared field differs,
+    ahead of any absence. `differently-prompted` is §11's "labelled weaker", which is the
+    correct reading of a real fleet; the unhashed bundle is a measurement this run did not
+    take, and it is not what decides the label.
+
+    `model_requested` IS NOT PART OF THAT ARGUMENT, and the correction above used to claim it
+    was — "three CLIs on three models", which measurement does not support. `spec.model` is
+    `build_real_spec`'s reading of `cfg`, and with no `cfg` it is `None` for all three seats
+    (measured: claude, codex and agy each answer `None`). `None` beside `None` is an absence
+    on both sides, never a difference, so it contributes nothing to the label. It differs only
+    when a caller supplies a `cfg` naming a DIFFERENT model per provider — one naming the same
+    model for all three makes all three equal (also measured) — and no production caller
+    supplies one at all yet, per the paragraph above.
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise LaunchError("a seat is launched with a task, and this prompt is empty")

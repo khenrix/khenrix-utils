@@ -277,11 +277,18 @@ def agreement_label(ids) -> str:
     would make every codex/claude pair not-comparable for a reason that is about the envelope
     rather than about the prompt. It is recorded, and a report that wants it says so.
 
-    WHAT A REAL FLEET GETS. The three seats are three CLIs on three models, so `cli_version`
-    and `model_requested` differ for every run forge performs and the fleet-wide label is
-    `differently-prompted` — §11's "labelled weaker", stated rather than discovered. The
-    comparison that can return `identically-prompted` is between attempts or reruns of the SAME
-    seat.
+    WHAT A REAL FLEET GETS. The three seats are three different CLIs, so `cli_version` differs
+    for every run forge performs and the fleet-wide label is `differently-prompted` — §11's
+    "labelled weaker", stated rather than discovered. The comparison that can return
+    `identically-prompted` is between attempts or reruns of the SAME seat.
+
+    `model_requested` DOES NOT CARRY ANY OF THAT WEIGHT, though this paragraph used to say
+    "three CLIs on three models" and rest half the argument on it. `launch.make_launcher` fills
+    it from `spec.model`, which is `build_real_spec`'s reading of a caller-supplied `cfg`;
+    with no `cfg` it is `None` for claude, codex and agy alike (measured), and by the paragraph
+    above an absence on both sides is not a difference. It differs only when a caller names a
+    different model per provider, and today no production caller names one at all. `cli_version`
+    is what actually reaches the verdict.
 
     NOTHING DOWNSTREAM MAY TREAT `identically-prompted` AS A CORRECTNESS ARGUMENT. §11's last
     line: agreement never substitutes for one.
