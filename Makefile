@@ -27,7 +27,7 @@ FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
                tests/test_forge_runstate.py tests/test_forge_preflight.py \
                tests/test_forge_gate.py tests/test_forge_seat.py \
                tests/test_forge_runner.py tests/test_forge_taskbundle.py \
-               tests/test_forge_ledger.py
+               tests/test_forge_ledger.py tests/test_forge_coverage.py
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
