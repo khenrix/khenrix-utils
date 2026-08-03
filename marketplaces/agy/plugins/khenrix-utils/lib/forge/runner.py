@@ -1,9 +1,11 @@
-"""One builder seat, driven end to end (spec §4, §6, §7, §8, §8.1).
+"""One builder seat, driven end to end, and then verified somewhere it never was (spec §4,
+§6, §7, §8, §8.1).
 
 Seven plans built the pieces; this is the first caller that composes them. `run_seat` chains
 clone -> F0 -> setup -> Fsetup -> launch -> Fwork -> artifact set -> candidate, classifies
 what came out through §8's four dimensions, and writes the seat's record where §14.2 says a
-`--collect` will look for it.
+`--collect` will look for it. `verify_candidate` then takes that candidate to a tree the
+builder never had and runs §6's five steps there, in §6's order.
 
 **`launch` IS INJECTED, AND NOTHING IN THIS PACKAGE'S SUITE INVOKES A REAL PROVIDER.** Every
 test passes a fake that writes into the seat and hands back a provider-shaped record, so the
@@ -29,8 +31,15 @@ and that running the confirmed command in the seat's own clone "measures nothing
 can replace `.venv/bin/pytest` with a program that exits zero. `gate.quote` prices the same
 division: `setup_runs` counts the builders, `verify_runs` does not. So `Phases.fverify` is
 handed `fwork` here, which is the true statement that nothing moved in this tree after the
-agent exited, and `verify` stays `"not-run"` on every status this module produces. §6's
-verifier clone is the next task's.
+agent exited, and `verify` stays `"not-run"` on every `Status` this module produces —
+INCLUDING after `verify_candidate` has run. That verdict is `classify`'s `(outcome, reason)`
+and it is returned, not written back onto the seat: §8's `verify` dimension and §6.2's
+outcome are different vocabularies over different trees, and nothing in this plan re-runs
+`classify_seat` with the answer. WHAT THAT COSTS IS STATED RATHER THAN HIDDEN: §8's
+`no_change` needs `verify == "pass"`, so no seat this package produces can reach it, and an
+argued zero-diff seat stays `partial` however green its candidate's gate came back. Closing
+that is a re-classification step nothing in this package has an interface for; see
+`verify_candidate`.
 
 WHAT NEVER HAPPENS HERE (§8.1, verbatim): *"Every retry attempt gets a fresh clone. The
 failed attempt is preserved as partial input. Never a reset-and-rerun in place."* `attempt`
@@ -106,6 +115,59 @@ def seat_dir(run_dir, name: str, attempt: int) -> Path:
     predicate `runstate.count` exists to refuse, called rather than re-spelled.
     """
     return Path(run_dir) / "seats" / name / f"attempt-{_count('attempt', attempt)}"
+
+
+def verifier_dir(run_dir, name: str) -> Path:
+    """Where §6's verifier clone for seat `name`'s candidate is built.
+
+    A sibling of `seats/`, never inside it: the whole claim of §6 is that this tree is one
+    "the builder never had access to", and a verifier nested under the seat directory would
+    be one `rm -rf seats/<name>` — or one over-broad glob in a later `--gc` — away from
+    taking the evidence with it.
+
+    NO ATTEMPT COMPONENT, and that is the priced shape rather than an omission: `gate.quote`
+    counts `verifier_runs = seats + 1 + review_fixes`, one verifier per SEAT plus one per
+    post-review fix, while `builders = seats * attempts`. So a second verification of the
+    same seat is a run the operator was never quoted, and it lands on a directory that
+    already exists — which `verify_candidate` refuses by name and `clone_seat` would refuse
+    anyway, since `git clone` will not populate a non-empty destination.
+    """
+    return Path(run_dir) / "verifiers" / name
+
+
+def _named(run_dir: Path, name: str) -> None:
+    """Refuse a seat name that `storage`'s own rule will not carry, before anything is built.
+
+    Named through `storage.seat_state_path` rather than a test spelled here, and BEFORE the
+    clone: a name that cannot be a filename would otherwise put a run's record somewhere
+    nothing accounts for, after the checkout had been paid for. `clone_seat` refuses one that
+    cannot be a BRANCH, which is a different set — `verify` is a legal branch component and
+    `..` is neither.
+    """
+    try:
+        storage.seat_state_path(run_dir, name)
+    except storage.StorageError as e:
+        raise RunnerError(str(e)) from e
+
+
+def _agreed_baseline(manifest, baseline) -> None:
+    """Refuse a baseline that is not the one this run recorded.
+
+    Both `run_seat` and `verify_candidate` are handed a manifest AND a baseline, and both are
+    the same seam: the harvest diffs against the ARGUMENT and the verifier is built from the
+    MANIFEST, so a disagreement hands a gate a candidate reconstructed from a tree the run
+    never agreed to — and nothing downstream can see it, because each half is internally
+    consistent. `bundle.materialize` checks the CLONE against the bundle's own baseline
+    commit, which closes candidate-against-tree and says nothing about which baseline the
+    manifest named.
+    """
+    if (baseline.commit, baseline.ref) != (manifest.baseline_commit, manifest.baseline_ref):
+        raise RunnerError(
+            f"this baseline is not the one run {manifest.run_id!r} recorded: the manifest "
+            f"names {manifest.baseline_ref} at {manifest.baseline_commit[:12]}, the argument "
+            f"names {baseline.ref} at {baseline.commit[:12]}. The harvest diffs against the "
+            "argument and the verifier is built from the manifest, so a mismatch hands over "
+            "a candidate reconstructed from a tree the run never agreed to.")
 
 
 def _count(name: str, value) -> int:
@@ -278,21 +340,8 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
     """
     run_dir = Path(run_dir)
     attempt = _count("attempt", attempt)
-    # Named through `storage`'s own rule rather than a test spelled here, and BEFORE anything
-    # is created: a seat name that cannot be a filename would otherwise put this run's record
-    # somewhere nothing accounts for, after the clone had been paid for.
-    try:
-        storage.seat_state_path(run_dir, name)
-    except storage.StorageError as e:
-        raise RunnerError(str(e)) from e
-
-    if (baseline.commit, baseline.ref) != (manifest.baseline_commit, manifest.baseline_ref):
-        raise RunnerError(
-            f"this baseline is not the one run {manifest.run_id!r} recorded: the manifest "
-            f"names {manifest.baseline_ref} at {manifest.baseline_commit[:12]}, the argument "
-            f"names {baseline.ref} at {baseline.commit[:12]}. The harvest diffs against the "
-            "argument and the verifier is built from the manifest, so a mismatch hands over "
-            "a candidate reconstructed from a tree the run never agreed to.")
+    _named(run_dir, name)
+    _agreed_baseline(manifest, baseline)
 
     path = seat_dir(run_dir, name, attempt)
     if path.exists():
@@ -379,3 +428,155 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
     # this call sees the previous record whole rather than a prefix of this one.
     runstate.write_seat(run_dir, name, _record(result_, token))
     return result_
+
+
+def _with_setup_caveat(reason: str, setup_run) -> str:
+    """`reason` with the verifier's own failed setup appended as a separate fact.
+
+    A setup that exits non-zero in the verifier is not a refusal — `run_setup` returns it,
+    and only a tracked overlap raises — so without this the run exists nowhere in the value
+    `verify_candidate` hands back, and a `FAIL` would read as "the candidate broke the gate"
+    when the gate ran in a tree the confirmed setup never finished preparing. §6.2 has no
+    outcome for it and this does not invent one: which side it belongs to is genuinely open,
+    because a candidate really can break the setup that passed in its own clone. So it is
+    recorded beside the verdict rather than made into one.
+
+    "also", on `verify._also`'s reasoning: the outcome was already decided by the runs and
+    the bundle, so a causal connective would claim something nothing here established.
+    """
+    if setup_run is None or setup_run.exit_code == 0:
+        return reason
+    return (f"{reason}; also, the verifier's own setup command exited "
+            f"{setup_run.exit_code} at step {setup_run.step_index}, so this gate ran in a "
+            "tree the confirmed setup did not finish preparing")
+
+
+def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
+                     calibration) -> tuple[str, str, verify.Verifier]:
+    """Run §6's five steps over one harvested candidate, in the order §6 gives them.
+
+    Returns `classify`'s `(outcome, reason)` and the `Verifier` the verdict was taken in.
+    The `Verifier` rather than the path, because `Verifier.candidate` is NOT the bundle
+    passed in: it is that bundle with §6.1's whole measurement — `gate_delta` and the
+    `gate_surface` it ranged over — filled from the two trees `build_verifier` had. A caller
+    that keeps the input bundle instead holds `gate_delta is None`, which `classify` reads as
+    UNKNOWN and answers `GATE_CHANGED`.
+
+    §6'S FIVE STEPS, AND WHERE EACH ONE IS:
+
+      1. *"Harvest the seat (§7) — before verification."* Structural, not a line here: the
+         `candidate` parameter is a `bundle.CandidateBundle`, which only `run_seat`'s harvest
+         produces, so a caller with no harvest has nothing to pass.
+      2. *"Materialize the harvested candidate in a brand-new clone built through the same
+         path as §4."* `build_verifier` — `fleet.clone_seat`, the same call `run_seat` makes,
+         then `bundle.materialize` on top. Followed immediately by the hash validation, see
+         below.
+      3. *"Run the confirmed setup command there."* `run_setup`, which refuses a tracked
+         effect the generator contract does not declare (`SetupOverlap`).
+      4. *"Run the confirmed verify command there."* `fixed_point`, not a bare
+         `run_command`: §6.2's PASS is "exit 0 AND no unexplained tracked delta", and only
+         the `FixedPoint` carries the second half — `classify` hands a caller that passed a
+         bare `Run` a weaker PASS, in as many words, and this one has no reason to earn it.
+      5. *"Repository hooks and any post-seat git configuration are disabled in verifier
+         clones."* `build_verifier` pins `core.hooksPath` to /dev/null before the candidate
+         is laid down and asserts it again afterwards, `clone_seat` builds under an empty
+         template, and every `gitcmd` call pins the global and system config to /dev/null.
+         Nothing is added here, because a second pin in this function would be a second place
+         for the property to be true and would hide the loss of the first.
+
+    THE HASH VALIDATION RUNS ON BOTH PATHS, and that is this function's own line rather than
+    a call it delegates. §6: *"The materialized candidate is hash-validated against the
+    bundle before setup runs."* `run_setup` makes that check as its first statement and owns
+    the ordering when there IS a setup command — `calibrate` relies on exactly that and
+    deliberately does not repeat it. But `run_command` refuses a command with no steps, so a
+    run whose confirmation named no setup never calls `run_setup` at all, and the one
+    ordering §6 states outright would be skipped entirely for every repository that needs no
+    toolchain. The `else` branch below is that hole closed; it is not a duplicate check,
+    because the two branches are exclusive.
+
+    `contract` IS NOT A PARAMETER, though every function it delegates to takes one. A
+    contract argument here would be a second place for one run to disagree with itself: the
+    run has exactly one generator contract, `manifest` is the record of the human confirming
+    it at the §5 gate, and `run_seat` already builds the bundle from
+    `manifest.generator_contract`. `build_verifier` compares the candidate's
+    contract ID against what it is handed, so a contract argument that shared the empty ID and
+    carried different RELATIONS would pass that check and change what `fixed_point` admits —
+    the manifest-records-X-while-the-gate-admitted-Y shape, reachable by one wrong argument.
+    Sourcing it here from the manifest removes the argument rather than checking it.
+
+    `calibration` IS REQUIRED, and it is a `verify.Calibration` rather than a `Run`. It
+    carries no `None` default because there is no honest value to run with when it is
+    missing. `classify` reads `baseline_run` only once the candidate's gate has already exited
+    non-zero, to choose between `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE` and `FAIL` — so a
+    fabricated green `Run` would report a NEW failure that nothing measured, and a fabricated
+    red one would report §6.2's baseline-red outcome, which is a claim ABOUT a calibration,
+    on the evidence of no calibration at all. Both are a verdict reading cleaner than its
+    evidence, in opposite directions. Nor is one ever absent in a run that gets this far: §5
+    step 3 calibrates before any provider spends a token, `GeneratorUnstable` stops the run
+    there, and the operator's `on_calibration_failure` policy chooses between aborting and
+    carrying a RED calibration — which is still a `Calibration`. WHAT THE TYPE CHECK BUYS IS
+    ONLY THE OBVIOUS MISTAKE: `Calibration` is a plain dataclass anyone can build, so it is no
+    evidence about the tree its `run` came from, exactly as `verify._as_run` says of `Run`. It
+    refuses a bare `Run` handed over from wherever the caller was standing, which is the
+    mistake a caller actually makes.
+
+    NO RERUN, SO `FLAKY` IS NOT REACHABLE FROM HERE. `gate.quote` prices
+    `verify_runs = 2 + verifier_runs` — one gate run per verifier clone — so a second run for
+    every candidate is a cost the operator was never shown. §6.2's fail->pass rerun therefore
+    has no caller yet; `classify` takes `rerun` and this passes none.
+
+    WHAT THIS DOES NOT DO IS UPDATE THE SEAT'S §8 STATUS. The outcome is returned, and
+    `runstate.write_seat`'s record still reads `verify: "not-run"` for this seat afterwards.
+    §8's `no_change` requires `verify == "pass"`, so re-classification is what would let an
+    argued zero-diff seat stop being `partial` — and this signature cannot do it: it carries
+    no `Status` in or out, and no `attempt`, so it cannot even name the record that would
+    have to be rewritten. Stated here rather than left for a reader to discover from a
+    verdict that never lands.
+
+    Raises `RunnerError` for an argument this function will not act on. `fleet.SeatError`,
+    `bundle.BundleError`, `verify.VerifyError` and its subclasses — `ContractMismatch` for a
+    candidate built under another contract, `SetupOverlap` for §6's `setup_overlap`,
+    `GeneratorUnstable` for a gate with no fixed point — all propagate UNWRAPPED, on
+    `run_seat`'s stated precedent: each already names the tree and the argument at fault, and
+    the last two are §6's own vocabulary for a candidate failed closed and an infrastructure
+    failure that is never a candidate's verdict.
+    """
+    run_dir = Path(run_dir)
+    _named(run_dir, name)
+    _agreed_baseline(manifest, baseline)
+    if not isinstance(calibration, verify.Calibration):
+        raise RunnerError(
+            f"a verify.Calibration is required, not {type(calibration).__name__}: §6.2's "
+            "BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE is a claim about the untouched "
+            "baseline's own gate, and a Run from anywhere else cannot support it")
+
+    dest = verifier_dir(run_dir, name)
+    if dest.exists():
+        # §6 step 2 says a BRAND-NEW clone. A second candidate materialized over the first
+        # one's tree is not one, and it would be measured against a gate the previous
+        # candidate had already had its hands on — the exact premise §6 exists to establish.
+        raise RunnerError(
+            f"seat {name!r} already has a verifier clone at {dest}. §6 materializes each "
+            "candidate in a brand-new clone and §5.2 prices one verifier per seat, so this "
+            "is never reused — nothing here deletes it either.")
+
+    # One contract and one gate for the whole run, both off the manifest. The environment is
+    # `run_seat`'s and `calibrate`'s: `classify` differences this run against the calibration,
+    # so a candidate measured in a different environment is differencing two machines.
+    contract = manifest.generator_contract
+    gate = verify.Command(steps=manifest.verify)
+    child_env = fleet.forge_child_env(manifest.repo_path)
+
+    v = verify.build_verifier(manifest.repo_path, baseline, candidate, dest,
+                              identity=identity, contract=contract, command=gate)
+
+    setup = verify.Command(steps=manifest.setup)
+    if setup.steps:
+        setup_run = verify.run_setup(v, setup, env=child_env).run
+    else:
+        verify.validate_materialized(v)
+        setup_run = None
+
+    fp = verify.fixed_point(v.path, gate, v.contract, env=child_env)
+    outcome, reason = verify.classify(fp, calibration.run, v.candidate)
+    return outcome, _with_setup_caveat(reason, setup_run), v
