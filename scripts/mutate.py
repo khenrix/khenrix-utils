@@ -12,13 +12,24 @@ row reads covered and the hole stays. So `rc != 0` is not by itself evidence tha
 noticed anything, and this script refuses to call it CAUGHT until it has watched the same
 command pass against the UNMUTATED file.
 
+A GREEN BASELINE IS ONLY HALF OF THAT ARGUMENT, AND THE MISSING HALF SHIPPED HERE FOR
+LONGER THAN THE PARAGRAPH ABOVE DID. `rc != 0` was read as CAUGHT for every nonzero status,
+so a `--new` that left a `{` unclosed made pytest exit 2 — one error during collection — and
+the row was written CAUGHT for a mutant that never executed a line. Reproduced on this repo
+against `tests/test_forge_coverage.py`. Only exit 1, `tests failed`, is evidence the suite
+noticed the mutation; 0 is SURVIVED; 2, 3, 4, 5 and any status not in `_PYTEST_RC` are the
+run failing to happen, and each is refused BY NAME rather than scored, because a verdict must
+never read cleaner than its evidence. That makes this script pytest-shaped on purpose: a
+runner with other exit conventions has to be wrapped to pytest's before its status is handed
+here.
+
     scripts/mutate.py --file shared/lib/forge/verify.py \
         --old 'VERIFIER_NAME = "verify"' --new 'VERIFIER_NAME = "claude"' \
         -- uvx pytest tests/test_forge_seams.py -q
 
 Exit 0 when the mutant is CAUGHT (a green suite went red), 1 when it SURVIVED, 2 on a usage
-or application error — including a baseline that was not green. The source file is restored
-from the bytes read at start, always.
+or application error — including a baseline that was not green, and a mutated run whose exit
+status is neither 0 nor 1. The source file is restored from the bytes read at start, always.
 
 CHECK `git status` BEFORE YOU TRUST A RUN, AND AGAIN AFTER. "Always" above means the `finally`
 below, and a `finally` only runs if this process reaches it: a SIGKILL, a session torn down
@@ -67,11 +78,12 @@ class _CannotRun(RuntimeError):
     """The test command never started, which is a fact about the command and not a verdict."""
 
 
-# pytest's documented exit codes. Only 5 is acted on; the rest are here so a refusal can say
-# what the runner reported instead of printing a bare integer.
+# pytest's documented exit codes. 0 and 1 are the only two that are VERDICTS here; every other
+# status is a fact about the run, and the table exists so a refusal can say which one the runner
+# reported instead of printing a bare integer.
 _PYTEST_RC = {1: "tests failed", 2: "interrupted, e.g. an error during collection",
               3: "internal error", 4: "usage error", 5: "no tests were collected"}
-_NOTHING_COLLECTED = 5
+_TESTS_FAILED = 1
 
 
 def _run(cmd, env) -> int:
@@ -175,17 +187,22 @@ def main() -> int:
         path.write_bytes(original)
         _purge_bytecode(purge)
 
-    if rc == _NOTHING_COLLECTED:
-        # The baseline collected tests, so reaching this means the mutation changed what gets
-        # collected — mutating a test file so that `-k` no longer selects it, say. Nothing
-        # ran, so there is nothing to have caught. Refused rather than reported, because by
-        # here a nonzero exit is otherwise indistinguishable from a failure.
-        print(f"mutate: the mutated run collected no tests (exit {rc}), so nothing was "
-              f"measured — not a verdict", file=sys.stderr)
+    if rc not in (0, _TESTS_FAILED):
+        # THE ONLY NONZERO STATUS THAT MEANS THE SUITE NOTICED IS 1. The baseline was green, so
+        # every other status is the mutation stopping the run rather than failing it: 2 is a
+        # collection error, and a file the mutation left unparseable never executes a line; 5 is
+        # a mutation that changed what gets COLLECTED — mutating a test file so that `-k` no
+        # longer selects it, say — and the baseline collected tests, so reaching 5 is the
+        # mutation's doing; 3 and 4 are the runner refusing its own arguments. Refused rather
+        # than reported, because by here a nonzero exit is otherwise indistinguishable from a
+        # failure, and that indistinguishability is exactly the FALSE CAUGHT above.
+        why = _PYTEST_RC.get(rc, "unrecognized exit status")
+        print(f"mutate: the mutated run exits {rc} ({why}), which is not a test failure — "
+              f"nothing was measured, so this is not a verdict", file=sys.stderr)
         return 2
-    verdict = "CAUGHT" if rc != 0 else "SURVIVED"
+    verdict = "CAUGHT" if rc == _TESTS_FAILED else "SURVIVED"
     print(f"mutate: {verdict} (test command exit {rc})", file=sys.stderr)
-    return 0 if rc != 0 else 1
+    return 0 if rc == _TESTS_FAILED else 1
 
 
 if __name__ == "__main__":
