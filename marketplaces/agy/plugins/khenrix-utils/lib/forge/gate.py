@@ -1434,12 +1434,16 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     was reached at all, so no arrangement of this function reaches `os.link`'s refusal by
     repeating a call. It is exercised directly instead.
 
-    THE POLICIES ARE JOURNALED, not in the manifest — §14.2's list of what the manifest holds
-    is the repository, `base_commit`, B's identity, the selected paths and the confirmed
-    commands, and `events.jsonl` is one of the six sources it names for a resume. What that
-    costs is that no decoder type-checks them on the way back in, the way `read_manifest`
-    does for every field it carries; `Confirmation.__post_init__` is the only thing that ever
-    validated them.
+    THE POLICIES AND THE AUTHOR ARE JOURNALED, not in the manifest — §14.2's list of what the
+    manifest holds is the repository, `base_commit`, B's identity, the selected paths and the
+    confirmed commands, and `events.jsonl` is one of the six sources it names for a resume.
+    What that costs is that no decoder type-checks them on the way back in, the way
+    `read_manifest` does for every field it carries; `Confirmation.__post_init__` is the only
+    thing that ever validated them. The AUTHOR is here because it was nowhere: it reached
+    `materialize` and no record, so a clean-tree run — where B1 is the user's own base commit
+    and forge writes no commit of its own — left nothing on disk saying whose name the
+    operator agreed forge could work under. `runner.run` still takes it as an argument and
+    does not yet read it back.
     `seats` and `attempts` go the OTHER way and are in the manifest, because a launcher reads
     them to decide how many providers to spend — see `runstate.Manifest` for why that one is
     not a policy — and `read_manifest` type-checks them on the way back. That launcher is
@@ -1534,5 +1538,15 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,
-               accepted_gaps=list(confirmation.accepted_gaps))
+               accepted_gaps=list(confirmation.accepted_gaps),
+               # THE ONE ANSWER THAT REACHED NO RECORD AT ALL. `author` went straight to
+               # `materialize` and was written nowhere: not into the manifest (§14.2 lists
+               # what that holds and an identity is not among them, and `_decode` refuses a
+               # field it does not know) and not here — so a run could not say who authored
+               # its own commits. On a DIRTY tree B1 carries it, but over a clean tree B1 is
+               # the user's own base commit and forge created no commit to read it off.
+               # Journalled beside the other three for the reason `open_run` gives them:
+               # this record is where §5 step 2's answers live. A list because a tuple comes
+               # back from json as one, and one spelling on disk beats two.
+               author=list(confirmation.author))
     return run_dir

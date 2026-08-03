@@ -1445,9 +1445,11 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
     r, q = _report_and_quote(tmp_path)
     sheets = [
         ("r1", dict(on_calibration_failure="degraded", strategy="fusion",
-                    accepted_gaps=[gate.GATE_SURFACE_EMPTY])),
+                    accepted_gaps=[gate.GATE_SURFACE_EMPTY],
+                    author=("Ada Lovelace", "ada@example.invalid"))),
         ("r2", dict(on_calibration_failure="abort", strategy="base-and-port",
-                    accepted_gaps=[gate.GC_UNBUILT, gate.REMOTES_AND_CONFIGURATION])),
+                    accepted_gaps=[gate.GC_UNBUILT, gate.REMOTES_AND_CONFIGURATION],
+                    author=("Grace Hopper", "grace@example.invalid"))),
     ]
     for run_id, sheet in sheets:
         run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id)
@@ -1458,6 +1460,12 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
         assert done[0].data["on_calibration_failure"] == sheet["on_calibration_failure"]
         assert done[0].data["strategy"] == sheet["strategy"]
         assert done[0].data["accepted_gaps"] == sheet["accepted_gaps"]
+        # THE ANSWER THAT REACHED NO RECORD AT ALL. `author` went straight to `materialize`
+        # and was written into neither the manifest nor this record, so over a CLEAN tree —
+        # where B1 is the user's own base commit and forge creates no commit of its own — a
+        # run could not say whose name the operator agreed it could work under. Disjoint per
+        # row for this case's stated reason: a hardcoded name satisfies neither.
+        assert done[0].data["author"] == list(sheet["author"])
         assert journal.orphans(events) == (), \
             "the write-ahead pair is closed, so a crash inside open_run stays distinguishable"
 
