@@ -45,7 +45,7 @@ from pathlib import Path
 
 from council import engine
 
-from . import fingerprint, gitcmd, journal as journalmod, storage
+from . import fingerprint, gitcmd, journal as journalmod, snapshot, storage
 from .taskbundle import task_dir as taskbundle_task_dir
 
 SEVERITIES = ("blocker", "important", "minor")
@@ -811,3 +811,522 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
     log.record(journalmod.done(COUNCIL_KIND), operation_id=op, round=round_,
                findings_sha256=digest, responded=len(responded), silent=len(silent))
     return r
+
+
+# ONE STRING FOR ONE PREDICATE. §13 and §14.2 say "verified but not independently REVIEWED";
+# §13.1 says "RE-reviewed". Two spellings of one fact is two things a reader has to notice
+# are the same, and a grep for either finds half the run's states. Every module that reports
+# this imports the constant.
+VERIFIED_NOT_INDEPENDENTLY_REVIEWED = "verified but not independently reviewed"
+
+READY = "ready"
+DEGRADED = "degraded"
+REVIEW_BLOCKED = "review_blocked"
+TERMINALS = (READY, DEGRADED, REVIEW_BLOCKED)
+
+_BLOCKER = "blocker"
+# EVERY MEMBER OF `RESOLUTIONS` IS READ, and this pair is why. The version that spelled the
+# blocking set `("open", "unresolved")` left `rejected` matching NO branch: the blocker went
+# into neither roll-up, vanished from the verdict, and the run's headline read
+# `ready` — "every panel whole and no blocker left open" — over a blocker somebody had
+# dismissed. `rejected` BLOCKS. A `Resolution` records no rationale and no author, so
+# "somebody considered this finding and rejected it" and "nobody acted on this finding" are
+# the same bytes on disk, and `review_blocked` is what §13's last paragraph needs to mean the
+# second one. A rejection worth acting on is a recorded human judgement and belongs on the
+# ledger, where §10.1's method axis can carry who made it.
+_BLOCKING = ("open", "unresolved", "rejected")
+_FIXED = "fixed"
+_READINGS = (*_BLOCKING, _FIXED)
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """What happened to one finding, and whether the fix survived the gate.
+
+    `verified` IS NOT DERIVABLE FROM `resolution`, and the pair is checked here. §13 requires
+    a fix to be re-verified in a fresh clone and a fix that BREAKS verify to be reverted with
+    the finding reported unresolved — so `fixed` with `verified=False` describes a state §13
+    forbids, and a record carrying it would let a reverted change count as a repair.
+    """
+    finding_id: str
+    resolution: str
+    checkpoint: str | None
+    verified: bool
+
+    def __post_init__(self) -> None:
+        if self.resolution not in RESOLUTIONS:
+            raise ReviewError(f"resolution is one of {list(RESOLUTIONS)}, "
+                              f"not {self.resolution!r}")
+        if not isinstance(self.verified, bool):
+            raise ReviewError(f"verified is a bool, not {self.verified!r}")
+        if self.resolution == "fixed":
+            if not self.verified:
+                raise ReviewError(
+                    "a finding recorded `fixed` was verified: §13 reverts a fix that breaks "
+                    "verify and reports the finding unresolved, so `fixed` and unverified is "
+                    "a state this run may not be in")
+            if not isinstance(self.checkpoint, str) or not self.checkpoint.strip():
+                raise ReviewError(
+                    "a fix names the checkpoint it produced; §13 cuts a fresh checkpoint "
+                    "after every fix and §14.1 makes git the ordering of record")
+
+
+def resolutions_path(run_dir, round_: int) -> Path:
+    return round_dir(run_dir, round_) / "resolutions.json"
+
+
+def _one_row_per_finding(rows, where: str) -> None:
+    """A finding is resolved once, or this record has no reading.
+
+    `terminal_from_record` keys the round's resolutions BY FINDING ID, so a second row for one
+    finding does not conflict — it silently replaces the first, and `fixed` beside `open` for
+    the same blocker resolves to whichever the writer happened to put last. Refused on the way
+    out and again on the way back in, because the two routes are different: the write covers
+    this module's own producer, and the read covers the file a resumed run and `--collect`
+    actually classify from.
+    """
+    ids = [r.finding_id for r in rows]
+    repeated = sorted({i for i in ids if ids.count(i) > 1})
+    if repeated:
+        raise ReviewError(
+            f"{where}: {repeated} carry more than one resolution. The terminal keys this "
+            "record by finding id, so the extra rows do not conflict — they overwrite, and a "
+            "blocker recorded both `fixed` and `open` is read as whichever came last.")
+
+
+def write_resolutions(run_dir, round_: int, rows) -> str:
+    """Record what one round's fix pass did. Write-once, for `write_round`'s reason."""
+    rows = tuple(rows)
+    wrong = sorted({type(r).__name__ for r in rows if not isinstance(r, Resolution)})
+    if wrong:
+        raise ReviewError(f"resolutions are Resolution records, not {wrong}")
+    path = resolutions_path(run_dir, round_)
+    _one_row_per_finding(rows, str(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    blob = (json.dumps([{f.name: getattr(r, f.name) for f in fields(Resolution)}
+                        for r in rows], sort_keys=True, indent=2) + "\n").encode("utf-8")
+    try:
+        storage.exclusive_write(path, blob)
+    except FileExistsError as e:
+        raise ReviewError(f"{path} already records round {round_}'s resolutions and is never "
+                          "rewritten") from e
+    return hashlib.sha256(blob).hexdigest()
+
+
+def read_resolutions(run_dir, round_: int):
+    """This round's resolutions, or `None` when no fix pass ran.
+
+    `None` RATHER THAN `()`. A round that recorded no fix and a round whose fix resolved
+    nothing are different facts, and only one of them means the blockers are still open
+    because nobody tried. `terminal_from_record` reads both as blocking, but it says which.
+    """
+    path = resolutions_path(run_dir, round_)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        rows = json.loads(raw)
+    except ValueError as e:
+        raise ReviewError(f"{path} is not readable as JSON: {e}") from e
+    if not isinstance(rows, list):
+        raise ReviewError(f"{path} holds a list of resolutions, not "
+                          f"{type(rows).__name__}")
+    try:
+        out = tuple(Resolution(**r) for r in rows)
+    except TypeError as e:
+        # `read_round`'s rule, one record over: a row this engine cannot construct is a
+        # refusal in this module's own vocabulary rather than a TypeError out of a dataclass.
+        raise ReviewError(f"{path} carries a resolution this engine cannot read: {e}") from e
+    _one_row_per_finding(out, str(path))
+    return out
+
+
+# ------------------------------------------- the checkout the reviewers were told not to touch
+#
+# §13's reviewers are WRITE-CAPABLE and run CONCURRENTLY inside the tree they are reviewing:
+# this module applies no read-only posture (see the module docstring for each thing it
+# deliberately does not call) and `run_council` runs its members in a thread pool, so all
+# three sit in the synthesis checkout at once. Until this pair of measurements, the only thing
+# between them and the change under review was `launcher_prompt`'s sentence — a check the
+# party being checked could walk around, with the reviewer standing in the builder's place.
+#
+# WHAT IT BUYS AND WHAT IT DOES NOT. It DETECTS a checkout that moved while the panel was in
+# it; it does not PREVENT the write. The round's findings are then inadmissible and the run
+# refuses, rather than reporting a terminal over a review of a tree that changed underneath
+# it. Detection was chosen over `engine.make_readonly` deliberately: nothing here can show
+# that a headless plan-mode reviewer can still run the `git diff` the bundle asks for, and
+# finding out costs real provider calls — a posture that silently blinds the panel is worse
+# than a measurement that catches the panel writing. This one costs no provider call at all.
+#
+# FOUR THINGS IT DOES NOT COVER, each written down because a guard whose gaps are unstated is
+# read as covering them:
+#
+#   * THE GIT DIRECTORY IS NOT MEASURED — `snapshot.take` prunes `.git`, and this passes that
+#     default deliberately. Git writes in there on the reviewer's behalf during the very
+#     command the bundle asks for: `git diff` refreshes and rewrites the index's stat cache.
+#     A measurement ranging over it would fire on every round that did as it was told, and a
+#     check that always fires is not a check. The reviewer inputs and §20's task bundle live
+#     there too. `test_git_doing_what_the_bundle_asks_does_not_disturb_the_checkout` pins both
+#     halves of that trade.
+#   * A WRITE OUTSIDE THE CHECKOUT is invisible. A reviewer has a shell and a whole
+#     filesystem; this answers one question about one tree.
+#   * A WRITE THAT WAS UNDONE byte-for-byte before the panel returned leaves nothing behind.
+#     The measurement is content-keyed, not event-keyed.
+#   * IT NAMES NO CULPRIT, and cannot. Any process that touched the checkout while the panel
+#     ran lands here, including the operator's own editor. That is the fail-closed direction:
+#     the round is refused, never attributed.
+WORKTREE_KIND = "review_worktree"
+
+# How many changed paths the completion record carries. The list is a SAMPLE for the sentence
+# and never the verdict — see `record_worktree_after`.
+_CHANGED_SAMPLE = 20
+
+
+def _inventory_digest(entries: dict) -> str:
+    """One string for one tree state.
+
+    `kind` is included where `snapshot.diff` omits it, so a path whose TYPE changed moves this
+    digest even where the diff has nothing to say about it. That is why the digest is the
+    authority and the diff is the explanation, and not the other way round.
+
+    `json.dumps` at its default `ensure_ascii` escapes the lone surrogates `os.walk` puts in a
+    non-UTF-8 filename, so the encode below cannot raise on one — the failure that took
+    `baseline.materialize` down on an ordinary tracked link.
+    """
+    rows = sorted([e.path, e.digest, e.mode, e.size, e.kind] for e in entries.values())
+    return hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def worktree_identity(checkout, quota) -> tuple:
+    """One digest over everything a reviewer could have written in `checkout`, and the
+    inventory it was taken from.
+
+    `snapshot.take` IS THE MEASUREMENT, rather than a fourth way to describe a tree. §7.3's
+    change predicate is already content-hash + mode + size and explicitly never mtime, already
+    prunes `.git`, already refuses a subtree it could not list, and already ships `diff`
+    beside it. The two nearer candidates do not fit: the baseline's filesystem manifest is
+    built inside `materialize`, which also writes a ref into the USER's repository, and
+    `verify.gate_surface` answers gate-defining NAMES only — a reviewer editing the source
+    under review would not appear in it at all, which is the fail-open direction.
+
+    THE QUOTA IS THE CALLER'S, on `_digests_under`'s rule: the number that decides whether a
+    measurement is complete is spelled at the call site where somebody chose it, not defaulted
+    where nobody did.
+
+    A BREACH IS A REFUSAL, and it is the one fail-open this function has to close by hand:
+    `snapshot.take` reports a quota breach by returning an EMPTY inventory beside the breach
+    line, so two breached measurements digest identically and the round would read as
+    undisturbed on the strength of two scans that inventoried nothing.
+    """
+    try:
+        entries, breaches = snapshot.take(checkout, quota=quota, skip_dirs=(".git",))
+    except (snapshot.SnapshotError, OSError) as e:
+        raise ReviewError(
+            f"{checkout} could not be inventoried whole ({e}), so whether a reviewer wrote "
+            "into the tree it was reviewing is a question this round cannot answer") from e
+    if breaches:
+        raise ReviewError(
+            f"{checkout} is over the inventory quota ({'; '.join(breaches)}). `snapshot.take` "
+            "answers a breach with an EMPTY inventory, and two of those digest alike — so the "
+            "round would read as undisturbed on two scans that measured nothing.")
+    return _inventory_digest(entries), entries
+
+
+def _worktree_operation(round_: int) -> str:
+    _check_round(round_)
+    return f"review-worktree-{round_}"
+
+
+def record_worktree_before(log, *, round_: int, digest: str, entries: int) -> None:
+    """§14.1's write-ahead half: the checkout as it stood before the panel was convened.
+
+    RECORDED AHEAD rather than held in memory and written once at the end, for §14.1's reason:
+    a crash between the two halves then leaves an ORPHAN, and a round whose after-measurement
+    never happened is `outcome_unknown` about its own tree. `terminal_from_record` refuses it
+    exactly as it refuses an orphaned council round.
+    """
+    log.record(journalmod.intent(WORKTREE_KIND), operation_id=_worktree_operation(round_),
+               round=round_, tree_digest=digest, entries=entries)
+
+
+def record_worktree_after(log, *, round_: int, digest: str, entries: int, changed) -> None:
+    """The completion half.
+
+    `changed` IS A BOUNDED SAMPLE AND IS NEVER THE VERDICT. The two digests are, and they are
+    compared by the reader; a reader that trusted a list the writer summarised would be
+    reading the writer's conclusion instead of its evidence.
+    """
+    rows = [f"{p}: {verb}" for p, verb in sorted(dict(changed).items())]
+    log.record(journalmod.done(WORKTREE_KIND), operation_id=_worktree_operation(round_),
+               round=round_, tree_digest=digest, entries=entries,
+               changed=rows[:_CHANGED_SAMPLE], changed_total=len(rows))
+
+
+def worktree_disturbances(events) -> tuple:
+    """Every round whose checkout cannot be shown to have survived its own review.
+
+    A HALF-RECORDED PAIR IS A DISTURBANCE, and so is a digest that is absent or is not a
+    string. Both read back as `None`, and `None == None` is the fail-open this function exists
+    to close: two unmeasured halves agree, and a tree nobody looked at reports as an
+    undisturbed one.
+
+    `journal.orphans` does the pairing, and it has already refused a repeated start and a
+    `_done` with no `_start` by the time the second loop runs — so a completion here always
+    has a start to compare against.
+    """
+    events = tuple(events)
+    out = [f"round {e.data.get('round')} ({e.operation_id}): the checkout was measured before "
+           "the panel and never re-measured after it, so whether a reviewer wrote into the "
+           "tree it was reviewing is unknown"
+           for e in journalmod.orphans(events)
+           if e.event == journalmod.intent(WORKTREE_KIND)]
+    starts = {e.operation_id: e for e in events
+              if e.event == journalmod.intent(WORKTREE_KIND)}
+    for e in events:
+        if e.event != journalmod.done(WORKTREE_KIND):
+            continue
+        before = starts[e.operation_id].data.get("tree_digest")
+        after = e.data.get("tree_digest")
+        if not all(isinstance(d, str) and d.strip() for d in (before, after)):
+            out.append(
+                f"round {e.data.get('round')} ({e.operation_id}): the checkout's identity was "
+                f"recorded as {before!r} before the panel and {after!r} after it, and an "
+                "unmeasured pair compares equal — so this round would report a tree nobody "
+                "measured as one nobody touched")
+            continue
+        if before == after:
+            continue
+        sample = e.data.get("changed") or []
+        total = e.data.get("changed_total")
+        out.append(
+            f"round {e.data.get('round')}: the checkout was {before[:12]} before the panel and "
+            f"{after[:12]} after it; snapshot.diff names {total} path(s)"
+            + (f", first: {', '.join(str(s) for s in sample)}" if sample else
+               " — no path at all beside two different digests is a path whose TYPE moved, "
+               "which snapshot.diff does not compare"))
+    return tuple(out)
+
+
+def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
+    """§13's terminal, read off the RECORD rather than off any return value.
+
+    §13's named failure is exactly what this function exists to prevent: "a compaction
+    between 'round 2 returned' and 'the orchestrator classified it' leaves `--collect` unable
+    to tell those two OPPOSITE terminal states apart, and the wrong one ships a clean header
+    over an unresolved blocker." So a round whose record is missing, or whose
+    `council_round_start` has no matching `_done`, or whose checkout the journal says moved
+    while the panel was in it, is a REFUSAL — never a round classified out of what happens to
+    be on disk.
+
+    PRECEDENCE: `review_blocked` > `degraded` > `ready`.
+
+      * `review_blocked` — any blocker whose effective resolution is `open`, `unresolved` or
+        `rejected`, including every blocker in a round with no resolutions record at all.
+        Absence of a fix record is an unfixed blocker, and so is a rejection this record
+        cannot attribute to anyone.
+      * `degraded` — every blocker resolved, but something about the review is weaker than a
+        clean one: a blocker fixed in the LAST round (nothing re-reviewed the fix), any round
+        in which a reviewer was silent, or any round whose record names no reviewer at all.
+        `VERIFIED_NOT_INDEPENDENTLY_REVIEWED` is the phrase, and CONTRADICTION 6 is settled
+        here — the terminal follows the finding's resolution, not which reviewer raised it,
+        so §13.1's ultrareview fix and §14.2's post-round-2 fix land in the same place on the
+        same evidence.
+      * `ready` — every blocker resolved and re-reviewed, and every round's panel whole.
+
+    WHAT IT DOES NOT ASSERT: that the checkout was measured at all. `loop` is what brackets a
+    round with `worktree_identity`, and a record written by any other route carries no such
+    pair — so an absent pair is read here as an absent CLAIM, not as a clean one. Everything
+    the record does say about a checkout is refused above.
+    """
+    if not isinstance(rounds_run, int) or isinstance(rounds_run, bool) or rounds_run < 1:
+        raise ReviewError(f"a review ran at least one round, not {rounds_run!r}")
+    orphaned = [e for e in journalmod.orphans(events)
+                if e.event == journalmod.intent(COUNCIL_KIND)]
+    if orphaned:
+        raise ReviewError(
+            "a council round started and recorded no result (operation "
+            f"{', '.join(sorted(e.operation_id for e in orphaned))}), so whether it returned "
+            "findings is unknown. §14.1 names that `outcome_unknown` and forbids retrying it "
+            "silently; a terminal chosen here would be a clean header over a round nobody read.")
+    disturbed = worktree_disturbances(events)
+    if disturbed:
+        raise ReviewError(
+            "this run's synthesis checkout did not survive its own review — "
+            + "; ".join(disturbed) + ". §13's reviewers share that checkout and nothing stops "
+            "them writing in it, so findings taken over a tree that moved underneath them "
+            "describe a state that no longer exists. A terminal chosen here would be the "
+            "check the reviewed party could have rigged, with the reviewer holding the pen.")
+    blocked, degraded = [], []
+    for n in range(1, rounds_run + 1):
+        r = read_round(run_dir, n)               # raises when the record is missing
+        res = read_resolutions(run_dir, n)
+        by_id = {x.finding_id: x for x in (res or ())}
+        for f in r.findings:
+            if f.severity != _BLOCKER:
+                continue
+            fixed = by_id.get(f.id)
+            if fixed is None:
+                blocked.append(
+                    f"round {n}: {f.seat} raised a blocker ({f.claim!r}) and "
+                    + ("no fix pass was recorded for that round"
+                       if res is None else "this round's fix pass did not resolve it"))
+                continue
+            if fixed.resolution not in _READINGS:
+                # Unreachable while `_READINGS` covers `RESOLUTIONS` — which a test asserts —
+                # and here anyway, because the failure it guards is the one this whole
+                # function exists to prevent: a blocker matching no branch is appended to
+                # neither roll-up and the run reports `ready` over a finding it never
+                # classified. A refusal is the only safe reading of an unread value.
+                raise ReviewError(
+                    f"round {n}: {f.seat}'s blocker carries resolution {fixed.resolution!r}, "
+                    f"which §13's terminal has no reading for. Every member of "
+                    f"{list(RESOLUTIONS)} must appear in `_READINGS`; one that does not "
+                    "disappears from the verdict rather than failing it.")
+            if fixed.resolution in _BLOCKING:
+                blocked.append(f"round {n}: {f.seat}'s blocker ({f.claim!r}) is "
+                               f"{fixed.resolution}"
+                               + (" — a rejected finding carries no rationale and no author "
+                                  "on this record, so it is not distinguishable from one "
+                                  "nobody acted on" if fixed.resolution == "rejected" else ""))
+            elif n == rounds_run:
+                degraded.append(
+                    f"round {n}: {f.seat}'s blocker ({f.claim!r}) was fixed at checkpoint "
+                    f"{fixed.checkpoint} and no later round reviewed it — "
+                    f"{VERIFIED_NOT_INDEPENDENTLY_REVIEWED}")
+        if r.seats_silent:
+            degraded.append(
+                f"round {n} was answered by {len(r.seats_responded)} of "
+                f"{len(r.seats_responded) + len(r.seats_silent)} reviewers; silent: "
+                + ", ".join(f"{s} ({why})" for s, why in r.seats_silent))
+        elif not r.seats_responded:
+            # `reviewer_specs` refuses to convene an empty panel, and this reads the RECORD
+            # one level up from it — where `Round`'s own docstring makes a panel-less round
+            # legal "because a round whose panel could not be convened still has to be
+            # recordable". Zero findings beside zero seats is byte-for-byte what three
+            # reviewers who found nothing leave, so without this branch nobody reviewing reads
+            # as everybody reviewing and finding nothing.
+            degraded.append(
+                f"round {n} names no reviewer at all — neither a seat that answered nor a "
+                f"seat recorded silent — so its empty finding list is "
+                f"{VERIFIED_NOT_INDEPENDENTLY_REVIEWED}")
+    if blocked:
+        return REVIEW_BLOCKED, "; ".join(blocked)
+    if degraded:
+        return DEGRADED, "; ".join(degraded)
+    return READY, (f"{rounds_run} round(s), every panel whole and no blocker left open")
+
+
+def settle(run_dir, state, *, rounds_run: int, events) -> tuple:
+    """Read the record, take §14's edge, and persist the new position.
+
+    `runstate.advance` already refuses an undeclared edge and `reviewing`'s successors already
+    include all three terminals, so this adds no graph — it adds the rule that the terminal
+    comes from the record.
+    """
+    from . import runstate                       # local: runstate imports nothing from here
+    terminal, why = terminal_from_record(run_dir, rounds_run=rounds_run, events=events)
+    new = runstate.advance(state, terminal)
+    runstate.write_state(run_dir, new)
+    return new, why
+
+
+def _tree_of(checkout, commit):
+    """The checkpoint's TREE oid, or None. §12.3's sighting is about content recurring.
+
+    FAILS CLOSED TO `None`, never to `""`: an empty-string tree id used as a sighting key
+    would make every unrecorded attempt "the same tree" and fire the oscillation stop signal
+    on the second one.
+    """
+    r = gitcmd.git(checkout, "rev-parse", f"{commit}^{{tree}}",
+                   env_extra=gitcmd.READONLY, check=False)
+    out = r.stdout.strip()
+    return out if r.returncode == 0 and out else None
+
+
+def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_tree: str,
+         artifact_manifest, log, manifest, fix, other_clones, run=None) -> tuple:
+    """§13's bounded review loop. NOT a convergence loop, and it never buys a third round.
+
+    §13: "Round-1 blocker → fix, verify, checkpoint, round 2. Round-2 blocker → terminal state
+    `review_blocked`, regardless of verify." The bound is `manifest.review_rounds`, which is
+    the number §5.2 priced, and the fix budget is `manifest.synthesis_fix_cap`, which is the
+    number §5.2 priced separately — see `progress.cap_remaining` for why counting STARTS is
+    what makes a crashed fix stay spent.
+
+    `other_clones` IS PASSED STRAIGHT THROUGH to `assert_ledger_is_out_of_reach` on every
+    round, and it is required here for that function's reason: the seat and verifier clone
+    paths are the caller's, and an argument nobody had to supply is Decision 3 enforced by
+    memory.
+
+    `fix` IS INJECTED AND IS PLAN J'S. Its contract is
+    `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool)`: apply the round's
+    blockers, re-verify in a FRESH clone the builder never touched (§6), cut a checkpoint, and
+    say whether verify passed. A `(None, False)` or a `(_, False)` answer is §13's "a fix that
+    breaks verify is reverted and the finding reported unresolved" — this loop records that
+    and stops rather than trying again, because a second attempt at one round's blockers is
+    the convergence loop §13 refuses.
+
+    EVERY ROUND IS BRACKETED BY A MEASUREMENT OF THE CHECKOUT, and the bracket is re-taken per
+    round rather than once around the whole loop: `fix` edits that same tree between rounds,
+    which is its job. See `WORKTREE_KIND` for what the bracket buys and the four things it
+    does not. A round whose tree moved stops the loop where it stands — the findings are
+    inadmissible, so nothing may be spent acting on them — and the refusal itself is left to
+    `terminal_from_record`, which reads the pair back off the journal. A crash between the
+    write and the verdict therefore reaches the same answer.
+    """
+    from . import progress                       # local: progress imports nothing from here
+    runner = run or run_round
+    rounds = getattr(manifest, "review_rounds", None)
+    if not isinstance(rounds, int) or isinstance(rounds, bool) or rounds < 1:
+        raise ReviewError(
+            f"the run's manifest records review_rounds={rounds!r}; §5.2 priced the panel by "
+            "that number and a default chosen here would convene rounds nobody paid for")
+    # `for_harvest`, not `default`: the synthesis checkout carries whatever §5's setup step
+    # installed, and `default`'s 5 000-file cap breaches on this repository's own worktree.
+    quota = storage.Quota.for_harvest()
+    current = checkpoint
+    n = 0
+    while n < rounds:
+        n += 1
+        before_digest, before = worktree_identity(checkout, quota)
+        record_worktree_before(log, round_=n, digest=before_digest, entries=len(before))
+        r = runner(run_dir, round_=n, checkout=checkout, checkpoint=current,
+                   baseline_commit=baseline_commit, baseline_tree=baseline_tree,
+                   artifact_manifest=artifact_manifest, other_clones=other_clones, log=log)
+        after_digest, after = worktree_identity(checkout, quota)
+        record_worktree_after(log, round_=n, digest=after_digest, entries=len(after),
+                              changed=snapshot.diff(before, after))
+        if after_digest != before_digest:
+            break
+        blockers = [f for f in r.findings if f.severity == _BLOCKER]
+        if not blockers:
+            break
+        if n >= rounds:
+            # §13's terminal case: a round-2 blocker is `review_blocked` regardless of
+            # verify, and the loop does not spend a fix it cannot have re-reviewed.
+            break
+        remaining = progress.cap_remaining(manifest, log.read())
+        if remaining <= 0:
+            write_resolutions(run_dir, n, tuple(
+                Resolution(f.id, "unresolved", None, False) for f in blockers))
+            return REVIEW_BLOCKED, (
+                f"round {n} raised {len(blockers)} blocker(s) and §12.3's synthesis-fix cap "
+                "is exhausted, so no fix was attempted")
+        op = f"review-fix-{n}"
+        progress.record_fix_start(log, operation_id=op, tree_oid=_tree_of(checkout, current))
+        new_checkpoint, verified = fix(tuple(blockers), current)
+        progress.record_fix_done(
+            log, operation_id=op,
+            tree_oid=(_tree_of(checkout, new_checkpoint) if new_checkpoint else None),
+            prog=progress.Progress(None, None))
+        if not verified or not new_checkpoint:
+            write_resolutions(run_dir, n, tuple(
+                Resolution(f.id, "unresolved", None, False) for f in blockers))
+            return REVIEW_BLOCKED, (
+                f"round {n}'s fix did not pass verify, so it was reverted and its "
+                f"{len(blockers)} blocker(s) are reported unresolved (§13)")
+        write_resolutions(run_dir, n, tuple(
+            Resolution(f.id, "fixed", new_checkpoint, True) for f in blockers))
+        current = new_checkpoint
+    return terminal_from_record(run_dir, rounds_run=n, events=log.read())

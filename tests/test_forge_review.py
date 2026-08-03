@@ -1,5 +1,6 @@
 """§13's reviewer input set, the in-process council call, and the durable findings record."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from council import engine  # noqa: E402
-from forge import journal, ledger, review, storage  # noqa: E402
+from forge import journal, ledger, review, snapshot, storage  # noqa: E402
 
 from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
@@ -940,3 +941,529 @@ def test_a_scan_that_ran_out_of_budget_refuses_rather_than_reporting_no_hits(tmp
     with pytest.raises(review.ReviewError) as e:
         review._digests_under([root], b"nothing like these", 2)
     assert "stopped before it finished" in str(e.value)
+
+
+# --------------------------------------------------------------------------- the loop
+class _Cap:
+    def __init__(self, cap=3, rounds=2):
+        self.synthesis_fix_cap = cap
+        self.review_rounds = rounds
+
+
+def _blocker(round_=1, seat="claude", claim="unbounded cache"):
+    return review.Finding(id=review.finding_id(round_, seat, "blocker", claim),
+                          round=round_, seat=seat, severity="blocker", claim=claim,
+                          resolution="open")
+
+
+def _clean_round(run, n, checkpoint="a" * 40, silent=()):
+    # A silent seat is NOT also a responding one. `terminal_from_record` counts the panel as
+    # `responded + silent`, so listing agy in both describes a panel of four; `Round` refuses
+    # the pair outright.
+    quiet = {s for s, _ in silent}
+    review.write_round(run, review.Round(
+        n, checkpoint, (), (),
+        tuple(s for s in ("claude", "codex", "agy") if s not in quiet), tuple(silent)))
+
+
+def test_one_string_for_the_unreviewed_label():
+    assert review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED == \
+        "verified but not independently reviewed"
+
+
+def test_a_clean_single_round_with_a_full_panel_is_ready(tmp_path):
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    assert review.terminal_from_record(run, rounds_run=1, events=())[0] == review.READY
+
+
+def test_a_silent_seat_degrades_a_round_that_found_nothing(tmp_path):
+    """A panel of one describing itself as a panel of three is what §13's whole record is
+    written against."""
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1, silent=(("agy", "auth_or_quota"),))
+    answer, why = review.terminal_from_record(run, rounds_run=1, events=())
+    assert answer == review.DEGRADED and "agy" in why
+
+
+def test_an_open_blocker_with_no_resolution_record_is_review_blocked(tmp_path):
+    """Absence of a fix record is an unfixed blocker, never a resolved one."""
+    run = _run_dir(tmp_path)
+    review.write_round(run, review.Round(1, "a" * 40, (_blocker(),), (),
+                                         ("claude", "codex", "agy"), ()))
+    answer, _ = review.terminal_from_record(run, rounds_run=1, events=())
+    assert answer == review.REVIEW_BLOCKED
+
+
+def test_a_blocker_fixed_and_then_re_reviewed_clean_is_ready(tmp_path):
+    run = _run_dir(tmp_path)
+    b = _blocker()
+    review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                         ("claude", "codex", "agy"), ()))
+    review.write_resolutions(run, 1, (review.Resolution(b.id, "fixed", "b" * 40, True),))
+    _clean_round(run, 2, checkpoint="b" * 40)
+    assert review.terminal_from_record(run, rounds_run=2, events=())[0] == review.READY
+
+
+def test_a_blocker_fixed_in_the_last_round_is_degraded_not_ready(tmp_path):
+    """CONTRADICTION 6's resolution: fixed-but-not-re-reviewed is `degraded`, whether the
+    finding came from review round 2 or from ultrareview."""
+    run = _run_dir(tmp_path)
+    b = _blocker(round_=2)
+    _clean_round(run, 1)
+    review.write_round(run, review.Round(2, "b" * 40, (b,), (),
+                                         ("claude", "codex", "agy"), ()))
+    review.write_resolutions(run, 2, (review.Resolution(b.id, "fixed", "c" * 40, True),))
+    answer, why = review.terminal_from_record(run, rounds_run=2, events=())
+    assert answer == review.DEGRADED
+    assert review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED in why
+
+
+def test_a_fix_that_broke_verify_leaves_the_finding_unresolved(tmp_path):
+    """§13: 'a fix that breaks verify is reverted and the finding reported unresolved'."""
+    run = _run_dir(tmp_path)
+    b = _blocker()
+    review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                         ("claude", "codex", "agy"), ()))
+    review.write_resolutions(run, 1, (review.Resolution(b.id, "unresolved", None, False),))
+    assert review.terminal_from_record(run, rounds_run=1, events=())[0] \
+        == review.REVIEW_BLOCKED
+
+
+def test_a_rejected_blocker_is_still_an_open_one(tmp_path):
+    """THE FAIL-OPEN. `rejected` matched none of the branches, so the blocker was appended to
+    neither roll-up and vanished: measured, the run answered
+    `('ready', '1 round(s), every panel whole and no blocker left open')` over a blocker
+    somebody had dismissed. A `Resolution` records no rationale and no author, so this record
+    cannot tell a considered rejection from a finding nobody acted on."""
+    run = _run_dir(tmp_path)
+    b = _blocker()
+    review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                         ("claude", "codex", "agy"), ()))
+    review.write_resolutions(run, 1, (review.Resolution(b.id, "rejected", None, False),))
+    answer, why = review.terminal_from_record(run, rounds_run=1, events=())
+    assert answer == review.REVIEW_BLOCKED and "rejected" in why
+
+
+def test_every_declared_resolution_has_a_terminal_reading(tmp_path):
+    """TOTAL BY CONSTRUCTION, not by four branches happening to cover four values. A
+    resolution added to `RESOLUTIONS` later must land in a roll-up or raise — never
+    disappear."""
+    assert set(review.RESOLUTIONS) == set(review._READINGS)
+    for res in review.RESOLUTIONS:
+        run = _run_dir(tmp_path, f"run-{res}")
+        b = _blocker()
+        review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                             ("claude", "codex", "agy"), ()))
+        row = (review.Resolution(b.id, res, "b" * 40, True) if res == "fixed"
+               else review.Resolution(b.id, res, None, False))
+        review.write_resolutions(run, 1, (row,))
+        answer, _ = review.terminal_from_record(run, rounds_run=1, events=())
+        assert answer != review.READY, res
+        assert answer in (review.REVIEW_BLOCKED, review.DEGRADED), (res, answer)
+
+
+def test_a_non_blocker_finding_does_not_block(tmp_path):
+    run = _run_dir(tmp_path)
+    minor = review.Finding(id=review.finding_id(1, "agy", "minor", "typo"), round=1,
+                           seat="agy", severity="minor", claim="typo", resolution="open")
+    review.write_round(run, review.Round(1, "a" * 40, (minor,), (),
+                                         ("claude", "codex", "agy"), ()))
+    assert review.terminal_from_record(run, rounds_run=1, events=())[0] == review.READY
+
+
+def test_a_missing_round_record_refuses_rather_than_classifying(tmp_path):
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    with pytest.raises(review.ReviewError):
+        review.terminal_from_record(run, rounds_run=2, events=())
+
+
+def test_an_orphaned_council_round_refuses_rather_than_classifying(tmp_path):
+    """§14.1: a start with no receipt is `outcome_unknown` and is never silently retried."""
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    log = journal.Journal(storage.journal_path(run))
+    log.record(journal.intent(review.COUNCIL_KIND), operation_id="review-round-1", round=1)
+    with pytest.raises(review.ReviewError) as e:
+        review.terminal_from_record(run, rounds_run=1, events=log.read())
+    assert "review-round-1" in str(e.value)
+
+
+def test_the_resolutions_record_is_written_once(tmp_path):
+    run = _run_dir(tmp_path)
+    rows = (review.Resolution("x" * 12, "fixed", "b" * 40, True),)
+    review.write_resolutions(run, 1, rows)
+    with pytest.raises(review.ReviewError):
+        review.write_resolutions(run, 1, rows)
+
+
+def test_a_resolution_naming_a_fixed_finding_with_no_checkpoint_is_refused():
+    with pytest.raises(review.ReviewError):
+        review.Resolution("x" * 12, "fixed", None, True)
+
+
+def test_a_resolution_claiming_fixed_and_unverified_is_refused():
+    with pytest.raises(review.ReviewError):
+        review.Resolution("x" * 12, "fixed", "b" * 40, False)
+
+
+def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path):
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    rounds = []
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        b = _blocker(round_=round_)
+        r = review.Round(round_, checkpoint, (b,), (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        rounds.append(round_)
+        return r
+
+    def fix(findings, checkpoint):
+        return checkpoint[:-1] + "f", True
+
+    answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(), fix=fix, run=fake_round)
+    assert rounds == [1, 2]
+    assert answer == review.REVIEW_BLOCKED
+
+
+def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path):
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    calls = []
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        b = _blocker(round_=round_)
+        r = review.Round(round_, checkpoint, (b,), (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        return r
+
+    def fix(findings, checkpoint):
+        calls.append(checkpoint)
+        return checkpoint[:-1] + "f", True
+
+    answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(cap=0), fix=fix, run=fake_round)
+    assert calls == [], "a cap of zero funds no fix at all"
+    assert answer == review.REVIEW_BLOCKED and "cap" in why
+
+
+def test_a_fix_that_did_not_pass_verify_stops_the_loop_and_reports_unresolved(tmp_path):
+    """§13: "a fix that breaks verify is reverted and the finding reported unresolved."
+    Measured, this branch had NO test and its mutation SURVIVED — and without it the loop
+    records a reverted fix as `fixed`, advances `current` to a checkpoint that does not
+    exist, and buys round 2 on top of it."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    rounds = []
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        b = _blocker(round_=round_)
+        r = review.Round(round_, checkpoint, (b,), (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        rounds.append(round_)
+        return r
+
+    def fix(findings, checkpoint):
+        return None, False              # reverted: no checkpoint, verify did not pass
+
+    answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(), fix=fix, run=fake_round)
+    assert rounds == [1], "a fix that broke verify does not buy a second round"
+    assert answer == review.REVIEW_BLOCKED and "verify" in why
+    assert [r.resolution for r in review.read_resolutions(run, 1)] == ["unresolved"]
+
+
+def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path):
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        findings = (_blocker(round_=round_),) if round_ == 1 else ()
+        r = review.Round(round_, checkpoint, findings, (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        return r
+
+    head = subprocess.run(["git", "-C", str(co), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+    def fix(findings, checkpoint):
+        return head, True
+
+    answer, _ = review.loop(run, checkout=co, checkpoint=head, baseline_commit="b" * 40,
+                            baseline_tree="c" * 40, artifact_manifest=None,
+                            other_clones=(), log=log, manifest=_Cap(), fix=fix,
+                            run=fake_round)
+    from forge import progress
+    kinds = [e.event for e in log.read()]
+    assert journal.intent(progress.FIX_KIND) in kinds
+    assert journal.done(progress.FIX_KIND) in kinds
+    assert journal.orphans(log.read()) == ()
+    assert answer == review.READY
+
+
+def test_settle_advances_the_run_state_through_a_declared_edge(tmp_path):
+    from forge import runstate
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    state = runstate.State(phase="reviewing", round=1, attempt=0,
+                           verified_checkpoint="a" * 40, deliverable_checkpoint="a" * 40)
+    new, why = review.settle(run, state, rounds_run=1, events=())
+    assert new.phase == review.READY
+    assert runstate.read_state(run).phase == review.READY and why
+
+
+# ------------------------------------------------- what the record says about the reviewers
+def test_a_round_nobody_answered_does_not_read_as_a_clean_one(tmp_path):
+    """THE FAIL-OPEN ONE READ LEVEL UP FROM `reviewer_specs`. That function refuses to convene
+    an empty panel, but `terminal_from_record` reads a RECORD — and `Round`'s own docstring
+    makes `Round(1, sha, (), (), (), ())` legal, "because a round whose panel could not be
+    convened still has to be recordable". Zero findings and zero silent seats is precisely
+    what three reviewers who found nothing leave behind."""
+    run = _run_dir(tmp_path)
+    review.write_round(run, review.Round(1, "a" * 40, (), (), (), ()))
+    answer, why = review.terminal_from_record(run, rounds_run=1, events=())
+    assert answer == review.DEGRADED
+    assert review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED in why
+
+
+def test_two_resolutions_for_one_finding_are_never_written(tmp_path):
+    """`terminal_from_record` keys the round's resolutions by finding id, so a second row for
+    one finding silently replaces the first: `fixed` beside `open` for the same blocker reads
+    as whichever the writer put last."""
+    run = _run_dir(tmp_path)
+    with pytest.raises(review.ReviewError) as e:
+        review.write_resolutions(run, 1, (review.Resolution("x" * 12, "fixed", "b" * 40, True),
+                                          review.Resolution("x" * 12, "open", None, False)))
+    assert "x" * 12 in str(e.value)
+
+
+def test_two_resolutions_for_one_finding_are_refused_on_the_way_back_in_too(tmp_path):
+    """The write refusal covers this module's own writer; the read refusal covers the file,
+    which is what a resumed run and `--collect` actually classify from."""
+    run = _run_dir(tmp_path)
+    path = review.resolutions_path(run, 1)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps([
+        {"finding_id": "x" * 12, "resolution": "fixed", "checkpoint": "b" * 40,
+         "verified": True},
+        {"finding_id": "x" * 12, "resolution": "open", "checkpoint": None,
+         "verified": False}]))
+    with pytest.raises(review.ReviewError):
+        review.read_resolutions(run, 1)
+
+
+# ------------------------------------------- the checkout the reviewers were told not to touch
+def _write_into(co, name, text):
+    (Path(co) / name).write_text(text)
+
+
+def test_a_panel_that_wrote_into_the_checkout_makes_its_round_inadmissible(tmp_path):
+    """§13's reviewers are write-capable and share the synthesis checkout. This DETECTS one
+    that wrote; it does not prevent it — so the round's findings are refused rather than
+    classified."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        _write_into(co, "src.py", "print('the reviewer fixed it')\n")
+        r = review.Round(round_, checkpoint, (), (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        return r
+
+    with pytest.raises(review.ReviewError) as e:
+        review.loop(run, checkout=co, checkpoint="a" * 40, baseline_commit="b" * 40,
+                    baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
+                    log=log, manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
+    assert "src.py" in str(e.value)
+
+
+def test_a_disturbed_checkout_buys_no_fix_and_no_second_round(tmp_path):
+    """The findings are inadmissible, so nothing may be spent acting on them."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    rounds, fixes = [], []
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        rounds.append(round_)
+        _write_into(co, "sneaked.txt", "x\n")
+        r = review.Round(round_, checkpoint, (_blocker(round_=round_),), (),
+                         ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        return r
+
+    def fix(findings, checkpoint):
+        fixes.append(checkpoint)
+        return checkpoint, True
+
+    with pytest.raises(review.ReviewError) as e:
+        review.loop(run, checkout=co, checkpoint="a" * 40, baseline_commit="b" * 40,
+                    baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
+                    log=log, manifest=_Cap(), fix=fix, run=fake_round)
+    assert "sneaked.txt" in str(e.value), "the refusal is the tree's, not something else's"
+    assert rounds == [1] and fixes == []
+    from forge import progress
+    assert journal.intent(progress.FIX_KIND) not in [e.event for e in log.read()]
+
+
+def test_the_disturbance_is_read_back_off_the_journal_and_not_out_of_memory(tmp_path):
+    """A crash between the write and the verdict must not change the answer, which is the
+    same rule §13 states for the findings themselves."""
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    log = journal.Journal(storage.journal_path(run))
+    review.record_worktree_before(log, round_=1, digest="a" * 64, entries=3)
+    review.record_worktree_after(log, round_=1, digest="b" * 64, entries=4,
+                                 changed={"src.py": "modified"})
+    with pytest.raises(review.ReviewError) as e:
+        review.terminal_from_record(run, rounds_run=1, events=log.read())
+    assert "src.py" in str(e.value)
+    assert review.terminal_from_record(run, rounds_run=1, events=())[0] == review.READY, \
+        "the record is what refuses; without it this round classifies clean"
+
+
+def test_a_checkout_measured_before_the_panel_and_never_after_it_is_refused(tmp_path):
+    """§14.1's orphan, applied to the tree rather than to the call: a round that started its
+    measurement and never finished it cannot say whether a reviewer wrote."""
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    log = journal.Journal(storage.journal_path(run))
+    review.record_worktree_before(log, round_=1, digest="a" * 64, entries=3)
+    with pytest.raises(review.ReviewError) as e:
+        review.terminal_from_record(run, rounds_run=1, events=log.read())
+    assert "review-worktree-1" in str(e.value)
+
+
+def test_two_unmeasured_digests_do_not_agree_that_nothing_changed(tmp_path):
+    """THE FAIL-OPEN THIS PAIR IS SHAPED AGAINST: a missing digest on each side reads back as
+    `None`, and `None == None` would report a tree nobody measured as an undisturbed one."""
+    run = _run_dir(tmp_path)
+    _clean_round(run, 1)
+    log = journal.Journal(storage.journal_path(run))
+    op = "review-worktree-1"
+    log.record(journal.intent(review.WORKTREE_KIND), operation_id=op, round=1)
+    log.record(journal.done(review.WORKTREE_KIND), operation_id=op, round=1)
+    assert len(review.worktree_disturbances(log.read())) == 1
+    with pytest.raises(review.ReviewError):
+        review.terminal_from_record(run, rounds_run=1, events=log.read())
+
+
+def test_an_inventory_over_its_quota_refuses_rather_than_digesting_an_empty_tree(tmp_path):
+    """`snapshot.take` answers a breach with an EMPTY inventory beside the breach line, so two
+    breached measurements digest alike and the round would read as undisturbed on two scans
+    that measured nothing."""
+    co = _checkout(tmp_path)
+    _write_into(co, "a.txt", "a\n")
+    _write_into(co, "b.txt", "b\n")
+    with pytest.raises(review.ReviewError) as e:
+        review.worktree_identity(co, storage.Quota(max_files=1, max_file_bytes=1 << 20,
+                                                   max_total_bytes=1 << 20))
+    assert "quota" in str(e.value)
+
+
+def test_the_identity_moves_on_content_alone(tmp_path):
+    """Never mtime, never size: §7.3's predicate is content + mode + size, and a reviewer's
+    edit is exactly the same-length rewrite an lstat-keyed check would miss."""
+    co = _checkout(tmp_path)
+    quota = storage.Quota.for_harvest()
+    before, _ = review.worktree_identity(co, quota)
+    _write_into(co, "src.py", "print('ho')\n")
+    assert len((Path(co) / "src.py").read_text()) == len("print('hi')\n")
+    after, _ = review.worktree_identity(co, quota)
+    assert before != after
+
+
+def test_git_doing_what_the_bundle_asks_does_not_disturb_the_checkout(tmp_path):
+    """THE FALSE-POSITIVE CONTROL, and the documented gap in one assertion. The bundle tells
+    every reviewer to run `git diff`, which refreshes and rewrites the index; the review
+    inputs are laid down in the git directory too. Both are invisible here BECAUSE the git
+    directory is not measured — which is the gap this check does not cover, stated as a test
+    rather than only as a sentence."""
+    co = _checkout(tmp_path)
+    quota = storage.Quota.for_harvest()
+    before, _ = review.worktree_identity(co, quota)
+    for args in (["status"], ["diff", "HEAD"], ["log", "--oneline"]):
+        subprocess.run(["git", "-C", str(co), *args], check=True, capture_output=True)
+    gd = Path(subprocess.run(["git", "-C", str(co), "rev-parse", "--absolute-git-dir"],
+                             check=True, capture_output=True, text=True).stdout.strip())
+    (gd / "a-reviewer-wrote-here.txt").write_text("invisible to this check\n")
+    after, _ = review.worktree_identity(co, quota)
+    assert before == after
+
+
+def test_a_path_whose_type_changed_moves_the_identity(tmp_path):
+    """`snapshot.diff` deliberately does NOT compare `kind`, so the digest has to — and this
+    is the pair where every other field agrees. A symlink whose target TEXT is `special:4096`
+    digests to `sha256(b"special:4096")` at mode 0 and size 0; `snapshot._special_entry` gives
+    a FIFO (S_IFMT 4096) at mode 0 the same three. Without `kind` the swap is invisible."""
+    co = _checkout(tmp_path)
+    quota = storage.Quota.for_harvest()
+    p = Path(co) / "swap"
+    os.symlink("special:4096", p)
+    before, before_entries = review.worktree_identity(co, quota)
+    p.unlink()
+    os.mkfifo(p)
+    os.chmod(p, 0)
+    after, after_entries = review.worktree_identity(co, quota)
+    a, b = before_entries["swap"], after_entries["swap"]
+    assert (a.digest, a.mode, a.size) == (b.digest, b.mode, b.size) and a.kind != b.kind
+    assert snapshot.diff(before_entries, after_entries) == {}, \
+        "the diff has nothing to say about this one, which is why the digest must"
+    assert before != after
+
+
+def test_the_bracket_does_not_fire_on_forges_own_writes(tmp_path):
+    """WHAT EVERY OTHER LOOP TEST'S FAKE ROUND CANNOT REACH. `run_round` lays the reviewer
+    inputs down inside the checkout's GIT DIRECTORY and the council's workdir under the run
+    directory; if either landed in the worktree, every real round would report its own bundle
+    as a reviewer that wrote and no run would ever reach a terminal. Driven through the real
+    `run_round` with the council faked — NO PROVIDER IS INVOKED."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    clean = ("I read the bundle. TOK\n" + "y" * 500
+             + '\n```json\n{"findings": []}\n```')
+    answers = {n: (clean, True, "ok") for n in ("claude", "codex", "agy")}
+
+    def runner(run_dir, **kw):
+        return review.run_round(
+            run_dir, run_council=_fake_council(tmp_path, answers=answers, record={}),
+            probe=_probe, make_token=lambda: "TOK", **kw)
+
+    answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(), fix=lambda f, c: (c, True), run=runner)
+    assert answer == review.READY, why
+    assert journal.orphans(log.read()) == ()
+    assert review.review_dir(co, 1).is_dir(), "the bundle really was written"
+
+
+def test_a_checkout_that_cannot_be_inventoried_whole_refuses(tmp_path):
+    """`snapshot.take` raises rather than returning a short inventory, and this module has to
+    meet that in its own vocabulary — a partial answer here is a tree nobody measured reported
+    as one nobody touched."""
+    with pytest.raises(review.ReviewError) as e:
+        review.worktree_identity(tmp_path / "not-there", storage.Quota.for_harvest())
+    assert "inventoried whole" in str(e.value)

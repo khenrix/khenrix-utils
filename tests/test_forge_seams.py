@@ -1950,3 +1950,16 @@ def test_the_engine_text_strip_has_one_spelling_across_sections_8_and_11():
         assert runner._rationale(text, tok) == fingerprint.without_engine_text(text, tok)
     assert runner._rationale.__doc__ and "fingerprint.without_engine_text" in \
         runner._rationale.__doc__, "the delegation must be stated where the rule was measured"
+
+
+def test_the_unreviewed_label_is_spelled_in_exactly_one_place():
+    """SEAM: §13/§14.2 say 'independently reviewed' and §13.1 says 'independently
+    re-reviewed'. Two spellings of one predicate is two things a reader has to notice are
+    the same, and a grep for either finds half the run's states."""
+    root = Path(__file__).resolve().parents[1] / "shared" / "lib" / "forge"
+    literal = '"verified but not independently reviewed"'
+    holders = [p.name for p in sorted(root.glob("*.py"))
+               if literal in p.read_text(encoding="utf-8")]
+    assert holders == ["review.py"], holders
+    assert not any("independently re-reviewed" in p.read_text(encoding="utf-8")
+                   for p in root.glob("*.py"))
