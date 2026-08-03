@@ -229,18 +229,20 @@ def state_path(run_dir) -> Path:
     return Path(run_dir) / "state.json"
 
 
-# Lowercase, digits and internal hyphens. A seat is named for a provider, so this is not a
-# narrowing anyone will notice — and the alternative is that a separator or a `..` in the
-# name silently relocates the file the run's state lives in.
+# Runs of lowercase letters and digits, joined by SINGLE hyphens: `a-b` passes and `a--b`,
+# `-a` and `a-` do not. A seat is named for a provider, so this is not a narrowing anyone
+# will notice — and the alternative is that a separator or a `..` in the name silently
+# relocates the file the run's state lives in. "Internal hyphens" is what this said, and it
+# understates the rule by exactly the doubled hyphen a reader would expect it to admit.
 _SEAT_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*\Z")
 
 
 def seat_state_path(run_dir, name: str) -> Path:
     if not isinstance(name, str) or not _SEAT_NAME.match(name):
         raise StorageError(
-            f"a seat name is lowercase letters, digits and internal hyphens: {name!r}. It "
-            "becomes a filename inside the run directory, so anything else can put a run's "
-            "state where nothing accounts for it.")
+            f"a seat name is runs of lowercase letters and digits joined by single hyphens: "
+            f"{name!r}. It becomes a filename inside the run directory, so anything else can "
+            "put a run's state where nothing accounts for it.")
     return Path(run_dir) / f"seat-{name}.json"
 
 

@@ -105,6 +105,15 @@ def read_filesystem_manifest(run_dir) -> dict:
 
     Absent is a REFUSAL rather than an empty dict, for that same reason: `{}` is exactly
     what the disarmed check looks like, and the two must not be one value.
+
+    AND AN EMPTY ONE ON DISK IS THE SAME REFUSAL, which this paragraph used to leave open by
+    speaking only of absence. `{}` was unreachable from a missing FILE and perfectly
+    reachable from a present one — a truncated write, a hand-edited run directory, a
+    `_record_filesystem_manifest` over a baseline that inventoried nothing — and it returned
+    the exact value the sentence above says must never be produced, with every downstream
+    check ranging over zero paths and reporting verified. A baseline with genuinely no files
+    is indistinguishable from that here, and it is not a repository forge has anything to do:
+    there is no tracked content for a seat to change and none for a gate to run over.
     """
     path = filesystem_manifest_path(run_dir)
     try:
@@ -122,6 +131,12 @@ def read_filesystem_manifest(run_dir) -> dict:
             isinstance(k, str) and isinstance(v, str) for k, v in row.items()):
         raise BaselineError(
             f"{path} is not a path-to-digest mapping, so nothing can be checked against it")
+    if not row:
+        raise BaselineError(
+            f"{path} describes no paths at all, so `fleet.clone_seat`'s per-path check would "
+            "range over nothing and return verified on the HEAD assertion alone. That is the "
+            "disarmed check this file exists to make impossible, and an empty manifest is "
+            "indistinguishable from it.")
     return row
 
 

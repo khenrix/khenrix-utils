@@ -1690,13 +1690,25 @@ def test_the_baseline_the_loop_rebuilds_still_checks_what_a_seat_received(tmp_pa
 
 def test_a_baseline_manifest_that_was_never_recorded_is_a_refusal_not_an_empty_check(tmp_path):
     """`{}` is precisely what the disarmed check looks like, so absent and empty must not be
-    one value. A run directory missing the file cannot be driven at all."""
+    one value. A run directory missing the file cannot be driven at all.
+
+    AND NEITHER CAN ONE HOLDING `{}`, which is the half this only argued. Absence was
+    refused and a present-but-empty file returned the exact value the argument says must
+    never be produced — `clone_seat`'s per-path loop ranging over nothing and reporting
+    verified on the HEAD assertion alone. Unreachable from a missing file, perfectly
+    reachable from a truncated write or a hand-edited run directory.
+    """
     repo, run, b, m = _open(tmp_path, seats=1)
+    restore = dict(base_commit=m.base_commit, tracked_tree_oid=m.tracked_tree_oid,
+                   commit=m.baseline_commit, ref=m.baseline_ref)
+
+    baseline.filesystem_manifest_path(run).write_text("{}\n")
+    with pytest.raises(baseline.BaselineError, match="describes no paths"):
+        baseline.restore(run, **restore)
+
     baseline.filesystem_manifest_path(run).unlink()
     with pytest.raises(baseline.BaselineError, match="filesystem manifest"):
-        baseline.restore(run, base_commit=m.base_commit,
-                         tracked_tree_oid=m.tracked_tree_oid,
-                         commit=m.baseline_commit, ref=m.baseline_ref)
+        baseline.restore(run, **restore)
     with pytest.raises(baseline.BaselineError):
         runner.run(run, repo, identity=IDENT,
                    launch=_per_seat(lambda name, n, p: True))
