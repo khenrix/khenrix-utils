@@ -471,8 +471,9 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
          path as §4."* `build_verifier` — `fleet.clone_seat`, the same call `run_seat` makes,
          then `bundle.materialize` on top. Followed immediately by the hash validation, see
          below.
-      3. *"Run the confirmed setup command there."* `run_setup`, which refuses a tracked
-         effect the generator contract does not declare (`SetupOverlap`).
+      3. *"Run the confirmed setup command there."* `run_setup`, when the confirmation named
+         a setup command at all, refusing a tracked effect the generator contract does not
+         declare (`SetupOverlap`).
       4. *"Run the confirmed verify command there."* `fixed_point`, not a bare
          `run_command`: §6.2's PASS is "exit 0 AND no unexplained tracked delta", and only
          the `FixedPoint` carries the second half — `classify` hands a caller that passed a
@@ -484,11 +485,11 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
          Nothing is added here, because a second pin in this function would be a second place
          for the property to be true and would hide the loss of the first.
 
-    THE HASH VALIDATION RUNS ON BOTH PATHS, and that is this function's own line rather than
-    a call it delegates. §6: *"The materialized candidate is hash-validated against the
-    bundle before setup runs."* `run_setup` makes that check as its first statement and owns
-    the ordering when there IS a setup command — `calibrate` relies on exactly that and
-    deliberately does not repeat it. But `run_command` refuses a command with no steps, so a
+    THE HASH VALIDATION RUNS ON BOTH PATHS, and only one of the two is delegated. §6: *"The
+    materialized candidate is hash-validated against the bundle before setup runs."*
+    `run_setup` makes that check as its first statement and owns the ordering when there IS a
+    setup command — `calibrate` relies on exactly that and deliberately does not repeat it,
+    and neither does the branch below. But `run_command` refuses a command with no steps, so a
     run whose confirmation named no setup never calls `run_setup` at all, and the one
     ordering §6 states outright would be skipped entirely for every repository that needs no
     toolchain. The `else` branch below is that hole closed; it is not a duplicate check,
