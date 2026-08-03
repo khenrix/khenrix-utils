@@ -73,7 +73,7 @@ def _manifest(repo, b, setup, gate, seats, attempts):
         setup=setup, verify=gate,
         protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
-        seats=seats, attempts=attempts)
+        seats=seats, attempts=attempts, review_rounds=2, synthesis_fix_cap=3)
 
 
 def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),

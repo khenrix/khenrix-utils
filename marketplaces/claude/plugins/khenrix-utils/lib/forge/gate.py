@@ -211,6 +211,15 @@ class Quote:
     lines: tuple[str, ...]
     seats: int
     attempts: int
+    # §12.3's synthesis-fix cap, and the rounds it has to cover. They are HERE for
+    # `seats`/`attempts`' reason one section on: everything downstream reads the run's shape
+    # off the quote, so the number the operator was shown and the number the loop spends are
+    # one number. `Manifest.attempts` cannot hold this — it is the BUILDER budget, and
+    # `quote` prices post-review synthesis separately as `review_rounds + ultra_fixes`, so
+    # reusing it turns a 3-attempt run into a 9-attempt one and leaves `--collect` unable to
+    # say which budget an `attempt` value was spending.
+    review_rounds: int
+    synthesis_fix_cap: int
 
 
 def _confirmed_count(name, value, source, *, floor=1) -> int:
@@ -328,7 +337,8 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     ]
     return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
-                 seats=seats, attempts=attempts)
+                 seats=seats, attempts=attempts,
+                 review_rounds=review_rounds, synthesis_fix_cap=review_fixes)
 
 
 # ---------------------------------------------------------------------------------------
@@ -1074,6 +1084,8 @@ class Confirmation:
     author: tuple[str, str]
     seats: int
     attempts: int
+    review_rounds: int
+    synthesis_fix_cap: int
 
     def __post_init__(self):
         # NORMALIZING as well as refusing, through the same helpers `confirm` used to call:
@@ -1110,6 +1122,17 @@ class Confirmation:
         # cannot hold a shape the manifest will not take.
         _confirmed_count("seats", self.seats, "§5 step 2")
         _confirmed_count("attempts", self.attempts, "§5 step 2")
+        _confirmed_count("review_rounds", self.review_rounds, "§5 step 2", floor=0)
+        _confirmed_count("synthesis_fix_cap", self.synthesis_fix_cap, "§5 step 2", floor=0)
+        if self.synthesis_fix_cap < self.review_rounds:
+            # Each round can produce at most one fix, and §13.1 adds one more. A cap under
+            # the rounds it must cover is a budget the loop is guaranteed to exhaust before
+            # the review it was priced for finishes, which would report `review_blocked` for
+            # an arithmetic mistake made at the gate.
+            raise GateError(
+                f"synthesis_fix_cap={self.synthesis_fix_cap} is below review_rounds="
+                f"{self.review_rounds}: §5.2 prices one post-review synthesis per round plus "
+                "§13.1's, so a cap under the round count cannot fund the review it agreed to")
 
 
 def must_show(report, quote_, command) -> tuple[str, ...]:
@@ -1383,7 +1406,9 @@ def confirm(report, quote_, answers) -> Confirmation:
                         strategy=answers["strategy"],
                         accepted_gaps=answers.get("accepted_gaps", ()),
                         author=answers["author"],
-                        seats=quote_.seats, attempts=quote_.attempts)
+                        seats=quote_.seats, attempts=quote_.attempts,
+                        review_rounds=quote_.review_rounds,
+                        synthesis_fix_cap=quote_.synthesis_fix_cap)
 
 
 def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
@@ -1534,7 +1559,9 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
         index_digest=runstate.snapshot_index(report.facts.root),
         created_at=datetime.now(timezone.utc).isoformat(),
         seats=confirmation.seats,
-        attempts=confirmation.attempts))
+        attempts=confirmation.attempts,
+        review_rounds=confirmation.review_rounds,
+        synthesis_fix_cap=confirmation.synthesis_fix_cap))
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,

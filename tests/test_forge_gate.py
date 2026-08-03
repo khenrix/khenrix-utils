@@ -773,7 +773,7 @@ def _confirmation(**kw):
     """A complete `Confirmation`, with any single field replaced by `kw`."""
     fields = dict(setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("true",)),),
                   on_calibration_failure="abort", strategy="size-gated", accepted_gaps=(),
-                  author=AUTHOR, seats=3, attempts=3)
+                  author=AUTHOR, seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3)
     return gate.Confirmation(**{**fields, **kw})
 
 
@@ -1611,7 +1611,7 @@ def _manifest(**kw):
                   verify=(verify.Step(argv=("true",)),), protected_refs={},
                   forge_refs={"refs/khenrix-forge/r1/base": "b" * 40}, status_digest="d",
                   index_digest="e", created_at="2026-08-02T00:00:00+00:00", seats=3,
-                  attempts=3)
+                  attempts=3, review_rounds=2, synthesis_fix_cap=3)
     return runstate.Manifest(**{**fields, **kw})
 
 
@@ -1648,7 +1648,8 @@ def test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse(tmp_p
     """
     shared = [f.name for f in dataclasses.fields(gate.Confirmation)
               if f.name in {g.name for g in dataclasses.fields(runstate.Manifest)}]
-    assert sorted(shared) == ["attempts", "seats", "setup", "verify"], \
+    assert sorted(shared) == ["attempts", "review_rounds", "seats", "setup",
+                              "synthesis_fix_cap", "verify"], \
         "the two records' shared fields moved; the rows below decide what this test measures"
     c = _confirmation()
     targets = [(f".{n}", lambda x, n=n: dataclasses.replace(c, **{n: x})) for n in shared]
@@ -1828,3 +1829,35 @@ def test_nothing_in_this_module_runs_the_repositorys_own_program(tmp_path, monke
     _git(repo, "add", "-A")
     assert {p.name for p in fired.iterdir()} == {"reference-transaction", "post-index-change"}, \
         "the control failed: these hooks do nothing even when an ordinary git runs them"
+
+
+def test_the_priced_synthesis_fix_cap_is_the_recorded_one(tmp_path, monkeypatch):
+    """§12.3's cap has one number, and §5.2 is where it is priced.
+
+    `Manifest.attempts` is the BUILDER budget — `quote` computes `builders = seats *
+    attempts` — and reusing it would silently re-price a 3-attempt run as 9. `State.attempt`
+    is already spent on builder attempts. So the cap is its own field, derived from the same
+    arithmetic the quote showed the operator.
+    """
+    _state(monkeypatch, tmp_path)
+    repo = make_repo(tmp_path)
+    report = preflight.inspect_repo(repo)
+    q = gate.quote(report, review_rounds=2, ultrareview=True)
+    assert (q.review_rounds, q.synthesis_fix_cap) == (2, 3)
+    assert gate.quote(report, review_rounds=2, ultrareview=False).synthesis_fix_cap == 2
+    assert gate.quote(report, review_rounds=0, ultrareview=False).synthesis_fix_cap == 0
+
+    c = gate.confirm(report, q, _answers())
+    assert (c.review_rounds, c.synthesis_fix_cap) == (2, 3)
+    run = gate.open_run(report, c, "r-cap")
+    back = runstate.read_manifest(run)
+    assert (back.review_rounds, back.synthesis_fix_cap) == (2, 3), \
+        "the priced number and the recorded number are the same number"
+
+
+def test_a_cap_below_the_rounds_it_must_cover_is_refused():
+    with pytest.raises(gate.GateError):
+        gate.Confirmation(setup=(), verify=(verify.Step(argv=("true",)),),
+                          on_calibration_failure="abort", strategy="size-gated",
+                          accepted_gaps=(), author=("A", "a@b.invalid"),
+                          seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=1)

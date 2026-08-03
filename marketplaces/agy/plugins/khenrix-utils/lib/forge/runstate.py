@@ -317,6 +317,13 @@ class Manifest:
     surviving seats is indistinguishable from a two-seat run once the third's directory is
     gone. `gate.confirm` takes both off the `Quote` that was shown rather than from a second
     argument, so the priced number and the recorded number are the same number.
+
+    `review_rounds` and `synthesis_fix_cap` are the same agreement for §12.3's post-review
+    loop, and the cap is its OWN field rather than a second reading of `attempts`: `attempts`
+    is the builder budget `quote` multiplies by `seats`, so spending it on synthesis fixes
+    would re-price a 3-attempt run as 9 and leave a resume unable to say which budget a
+    number was drawn against. Both are floored at zero rather than at one — a run that priced
+    no review rounds is a run, and its cap is 0 rather than a field nobody wrote.
     """
     run_id: str
     repo_path: str
@@ -335,6 +342,8 @@ class Manifest:
     created_at: str
     seats: int
     attempts: int
+    review_rounds: int
+    synthesis_fix_cap: int
 
 
 def write_manifest(run_dir, manifest: Manifest) -> None:
@@ -937,6 +946,16 @@ def _contract(name, value, source):
         raise ManifestError(f"{source}: {name}: {e}") from e
 
 
+def _budget(name, value, source):
+    """A post-review budget, floored at ZERO rather than at one.
+
+    `count`'s floor of 1 is right for `seats` and `attempts` — a run with no seat is not a
+    run. Zero review rounds IS a run (`gate.quote` says so at its own floor), and a run that
+    priced no post-review synthesis has a cap of 0 rather than a missing field.
+    """
+    return count(name, value, source, floor=0)
+
+
 # One decoder per field, by name. A field added to `Manifest` and not named here makes the
 # next read fail loudly, which is the point: the alternative is that it arrives as whatever
 # JSON made of it and compares unequal to what was written, silently, on a resume.
@@ -958,6 +977,8 @@ _DECODERS = {
     "created_at": _text,
     "seats": count,
     "attempts": count,
+    "review_rounds": _budget,
+    "synthesis_fix_cap": _budget,
 }
 
 
