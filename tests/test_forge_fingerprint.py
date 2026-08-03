@@ -253,17 +253,25 @@ def test_an_uninstalled_cli_records_none_rather_than_a_shared_absence():
     assert fingerprint.agreement_label([pi, pi, pi]) == "not-comparable"
 
 
-def test_an_empty_string_is_not_a_measurement():
+@pytest.mark.parametrize("blank", ["", " ", "   ", "\t", "\n", " \t\n "])
+def test_a_blank_string_is_not_a_measurement_whatever_it_is_made_of(blank):
     """`None` is how this module spells "nobody looked", and it is the ONLY spelling.
 
-    An empty version string is the `"(unknown)"` defect wearing different clothes: two seats
-    carrying `""` compare equal and manufacture the identity match, and `""` is not a fact
-    about either CLI.
+    A blank version string is the `"(unknown)"` defect wearing different clothes: two seats
+    carrying it compare equal and manufacture the identity match, and it is not a fact about
+    either CLI.
+
+    PARAMETRIZED RATHER THAN SPELLED OUT, because the enumeration is the defect. `""` was
+    refused and `"   "` was not — whitespace is truthy, so `not value` let it past — and
+    measured before the fix, `agreement_label([_pi(cli_version="   ")] * 2)` returned
+    `identically-prompted` with `creditable` True. The rule the code now states is a property
+    of the value, so this test asserts the property holds across the shapes rather than
+    growing one more `with` block per shape someone thinks of.
     """
     with pytest.raises(fingerprint.FingerprintError, match="non-empty"):
-        _pi(cli_version="")
+        _pi(cli_version=blank)
     with pytest.raises(fingerprint.FingerprintError, match="non-empty"):
-        _pi(semantic_sha256="")
+        _pi(semantic_sha256=blank)
 
 
 def test_a_hash_that_is_absent_is_refused_because_it_is_never_unmeasured():
@@ -297,9 +305,12 @@ def test_a_row_whose_field_is_not_a_string_is_refused():
         fingerprint.from_row(row)
 
 
-def test_a_row_carrying_an_empty_string_is_refused_like_any_other_non_measurement():
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_a_row_carrying_a_blank_string_is_refused_like_any_other_non_measurement(blank):
+    """`from_row`'s own docstring calls a stored record an untrusted shape, and this is the
+    route a tampered or corrupted one takes to reach the comparison."""
     row = fingerprint.as_row(_pi())
-    row["plugin_closure_sha256"] = ""
+    row["plugin_closure_sha256"] = blank
     with pytest.raises(fingerprint.FingerprintError, match="non-empty"):
         fingerprint.from_row(row)
 

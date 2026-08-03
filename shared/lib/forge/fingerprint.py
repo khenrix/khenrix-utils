@@ -21,8 +21,13 @@ WHAT A `None` MEANS HERE, ON EVERY FIELD THAT HAS ONE: nobody looked. It must NE
 equal to another `None` for "the same". `bundle.CandidateBundle.gate_delta`'s three-state rule
 is the in-repo precedent, and §11 is where it matters most: two seats whose versions could not
 be read, recorded as one string, would MANUFACTURE the identity match this section is written
-to make honest. `None` is also the ONLY spelling of it — an empty string is refused at
-construction, because `""` compares equal to `""` exactly as `"(unknown)"` does.
+to make honest. `None` is also the ONLY spelling of it, and that is stated as a PROPERTY
+rather than as a list of the spellings anyone has thought of: a value that is not a non-empty
+STRIPPED string records no measurement, and is refused at construction. The list is how this
+was got wrong three times — the brief said `None`, then `""` was found admitted, then `"   "`
+was found admitted by the guard written to refuse `""` — and each time the fix was one more
+`or`. `"   "` compares equal to `"   "` exactly as `""` and `"(unknown)"` do, and so does
+whichever character someone types next; the property is what leaves nothing left to enumerate.
 """
 import hashlib
 import re
@@ -50,6 +55,23 @@ class FingerprintError(RuntimeError):
     """This seat's prompt identity cannot be recorded or compared honestly."""
 
 
+def _absent(value) -> bool:
+    """Whether this value records no measurement — §11's "nobody looked", as ONE predicate.
+
+    THE POINT IS THAT IT IS NOT A LIST. Written as an enumeration this guard has been wrong
+    three times, each fix adding the spelling the last review happened to try; a value that is
+    not a non-empty string AFTER STRIPPING is absent, and there is no fourth spelling to find
+    because the rule no longer names any. Whitespace is the one that got through: `"   "` is
+    truthy, so `not value` admitted it, and two seats carrying it scored `identically-prompted`
+    — an unread version manufacturing the identity match §11 exists to make honest.
+
+    `probe_cli` already answers in exactly this shape, stripping its stdout before choosing
+    between the string and `None`. This is that same rule at the door every other path in and
+    out of a record — `build`, `from_row`, a caller assembling one by hand — has to pass.
+    """
+    return not isinstance(value, str) or not value.strip()
+
+
 @dataclass(frozen=True)
 class PromptIdentity:
     """§11's four values, spread across eight fields because two of them are pairs.
@@ -72,9 +94,10 @@ class PromptIdentity:
     The CLI binary is recorded as a resolved absolute PATH and never hashed — these are
     multi-hundred-megabyte node bundles and the hash would dominate seat setup.
 
-    EVERY FIELD IS A NON-EMPTY STRING OR `None`, CHECKED HERE AND NOWHERE ELSE. One gate rather
-    than one per constructor: `build` assembles from live measurements and `from_row` from a
-    stored record, and a rule spelled twice is a rule that eventually holds in one of them.
+    EVERY FIELD IS A NON-EMPTY STRING — `_absent`'s sense of non-empty, so stripped — OR
+    `None`, CHECKED HERE AND NOWHERE ELSE. One gate rather than one per constructor: `build`
+    assembles from live measurements and `from_row` from a stored record, and a rule spelled
+    twice is a rule that eventually holds in one of them.
     """
     prompt_sha256: str
     semantic_sha256: str
@@ -88,12 +111,16 @@ class PromptIdentity:
     def __post_init__(self):
         for f in fields(self):
             value = getattr(self, f.name)
-            if value is None and f.name not in _ALWAYS_MEASURED:
+            optional = f.name not in _ALWAYS_MEASURED
+            # `None` is checked by identity and ONLY here, which is what makes it the single
+            # spelling of absence the rest of the module may compare against; every other way
+            # of being absent is `_absent`'s business and is refused rather than admitted.
+            if value is None and optional:
                 continue
-            if not isinstance(value, str) or not value:
+            if _absent(value):
                 raise FingerprintError(
-                    f"{f.name} is a non-empty string"
-                    f"{'' if f.name in _ALWAYS_MEASURED else ' or None'}, not {value!r}")
+                    f"{f.name} is a non-empty string{' or None' if optional else ''}, "
+                    f"not {value!r}")
 
 
 def without_engine_text(text: str, token: str) -> str:
@@ -235,7 +262,9 @@ def agreement_label(ids) -> str:
     it must not credit agreement either, which is why `creditable` is True for exactly one of
     them. A `None` in any compared field is `not-comparable`: two seats with
     `bundle_sha256=None` are two seats whose bundles were never hashed, not two seats with the
-    same bundle.
+    same bundle. `is None` IS THE WHOLE TEST, and that is a consequence of `_absent` rather
+    than a second opinion about it: nothing carrying an absence spelled any other way can reach
+    here, because `PromptIdentity` refused it at construction.
 
     A MEASURED DIFFERENCE OUTRANKS AN UNMEASURED FIELD, so the answer does not depend on where
     the `None` sits in `_COMPARED`. Two seats on different models are differently prompted
