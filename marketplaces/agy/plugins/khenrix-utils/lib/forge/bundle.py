@@ -305,7 +305,27 @@ def _names_dotgit(rel: str) -> bool:
     return any(_is_dotgit(p) for p in Path(rel).parts)
 
 
-def _assert_contained(rel: str, what: str) -> None:
+def _parts(rel):
+    """`rel`'s POSIX components, for a `str` OR a `bytes` path.
+
+    BYTES ARE NOT A CONVENIENCE HERE. `runstate` keeps a carried path in bytes from git's
+    output all the way to `os.lstat`, deliberately: a repository may hold a name that is not
+    valid UTF-8, and a decode that raises is a drift check that does not run. That module
+    needs this module's descent over exactly those values, and the alternative — a second
+    spelling of the rule, in bytes, one file over — is the divergence `_check_rel`'s comment
+    already names as an open defect on this project.
+
+    `PurePosixPath` refuses bytes outright, so the split is explicit. Empty components are
+    dropped, which is what collapses `a//b` and a trailing slash; `.` is dropped because it
+    names the directory it sits in. Neither is a normalization the caller could be surprised
+    by — `..` is NOT collapsed, and is left for `_assert_contained` to refuse.
+    """
+    if isinstance(rel, bytes):
+        return tuple(p for p in rel.split(b"/") if p and p != b".")
+    return tuple(p for p in PurePosixPath(rel).parts if p != ".")
+
+
+def _assert_contained(rel, what: str) -> None:
     """`rel` stays inside the tree it is joined onto, or a refusal.
 
     `Path(root) / "../../.ssh/id_rsa"` escapes without Path complaining, and it does damage
@@ -319,8 +339,56 @@ def _assert_contained(rel: str, what: str) -> None:
     escapes is not a path this module should be reasoning about, while `omitted` means
     "we looked and could not carry it".
     """
-    if os.path.isabs(rel) or ".." in Path(rel).parts:
+    dotdot = b".." if isinstance(rel, bytes) else ".."
+    if os.path.isabs(rel) or dotdot in _parts(rel):
         raise BundleError(f"{what} escapes the tree: {rel!r}")
+
+
+def _assert_no_collision(rels, what: str) -> None:
+    """No two entries in `rels` claim one path, and none claims a path another needs as a
+    DIRECTORY — or a refusal, raised before anything is laid down.
+
+    WHAT THIS REPLACES IS A RAW `FileExistsError`. Entries are materialized in order, and the
+    leaf write is `O_EXCL` because nothing in either materializer overwrites. A manifest
+    carrying one path twice, or carrying both `x/y/z` and `x/y`, therefore reached that open
+    with the leaf already created — by the previous entry, or by the descent's own `mkdir` —
+    and `os.open` raised `FileExistsError` straight out of `materialize`. Measured on both:
+    `taskbundle.materialize` over two identical entries, and `bundle.materialize` over
+    `x/y/z` then `x/y` (and over `p/q/r` then a symlink `p/q`, where `os.symlink` raises the
+    same class). That is an error class NEITHER module's contract names, so it reaches a
+    caller that knows only `TaskBundleError`/`BundleError` as an engine crash.
+
+    IT IS ALSO WHAT MADE "A REFUSED BUNDLE LEAVES NOTHING BEHIND" FALSE, which is the more
+    expensive half. `taskbundle.materialize`'s own comment argues that every path is checked
+    ahead of the `mkdir` so a refusal leaves nothing — but a collision is a property of the
+    entry SET, invisible to a per-entry check, so it was only ever discovered after the
+    directory and the earlier entries had been written. Measured: the seat's task directory
+    was left holding `d/f.txt`, and the §8.1 retry that is meant to recover then refused with
+    "already holds a task bundle". The check belongs with the other pre-write ones for exactly
+    that reason.
+
+    A REFUSAL RATHER THAN A LAST-ONE-WINS, on `_safe_rel`'s argument: by this point the
+    manifest CLAIMS both entries, and silently resolving the ambiguity in favour of whichever
+    happens to be later is the engine choosing what the record meant.
+
+    The ancestor test and the duplicate test are ONE rule, not two, because a path that is an
+    entry is also a path some other entry may need to descend through, and the filesystem has
+    only one name for both.
+    """
+    seen: dict[tuple, str] = {}
+    for rel in rels:
+        parts = _parts(rel)
+        if (prior := seen.get(parts)) is not None:
+            raise BundleError(
+                f"{what} is claimed by two entries: {prior!r} and {rel!r}. One path cannot "
+                "hold two records, and choosing between them is not this engine's to do.")
+        seen[parts] = rel
+    for parts, rel in seen.items():
+        for i in range(1, len(parts)):
+            if (ancestor := seen.get(parts[:i])) is not None:
+                raise BundleError(
+                    f"{what} {ancestor!r} is also a directory {rel!r} must be laid down "
+                    "inside; one name cannot be both an entry and the path to one.")
 
 
 # Every operation the descent below needs must take a `dir_fd=`, or the descent is decoration:
@@ -352,7 +420,20 @@ class _Contained:
     path, so nothing renamed or symlinked afterwards can redirect it, and `O_NOFOLLOW` turns a
     component that IS a symlink into an `ELOOP` refusal rather than a redirect. There is no
     window between validating and using because nothing is validated by name — the kernel
-    resolves one component at a time and every one of them is already inside the tree.
+    resolves one component at a time and every one of them was inside the tree WHEN IT WAS
+    OPENED.
+
+    THAT LAST CLAUSE IS THE RESIDUAL, and this paragraph used to assert the unqualified
+    version of it. A descriptor pins an inode, and an inode can be MOVED: renaming an already
+    opened intermediate component out of `root` mid-descent leaves the descent holding a
+    directory that is no longer inside the tree, and the leaf write lands wherever it went.
+    Measured — `a` opened, `<root>/a` renamed to a sibling of `root`, and the write arrived at
+    `<outside>/a/b/f.txt` with nothing under `root` at all. It is NOT the forged-manifest
+    route this class exists to close: no manifest can perform a rename, so it takes a
+    CONCURRENT WRITER with access to the tree, which is a different adversary from the one
+    §8.1 describes. It is stated because the alternative is a comment that reads cleaner than
+    the code, and because closing it needs something this mechanism does not have — an
+    `openat2(RESOLVE_BENEATH)`, which is Linux-only and has no stdlib spelling.
 
     `_assert_contained` STILL RUNS FIRST, AND IT IS NOT A FIFTH LEXICAL GUARD. `..` is a
     LITERAL component: the kernel resolves it with no symlink involved, so `os.open("..",
@@ -377,10 +458,13 @@ class _Contained:
                 f"({[fn.__name__ for fn in _DIR_FD_OPS if fn not in os.supports_dir_fd]}), so "
                 "there is no way to lay a path down that a symlink cannot redirect")
         _assert_contained(rel, what)
-        parts = [p for p in PurePosixPath(rel).parts if p != "."]
+        parts = _parts(rel)
         if not parts:
             raise BundleError(f"{what} names no path at all: {rel!r}")
-        fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)
+        # `os.fspath`, not `str`: a `bytes` root is a real caller (`runstate` keeps a
+        # repository path in bytes so a non-UTF-8 one cannot raise), and `str(b"/x")` is the
+        # literal text `b'/x'` — a name nothing on disk has.
+        fd = os.open(os.fspath(root), os.O_RDONLY | os.O_DIRECTORY)
         try:
             for part in parts[:-1]:
                 if create_dirs:
@@ -646,6 +730,13 @@ def materialize(bundle, dest) -> tuple[str, ...]:
                 e.path, e.payload.decode("utf-8", "surrogateescape")):
             raise BundleError(
                 f"sidecar symlink {e.path!r} points out of the tree: {e.payload!r}")
+    # The one check over the entry SET rather than over an entry, and it belongs with the
+    # loop above rather than inside it: a collision is invisible per entry and used to be
+    # discovered by `FileExistsError` from the write loop, after the patch had been applied.
+    # Sidecar paths are NOT checked against the patch's paths, deliberately — this function's
+    # own docstring names a rename shim the patch deletes and a sidecar puts back as a path
+    # that legitimately belongs to both channels.
+    _assert_no_collision([e.path for e in bundle.sidecars], "sidecar path")
 
     post, pre = _patch_paths(dest, bundle.tracked_patch)
     # Both sides here, unlike in `build`: this answers "what did materializing touch", and a
@@ -697,21 +788,34 @@ def materialize(bundle, dest) -> tuple[str, ...]:
                 os.unlink(at.leaf, dir_fd=at.fd)
             except (FileNotFoundError, IsADirectoryError, PermissionError):
                 pass
-            if e.kind == "symlink":
-                os.symlink(e.payload.decode("utf-8", "surrogateescape"), at.leaf,
-                           dir_fd=at.fd)
-            else:
-                # `O_EXCL` is safe after the unlink and is what refuses to write through
-                # anything that reappeared in between. Bytes then mode, never the reverse: a
-                # 0400 file created mode-first cannot be written to, and `fchmod` on the
-                # descriptor cannot be pointed at another file the way a path can.
-                fd = open_leaf(at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "sidecar path")
-                try:
-                    n = 0
-                    while n < len(e.payload):
-                        n += os.write(fd, e.payload[n:])
-                    os.fchmod(fd, e.mode)
-                finally:
-                    os.close(fd)
+            # WHAT `O_EXCL` STILL REFUSES, now that `_assert_no_collision` has taken the
+            # manifest's own collisions: something that reappeared at the leaf between the
+            # unlink above and the create below. That needs a CONCURRENT WRITER — the forged
+            # manifest cannot reach it any more — and it stays a refusal rather than an
+            # overwrite. It is reported in this module's own class, because `FileExistsError`
+            # out of here is an engine crash to a §6.2 caller that knows only `BundleError`;
+            # the tree is half-materialized either way, and the message says so rather than
+            # letting the caller infer a cleanliness this path cannot promise.
+            try:
+                if e.kind == "symlink":
+                    os.symlink(e.payload.decode("utf-8", "surrogateescape"), at.leaf,
+                               dir_fd=at.fd)
+                else:
+                    # Bytes then mode, never the reverse: a 0400 file created mode-first
+                    # cannot be written to, and `fchmod` on the descriptor cannot be pointed
+                    # at another file the way a path can.
+                    fd = open_leaf(at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "sidecar path")
+                    try:
+                        n = 0
+                        while n < len(e.payload):
+                            n += os.write(fd, e.payload[n:])
+                        os.fchmod(fd, e.mode)
+                    finally:
+                        os.close(fd)
+            except OSError as err:
+                raise BundleError(
+                    f"the sidecar {e.path!r} could not be laid down ({err.strerror}); "
+                    "something else is writing this tree, and the verifier is now "
+                    "half-materialized") from err
         written.add(e.path)
     return tuple(sorted(written))

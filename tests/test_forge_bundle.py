@@ -847,6 +847,13 @@ def test_a_chain_of_sidecar_links_cannot_write_outside_the_verifier(tmp_path):
 
     A `CandidateBundle`'s sidecars are INPUT under the deserialize-from-a-ledger model this
     module's own `_safe_rel` docstring is written for, so this is reachable by the same route.
+
+    WHICH DOOR IT IS REFUSED AT MOVED. `_assert_no_collision` now catches this chain before
+    the patch is applied, and by construction rather than by luck: each link has to be both a
+    sidecar ENTRY and an ancestor of the next one, and one name cannot be both. So the route
+    where an earlier sidecar redirects a later one is closed at the manifest, and
+    `test_a_sidecar_is_refused_through_a_directory_component_that_is_a_link` is what still
+    pins the descent itself.
     """
     repo = make_repo(tmp_path / "work")
     run = tmp_path / "work" / "run"
@@ -863,7 +870,41 @@ def test_a_chain_of_sidecar_links_cannot_write_outside_the_verifier(tmp_path):
                                      S("a/b", "symlink", 0, b".."),
                                      S("a/b/c", "symlink", 0, b".."),
                                      S("a/b/c/outside/OWNED.txt", "file", 0o644, b"host\n")))
-    with pytest.raises(bundle.BundleError, match="does not stay inside the tree"):
+    with pytest.raises(bundle.BundleError,
+                       match="cannot be both an entry and the path to one"):
+        bundle.materialize(cand, seat.path)
+    assert not (outside / "OWNED.txt").exists(), \
+        "the write must never reach a host path, not even briefly"
+    assert not (Path(seat.path) / "a").exists(follow_symlinks=False), \
+        "refused before the first sidecar, so not even the first link was laid down"
+
+
+def test_a_sidecar_is_refused_through_a_directory_component_that_is_a_link(tmp_path):
+    """What still pins the DESCENT in `materialize`'s sidecar loop, now that the chain above
+    is refused at the manifest.
+
+    The link is already in the verifier when `materialize` is called, which is the difference
+    that matters: it is not a sidecar, so no rule about the entry SET can see it, and every
+    component of `a/OWNED.txt` is lexically clean — `_safe_rel` passes, `_escapes` has no link
+    target to judge. Only opening `a` with `O_NOFOLLOW` against the root's descriptor answers.
+    A verifier clone is a tree the candidate's own patch has just been applied to, so a link
+    sitting at a directory component is an ordinary state rather than a contrived one.
+    """
+    repo = make_repo(tmp_path / "work")
+    run = tmp_path / "work" / "run"
+    run.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    seat = fleet.clone_seat(repo, b, tmp_path / "work" / "verifier", name="claude",
+                            identity=("F", "f@example.invalid"))
+    os.symlink(outside, Path(seat.path) / "a")
+    cand = bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref=b.ref, baseline_commit=b.commit,
+        tracked_patch=b"",
+        sidecars=(bundle.SidecarEntry("a/OWNED.txt", "file", 0o644, b"host\n"),))
+    with pytest.raises(bundle.BundleError,
+                       match=r"passes through 'a', which is not a directory"):
         bundle.materialize(cand, seat.path)
     assert not (outside / "OWNED.txt").exists(), \
         "the write must never reach a host path, not even briefly"
