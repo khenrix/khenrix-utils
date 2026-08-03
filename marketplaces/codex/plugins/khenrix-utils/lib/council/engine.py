@@ -1277,7 +1277,14 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                 requested: Optional[list] = None,
                 mode: Optional[str] = None,
                 read_only: Optional[bool] = None,
-                install_signal_handler: bool = True) -> dict:
+                install_signal_handler: bool = True,
+                env=None) -> dict:
+    # `env` is handed to every member, BEFORE `child_env` applies the council's own depth
+    # guard on top of it; `None` keeps the previous behaviour exactly (`os.environ` plus the
+    # guard). Keyword-only and defaulted, so no existing caller changes. The caller this
+    # exists for is `forge.review.run_round`, whose panel must not be able to write bytecode
+    # into the tree it is reviewing — `run_provider` already took an `env`, and a council of
+    # members that could not be given one meant that seam stopped at the single-member call.
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     # Install at the CHOKE POINT, not in the callers. Members now lead their own session,
@@ -1292,7 +1299,7 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
         install_cleanup_handler()
     started = _now_iso()
     with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
-        futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir)
+        futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir, env=env)
                    for s in specs]
         providers = [f.result() for f in futures]
     finished = _now_iso()

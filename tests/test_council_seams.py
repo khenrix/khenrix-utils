@@ -148,3 +148,35 @@ def test_run_provider_hands_its_callers_environment_to_the_child(monkeypatch):
                          env={"LLM_FORGE_DEPTH": "1", "GIT_CONFIG_GLOBAL": "/dev/null"})
     assert seen["env"]["LLM_FORGE_DEPTH"] == "1" and seen["env"]["LLM_COUNCIL_DEPTH"] == "1"
     assert "PATH" not in seen["env"], "the scrubbed base reached the child, not os.environ"
+
+
+def test_run_council_hands_its_callers_environment_to_every_member(monkeypatch):
+    """THE SEAM ONE CONTAINER OUT. `run_provider` already took an `env`; `run_council` did
+    not, so a caller convening a PANEL could not give it one and every member ran under
+    `os.environ` regardless. `forge.review.run_round` is the caller that needs it — its three
+    reviewers are write-capable and share the checkout they are reviewing, and the environment
+    is what stops them writing bytecode into it.
+
+    Watches what each child was actually given rather than the signature: `env` accepted and
+    dropped is the defect this whole family of tests exists for, and a council record reads
+    identically either way.
+    """
+    eng = _engine()
+    seen = []
+
+    def fake_run_member(argv, stdin=None, timeout=None, env=None, cwd=None):
+        seen.append(env)
+        raise FileNotFoundError("no binary is launched by this test")
+
+    monkeypatch.setattr(eng, "run_member", fake_run_member)
+    with tempfile.TemporaryDirectory() as td:
+        specs = [eng.ProviderSpec(n, ["true"], None, eng.extract_raw, min_chars=0)
+                 for n in ("claude", "codex", "agy")]
+        eng.run_council(specs, retries=0, timeout=5, backoff=0.0, workdir=Path(td),
+                        install_signal_handler=False,
+                        env={"PYTHONDONTWRITEBYTECODE": "1"})
+    assert len(seen) == 3
+    for env in seen:
+        assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+        assert env["LLM_COUNCIL_DEPTH"] == "1", "the council's own guard still applies on top"
+        assert "PATH" not in env, "the caller's environment reached the child, not os.environ"
