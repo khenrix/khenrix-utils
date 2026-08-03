@@ -93,11 +93,13 @@ class SeatResult:
     code, and `_with_setup_caveat` puts it in prose that no later phase can branch on.
 
     `verification_refused` is what §6 or §8 said when this seat's verification could not be
-    completed, and `None` otherwise. `verification is None` alone cannot carry it: a seat
-    whose verification was refused and a seat whose verification was never reached both
-    leave that field empty, and after the run loop stopped killing the fleet over one seat
-    the second state stopped implying the first. A record that could not tell them apart
-    would read as "not verified yet" for a verifier clone that was bought and spent.
+    completed, and `None` otherwise. `verification is None` alone cannot carry it: a seat §6
+    refused and a seat the loop never reached both leave that field empty, and after the run
+    loop stopped killing the fleet over one seat the second state stopped implying the first.
+    A record that could not tell them apart would read as "not verified yet" for a verifier
+    clone that was bought and spent. Nor is a SET `verification` the complement: an §8
+    refusal fills it and still refuses, which is the one state where both fields are
+    populated at once.
 
     `seat` is typed optional because a record for a seat that never got a clone would carry
     `None` there, and `run_seat` does not produce one: a clone that fails raises, because a
@@ -125,6 +127,11 @@ class SeatResult:
     then. §6.2's vocabulary, not §8's: `status.verify` holds the translation and this holds
     what was actually decided, because `_verify_dim` is lossy in the direction that matters
     and a record carrying only the translation would lose which of four non-verdicts it was.
+    ONCE ONE HAS BEEN TAKEN INCLUDES ONE §8 THEN REFUSED, which the sentence above used to be
+    false of: taking a verdict and carrying it into a `Status` are two events, §8 can refuse
+    the second having watched the first, and a field emptied on that path describes a measured
+    gate — in a clone that was built, in a run that was paid for — as a measurement never
+    taken. See `_verify_a_seat`.
     """
     name: str
     attempt: int
@@ -701,6 +708,46 @@ def _revise(run_dir: Path, out: SeatResult) -> SeatResult:
     return out
 
 
+def _measured(result: SeatResult, candidate, verifier_setup) -> SeatResult:
+    """`result` carrying §6's own measurements, or a refusal for one that is not this seat's.
+
+    SPELLED APART FROM `reclassify_seat` BECAUSE TWO PATHS HAVE TO ADMIT THE SAME PAIR ON THE
+    SAME TERMS. §6.1's `gate_delta`/`gate_surface` live on `Verifier.candidate` — NOT on the
+    bundle handed in, which is the pre-verification one `run_seat` built — and the verifier's
+    own `SetupResult` exists nowhere else at all, since `run_setup` returns a failing setup
+    rather than raising. Both are measured whether or not §8 goes on to accept the verdict
+    they were taken beside, so `_verify_a_seat` attaches them on its refusal path too, and a
+    second copy of these two checks would be a second chance for one path to admit what the
+    other refuses.
+
+    THE MEASUREMENT IS ADMITTED, THE CANDIDATE IS NOT. §6.1's whole claim is that the gate
+    surface was measured over the bundle THIS seat harvested, so a bundle that differs
+    anywhere else is a different candidate's measurement filed under this seat's name — and
+    `_record` writes shape, so nothing downstream could see it. The comparison strips exactly
+    the two fields `with_gate_measurement` fills, which is what makes "the same bundle, now
+    measured" the only thing that passes.
+
+    Both are OPTIONAL because a caller that took no such measurement must not have to invent
+    one: `None` for `candidate` leaves the record's `gate_delta` and `gate_surface` at
+    `bundle`'s own value for "nobody looked", and `None` for `verifier_setup` leaves it
+    saying no verifier setup was taken. Neither default claims anything.
+    """
+    if candidate is not None and replace(
+            candidate, gate_delta=None, gate_surface=None) != result.candidate:
+        raise RunnerError(
+            f"the candidate handed back for seat {result.name!r} is not the one this seat "
+            "harvested, once §6.1's gate measurement is set aside; only the bundle "
+            "`verify.build_verifier` returned for THIS candidate can describe it")
+    if verifier_setup is not None and not isinstance(verifier_setup, verify.SetupResult):
+        raise RunnerError(
+            f"a verify.SetupResult is required, not {type(verifier_setup).__name__}; the "
+            "verifier's setup reaches the record as an exit code and an overlap, and a "
+            "stand-in would put an unmeasured pair there")
+    return replace(result,
+                   candidate=result.candidate if candidate is None else candidate,
+                   verifier_setup=verifier_setup)
+
+
 def reclassify_seat(run_dir, result: SeatResult, outcome: str, reason: str, *,
                     candidate: bundle.CandidateBundle | None = None,
                     verifier_setup: verify.SetupResult | None = None) -> SeatResult:
@@ -727,46 +774,25 @@ def reclassify_seat(run_dir, result: SeatResult, outcome: str, reason: str, *,
     `_rationale` applied to them. A second, looser reading of either here would be a seat
     classified twice by two rules.
 
-    `candidate` AND `verifier_setup` ARE THE MEASUREMENTS §6 TOOK ALONG THE WAY, and this is
-    where they reach the record because this is the call that owns one. `verify_candidate`
-    returns four values and its only caller read two: §6.1's `gate_delta`/`gate_surface` live
-    on `Verifier.candidate` — NOT on the bundle handed in, which is the pre-verification one
-    `run_seat` built — and the verifier's own `SetupResult` exists nowhere else at all, since
-    `run_setup` returns a failing setup rather than raising. Both were measured and dropped.
-
-    They are OPTIONAL because a caller that took no such measurement must not have to invent
-    one: omitting `candidate` leaves the record's `gate_delta` and `gate_surface` at `None`,
-    which is `bundle`'s own value for "nobody looked", and omitting `verifier_setup` leaves
-    the record saying no verifier setup was taken. Neither default claims anything.
+    `candidate` AND `verifier_setup` ARE THE MEASUREMENTS §6 TOOK ALONG THE WAY, admitted
+    through `_measured` — which is where the rule for both now lives, because §8 refusing the
+    re-classification does not unmeasure them and the run loop has to record them anyway. See
+    that function for what it admits and what it will not.
 
     Raises `RunnerError` for an outcome that is not §6.2's, for a seat whose record this
     cannot find, for a candidate that is not this seat's own, and for a re-classification §8
     refuses — a `changed=False` claim the gate positively REFUTED is a contradiction in the
     caller's own measurements, and the record is left carrying the pre-verification verdict
-    rather than rewritten to something nothing decided.
+    rather than rewritten to something nothing decided. THIS FUNCTION WRITES NOTHING ON THAT
+    LAST PATH: the verdict §6 took is still in the caller's hands, and `_verify_a_seat` is
+    what records it beside the unrevised status.
     """
     run_dir = Path(run_dir)
     if not isinstance(result, SeatResult) or result.status is None:
         raise RunnerError(
             "re-classification revises a status this module already took; a seat with none "
             "was never classified in the first place")
-    if candidate is not None and replace(
-            candidate, gate_delta=None, gate_surface=None) != result.candidate:
-        # THE MEASUREMENT IS ADMITTED, THE CANDIDATE IS NOT. §6.1's whole claim is that the
-        # gate surface was measured over the bundle this seat harvested, so a bundle that
-        # differs anywhere else is a different candidate's measurement filed under this
-        # seat's name — and `_record` writes shape, so nothing downstream could see it. The
-        # comparison strips exactly the two fields `with_gate_measurement` fills, which is
-        # what makes "the same bundle, now measured" the only thing that passes.
-        raise RunnerError(
-            f"the candidate handed back for seat {result.name!r} is not the one this seat "
-            "harvested, once §6.1's gate measurement is set aside; only the bundle "
-            "`verify.build_verifier` returned for THIS candidate can describe it")
-    if verifier_setup is not None and not isinstance(verifier_setup, verify.SetupResult):
-        raise RunnerError(
-            f"a verify.SetupResult is required, not {type(verifier_setup).__name__}; the "
-            "verifier's setup reaches the record as an exit code and an overlap, and a "
-            "stand-in would put an unmeasured pair there")
+    measured = _measured(result, candidate, verifier_setup)
     dim = _verify_dim(outcome)
     answer = _result_text(result.launch_result)
     try:
@@ -785,10 +811,7 @@ def reclassify_seat(run_dir, result: SeatResult, outcome: str, reason: str, *,
             "verdict taken before verification, which is the one its evidence supports."
         ) from e
 
-    return _revise(run_dir, replace(
-        result, status=status, verification=(outcome, reason),
-        candidate=result.candidate if candidate is None else candidate,
-        verifier_setup=verifier_setup))
+    return _revise(run_dir, replace(measured, status=status, verification=(outcome, reason)))
 
 
 def _with_setup_caveat(reason: str, setup_run) -> str:
@@ -829,6 +852,19 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     exit code reached an operator as prose inside `reason` and no later phase could put it in
     a record. A `Run` that survives in the function and not in the value is the same class of
     defect as a rationale that survives in memory and not on disk.
+
+    ON THE RETURN PATH ONLY, AND THAT IS STILL OPEN. Everything above is measured in order —
+    `build_verifier` fills §6.1's `gate_delta`/`gate_surface`, then `run_setup` runs — and a
+    refusal from any step AFTER them leaves both as locals this function drops on its way out.
+    Measured through the loop: a candidate that repoints `core.hooksPath` through its own
+    setup script is refused at `assert_hooks_pinned` below, and the seat's record comes back
+    `gate_delta: null`, `gate_surface: null`, `verifier_setup: null` for a verifier clone that
+    was built, whose gate surface WAS measured over two trees, and whose setup ran and exited
+    0 — which is the very fact explaining how the hooks moved. `_verify_a_seat` cannot close
+    it from the outside: the values never leave this frame, so closing it means this function
+    handing them back on the refusal path too, which is a change to what it raises and not a
+    narrower `except` at the call site. Left open deliberately and named here rather than
+    implied closed by the paragraph above.
 
     §6'S FIVE STEPS, AND WHERE EACH ONE IS:
 
@@ -1304,19 +1340,43 @@ def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, cali
     gate measurement and the verifier's setup exit code respectively, both of which existed
     nowhere else and were dropped here.
 
-    A REFUSAL IS CONTAINED TO ITS OWN SEAT, on `_drive_a_seat`'s rule and for its reason: the
-    build half already catches per seat, and while this half re-raised, ONE seat's refused
-    verification ended the whole run — with every provider already paid and the seats behind
-    this one never verified at all. That is the fleet losing two paid verifier clones over a
-    third seat's problem, and §6 gives no reason the three should share a fate: each candidate
-    is measured in its own clone, against the same calibration, and nothing about seat A's
-    verdict is evidence about seat B's.
+    A REFUSAL IS CONTAINED TO ITS OWN SEAT, for `_drive_a_seat`'s reason and NOT on its rule
+    — the two halves share the argument and catch different sets, so each states its own. The
+    reason is the fleet's economics: while this half re-raised, ONE seat's refused
+    verification ended the whole run, with every provider already paid and the seats behind
+    this one never verified at all. §6 gives no reason the three should share a fate — each
+    candidate is measured in its own clone, against the same calibration, and nothing about
+    seat A's verdict is evidence about seat B's.
+
+    THE SET IS WIDER HERE THAN IN THE BUILD HALF. `_drive_a_seat` catches `RunnerError` alone
+    and says so in as many words: `SeatError`, `HarvestError`, `VerifyError` and whatever
+    `launch` raises all propagate out of it. This half catches `RunnerError` AND
+    `verify.VerifyError`, because `GeneratorUnstable` and `SetupOverlap` are §6's own
+    vocabulary for a candidate failed closed — a statement about ONE candidate, taken in one
+    clone, which is exactly the thing the paragraph above says is not evidence about the
+    others. What still escapes here is what escapes there: `fleet.SeatError`,
+    `bundle.BundleError` and `GitError`, so a verifier clone that cannot be BUILT still ends
+    the run and still costs the seats behind it the verification their providers were paid
+    for. Stated rather than implied, because it is the half of C1's economics this does not
+    close.
+
+    THE TWO CALLS ARE CAUGHT SEPARATELY, and that is what makes a bought verdict survive §8's
+    refusal. They used to share one `except`, so a §6.2 outcome that WAS taken — beside
+    §6.1's gate surface, measured over two trees, and the verifier's own setup run — was
+    discarded whole when §8 then refused to carry it into a `Status`. Everything §6 measured
+    is therefore bound through `_measured` BEFORE the call that can refuse it, which is the
+    only ordering under which the handler holds a value rather than reaching back into a
+    scope the exception left. `_measured` raising lands in the FIRST handler and carries
+    nothing, deliberately: a candidate that is not this seat's is a measurement that must not
+    reach this seat's record at all, which is the whole of what that check is for.
 
     WHAT THE CONTAINED SEAT KEEPS IS ITS PRE-VERIFICATION VERDICT, never a promotion: the
-    record still reads `verify: "not-run"`, and `verification_refused` beside it says §6 or §8
-    was asked and would not answer. Without that field the seat would read exactly like one
-    the loop had not reached yet — a verifier clone bought and spent, described on disk as
-    work not yet begun.
+    record still reads `verify: "not-run"` and `status.forge` is untouched, because §8 is the
+    only thing that revises a verdict and §8 is what refused. `verification_refused` beside it
+    says which half would not answer — without it the seat would read exactly like one the
+    loop had not reached yet, a verifier clone bought and spent, described on disk as work not
+    yet begun. A record where `verification` is set and `status.verify` is `"not-run"` is the
+    §8 refusal exactly: the gate answered and the classification did not move.
     """
     if result.status.forge == "failed":
         return result
@@ -1326,16 +1386,30 @@ def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, cali
         outcome, reason, v, setup_result = verify_candidate(
             manifest, run_dir, base, result.candidate, name=result.name, identity=identity,
             calibration=calibration)
-        out = reclassify_seat(run_dir, result, outcome, reason,
-                              candidate=v.candidate, verifier_setup=setup_result)
+        measured = replace(_measured(result, v.candidate, setup_result),
+                           verification=(outcome, reason))
     except (RunnerError, verify.VerifyError) as e:
         # Recorded rather than re-raised, and RECORDED TWICE: in the journal, because this
         # loop watched the operation end and an open intent would report `outcome_unknown`
         # for an outcome it knows; and on the seat, because the journal is the run's log and
-        # the seat file is what §14.2 hands `--collect`.
+        # the seat file is what §14.2 hands `--collect`. Nothing extra is carried: §6 reached
+        # no verdict here, so there is none to keep.
         log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
                    refused=str(e))
         return _revise(run_dir, replace(result, verification_refused=str(e)))
+    try:
+        out = reclassify_seat(run_dir, result, outcome, reason,
+                              candidate=v.candidate, verifier_setup=setup_result)
+    except RunnerError as e:
+        # `RunnerError` alone, because that is the class `reclassify_seat` names for a
+        # re-classification it will not make. `runstate`'s own write errors are deliberately
+        # NOT caught: a seat record that cannot be written is not a refusal this loop can
+        # contain, because containing it means writing it somewhere. The outcome goes into
+        # the journal beside the refusal, so the run's log says §6 answered and §8 would not
+        # carry it rather than reporting a refusal over no stated measurement.
+        log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
+                   outcome=outcome, refused=str(e))
+        return _revise(run_dir, replace(measured, verification_refused=str(e)))
     log.record(journal.done(_VERIFICATION), operation_id=op, seat=result.name,
                outcome=outcome, forge=out.status.forge)
     return out

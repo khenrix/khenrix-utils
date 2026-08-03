@@ -87,9 +87,20 @@ class Seat:
     `verified` IS ONLY AS STRONG AS THE BASELINE IT WAS CHECKED AGAINST. `clone_seat` asserts
     HEAD and then walks `Baseline.filesystem_manifest` path by path, so a `Baseline` carrying
     an EMPTY manifest makes the second half vacuous and still answers True — no exception, no
-    trace. `baseline.materialize` never produces one, and `baseline.restore` refuses to build
-    one rather than defaulting the field, because a run rebuilding B from its run directory is
-    exactly the caller that would otherwise hand this an empty dict without noticing.
+    trace.
+
+    THE GUARD IS ON THE READ PATH AND NOT THE WRITE PATH, which this used to state the other
+    way round. `baseline.materialize` DOES produce an empty one: it inventories the tracked
+    tree and the selected untracked paths, so a repository with nothing in either leaves the
+    dict `{}`, and `_record_filesystem_manifest` writes that to disk — the case
+    `read_filesystem_manifest` names among the routes to `{}` there. What is closed is the
+    way back IN: that function refuses an empty manifest, so `baseline.restore` — which reads
+    through it rather than defaulting the field — cannot build a `Baseline` carrying one, and
+    a run rebuilding B from its run directory, the caller that would otherwise hand this an
+    empty dict without noticing, goes through exactly that. A caller holding `materialize`'s
+    return value directly does not, and neither does one building a `Baseline` by hand, since
+    the field still defaults to `{}`. So `verified` is a claim about the manifest this was
+    handed and never about the repository behind it.
     """
     path: Path
     replayed: tuple = field(default_factory=tuple)

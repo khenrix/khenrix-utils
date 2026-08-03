@@ -1557,6 +1557,55 @@ def test_the_gate_measurement_and_the_verifiers_setup_reach_the_seats_record(tmp
         "whether anything was looked at, which is why the two are written together"
 
 
+def test_a_verdict_section_8_refuses_is_still_a_verdict_that_reaches_the_record(tmp_path):
+    """The case before this one, on the path where §8 says no — the same measurement, the
+    same requirement that it reach disk.
+
+    THE VERIFIER WAS BOUGHT AND SPENT EITHER WAY. §6.1's gate surface is measured over the
+    two trees only `build_verifier` has, the verifier's own setup ran, and §6.2 returned a
+    verdict; §8 then refusing to carry that verdict into a `Status` says nothing about
+    whether any of the three happened. The containment path used to write the
+    PRE-verification result whole, so all four came back null for a seat whose clone was
+    built and whose gate was run — I2's finding reopened one seam over.
+
+    THE GATE IS PATH-DEPENDENT, and that is the smallest input that reaches §8's refusal
+    without a stub: it exits 0 on the untouched baseline, so §5 step 3 calibrates green and
+    the run carries on, and 1 in the verifier, so a seat that changed NOTHING draws §6.2's
+    `FAIL`. §8 rule 3 will not classify a `changed=False` claim the gate positively refuted,
+    which is the refusal — and the verdict that provoked it is exactly what a reader needs.
+    """
+    repo, run, b, m = _open(
+        tmp_path, gate=GATE, seats=1,
+        seed=_gate('case "$(pwd)" in */verifiers/*) exit 1 ;; esac'))
+    (result,) = runner.run(run, repo, identity=IDENT,
+                           launch=_per_seat(lambda name, n, p: True))
+
+    assert result.artifacts.paths == (), "the premise: the seat changed nothing"
+    assert result.verification is not None and result.verification[0] == verify.FAIL, \
+        "§6 was asked and ANSWERED; only §8 refused"
+    assert "cannot be re-classified under verify='fail'" in result.verification_refused
+    assert (result.status.verify, result.status.forge) == ("not-run", "partial"), \
+        "the pre-verification verdict is kept, never promoted and never worsened"
+
+    row = _attempt(run, "claude", 1)
+    assert row["verification"]["outcome"] == verify.FAIL, \
+        "the verdict is on disk, which is where a later phase and `--collect` read it"
+    assert row["status"]["verify"] == "not-run", \
+        "beside the status §8 would not revise — the two disagree, and truthfully"
+    assert row["candidate"]["gate_surface"] == ["gate.sh"] and \
+        row["candidate"]["gate_delta"] == [], "§6.1's measurement survived the refusal"
+    assert row["verifier_setup"] == {"exit_code": 0, "step_index": 0, "overlap": []}, \
+        "and so did the verifier's own setup run, which exists nowhere else"
+
+    done = [e for e in journal.Journal(storage.journal_path(run)).read()
+            if e.event == journal.done("verification")]
+    assert [(e.data.get("outcome"), "refused" in e.data) for e in done] \
+        == [(verify.FAIL, True)], \
+        "and the run's own log says §6 answered rather than reporting a bare refusal"
+    assert runstate.reconstruct(run, repo).orphans == (), \
+        "a contained refusal closes its operation; it does not orphan it"
+
+
 def test_a_seat_verified_before_the_gate_was_measured_records_neither_half(tmp_path):
     """`gate_delta` and `gate_surface` are `None` together or written together, on
     `bundle.with_gate_measurement`'s own rule: `[]` alone cannot say whether the gate was
