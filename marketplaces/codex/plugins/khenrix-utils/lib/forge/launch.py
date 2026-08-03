@@ -6,11 +6,11 @@ provider calls and a suite that spends them is one nobody runs — so the first 
 is the skill's own eval, one plan away. What that costs is that NOTHING HERE PROVES THE REAL
 PROVIDER PATH WORKS; the signature is kept narrow enough that the shape is obviously the same.
 
-WHY THIS FILE EXISTS AT ALL, beyond convenience: `seat.forge_spec` has had NO PRODUCTION
-CALLER since Plan H, so §8.1's validator has never run outside the suite. Whatever wires the
-real adapter must wire `forge_spec` with it, or seats run under the council's own validity
-policy — a builder seat that worked for forty minutes and signed off in one line would be
-RE-RUN on top of itself, which is the defect `_forge_validator` exists to close.
+WHY THIS FILE EXISTS AT ALL, beyond convenience: it is the one place `seat.forge_spec` is
+wired to a real provider, so §8.1's validator runs or it does not. Without that wiring seats
+run under the council's own validity policy — a builder seat that worked for forty minutes and
+signed off in one line would be RE-RUN on top of itself, which is the defect `_forge_validator`
+exists to close. `cli.start` is the production caller, through `make_launcher` below.
 
 THE PROMPT IS COMPOSED BY `engine.apply_sentinel`, AND THAT IS A SEAM, NOT A STYLE CHOICE.
 `fingerprint.without_engine_text` — which is both §8's rationale floor and §11's nonce-stripped
@@ -65,10 +65,14 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
     The adapter owns the model and the TIMEOUT: §19 forbids a second timeout mechanism, so
     there is deliberately no timeout parameter on the returned callable.
 
-    NO PRODUCTION CALLER YET. Nothing in this plan calls `make_launcher`; `runner.run(...,
-    launch=)` is injected and the CLI is a later plan. So `seat.forge_spec`'s "production
-    caller" is itself uncalled in production until then, and `bundle_sha256` is `None` for
-    every seat a caller does not supply one for.
+    `cli.start` IS THE PRODUCTION CALLER, and it supplies `bundle_sha256` from
+    `taskbundle.bundle_hash` over the bundle the run recorded. What is still injected is
+    `runner.run(..., launch=)`, which is how this suite drives a fleet without paying for one —
+    so nothing here proves the real provider path works, and the signature is kept narrow
+    enough that the shape is obviously the same.
+
+    `bundle_sha256` IS STILL `None` FOR A CALLER THAT SUPPLIES NONE, and the paragraph below
+    is about that case rather than about the production one.
 
     WHAT THAT `None` DOES NOT DO, stated because this docstring said the opposite and the
     opposite was measured false: it does NOT make `fingerprint.agreement_label` answer

@@ -455,8 +455,9 @@ def _bugs(payload, checkpoint_round: int) -> tuple:
         # `run_round` gained this at review.py:860 and this sibling did not: the id is
         # content-derived, so a payload that restates one bug twice — ordinary model output,
         # not malformed input — produces two `Finding`s sharing an id, which `Round` refuses
-        # (`__post_init__`). Nothing calls `run_ultra` yet, so nothing has hit this, but the
-        # defect is the same one, one module over, and waiting for a caller is not a fix.
+        # (`__post_init__`). No fixture has produced a payload that restates a bug, so nothing
+        # has hit this line; the defect is the same one, one module over, and waiting for a
+        # reproduction is not a fix.
         if any(f.id == prior.id for prior in out):
             continue
         out.append(f)
@@ -492,10 +493,11 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, round_: int, enabled: 
     fresh-verifier verify → checkpoint → `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, with
     the terminal decided by `review.terminal_from_record` (a fixed-but-unreviewed blocker is
     `degraded`, an unresolved one is `review_blocked`). No new loop and no new state, exactly
-    as §13.1 says — the record and the transition are `review`'s. THAT WIRING DOES NOT EXIST
-    YET, and the gap is named as a missing mechanism rather than left implied: no caller
-    invokes `run_ultra`, nothing writes what it returns into a `review.Round`, and no test
-    covers the hand-off. Until something does, this function's findings reach no terminal.
+    as §13.1 says — the record and the transition are `review`'s. THAT WIRING STILL DOES NOT
+    EXIST, and the gap is named as a missing mechanism rather than left implied: `cli.collect`
+    invokes this and renders the returned `Ultra` in §16.1's header, and nothing writes what it
+    returns into a `review.Round`. So these findings are REPORTED and reach no terminal, which
+    is a narrower gap than it was and still a gap.
     """
     if not isinstance(round_, int) or isinstance(round_, bool) or round_ < 1:
         raise UltraError(
