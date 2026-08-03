@@ -433,6 +433,28 @@ def test_an_uninstalled_cli_is_none_and_none_never_agrees_with_none(monkeypatch)
     assert taskbundle.ambient_verdict({"claude": "a", "codex": "a", "agy": "a"}) is True
 
 
+def test_an_installed_directory_holding_nothing_is_none_not_a_shared_hash(tmp_path,
+                                                                           monkeypatch):
+    """The empty manifest arrives by a SECOND route, and only the first was closed.
+
+    `not dirs` is "never installed". A directory that EXISTS and holds no files walks to the
+    same `[]` and hashed to `sha256("[]")` — identical for every CLI in that state, because
+    paths are deliberately not hashed — so `ambient_verdict` answered True over three broken
+    installs and licensed the ambient skill none of them have. Reachable from an interrupted
+    `refresh.sync`, whose `copytree` creates the directory before it copies into it.
+    """
+    empties = {}
+    for cli in ("claude", "codex", "agy"):
+        d = tmp_path / cli
+        d.mkdir()
+        empties[cli] = d
+    monkeypatch.setattr(taskbundle, "_install_dirs", lambda cli: [empties[cli]])
+    assert taskbundle.installed_closure("claude") is None
+    closures = {c: taskbundle.installed_closure(c) for c in ("claude", "codex", "agy")}
+    assert taskbundle.ambient_verdict(closures) is False, \
+        "three empty installs are three absences, not one identical closure"
+
+
 def test_the_closure_hash_is_stable_and_path_independent(tmp_path, monkeypatch):
     """Three CLIs install to three different absolute paths by construction. A hash that
     included the path would make §20's identity rule unsatisfiable for a reason that is

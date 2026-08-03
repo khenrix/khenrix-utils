@@ -538,6 +538,14 @@ def installed_closure(cli: str) -> str | None:
     ambient skill, manufactured out of three absences. `seat.read_proof`'s rule, one module
     over: a missing measurement fails closed.
 
+    AN EMPTY MANIFEST ARRIVES BY TWO ROUTES AND BOTH ARE REFUSED. `not dirs` is one; a
+    directory that EXISTS and holds no files is the other, and it reaches the same `[]` — an
+    interrupted `refresh.sync` (`copytree` creates the directory before it copies into it), or
+    a cache whose contents were deleted. Guarding only the first left the hash this paragraph
+    forbids reachable from the second, which is also the value `fingerprint.PromptIdentity`
+    carries as `plugin_closure_sha256`: two seats recording `sha256("[]")` compare equal and
+    `fingerprint.agreement_label` calls them identically-prompted.
+
     THE SECOND HALF IS NOT DECORATION. `_walk` walks the LIVE INSTALLED directories and refuses
     a `.git` component, an escaping symlink, a special file and a cap breach. Those refusals
     are right for an AUTHORED bundle, where the author is present and wrong. The installed
@@ -565,6 +573,8 @@ def installed_closure(cli: str) -> str | None:
         for d in dirs:
             rows += _rows(_walk(d, storage.Quota.for_harvest()))
     except (TaskBundleError, OSError):
+        return None
+    if not rows:
         return None
     return hashlib.sha256(json.dumps(sorted(rows), sort_keys=True).encode()).hexdigest()
 
