@@ -1257,9 +1257,12 @@ class Calibration:
     the run's confirmation named NO setup command, so none was run here. `gate.Confirmation`
     admits an empty setup in as many words — it refuses only an empty VERIFY — and this field
     used to be typed as though it could not happen, which made §5 step 3 raise for every
-    repository that needs no toolchain. It is the same value `runner`'s `status.setup ==
-    "not-run"` records one module over, and `_with_setup_caveat` already reads `None` as
-    "nothing to say about a setup that never ran" rather than as a passing one.
+    repository that needs no toolchain. It is the same fact `runner`'s `status.setup ==
+    "none"` records one module over — NOT its `"not-run"`, which is §8's value for a
+    confirmed command whose measurement was withheld and is a different state entirely; this
+    sentence named that one, and the two sharing a spelling in `seat` is what made a
+    no-toolchain run a crash. `_with_setup_caveat` already reads `None` here as "nothing to
+    say about a setup that never ran" rather than as a passing one.
     """
     run: Run
     path: Path

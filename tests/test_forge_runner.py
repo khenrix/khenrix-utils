@@ -14,6 +14,7 @@ file wrote, so the whole of §6 runs and nothing is stubbed except the provider.
 """
 import inspect as pyinspect
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -308,10 +309,13 @@ def test_a_confirmation_that_named_no_setup_never_records_a_passing_setup(tmp_pa
     refusal, which the adjacent comment claims in as many words ("Never a fabricated pass").
 
     UNPINNED UNTIL NOW, and that is the finding: no fixture used an empty `manifest.setup`,
-    so the mutant that writes `"pass"` here SURVIVED beneath the comment denying it. The seat
-    below is otherwise strong enough to be `completed` — valid process, usable artifacts,
-    proof token quoted — so `partial` is §8 rule 6 firing on the one dimension left, and
-    nothing else in the fixture can produce it.
+    so the mutant that writes `"pass"` here SURVIVED beneath the comment denying it.
+
+    `"none"` AND NOT `"not-run"`, and the difference is the whole of C1: `"not-run"` is §8's
+    value for a confirmed command whose measurement was WITHHELD, and reading a run that
+    never had one as though it had withheld something is what made the zero-diff intersection
+    a crash. Neither is a pass, which is what this case exists to hold: `_PHASE` is checked
+    for both spellings so a fabricated `"pass"` still dies here.
     """
     repo, run, b, m = _open(tmp_path, setup=())
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
@@ -320,9 +324,10 @@ def test_a_confirmation_that_named_no_setup_never_records_a_passing_setup(tmp_pa
     assert r.run is None, "the premise: no setup command was run in this seat"
     assert (r.status.process, r.status.artifacts, r.status.proven_read) \
         == ("valid", "usable", True), "every other dimension is at its strongest reading"
-    assert r.status.setup == "not-run"
-    assert r.status.forge == "partial", "§8 rule 6: an unmeasured setup cannot promote a seat"
-    assert _attempt(run, "claude", 1)["status"]["setup"] == "not-run"
+    assert r.status.setup == "none"
+    assert _attempt(run, "claude", 1)["status"]["setup"] == "none"
+    assert r.status.setup not in ("pass", "not-run"), \
+        "never a fabricated pass, and never a withheld measurement either"
 
 
 def test_the_seats_status_is_written_where_a_resume_will_read_it(tmp_path):
@@ -1444,6 +1449,139 @@ def test_a_zero_diff_fleet_reaches_no_change_through_the_loops_own_sequencing(tm
     assert _attempt(run, "claude", 1)["verification"]["outcome"] == verify.PASS
 
 
+def test_a_no_toolchain_fleet_that_changed_nothing_is_verified_rather_than_lost(tmp_path):
+    """THE INTERSECTION of two gate-legal inputs, each of which already had a case alone: an
+    empty confirmed setup and a zero-diff seat, across MORE THAN ONE seat.
+
+    Measured on the pair before this, the run did not degrade — it died. Seat 1's
+    re-classification raised *"no_change requires independent verification (setup='not-run',
+    verify='pass')"* out of `run`; seats 2 and 3 were never verified though all three
+    providers had already been paid; the phase stuck at `comparing`; `orphans` came back `()`
+    so `reconstruct` read CLEAN; and `_refuse_a_second_pass` then made the run unrecoverable.
+    Three paid provider calls, one verdict, and a recovery path reporting nothing wrong.
+
+    `"none"` is what closed it — §8 reads it as a setup with nothing to measure rather than a
+    measurement withheld — and the ceiling this branch recorded as accepted goes with it: a
+    repository needing no toolchain reaches `no_change` here, and `completed` one rule down.
+    """
+    repo, run, b, m = _open(tmp_path, setup=(), gate=GATE, seed=_gate("exit 0"), seats=3)
+    results = runner.run(run, repo, identity=IDENT,
+                         launch=_per_seat(lambda name, n, p: True))
+
+    assert [r.name for r in results] == ["claude", "codex", "agy"]
+    assert {r.artifacts.paths for r in results} == {()}, \
+        "the premise's first half: no seat changed anything"
+    assert {r.run for r in results} == {None}, \
+        "and its second: no setup command ran in any of them"
+    assert {(r.status.setup, r.status.verify, r.status.forge) for r in results} \
+        == {("none", "pass", "no_change")}
+    for r in results:
+        assert runner.verifier_dir(run, r.name).is_dir(), \
+            "every seat was verified, not only the one that used to raise on its way out"
+        assert _attempt(run, r.name, 1)["status"]["forge"] == "no_change"
+    assert runstate.read_state(run).phase == "comparing"
+    assert runstate.reconstruct(run, repo).orphans == (), \
+        "and a clean-reading reconstruction is the truth now rather than the disguise"
+
+
+def test_a_verification_this_loop_refuses_costs_that_seat_and_not_the_fleet(tmp_path):
+    """§6 measures each candidate in its own clone against one calibration, so nothing about
+    seat A's verdict is evidence about seat B's — and the loop's two halves now agree about
+    that. The build half already contained a refusal per seat; this half re-raised, so ONE
+    seat's failure ended the run with every provider paid and the seats behind it unverified.
+
+    The refusal is a real one, not a stub: §6 step 2 says a BRAND-NEW clone, and a directory
+    already standing where codex's verifier goes is what `verify_candidate` refuses by name.
+
+    CONTAINED IS NOT QUIET. The refused seat keeps the verdict it held before verification —
+    never a promotion — and `verification_refused` on its own record is what stops it reading
+    exactly like a seat the loop had not reached yet, for a verifier clone bought and spent.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=3)
+    runner.verifier_dir(run, "codex").mkdir(parents=True)
+
+    results = runner.run(run, repo, identity=IDENT, launch=_per_seat(
+        lambda name, n, p: bool(write(p, f"{name}.py", "work\n"))))
+
+    seen = {r.name: (r.status.verify, r.status.forge) for r in results}
+    assert seen["claude"] == seen["agy"] == ("pass", "completed"), \
+        "the seats either side of the refusal were verified; the run used to die at the first"
+    assert seen["codex"] == ("not-run", "completed"), \
+        "and the refused one keeps its pre-verification verdict rather than gaining one"
+
+    refused = _attempt(run, "codex", 1)
+    assert "already has a verifier clone" in refused["verification_refused"], \
+        "the seat's own record says §6 was asked and would not answer"
+    assert refused["verification"] is None
+    assert _attempt(run, "claude", 1)["verification_refused"] is None, \
+        "and the field is not merely always set"
+
+    done = [e for e in journal.Journal(storage.journal_path(run)).read()
+            if e.event == journal.done("verification")]
+    assert len(done) == 3 and sum("refused" in e.data for e in done) == 1, \
+        "three operations, all closed — a contained refusal is not an orphan"
+    assert runstate.reconstruct(run, repo).orphans == ()
+    assert runstate.read_state(run).phase == "comparing"
+
+
+def test_the_gate_measurement_and_the_verifiers_setup_reach_the_seats_record(tmp_path):
+    """`verify_candidate` returns four values and its only call site read two.
+
+    §6.1's `gate_delta`/`gate_surface` are filled by `build_verifier` onto `Verifier.candidate`
+    — never onto the bundle handed in, which is `run_seat`'s pre-verification one — so a
+    caller that keeps the input bundle holds `gate_delta is None`. The measurement was taken
+    over the two trees only `build_verifier` has, and then dropped at the seam.
+
+    The verifier's own `SetupResult` was the other half: `run_setup` RETURNS a failing setup
+    rather than raising, so the exit code reached an operator as prose inside `reason` and no
+    record at all. The setup below passes in the BUILDER (it runs before the agent writes
+    `w.py`) and fails in the VERIFIER (the candidate is materialized first), which is the one
+    shape that separates the two runs without failing the seat.
+    """
+    setup = (verify.Step(argv=("sh", "-c", "! test -f w.py")),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"), seats=1)
+    (result,) = runner.run(run, repo, identity=IDENT, launch=_per_seat(
+        lambda name, n, p: bool(write(p, "w.py", "the edit\n"))))
+
+    assert result.status.setup == "pass", "the premise: the same command passed in the seat"
+    assert result.verification[0] == verify.PASS and "setup command exited 1" in \
+        result.verification[1], "and failed in the verifier, where §6 takes the verdict"
+
+    row = _attempt(run, "claude", 1)
+    assert row["verifier_setup"] == {"exit_code": 1, "step_index": 0, "overlap": []}, \
+        "the exit code is a fact a later phase can branch on, not a phrase inside a reason"
+    assert row["candidate"]["gate_surface"] == ["gate.sh"], \
+        "§6.1 ranged over the gate the candidate did not touch, and the record says which"
+    assert row["candidate"]["gate_delta"] == [], \
+        "empty BESIDE the surface it was measured over — `[]` with no surface cannot say "\
+        "whether anything was looked at, which is why the two are written together"
+
+
+def test_a_seat_verified_before_the_gate_was_measured_records_neither_half(tmp_path):
+    """`gate_delta` and `gate_surface` are `None` together or written together, on
+    `bundle.with_gate_measurement`'s own rule: `[]` alone cannot say whether the gate was
+    measured and nothing moved, or whether nobody looked. A caller that took no §6.1
+    measurement therefore records the third state rather than the flattering one.
+    """
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"))
+    r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=_fake(lambda p: write(p, "work.py", "the edit\n")))
+    cal = _calibrate(tmp_path, repo, b, m)
+    outcome, reason, v, s = runner.verify_candidate(
+        m, run, b, r.candidate, name="claude", identity=IDENT, calibration=cal)
+
+    runner.reclassify_seat(run, r, outcome, reason)
+    row = _attempt(run, "claude", 1)
+    assert (row["candidate"]["gate_delta"], row["candidate"]["gate_surface"]) == (None, None)
+    assert row["verifier_setup"] is None, "and a setup nobody handed over is not reported"
+
+    with pytest.raises(runner.RunnerError, match="not the one this seat harvested"):
+        runner.reclassify_seat(run, r, outcome, reason,
+                               candidate=replace(v.candidate, tracked_patch=b"not mine"))
+    with pytest.raises(runner.RunnerError, match="verify.SetupResult is required"):
+        runner.reclassify_seat(run, r, outcome, reason, verifier_setup=s.run)
+
+
 def test_a_baseline_that_fails_its_own_gate_stops_a_run_whose_operator_said_abort(tmp_path):
     """§5 step 2's first policy, obeyed rather than recorded and ignored.
 
@@ -1598,23 +1736,24 @@ def test_a_run_whose_confirmation_named_no_setup_is_driven_end_to_end(tmp_path):
     admits one in as many words and refuses only an empty VERIFY — and it is the input this
     package has repeatedly mishandled at call sites no fixture reached.
 
-    Four of them were already closed one at a time: `run_command` refuses a command with no
-    steps, `run_seat` records `not-run` rather than a fabricated pass, `calibrate` would once
-    raise for every such repository, and `verify_candidate` would skip §6's hash validation
-    entirely. THE LOOP IS A FIFTH CALL SITE, and it reaches all of them in one pass — so the
-    case is driven whole rather than asserted per branch.
+    Five of them were closed one at a time: `run_command` refuses a command with no steps,
+    `run_seat` records `none` rather than a fabricated pass, `calibrate` would once raise for
+    every such repository, `verify_candidate` would skip §6's hash validation entirely, and
+    §8 would refuse the re-classification of a zero-diff seat outright. THE LOOP IS A SIXTH
+    CALL SITE, and it reaches all of them in one pass — so the case is driven whole rather
+    than asserted per branch. The zero-diff pair is the case beside this one.
     """
     repo, run, b, m = _open(tmp_path, setup=(), gate=GATE, seed=_gate("exit 0"), seats=1)
     (result,) = runner.run(run, repo, identity=IDENT,
                            launch=_per_seat(lambda name, n, p: bool(write(p, "w.py", "w\n"))))
 
-    assert result.run is None and result.status.setup == "not-run", \
-        "no setup ran in the seat, and the record says so rather than reporting a pass"
+    assert result.run is None and result.status.setup == "none", \
+        "no setup ran in the seat, and the record says there was none rather than a pass"
     assert result.verification[0] == verify.PASS
-    assert result.status.forge == "partial", \
-        "§8 rule 6 fails closed on a setup that was never positively confirmed, so a "\
-        "repository needing no toolchain has a `completed` ceiling of `partial` — a standing "\
-        "consequence of that rule, reached here through the whole loop rather than argued"
+    assert result.status.forge == "completed", \
+        "§8 rule 6 degrades a WITHHELD setup measurement, and a run with no setup command "\
+        "withheld nothing — this was `partial` while the two shared one literal, recorded as "\
+        "a standing ceiling for every repository that needs no toolchain"
     assert runstate.read_state(run).phase == "comparing"
 
 
@@ -1651,10 +1790,10 @@ def test_a_seat_refused_at_classification_is_recorded_and_does_not_orphan_its_op
     assert not runner.verifier_dir(run, "claude").exists()
 
 
-def test_a_candidate_section_6_refuses_stops_the_run_without_orphaning_the_verification(
+def test_a_candidate_section_6_refuses_is_recorded_rather_than_orphaned_or_invented(
         tmp_path):
-    """§6's own refusals — `SetupOverlap` here — end the run, and the journal records that
-    they ended it rather than leaving `outcome_unknown` behind.
+    """§6's own refusals — `SetupOverlap` here — leave a seat with no verdict, and the loop
+    says so in both places a reader looks rather than leaving `outcome_unknown` behind.
 
     The setup command only overlaps WHEN THE CANDIDATE IS PRESENT, which is what makes this
     reachable at all: on the untouched baseline it is a no-op, so §5 step 3 calibrates clean
@@ -1662,22 +1801,29 @@ def test_a_candidate_section_6_refuses_stops_the_run_without_orphaning_the_verif
     confirmed setup and the candidate — sees a tracked file move under a contract that
     declares nothing.
 
-    The run STOPS, because §6.2 has no outcome for it and this module does not invent one.
+    NO OUTCOME IS INVENTED, which is what this case has always been about: §6.2 has none for
+    it and the seat keeps `verify: "not-run"`. What changed is the blast radius — this used
+    to END THE RUN, so on a real fleet the two seats behind this one lost verifications their
+    providers had already been paid for. The seat beside it holds that half.
     """
     setup = (verify.Step(argv=("sh", "-c", "if [ -f work.py ]; then echo x >> seed.txt; fi")),)
     repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"), seats=1)
 
-    with pytest.raises(verify.SetupOverlap):
-        runner.run(run, repo, identity=IDENT,
-                   launch=_per_seat(lambda n_, i_, p: bool(write(p, "work.py", "w\n"))))
+    (result,) = runner.run(run, repo, identity=IDENT,
+                           launch=_per_seat(lambda n_, i_, p: bool(write(p, "work.py", "w\n"))))
+    assert result.verification is None and "seed.txt" in result.verification_refused
 
     assert runstate.reconstruct(run, repo).orphans == (), \
         "the loop watched the verification end, so nothing here is `outcome_unknown`"
     (done,) = [e for e in journal.Journal(storage.journal_path(run)).read()
                if e.event == journal.done("verification")]
     assert "seed.txt" in done.data["refused"]
-    assert _attempt(run, "claude", 1)["status"]["verify"] == "not-run", \
+    row = _attempt(run, "claude", 1)
+    assert row["status"]["verify"] == "not-run", \
         "and the seat's record still carries the verdict its evidence supports"
+    assert "seed.txt" in row["verification_refused"], \
+        "beside the reason it never got a better one — `not-run` alone would read as a seat "\
+        "the loop had not reached, for a verifier clone that was bought and spent"
 
 
 def test_a_crash_after_the_phase_was_written_and_before_anything_was_journalled_resumes(

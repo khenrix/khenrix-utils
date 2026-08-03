@@ -82,7 +82,7 @@ Fusion of any kind: §10's claim ledger, §11's agreement rule, §12's strategy,
 **Files:** Create `shared/lib/forge/seat.py`, `tests/test_forge_seat.py`; modify `Makefile`.
 
 **Interfaces produced:**
-- `seat.Status` — frozen: `process: str` (`valid`/`invalid`), `artifacts: str` (`usable`/`unusable`), `proven_read: bool`, `forge: str` (`completed`/`partial`/`no_change`/`failed`), `setup: str`, `verify: str` (each `pass`/`fail`/`not-run`).
+- `seat.Status` — frozen: `process: str` (`valid`/`invalid`), `artifacts: str` (`usable`/`unusable`), `proven_read: bool`, `forge: str` (`completed`/`partial`/`no_change`/`failed`), `verify: str` (`pass`/`fail`/`not-run`), `setup: str` (those three plus `none`). The plan said `setup` and `verify` shared one three-value vocabulary; the branch review found that collapse was itself a defect — see the spec's §8 for what `none` separates and what it cost while it did not exist.
 - `seat.classify_seat(*, process, artifacts, proven_read, changed, setup, verify, rationale=None) -> Status`.
 - `seat.SeatStatusError(RuntimeError)`.
 

@@ -46,9 +46,9 @@ none above it already decided `forge`:
    see test_a_setup_failure_does_not_proceed_on_the_strength_of_its_files and
    test_a_setup_failure_pre_empts_the_partial_rule_not_just_the_completed_one beside it.
 3. `changed is False` -> `no_change`, but only when BOTH stated requirements hold:
-   a substantive `rationale`, and independent verification -- `setup == "pass"` AND
-   `verify == "pass"`. Neither substitutes for the other. Rule 3's "verify is recorded, not
-   required" is a statement about the `completed`/`partial`/`failed` branches below, where
+   a substantive `rationale`, and independent verification -- `setup` in `_CONFIRMED_SETUP`
+   AND `verify == "pass"`. Neither substitutes for the other. Rule 3's "verify is recorded,
+   not required" is a statement about the `completed`/`partial`/`failed` branches below, where
    verify never gates `forge`; a `no_change` claim is the one place the spec text asks verify
    to gate something directly ("no_change ... requires ... independent verification"), so
    this branch reads it rather than merely recording it. A missing or decorative rationale
@@ -66,18 +66,29 @@ none above it already decided `forge`:
    conclusion §8 says must not be discarded. It degrades to `partial` instead -- real work
    whose verdict cannot be taken yet -- which is still not `no_change`, so an unverified
    claim can never read as a verified one. A verification that WAS taken and refuted the
-   claim (`verify == "fail"`, or a `setup` that never positively confirmed under a verify
-   that passed) still raises: that is a contradiction in the caller's own measurements, not
-   a measurement it is too early to have.
+   claim still raises, and it is two states rather than one: `verify == "fail"` is the gate
+   contradicting the claim outright, and a `setup` that is neither `"pass"` nor `"none"`
+   under a verify that DID pass is a caller that took the later measurement while
+   withholding the earlier one. Neither is a measurement it is too early to have.
+
+   THAT REFUSAL USED TO INCLUDE EVERY NO-TOOLCHAIN REPOSITORY, and this paragraph called it
+   "a contradiction in the caller's own measurements" while `runner.run_seat`'s HAPPY PATH
+   produced it: an empty confirmed setup recorded `"not-run"`, indistinguishable here from a
+   setup command that existed and was skipped, so the first argued zero-diff seat raised out
+   of the run loop -- after all three providers had been paid, with the other seats never
+   verified and the journal reading clean. `"none"` is the value that tells the two apart;
+   see `_SETUP` below for what each of the four means.
 4. `artifacts == "unusable"` (only reachable here with `changed is True`: the seat touched
    something and what it left behind cannot be used) -> `failed`. There is no partial credit
    for an unusable result.
 5. `not proven_read` -> `partial`. Useful, usable artifacts with no proof the task prompt was
    read are real work, but not a `completed` seat -- section 8's first load-bearing rule.
-6. `setup != "pass"` (i.e. `"not-run"`: setup never positively confirmed) -> `partial`. Fail
-   closed: a measurement that was not taken cannot promote a seat to the cleanest verdict.
-   Rule 3 names verify as the one dimension exempt from this default; it does not exempt
-   setup, so the default stands here the way it does not for verify.
+6. `setup` not in `_CONFIRMED_SETUP` (i.e. `"not-run"`: a setup command exists and the
+   measurement was withheld) -> `partial`. Fail closed: a measurement that was not taken
+   cannot promote a seat to the cleanest verdict. Rule 3 names verify as the one dimension
+   exempt from this default; it does not exempt setup, so the default stands here the way it
+   does not for verify. `"none"` is not withheld evidence and does not degrade a seat --
+   there was no command to run, so there is no measurement missing from the record.
 7. Otherwise -> `completed`. `verify`'s value is never read above this line -- rule 3,
    enforced by omission rather than by a branch that would have to be kept in step with it.
 """
@@ -88,7 +99,28 @@ from council import engine
 
 _PROCESS = ("valid", "invalid")
 _ARTIFACTS = ("usable", "unusable")
-_PHASE = ("pass", "fail", "not-run")  # setup, verify
+
+# `setup` and `verify` had ONE vocabulary and it could not say the thing rules 3 and 6 turn
+# on: whether a missing measurement was withheld or was never there to take. `"not-run"` is
+# the first -- a confirmed command that did not run in this seat -- and `"none"` is the
+# second: §5's confirmation named no setup command at all, which `gate.Confirmation` admits
+# outright (it refuses only an empty VERIFY) and which is the ordinary shape of a repository
+# that needs no toolchain. Collapsing them is what made an argued zero-diff seat in such a
+# repository a crash rather than a verdict.
+_SETUP = ("pass", "fail", "not-run", "none")
+
+# `verify` has no `"none"` and must not gain one by sharing a tuple: §6 runs the confirmed
+# gate in a fresh clone for EVERY run -- `Confirmation` refuses an empty verify command, so
+# there is no such thing as a run with no gate to take -- and a value nothing measures is a
+# value nothing should be able to be classified under. `runner._verify_dim` produces
+# `"not-run"` for §6.2's four non-verdicts and `runner.run_seat` writes it literally at
+# harvest time; both mean the same thing, which is why one literal serves them.
+_VERIFY = ("pass", "fail", "not-run")
+
+# The `setup` readings that leave nothing unmeasured, and the exact set rules 3 and 6 admit.
+# `"pass"` is a command that ran and confirmed; `"none"` is a run with no command to run.
+_CONFIRMED_SETUP = ("pass", "none")
+
 _FORGE = ("completed", "partial", "no_change", "failed")
 
 # A rationale below this many characters (after stripping leading/trailing whitespace) is
@@ -153,8 +185,8 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
     """
     _require_literal("process", process, _PROCESS)
     _require_literal("artifacts", artifacts, _ARTIFACTS)
-    _require_literal("setup", setup, _PHASE)
-    _require_literal("verify", verify, _PHASE)
+    _require_literal("setup", setup, _SETUP)
+    _require_literal("verify", verify, _VERIFY)
     _require_bool("proven_read", proven_read)
     _require_bool("changed", changed)
 
@@ -170,19 +202,20 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
             # seat's own classification always lands, and `partial` withholds the promotion
             # without throwing the argument away.
             forge = "partial"
-        elif setup != "pass" or verify != "pass":
+        elif setup not in _CONFIRMED_SETUP or verify != "pass":
             raise SeatStatusError(
-                "no_change requires independent verification: setup and verify must both "
-                f"have run and passed (setup={setup!r}, verify={verify!r}) -- a claim that "
-                "nothing needed to change is only as credible as the check that confirms "
-                "the current state is already correct")
+                "no_change requires independent verification: verify must have run and "
+                f"passed and setup must be one of {list(_CONFIRMED_SETUP)} "
+                f"(setup={setup!r}, verify={verify!r}) -- a claim that nothing needed to "
+                "change is only as credible as the check that confirms the current state is "
+                "already correct")
         else:
             forge = "no_change"
     elif artifacts == "unusable":
         forge = "failed"
     elif not proven_read:
         forge = "partial"
-    elif setup != "pass":
+    elif setup not in _CONFIRMED_SETUP:
         forge = "partial"
     else:
         forge = "completed"
@@ -239,9 +272,21 @@ def forge_spec(name: str, prompt: str, timeout: int, **kw) -> engine.ProviderSpe
     `cfg=`/`workdir=` when a seat needs a specific model/tier or a real run directory.
     Left at their defaults (no model override, the current directory) they are
     harmless at spec-construction time -- neither is touched until the spec is run.
+
+    ANYTHING ELSE IS REFUSED rather than dropped. `**kw` exists to name two optional
+    parameters, and a swallow makes `workdirr=` -- or a `sentinel=`/`min_chars=` a caller
+    reasonably expects to reach the spec -- construct a spec silently missing what was
+    asked for. The two `_forge_validator` neutralizes are exactly the ones a caller is
+    most likely to try to set, so the quiet reading of a typo there is a seat running
+    under a policy nobody chose.
     """
     cfg = kw.pop("cfg", {})
     workdir = kw.pop("workdir", Path("."))
+    if kw:
+        raise SeatStatusError(
+            f"forge_spec does not take {sorted(kw)}; besides name/prompt/timeout it takes "
+            "cfg= and workdir=, which are `council.engine.build_real_spec`'s own remaining "
+            "parameters")
     spec = engine.build_real_spec(name, prompt, timeout, cfg, workdir)
     spec.min_chars = 0
     spec.validator = _forge_validator

@@ -95,6 +95,48 @@ def test_setup_that_never_ran_does_not_let_a_seat_read_as_completed():
     assert s.forge == "partial"
 
 
+def test_a_run_with_no_setup_command_withheld_nothing_and_is_not_degraded_for_it():
+    """`"none"` against `"not-run"`, which are one measurement apart and were one literal.
+
+    Rule 6 fails closed on a measurement that was not TAKEN. A run whose §5 confirmation
+    named no setup command has none to take — `gate.Confirmation` admits an empty setup and
+    refuses only an empty VERIFY — so degrading it is refusing to promote a seat over
+    evidence that was never owed. The case above holds the other half: a command that exists
+    and did not run still degrades.
+    """
+    assert seat.classify_seat(**{**_BASE, "setup": "none"}).forge == "completed"
+    assert seat.classify_seat(**{**_BASE, "setup": "not-run"}).forge == "partial"
+
+
+def test_a_zero_diff_seat_in_a_no_toolchain_repository_is_verified_not_refused():
+    """§8's rule 3 asks for independent verification, and a setup command that does not exist
+    is not a verification that was skipped. This exact pair — `setup` with nothing to run and
+    a verify that passed — was `runner.run_seat`'s happy path for any repository needing no
+    toolchain, and rule 3 refused it as *"a contradiction in the caller's own measurements"*:
+    an uncaught raise out of the run loop, after three providers had been paid.
+
+    `verify` is still asked for positively. `"not-run"` degrades to `partial` and `"fail"` is
+    still the refusal, because those ARE a measurement missing and a measurement refuting.
+    """
+    rationale = "the retry already backs off; adding one would double-sleep"
+    base = dict(process="valid", artifacts="unusable", proven_read=True, changed=False,
+                setup="none", rationale=rationale)
+    assert seat.classify_seat(**base, verify="pass").forge == "no_change"
+    assert seat.classify_seat(**base, verify="not-run").forge == "partial"
+    with pytest.raises(seat.SeatStatusError):
+        seat.classify_seat(**base, verify="fail")
+
+
+def test_verify_has_no_none_because_every_run_has_a_gate_to_take():
+    """The two dimensions share a rule and not a vocabulary. `gate.Confirmation` refuses an
+    empty verify command, so there is no run in which the gate does not exist — and a value
+    nothing can ever measure is one nothing should be classifiable under. Sharing one tuple
+    would have admitted it silently, which is the shape of the defect `"none"` exists to fix.
+    """
+    with pytest.raises(seat.SeatStatusError):
+        seat.classify_seat(**{**_BASE, "verify": "none"})
+
+
 def test_no_change_also_requires_independent_verification_not_only_a_rationale():
     """§8, verbatim: "a `no_change` requires a substantive rationale AND independent
     verification." A rationale alone is not enough — an unfailing setup/verify pair has to
@@ -230,6 +272,17 @@ def test_the_sentinel_is_recorded_and_cannot_invalidate():
     # Recorded, not vetoed: proven_read reads the same text independently and is False,
     # while `valid` above stayed True -- the exact split section 8.1 asks for.
     assert seat.read_proof(result_text, token) is False
+
+
+def test_forge_spec_refuses_a_keyword_it_does_not_understand():
+    """`**kw` names two optional parameters and used to drop everything else. A typo'd
+    `workdirr=` built a spec silently missing what was asked for — and `sentinel=`/
+    `min_chars=` are exactly what a caller reading `ProviderSpec` would try to pass, so the
+    quiet reading of one is a seat running under a policy nobody chose."""
+    spec = seat.forge_spec("claude", "do the thing", 900, workdir=Path("."))
+    assert spec.validator is not None, "the spelled-right keyword still works"
+    with pytest.raises(seat.SeatStatusError, match="workdirr"):
+        seat.forge_spec("claude", "do the thing", 900, workdirr=Path("."))
 
 
 def test_read_proof_fails_closed_on_a_missing_token():

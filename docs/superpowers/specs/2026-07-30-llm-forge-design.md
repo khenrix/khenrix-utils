@@ -537,7 +537,14 @@ as success:
 | task bundle | proven read / not proven |
 | forge status | `completed` / `partial` / `no_change` / `failed` |
 
-plus `setup` and `verify`, each pass / fail / not-run.
+plus `setup` and `verify`. `verify` is pass / fail / not-run. `setup` is those three **plus
+`none`**, and the fourth value is load-bearing rather than cosmetic: this line said three, so
+a run whose confirmation named no setup command recorded `not-run` — the same value as a
+confirmed command whose measurement was withheld. The two are treated differently by the
+rules below (a withheld measurement cannot promote a seat; an absent command has nothing to
+withhold), and while they shared one spelling, an argued zero-diff seat in a repository that
+needs no toolchain was refused as a contradiction: an uncaught raise out of the run loop,
+after every provider had been paid and with the seats behind it left unverified.
 
 A seat with useful artifacts but no proof token is **`partial`**, not completed. A
 `no_change` requires a substantive rationale and independent verification — a correct
