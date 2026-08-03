@@ -2135,6 +2135,32 @@ def test_a_calibration_runs_the_baseline_in_a_clone_the_builder_never_had(tmp_pa
     assert _git(cal.path, "status", "--porcelain").stdout == ""
 
 
+def test_a_run_that_confirmed_no_setup_command_can_still_be_calibrated(tmp_path):
+    """§5 step 3 has to be takeable for every run the §5 gate lets through, and it was not.
+
+    `gate.Confirmation` admits an empty setup in as many words — it refuses only an empty
+    VERIFY — so a repository that needs no toolchain is an ordinary confirmed run. `calibrate`
+    called `run_setup` unconditionally, `run_setup` calls `run_command`, and `run_command`
+    declines to report exit 0 for a gate with no steps: §5 step 3 raised `VerifyError` for
+    every such run, before any provider spent a token, on a shape the gate had just approved.
+
+    `setup is None` rather than a green `Run`, and that is the point of the type change: a
+    fabricated exit-0 setup would be a calibration claiming a preparation step that never
+    happened, which `classify` then differences every candidate against.
+
+    NOT A NARROWER TEST OF THE SAME THING as the no-setup verifier case one file over: this
+    is the calibration, which is the one run §6.2 leans on hardest and the only one taken
+    before the fleet starts.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
+    cal = _calibrate(tmp_path, repo, setup=verify.Command())
+
+    assert cal.setup is None, "no setup was confirmed, so none ran and none is invented"
+    assert cal.run.exit_code == 0 and cal.second_pass.exit_code == 0, \
+        "and the gate itself was still run to a fixed point and confirmed"
+    assert _git(cal.path, "status", "--porcelain").stdout == ""
+
+
 def test_a_red_baseline_calibrates_red_rather_than_raising(tmp_path):
     """§6.2 needs the red result — it is what `BASELINE_RED_…` is a comparison against, so
     a refusal here would delete the outcome instead of producing it."""

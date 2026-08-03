@@ -804,8 +804,8 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
     seat = fleet.clone_seat(repo, baseline, dest, name=VERIFIER_NAME, identity=identity)
     # Before the candidate, so nothing between the clone and the gate runs unpinned; and
     # read back after it, because the candidate is the only writer BEFORE THIS READBACK.
-    # `run_setup` writes later and nothing reads the pin again, so a confirmed setup command
-    # that repoints core.hooksPath moves it with no canary left to fire.
+    # `run_setup` writes later, which is why `assert_hooks_pinned` exists as a second READ
+    # for the caller that owns §6's chronology to take between setup and the gate.
     _hooks_pin(seat.path)
     # The baseline half of the delta, and this is the only moment it can be taken: the
     # clone holds exactly B1 and `clone_seat` has already verified the checkout against its
@@ -864,6 +864,32 @@ def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
     except OSError:
         return None
     return None
+
+
+def assert_hooks_pinned(verifier: Verifier) -> None:
+    """§6 step 5, re-read after the confirmed setup ran and before the gate does.
+
+    A READ, never a re-pin, and the distinction is the whole value: re-pinning here would
+    restore the property and destroy the evidence that it had been lost, which is exactly
+    what `build_verifier`'s own note means by a second pin hiding the loss of the first. An
+    assertion detects instead, and a detection is what §6's premise needs.
+
+    WHY THE SECOND READ IS NEEDED AT ALL, measured. `build_verifier` pins before
+    materialization and asserts once afterwards, when the candidate is the only writer so
+    far. THE CONFIRMED SETUP COMMAND RUNS AFTER THAT, in the candidate's own tree, and a
+    candidate may legitimately own the script setup invokes: a `./setup.sh` the candidate
+    rewrote to `git config --local core.hooksPath .githooks` leaves the gate running under
+    builder-supplied hooks, and `run_setup`'s overlap check cannot see it because
+    `.git/config` is not a tracked path. MEASURED, with this call neutralized: the verifier's
+    `core.hooksPath` read `.githooks` at the moment the gate ran and `verify_candidate`
+    returned PASS — reason "the gate exited 0; the bundle carried every artifact path, the
+    gate surface was measured over 1 file(s) and unchanged". A verdict reading perfectly
+    clean over a gate the builder had reached, which is the founding premise inverted.
+
+    Takes the `Verifier` rather than a path so a caller cannot aim it at the seat's own
+    clone, where the answer would be about the tree §6 exists to stop trusting.
+    """
+    _assert_hooks_pinned(verifier.path)
 
 
 def validate_materialized(verifier: Verifier) -> None:
@@ -1223,10 +1249,18 @@ class Calibration:
     second was spent — §6.2 already has its verdict there. A red `second_pass` over a green
     `run` is a baseline gate that disagrees with itself, which is recorded rather than
     refused; `classify` reads the same pair in the candidate direction as FLAKY.
+
+    `setup` IS OPTIONAL, and `None` is a different fact from a `Run` that exited 0: it says
+    the run's confirmation named NO setup command, so none was run here. `gate.Confirmation`
+    admits an empty setup in as many words — it refuses only an empty VERIFY — and this field
+    used to be typed as though it could not happen, which made §5 step 3 raise for every
+    repository that needs no toolchain. It is the same value `runner`'s `status.setup ==
+    "not-run"` records one module over, and `_with_setup_caveat` already reads `None` as
+    "nothing to say about a setup that never ran" rather than as a passing one.
     """
     run: Run
     path: Path
-    setup: Run
+    setup: Run | None
     second_pass: Run | None
     admitted: tuple[str, ...] = ()
     unexplained: tuple[str, ...] = ()
@@ -1241,10 +1275,19 @@ def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
     way would make the calibration the one clone in the run whose construction nobody
     reviewed, and it is the run §6.2 leans on hardest.
 
-    `validate_materialized` is deliberately not called here. `run_setup` makes that check as
-    its first statement, because §6 orders it before setup and the ordering is the whole of
-    its value; a second call would re-read nothing anyway, since an empty bundle has no
-    sidecars to compare.
+    `validate_materialized` is deliberately not called here, on EITHER branch below, and the
+    reason is the bundle rather than the delegation: the candidate is empty by construction,
+    so there are no sidecars to compare and the check can only ever be a no-op. Where a
+    setup command was confirmed, `run_setup` makes the check as its first statement anyway,
+    because §6 orders it before setup; where none was, nothing calls it and nothing is lost.
+    `verify_candidate`'s no-setup branch DOES call it, and the difference is not an
+    inconsistency — that one holds a real candidate with real sidecars.
+
+    A CONFIRMATION THAT NAMED NO SETUP IS RUN, NOT REFUSED. `run_command` declines to report
+    exit 0 for a gate that ran nothing, so calling `run_setup` unconditionally made §5 step 3
+    raise `VerifyError` for every repository needing no toolchain — a run the §5 gate
+    explicitly admits, since `gate.Confirmation` refuses only an empty VERIFY. The branch
+    below is that closed, and `Calibration.setup` carries the `None` that says so.
 
     `env` is passed through rather than derived from `repo`, though this IS a caller holding
     the repo path. The calibration and the candidates it will be compared against have to
@@ -1261,11 +1304,11 @@ def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
     # unobservable is one the next reader has to re-derive as harmless.
     v = build_verifier(repo, baseline, empty, dest, identity=identity, contract=contract,
                        command=command)
-    s = run_setup(v, setup, env=env)
+    setup_run = run_setup(v, setup, env=env).run if setup.steps else None
     fp = fixed_point(v.path, command, v.contract, env=env)
     second = (_confirm_fixed_point(v.path, command, v.contract, env=env)
               if fp.run.exit_code == 0 else None)
-    return Calibration(run=fp.run, path=v.path, setup=s.run, second_pass=second,
+    return Calibration(run=fp.run, path=v.path, setup=setup_run, second_pass=second,
                        admitted=fp.admitted, unexplained=fp.unexplained)
 
 
