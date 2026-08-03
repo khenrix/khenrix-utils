@@ -1500,11 +1500,29 @@ _HOOK_SAFE = frozenset({
 # flags: `NO_DIFF_DRIVERS` is a SUBCOMMAND option, so `rev-parse --no-ext-diff` is an error.
 # An unmeasured verb is therefore cleared by measuring it onto this list or by an exemption
 # naming what it actually runs.
+#
+# `worktree` and `fetch` were measured ONTO this list rather than exempted, which is the
+# stronger of the two routes this comment offers. Measured on git 2.53.0 with `diff.external`,
+# `diff.<d>.command` and `diff.<d>.textconv` all planted and an in-tree `.gitattributes`
+# selecting the driver: `worktree add -b` and `fetch --no-tags --no-write-fetch-head <path>
+# <refspec>` fired NONE of the three, while the control `git diff` over the same repository
+# fired `diff.probe.command`. They are absent from `_INDEX_SAFE` and `_HOOK_SAFE` on the
+# opposite measurement — `worktree add -b` fires core.fsmonitor once, `post-checkout` once,
+# `post-index-change` once and `reference-transaction` FOURTEEN times, and `fetch` fires
+# core.fsmonitor once and `reference-transaction` twice — so both call sites carry
+# NO_DAEMON_CACHE and NO_HOOKS, which were measured necessary and sufficient for all of them.
+# `--no-ext-diff` could not have been used in any case: it is rc=129 for both verbs in every
+# argv position, before, after and among the subcommand's own arguments.
 _DIFF_DRIVER_SAFE = frozenset({
     "rev-parse", "show-ref", "symbolic-ref",
     "config", "check-ref-format", "check-attr", "ls-files", "status",
     "add", "write-tree", "commit-tree", "update-ref", "checkout", "clone", "remote",
     "apply",              # both forms: `--numstat -z` and `--index --binary`
+    # ONE FORM EACH, which is all that is measured and all that is called. §15's `--gc` adds
+    # `worktree list --porcelain` and `worktree remove`; each is its own argv and re-measuring
+    # is what clears it, exactly as `apply` came to decide by flag and `remote` by first word.
+    "worktree",           # `worktree add -b <branch> <dest> <at>` — see above
+    "fetch",              # `fetch --no-tags --no-write-fetch-head <path> <refspec>`
 })
 
 
@@ -1734,11 +1752,20 @@ def test_the_git_call_reader_sees_a_new_call_site():
         "an unresolved subcommand must read as needing an exemption, not as clear"
     assert not _loads_an_index(one('gitcmd.git(r, "config", "--get", "user.name")')), \
         "a measured-safe verb is cleared by BEING on the list, not by being absent from one"
-    assert _loads_an_index(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+    assert _loads_an_index(one('gitcmd.git(r, "merge", "--no-ff", b)')), \
         "the inversion's whole point: a verb nobody measured needs the flags"
-    assert _fires_a_hook(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')) and \
-        _runs_a_diff_driver(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+    assert _fires_a_hook(one('gitcmd.git(r, "merge", "--no-ff", b)')) and \
+        _runs_a_diff_driver(one('gitcmd.git(r, "merge", "--no-ff", b)')), \
         "and needs them for all three rules, not for whichever one was enumerated"
+    # `worktree` USED TO BE THAT EXAMPLE and is now the other half of the same point: it was
+    # cleared on ONE rule by being measured on that rule, and stays unmeasured on the two it
+    # was measured to trip. A verb cleared everywhere by one measurement is the enumeration
+    # problem back again.
+    assert _loads_an_index(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')) and \
+        _fires_a_hook(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+        "worktree add -b runs core.fsmonitor and three hooks (measured); both flags stay"
+    assert not _runs_a_diff_driver(one('gitcmd.git(r, "worktree", "add", "-b", b, d)')), \
+        "and runs no diff driver (measured), which is the one rule it is cleared on"
     assert not one('gitcmd.git(r, "config", "--get", "user.name")').user_config
     assert one('gitcmd.git(r, "config", "--get", "user.name", user_config=True)').user_config, \
         "the door out of the /dev/null pin is a keyword, and the reader has to see it"
@@ -1998,6 +2025,126 @@ def test_the_bundle_hash_the_launcher_claims_and_the_one_the_seat_gets_have_one_
         assert "read_task_bundle(" in t or "read_task_bundle_if_recorded(" in t
         assert "bundle_hash(" in t, (
             "the CLI computes a bundle hash some other way than taskbundle.bundle_hash")
+
+
+def test_the_branch_name_has_one_spelling():
+    """`fleet.clone_seat` computes `forge/{run_id}/{name}` for a seat and `handover.branch`
+    computes it for the transport and the synthesis tree. Two spellings of one predicate will
+    eventually disagree, and this one decides whether a seat's work can be found at all."""
+    from forge import handover  # noqa: PLC0415
+    assert handover.branch("r1", "claude") == "forge/r1/claude"
+    assert handover.branch("r1", handover.SYNTHESIS) == "forge/r1/synthesis"
+    src = (ROOT / "shared" / "lib" / "forge" / "fleet.py").read_text()
+    assert 'f"forge/{run_id}/{name}"' in src or "handover.branch(" in src, (
+        "fleet no longer spells the seat branch the way this test reads it — re-derive the "
+        "pair rather than widening the pattern")
+
+
+def test_both_materializers_hand_a_tree_the_same_bundle_by_the_same_route():
+    """SEAM: `runner._materialize_the_task` lays §20's bundle into a SEAT and
+    `handover.create_synthesis_worktree` lays it into the SYNTHESIS tree. Two call sites, one
+    contract, and the parts that must not drift are the decoder, the byte source and the
+    read-back — a second site that opened `storage.task_bundle_path` itself, or skipped
+    `verify_materialized`, would hand one of the two trees a bundle nothing checked.
+
+    Read off the SOURCE for `test_the_bundle_hash_the_launcher_claims…`'s reason: a
+    behavioural test of the seat half needs a fleet, and what is at issue is the route rather
+    than one run's bytes.
+    """
+    forge_dir = ROOT / "shared" / "lib" / "forge"
+    runner_src = (forge_dir / "runner.py").read_text(encoding="utf-8")
+    seat = runner_src[runner_src.index("def _materialize_the_task"):]
+    seat = seat[:seat.index("\ndef ")]
+    hand_src = (forge_dir / "handover.py").read_text(encoding="utf-8")
+    synth = hand_src[hand_src.index("def create_synthesis_worktree"):]
+    synth = synth[:synth.index("\ndef ")]
+    for where, body in (("runner._materialize_the_task", seat),
+                        ("handover.create_synthesis_worktree", synth)):
+        assert "read_task_bundle_if_recorded(run_dir)" in body, where
+        assert "storage.task_source_path(run_dir)" in body, where
+        assert "verify_materialized(" in body, where
+        assert "storage.task_bundle_path" not in body, (
+            f"{where} opens the manifest path itself instead of going through taskbundle's "
+            "decoder — that is the second spelling")
+
+
+def test_the_synthesis_checkout_reviewers_are_sent_to_holds_the_task_it_was_given(tmp_path):
+    """SEAM: `handover.create_synthesis_worktree` produces the tree and `review.run_round`
+    interrogates it. §13 sets every reviewer's cwd to that tree, and `run_round` decides
+    `task_bundle_present` by asking it for `taskbundle.task_dir` — so until a producer
+    existed, §20's bundle reached three seats and no synthesis tree, and every reviewer was
+    told "There is no task bundle in this checkout" while judging work built from one.
+
+    ASSERTED THROUGH `run_round` RATHER THAN THROUGH THE PREDICATE, because the predicate is
+    one line of `run_round` and restating it here would be this file asserting its own copy.
+    What the round produces is REVIEW.md, which is what a reviewer actually reads.
+    """
+    from forge import handover, ledger, review, taskbundle  # noqa: PLC0415
+
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"
+    run.mkdir()
+    src = storage.task_source_path(run)
+    src.mkdir(parents=True)
+    (src / "TASK.md").write_text("Refactor the thing.\n")
+    taskbundle.write_task_bundle(run, taskbundle.scan(src, entrypoint="TASK.md"))
+    row = ledger.Row(id=ledger.row_id("R1", "c"), requirement_id="R1",
+                     requirement_span="spec.md:1-3", requirement_sha256="0" * 64,
+                     kind="architecture", component="core", semantic_claim="c",
+                     status="rejected", dependencies=(), seat_evidence=(), counterevidence="",
+                     acceptance_criteria=(), synthesis_evidence=None,
+                     verification_receipt=None, risk="", rationale="none")
+    ledger.write_ledger(run, ledger.Ledger(
+        version=ledger.VERSION, rows=(row,), union_diff_bytes=10,
+        degrade_threshold_bytes=ledger.DEGRADE_UNION_DIFF_BYTES, degraded=False))
+
+    synth = tmp_path / "synth"
+    handover.create_synthesis_worktree(repo, synth, run_id="r1",
+                                       at=_git(repo, "rev-parse", "HEAD").stdout.strip(),
+                                       run_dir=run)
+
+    answer = ("I read the diff.\n" + "z" * 500 + '\n```json\n{"findings": []}\n```')
+
+    def run_council(specs, *, retries, timeout, backoff, workdir, prompt=None, requested=None,
+                    mode=None, read_only=None, install_signal_handler=True, env=None):
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        providers = []
+        for s in specs:
+            rf = Path(workdir) / f"{s.name}.result.txt"
+            rf.write_text(answer)
+            providers.append({"name": s.name, "valid": True, "reason": "ok",
+                              "result_text": answer[:80], "result_file": str(rf),
+                              "model": s.model})
+        return {"providers": providers, "prompt_sha256": None}
+
+    from forge import fingerprint  # noqa: PLC0415
+    review.run_round(
+        run, round_=1, checkout=synth, checkpoint="a" * 40, baseline_commit="b" * 40,
+        baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
+        log=journal.Journal(storage.journal_path(run)), run_council=run_council,
+        probe=lambda **kw: fingerprint.build(
+            prompt=kw["prompt"], token=kw["token"], cli=kw["cli"],
+            bundle_sha256=kw.get("bundle_sha256"),
+            model_requested=kw.get("model_requested"),
+            model_reported=kw.get("model_reported"),
+            run=lambda *a, **k: __import__("subprocess").CompletedProcess(a, 0, "1.0", ""),
+            closure=lambda cli: "closure-" + cli),
+        make_token=lambda: "TOK")
+
+    text = (review.review_dir(synth, 1) / "REVIEW.md").read_text()
+    assert "no task bundle" not in text, text
+    assert "khenrix-forge/task" in text
+    # NON-VACUITY: the same round over a checkout with no bundle still says there is none, so
+    # the assertion above is about this tree and not about the sentence having been deleted.
+    bare = tmp_path / "bare"
+    handover.create_synthesis_worktree(repo, bare, run_id="r2",
+                                       at=_git(repo, "rev-parse", "HEAD").stdout.strip(),
+                                       run_dir=tmp_path / "empty-run")
+    assert "no task bundle" in review.write_reviewer_inputs(
+        bare, 1, checkpoint="a" * 40, baseline_commit="b" * 40, baseline_tree="c" * 40,
+        artifact_manifest=None, token="TOK",
+        task_bundle_present=Path(taskbundle.task_dir(bare)).is_dir()).joinpath(
+            "REVIEW.md").read_text()
 
 
 def test_the_task_bundle_a_run_records_and_the_bytes_it_materializes_have_one_name():

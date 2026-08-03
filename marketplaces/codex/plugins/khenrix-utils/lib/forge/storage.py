@@ -249,6 +249,12 @@ def ledger_path(run_dir) -> Path:
     return Path(run_dir) / "ledger.json"
 
 
+def handover_path(run_dir) -> Path:
+    """§16's delivery record, which §15's `--gc` reads for its licence to delete a synthesis
+    worktree. Named here with the rest so the writer and a later `--gc` process agree."""
+    return Path(run_dir) / "handover.json"
+
+
 # Runs of lowercase letters and digits, joined by SINGLE hyphens: `a-b` passes and `a--b`,
 # `-a` and `a-` do not. A seat is named for a provider, so this is not a narrowing anyone
 # will notice — and the alternative is that a separator or a `..` in the name silently
