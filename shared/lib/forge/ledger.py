@@ -36,7 +36,8 @@ quoting a claim is the ledger handed over through git. Say hash; never summary.
 WHAT THIS MODULE REFUSES AT WRITE AND WHAT IT LEAVES TO COVERAGE. Structure is refused here,
 where the producer is still present and can fix it (`write_manifest`'s round-trip refusal makes
 the same argument): a stale id, a duplicate id, an unknown vocabulary word, a dangling
-dependency, an ordering cycle, a self-conflict, a criterion whose kind and fields disagree.
+dependency, an ordering cycle, a self-conflict, a one-sided conflict, a criterion whose kind
+and fields disagree.
 SEMANTICS are `coverage`'s: whether two conflicting rows are both accepted, and whether an
 accepted row contradicts a unanimous rejection, are findings a report carries — §12.4 makes the
 coverage check "a fallback trigger AND a report line", which a write refusal cannot be.
@@ -182,6 +183,14 @@ class Ledger:
     degraded: bool
 
 
+# The nested lists on a Row, and the type each element holds. ONE PAIRING, READ BY BOTH SIDES:
+# `_decode` builds elements of these classes with `_sub`, and `_check` requires a Ledger built
+# IN PROCESS to already hold them. Named rather than inlined so the decode loop can also tell
+# "this key is absent" from "this key is an empty list", which are different records.
+_ROW_LISTS = (("dependencies", Dependency), ("seat_evidence", SeatEvidence),
+              ("acceptance_criteria", Criterion))
+
+
 def row_id(requirement_id: str, semantic_claim: str) -> str:
     """§10's content-derived id: `sha256(requirement_id || semantic_claim)[:12]`, FRAMED.
 
@@ -206,9 +215,90 @@ def row_id(requirement_id: str, semantic_claim: str) -> str:
     `.strip()` is the tempting one, and it is jointly wrong with the equality check in
     `write_ledger`: normalization makes two visibly different claims share a row, and the check
     then passes because both sides normalize.
+
+    BOTH ARGUMENTS ARE `str` OR THIS REFUSES, because `json.dumps` fails two different ways on
+    anything else and neither is this module's error class. An unserializable value raised
+    `TypeError`; an int or a list serialized QUIETLY, so a row whose `requirement_id` was a
+    number hashed into an id nothing downstream would question.
     """
+    for name, v in (("requirement_id", requirement_id), ("semantic_claim", semantic_claim)):
+        if not isinstance(v, str):
+            raise LedgerError(f"a row id is taken over two strings; {name} is a str, not "
+                              f"{type(v).__name__}")
     canonical = json.dumps([requirement_id, semantic_claim], sort_keys=True).encode()
     return hashlib.sha256(canonical).hexdigest()[:12]
+
+
+def _as_rows(rows) -> tuple:
+    """Materialize ONCE, and refuse anything that is not a `Row`.
+
+    ITERATED ONCE, BY EVERY CALLER. `topological_order` reads its argument three times — the
+    ids, the claims, and `edges` — so a GENERATOR is exhausted by the first pass and the last
+    two see an empty graph: every edge silently dropped, every in-degree zero, the length check
+    satisfied, and a clean SORTED order returned for a graph that declared constraints. §12.2
+    partitions synthesis by that order. Measured: a two-row `requires` came back reversed.
+
+    The type check is the same public-surface argument the dangling-edge refusal makes.
+    `edges` and `topological_order` are called by §12.2 over rows that need never have been
+    through a write, and a dict or a bare string there raised `AttributeError` on
+    `r.dependencies` — an error escaping this module's declared class, so one no caller of it
+    knows to catch. A `str` is the ordinary way to reach it, because iterating one yields
+    characters rather than failing.
+    """
+    try:
+        out = tuple(rows)
+    except TypeError as e:
+        raise LedgerError(
+            f"rows is a sequence of Row, not {type(rows).__name__}") from e
+    _check_rows(out)
+    return out
+
+
+def _check_rows(rows) -> None:
+    """A sequence of `Row`, each holding its declared element types. THE SHAPE, NOT THE VALUES.
+
+    Separate from `_check` because three entry points meet a `Row` with no decoder ahead of
+    them and none of the three runs the rest: `_as_rows`, for the two public graph functions;
+    `_payload`, for `ledger_hash`, which §14.1 calls without ever going through `_check`; and
+    `_check` itself, before it starts reading fields whose meaning presumes the shape.
+
+    ONE RULE IN ONE PLACE, which is why `edges` is refused a row whose `acceptance_criteria`
+    are malformed although it never reads them. The narrower alternative is a second spelling
+    per caller, and two spellings of one rule drifting apart is this project's standing defect.
+    """
+    if not isinstance(rows, (tuple, list)):
+        raise LedgerError(f"a ledger's rows are a sequence of Row, not {type(rows).__name__}")
+    for r in rows:
+        if not isinstance(r, Row):
+            raise LedgerError(f"a ledger row is a Row, not {type(r).__name__}")
+        _check_row_lists(r)
+
+
+def _check_row_lists(r: Row) -> None:
+    """The three nested lists hold what `_ROW_LISTS` says they hold — ON THE WRITE SIDE.
+
+    `_decode` builds every element with `_sub`, so a ledger READ from disk cannot hold the
+    wrong type here. A `Ledger` built IN PROCESS never goes through it, and §12.2's synthesis
+    builds rows — so this is the ordinary route into the module, not an exotic one. It is the
+    dangling-edge argument one branch over: `_check` typed the ROW and said nothing about what
+    its lists carry, and the element's real type was then discovered by whoever first read a
+    field off it. Measured, all four escape this module's declared class — `d.relation` in
+    `edges` and `topological_order`, `e.stance` and `c.kind` in `_check`, all `AttributeError`;
+    `dataclasses.asdict` in `ledger_hash`, `TypeError`.
+
+    A `list` is accepted here because refusing it is `write_ledger`'s round-trip check, which
+    reports the right defect — JSON has one sequence type — where this would report a type
+    error about a sequence that is in fact the right shape.
+    """
+    for name, cls in _ROW_LISTS:
+        v = getattr(r, name)
+        if not isinstance(v, (tuple, list)):
+            raise LedgerError(f"row {r.id}: {name} is a sequence of {cls.__name__}, "
+                              f"not {type(v).__name__}")
+        for i, x in enumerate(v):
+            if not isinstance(x, cls):
+                raise LedgerError(f"row {r.id}: {name}[{i}] is a {cls.__name__}, "
+                                  f"not {type(x).__name__}")
 
 
 def edges(rows) -> tuple:
@@ -236,10 +326,11 @@ def edges(rows) -> tuple:
     one before any sort runs. Read on its own this function answers `()` for a graph that
     declares an ordering, so the refusal there is what makes the silence here honest.
 
-    `conflicts` IS NOT HERE. It is symmetric and not an ordering; a "cycle" of conflicts is
-    meaningless. Whether two conflicting rows may both be accepted is a coverage assertion, not
-    a sort.
+    `conflicts` IS NOT HERE. It is symmetric — `_check` refuses a one-sided one — and not an
+    ordering; a "cycle" of conflicts is meaningless. Whether two conflicting rows may both be
+    accepted is a coverage assertion, not a sort.
     """
+    rows = _as_rows(rows)
     out = []
     for r in rows:
         for d in r.dependencies:
@@ -262,7 +353,24 @@ def topological_order(rows) -> tuple:
     §12.2's "topological ordering is a precondition of partitioned synthesis" satisfied over a
     graph that is not the one written down.
     """
+    rows = _as_rows(rows)
     ids = [r.id for r in rows]
+    # A DUPLICATE ID IS NOT AN ORDERING QUESTION, IT IS A MALFORMED LEDGER — and this is the
+    # same public-surface argument the dangling-edge refusal below makes, applied to the raise
+    # beside it. `_check` refuses a duplicate before any WRITTEN ledger reaches here. Reached
+    # directly, both outcomes are wrong and neither was a `LedgerError`: `[a, a]` returned an
+    # order naming one row TWICE, and a duplicate carrying an edge left `len(order)` short of
+    # `len(ids)` with NOTHING unemitted, so the cycle renderer's `sorted(remaining)[0]` raised
+    # `IndexError` about a graph with no cycle in it. Refusing here is also what makes
+    # `_render_cycle`'s `remaining` provably non-empty.
+    dedup = set()
+    for i in ids:
+        if i in dedup:
+            raise LedgerError(
+                f"row id {i!r} appears twice, so these rows are not a graph to order: an "
+                "order naming one row twice is not an ordering, and §10's ids are "
+                "content-derived, so two rows under one id are two claims merged into one.")
+        dedup.add(i)
     claims = {r.id: r.semantic_claim for r in rows}
     succ = {i: [] for i in ids}
     indeg = {i: 0 for i in ids}
@@ -315,6 +423,12 @@ def _render_cycle(succ, remaining, claims) -> str:
     acting on that message deletes the wrong edge and the cycle survives. Backward the walk
     cannot dead-end, so the first repeat closes a cycle that is really there — and the prefix
     before that repeat is trimmed off, because the rows leading INTO a cycle are not in it.
+
+    `remaining` IS NON-EMPTY, and that is a fact about the CALLER rather than about this
+    function. Each id is emitted at most once, so `len(order) < len(ids)` leaves something
+    over — unless `ids` repeats an id, which is the one way the count falls short with nothing
+    unemitted at all. `topological_order` refuses a duplicate id before it sorts; without that
+    refusal `sorted(remaining)[0]` raises `IndexError` here, and it did.
     """
     pred = {n: [] for n in remaining}
     for tail in remaining:
@@ -361,7 +475,7 @@ def _check_criterion(c: Criterion, where: str) -> None:
                           f"not {c.kind!r}")
     # EVERY OTHER FIELD IS TEXT OR ABSENT. The required-field loop below tests truthiness and
     # `7` is truthy, so an int `path` reached `_assert_contained` and raised `TypeError` out of
-    # `os.fspath` — the same escape as an unchecked element type, one level further down.
+    # `os.fspath` — the same escape as the nested lists, one level further down.
     for name in ("text", "trace") + _CRITERION_OPTIONAL:
         v = getattr(c, name)
         if v is not None and not isinstance(v, str):
@@ -412,6 +526,7 @@ def _check(l: Ledger) -> None:
     """
     if not isinstance(l, Ledger):
         raise LedgerError(f"a Ledger is required, not {type(l).__name__}")
+    _check_rows(l.rows)
     if l.version != VERSION:
         raise LedgerError(f"this engine writes ledger version {VERSION}, not {l.version!r}")
     if l.degrade_threshold_bytes != DEGRADE_UNION_DIFF_BYTES:
@@ -426,8 +541,6 @@ def _check(l: Ledger) -> None:
             "synthesis, so a ledger that hides its own degradation misdescribes the spec.")
     seen = {}
     for r in l.rows:
-        if not isinstance(r, Row):
-            raise LedgerError(f"a ledger row is a Row, not {type(r).__name__}")
         if r.kind not in KINDS:
             raise LedgerError(f"row {r.id}: kind is one of {list(KINDS)}, not {r.kind!r}")
         if r.status not in STATUSES:
@@ -454,6 +567,7 @@ def _check(l: Ledger) -> None:
                                   f"not {e.stance!r}")
         for i, c in enumerate(r.acceptance_criteria):
             _check_criterion(c, f"row {r.id} criterion {i}")
+    conflicts = set()
     for r in l.rows:
         for d in r.dependencies:
             if d.relation not in RELATIONS:
@@ -466,6 +580,21 @@ def _check(l: Ledger) -> None:
                     "constraint, and §12.2's precondition would hold over the wrong graph.")
             if d.relation == "conflicts" and d.id == r.id:
                 raise LedgerError(f"row {r.id} conflicts with itself, which is not a claim")
+            if d.relation == "conflicts":
+                conflicts.add((r.id, d.id))
+    # SYMMETRY IS A PROPERTY OF THE RELATION, SO IT HAS TO BE IN THE RECORD. §10 makes
+    # `conflicts` symmetric, and this file stores dependencies PER ROW — so a one-sided
+    # declaration leaves the partner row reading as unconstrained to anything that meets it
+    # alone, which §12.2's partitioned synthesis does by construction. Refused at write, where
+    # the producer is present, for the reason the module docstring gives; it is the same
+    # malformed-relation class as a self-conflict, one branch over.
+    for a, b in sorted(conflicts):
+        if (b, a) not in conflicts:
+            raise LedgerError(
+                f"row {a} declares a conflicts on {b} and {b} does not declare it back. §10's "
+                "`conflicts` is symmetric, and a reader holding only the silent row — which "
+                "is every partition that does not contain both — would read an unconstrained "
+                "claim.")
     topological_order(l.rows)
 
 
@@ -482,6 +611,10 @@ def _row_row(r: Row) -> dict:
 
 
 def _payload(l: Ledger) -> dict:
+    # `ledger_hash` reaches here WITHOUT `_check` — §14.1 hashes a ledger it already holds —
+    # and `dataclasses.asdict` answers `TypeError` for anything that is not a dataclass. The
+    # shape check is in the one function that serializes, so both callers get it.
+    _check_rows(l.rows)
     return {"version": l.version, "union_diff_bytes": l.union_diff_bytes,
             "degrade_threshold_bytes": l.degrade_threshold_bytes,
             "degraded": bool(l.degraded), "rows": [_row_row(r) for r in l.rows]}
@@ -498,12 +631,6 @@ def _sub(cls, row, where):
     if unknown:
         raise LedgerError(f"{where} carries fields this engine does not know: {unknown}")
     return cls(**{n: row[n] for n in names})
-
-
-# The nested lists on a Row, and the type each element decodes to. Named so the loop below
-# can tell "this key is absent" from "this key is an empty list", which are different records.
-_ROW_LISTS = (("dependencies", Dependency), ("seat_evidence", SeatEvidence),
-              ("acceptance_criteria", Criterion))
 
 
 def _decode(raw, source) -> Ledger:
@@ -586,7 +713,14 @@ def ledger_hash(l: Ledger) -> str:
     text would be the ledger handed to a blind reviewer through git. A hash is not content; a
     line quoting a claim is. The whole payload is hashed — including `degraded`, because a
     degraded ledger IS a different spec.
+
+    A NON-`Ledger` IS REFUSED HERE AND NOT ONLY IN `_check`. This function does not run the
+    structural checks — §14.1 calls it on a value it already holds — so a dict handed over
+    raised `AttributeError` on `l.version`, which is the error class argument `_check`'s own
+    first line makes.
     """
+    if not isinstance(l, Ledger):
+        raise LedgerError(f"a Ledger is required, not {type(l).__name__}")
     return hashlib.sha256(
         json.dumps(_payload(l), sort_keys=True).encode()).hexdigest()
 

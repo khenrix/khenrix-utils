@@ -79,8 +79,12 @@ def test_two_rows_with_one_id_and_different_claims_are_refused(tmp_path):
 
 
 def test_a_duplicated_row_id_is_refused_rather_than_merged(tmp_path):
+    """MATCHED ON `_check`'S OWN SENTENCE, not on "twice". `topological_order` refuses a
+    duplicate id as well, and `_check` calls it — so a bare "twice" passes on either refusal
+    and deleting the write-time one leaves this green. Measured, it did. The two say different
+    things and this is the one that names the ledger consequence."""
     a = _row("R1", "alpha")
-    with pytest.raises(ledger.LedgerError, match="twice"):
+    with pytest.raises(ledger.LedgerError, match="Merging would make one row"):
         ledger.write_ledger(tmp_path, _led([a, a]))
 
 
@@ -240,11 +244,18 @@ def test_a_dangling_conflict_is_refused_where_the_sort_could_never_see_it(tmp_pa
 
     It is also the shape §10 makes likely rather than exotic: a round that resolved the partner
     claim by deleting the row instead of recording the resolution leaves exactly this behind,
-    and coverage would then be comparing a conflict against nothing."""
+    and coverage would then be comparing a conflict against nothing.
+
+    THE MATCH NAMES THE DANGLING REFUSAL AND NOT MERELY THE RELATION. The symmetry check below
+    also refuses this row — a partner that does not exist declares nothing back — and its
+    message opens with the same "declares a conflicts on". So `match="declares a conflicts on"`
+    left this test green with the dangling guard deleted. Measured. The full phrase is what
+    distinguishes "the partner is missing" from "the partner stayed silent"."""
     a = _row("R1", "alpha")
     a2 = ledger.Row(**{**a.__dict__,
                        "dependencies": (ledger.Dependency("ffffffffffff", "conflicts"),)})
-    with pytest.raises(ledger.LedgerError, match="declares a conflicts on"):
+    with pytest.raises(ledger.LedgerError,
+                       match="declares a conflicts on .*which no row carries"):
         ledger.write_ledger(tmp_path, _led([a2]))
 
 
@@ -260,16 +271,133 @@ def test_a_dangling_dependency_reaching_the_sort_directly_is_a_ledger_error(tmp_
         ledger.topological_order([a2])
 
 
+def test_a_duplicate_row_id_reaching_the_sort_directly_is_a_ledger_error_too():
+    """THE SAME PUBLIC-SURFACE ARGUMENT AS THE TEST ABOVE, applied to the raise beside it.
+    `_check` refuses a duplicate id before any WRITTEN ledger reaches the sort, and §12.2's
+    partitioned synthesis calls the sort directly over rows that never went through it. Both
+    outcomes are wrong and neither is a `LedgerError`:
+
+    `[a, a]` returned `(a.id, a.id)` — an ORDER NAMING ONE ROW TWICE, with no refusal, which
+    §12.2 would then partition synthesis by. And `[b2, b2, a]`, where `b2` carries an edge,
+    left `len(order) != len(ids)` with NOTHING unemitted, so `_render_cycle`'s
+    `sorted(remaining)[0]` raised `IndexError` — an error escaping this module's declared
+    class, reporting a cycle on a graph that has none. Measured, both.
+
+    A duplicate id is not an ordering question; it is a malformed ledger."""
+    a, b = _row("R1", "alpha"), _row("R2", "beta")
+    with pytest.raises(ledger.LedgerError, match="appears twice"):
+        ledger.topological_order([a, a])
+    b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "requires"),)})
+    with pytest.raises(ledger.LedgerError, match="appears twice"):
+        ledger.topological_order([b2, b2, a])
+
+
+def test_a_generator_of_rows_is_not_ordered_over_the_empty_graph_it_leaves_behind():
+    """`topological_order` reads `rows` THREE TIMES — the ids, the claims, and `edges` — so a
+    generator is exhausted by the first pass and the last two see nothing. Every edge is
+    dropped, every in-degree is zero, the length check passes, and the answer is a clean,
+    fully-covering, SORTED order over a graph that declared constraints. Measured: the pair
+    below came back in exactly the wrong order, with no refusal.
+
+    The fixture pins `a2 requires b` with `a.id < b.id`, so the correct order is DESCENDING
+    and the silent-drop answer is distinguishable from it. Materializing once is the fix; a
+    generator is now ordered like the sequence it stands for."""
+    a, b = _row("R1", "alpha"), _row("R2", "beta")
+    assert a.id < b.id, "the correct order must differ from the sorted one"
+    a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "requires"),)})
+    assert ledger.topological_order([a2, b]) == (b.id, a2.id)
+    assert ledger.topological_order(x for x in (a2, b)) == (b.id, a2.id)
+
+
+def test_the_rest_of_the_public_surface_refuses_in_this_modules_own_error_class():
+    """THE SWEEP THE DANGLING-EDGE FIX DID NOT DO. `edges`, `topological_order`, `ledger_hash`
+    and `row_id` are all public, all reachable without `_check`, and each one raised something
+    outside `LedgerError` on an off-contract argument — an error no caller of this module
+    knows to catch. Measured before the fix: `edges([{...}])` and `ledger_hash({...})` raised
+    `AttributeError`, `row_id(object(), "x")` raised `TypeError` out of `json.dumps`.
+
+    `row_id` is the one that could also fail SILENTLY: `json.dumps` serializes an int happily,
+    so a non-str `requirement_id` used to hash cleanly into an id nothing would question."""
+    with pytest.raises(ledger.LedgerError, match="a ledger row is a Row"):
+        ledger.edges([{"id": "ffffffffffff"}])
+    with pytest.raises(ledger.LedgerError, match="a ledger row is a Row"):
+        ledger.topological_order(["not a row"])
+    with pytest.raises(ledger.LedgerError, match="rows is a sequence"):
+        ledger.edges(7)
+    with pytest.raises(ledger.LedgerError, match="a Ledger is required"):
+        ledger.ledger_hash({"version": 1, "rows": []})
+    with pytest.raises(ledger.LedgerError, match="is a str"):
+        ledger.row_id(object(), "alpha")
+    with pytest.raises(ledger.LedgerError, match="is a str"):
+        ledger.row_id("R1", 7)
+
+
+@pytest.mark.parametrize("key,bad", [("dependencies", "x"), ("seat_evidence", {"a": 1}),
+                                     ("acceptance_criteria", 7)])
+def test_a_nested_list_holding_the_wrong_type_is_refused_on_the_write_side_too(tmp_path,
+                                                                              key, bad):
+    """THE SAME SWEEP AS THE TEST ABOVE, ONE BRANCH OVER, and it is the ORDINARY route rather
+    than the exotic one. `_decode` builds these elements with `_sub`, so a ledger read from
+    disk cannot hold the wrong type — but a `Ledger` built IN PROCESS never passes through the
+    decoder, and §12.2's synthesis builds rows. `_check` typed the ROW and stopped there, so
+    the element's real type was discovered by whoever first read a field off it. Measured, four
+    ways out of this module's declared class: `d.relation` in `edges` and `topological_order`,
+    `e.stance` and `c.kind` in `_check` (all `AttributeError`), and `dataclasses.asdict` in
+    `ledger_hash` (`TypeError`)."""
+    r = _row(**{key: (bad,)})
+    with pytest.raises(ledger.LedgerError, match=f"{key}\\[0\\] is a"):
+        ledger.write_ledger(tmp_path, _led([r]))
+    with pytest.raises(ledger.LedgerError, match=f"{key}\\[0\\] is a"):
+        ledger.ledger_hash(_led([r]))
+    with pytest.raises(ledger.LedgerError, match=f"{key}\\[0\\] is a"):
+        ledger.edges([r])
+    with pytest.raises(ledger.LedgerError, match="is a sequence of"):
+        ledger.write_ledger(tmp_path, _led([_row(**{key: None})]))
+    not_a_sequence = ledger.Ledger(
+        version=ledger.VERSION, rows=7, union_diff_bytes=100,
+        degrade_threshold_bytes=ledger.DEGRADE_UNION_DIFF_BYTES, degraded=False)
+    with pytest.raises(ledger.LedgerError, match="rows are a sequence"):
+        ledger.write_ledger(tmp_path, not_a_sequence)
+
+
+def test_a_criterion_field_that_is_not_text_is_refused_before_a_path_is_joined(tmp_path):
+    """The required-field loop tests TRUTHINESS, and `7` is truthy — so an int `path` went
+    straight through it into `bundle._assert_contained`, which raised `TypeError` out of
+    `os.fspath`. That is the nested-list escape one level further down, on the one field this
+    module hands to another module."""
+    bad = _row(acceptance_criteria=(_crit(kind="hash", text="p is unchanged", path=7,
+                                          sha256="0" * 64),))
+    with pytest.raises(ledger.LedgerError, match="path is a str, not int"):
+        ledger.write_ledger(tmp_path, _led([bad]))
+    numeric = _row(acceptance_criteria=(_crit(kind="prose", text=7),))
+    with pytest.raises(ledger.LedgerError, match="text is a str, not int"):
+        ledger.write_ledger(tmp_path, _led([numeric]))
+
+
 def test_conflicts_is_symmetric_and_not_an_ordering_edge(tmp_path):
     """A 'cycle' of conflicts is meaningless; two rows may conflict mutually and still be
     a legal ledger. Whether they may both be ACCEPTED is a coverage question, not a write
-    refusal."""
+    refusal.
+
+    THE SYMMETRY HALF USED TO BE THE TEST'S NAME AND NOTHING ELSE. Both fixtures below
+    declared the relation, so the test passed whether or not anything enforced it — measured,
+    a ONE-SIDED `conflicts` wrote and read back clean, and a passing test named for an
+    unimplemented property is worse than no test because it retires the question. §12.2
+    partitions synthesis by the topological order, so a partition holding only the row that
+    stayed silent reads an unconstrained claim: the record has to carry the relation on both
+    rows or it is not the symmetric relation §10 describes."""
     a, b = _row("R1", "alpha"), _row("R2", "beta")
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "conflicts"),)})
     b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "conflicts"),)})
     ledger.write_ledger(tmp_path, _led([a2, b2]))
     assert ledger.read_ledger(tmp_path).rows[0].id == a.id
     assert ledger.edges([a2, b2]) == ()
+    with pytest.raises(ledger.LedgerError, match="does not declare it back"):
+        ledger.write_ledger(tmp_path, _led([a2, b]))
+    with pytest.raises(ledger.LedgerError, match="does not declare it back"):
+        ledger.write_ledger(tmp_path, _led([a, b2]))
+    assert ledger.read_ledger(tmp_path).rows[0].id == a.id, \
+        "a refused round leaves the previous ledger readable"
 
 
 def test_a_self_conflict_is_refused_as_nonsense(tmp_path):
@@ -450,20 +578,6 @@ def test_a_trace_may_not_stand_in_for_the_schema_evaluator_this_repo_does_not_ha
         "prose is the one kind with no predicate, and the only one a trace may hang on"
 
 
-def test_a_criterion_field_that_is_not_text_is_refused_before_a_path_is_joined(tmp_path):
-    """The required-field loop tests TRUTHINESS, and `7` is truthy — so an int `path` went
-    straight through it into `bundle._assert_contained`, which raised `TypeError` out of
-    `os.fspath`: an error escaping this module's declared class, on the one field it hands to
-    another module."""
-    bad = _row(acceptance_criteria=(_crit(kind="hash", text="p is unchanged", path=7,
-                                          sha256="0" * 64),))
-    with pytest.raises(ledger.LedgerError, match="path is a str, not int"):
-        ledger.write_ledger(tmp_path, _led([bad]))
-    numeric = _row(acceptance_criteria=(_crit(kind="prose", text=7),))
-    with pytest.raises(ledger.LedgerError, match="text is a str, not int"):
-        ledger.write_ledger(tmp_path, _led([numeric]))
-
-
 def test_the_degradation_is_recorded_in_the_ledger_not_only_in_a_report(tmp_path):
     """§10 also says from-scratch synthesis 'reads only the ledger', so a degraded ledger
     silently becomes the INPUT to synthesis. The threshold is recorded too, so changing it
@@ -618,6 +732,73 @@ def test_a_nested_list_that_is_not_a_list_is_refused_before_it_is_iterated(tmp_p
     p.write_text(json.dumps(raw))
     with pytest.raises(ledger.LedgerError, match=f"{key} is a list"):
         ledger.read_ledger(tmp_path)
+
+
+@pytest.mark.parametrize("key", ["acceptance_criteria", "seat_evidence", "dependencies"])
+def test_a_nested_list_element_that_is_not_an_object_is_refused_as_one(tmp_path, key):
+    """THE ELEMENT-LEVEL HALF, and it was never measured. The test above pins the LIST's type;
+    this pins the type of what is IN it, and `_sub`'s guard is the only thing that reads it.
+    Without that guard `_sub` runs its missing-field comprehension over the element, and
+    Python's `in` means three different things across the shapes JSON can produce here:
+    `"id" in "ffffffffffff"` is a SUBSTRING test, so a string element is refused for the wrong
+    reason; `row["id"]` on a JSON ARRAY raises `TypeError: list indices must be integers`; and
+    `"id" in 7` raises `TypeError` too. Two of the three escape this module's declared class.
+    Measured — and the guard SURVIVED the suite, because the multi-line mutation pattern that
+    was supposed to test it exited 2 without applying."""
+    ledger.write_ledger(tmp_path, _led([_row()]))
+    p = storage.ledger_path(tmp_path)
+    for element in ("ffffffffffff", ["id", "relation"], 7):
+        raw = json.loads(p.read_text())
+        raw["rows"][0][key] = [element]
+        p.write_text(json.dumps(raw))
+        with pytest.raises(ledger.LedgerError, match="expected an object"):
+            ledger.read_ledger(tmp_path)
+
+
+def test_a_ledger_file_that_is_not_an_object_is_refused_as_one(tmp_path):
+    """`json.loads` answers whatever the file holds, so a ledger that is a NUMBER or `null`
+    reaches `_decode` as one. Without the guard the missing-field comprehension asks
+    `"version" not in 5` and raises `TypeError: argument of type 'int' is not iterable` — an
+    error escaping this module's declared class on the ordinary route, a truncated or
+    hand-edited file. Measured; the guard SURVIVED the suite without this."""
+    p = storage.ledger_path(tmp_path)
+    for blob in (b"5", b"null", b'"a ledger"', b"[1, 2]"):
+        p.write_bytes(blob)
+        with pytest.raises(ledger.LedgerError, match="a ledger is an object"):
+            ledger.read_ledger(tmp_path)
+
+
+def test_a_rows_element_that_is_not_an_object_is_refused_before_it_is_copied(tmp_path):
+    """`body = dict(r)` is where an unguarded row lands, and `dict` accepts more than it
+    should: `dict(["id"])` is `{'i': 'd'}` — a two-character string read as a key/value PAIR —
+    so a JSON array of short strings decodes into a dict nobody wrote and is then refused for
+    its missing fields, naming the wrong defect. The other shapes escape the class outright:
+    `dict("nope")` raises `ValueError`, `dict(5)` raises `TypeError`. Measured; the guard
+    SURVIVED the suite without this."""
+    ledger.write_ledger(tmp_path, _led([_row()]))
+    p = storage.ledger_path(tmp_path)
+    for element in ("nope", 5, ["id"]):
+        raw = json.loads(p.read_text())
+        raw["rows"] = [element]
+        p.write_text(json.dumps(raw))
+        with pytest.raises(ledger.LedgerError, match="expected an object"):
+            ledger.read_ledger(tmp_path)
+
+
+def test_a_value_json_cannot_serialize_is_a_ledger_error_and_publishes_nothing(tmp_path):
+    """`synthesis_evidence` is §10's `{oid, path, hunk/symbol, test}` and this module types it
+    as a bare `dict`, so what a producer puts INSIDE it is unvalidated by design — which makes
+    the serializer the first thing that sees it. BOTH exception types are needed and one test
+    cannot show it: a `set` raises `TypeError`, while a NaN under `allow_nan=False` raises
+    `ValueError`, so a handler naming either alone lets the other escape as itself. Measured;
+    the handler SURVIVED the suite without this.
+
+    `allow_nan=False` is why the NaN case exists at all — json's default emits bare `NaN`,
+    which is not JSON and which no other reader of this file would parse back."""
+    for bad in ({"oid": {1, 2}}, {"lines": float("nan")}):
+        with pytest.raises(ledger.LedgerError, match="json cannot serialize"):
+            ledger.write_ledger(tmp_path, _led([_row(synthesis_evidence=bad)]))
+        assert not storage.ledger_path(tmp_path).exists()
 
 
 def test_a_criterion_path_that_leaves_the_tree_is_refused_at_write(tmp_path):
