@@ -104,3 +104,42 @@ def test_identities_returns_one_entry_per_attempt_including_the_unmeasured_ones(
 def test_an_empty_record_is_refused():
     with pytest.raises(seatrecord.SeatRecordError, match="at least one"):
         seatrecord.decode({"name": "claude", "attempts": []})
+
+
+@pytest.mark.parametrize("field,value,why", [
+    ("attempt", "1", "attempt is an int"),
+    ("attempt", 1.0, "attempt is an int"),
+    ("attempt", True, "attempt is an int"),
+    ("path", "", "path is a non-empty string"),
+    ("path", None, "path is a non-empty string"),
+    ("status", "ok", "status is an object or null"),
+    ("verification", [], "verification is an object or null"),
+    ("setup_run", 0, "setup_run is an object or null"),
+    ("verifier_setup", "", "verifier_setup is an object or null"),
+    ("launch", "done", "launch is an object or null"),
+    ("artifacts", None, "artifacts is an object"),
+    ("candidate", None, "candidate is an object"),
+])
+def test_every_field_this_reader_types_is_refused_when_it_is_the_wrong_type(field, value,
+                                                                           why):
+    """FIVE OF THESE GUARDS WERE PINNED BY NOTHING, and mutation testing is what said so:
+    replacing each of `attempt`'s int check (with its `bool` exclusion), `path`'s non-empty
+    string check, the optional-dict loop, the required-dict loop and `decode`'s own name check
+    with `if False:` all SURVIVED the suite. A schema whose per-field rules are unpinned is a
+    schema that can be deleted a field at a time under a green gate — which is the reader
+    §12's rubric, §13's fusion and `--collect` all act on.
+
+    `True` is in the table for its own reason: `isinstance(True, int)` is True in Python, so
+    an attempt number of `True` decodes as attempt 1 and collides with the real one unless the
+    bool is excluded by name.
+    """
+    with pytest.raises(seatrecord.SeatRecordError, match=why):
+        seatrecord.decode({"name": "claude", "attempts": [_attempt(**{field: value})]})
+
+
+@pytest.mark.parametrize("name", ["", None, 1])
+def test_a_record_whose_name_is_not_a_name_is_refused(name):
+    """`identities` and `--collect` key every seat by this string; an empty one is a seat
+    nothing can be attributed to."""
+    with pytest.raises(seatrecord.SeatRecordError, match="non-empty string"):
+        seatrecord.decode({"name": name, "attempts": [_attempt()]})

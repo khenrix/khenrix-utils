@@ -2230,3 +2230,36 @@ def test_the_gate_surface_survives_a_refusal_taken_before_the_verifiers_setup_fi
         "§6.1's measurement existed before the refusal and reached the record"
     assert row["verifier_setup"] is None, \
         "and nothing is invented — that setup never produced a result to record"
+
+
+def test_a_prior_attempt_its_own_reader_refuses_costs_no_provider_call(tmp_path):
+    """I2: THE REFUSAL WAS AT THE WRITER, WHICH IS AFTER THE PROVIDER HAS BEEN PAID.
+
+    `_prior_attempts` asked only that `attempts` be a list of dicts, while `_payload` runs the
+    whole `seatrecord.decode` schema over `[*priors, this]` before publishing. So a prior
+    attempt missing a field — or carrying a malformed `prompt_identity` — passed the cheap
+    check, and the run then cloned the seat, ran the setup command and called the provider
+    before failing at the write. `_prior_attempts`' own docstring argues that this refusal is
+    free BECAUSE it is taken before any of that; running the reader's schema here is what makes
+    the sentence true rather than aspirational.
+
+    The provider is a fake that RECORDS being called, because the verdict is identical either
+    way and the cost is the whole finding.
+    """
+    repo, run, b, m = _open(tmp_path)
+    runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                    launch=_fake(lambda p: write(p, "half.py", "half\n")))
+    row = runstate.read_seat(run, "claude")
+    del row["attempts"][0]["verification"]              # a field the writer always writes
+    runstate.write_seat(run, "claude", row)
+
+    called = []
+
+    def launch(**kw):
+        called.append(kw)
+        return {"status": "ok", "valid": True, "result_text": "x"}
+    with pytest.raises(runner.RunnerError, match="its own reader refuses"):
+        runner.run_seat(m, run, b, name="claude", attempt=2, identity=IDENT, launch=launch)
+    assert called == [], "the damaged record must be refused before a provider is paid"
+    assert not runner.seat_dir(run, "claude", 2).exists(), \
+        "and before the clone, which is what makes the refusal free"

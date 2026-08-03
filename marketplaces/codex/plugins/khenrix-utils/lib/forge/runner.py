@@ -486,6 +486,15 @@ def _prior_attempts(run_dir: Path, name: str, attempt: int) -> list:
     so the refusal is free. Read after the work, it would have forced a choice between losing
     attempt 1 and losing attempt 2.
 
+    "DAMAGED" IS `_payload`'S DEFINITION, NOT A WEAKER ONE, and it was weaker. This function
+    asked only that `attempts` be a list of dicts while `_payload` runs the whole
+    `seatrecord.decode` schema over `[*priors, this]` — so a prior attempt missing a field, or
+    carrying a malformed `prompt_identity`, passed here and failed at the write, which is AFTER
+    the clone, the setup command and the provider call. The refusal that is free before the
+    work is the same refusal that is expensive after it; running the reader's own schema here
+    is what puts it on the cheap side. It is also the only reading that makes the paragraph
+    above true rather than aspirational.
+
     An `attempt` already recorded is refused for the reason its clone directory is: nothing
     in this module deletes, so an overwrite is the one way §8.1's evidence can still be lost.
     The clone check answers the TREE and this answers the RECORD; they are the same rule at
@@ -505,6 +514,12 @@ def _prior_attempts(run_dir: Path, name: str, attempt: int) -> list:
             f"seat {name!r} has a record this module did not write: its 'attempts' is "
             f"{type(priors).__name__}, not a list of attempt objects. Appending to it would "
             "publish a record whose earlier half nothing can read.")
+    try:
+        seatrecord.decode(row)
+    except seatrecord.SeatRecordError as e:
+        raise RunnerError(
+            f"seat {name!r} has a record its own reader refuses, so appending to it would "
+            f"publish a record whose earlier half nothing can read: {e}") from e
     if any(x.get("attempt") == attempt for x in priors):
         raise RunnerError(
             f"attempt {attempt} of seat {name!r} is already recorded at "
