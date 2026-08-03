@@ -264,9 +264,11 @@ def _test(c, *, row_id, index, tree, pytest_argv, run, **_) -> Result:
 
     THE FAIL-OPEN THIS FORECLOSES, and it is the obvious one: treating "the run's verify gate
     exited 0" as satisfying every test-ID criterion. `verify.Run` holds only `exit_code`,
-    `stdout` and `stderr` — forge has NO per-test result parser anywhere — so "the suite passed,
-    so the named test passed" is one line of code and is a manufactured green. The predicate
-    must SELECT the named test and watch it.
+    `stdout` and `stderr`, and the one reader forge has for that text —
+    `progress.pytest_fingerprints` — answers with FAILING ids or `None`, so it can say a named
+    test is among the failures and can never say one ran and passed. "The suite passed, so the
+    named test passed" is one line of code and is a manufactured green. The predicate must
+    SELECT the named test and watch it.
 
     `--collect-only` first, and exactly one collected node required, MATCHING THE NODE ID
     EXACTLY. A node id naming a FILE selects many tests, and a green run over many says nothing

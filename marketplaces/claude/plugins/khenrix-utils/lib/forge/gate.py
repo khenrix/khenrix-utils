@@ -1038,9 +1038,10 @@ class Confirmation:
     it and `baseline_commit` is in the manifest, so a second copy is a second thing to be
     right about.
 
-    `seats` and `attempts` come off the `Quote` the operator was shown, and `confirm` refuses
-    to take them from anywhere else. They are the run's shape and §5.2 priced the run BY them,
-    so the alternative — a launcher passing its own — is a fleet nobody costed.
+    `seats`, `attempts`, `review_rounds` and `synthesis_fix_cap` come off the `Quote` the
+    operator was shown, and `confirm` refuses to take them from anywhere else. They are the
+    run's shape and §5.2 priced the run BY them, so the alternative — a launcher passing its
+    own — is a fleet nobody costed.
 
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
     constructor supplies is a fact nobody answered for. `confirm` is where an omitted
@@ -1376,7 +1377,8 @@ def confirm(report, quote_, answers) -> Confirmation:
     is deliberately not called here: this function records an answer, and a value it went and
     fetched is not one.
 
-    `seats` and `attempts` are read OFF THE QUOTE and are not answer keys. §5.2 prices the run
+    The four numbers of the run's shape — `seats`, `attempts`, `review_rounds` and
+    `synthesis_fix_cap` — are read OFF THE QUOTE and are not answer keys. §5.2 prices the run
     by them, and a second route in is a run whose recorded shape and quoted shape are two
     numbers a reader has to compare — so there is one number, and the only way to change it is
     to price the change first.
@@ -1469,11 +1471,12 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
     and forge writes no commit of its own — left nothing on disk saying whose name the
     operator agreed forge could work under. `runner.run` still takes it as an argument and
     does not yet read it back.
-    `seats` and `attempts` go the OTHER way and are in the manifest, because a launcher reads
-    them to decide how many providers to spend — see `runstate.Manifest` for why that one is
-    not a policy — and `read_manifest` type-checks them on the way back. That launcher is
+    The run's four shape numbers go the OTHER way and are in the manifest, because a launcher
+    reads them to decide how many providers to spend — see `runstate.Manifest` for why those
+    are not a policy — and `read_manifest` type-checks them on the way back. That launcher is
     `runner.run`: `seats` resolves to that many of `council.engine`'s providers and `attempts`
-    is the per-seat retry budget. `on_calibration_failure` is read back from HERE, off this
+    is the per-seat retry budget; `review_rounds` and `synthesis_fix_cap` bound §12.3's
+    post-review loop, which `progress.cap_remaining` reads back off the manifest. `on_calibration_failure` is read back from HERE, off this
     record, which is the only copy of it — see `runner._confirmed_policy`.
 
     The record is WRITE-AHEAD around everything that touches the user's repository, so a
