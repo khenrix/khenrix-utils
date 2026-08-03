@@ -25,6 +25,44 @@ testing: `scripts/mutate.py`. Gates: `make render`, `make verify`, `make precomm
 
 ---
 
+## Revisions
+
+Revision 1 (2026-08-03), after an adversarial review. Every change below is to the **draft
+code**, not to the prose beside it: a corrected sentence next to uncorrected code is worse than
+neither. The git measurements (M1–M8) all reproduced under review and are unchanged except for
+one count.
+
+| # | What was wrong | What it is now |
+|---|---|---|
+| 1 | Task 11's eval set was six inline Q&A whose assertions Step 6 derived **from the SKILL.md the same task writes** — a closed loop graded on project vocabulary a baseline cannot know. The fixture repository was referenced by none of them. | Two evals now grade **against the fixture**, on engine facts a baseline gets wrong (what enters B1, what happens to an ignored directory, what a handover header entitles you to claim). Assertions are written from the **engine source**, not from SKILL.md. Step 6 says which file each fact comes from. |
+| 2 | `cli.start` gave no injection point for the launcher, and two tests called `_drive_a_start(tmp_path)` with no `monkeypatch` — **real provider calls** and writes to the real `~/.local/state`. | `start` and `main` take `make_launcher=None`, resolved at call time. `_drive_a_start` requires `monkeypatch` and every test that calls it requests the fixture. |
+| 3 | `--collect` took `synthesis_outcome`/`seconds`/`strategy` **from argv** and printed them under `_VERIFIED_MEANS`. Nothing ran the verify command. | `Provenance` carries `synthesis_measured`. An operator-asserted verdict renders as *reported by the orchestrator, not measured here*, and `_VERIFIED_MEANS` is **not printed beside it**. Measuring the synthesis in-engine is named as its own task, with its cost. |
+| 4 | `create_synthesis_worktree`'s docstring contained the literal `--detach` while its own test asserted the module does not, and claimed "the flag is absent from this file". | The docstring names the flag in words. The test is unchanged and now passes. |
+| 5 | `mergeability` null-checked `synthesis_tree_oid` and then never read it, so an **empty synthesis worktree returned `MERGE_READY`**; the docstring described a `!=` that did not exist. | The synthesis tree is compared against B1's tracked tree and an unfused worktree **raises**. The docstring describes the comparison the code performs. A test and a mutation cover it. |
+| 6 | `test_collect_refuses_a_run_directory_it_cannot_read_whole` could not pass: `reconstruct` raises four classes, none in `cli.main`'s except tuple. | All four are in the tuple, with the rationale that keeps the narrow-except argument intact. |
+| 7 | §20's ambient-skill bar was `if named and bundle is None`, and `cli.start` always passes a bundle — so the three-closure check never ran, and `taskbundle.ambient_note` had no caller. | The bar no longer looks at the bundle: a bundle carries files, it does not make `/markitdown` identical across three CLIs. `preflight.ambient_notes` gives `ambient_note` its caller and `cli.start` adds the notes to the prompt. |
+| 8 | The header test asserted `"2 artifact sets usable"` against a renderer emitting `artifact set(s)`. | Test matches the renderer. |
+| 9 | `"built"` appeared **four** times in the drafted `handover.py` — including inside the docstring sentence asserting the word appears nowhere — against a source-level assertion. (The review found two; measured, it is four.) | All four rewritten. |
+| 10 | The receipt would have recorded `deterministic_gate="wikisync-unittests"` for llm-forge: `eval_harness.py:452` hardcodes that literal for **every** `DETERMINISTIC_GATED` skill. | A `DETERMINISTIC_GATE_NAMES` table; the receipt records the gate that actually ran. |
+| 11 | The weight split is correct (22 + 9 = 31 files, no gaps) but left `baseline`, `fleet`, `harvest`, `bundle`, `verify`, `runner` and `review` in **no** commit-boundary gate. | `precommit` depends on `forge-test-slow`. `verify` stays free of it for the forge-inside-forge reason the plan already argues. |
+| 12 | `gc._run_dirs` re-derived `storage.run_root`'s formula by hand (measured byte-identical), which the plan condemns three times elsewhere. | `storage.run_dirs` is the one home; a seam test asserts `gc.py` spells neither `sha256` nor `XDG_STATE_HOME`. |
+| 13 | An **unregistered** synthesis worktree fell through to `shutil.rmtree`, leaving `.git/worktrees/<name>` registered and unreclaimable, since §9 forbids the prune. | An unknown-but-present synthesis path refuses. |
+| 14 | Task 8 required `PYTHONPYCACHEPREFIX` set to "a per-round directory under the run directory", which the produced signature had no way to name — **and the premise was stale**: `review.py:1177` already does `env.pop("PYTHONPYCACHEPREFIX", None)`, with a docstring arguing why dropping beats pinning. | Task 8 keeps the drop and says so. The drafted assertion, which forbade the drop, is corrected; the planted-`.pyc` behavioural test stands. |
+| 15 | The Interfaces block and the draft disagreed on three `cli` signatures. | Interfaces match the draft. |
+| 16 | Task 4 Step 3 added `worktree`/`fetch` to `_DIFF_DRIVER_SAFE` before Step 4 created the calls; `test_every_verb_the_allow_lists_clear_is_one_this_package_calls` asserts `allowed <= verbs` and fails in the window. | Step 3 states the two edits are one change and must land together. |
+| 17 | Minor: `(closures.get(c) or 'not installed')[:12]` prints `not installe`; `usage()` discarded `why_h` on the `OSError` path and reported an unreadable handover record as "NOT handed over"; the façade's second path candidate is dead and its comment mislabels it; Task 1 Step 5's grep does not glob `scripts/lib/*.py`. | All four fixed. |
+| 18 | The sweep headline said **9** modules. | Measured: 17 line-matches with `(?!-)` across 9 modules, **plus** `harvest.py`'s flattened-only hit, which is in no line-match — 18 citations across **10** modules. The Files list already named 10. |
+| 19 | The File Structure table claimed `runstate.py` gains `handover_target` on `State`. No task implements it, and none needs to. | Row removed: the record lives in `handover.json`, which is what makes §15's "unmerged" well-defined. `storage.py`, `gate.py` and `taskbundle.py` — all modified by tasks — were missing from the table and are added. |
+
+**Not changed, because the review confirmed them:** every git measurement (`worktree add` fires
+FSMONITOR ×1, post-checkout ×1, post-index-change ×1, reference-transaction ×14, and the two
+presets reduce all of it to `fired: []`; `--no-ext-diff` is rc=129 in every argv position;
+`fetch` fires FSMONITOR ×1 and reference-transaction ×2; **neither verb runs a diff driver** —
+the control `git diff` fired EXTDIFF; `worktree unlock` on an unlocked tree is rc=128;
+`worktree remove` leaves the branch), the eleven-receipt count, and the two fail-open shapes.
+
+---
+
 ## THIS PLAN DOES NOT FIT IN SIX TASKS — the honest split
 
 Eleven tasks, in four commit groups. The brief asked me to say so at the top if six would not
@@ -36,7 +74,7 @@ compressed:
 | **A — foreign gates** | 1, 2 | Task 1 edits `scripts/lib/reconcile.py`, which `checks.LIB_SCRIPTS` puts in **every** skill's source closure — measured: eleven receipts go stale at once, and re-blessing them is a documented ritual with its own rationale. Nothing else may ride that commit. Task 2 is separable: measured, `scripts/eval_trigger.py` is in **no** skill's closure. |
 | **B — the deliverable** | 3, 4, 5 | §20's bundle wiring (3) must land before §16 (4) because the synthesis worktree is the first tree whose git dir is a *file*, which is what `taskbundle.task_dir` exists to survive. §16.1's header (5) is rejectable on its own: a reviewer can accept the worktree and reject the sentence it prints. |
 | **C — the front end** | 6, 7, 8 | The CLI (6) is `make_launcher`/`forge_spec`/`run_ultra`'s first production caller — the thing three plans deferred. `--gc` (7) is a subcommand of the CLI from 6 and needs `handover_target` from 4. `reviewer_env` (8) is a security change to `review.py` a reviewer must be able to reject without losing the CLI. |
-| **D — shipping** | 9, 10, 11 | §19 (9) touches `shared/lib/council/engine.py` and therefore needs its **own commit and its own gate** (`--self-test` + `make smoke-llm-council`, ~$0.22). The prose sweep (10) rewrites eighteen sites across nine modules and adds the packaging test that keeps them closed — a whole-package diff nobody should read interleaved with logic. Task 11 is the hard gate the plan ends on. |
+| **D — shipping** | 9, 10, 11 | §19 (9) touches `shared/lib/council/engine.py` and therefore needs its **own commit and its own gate** (`--self-test` + `make smoke-llm-council`, ~$0.22). The prose sweep (10) rewrites eighteen sites across ten modules and adds the packaging test that keeps them closed — a whole-package diff nobody should read interleaved with logic. Task 11 is the hard gate the plan ends on. |
 
 Tasks 1, 2, 9 and 10 are independent of the rest and of each other. Tasks 3 → 4 → 5 → 6 → 7 are
 a chain. Task 8 depends on nothing after Task 3. Task 11 depends on everything.
@@ -107,16 +145,22 @@ every equality test you write below:
 | `scripts/lib/reconcile.py` | `read_json_object` distinguishes unparseable from absent. |
 | `scripts/eval_trigger.py` | A dead judge is `unreadable`, not a correct abstain. |
 | `shared/lib/forge/preflight.py` | §20's `task_refusals`. |
+| `shared/lib/forge/taskbundle.py` | `read_task_bundle_if_recorded`. |
 | `shared/lib/forge/runner.py` | Materialize the run's task bundle into every seat. |
-| `shared/lib/forge/review.py` | `reviewer_env` neutralizes `PATH`, `PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS`. |
-| `shared/lib/forge/runstate.py` | `handover_target` on `State`. |
+| `shared/lib/forge/review.py` | `reviewer_env` neutralizes `PATH`, `PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS` and applies the `HOSTILE_ENV` scrub. |
+| `shared/lib/forge/storage.py` | `task_source_path`, `handover_path`, `run_dirs`. |
+| `shared/lib/forge/gate.py` | `Confirmation.ultrareview`; `GC_UNBUILT` leaves `ACCEPTABLE_GAPS`. |
 | `shared/lib/council/engine.py` | §19: `MODE_TIMEOUT["forge"]`, agy timeout-wording mapping. |
 | `tests/test_forge_seams.py` | `worktree` and `fetch` onto `_DIFF_DRIVER_SAFE`, with the measurements. |
 | `tests/test_forge_packaging.py` | The plan-citation pattern, after the sweep clears it. |
-| `scripts/eval_harness.py` | `DETERMINISTIC_GATED["llm-forge"]` using `sys.executable`. |
-| `Makefile` | `FORGE_TESTS` split by weight; `forge-test-slow` target. |
+| `scripts/eval_harness.py` | `DETERMINISTIC_GATED["llm-forge"]` using `sys.executable`, and a gate NAME the receipt can record truthfully. |
+| `Makefile` | `FORGE_TESTS` split by weight; `forge-test-slow` target; `precommit` depends on it. |
 | `capabilities.toml` | `[[skills]]` discoverability entry for `llm-forge`. |
-| `nine forge modules` | The plan-document prose sweep (Task 10). |
+| `ten forge modules` | The plan-document prose sweep (Task 10). |
+
+There is deliberately **no** `runstate.State.handover_target`. §15 asks that the target (or an
+explicit acceptance) be recorded so "unmerged" is well-defined; `handover.json` is where this
+plan records it, and a second copy on `State` would be two spellings of one fact.
 
 ---
 
@@ -160,13 +204,18 @@ worktree/**branch** not marked handed over" two separate refusals rather than on
 `locked` / `prunable` as bare or valued lines.
 
 **M7 — the package-wide plan-citation sweep is smaller than the brief states.** Running
-`.superpowers/sdd/i2-branch-fix-report.md`'s regex over `shared/lib/forge/*.py` today:
-**18 line-matches plus 1 flattened-only, across 10 modules** — not "~27 across 12". The
-report's own itemisation sums to 19 + 2 already-fixed = 21, so its headline 27 disagreed with
-its own list. **And one of the 18 is a false positive:** `taskbundle.py:48` reads
-"Both the **plan-mode** and JSON forms" — agy's mode, not a plan document; the regex's
-`(?:the) plan\b` matches because `-` is a word boundary. **Real count: 17 line-matches + 1
-flattened-only = 18 citations across 9 modules.** The exact list is in Task 10.
+`.superpowers/sdd/i2-branch-fix-report.md`'s regex over `shared/lib/forge/*.py` today gives
+**18 line-matches across 9 modules** — not "~27 across 12". The report's own itemisation sums
+to 19 + 2 already-fixed = 21, so its headline 27 disagreed with its own list. **And one of the
+18 is a false positive:** `taskbundle.py:48` reads "Both the **plan-mode** and JSON forms" —
+agy's mode, not a plan document; the regex's `(?:the) plan\b` matches because `-` is a word
+boundary. Adding `(?!-)` suppresses **exactly** that one and damages nothing else, leaving
+**17 line-matches across 9 modules**.
+
+`harvest.py` contributes one hit that only a **flattened** scan finds — its referent is wrapped
+across two comment lines, so it appears in no line-match and `harvest.py` is in neither of the
+counts above. **Real count: 17 line citations + 1 flattened-only = 18 citations across 10
+modules** (the nine plus `harvest.py`). The exact list is in Task 10, and it names all ten.
 
 **M8 — eleven eval receipts, not 33.** `checks._evald_skills(ROOT)` returns 11 skills and
 `evals/*/receipt.json` is 11 files. `scripts/eval_trigger.py` is in **no** skill's
@@ -317,8 +366,14 @@ Expected: PASS, all six checks.
 
 ```
 cd /home/khenrix/git/khenrix-utils
-grep -n "read_json_object" scripts/lib/reconcile.py scripts/*.py shared/skills/*/scripts/*.py
+grep -rn "read_json_object" scripts/ shared/skills/
 ```
+
+(`-r` over the two trees, not a glob list: the drafted glob `scripts/lib/reconcile.py
+scripts/*.py shared/skills/*/scripts/*.py` **does not match `scripts/lib/*.py`**, so it could
+not have proved the claim it is here to prove. Measured independently: the only call sites are
+`reconcile.py:169`, `:537`, `:549`, `:644` — the count below is right, the drafted command was
+not.)
 
 Expected: exactly the four call sites at `reconcile.py:169`, `:537`, `:549`, `:644` and the
 definition. **If any call site is inside a `try:` that swallows `RuntimeError` or
@@ -661,6 +716,7 @@ seat since Plan I — carries a value §11's agreement label can read.
   `preflight.PreflightError`.
 - Produces:
   - `preflight.task_refusals(instruction: str, *, bundle=None, closures=None) -> tuple[str, ...]`
+  - `preflight.ambient_notes(instruction: str, *, closures) -> tuple[str, ...]`
   - `taskbundle.read_task_bundle_if_recorded(run_dir) -> TaskBundle | None`
   - `runner.run_seat` materializes the run's bundle into `<seat git-dir>/khenrix-forge/task`
     immediately after `clone_seat` and before `F0`, and calls `verify_materialized`.
@@ -673,8 +729,12 @@ seat since Plan I — carries a value §11's agreement label can read.
    collapses **corrupt** into **not recorded**, and three seats would then be launched with
    nothing materialized while `bundle_sha256` claims a bundle. `None` is returned for
    `not path.exists()` and for **nothing else**.
-3. A bundle being supplied clearing a provider-specific refusal. §20 forbids automatic
-   translation; a bundle carries files, it does not make a `subagent_type` portable.
+3. A bundle being supplied clearing **any** refusal. §20 forbids automatic translation; a
+   bundle carries files, and files make neither a `subagent_type` portable **nor `/markitdown`
+   identical across three CLIs**. The ambient-skill bar therefore does not consult `bundle` at
+   all — a `bundle is None` condition on it would be dead code in the only production caller,
+   because `cli.start` always builds and passes one, and the three-closure check §20 asks for
+   would never run outside the test suite.
 4. Two spellings of the bundle hash. The CLI's `make_launcher(bundle_sha256=…)` and
    `run_seat`'s materialization must both derive from `storage.task_bundle_path(run_dir)`
    through `taskbundle._decode` — one file, one decoder. A seam test names that property.
@@ -737,6 +797,36 @@ def test_an_ambient_skill_is_refused_unless_all_three_closures_hash_identically(
     three_absences = {"claude": None, "codex": None, "agy": None}
     out2 = preflight.task_refusals(text, closures=three_absences)
     assert out2, "three uninstalled CLIs hashed identically and licensed an ambient skill"
+    # The refusal names the mismatching hashes readably. `"not installed"[:12]` is
+    # `"not installe"`, which is the truncation reading as a hash prefix.
+    assert "not installed" in " ".join(out2), out2
+
+
+def test_a_bundle_does_not_clear_the_ambient_skill_bar_either(tmp_path):
+    """The bar must not consult `bundle`. `cli.start` ALWAYS builds one and passes it, so a
+    `bundle is None` condition would make §20's three-closure check dead in the only
+    production caller — and a directory of files does not make `/markitdown` the same skill on
+    claude, codex and agy, which was the entire argument for the check."""
+    b = _a_task_bundle(tmp_path)
+    text = "Follow the /markitdown skill to convert the file."
+    out = preflight.task_refusals(text, bundle=b,
+                                  closures={"claude": "a", "codex": "b", "agy": "a"})
+    assert out and any("markitdown" in line for line in out), (
+        "a supplied bundle cleared the ambient-skill bar, which is the shape that made the "
+        "check unreachable from the CLI")
+
+
+def test_a_cleared_ambient_skill_produces_the_note_the_prompt_carries(tmp_path):
+    """`ambient_note` is what §20 asks the caller to add to the prompt, and until this
+    function existed it had no caller anywhere. A cleared skill yields a note; a skill that
+    did NOT clear yields none, because the refusal is the answer in that case."""
+    text = "Follow the /markitdown skill to convert the file."
+    agreed = {"claude": "a", "codex": "a", "agy": "a"}
+    notes = preflight.ambient_notes(text, closures=agreed)
+    assert len(notes) == 1 and "markitdown" in notes[0], notes
+    assert preflight.ambient_notes(text,
+                                   closures={"claude": "a", "codex": "b", "agy": "a"}) == ()
+    assert preflight.ambient_notes("no skills named here.", closures=agreed) == ()
 
 
 def test_a_skill_name_inside_a_url_is_not_read_as_an_ambient_skill_reference():
@@ -827,10 +917,15 @@ def task_refusals(instruction, *, bundle=None, closures=None) -> tuple[str, ...]
     read may not borrow that sentence, so a non-string, an empty string and whitespace all
     RAISE rather than return the clean answer.
 
-    A BUNDLE DOES NOT CLEAR A PROVIDER-SPECIFIC REFERENT. §20: "Do not automatically translate
-    provider-specific tools or subagent semantics." A bundle carries files; it cannot give
-    codex a subagent type. What a bundle DOES answer is the ambient-skill question — it is the
-    portable form §20 asks for — and `ambient_note` is what the caller then adds to the prompt.
+    A BUNDLE CLEARS NOTHING HERE, AND `bundle` IS READ BY NO CONDITION BELOW. §20: "Do not
+    automatically translate provider-specific tools or subagent semantics." A bundle carries
+    files; it cannot give codex a subagent type, and it cannot make `/markitdown` the same
+    skill on three CLIs — which is the whole reason §20 asks for a three-way closure hash. The
+    parameter is kept because a caller reads more naturally passing what it has, and because a
+    future referent might genuinely be answerable by a file; it is NOT a licence, and a
+    `bundle is None` guard on the ambient bar would be dead code in the only production caller,
+    since `cli.start` always builds one. What the caller does with a CLEARED ambient skill is
+    `ambient_notes` below.
 
     `closures` IS THE THREE LIVE INSTALLED HASHES, `{cli: sha or None}`, and it is an ARGUMENT
     because resolving it walks three plugin caches and this function is called at a gate.
@@ -858,25 +953,65 @@ def task_refusals(instruction, *, bundle=None, closures=None) -> tuple[str, ...]
                 f"this task is not portable: it names {what} ({m.group(0)!r}), which two of the "
                 f"three seats do not have. §20 refuses to translate it automatically. "
                 f"{_PORTABLE_ASK}")
+    named = _named_skills(instruction)
+    if named and not _ambient_ok(closures):
+        why = ("the three installed closures were never resolved" if not closures else
+               "the three installed closures do not hash identically: " + _closure_line(closures))
+        for skill in named:
+            out.append(
+                f"this task relies on the ambient `{skill}` skill and {why}. §20 permits a "
+                "named skill only when all three installed copies hash identically and it "
+                f"is declared provider-neutral. {_PORTABLE_ASK}")
+    return tuple(out)
+
+
+def _named_skills(instruction: str) -> tuple[str, ...]:
     named = []
     for pattern in _AMBIENT_SKILL:
         named += [m.group(1) for m in pattern.finditer(instruction)]
-    if named and bundle is None:
-        ok = taskbundle.ambient_verdict(closures) if closures else False
-        if not ok:
-            why = ("the three installed closures were never resolved" if not closures else
-                   "the three installed closures do not hash identically: "
-                   + ", ".join(f"{c}={(closures.get(c) or 'not installed')[:12]}"
-                               for c in ("claude", "codex", "agy")))
-            for skill in sorted(set(named)):
-                out.append(
-                    f"this task relies on the ambient `{skill}` skill and {why}. §20 permits a "
-                    "named skill only when all three installed copies hash identically and it "
-                    f"is declared provider-neutral. {_PORTABLE_ASK}")
-    return tuple(out)
+    return tuple(sorted(set(named)))
+
+
+def _ambient_ok(closures) -> bool:
+    """`closures` unresolved is NOT `closures` resolved and disagreeing, and neither licenses
+    an ambient skill — but they are different facts and the refusal says which."""
+    return bool(closures) and taskbundle.ambient_verdict(closures)
+
+
+def _closure_line(closures) -> str:
+    # NOT `(closures.get(c) or "not installed")[:12]`: that truncates to `not installe`, which
+    # reads as a twelve-character hash prefix. A CLI with no installed copy is a different fact
+    # from a CLI whose copy hashes differently, and the operator has to be able to see which.
+    return ", ".join(
+        f"{c}=" + ("not installed" if not closures.get(c) else str(closures[c])[:12])
+        for c in ("claude", "codex", "agy"))
+
+
+def ambient_notes(instruction, *, closures) -> tuple[str, ...]:
+    """§20's note for every named skill this task may rely on, for the caller to add to the
+    prompt. `()` when nothing was named, and `()` when the bar was not cleared.
+
+    THIS IS `ambient_note`'s CALLER, and until it existed there was none: `task_refusals`
+    answers what STOPS a run, and §20's other half — "declare it provider-neutral in the
+    prompt" — needs a producer or the check clears a skill and then says nothing about it.
+
+    NOT CLEARED MEANS NO NOTE, not a hedged one. `task_refusals` has already refused that run;
+    emitting a note beside a refusal would put a sentence licensing the skill into the same
+    output that says it may not be used.
+    """
+    if not isinstance(instruction, str):
+        raise PreflightError(
+            f"§20's ambient note is about a task's text, and this one is "
+            f"{type(instruction).__name__}")
+    if not _ambient_ok(closures):
+        return ()
+    return tuple(taskbundle.ambient_note(s) for s in _named_skills(instruction))
 ```
 
-Add `import re` to `preflight.py`'s imports if it is not already there.
+Add `import re` to `preflight.py`'s imports if it is not already there. **Read
+`taskbundle.ambient_note`'s actual return shape before wiring it** — it is drafted here as a
+`str` per this task's Interfaces block, and the standing brief is that this plan's draft code
+has been wrong in every task of every plan.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1120,8 +1255,12 @@ python3 scripts/mutate.py --file shared/lib/forge/preflight.py \
   --old '    if not instruction.strip():' --new '    if False:' \
   --test 'uvx --with pytest pytest -q tests/test_forge_preflight.py'
 python3 scripts/mutate.py --file shared/lib/forge/preflight.py \
-  --old '        ok = taskbundle.ambient_verdict(closures) if closures else False' \
-  --new '        ok = True' \
+  --old '    return bool(closures) and taskbundle.ambient_verdict(closures)' \
+  --new '    return True' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_preflight.py'
+python3 scripts/mutate.py --file shared/lib/forge/preflight.py \
+  --old '    if named and not _ambient_ok(closures):' \
+  --new '    if named and bundle is None and not _ambient_ok(closures):' \
   --test 'uvx --with pytest pytest -q tests/test_forge_preflight.py'
 python3 scripts/mutate.py --file shared/lib/forge/runner.py \
   --old '    taskbundle.verify_materialized(b, seat_path)' --new '    pass' \
@@ -1129,7 +1268,10 @@ python3 scripts/mutate.py --file shared/lib/forge/runner.py \
 git status --short
 ```
 
-Expected: all four `CAUGHT`. `git status --short` identical before and after.
+Expected: all five `CAUGHT`. `git status --short` identical before and after. The last one is
+the dead-bar mutation in reverse: re-adding `bundle is None` must fail
+`test_a_bundle_does_not_clear_the_ambient_skill_bar_either`, or the condition that made §20's
+check unreachable from the CLI can come back unnoticed.
 
 - [ ] **Step 13: Render, gate, commit**
 
@@ -1217,10 +1359,12 @@ with the measurements beside them.
 3. `force-add`ing an ignored artifact. §16: "Never force-added — that violates the originating
    skill's contract and would put `node_modules` in the object store forever." A test asserts
    `-f` / `--force` appears in no call in the module.
-4. `mergeability` answering `MERGE_READY` on an **unmeasured** tree. `tracked_tree_oid ==
-   base_commit^{tree}` is the condition; a `synthesis_tree_oid` of `None` must produce a
-   refusal, not a comparison against `None` that happens to be unequal and therefore "safe".
-   Unequal-because-unmeasured and unequal-because-dirty are two different records.
+4. `mergeability` answering `MERGE_READY` on an **unmeasured** tree, or on an **unfused** one.
+   `synthesis_tree_oid` must be *read*, not merely liveness-checked: `None` refuses (unmeasured
+   and dirty are two different records), and a value EQUAL to `manifest.tracked_tree_oid` is a
+   synthesis worktree nobody fused into and refuses too. A parameter that is validated and then
+   discarded is the shape that lets an empty delivery render as "the branch merges as it
+   stands", and its docstring then describes a comparison the code does not perform.
 5. `out_of_band` returning `()` for both "there were no ignored artifacts" and "nobody
    enumerated them". `sidecars=None` raises; `sidecars=()` returns `()` and the caller's record
    says which.
@@ -1359,16 +1503,22 @@ def _manifest(repo, base_oid, tree_oid):
         synthesis_fix_cap=3)
 
 
+# A synthesis tree DISTINCT from B1's own. `mergeability` reads the two against each other —
+# an equal pair is a worktree nobody fused into — so every fixture below that means "the
+# orchestrator did fuse something" has to say so with a different oid.
+_FUSED = "f" * 40
+
+
 def test_mergeability_separates_a_clean_baseline_from_a_dirty_one(tmp_path):
     r = _repo(tmp_path)
     base = _rev(r, "HEAD")
     tree = _rev(r, f"{base}^{{tree}}")
-    ready = handover.mergeability(_manifest(r, base, tree), synthesis_tree_oid=tree,
+    ready = handover.mergeability(_manifest(r, base, tree), synthesis_tree_oid=_FUSED,
                                   sidecars=())
     assert ready.kind == handover.MERGE_READY
 
     out = handover.mergeability(_manifest(r, base, "0" * len(tree)),
-                                synthesis_tree_oid=tree, sidecars=())
+                                synthesis_tree_oid=_FUSED, sidecars=())
     assert out.kind == handover.PATCH_ONLY
     assert "baseline" in out.why
     assert out.integration, "a patch handover with no integration command is a dead end"
@@ -1385,6 +1535,25 @@ def test_a_tree_nobody_measured_is_not_a_tree_that_matched(tmp_path):
     assert "not measured" in str(e.value)
 
 
+def test_a_synthesis_worktree_nobody_fused_into_is_not_a_merge_ready_delivery(tmp_path):
+    """THE PARAMETER IS READ, and this is the input that proves it. A run whose orchestrator
+    fused nothing leaves the synthesis worktree at B1: its tree IS `tracked_tree_oid`, there
+    are no sidecars, and a `mergeability` that only liveness-checked the oid would report
+    'the branch merges as it stands' over an empty delivery — nothing and nobody, one record,
+    in the artifact this whole task exists to produce."""
+    r = _repo(tmp_path)
+    base = _rev(r, "HEAD")
+    tree = _rev(r, f"{base}^{{tree}}")
+    with pytest.raises(handover.HandoverError) as e:
+        handover.mergeability(_manifest(r, base, tree), synthesis_tree_oid=tree, sidecars=())
+    assert "nothing was fused" in str(e.value)
+    # And it is refused on a DIRTY baseline too: the comparison is against B1's tracked tree,
+    # not against `base^{tree}`, so it does not accidentally depend on the baseline being clean.
+    with pytest.raises(handover.HandoverError):
+        handover.mergeability(_manifest(r, base, "0" * len(tree)),
+                              synthesis_tree_oid="0" * len(tree), sidecars=())
+
+
 def test_one_changed_sidecar_keeps_a_matching_tree_out_of_merge_ready(tmp_path):
     """§16's table: merge-ready needs `tracked_tree_oid == base^{tree}` AND NO SIDECARS. A
     tree that matches while carrying an out-of-band artifact is the input that makes those two
@@ -1393,7 +1562,7 @@ def test_one_changed_sidecar_keeps_a_matching_tree_out_of_merge_ready(tmp_path):
     base = _rev(r, "HEAD")
     tree = _rev(r, f"{base}^{{tree}}")
     side = (bundle.SidecarEntry(path="dist/app.js", kind="file", mode=0o644, payload=b"x"),)
-    out = handover.mergeability(_manifest(r, base, tree), synthesis_tree_oid=tree,
+    out = handover.mergeability(_manifest(r, base, tree), synthesis_tree_oid=_FUSED,
                                 sidecars=side)
     assert out.kind == handover.PATCH_ONLY
     assert "dist/app.js" in out.why
@@ -1467,7 +1636,12 @@ uvx --with pytest pytest -q tests/test_forge_handover.py
 
 Expected: FAIL at collection — `ImportError: cannot import name 'handover'`.
 
-- [ ] **Step 3: Add the git-closure entries with their measurements**
+- [ ] **Step 3: Add the git-closure entries with their measurements — in ONE edit with Step 4**
+
+**These two steps are a single change and neither may be run against the suite alone.**
+`test_every_verb_the_allow_lists_clear_is_one_this_package_calls` asserts `allowed <= verbs`
+over every verb this package actually calls, so a closure entry whose call site does not exist
+yet fails the seams suite for the whole window between the steps. Make both edits, then run.
 
 In `tests/test_forge_seams.py`, extend `_DIFF_DRIVER_SAFE` and append this measurement to the
 comment block above it:
@@ -1505,7 +1679,7 @@ Create `shared/lib/forge/handover.py`:
 """§16 — handover: what leaves this engine and how the user takes delivery of it.
 
 THE TREES THIS MODULE TOUCHES ARE THE USER'S OWN, which is the difference between it and every
-other module here. `fleet`, `verify` and `runner` run git in clones the engine built; every
+other module here. `fleet`, `verify` and `runner` run git in clones this engine created; every
 call below runs in the repository the operator opened the run against, or in a worktree sharing
 its object store. So each one carries `NO_DAEMON_CACHE` and `NO_HOOKS`, on the measurement
 recorded in `tests/test_forge_seams.py`, and `NO_DIFF_DRIVERS` is not spelled anywhere:
@@ -1548,10 +1722,13 @@ def branch(run_id: str, name: str) -> str:
 def create_synthesis_worktree(repo, dest, *, run_id: str, at: str) -> str:
     """§16's git-deliverable surface: a worktree on a NEW BRANCH at `at`. Returns the branch.
 
-    `-b`, NEVER `--detach`, and §16 gives the reason in one sentence: a detached HEAD leaves
-    the commits unreachable and the next `git gc` deletes the deliverable. The flag is absent
-    from this file and a test asserts the file does not contain it, because the argument is
-    about a caller who adds it later, not about this line today.
+    `-b`, NEVER THE DETACH FLAG, and §16 gives the reason in one sentence: a detached HEAD
+    leaves the commits unreachable and the next `git gc` deletes the deliverable. A test
+    asserts the flag's spelling appears nowhere in this file, because the argument is about a
+    caller who adds it later and not about this line today — which is also why the flag is
+    named in words here rather than written out. A docstring that spelled it would fail that
+    test, and a test weakened to let the docstring through would stop catching the call site
+    it exists for.
 
     THE TWO PRESETS ARE NOT DECORATION. Measured on git 2.53.0 against a repository with all
     hooks planted and `core.fsmonitor` armed, `worktree add -b` fires the monitor plus
@@ -1629,16 +1806,28 @@ class Mergeability:
 def mergeability(manifest, *, synthesis_tree_oid, sidecars) -> Mergeability:
     """§16's table: which of the two deliverable shapes this run can offer.
 
-    TWO CONDITIONS, NOT ONE. `tracked_tree_oid == base_commit^{tree}` AND no sidecars. A tree
-    that matches while carrying an out-of-band artifact is merge-ready for its tracked half
-    and silently incomplete for the other, which is the reading the second condition exists to
-    forbid — and §16 closes the same hole in prose one paragraph on ("merging the branch alone
-    does not install out-of-band artifacts").
+    THREE READINGS, AND `synthesis_tree_oid` IS READ BY ONE OF THEM RATHER THAN ONLY
+    LIVENESS-CHECKED. In order:
+
+    1. THE SYNTHESIS TREE AGAINST B1's TRACKED TREE. `cli.start` creates the worktree at
+       `manifest.baseline_commit`, whose tree is `manifest.tracked_tree_oid`, so a synthesis
+       oid EQUAL to it is a worktree nobody fused into. Without this reading the parameter is
+       validated and then discarded, and a run in which the orchestrator produced nothing
+       reports "the branch merges as it stands" over an empty delivery — *does nothing leave
+       the same record as nobody?* answered wrong in the flagship artifact. It raises, because
+       there is no delivery to describe and a third `kind` would put an empty one into
+       `Handover` and thence into `--gc`'s licence to delete.
+    2. TWO CONDITIONS FOR MERGE-READY, NOT ONE. `tracked_tree_oid == base_commit^{tree}` AND
+       no sidecars. A tree that matches while carrying an out-of-band artifact is merge-ready
+       for its tracked half and silently incomplete for the other, which is the reading the
+       second condition exists to forbid — and §16 closes the same hole in prose one paragraph
+       on ("merging the branch alone does not install out-of-band artifacts").
+    3. Everything else is `PATCH_ONLY`, with every reason it read attached.
 
     A TREE NOBODY MEASURED IS NOT A TREE THAT DID NOT MATCH. `synthesis_tree_oid=None` compares
-    unequal to every real oid, so a plain `!=` would answer `patch` and the record would read
-    as a measured mismatch — a verdict cleaner than its evidence in the direction that costs
-    the user a merge-ready branch they had earned. It raises.
+    unequal to every real oid, so reading (1) with a plain `!=` would call an unmeasured tree
+    a fused one and reading (2) would then answer over evidence nobody gathered. It raises
+    first, before either comparison.
 
     `sidecars` IS THE CANDIDATE'S OUT-OF-BAND SET AND `None` IS NOT `()`. An empty tuple is
     "this candidate produced no ignored artifacts"; `None` is "nobody enumerated them", and
@@ -1646,14 +1835,21 @@ def mergeability(manifest, *, synthesis_tree_oid, sidecars) -> Mergeability:
     """
     if synthesis_tree_oid is None:
         raise HandoverError(
-            "the synthesis tree's oid was not measured, so §16's first condition cannot be "
-            "read. An unmeasured tree compares unequal to every oid, which would report a "
-            "dirty baseline about a tree nobody looked at.")
+            "the synthesis tree's oid was not measured, so §16's conditions cannot be read. "
+            "An unmeasured tree compares unequal to every oid, which would report a fused "
+            "delivery about a tree nobody looked at.")
     if sidecars is None:
         raise HandoverError(
             "the out-of-band set was not enumerated. `()` is a candidate that produced no "
             "ignored artifacts; `None` is nobody having looked, and §16's second condition "
             "cannot be read off it.")
+    if synthesis_tree_oid == manifest.tracked_tree_oid:
+        raise HandoverError(
+            f"the synthesis worktree's tree is {synthesis_tree_oid}, which is B1's own tracked "
+            "tree: nothing was fused into it. There is no delivery to describe, and describing "
+            "one would report a merge-ready branch over an empty worktree — a run in which "
+            "NOTHING happened leaving the same record as one in which NOBODY did. Fuse in the "
+            "synthesis worktree and commit there, then re-run `--collect`.")
     base_tree = gitcmd.git(manifest.repo_path, "rev-parse",
                            f"{manifest.base_commit}^{{tree}}",
                            env_extra=gitcmd.READONLY).stdout.strip()
@@ -1713,8 +1909,8 @@ def out_of_band(sidecars, *, synthesis_path, run_dir) -> tuple[OutOfBand, ...]:
     if sidecars is None:
         raise HandoverError(
             "the out-of-band set was not enumerated; `()` is what a candidate with no ignored "
-            "artifacts carries, and reporting that here for a set nobody built would tell the "
-            "user there is nothing to copy")
+            "artifacts carries, and reporting that here for a set nobody assembled would tell "
+            "the user there is nothing to copy")
     out = []
     for s in sidecars:
         payload = s.payload if isinstance(s.payload, bytes) else str(s.payload).encode()
@@ -1894,6 +2090,9 @@ python3 scripts/mutate.py --file shared/lib/forge/handover.py \
   --old '    if synthesis_tree_oid is None:' --new '    if False:' \
   --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
 python3 scripts/mutate.py --file shared/lib/forge/handover.py \
+  --old '    if synthesis_tree_oid == manifest.tracked_tree_oid:' --new '    if False:' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
+python3 scripts/mutate.py --file shared/lib/forge/handover.py \
   --old '    if sidecars is None:' --new '    if False:' \
   --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
 python3 scripts/mutate.py --file shared/lib/forge/handover.py \
@@ -1907,9 +2106,11 @@ python3 scripts/mutate.py --file shared/lib/forge/handover.py \
 git status --short
 ```
 
-Expected: all four `CAUGHT`. If the third SURVIVES, the "one changed sidecar" test is not
-reaching it — that is the two-conditions-look-like-one input and it must be closed here, not
-noted.
+Expected: all five `CAUGHT`. If the sidecar-condition one SURVIVES, the "one changed sidecar"
+test is not reaching it — that is the two-conditions-look-like-one input and it must be closed
+here, not noted. If the `tracked_tree_oid` one SURVIVES, the parameter is back to being
+liveness-checked and discarded, and an empty synthesis worktree is reporting a merge-ready
+branch again.
 
 - [ ] **Step 10: Whole suite, render, gate, commit**
 
@@ -1983,9 +2184,10 @@ from a blank.
   `strategy.STRATEGIES`.
 - Produces:
   - `handover.SeatLine(name: str, forge: str, artifacts: str, verify_outcome: str | None)`
-  - `handover.Provenance(...)` frozen record
+  - `handover.Provenance(...)` frozen record, including `synthesis_measured: bool`
   - `handover.header(p: Provenance) -> str`
   - `handover.text(h: Handover, p: Provenance) -> str` — the full handover message
+  - `handover._VERIFIED_MEANS` and `handover._ASSERTED_MEANS`
   - Task 6's CLI prints `handover.text(...)`; Task 11's SKILL.md quotes the "Verified means"
     sentence.
 
@@ -1997,15 +2199,26 @@ from a blank.
 2. **The word "built" for a seat that produced artifacts and failed verify.** §16.1 forbids it
    outright. `header` never emits the word; a test asserts the rendered text contains no
    case-insensitive `built` for such a seat, **and** that the module source contains no
-   `"built"` literal, because the first check only covers the fixtures it runs.
+   `"built"` literal, because the first check only covers the fixtures it runs. **The
+   source-level half binds the docstrings and the rendered headings too**, and Task 4's draft
+   tripped it four times — "clones the engine built", "a set nobody built", "B1 … built from",
+   and, most instructively, the sentence in `header`'s own docstring asserting the word appears
+   nowhere. When this test fails on a docstring the assertion is right and the prose is wrong.
 3. **A missing line reading as a clean answer.** `strongest` returning `(None, why)` and
    `agreement_label` returning `not-comparable` must each render a line **naming the
    judgement and its reason**. Omitting the line is the failure this task exists to prevent.
-4. **"Verified" overclaiming.** The scope map's debt 3: `verify.classify` never reads
-   `baseline_run` on the `PASS` path, so nothing proves the calibration a `PASS` rests on came
-   from this run's baseline. §16.1's sentence must therefore say what a PASS *is* — the
-   confirmed verify command exited 0 on a fresh verifier clone at the final checkpoint — and
-   nothing more.
+4. **"Verified" overclaiming, in two directions.** The scope map's debt 3: `verify.classify`
+   never reads `baseline_run` on the `PASS` path, so nothing proves the calibration a `PASS`
+   rests on came from this run's baseline. §16.1's sentence must therefore say what a PASS
+   *is* — the confirmed verify command exited 0 on a fresh verifier clone at the final
+   checkpoint — and nothing more. **And the sentence may not be printed beside a verdict this
+   engine did not measure at all.** `--collect` takes the synthesis outcome from the
+   orchestrator (see Task 6), and a header that renders an *asserted* verdict in the same
+   words as a measured one, under a paragraph beginning "Verified here means", is the whole
+   project's rule — a verdict must never read cleaner than its evidence — broken by the
+   artifact whose job is to say what was verified. `Provenance` therefore carries
+   `synthesis_measured`, the two render differently, and `_VERIFIED_MEANS` appears only beside
+   the measured one.
 5. **`ultrareview: unavailable` collapsing with `skipped` and `timeout`.** Four statuses, four
    renderings. §16.1's example shows only the `ran` one.
 
@@ -2028,8 +2241,8 @@ def _prov(**kw):
         seats=(handover.SeatLine("claude", "completed", "usable", "PASS"),
                handover.SeatLine("codex", "completed", "usable", "FAIL"),
                handover.SeatLine("agy", "partial", "unusable", None)),
-        synthesis_outcome="PASS", verify_command="make verify", verify_seconds=47.0,
-        strategy="from_scratch",
+        synthesis_outcome="PASS", synthesis_measured=True,
+        verify_command="make verify", verify_seconds=47.0, strategy="from_scratch",
         strongest=(None, "no strongest seat can be named while agy has no measured "
                          "requirement_coverage"),
         agreement="differently-prompted",
@@ -2045,7 +2258,7 @@ def test_the_header_is_four_lines_and_names_every_number_it_reports():
     assert len(lines) >= 4
     assert lines[0].startswith("**Forge:")
     assert "2 of 3 seats completed" in lines[0]
-    assert "2 artifact sets usable" in lines[0]
+    assert "2 artifact set(s) usable" in lines[0]     # the renderer says `set(s)`; match it
     assert "1 of 3 passed verify" in lines[0]
     assert text.rstrip().endswith("**")
 
@@ -2064,7 +2277,8 @@ def test_a_run_in_which_nothing_completed_cannot_render_a_success_header():
     dead = _prov(seats=(handover.SeatLine("claude", "failed", "unusable", None),
                         handover.SeatLine("codex", "failed", "unusable", None),
                         handover.SeatLine("agy", "failed", "unusable", None)),
-                 synthesis_outcome=None, verify_seconds=None, strategy=None,
+                 synthesis_outcome=None, synthesis_measured=False, verify_seconds=None,
+                 strategy=None,
                  review_terminal=None, review_rounds=0, unresolved_findings=0,
                  ultra=ultra.Ultra(ultra.SKIPPED, None, None, None, False, "no synthesis"))
     text = handover.header(dead)
@@ -2074,6 +2288,19 @@ def test_a_run_in_which_nothing_completed_cannot_render_a_success_header():
     with pytest.raises(handover.HandoverError):
         _prov(seats=(handover.SeatLine("claude", "failed", "unusable", None),),
               synthesis_outcome="PASS")
+
+
+def test_a_run_with_no_reported_verdict_is_not_a_run_with_no_candidate():
+    """Two absences that must not compare equal. Seats completed and nobody reported an outcome
+    for the fusion — `--collect` run without one — is a MISSING ARGUMENT. Rendering it as "no
+    seat produced a candidate" would have the header invent a fleet failure out of it, and the
+    operator would read a working three-seat run as a dead one."""
+    quiet = _prov(synthesis_outcome=None, synthesis_measured=False, verify_seconds=None)
+    text = handover.header(quiet)
+    assert "no seat produced a candidate" not in text
+    assert "no verify verdict was reported" in text
+    assert "2 of 3 seats produced a candidate" in text
+    assert handover._VERIFIED_MEANS not in handover.text(_a_handover(), quiet)
 
 
 def test_a_run_with_no_seats_at_all_is_refused_rather_than_rendered_as_zeros():
@@ -2128,6 +2355,36 @@ def test_the_verified_sentence_says_what_a_pass_is_and_no_more():
     assert ("the confirmed verify command exited 0 on a fresh verifier clone at the final "
             "checkpoint") in text
     assert "no new defects" in text and "does not mean" in text
+
+
+def test_an_asserted_synthesis_verdict_never_prints_the_verified_sentence():
+    """A VERDICT MUST NEVER READ CLEANER THAN ITS EVIDENCE, and this is the input that breaks
+    it in the artifact whose whole job is to say what was verified. `--collect` takes the
+    synthesis outcome from the orchestrator; nothing in this engine runs the confirmed command
+    over the fusion. Rendering that in the same words as a measured PASS, under a paragraph
+    beginning "Verified here means", asserts a verification that did not happen."""
+    asserted = _prov(synthesis_measured=False, verify_seconds=None)
+    text = handover.text(_a_handover(), asserted)
+    assert handover._VERIFIED_MEANS not in text
+    assert "reported by the orchestrator" in text
+    assert "this engine did not run it" in text
+    head = handover.header(asserted)
+    assert "verify PASS" not in head, (
+        "an asserted verdict is rendered in the words of a measured one")
+    # And the measured rendering is still the measured rendering.
+    assert handover._VERIFIED_MEANS in handover.text(_a_handover(), _prov())
+
+
+def test_a_measured_synthesis_verdict_must_carry_the_measurement():
+    """`synthesis_measured=True` is a claim that this engine ran the command, and a run it
+    timed is the evidence for that claim. A measured verdict with no duration is the record
+    saying it measured something it did not time — which is the same fail-open one field over,
+    and it is how an asserted verdict would be re-labelled as a measured one by a caller
+    passing the wrong flag."""
+    with pytest.raises(handover.HandoverError):
+        _prov(synthesis_measured=True, verify_seconds=None)
+    with pytest.raises(handover.HandoverError):
+        _prov(synthesis_measured=True, synthesis_outcome=None)
 
 
 def _a_handover():
@@ -2216,9 +2473,24 @@ class Provenance:
     and never a correctness argument, so `differently-prompted` — the ordinary answer for a
     real fleet, since three seats are three different CLIs and `cli_version` differs — is
     information, not a defect.
+
+    `synthesis_measured` IS THE FIELD THAT KEEPS THE HEADER HONEST, and it exists because
+    §16's synthesis author is the ORCHESTRATOR and not this engine. `--collect` is handed a
+    verdict; it does not build a verifier clone for the fusion and does not run the confirmed
+    command over it. So `synthesis_outcome` has two provenances that must never render alike:
+    MEASURED by this engine, or ASSERTED by whoever fused. `header` renders them as different
+    sentences and `text` prints the "Verified means" paragraph only beside the first —
+    otherwise the one artifact whose job is to say what was verified would be the one asserting
+    a verification that never happened.
+
+    A MEASURED VERDICT CARRIES ITS MEASUREMENT. `synthesis_measured=True` with no outcome, or
+    with no `verify_seconds`, is a record claiming a measurement it cannot show, and it is the
+    exact route by which a caller passing the wrong flag would re-label an asserted verdict as
+    a measured one.
     """
     seats: tuple
     synthesis_outcome: str | None
+    synthesis_measured: bool
     verify_command: str
     verify_seconds: float | None
     strategy: str | None
@@ -2251,6 +2523,16 @@ class Provenance:
             raise HandoverError(
                 f"synthesis_outcome is one of {list(verifymod.OUTCOMES)} or None, not "
                 f"{self.synthesis_outcome!r}")
+        if not isinstance(self.synthesis_measured, bool):
+            raise HandoverError(
+                f"synthesis_measured is a bool, not {self.synthesis_measured!r}: a truthy "
+                "string here would print an asserted verdict under the Verified sentence")
+        if self.synthesis_measured and (self.synthesis_outcome is None
+                                        or self.verify_seconds is None):
+            raise HandoverError(
+                "this record claims the synthesis verdict was MEASURED by this engine and "
+                "carries no outcome or no duration. A measurement this engine cannot show is "
+                "not one, and the Verified sentence is printed on the strength of this flag.")
         completed = [s for s in self.seats if s.forge == "completed"]
         if self.synthesis_outcome is not None and not completed:
             raise HandoverError(
@@ -2310,10 +2592,12 @@ def _ultra_line(u) -> str:
 def header(p: Provenance) -> str:
     """§16.1's provenance header.
 
-    "BUILT" APPEARS NOWHERE. §16.1 forbids the word for a seat that produced artifacts and
-    failed verify, and the enforcement is that this module never uses it at all rather than
-    that this function remembers which seats it may use it for — a rule that holds only on the
-    branches its author remembered is the shape this package refuses everywhere else.
+    §16.1'S FORBIDDEN VERB APPEARS NOWHERE IN THIS MODULE — not in the rendered text, not in a
+    docstring, and not in this sentence. It is forbidden for a seat that produced artifacts and
+    failed verify, and the enforcement is a source-level assertion over the whole file rather
+    than this function remembering which seats it may use it for: a rule that holds only on the
+    branches its author remembered is the shape this package refuses everywhere else. That
+    assertion is also why the word is described here instead of quoted.
 
     THE FUSION AND AGREEMENT LINES ARE ALWAYS PRESENT. §12.5's `strongest` names nobody
     whenever any seat is unrankable, and a real ledger carrying a `schema` or untraced `prose`
@@ -2334,15 +2618,31 @@ def header(p: Provenance) -> str:
         first += f" ({unverified} never verified)"
     first += "."
 
-    if p.synthesis_outcome is None:
+    strat = p.strategy or "strategy not recorded"
+    if p.synthesis_outcome is None and not completed:
         second = ("Synthesis: no seat produced a candidate, so no synthesis was attempted and "
                   "there is no verify result to report.")
-    else:
+    elif p.synthesis_outcome is None:
+        # NO VERDICT IS NOT NO CANDIDATE. Seats completed here; nobody reported an outcome for
+        # the fusion — `--collect` was run without one. Saying "no seat produced a candidate"
+        # would be this header inventing a fleet failure out of a missing argument.
+        second = (f"Synthesis: {completed} of {n} seats produced a candidate and no verify "
+                  "verdict was reported for the fusion. This engine did not run one either, "
+                  "so there is nothing here about whether the fused work passes.")
+    elif p.synthesis_measured:
         secs = f", {p.verify_seconds:.0f}s" if p.verify_seconds is not None else \
                ", duration not measured"
-        strat = p.strategy or "strategy not recorded"
         second = (f"Synthesis: verify {p.synthesis_outcome} (`{p.verify_command}`{secs}) "
                   f"— {strat}.")
+    else:
+        # THE ASSERTED RENDERING, AND IT DOES NOT BORROW THE MEASURED ONE'S WORDS. §16 makes
+        # the orchestrator the synthesis author; `--collect` is handed this verdict and never
+        # builds a verifier clone for the fusion. "verify PASS" would be this engine's own
+        # vocabulary for something it ran, spent on something it did not.
+        second = (f"Synthesis: the orchestrator reports {p.synthesis_outcome} for "
+                  f"`{p.verify_command}` — {strat}. This engine did not run it: no verifier "
+                  "clone was built for the fusion, so this line is a report and not a "
+                  "verification.")
 
     name, why = p.strongest
     fusion = (f"Fusion: strongest seat: {name} — {why}." if name else f"Fusion: {why}.")
@@ -2363,6 +2663,35 @@ _VERIFIED_MEANS = (
     "new defects, and it is not a review."
 )
 
+# THE OTHER PARAGRAPH, AND THE REASON THERE ARE TWO. The sentence above describes a
+# measurement THIS ENGINE TOOK. A synthesis verdict reaches `--collect` from the orchestrator
+# that fused, and printing that under the sentence above would claim a verifier clone nobody
+# built. Neither paragraph is a hedge of the other: one says what a PASS is, the other says
+# who said so.
+_ASSERTED_MEANS = (
+    "This run's synthesis verdict was reported by the orchestrator that fused the candidates. "
+    "This engine did not run it: no verifier clone was built for the fusion and the confirmed "
+    "verify command was not executed here, so nothing above is a verification. To get one, run "
+    "the confirmed command yourself in a fresh clone of the synthesis branch."
+)
+
+_NO_VERDICT_MEANS = (
+    "There is no synthesis verdict here at all — not a failing one, and not one somebody else "
+    "reported. Nothing above says whether the fused work passes this repository's gate, and "
+    "the absence is not a pass: run the confirmed verify command yourself in a fresh clone of "
+    "the synthesis branch before you treat any of this as working."
+)
+
+
+def _means(p: Provenance) -> str:
+    """The one provenance paragraph this run has earned. THREE STATES, THREE RECORDS: a verdict
+    this engine measured, a verdict somebody else reported, and no verdict. Folding the third
+    into the second would say the orchestrator reported something over a run where nobody
+    reported anything."""
+    if p.synthesis_outcome is None:
+        return _NO_VERDICT_MEANS
+    return _VERIFIED_MEANS if p.synthesis_measured else _ASSERTED_MEANS
+
 
 def text(h: Handover, p: Provenance) -> str:
     """The whole handover message: the header, what was delivered, and what merging does not do.
@@ -2370,19 +2699,25 @@ def text(h: Handover, p: Provenance) -> str:
     §16 requires the B1 file list HERE rather than only at a confirmation gate an hour earlier,
     and it requires the sentence about out-of-band artifacts to be stated plainly rather than
     left to be inferred from the fact that they are listed separately.
+
+    EXACTLY ONE OF THE THREE PROVENANCE PARAGRAPHS, NEVER TWO AND NEVER NONE — measured,
+    asserted, or no verdict at all. Three states, three records; collapsing the third into the
+    second would tell the user the orchestrator reported something when nobody reported
+    anything. Which one is `_means`'s decision and not this line's discretion, and `Provenance`
+    has already refused a `synthesis_measured=True` it cannot show a measurement for.
     """
     if not isinstance(h, Handover):
         raise HandoverError(f"a Handover is required, not {type(h).__name__}")
     if not isinstance(p, Provenance):
         raise HandoverError(f"a Provenance is required, not {type(p).__name__}")
-    parts = [header(p), "", _VERIFIED_MEANS, "",
+    parts = [header(p), "", _means(p), "",
              f"Branch: `{h.branch}` ({h.kind}) — {h.why}"]
     if h.handover_target:
         parts.append(f"Handed over to: {h.handover_target}")
     elif h.accepted:
         parts.append("Handed over: accepted by the user without a merge target — a "
                      "patch-based handover may intentionally never merge this branch.")
-    parts += ["", "B1 — the baseline this run was built from:"]
+    parts += ["", "B1 — the baseline this run started from:"]
     parts += [f"  {f}" for f in h.b1_files] or ["  (no files)"]
     if h.baseline_owned:
         parts += ["", "Baseline-owned — unchanged selected untracked/ignored files. These are "
@@ -2430,11 +2765,22 @@ python3 scripts/mutate.py --file shared/lib/forge/handover.py \
   --old '    fusion = (f"Fusion: strongest seat: {name} — {why}." if name else f"Fusion: {why}.")' \
   --new '    fusion = (f"Fusion: strongest seat: {name}." if name else "")' \
   --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
+python3 scripts/mutate.py --file shared/lib/forge/handover.py \
+  --old '    return _VERIFIED_MEANS if p.synthesis_measured else _ASSERTED_MEANS' \
+  --new '    return _VERIFIED_MEANS' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
+python3 scripts/mutate.py --file shared/lib/forge/handover.py \
+  --old '        if self.synthesis_measured and (self.synthesis_outcome is None' \
+  --new '        if False and (self.synthesis_outcome is None' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_handover.py'
 git status --short
 ```
 
-Expected: all four `CAUGHT`. The fourth is the brief's requirement in mutation form: dropping
-the reason when nobody is named must fail the suite.
+Expected: all six `CAUGHT`. The fourth is the brief's requirement in mutation form: dropping
+the reason when nobody is named must fail the suite. The fifth and sixth are the overclaim in
+mutation form — printing "Verified here means" beside an unmeasured verdict, and letting a
+record claim a measurement it cannot show — and if either SURVIVES the header can still state a
+verdict it has no evidence for.
 
 - [ ] **Step 7: Whole suite, render, gate, commit**
 
@@ -2518,10 +2864,18 @@ shape without rejecting the feature.
   `engine.MODE_TIMEOUT` (Task 9 adds `"forge"`).
 - Produces:
   - `cli.CliError(RuntimeError)`
-  - `cli.main(argv=None, *, stdout=sys.stdout) -> int`
-  - `cli.start(args) -> int`, `cli.collect(args) -> int` (`cli.gc` arrives in Task 7)
+  - `cli.main(argv=None, *, out=None, make_launcher=None) -> int`
+  - `cli.start(args, *, out, make_launcher=None) -> int`
+  - `cli.collect(args, *, out) -> int` (`cli._gc` arrives in Task 7)
   - `gate.Confirmation.ultrareview: bool`
   - Task 7 adds the `--gc` subcommand to this parser; Task 11's SKILL.md drives this CLI.
+
+**`make_launcher` is a seam and not a convenience.** It is `None`-defaulted and resolved at
+call time (`make_launcher or launch.make_launcher`), which is the only shape that serves both
+callers the tests need: an explicit fake passed through `main`, and a `monkeypatch.setattr` on
+`cli.launch.make_launcher`. A module-level default bound at `def` time would silently ignore the
+second. Without the seam there is no way to drive `--start` from a test without paying three
+providers, and **no test in this project may invoke a real provider or spend money**.
 
 **The specific fail-opens this must not have:**
 1. **A `--start` that reports success after a refusal.** Every refusal path returns a non-zero
@@ -2535,8 +2889,18 @@ shape without rejecting the feature.
    the run's own recorded bundle.** Task 3's seam test arms itself on this file's existence.
 4. **`--collect` printing a handover for a run it could not read.** `reconstruct` raises for
    a run directory it cannot read whole, and the CLI does not catch that into a "nothing to
-   collect" message.
-5. **A default `--timeout` invented here.** §19 forbids a second timeout mechanism. The seat
+   collect" message. **Measured: `reconstruct` raises `runstate.ManifestError`,
+   `runstate.StateError`, `journal.JournalError` or `storage.StorageError`, and all four are
+   direct `RuntimeError` subclasses.** None of them is in the drafted narrow tuple, so as first
+   written `--collect` on a damaged run *crashed with a traceback* rather than refusing — and
+   the test for it could not pass. All four go in the tuple; the narrow-except rationale
+   survives intact, because every one of them is this package saying "this run's state is
+   unknown", which §14.1 names `outcome_unknown` and is exactly the refusal a caller wants
+   printed.
+5. **A synthesis verdict presented as a verification.** `--collect` is handed the outcome; it
+   builds no verifier clone. It passes `synthesis_measured=False` and the header says who
+   reported it — see Task 5.
+6. **A default `--timeout` invented here.** §19 forbids a second timeout mechanism. The seat
    timeout comes from `engine.MODE_TIMEOUT["forge"]` (Task 9) and from nowhere else; until
    Task 9 lands, `--start` refuses rather than picking a number. **Order Task 9 before Task 6
    if you would rather not write that refusal** — either order is correct, but the refusal
@@ -2695,10 +3059,25 @@ Expected: both mutations `CAUGHT`; `verify rc=0`, `precommit rc=0`.
 
 - [ ] **Step 5: Write the failing tests**
 
-Create `tests/test_forge_cli.py`. **No test in this file may invoke a real provider.** The
-launcher is exercised by injecting `run_provider` and `probe` into `make_launcher`, exactly as
-`tests/test_forge_launch.py` already does — read that file and reuse its fakes rather than
-writing new ones.
+Create `tests/test_forge_cli.py`. **No test in this file may invoke a real provider, and none
+may write outside `tmp_path`.** Two rules make that structural rather than remembered:
+
+- **`_drive_a_start` takes `monkeypatch` as a required positional argument, and every test that
+  calls it requests the fixture.** It needs it twice: to point `XDG_STATE_HOME` at `tmp_path`
+  so `storage.run_root` never writes under the developer's `~/.local/state`, and to keep the
+  provider fake in place. A helper that quietly did neither — driven from a test with no
+  `monkeypatch` in its signature — is the shape that spends money and writes to a real home
+  directory while looking like an ordinary unit test.
+- **The launcher reaches `cli` through the `make_launcher=` seam**, either passed explicitly
+  through `cli.main(...)` or monkeypatched onto `cli.launch.make_launcher`. Injecting
+  `run_provider`/`probe` into `make_launcher` is what keeps the real launcher path under test,
+  exactly as `tests/test_forge_launch.py` already does — read that file and reuse its fakes
+  rather than writing new ones.
+
+`_drive_a_start` must also neutralise `cli._closures`, which otherwise walks the developer's
+three real plugin caches: `monkeypatch.setattr(cli, "_closures", lambda: {"claude": "a",
+"codex": "a", "agy": "a"})`. A test whose result depends on which CLIs happen to be installed
+on the machine running it is not a test of this code.
 
 ```python
 """The front end. Nothing here spends money: every provider call is an injected fake."""
@@ -2751,7 +3130,10 @@ def test_a_task_naming_provider_specific_machinery_is_refused_before_the_gate(tm
 def test_start_records_the_task_bundle_and_hands_the_launcher_its_hash(tmp_path, monkeypatch):
     """The debt three plans deferred: make_launcher/forge_spec had no production caller, so
     §8.1's validator never ran outside the suite. This asserts the CLI builds the launcher and
-    that the hash it passes is taskbundle.bundle_hash over the run's OWN recorded bundle."""
+    that the hash it passes is taskbundle.bundle_hash over the run's OWN recorded bundle.
+
+    The spy wraps the REAL make_launcher with fake transport, so the seam under test is the
+    CLI's argument list and not a stand-in for it."""
     seen = {}
     real = cli.launch.make_launcher
 
@@ -2760,15 +3142,15 @@ def test_start_records_the_task_bundle_and_hands_the_launcher_its_hash(tmp_path,
         return real(**kw, run_provider=_fake_provider, probe=_fake_probe) \
             if "run_provider" not in kw else real(**kw)
     monkeypatch.setattr(cli.launch, "make_launcher", spy)
-    run_dir = _drive_a_start(tmp_path)
+    run_dir = _drive_a_start(tmp_path, monkeypatch, make_launcher=None)   # resolve via module
     b = taskbundle.read_task_bundle(run_dir)
     assert seen["bundle_sha256"] == taskbundle.bundle_hash(b)
     assert seen["bundle_sha256"] is not None
 
 
-def test_every_seats_recorded_fingerprint_carries_the_bundle_hash(tmp_path):
+def test_every_seats_recorded_fingerprint_carries_the_bundle_hash(tmp_path, monkeypatch):
     """§11's bundle_sha256 was None for every real seat until §20 had a producer."""
-    run_dir = _drive_a_start(tmp_path)
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
     from forge import runstate
     for name in storage.seat_names(run_dir):
         rec = runstate.read_seat(run_dir, name)
@@ -2777,22 +3159,31 @@ def test_every_seats_recorded_fingerprint_carries_the_bundle_hash(tmp_path):
             assert pi.get("bundle_sha256"), (name, pi)
 
 
-def test_collect_builds_its_seat_lines_from_the_records_and_not_from_a_results_tuple(tmp_path):
+def test_collect_builds_its_seat_lines_from_the_records_and_not_from_a_results_tuple(
+        tmp_path, monkeypatch):
     """`runner.run` returns one SeatResult per seat that produced one, which is not always
     `manifest.seats` of them — a seat every attempt of which was refused has no verdict to
     return. Counting the tuple reports '2 of 2 seats completed' for a three-seat run."""
-    run_dir = _drive_a_start(tmp_path, refuse_seat="agy")
+    run_dir = _drive_a_start(tmp_path, monkeypatch, refuse_seat="agy")
     text = _collect_text(tmp_path, run_dir)
     assert "of 3 seats completed" in text
     assert "of 2 seats" not in text
 
 
-def test_collect_refuses_a_run_directory_it_cannot_read_whole(tmp_path, capsys):
-    run_dir = _drive_a_start(tmp_path)
+def test_collect_refuses_a_run_directory_it_cannot_read_whole(tmp_path, monkeypatch, capsys):
+    """MEASURED: `runstate.reconstruct` raises `runstate.ManifestError`, `runstate.StateError`,
+    `journal.JournalError` or `storage.StorageError` — four direct RuntimeError subclasses, and
+    not one of them was in `main`'s first draft of the narrow except tuple. As drafted this
+    test could not pass: `cli.main` would propagate the raise and the test would ERROR rather
+    than read a return code. The tuple carries all four; the narrow-except argument survives,
+    because each is this package refusing a run whose state is unknown."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
     storage.manifest_path(run_dir).write_bytes(b"{ not json")
     rc = cli.main(["--collect", _run_id(run_dir), "--repo", str(_repo_of(run_dir))])
     assert rc != 0
-    assert "collected" not in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out.lower()
+    assert "collected" not in out
+    assert "manifest" in out, "the refusal did not name what could not be read"
 
 
 def test_no_ultra_reaches_run_ultra_as_well_as_the_quote(tmp_path, monkeypatch):
@@ -2801,18 +3192,57 @@ def test_no_ultra_reaches_run_ultra_as_well_as_the_quote(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(cli.ultra, "run_ultra",
                         lambda *a, **kw: calls.append(kw) or _skipped_ultra())
-    run_dir = _drive_a_start(tmp_path, no_ultra=True)
+    run_dir = _drive_a_start(tmp_path, monkeypatch, no_ultra=True)
     _collect_text(tmp_path, run_dir)
     assert calls and calls[-1]["enabled"] is False
+
+
+def test_the_handover_a_collect_prints_does_not_call_an_asserted_verdict_verified(
+        tmp_path, monkeypatch, capsys):
+    """`--collect --synthesis-outcome PASS` renders a verdict THIS ENGINE DID NOT MEASURE. It
+    builds no verifier clone for the fusion and runs no confirmed command over it, so the
+    §16.1 "Verified here means" paragraph may not appear beside it."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)          # helper: a commit in the synthesis worktree
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", str(_repo_of(run_dir)),
+                   "--accept", "--synthesis-outcome", "PASS", "--strategy", "from_scratch"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert handover._VERIFIED_MEANS not in out
+    assert "the orchestrator reports PASS" in out
+    assert "This engine did not run it" in out
 ```
 
 Write the helpers (`_a_repo_with_a_secret`, `_a_clean_repo`, `_a_task`, `_answers`,
-`_drive_a_start`, `_collect_text`, `_run_id`, `_repo_of`, `_fake_provider`, `_fake_probe`,
-`_skipped_ultra`) in this file. **Reuse the repository and answer-sheet fixtures
+`_drive_a_start`, `_fuse_something`, `_collect_text`, `_run_id`, `_repo_of`, `_fake_provider`,
+`_fake_probe`, `_skipped_ultra`) in this file. **Reuse the repository and answer-sheet fixtures
 `tests/test_forge_runner.py` and `tests/test_forge_gate.py` already define wherever they fit —
-read both first.** `_drive_a_start` must point `XDG_STATE_HOME` at `tmp_path` via
-`monkeypatch.setenv` so `storage.run_root` writes under the test's own directory and never
-under the developer's `~/.local/state`.
+read both first.**
+
+`_drive_a_start(tmp_path, monkeypatch, **kw)` takes `monkeypatch` **positionally and required**,
+and does three things before it drives anything:
+
+```python
+def _drive_a_start(tmp_path, monkeypatch, *, no_ultra=False, refuse_seat=None,
+                   make_launcher=_a_fake_make_launcher):
+    """§5's gate and §7's fleet, with nothing paid and nothing written outside tmp_path.
+
+    THE THREE NEUTRALISATIONS ARE NOT OPTIONAL AND THIS IS WHY THE FIXTURE IS REQUIRED RATHER
+    THAN DEFAULTED. Without the first, `storage.run_root` writes run directories under the
+    developer's real `~/.local/state` and every test run leaks one. Without the second, three
+    real CLIs are launched and the suite spends money. Without the third, the result depends on
+    which plugins happen to be installed on the machine running it.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "_closures",
+                        lambda: {"claude": "a", "codex": "a", "agy": "a"})
+    ...
+    rc = cli.main(argv, out=buf, make_launcher=make_launcher)
+```
+
+`_a_fake_make_launcher` matches `launch.make_launcher`'s keyword-only signature and returns a
+callable satisfying `launch(*, name, seat_path, token, env)` — read
+`tests/test_forge_launch.py` for the fakes and the exact contract before writing it.
 
 - [ ] **Step 6: Run to verify they fail**
 
@@ -2897,7 +3327,18 @@ def _closures() -> dict:
     return {c: taskbundle.installed_closure(c) for c in _CLIS}
 
 
-def start(args, *, out) -> int:
+def start(args, *, out, make_launcher=None) -> int:
+    """§5's gate, §7's fleet, §6's verification — and it stops at `comparing`.
+
+    `make_launcher` IS A SEAM AND `None` MEANS "ASK THE MODULE", NOT "USE A DEFAULT". Resolved
+    at call time rather than bound as a default at `def` time, because the two callers that
+    need it want different things: a test passing an explicit fake through `main`, and a test
+    that has monkeypatched `cli.launch.make_launcher` to spy on the real one. A `def`-time
+    default would silently ignore the second, and without the seam at all there is no way to
+    exercise this function without paying three providers — which no test in this project may
+    do.
+    """
+    mk = make_launcher or launch.make_launcher
     repo = Path(args.repo).resolve()
     task_root = Path(args.task).resolve()
     entrypoint = args.entrypoint
@@ -2909,12 +3350,21 @@ def start(args, *, out) -> int:
         return _fail(out, ["preflight refuses this repository, so nothing is spent:", *blocked])
 
     b = taskbundle.scan(task_root, entrypoint=entrypoint)
-    # §20's refusal, and the bundle is passed because a supplied bundle IS the portable form
-    # the ambient-skill half asks for. It does NOT clear a provider-specific referent — see
-    # `preflight.task_refusals`.
-    not_portable = preflight.task_refusals(instruction, bundle=b, closures=_closures())
+    # §20's refusal. The bundle is passed for the record, and it CLEARS NOTHING: it does not
+    # make a provider-specific referent portable and it does not make an ambient skill
+    # identical across three CLIs. The ambient bar is the three-closure hash and nothing else —
+    # a `bundle is None` guard on it would be dead here, because this line always has one.
+    closures = _closures()
+    not_portable = preflight.task_refusals(instruction, bundle=b, closures=closures)
     if not_portable:
         return _fail(out, ["§20 refuses this task:", *not_portable])
+    # §20's other half, and `taskbundle.ambient_note`'s only caller: a named skill that DID
+    # clear the three-way hash is declared provider-neutral in the prompt the seats receive.
+    # Clearing it and then saying nothing would use the skill on all three CLIs on the strength
+    # of a check whose result never left this function.
+    notes = preflight.ambient_notes(instruction, closures=closures)
+    if notes:
+        instruction = instruction + "\n\n" + "\n".join(notes)
 
     timeout = _resolve_seat_timeout()
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
@@ -2937,8 +3387,8 @@ def start(args, *, out) -> int:
     shutil.copytree(task_root, storage.task_source_path(run_dir))
     taskbundle.write_task_bundle(run_dir, b)
 
-    launcher = launch.make_launcher(prompt=instruction, timeout=timeout,
-                                    bundle_sha256=taskbundle.bundle_hash(b))
+    launcher = mk(prompt=instruction, timeout=timeout,
+                  bundle_sha256=taskbundle.bundle_hash(b))
     results = runnermod.run(run_dir, repo, identity=confirmation.author, launch=launcher)
 
     # §16: seat work is transported out of each remote-less clone by the ENGINE, from the
@@ -3027,6 +3477,14 @@ def collect(args, *, out) -> int:
 
     p = handover.Provenance(
         seats=_seat_lines(run_dir), synthesis_outcome=args.synthesis_outcome,
+        # `False`, AND IT IS A CONSTANT HERE RATHER THAN A FLAG. Nothing in this function runs
+        # the confirmed verify command over the fusion: §16 makes the orchestrator the
+        # synthesis author, and building a verifier clone here would be a fourth §6 pass that
+        # §5.2 never quoted. So the outcome above arrives from argv, which is a REPORT, and
+        # `handover.header` renders it in the words of one. There is no `--synthesis-measured`
+        # flag, because a flag is exactly how an asserted verdict would come to be printed
+        # under the "Verified here means" sentence.
+        synthesis_measured=False,
         verify_command=" ".join(manifest.verify[0].argv) if manifest.verify else "",
         verify_seconds=args.synthesis_seconds, strategy=args.strategy,
         strongest=_strongest(run_dir), agreement=_agreement(run_dir),
@@ -3082,14 +3540,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--accept", action="store_true",
                     help="--collect: the user accepts delivery with no merge target")
     ap.add_argument("--synthesis-outcome", dest="synthesis_outcome",
-                    help="--collect: the verify verdict the orchestrator measured")
-    ap.add_argument("--synthesis-seconds", dest="synthesis_seconds", type=float)
+                    help="--collect: the verify verdict the orchestrator REPORTS. This engine "
+                         "does not run it, and the handover says so rather than calling it "
+                         "verified")
+    ap.add_argument("--synthesis-seconds", dest="synthesis_seconds", type=float,
+                    help="--collect: how long the orchestrator's own verify run took, if it "
+                         "timed one")
     ap.add_argument("--strategy", help="--collect: the §12 rule the fusion followed")
     ap.add_argument("--force", action="store_true", help="--gc: see §15")
     return ap
 
 
-def main(argv=None, *, out=None) -> int:
+def main(argv=None, *, out=None, make_launcher=None) -> int:
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
     try:
@@ -3097,12 +3559,22 @@ def main(argv=None, *, out=None) -> int:
             for required in ("task", "answers"):
                 if not getattr(args, required):
                     return _fail(out, [f"--start needs --{required}"])
-            return start(args, out=out)
+            return start(args, out=out, make_launcher=make_launcher)
         if args.collect:
             return collect(args, out=out)
         return _gc(args, out=out)          # replaced by gc.py's caller in the next task
     except (CliError, preflight.PreflightError, gate.GateError, taskbundle.TaskBundleError,
-            handover.HandoverError) as e:
+            handover.HandoverError,
+            # MEASURED, and the first draft of this tuple was missing all four.
+            # `runstate.reconstruct` — the only thing `--collect` does before it can say
+            # anything — raises exactly these for a run directory it cannot read whole, and
+            # every one is a direct RuntimeError subclass that would otherwise leave the CLI
+            # with a traceback instead of a refusal. They belong here for the SAME reason as
+            # the five above and not as a widening: each is this package saying "this run's
+            # state is unknown", which §14.1 names `outcome_unknown` — the one thing a
+            # `--collect` must be able to tell an operator.
+            runstate.ManifestError, runstate.StateError,
+            journal.JournalError, storage.StorageError) as e:
         # NARROW ON PURPOSE. Every class here is one this package raises to say "I will not
         # do that", and printing it is the right end. A bare `except Exception` would turn a
         # crash mid-fleet — three paid seats, a half-written run directory — into the same
@@ -3110,6 +3582,12 @@ def main(argv=None, *, out=None) -> int:
         # `outcome_unknown` and says must be distinguishable.
         return _fail(out, [str(e)])
 ```
+
+Add `journal` to `cli.py`'s `from . import (...)` list. **`reconstruct`'s own docstring names a
+fifth case it does not cover** — a manifest path carrying a NUL reaches `os.lstat` and raises
+`ValueError`, which is deliberately left to raise. Do not add `ValueError` to the tuple: it is
+not this package refusing anything, and catching it would turn a genuine crash into a refusal
+that reads the same as a rejected answer sheet.
 
 **`--gc` is advertised by this parser and built in the next task, so define the stub now** —
 a flag that raises `AttributeError` is worse than one that says it is not built:
@@ -3194,11 +3672,16 @@ python3 scripts/mutate.py --file shared/lib/forge/cli.py \
   --old '    for name in storage.seat_names(run_dir):' \
   --new '    for name in []:' \
   --test 'uvx --with pytest pytest -q tests/test_forge_cli.py'
+python3 scripts/mutate.py --file shared/lib/forge/cli.py \
+  --old '        synthesis_measured=False,' --new '        synthesis_measured=True,' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_cli.py'
 git status --short
 ```
 
-Expected: all three `CAUGHT`. The third is the seat-line fail-open: an empty enumeration must
-not render as a clean fleet, and `Provenance.__post_init__` (Task 5) is what catches it.
+Expected: all four `CAUGHT`. The third is the seat-line fail-open: an empty enumeration must
+not render as a clean fleet, and `Provenance.__post_init__` (Task 5) is what catches it. The
+fourth is the overclaim at its source — a `--collect` that labelled an argv verdict as measured
+would print §16.1's "Verified here means" beside a command nobody ran.
 
 - [ ] **Step 12: Render, gate, commit**
 
@@ -3285,6 +3768,15 @@ mandatory rather than tidy — and it is not built."* This builds it and deletes
    asks for, inverted.
 5. **`worktree remove` being read as having removed the branch.** Measured: it does not. The
    branch is a second deletion and a second refusal.
+6. **`rmtree`-ing a synthesis worktree git does not have registered.** The `shutil.rmtree` at
+   the end deletes the whole run directory, `synthesis/` included. If `worktree list` never
+   named that path, removing the directory leaves `.git/worktrees/<name>` in the user's
+   repository — and §9 forbids the `worktree prune` that is the only thing that reclaims it, so
+   the leak is permanent and nothing says it happened. An unknown-but-present synthesis path
+   refuses, and `--force` does not clear it: `force` waives the not-handed-over decision, which
+   is the operator's to make, and this is not.
+7. **`Usage.handed_over` collapsing "not handed over" with "the record could not be read".**
+   The first is an answer, the second is the absence of one, and `--gc all` prints them.
 
 **What input would make this produce a result cleaner than its evidence:** a run directory
 whose `handover.json` **exists and is corrupt**. `read_handover` raises (Task 4), and a `gc`
@@ -3382,11 +3874,53 @@ def test_the_disk_report_names_a_run_it_could_not_measure_rather_than_summing_it
     assert rows[0].bytes_ is None, "an unwalkable run was reported as holding 0 bytes"
 
 
+def test_an_unreadable_handover_record_is_not_reported_as_not_handed_over(tmp_path,
+                                                                         monkeypatch):
+    """"This run was not handed over" is an answer; "this engine could not read the record" is
+    the absence of one. Printing them the same way tells an operator that a delivery they made
+    is unfinished work, which is the one sentence that gets a deliverable deleted. And both
+    reasons survive when the walk ALSO fails — a row that dropped one would name a size problem
+    and silently lose a record problem."""
+    repo, run_dir, _ = _a_run_with_a_synthesis_tree(tmp_path, monkeypatch)
+    storage.handover_path(run_dir).write_bytes(b"{ not json")
+    rows = gc.usage(repo)
+    assert rows[0].handed_over is None, "an unreadable record answered the licence question"
+    assert "could not be read" in rows[0].why
+
+    def boom(*a, **kw):
+        raise PermissionError("nope")
+    monkeypatch.setattr(gc, "_walk_bytes", boom)
+    rows = gc.usage(repo)
+    assert rows[0].handed_over is None
+    assert "could not be walked" in rows[0].why and "could not be read" in rows[0].why
+
+
 def test_a_corrupt_handover_record_reaches_the_operator(tmp_path, monkeypatch):
     repo, run_dir, _ = _a_run_with_a_synthesis_tree(tmp_path, monkeypatch)
     storage.handover_path(run_dir).write_bytes(b"{ not json")
     with pytest.raises(handover.HandoverError):
         gc.collect(repo, _run_id(run_dir))
+
+
+def test_a_synthesis_directory_git_does_not_know_about_is_refused_not_rmtreed(tmp_path,
+                                                                             monkeypatch):
+    """The `rmtree` at the end of `collect` takes the whole run directory, `synthesis/`
+    included. If `worktree list` never named that path, the directory goes and
+    `.git/worktrees/<name>` stays registered — and §9 forbids the repo-wide `worktree prune`
+    that is the only thing that reclaims it. Permanent, and silent."""
+    repo, run_dir, synth = _a_run_with_a_synthesis_tree(tmp_path, monkeypatch)
+    _hand_over(run_dir)
+    # Deregister the tree without removing the directory, which is exactly the state a killed
+    # `--gc` or a hand-edited `.git` leaves behind.
+    monkeypatch.setattr(gc, "worktrees", lambda repo_: ())
+    with pytest.raises(gc.GcError) as e:
+        gc.collect(repo, _run_id(run_dir))
+    assert "worktree list" in str(e.value)
+    assert synth.exists(), "an unregistered synthesis worktree was deleted anyway"
+    assert run_dir.exists()
+    # And --force does not clear THIS refusal: it waives the handover decision and nothing else.
+    with pytest.raises(gc.GcError):
+        gc.collect(repo, _run_id(run_dir), force=True)
 ```
 
 Write `_a_run_with_a_synthesis_tree`, `_run_id`, `_show_ref` and `_hand_over` in this file;
@@ -3439,13 +3973,19 @@ class Usage:
 
     `bytes_` AND `files` ARE NULLABLE AND A NULL IS NOT A ZERO. A run directory this walk could
     not read is not a run holding nothing — and a total that silently omits a 40 GB run is this
-    report inverted. `why` carries what stopped the walk so the operator can act on it.
+    report inverted. `why` carries every reason the row is incomplete, joined, because a walk
+    failure and an unreadable handover record are two independent facts about one run.
+
+    `handed_over` IS NULLABLE FOR THE SAME REASON ONE FIELD OVER. `True` and `False` are
+    answers `read_handover` gave; `None` is the state where it raised and there is no answer.
+    Reporting an unreadable record as `False` prints "NOT handed over" about a delivery the
+    operator may well have made, which is the one sentence that would make them delete it.
     """
     run_id: str
     path: str
     bytes_: int | None
     files: int | None
-    handed_over: bool
+    handed_over: bool | None
     why: str = ""
 
 
@@ -3463,39 +4003,39 @@ def _walk_bytes(root: Path) -> tuple:
     return total, count
 
 
-def _run_dirs(repo) -> list:
-    """Every run directory recorded for THIS repository, by `storage.run_root`'s own formula.
-
-    The digest is `sha256(resolved repo path)[:12]`, which is why `~/git/a/utils` and
-    `~/work/b/utils` do not collide — and why this walk can enumerate one repository's runs
-    without reading any of them.
-    """
-    import hashlib
-    state = os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state")
-    digest = hashlib.sha256(str(Path(repo).resolve()).encode()).hexdigest()[:12]
-    base = Path(state) / "khenrix-forge"
-    if not base.is_dir():
-        return []
-    return sorted(p for p in base.iterdir() if p.is_dir() and p.name.startswith(digest + "-"))
-
-
 def usage(repo) -> tuple:
-    """§15's disk report, one row per past run plus whatever could not be measured."""
+    """§15's disk report, one row per past run plus whatever could not be measured.
+
+    THE ENUMERATION IS `storage.run_dirs`'s AND NOT A SECOND COPY OF IT. The naming scheme —
+    `XDG_STATE_HOME/khenrix-forge/<sha256(resolved repo)[:12]>-<run-id>` — has exactly one
+    home, because two spellings of one predicate will eventually disagree and this one fails
+    SILENTLY: if `run_root` moves and this walk does not, `usage()` returns `()` and `--gc all`
+    prints "no forge runs are on disk for this repository" over a disk holding all of them.
+    """
     rows = []
-    for d in _run_dirs(repo):
+    for d in storage.run_dirs(repo):
         run_id = d.name.split("-", 1)[1]
         try:
             handed = handovermod.read_handover(d) is not None
         except handovermod.HandoverError as e:
-            handed, why_h = False, f"handover record unreadable: {e}"
+            # `None`, NOT `False`. "This run was not handed over" is a licence question with a
+            # real answer; "this engine could not read the record" is not an answer to it, and
+            # printing the two the same way tells an operator a delivery they made is
+            # unfinished work.
+            handed, why_h = None, f"the handover record could not be read ({e})"
         else:
             why_h = ""
         try:
             total, count = _walk_bytes(d)
         except OSError as e:
+            # BOTH REASONS SURVIVE. The walk failing does not un-fail the handover read, and a
+            # row that dropped `why_h` here would name the size problem and silently lose the
+            # record problem — one report, one cause, in a function whose whole job is to name
+            # what it could not measure.
+            why = (f"this run's directory could not be walked ({e}), so its size is unknown — "
+                   "it is named here rather than summed as zero")
             rows.append(Usage(run_id, str(d), None, None, handed,
-                              f"this run's directory could not be walked ({e}), so its size is "
-                              "unknown — it is named here rather than summed as zero"))
+                              "; ".join(x for x in (why, why_h) if x)))
             continue
         rows.append(Usage(run_id, str(d), total, count, handed, why_h))
     return tuple(rows)
@@ -3558,6 +4098,19 @@ def collect(repo, run_id: str, *, force: bool = False) -> tuple:
     b = handovermod.branch(run_id, handovermod.SYNTHESIS)
     known = {t.get("worktree") for t in worktrees(repo)}
     synth = run_dir / "synthesis"
+    if synth.exists() and str(synth) not in known:
+        # A PATH THIS ENGINE CANNOT NAME IS NOT A PATH IT MAY DELETE. Falling through to the
+        # `rmtree` below would remove the directory while `.git/worktrees/<name>` stays
+        # registered in the user's repository — and §9 forbids the `worktree prune` that is the
+        # only thing that reclaims it, so the leak is permanent and silent. `worktree list`
+        # not naming a directory that exists is a state this walk does not understand, and
+        # `--force` does not clear it: `force` waives the not-handed-over refusal, which is a
+        # decision the operator can make, and this is not one.
+        raise GcError(
+            f"{synth} exists and `git worktree list` in {repo} does not name it. This walk "
+            "will not delete a worktree it cannot see registered: removing the directory "
+            "would leave the admin entry behind, and §9 forbids the repo-wide `worktree "
+            "prune` that would reclaim it. Re-register or remove it by hand, then re-run.")
     if str(synth) in known:
         # UNLOCK ONLY IF LOCKED. Measured on git 2.53.0: `worktree unlock` on an unlocked tree
         # is rc=128, so §9's unlock-then-remove done unconditionally fails on the ordinary
@@ -3588,6 +4141,54 @@ def collect(repo, run_id: str, *, force: bool = False) -> tuple:
     return tuple(removed)
 ```
 
+Add to `shared/lib/forge/storage.py`, **immediately beside `run_root` and sharing its
+arithmetic** — read `run_root` first and refactor both onto one digest helper rather than
+writing a second expression that happens to agree today:
+
+```python
+def run_digest(repo_path) -> str:
+    """The twelve hex characters that separate one repository's runs from another's.
+
+    ONE SPELLING, READ BY THE WRITER AND BY THE WALK. `run_root` builds a path with it and
+    `run_dirs` enumerates with it, and if those were two expressions the failure mode would be
+    silent in the worst direction: the walk would find nothing, `--gc all` would report "no
+    forge runs are on disk for this repository", and every run would stay on disk unnamed.
+    """
+    return hashlib.sha256(str(Path(repo_path).resolve()).encode()).hexdigest()[:12]
+
+
+def run_dirs(repo_path) -> tuple[Path, ...]:
+    """Every run directory this engine has recorded for `repo_path`, oldest name first.
+
+    `()` for a state directory that does not exist, which is genuinely "no runs" — the walk
+    over an EXISTING directory that cannot be read raises, because that is a different fact
+    and `--gc all` has to be able to say which one it met.
+    """
+    base = state_root() / "khenrix-forge"
+    if not base.is_dir():
+        return ()
+    return tuple(sorted(p for p in base.iterdir()
+                        if p.is_dir() and p.name.startswith(run_digest(repo_path) + "-")))
+```
+
+and factor `state_root()` (`XDG_STATE_HOME` or `~/.local/state`) out of `run_root` so all three
+read it. **`run_root`'s body must then call these**, or the split has added a spelling instead
+of removing one — the whole point of this change.
+
+Append to `tests/test_forge_seams.py`:
+
+```python
+def test_the_run_directory_naming_scheme_has_one_home():
+    """`gc` walks the directories `storage` writes. A second copy of the formula in `gc.py`
+    was measured byte-identical to `storage.run_root`'s — which is exactly when a duplicate is
+    most dangerous, because nothing fails until one of them moves and then `--gc all` reports
+    an empty disk over a full one."""
+    src = (ROOT / "shared" / "lib" / "forge" / "gc.py").read_text()
+    assert "sha256" not in src, "gc re-derives the run-directory digest instead of asking"
+    assert "XDG_STATE_HOME" not in src, "gc re-derives the state root instead of asking"
+    assert "storage.run_dirs(" in src
+```
+
 - [ ] **Step 3: Wire `_gc` into the CLI**
 
 Append to `shared/lib/forge/cli.py`:
@@ -3606,7 +4207,13 @@ def _gc(args, *, out) -> int:
         unknown = [r for r in rows if r.bytes_ is None]
         for r in rows:
             size = "unknown" if r.bytes_ is None else f"{r.bytes_ / 1e9:.2f} GB"
-            mark = "handed over" if r.handed_over else "NOT handed over"
+            # THREE MARKS, BECAUSE THERE ARE THREE STATES. `handed_over is None` is a record
+            # this engine could not read, and printing it as "NOT handed over" would tell an
+            # operator that a delivery they made is unfinished work — the one sentence that
+            # gets a deliverable deleted.
+            mark = ("handed over" if r.handed_over is True else
+                    "NOT handed over" if r.handed_over is False else
+                    "handover record UNREADABLE")
             print(f"  {r.run_id}  {size:>12}  {mark}"
                   + (f"  — {r.why}" if r.why else ""), file=out)
         print(f"  total: {total / 1e9:.2f} GB over {len(rows) - len(unknown)} run(s)", file=out)
@@ -3652,6 +4259,13 @@ python3 scripts/mutate.py --file shared/lib/forge/gc.py \
   --old '            rows.append(Usage(run_id, str(d), None, None, handed,' \
   --new '            rows.append(Usage(run_id, str(d), 0, 0, handed,' \
   --test 'uvx --with pytest pytest -q tests/test_forge_gc.py'
+python3 scripts/mutate.py --file shared/lib/forge/gc.py \
+  --old '            handed, why_h = None, f"the handover record could not be read ({e})"' \
+  --new '            handed, why_h = False, f"the handover record could not be read ({e})"' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_gc.py'
+python3 scripts/mutate.py --file shared/lib/forge/gc.py \
+  --old '    if synth.exists() and str(synth) not in known:' --new '    if False:' \
+  --test 'uvx --with pytest pytest -q tests/test_forge_gc.py'
 git status --short
 make render
 make verify
@@ -3659,7 +4273,8 @@ echo "verify rc=$?"
 make precommit
 echo "precommit rc=$?"
 git add shared/lib/forge/gc.py shared/lib/forge/cli.py shared/lib/forge/gate.py \
-        tests/test_forge_gc.py tests/test_forge_gate.py marketplaces
+        shared/lib/forge/storage.py tests/test_forge_gc.py tests/test_forge_gate.py \
+        tests/test_forge_seams.py marketplaces
 git commit -m "$(cat <<'EOF'
 feat(forge): §15's --gc, which storage.py has cited as an existing contract since it was written
 
@@ -3677,7 +4292,16 @@ And nothing prunes: §9 forbids a repo-wide prune, so this removes only trees it
 from a run directory it read.
 
 The disk report reports a run it could not walk as UNKNOWN and says the total excludes it.
-A sum silently short by one 40 GB run is the report §15 asks for, inverted.
+A sum silently short by one 40 GB run is the report §15 asks for, inverted. Its
+handed_over is likewise nullable: an unreadable handover record is not a run that was never
+handed over, and printing the two alike is the sentence that gets a deliverable deleted.
+
+Two things this walk refuses to touch. A synthesis directory git does not have registered:
+rmtree'ing it would leave the .git/worktrees entry behind, and §9 forbids the prune that
+reclaims it — --force does not clear that, since force waives the handover decision and
+nothing else. And the run-directory naming scheme is storage.run_dirs's alone; the second
+copy this task first drafted was byte-identical, which is when a duplicate is most
+dangerous — nothing fails until one moves, and then --gc all reports an empty disk.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01UiV66Pt8cZVMq9t8WEAhpN
@@ -3692,15 +4316,25 @@ Expected: all three mutations `CAUGHT`; `verify rc=0`, `precommit rc=0`.
 ## Task 8: `reviewer_env` — the three variables the docstring names and does not neutralise
 
 `review.reviewer_env`'s own docstring records the residual: `gitcmd.HOSTILE_ENV` is not
-stripped for reviewers and `LLM_FORGE_DEPTH` is not set. Plan I₂'s branch re-review added a
-fourth: `PYTHONPYCACHEPREFIX`, reproduced — a forged `.pyc` planted in the mirrored prefix
-tree, entirely outside the checkout, is loaded in preference to untouched source, and
-`reviewer_env` copies `os.environ` wholesale so all three reviewers share one prefix.
+stripped for reviewers and `LLM_FORGE_DEPTH` is not set.
 
-**The brief adds three more: `PATH`, `PYTHONPATH`/`PYTHONHOME`, and `NODE_OPTIONS`.** Note that
-`claude` is Node, `codex` is a static musl binary and `agy` is Go — **so `NODE_OPTIONS` reaches
-one of three reviewers, not three.** A comment claiming it protects all three would be a
-comment asserting something the code does not do.
+**`PYTHONPYCACHEPREFIX` IS ALREADY CLOSED AND THIS TASK MUST NOT REOPEN IT.** Measured on the
+current tree: `review.py:1177` is `env.pop("PYTHONPYCACHEPREFIX", None)`, and the docstring
+above it argues the choice — CPython treats an unset value as "use the default beside the
+source", which is the one location `_SKIP_DIRS` no longer exempts, so **dropping is stronger
+than pinning**. An earlier draft of this task required the variable be *set* to "a per-round
+directory this engine created under the run directory", which is both a regression and
+unimplementable in the signature this task produces, since `reviewer_env` is never handed a run
+directory. Keep the drop. The behavioural test below — plant a `.pyc` in an ambient prefix tree
+and prove the reviewer loads source — is still exactly the right test; only the environment
+assertion beside it changes, from "set to something else" to "not present".
+
+**What is genuinely open is the brief's three: `PATH`, `PYTHONPATH`/`PYTHONHOME`, and
+`NODE_OPTIONS`**, plus `gitcmd.HOSTILE_ENV`. Note that `claude` is Node, `codex` is a static
+musl binary and `agy` is Go — **so `NODE_OPTIONS` reaches one of three reviewers, not three.** A
+comment claiming it protects all three would be a comment asserting something the code does not
+do. (`review.py`'s current docstring already gets this right, per-seat and measured; the
+rewrite must keep that specificity rather than replacing it with a class claim.)
 
 **Files:**
 - Modify: `shared/lib/forge/review.py` (`reviewer_env`)
@@ -3711,9 +4345,14 @@ comment asserting something the code does not do.
   env=None) -> dict` and `fleet.scrub_env(env, repo_path) -> dict` — **read both before
   writing this; if `scrub_env` already does what this task needs, call it rather than
   restating it.** A second spelling of the scrub is the defect this task is fixing.
-- Produces: `review.reviewer_env(base=None, *, repo_path=None) -> dict` with `PATH`,
-  `PYTHONPATH`, `PYTHONHOME`, `NODE_OPTIONS` and `PYTHONPYCACHEPREFIX` neutralised, plus the
-  existing `PYTHONDONTWRITEBYTECODE` / `PYTEST_ADDOPTS` behaviour unchanged.
+- Produces: `review.reviewer_env(base=None, *, repo_path=None) -> dict` with `PATH` rebuilt,
+  `PYTHONPATH`/`NODE_OPTIONS` emptied, `PYTHONHOME` deleted and `gitcmd.HOSTILE_ENV` stripped,
+  plus the existing `PYTHONDONTWRITEBYTECODE`, `PYTEST_ADDOPTS` and **`PYTHONPYCACHEPREFIX`
+  drop** behaviour unchanged. `repo_path` is optional and exists only so the `HOSTILE_ENV`
+  strip can go through `fleet.scrub_env` where that function already does the right thing —
+  **read `fleet.scrub_env`'s body first**; it drops values pointing back into the ORIGINAL
+  checkout, which is a different direction from a reviewer being redirected somewhere else, so
+  it may turn out to be the wrong function to call and the strip belongs here spelled once.
 
 **The specific fail-opens this must not have:**
 1. **Deleting `PATH`.** A reviewer with no `PATH` cannot find `git`, `make` or its own
@@ -3730,12 +4369,14 @@ comment asserting something the code does not do.
    child was **handed**.
 
 **What input would make this produce a result cleaner than its evidence:** an ambient
-`PYTHONPYCACHEPREFIX` pointing at a tree the reviewer can write. Plan I₂ measured that
-`PYTHONDONTWRITEBYTECODE=1` stops **writes, not reads**, so a `.pyc` already planted in that
-mirrored tree is still loaded in preference to untouched source — and the in-tree bracket
-`worktree_identity` takes cannot see it, because the tree is outside the checkout. Setting the
-variable to a per-round directory this engine created is the fix; **the test must plant a
-`.pyc` in the ambient prefix and prove the reviewer loads source instead.**
+`PYTHONPYCACHEPREFIX` pointing at a tree the reviewer can write. `PYTHONDONTWRITEBYTECODE=1`
+stops **writes, not reads**, so a `.pyc` already planted in that mirrored tree is still loaded
+in preference to untouched source — and the in-tree bracket `worktree_identity` takes cannot
+see it, because the tree is outside the checkout. **The variable being DROPPED is the fix and
+it is already in the tree**; what this task adds is the test that keeps it there. **The test
+must plant a `.pyc` in the ambient prefix and prove the reviewer loads source instead** —
+because an assertion about the environment dict alone cannot tell a drop from a redirect to
+another writable tree, and only one of those is safe.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3772,13 +4413,19 @@ def test_an_ambient_pycache_prefix_cannot_serve_a_planted_pyc_to_a_reviewer(tmp_
                                                                            monkeypatch):
     """Measured on this project: with PYTHONDONTWRITEBYTECODE=1 set, `-B` stops WRITES, not
     READS — a .pyc planted in the mirrored prefix tree, entirely outside the checkout, is
-    still loaded in preference to untouched source. reviewer_env copied os.environ wholesale,
-    so all three reviewers shared one prefix, and the in-tree bracket cannot see it."""
+    still loaded in preference to untouched source, and the in-tree bracket cannot see it.
+
+    DROPPED, NOT REPOINTED. `reviewer_env` already pops the variable and its docstring gives
+    the reason: CPython reads an unset value as "use the default beside the source", which is
+    the one location `_SKIP_DIRS` no longer exempts. Pinning it to some other directory would
+    put the reviewers back on a shared tree, differing from the ambient one only in who chose
+    it. The env assertion below is therefore ABSENCE, and the behavioural half underneath it is
+    what makes the difference between the two visible at all."""
     prefix = tmp_path / "prefix"
     prefix.mkdir()
     monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(prefix))
     env = review.reviewer_env()
-    assert env.get("PYTHONPYCACHEPREFIX", str(prefix)) != str(prefix)
+    assert "PYTHONPYCACHEPREFIX" not in env
 
     src = tmp_path / "m.py"
     src.write_text("VALUE = 'SOURCE'\n")
@@ -3854,12 +4501,16 @@ Rewrite `review.reviewer_env` to:
 3. `PYTHONPATH=""`, `NODE_OPTIONS=""`, and **delete** `PYTHONHOME` (an empty `PYTHONHOME`
    is not neutral — it is a prefix of `""`; measure this before choosing, and record what you
    measured in the comment).
-4. `PYTHONPYCACHEPREFIX` set to a per-round directory this engine created under the run
-   directory, so the three reviewers do not share one and nothing pre-existing is on it.
+4. **Leave `PYTHONPYCACHEPREFIX` exactly as it is** — `env.pop(..., None)`, dropped and not
+   repointed. It is already closed; the change here is the test, not the code. Repointing it
+   at a directory this engine chose would put the three reviewers back on one shared tree,
+   differing from the ambient hazard only in who picked the path.
 5. Keep `PYTHONDONTWRITEBYTECODE=1` and the `PYTEST_ADDOPTS` **append** exactly as they are.
-6. Update the docstring: delete the residual paragraph that named these as unfixed, and state
-   plainly that `NODE_OPTIONS` reaches **claude only**, because codex is a static musl binary
-   and agy is Go.
+6. Update the docstring: delete only the clauses that are no longer true — the `HOSTILE_ENV`
+   sentence and the `PATH`/`PYTHONPATH`/`NODE_OPTIONS` "none of them is closed here" — and
+   **keep** the `PYTHONPYCACHEPREFIX` paragraph and the per-seat `NODE_OPTIONS` measurement,
+   which are correct and stay correct. State plainly that `NODE_OPTIONS` reaches **claude
+   only**, because codex is a static musl binary and agy is Go.
 
 - [ ] **Step 3: Run, mutate, commit**
 
@@ -3881,18 +4532,20 @@ make precommit
 echo "precommit rc=$?"
 git add shared/lib/forge/review.py tests/test_forge_review.py marketplaces
 git commit -m "$(cat <<'EOF'
-fix(forge): reviewer_env named four variables it did not neutralise, in its own docstring
+fix(forge): reviewer_env named three variables it did not neutralise, in its own docstring
 
-PATH, PYTHONPATH/PYTHONHOME, NODE_OPTIONS and PYTHONPYCACHEPREFIX all reached a
-write-capable reviewer, alongside gitcmd.HOSTILE_ENV, which fleet.forge_child_env closes for
-seats and this closed for nobody. PATH is REBUILT rather than removed and the function
-raises if the rebuilt value resolves none of the three CLIs — a reviewer that cannot find
-git fails the round for a reason that reads as a provider failure, and the round is paid for.
+PATH, PYTHONPATH/PYTHONHOME and NODE_OPTIONS all reached a write-capable reviewer, alongside
+gitcmd.HOSTILE_ENV, which fleet.forge_child_env closes for seats and this closed for nobody.
+PATH is REBUILT rather than removed and the function raises if the rebuilt value resolves
+none of the three CLIs — a reviewer that cannot find git fails the round for a reason that
+reads as a provider failure, and the round is paid for.
 
-PYTHONPYCACHEPREFIX is the one that was already reproduced: -B stops writes, not reads, so a
-.pyc planted in the mirrored prefix tree — outside the checkout, where worktree_identity's
-bracket cannot see it — is loaded in preference to untouched source, and all three reviewers
-shared one prefix.
+PYTHONPYCACHEPREFIX is NOT changed: it was already dropped, and dropping beats pinning
+because CPython reads an unset value as "use the default beside the source", which is the
+one location _SKIP_DIRS no longer exempts. What is new is the behavioural test — plant a
+.pyc in an ambient prefix tree and prove the reviewer loads source — because -B stops
+writes, not reads, and an assertion about the env dict alone cannot tell a drop from a
+redirect to another writable tree.
 
 NODE_OPTIONS reaches claude and no other reviewer: codex is a static musl binary and agy is
 Go. The comment says so, because a comment asserting something the code does not do is a
@@ -4140,13 +4793,19 @@ Fill in the model, duration and cost from the smoke output. Expected: `verify rc
 ## Task 10: the package-wide prose sweep, and the test that keeps it closed
 
 **Measured while authoring this plan (M7), and the brief's number is wrong.** The
-`i2-branch-fix-report.md` regex finds **18 line-matches plus 1 flattened-only across 10
-modules** today, not "~27 across 12" — and the report's own itemisation summed to 21, so its
-headline disagreed with its list. **One of the 18 is a false positive**: `taskbundle.py:48`
-reads "Both the **plan-mode** and JSON forms", which is agy's mode, not a plan document; the
-pattern's `(?:the) plan\b` matches because `-` is a word boundary.
+`i2-branch-fix-report.md` regex finds **18 line-matches across 9 modules** today, not "~27
+across 12" — and the report's own itemisation summed to 21, so its headline disagreed with its
+list. **One of the 18 is a false positive**: `taskbundle.py:48` reads "Both the **plan-mode**
+and JSON forms", which is agy's mode, not a plan document; the pattern's `(?:the) plan\b`
+matches because `-` is a word boundary. With `(?!-)` that one is suppressed and nothing else
+is: **17 line citations across 9 modules**.
 
-**Real work: 17 line citations + 1 flattened-only = 18 rewrites across 9 modules.**
+`harvest.py` adds one hit that only the FLATTENED scan finds — its referent wraps across two
+comment lines, so it appears in no line-match and `harvest.py` is in neither count above.
+
+**Real work: 17 line citations + 1 flattened-only = 18 rewrites across 10 modules.** The Files
+list below names all ten; a headline saying nine would leave `harvest.py` out of the sweep
+that has to touch it.
 
 **Files:**
 - Modify: `shared/lib/forge/{baseline,fleet,harvest,inspect,launch,ledger,runner,screen,
@@ -4342,8 +5001,9 @@ git add shared/lib/forge tests/test_forge_packaging.py marketplaces
 git commit -m "$(cat <<'EOF'
 docs(forge): the shipped package pointed eighteen times at documents it does not ship
 
-Measured today rather than carried forward: 17 line-oriented citations plus 1 that only a
-flattened scan finds, across 9 modules — not the 27 across 12 the carried note claimed,
+Measured today rather than carried forward: 17 line-oriented citations across 9 modules plus
+1 that only a flattened scan finds, in a tenth (harvest) — 18 across 10, not the 27 across 12
+the carried note claimed,
 whose own itemisation summed to 21. One apparent hit was a FALSE POSITIVE: taskbundle's
 "the plan-mode and JSON forms" is agy's mode, and the pattern matched because `-` is a word
 boundary. The detector added here carries `(?!-)` so it does not fire on a correct sentence.
@@ -4408,6 +5068,21 @@ set edited to clear the gate measures the editor, not the skill.
    — a suite that silently stops running is the vacuous green this whole project exists to
    close. The `forge-test-slow` target and a `make test` dependency land in the same commit as
    the first marker.
+4. **Nine suites leaving the commit-boundary gate.** `make verify` runs `council-test`, which
+   runs `$(FORGE_TESTS)`, and `make precommit` is `verify` plus the receipt check — so moving a
+   file out of `FORGE_TESTS` moves it out of `precommit`. Measured: the split removes
+   `baseline`, `fleet`, `harvest`, `bundle`, `verify`, `runner`, `review`, `gc` and `cli`, and
+   `DETERMINISTIC_GATED["llm-forge"]` re-covers only the last two plus `handover` — leaving
+   **`baseline`, `fleet`, `harvest`, `bundle`, `verify`, `runner` and `review` in no gate at
+   all**, including the two modules Tasks 3 and 8 change. The forge-inside-forge argument is
+   about `verify` specifically, because `make verify` is this repository's own obvious
+   confirmed verify command; it says nothing about `precommit`, which no forge run executes.
+   **`precommit` therefore depends on `forge-test-slow`**, and that dependency lands in the
+   same commit as the split.
+5. **A receipt naming a gate that did not run.** `eval_harness.py:452` hardcodes
+   `deterministic_gate="wikisync-unittests"` for **every** `DETERMINISTIC_GATED` skill, so
+   llm-forge's receipt would record the wikisync unit tests as its evidence — a false
+   provenance string on the very artifact that exists to say which gate ran.
 4. **A SKILL.md that lets "verified" read as the stronger claim.** §16.1 requires one sentence
    saying what it means, and §18 requires one saying the self-test gates wiring, not judgment.
    Both are asserted by a packaging test, not left to review.
@@ -4454,17 +5129,45 @@ and:
 
 ```makefile
 # A HEAVY SUITE WITH NO TARGET IS A SUITE THAT ROTS, which is the failure `bats-test`'s own
-# comment is about one gate over. `make test` runs it, and the receipt gate runs it through
-# DETERMINISTIC_GATED — so it has two homes and neither is `make verify`.
+# comment is about one gate over. `make test` runs it, the receipt gate runs it through
+# DETERMINISTIC_GATED, and `make precommit` depends on it — three homes, and none of them is
+# `make verify`.
 forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower)
 	$(call RUN_PYTEST,$(FORGE_SLOW_TESTS))
 
 test: council-test forge-test-slow ## …
+
+# THE SPLIT MOVES NINE SUITES OUT OF `verify`, AND `precommit` IS WHERE THEY LAND. `verify` is
+# reached by `precommit` and also by whoever picks a confirmed verify command for THIS
+# repository, which is the whole forge-inside-forge argument above — a forge run would spawn
+# clone fleets inside its own verifier clones. `precommit` is neither: nothing runs it inside a
+# verifier. Without this line `baseline`, `fleet`, `harvest`, `bundle`, `verify`, `runner` and
+# `review` are in no commit-boundary gate at all, which is the vacuous green this repository
+# spends eleven plans closing.
+precommit: verify forge-test-slow ## …
 ```
 
-Add `forge-test-slow` to `.PHONY`. **Run `make council-test`, `make forge-test-slow` and
-`make test` and confirm every file appears in exactly one of the two lists** — a file in
-neither is a suite nothing runs, which is precisely the defect this split could introduce.
+Add `forge-test-slow` to `.PHONY`. **Run `make council-test`, `make forge-test-slow`,
+`make test` and `make precommit` and confirm every file appears in exactly one of the two
+lists** — a file in neither is a suite nothing runs, which is precisely the defect this split
+could introduce. Then confirm the coverage claim directly:
+
+```
+cd /home/khenrix/git/khenrix-utils
+python3 - <<'PY'
+import pathlib, re
+mk = pathlib.Path("Makefile").read_text()
+def names(var):
+    m = re.search(rf"^{var} :?=(.*?)(?=\n[A-Z_]+ :?=|\n\n)", mk, re.S | re.M)
+    return set(re.findall(r"tests/\S+\.py", m.group(1)))
+gated = names("FORGE_TESTS") | names("FORGE_SLOW_TESTS")
+on_disk = {str(p) for p in pathlib.Path("tests").glob("test_forge_*.py")}
+print("reached by no precommit target:", sorted(on_disk - gated))
+print("precommit deps:", re.search(r"^precommit: (.*?) ", mk, re.M).group(1))
+PY
+```
+
+Expected: an empty list, and `precommit` naming both `verify` and `forge-test-slow`.
 
 ```
 cd /home/khenrix/git/khenrix-utils
@@ -4525,14 +5228,26 @@ import sys
 from pathlib import Path
 
 _here = Path(__file__).resolve()
-for candidate in (_here.parents[3] / "lib",                 # installed plugin: .../plugins/X/lib
-                  _here.parents[3] / "shared" / "lib",      # repo source tree
-                  _here.parents[4] / "shared" / "lib"):
-    if (candidate / "forge" / "cli.py").is_file():
-        sys.path.insert(0, str(candidate))
-        break
-else:
-    sys.exit("could not locate the forge engine (lib/forge/cli.py) beside this script")
+
+# ONE EXPRESSION, BOTH LIVE LAYOUTS — measured, not assumed. This script sits at
+# `<root>/<skills-dir>/llm-forge/scripts/forge.py` in each of them, so `parents[3]` is the root
+# and the engine is at `<root>/lib/forge/`:
+#
+#   installed plugin  .../plugins/khenrix-utils/skills/llm-forge/scripts/forge.py
+#                     -> parents[3] = .../plugins/khenrix-utils   -> lib/forge/cli.py      ✓
+#   repo source tree  shared/skills/llm-forge/scripts/forge.py
+#                     -> parents[3] = shared                      -> shared/lib/forge/cli.py ✓
+#
+# An earlier draft carried two more candidates. `parents[3]/"shared"/"lib"` resolves to
+# `shared/shared/lib` in the repo and `.../khenrix-utils/shared/lib` in a plugin — neither
+# exists in either layout, and its "# repo source tree" comment named a directory it never
+# points at. `parents[4]/"shared"/"lib"` does reach the repo's `shared/lib`, but only from the
+# repo, where the line above already matched. A dead candidate with a wrong comment is worse
+# than none: it reads as coverage of a case nobody has.
+_lib = _here.parents[3] / "lib"
+if not (_lib / "forge" / "cli.py").is_file():
+    sys.exit(f"could not locate the forge engine: no forge/cli.py under {_lib}")
+sys.path.insert(0, str(_lib))
 
 from forge import cli  # noqa: E402
 
@@ -4540,9 +5255,12 @@ if __name__ == "__main__":
     raise SystemExit(cli.main())
 ```
 
-**Verify both resolution paths by running it from each location** and record what you observed;
-`parents[N]` indices are the plan's own draft code and this project's standing brief says that
-draft has been wrong in every task of every plan.
+**Verify the resolution from BOTH locations before relying on it** — run the source-tree copy
+and a rendered plugin copy, and record what you observed; `parents[N]` indices are the plan's
+own draft code and this project's standing brief says that draft has been wrong in every task
+of every plan. If `render.py` places the skill at a different depth than the source tree does,
+the single expression is wrong and the fix is a second candidate **with a comment naming the
+layout it was measured against**, never a speculative one.
 
 - [ ] **Step 4: Add the discoverability entry and render**
 
@@ -4590,30 +5308,105 @@ def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
             assert flag in r.stdout, (cli_name, flag)
 ```
 
-- [ ] **Step 6: Write the eval set — real tasks, graded on real decisions**
+- [ ] **Step 6: Write the eval set — real work, graded against the fixture**
 
-Create `evals/llm-forge/fixtures/` with a small git repository the evals can refer to (a
-`Makefile` with a `verify` target, a source file, an ignored `dist/` directory, and one
-untracked `scratch/notes.md`). Then create `evals/llm-forge/evals.json` in the shape
-`evals/markitdown/evals.json` uses: `{skill_name, notes, evals: [{id, name, prompt, files,
-assertions}]}`.
+**READ THIS BEFORE WRITING A LINE OF IT.** An earlier draft of this step said to write the
+assertions "from the SKILL.md you wrote in Step 2", with six inline Q&A and a fixture directory
+**none of them referenced**. That is a closed loop: assertions derived from the body, graded
+against the body. A with-skill condition cannot fail it, and a no-skill baseline cannot know
+project vocabulary like `--gc all` or "re-prices the run" — so `delta.pass_rate >= 0` would be
+guaranteed by construction rather than earned, and `make eval SKILL=llm-forge` would cost
+tokens to certify prose. **A gate that cannot fail measures nothing, and is worse than a
+failing one because it reports success.**
 
-**The discriminating signal must be a decision the skill encodes that a no-skill baseline gets
-wrong.** Six evals, each an inline Q&A that forbids plan mode and tools (the harness runs
-executors read-only):
+So:
 
-| id | name | The decision under test |
-|---|---|---|
-| 0 | `fusion-not-selection` | Asked "which of the three answers do I pick?", the skill answers **fuse**, not pick. A baseline defaults to picking a winner. |
-| 1 | `verified-is-not-defect-free` | Asked what forge's "1 of 3 passed verify" header entitles them to claim, the skill answers the §16.1 sentence exactly and refuses "no new defects". |
-| 2 | `start-stops-at-comparing` | Asked what `--start` leaves behind, the skill says three verified candidates and **nothing choosing between them**, and names the orchestrator as the synthesis author. |
-| 3 | `gc-is-mandatory` | Asked about disk, the skill names `--gc <run-id>` as **mandatory rather than tidy**, `--gc all` for the report, and that a not-handed-over synthesis tree is refused. |
-| 4 | `provider-specific-task-is-refused` | Given a task naming `subagent_type`, the skill says preflight refuses it and asks for a portable task bundle — **not** that it will translate it. |
-| 5 | `no-ultra-is-priced-not-just-skipped` | Asked to skip the cloud review, the skill says `--no-ultra` **re-prices the run** at the gate and is answered once, not toggled at collect time. |
+- **The assertions come from the ENGINE, not from `SKILL.md`.** Each one below names the file
+  it is a fact about. Read that file, confirm the fact, then write the assertion. If `SKILL.md`
+  does not support an assertion the engine does, **fix `SKILL.md`** — that is the loop running
+  in the right direction. If the ENGINE does not support an assertion, the assertion is wrong
+  and you found it by reading code, which is the only legitimate reason to edit this file.
+- **At least two evals grade against the fixture**, on facts where a baseline answer can be
+  factually wrong, not merely differently-worded.
 
-Each eval's `assertions` list is 4 concrete, checkable claims. **Write them from the SKILL.md
-you wrote in Step 2 — and if an assertion is not supported by the body, fix the body, not the
-assertion.**
+**The fixture.** Create `evals/llm-forge/fixtures/repo-state/` describing one small repository —
+captured text, not a live git directory, on `evals/khenrix-audit/fixtures/scaffold_home.py`'s
+precedent (the executor reads it; the harness copies it into both conditions identically):
+
+| File | Contents |
+|---|---|
+| `Makefile` | a `verify:` target running a two-line test command |
+| `gitignore.txt` | the repository's `.gitignore`: `dist/`, `.venv/` |
+| `git-status.txt` | `git status --porcelain` output: ` M src/app.py`, `?? scratch/notes.md` |
+| `git-ls-files.txt` | `Makefile`, `src/app.py`, `.gitignore` |
+| `tree.txt` | the working tree including the ignored `dist/bundle.js` |
+
+**Put no credential-shaped literal in this fixture.** This repository screens its own tree; a
+realistic-looking key would trip `make verify` and the fixture would fail a gate it is not
+about.
+
+**Generate `fixtures/handover-header.txt` by RUNNING the renderer**, never by hand:
+`handover.text(h, p)` over a `Handover`/`Provenance` describing a run against this same fixture
+repo — three seats, two completed, one passing verify, `PATCH_ONLY` because the baseline was
+dirty, one out-of-band artifact, `strongest=(None, why)`, `agreement="differently-prompted"`,
+and `synthesis_measured=False`. Record the snippet that produced it beside the file. A
+hand-written header drifts from the renderer the first time either moves, and then the eval
+grades an artifact this engine does not emit.
+
+Then create `evals/llm-forge/evals.json` in the shape `evals/markitdown/evals.json` uses:
+`{skill_name, notes, evals: [{id, name, prompt, files, assertions}]}`. Six evals; the first two
+carry `"files": ["repo-state"]` / `["handover-header.txt"]` and reference `{fixture_dir}` in
+the prompt, and must **permit reading those files** (say so in the prompt, as khenrix-audit's
+eval 0 does). The other four forbid plan mode and tools and are answered inline.
+
+| id | name | Graded on | A baseline plausibly answers |
+|---|---|---|---|
+| 0 | `fixture-what-enters-b1-and-what-comes-back` | **the fixture repo** | "it runs on your working tree"; "`git add -f dist/`"; "just merge the branch" |
+| 1 | `fixture-handover-what-may-i-claim` | **the fixture header** | "verified means it works"; "merge and you're done"; "no strongest seat = they tied" |
+| 2 | `fusion-not-selection` | `runner`/§16 | "pick the best of the three" |
+| 3 | `provider-specific-task-is-refused` | `preflight.task_refusals` | "forge will adapt it for each CLI" |
+| 4 | `gc-is-mandatory` | `gc.py` | "delete the run directory" |
+| 5 | `no-ultra-is-priced-not-just-skipped` | `gate.confirm` | "pass `--no-ultra` when you collect" |
+
+**Eval 0** — prompt: the executor may read `{fixture_dir}/repo-state/`; it is asked what
+`llm-forge --start --select scratch/notes.md` does here, what B1 contains, what happens to
+`dist/`, and what shape the handover will be. Four assertions, each a fact about a named file:
+
+1. `src/app.py` is **dirty tracked work**, so B1's tracked tree is not `base^{tree}` and the
+   handover is **patch-only, not a merge-ready branch** — merging would carry the user's
+   uncommitted work as though forge had authored it. (`handover.mergeability`)
+2. `scratch/notes.md` enters the baseline **only because it was `--select`ed**; untracked paths
+   are not carried otherwise, and if it comes back unchanged it is **baseline-owned** — the
+   user's, not forge's, with only its B→S changes forge-authored. (`preflight.inspect_repo`,
+   `handover.Handover.baseline_owned`)
+3. `dist/bundle.js` is ignored and is **never force-added**; it returns as an **out-of-band
+   artifact** with a sha256, a size and an explicit `cp` command, and **merging the branch does
+   not install it**. (`handover.out_of_band`, `handover.text`)
+4. The credential screen covers **the selected paths only** — `screen_tree(facts.root,
+   contained)` — so it is not "forge scans your repository for secrets", and an escaping
+   selection is refused before anything is spent. (`preflight.inspect_repo`, `refusals`)
+
+**Eval 1** — prompt: here is what forge printed (`{fixture_dir}/handover-header.txt`); what may
+I claim, and what must I do to actually have this change? Four assertions:
+
+1. "verify PASS" here is a **report from the orchestrator, not a verification this engine
+   performed** — the header says so, and the "Verified here means" paragraph is absent for
+   exactly that reason. (`handover._ASSERTED_MEANS`)
+2. Even a measured PASS would mean only that the confirmed command exited 0 on a fresh verifier
+   clone at the final checkpoint — **not** that the change has no new defects, and not a
+   review. (`handover._VERIFIED_MEANS`)
+3. Merging the branch does **not** install the out-of-band artifact; the printed `cp` command
+   is a second step. (`handover.text`)
+4. "no strongest seat" is a measured **cannot-tell** with its reason attached, not a tie or an
+   absence of finding; and `differently-prompted` is §11 provenance, not a correctness claim.
+   (`rubric.strongest`, `fingerprint.LABELS`)
+
+Evals 2–5 keep four checkable claims each, drawn the same way — from `cli.py`, `preflight.py`,
+`gc.py` and `gate.py` respectively.
+
+**Cost note.** Two evals now read fixture files, so the executor does real work rather than
+recall. That is the point, and it is also why the other four stay inline: §18's exemption
+already makes the delta advisory, and the eval set's job is to be honest, not expensive.
 
 - [ ] **Step 7: Route the receipt through `DETERMINISTIC_GATED`**
 
@@ -4636,6 +5429,39 @@ In `scripts/eval_harness.py`, add to the dict:
                   str(ROOT / "tests" / "test_forge_cli.py"),
                   str(ROOT / "tests" / "test_forge_gc.py")],
 ```
+
+and **fix the gate NAME the receipt records**, which is a defect for the two existing entries
+too. `eval_harness.py:452` is:
+
+```python
+        rec.update(deterministic_gate="wikisync-unittests", self_test=True)
+```
+
+— a hardcoded literal applied to **every** `DETERMINISTIC_GATED` skill, so llm-forge's receipt
+would name the wikisync unit tests as the evidence that gated it. Add a parallel table and read
+it:
+
+```python
+# WHICH gate earned this receipt, as a name a reader can check against the command above. A
+# single literal here was a false provenance string the moment a third skill was routed through
+# this dict — and a receipt exists to say what ran, so being wrong about that is worse than
+# recording nothing.
+DETERMINISTIC_GATE_NAMES = {
+    "khenrix-wiki-add":  "wikisync-unittests",
+    "khenrix-wiki-sync": "wikisync-unittests",
+    "llm-forge":         "forge-handover-cli-gc-suites",
+}
+```
+
+```python
+        rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True)
+```
+
+A `KeyError` here is the right failure: a skill routed through `DETERMINISTIC_GATED` with no
+name is one whose receipt cannot say what gated it, and `.get(skill, "unknown")` would write
+that receipt anyway. **Measured: `scripts/eval_harness.py` is in no skill's source closure**
+(`checks.LIB_SCRIPTS` is `reconcile.py` + `inventory.py`, `GLOBAL_INPUTS` is `render.py`), so
+editing it stales no receipt — including the two whose recorded name is unchanged.
 
 **Verify this command runs standalone before relying on it** — `pytest` must be importable by
 `sys.executable`, and if it is not, the entry must use the `uvx` form the Makefile falls back
@@ -4685,6 +5511,15 @@ The blind A/B winner is **recorded and advisory**. A tie or a loss beside a non-
 does not fail this run; `CLAUDE.md` says so, and on a strong executor it rewards the tighter
 baseline over a correct-but-thorough skill answer.
 
+**And say plainly, in the commit message, what this number is worth.** §18 exempts llm-forge
+from the judge gate because a read-only harness cannot drive a clone fleet, so `gate_ok` is
+overridden to `True` for anything in `DETERMINISTIC_GATED` and the real evidence is the
+hermetic suite. The delta is therefore **advisory here even when it is positive**. What the
+eval set buys is that the two fixture-graded evals can actually be **wrong**: if the with-skill
+condition tells an operator to merge a branch that does not install its out-of-band artifacts,
+or calls an orchestrator-reported verdict verified, the judge should catch it — and a negative
+delta on those two is a real signal about the body, not about the eval set.
+
 - [ ] **Step 10: Confirm the receipt and commit**
 
 ```
@@ -4717,17 +5552,29 @@ python3 — this machine's python3 is 3.14 against a stated 3.11 floor, and the 
 entries get that wrong. The judge run still executes: gate_ok is overridden AFTER it, so the
 delta is advisory and the run is not free; the cost control is the cheap eval set.
 
+The receipt also records WHICH gate ran. eval_harness hardcoded
+deterministic_gate="wikisync-unittests" for every DETERMINISTIC_GATED skill, so llm-forge's
+receipt would have named the wikisync unit tests as its evidence — a false provenance string
+on the one artifact that exists to say what gated it.
+
 The forge suite is split by weight. The heavy subset leaves `make verify`, because verify is
 the obvious confirmed verify command for this very repository and a forge run would then
 spawn clone fleets inside its own verifier clones. It gains a `forge-test-slow` target in
 the same commit, since Makefile:96 named only the two council files under -m slow and a
-forge test given that marker would have been run by nothing at all.
+forge test given that marker would have been run by nothing at all — and `precommit` depends
+on that target, or the split would leave baseline, fleet, harvest, bundle, verify, runner and
+review in no commit-boundary gate at all.
 
 SKILL.md carries §16.1's "Verified means" sentence and §18's "the self-test gates wiring,
 not judgment", both asserted by a packaging test against handover's own constant so the
 header and the skill cannot drift.
 
-make eval SKILL=llm-forge: delta.pass_rate = <N>, blind winner <W> (advisory).
+make eval SKILL=llm-forge: delta.pass_rate = <N>, blind winner <W> (advisory). The delta is
+advisory even when positive: §18 exempts this skill from the judge gate and gate_ok is
+overridden after the run, so the evidence in the receipt is the hermetic forge suite. What
+the eval set buys is that two of its six grade against a fixture repository on facts an
+answer can be WRONG about — what enters B1, what an ignored directory does, and what a
+handover header entitles the reader to claim — rather than on vocabulary SKILL.md supplies.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01UiV66Pt8cZVMq9t8WEAhpN
@@ -4749,8 +5596,8 @@ Run against the spec (`docs/superpowers/specs/2026-07-30-llm-forge-design.md`) a
 |---|---|---|
 | §15 storage — `--gc`, `handover_target`, disk report | 7 (+4 for the record) | Keep-last-N stays deferred, per §15. |
 | §16 handover | 4 | All six requirements: worktree `-b`, explicit refspec, mergeability table, out-of-band never force-added, baseline-owned, B₁ in the text. |
-| §16.1 provenance header | 5 | Four lines, "built" forbidden, the `unavailable` variant, failure-cannot-render-success. |
-| §18 evals | 11 | `evals.json`, `DETERMINISTIC_GATED` with `sys.executable`, the weight split. **The live three-provider write smoke and the 180 s silent step are NOT planned — see "could not specify" below.** |
+| §16.1 provenance header | 5 | Four lines, "built" forbidden, the `unavailable` variant, failure-cannot-render-success, and the measured/asserted split that keeps "Verified means" off an unmeasured verdict. **Measuring the synthesis in-engine is NOT planned — see "could not specify" below.** |
+| §18 evals | 11 | `evals.json` (two of six graded against the fixture), `DETERMINISTIC_GATED` with `sys.executable` and a truthful gate name, the weight split with `precommit` covering the heavy half. **The live three-provider write smoke and the 180 s silent step are NOT planned — see below.** |
 | §19 agy print-timeout | 9 | Items 1 and 2. **Item 3, the hour-long three-adapter probe, is NOT planned — see below.** |
 | §20 portability | 3 | The preflight refusal, the ambient bar, bundle materialization, persistence for `--collect`. The live-installed-closure resolver and three-way hash check already exist in `taskbundle`; this wires them. |
 | CLI | 6, 7 | `--start` / `--collect` / `--gc` / `--no-ultra`. |
@@ -4772,10 +5619,18 @@ file and line range and the code it governs is written out in full.
 
 **3. Type consistency.** `handover.branch` is one function used by Tasks 4, 6 and 7.
 `handover.SeatLine`/`Provenance` are produced in Task 5 and consumed in Task 6's `_seat_lines`
-with the same field names. `handover.Handover` is produced in Task 4, written in Task 6's
-`collect`, read in Task 7's `gc.collect`. `taskbundle.read_task_bundle_if_recorded` is produced
+and `collect` with the same field names — including `synthesis_measured`, which Task 5 refuses
+a `True` for without a measurement and Task 6 writes as a constant `False`. `handover.Handover`
+is produced in Task 4, written in Task 6's `collect`, read in Task 7's `gc.collect` and in
+Task 7's `usage`. `preflight.ambient_notes` is produced in Task 3 and consumed in Task 6's
+`start`, and is `taskbundle.ambient_note`'s only caller anywhere.
+`taskbundle.read_task_bundle_if_recorded` is produced
 in Task 3 and consumed in Task 3's `runner._materialize_the_task` and Task 6's seam test.
-`storage.task_source_path` is produced in Task 3 and consumed in Tasks 3 and 6.
+`storage.task_source_path` is produced in Task 3 and consumed in Tasks 3 and 6;
+`storage.run_dirs`/`run_digest` are produced in Task 7 and consumed by Task 7's `gc.usage` and
+by `run_root` itself, which is what makes them one spelling rather than two.
+`cli.main`/`cli.start` carry `make_launcher`, which only `tests/test_forge_cli.py` passes and
+which is `None` in production — the seam that keeps the CLI suite from spending money.
 `gate.Confirmation.ultrareview` is produced in Task 6 commit 1 and read in Task 6 commit 2's
 `_confirmed_ultrareview`. `cli._gc` is referenced in Task 6's `main` and defined in Task 7 —
 **Task 6 will not import cleanly until Task 7 lands**, so Task 6 defines a stub `_gc` that
@@ -4802,9 +5657,9 @@ is the leaf and nothing imports it.
 
 ## What this plan could NOT specify, and why
 
-Three items in scope for §18 and §19 are **named here and deliberately not planned as steps**,
-because specifying them would mean writing instructions to take a measurement this authoring
-pass may not take. Each is a real gap; none is silently dropped.
+Four items are **named here and deliberately not planned as steps**, because specifying them
+would mean writing instructions to take a measurement this authoring pass may not take, or to
+spend money §5.2 never quoted. Each is a real gap; none is silently dropped.
 
 **1. §18's live three-provider write smoke, and its 180 s silent step.** §18 asks for a smoke
 whenever adapter wiring changes: a tiny disposable repo, each provider writing a distinct
@@ -4825,7 +5680,19 @@ to two, so the probe is not optional; but it is a measurement, not code, and Tas
 codex's streaming path unhealthy across that duration, the entry is wrong and Task 9 must be
 revisited.** Budget it as its own task and record the result.
 
-**3. §22 Q5's peak-memory measurement and the concurrent-seat cap.** Still outstanding from the
+**3. Measuring the synthesis in-engine, so `--collect` can say "verified" and mean it.** The
+CLI is handed the fusion's verify verdict; it builds no verifier clone for the synthesis and
+runs no confirmed command over it. Revision 1 makes the header say so — `synthesis_measured` is
+`False`, the line reads *the orchestrator reports*, and §16.1's "Verified here means" paragraph
+is not printed beside it — which closes the overclaim but does not produce the measurement.
+Producing it is a whole §6 pass: a `bundle.CandidateBundle` over the synthesis worktree, a
+`verify.Calibration` over B1 (which means **re-running the baseline gate**), and
+`runner.verify_candidate`. That is a fourth verification `gate.quote` never priced, and §5.2
+forbids spending an operator has not been shown. **It is its own task: extend the quote first,
+then the flag.** Until then `synthesis_measured` has one producer and it writes `False`, which
+is a true statement about this build rather than a placeholder.
+
+**4. §22 Q5's peak-memory measurement and the concurrent-seat cap.** Still outstanding from the
 scope map: nothing measures or caps memory, and §22 asks for a three-seat load, a derived cap
 (plausibly 2 on this ~7.9 GB box), and an OOM classified as an **infrastructure** failure so
 §12.3 never reads it as non-progress. The third clause is code and could have been planned; the
@@ -4835,8 +5702,9 @@ plan spends eleven tasks closing. **Its own task, after the smoke.**
 
 **Two corrections to the brief, both measured (M7, M8):**
 
-- The prose sweep is **18 citations across 9 modules** (17 line-oriented + 1 flattened-only),
-  not "~27 line-matches across 12 modules". The `i2-branch-fix-report.md` headline disagreed
+- The prose sweep is **18 citations across 10 modules** — 17 line-oriented across nine, plus
+  one that only a flattened scan finds, in `harvest.py`, which appears in no line-match at all.
+  Not "~27 line-matches across 12 modules". The `i2-branch-fix-report.md` headline disagreed
   with its own itemisation, which summed to 21 including the two already fixed. **And the
   report's regex over-matches**: it fires on `taskbundle.py:48`'s "the **plan-mode** and JSON
   forms", which is agy's mode. A sweep that mechanically rewrote everything the pattern found
