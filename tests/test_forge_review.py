@@ -308,16 +308,33 @@ def test_a_finding_with_no_claim_is_unreadable():
     assert rows is None and "claim" in why
 
 
-def test_a_finding_that_cites_no_evidence_is_unreadable():
+def test_a_finding_that_cites_no_evidence_is_unreadable_when_nothing_else_survives():
     """REVIEW.md tells every reviewer to cite changed-file evidence for every finding, and a
     demand nothing checks is a sentence rather than a requirement — the blocker line the
-    terminal prints would name a claim with nothing behind it. Refused like a missing claim,
-    which records the seat SILENT: `parse_findings` never returns a partial read."""
+    terminal prints would name a claim with nothing behind it. Dropped like a missing claim;
+    with no OTHER row in the answer to salvage, dropping the only row leaves nothing, which
+    is unreadable rather than "found nothing" (see the next test for the case where a sibling
+    row DOES survive)."""
     for block in ('{"findings": [{"severity": "blocker", "claim": "c"}]}',
                   '{"findings": [{"severity": "blocker", "claim": "c", "evidence": "  "}]}',
                   '{"findings": [{"severity": "blocker", "claim": "c", "evidence": 7}]}'):
         rows, why = review.parse_findings(f"```json\n{block}\n```")
         assert rows is None and "evidence" in why, block
+
+
+def test_a_malformed_row_drops_only_that_row():
+    """THE FIX: a version of this voided the WHOLE answer over one bad row, which discarded
+    the OTHER, properly-evidenced finding in the same block too — a real blocker a
+    three-provider panel was paid to produce, thrown out for a sibling's missing field. That
+    read cleaner than the evidence the panel actually returned. The good row survives; `why`
+    is non-empty so the drop is recorded rather than silently vanishing (`run_round` puts it
+    on the journal — see `test_a_dropped_row_is_journalled_not_silently_absorbed`)."""
+    good = {"severity": "blocker", "claim": "unbounded cache", "evidence": "cache.py:12"}
+    bad = {"severity": "minor", "claim": "no evidence for this one"}
+    rows, why = review.parse_findings(
+        '```json\n{"findings": [' + json.dumps(good) + ', ' + json.dumps(bad) + ']}\n```')
+    assert rows == [good], "the malformed row is dropped, the good one is not"
+    assert why and "evidence" in why and "no evidence for this one" in why
 
 
 def test_malformed_json_is_unreadable():
@@ -487,6 +504,38 @@ def test_a_round_records_findings_a_silent_seat_and_three_identities(tmp_path):
                                     "codex": "unreadable_findings"}, \
         "a reviewer whose answer could not be read is SILENT, never a reviewer with no findings"
     assert len(r.identities) == 3
+
+
+def test_a_dropped_row_is_journalled_not_silently_absorbed(tmp_path):
+    """A seat whose answer carried one malformed row alongside a good one still RESPONDS —
+    `parse_findings` drops the row, not the seat — but the drop must not vanish just because
+    the rest of the answer was clean. `responded` alone cannot say that; the journal can."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    good = {"severity": "blocker", "claim": "unbounded cache", "evidence": "cache.py:12"}
+    bad = {"severity": "minor", "claim": "no evidence for this one"}
+    mixed = ("I reviewed the diff.\n" + "x" * 500 + "\nToken: TOK\n"
+             '```json\n{"findings": [' + json.dumps(good) + ", " + json.dumps(bad)
+             + "]}\n```")
+    answers = {"claude": (mixed, True, "ok"),
+               "codex": (ANSWER.format(tok="TOK"), True, "ok"),
+               "agy": (ANSWER.format(tok="TOK"), True, "ok")}
+    log = journal.Journal(storage.journal_path(run))
+    r = review.run_round(
+        run, round_=1, checkout=co, checkpoint="a" * 40, baseline_commit="b" * 40,
+        baseline_tree="c" * 40, artifact_manifest=None, other_clones=(), log=log,
+        run_council=_fake_council(tmp_path, answers=answers, record={}),
+        probe=_probe, make_token=lambda: "TOK")
+
+    assert r.seats_responded == ("agy", "claude", "codex")
+    assert [f.claim for f in r.findings if f.seat == "claude"] == ["unbounded cache"], \
+        "the malformed row from claude's answer is gone; the good one from it is not"
+
+    done = next(e for e in log.read() if e.event == journal.done(review.COUNCIL_KIND))
+    assert done.data["dropped_rows"], "the drop must be recorded, not merely tolerated"
+    name, why = done.data["dropped_rows"][0]
+    assert name == "claude" and "evidence" in why
 
 
 def test_the_council_never_writes_into_the_run_directory(tmp_path):
@@ -1699,6 +1748,51 @@ def test_the_reviewer_environment_stops_the_writes_the_exemption_used_to_excuse(
     assert import_it(review.reviewer_env(plain)).returncode == 0
     assert review.worktree_identity(co, quota)[0] == before, \
         "under the reviewer's environment the same import leaves the tree byte-identical"
+
+
+def test_the_reviewer_environment_drops_pythonpycacheprefix(tmp_path):
+    """THE SAME ATTACK, RELOCATED OUTSIDE THE TREE. `PYTHONDONTWRITEBYTECODE` stops a NEW
+    `.pyc` from being written; it says nothing about one already sitting wherever
+    `PYTHONPYCACHEPREFIX` points, which need not be under the checkout `worktree_identity`
+    measures. `reviewer_env` copies `os.environ` wholesale, so an ambient value here would
+    reach all three reviewers alike — one shared, external location the source under review
+    could be replaced from. This measures both halves: the control shows the mirrored
+    forgery running under the plain environment, and the fix shows the same import falling
+    back to real source once `reviewer_env` has dropped the variable."""
+    co = _checkout(tmp_path)
+    (Path(co) / "pkg").mkdir()
+    _write_into(co, "pkg/mod.py", 'def who():\n    return "the real source"\n')
+    mirror = tmp_path / "pycache-mirror"  # OUTSIDE the checkout entirely
+
+    import importlib._bootstrap_external as bootstrap
+    import importlib.util
+    src = Path(co) / "pkg" / "mod.py"
+    st = src.stat()
+    code = compile('def who():\n    return "PLANTED BYTECODE"\n', str(src), "exec")
+    old_prefix = sys.pycache_prefix
+    sys.pycache_prefix = str(mirror)
+    try:
+        cache = Path(importlib.util.cache_from_source(str(src)))
+    finally:
+        sys.pycache_prefix = old_prefix
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(bootstrap._code_to_timestamp_pyc(code, st.st_mtime, st.st_size))
+
+    plain = dict(os.environ)
+    plain["PYTHONPYCACHEPREFIX"] = str(mirror)
+    plain.pop("PYTHONDONTWRITEBYTECODE", None)
+
+    def import_it(env):
+        return subprocess.run([sys.executable, "-c", "import pkg.mod; print(pkg.mod.who())"],
+                              cwd=str(co), capture_output=True, text=True, env=env)
+
+    control = import_it(plain)
+    assert control.stdout.strip() == "PLANTED BYTECODE", control.stderr
+
+    fixed_env = review.reviewer_env(plain)
+    assert "PYTHONPYCACHEPREFIX" not in fixed_env
+    fixed = import_it(fixed_env)
+    assert fixed.stdout.strip() == "the real source", fixed.stderr
 
 
 def test_the_reviewer_environment_composes_and_keeps_what_it_was_given():

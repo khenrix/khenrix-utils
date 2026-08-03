@@ -447,11 +447,19 @@ def _bugs(payload, checkpoint_round: int) -> tuple:
         # cannot be re-run for free, over a field this module has never measured the remote to
         # emit (the module docstring says the payload's shape is not something it knows).
         where = str(row.get("location") or "").strip()
-        out.append(review.Finding(
+        f = review.Finding(
             id=review.finding_id(checkpoint_round, "ultrareview", sev, claim, where),
             round=checkpoint_round, seat="ultrareview", severity=sev, claim=claim,
             evidence=where or "the ultrareview payload named no location for this bug",
-            resolution="open"))
+            resolution="open")
+        # `run_round` gained this at review.py:860 and this sibling did not: the id is
+        # content-derived, so a payload that restates one bug twice — ordinary model output,
+        # not malformed input — produces two `Finding`s sharing an id, which `Round` refuses
+        # (`__post_init__`). Nothing calls `run_ultra` yet, so nothing has hit this, but the
+        # defect is the same one, one module over, and waiting for a caller is not a fix.
+        if any(f.id == prior.id for prior in out):
+            continue
+        out.append(f)
     return tuple(out)
 
 

@@ -146,6 +146,27 @@ def test_a_bug_with_no_location_records_that_it_had_none(tmp_path):
     assert "named no location" in u.bugs[0].evidence
 
 
+def test_a_repeated_bug_is_one_finding_not_two(tmp_path):
+    """`run_round` gained this dedup at review.py:860 and `_bugs` did not — the same defect
+    one module over. REPRODUCED: the id is content-derived, so two identical bugs make the
+    same id twice, and `Round.__post_init__` refuses a `Round` holding both. No caller yet
+    wires `run_ultra`'s findings into a `Round` (see its own docstring), so nothing has
+    crashed on this — it is latent rather than observed, which is exactly the shape that
+    keeps recurring in this package."""
+    claim = "unbounded cache cache.py:12"      # `_bugs` joins description + location
+    f = review.Finding(id=review.finding_id(1, "ultrareview", "blocker", claim, "cache.py:12"),
+                       round=1, seat="ultrareview", severity="blocker",
+                       claim=claim, evidence="cache.py:12", resolution="open")
+    with pytest.raises(review.ReviewError) as e:
+        review.Round(1, "a" * 40, (f, f), (), ("ultrareview",), ())
+    assert f.id in str(e.value)
+
+    row = {"severity": "blocker", "description": "unbounded cache", "location": "cache.py:12"}
+    findings = ultra._bugs({"bugs": [row, dict(row)]}, 1)
+    assert findings == (f,), "the duplicate is dropped by `_bugs` itself, not merely " \
+                            "tolerated by whatever calls it"
+
+
 def test_an_exit_zero_with_unreadable_json_is_not_a_clean_review(tmp_path):
     """THE FAIL-OPEN. §13.1's five reasons do not cover this; folding it into 'found no
     bugs' is the false green this whole project keeps finding."""

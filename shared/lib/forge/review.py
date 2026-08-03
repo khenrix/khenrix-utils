@@ -495,6 +495,20 @@ def parse_findings(text) -> tuple:
     §13's loop may act on. Everything else is "this answer could not be read", which §13's
     loop must record as a SILENT SEAT rather than as a clean review. Every early return below
     is one of the ways the second thing looks like the first.
+
+    A MALFORMED ROW DROPS THE ROW, NOT THE WHOLE ANSWER — the one exception to that, and why
+    it is one. An earlier version voided the ENTIRE answer over one row missing `claim` or
+    `evidence`, which discarded every OTHER finding in the same block too: real, evidenced
+    claims a three-provider panel was paid to produce, thrown out because a sibling row in the
+    same JSON skipped a field. That is not the fail-closed reading it looks like — a genuine
+    blocker with good evidence, sitting beside a sloppy row, went silent along with it, which
+    is a VERDICT READING CLEANER THAN THE EVIDENCE THE PANEL ACTUALLY RETURNED: the blocker
+    was reported and paid for, and the record showed nothing. Dropping only the malformed row
+    keeps every properly-evidenced finding in play; `why` carries what was dropped and why so
+    the drop itself is never silent (`run_round` puts it on the journal), and an empty
+    `claim`/`evidence` is still never repaired with an invented value — only left out. A block
+    that yields NO usable row this way is not "found nothing": see the `not kept` check below,
+    which keeps that distinction rather than trading it for this one.
     """
     if not isinstance(text, str):
         return None, f"a reviewer's answer is text, not {type(text).__name__}"
@@ -511,22 +525,32 @@ def parse_findings(text) -> tuple:
         return None, f"the fenced block is not readable as json: {e}"
     if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):
         return None, "the fenced block carries no `findings` list"
+    kept, dropped = [], []
     for row in payload["findings"]:
         if not isinstance(row, dict):
             return None, f"a finding is an object, not {type(row).__name__}"
         if row.get("severity") not in SEVERITIES:
             return None, (f"a finding's severity is one of {list(SEVERITIES)}, not "
                           f"{row.get('severity')!r}")
-        for name in ("claim", "evidence"):
-            if not isinstance(row.get(name), str) or not row[name].strip():
-                # `evidence` IS CHECKED HERE BECAUSE REVIEW.md DEMANDS IT. The instructions
-                # tell every reviewer to cite changed-file evidence for every finding, and a
-                # demand nothing checks is a sentence, not a requirement — the blocker line
-                # `terminal_from_record` prints would then name a claim with nothing behind
-                # it. Refusing the whole answer rather than the row is `parse_findings`' own
-                # rule: a partial read is recorded as a silent seat, never as a clean review.
-                return None, f"a finding carries a non-empty {name}"
-    return payload["findings"], ""
+        # `claim`/`evidence` ARE CHECKED HERE BECAUSE REVIEW.md DEMANDS THEM. The instructions
+        # tell every reviewer to cite changed-file evidence for every finding, and a demand
+        # nothing checks is a sentence, not a requirement — the blocker line
+        # `terminal_from_record` prints would then name a claim with nothing behind it.
+        missing = [name for name in ("claim", "evidence")
+                  if not isinstance(row.get(name), str) or not row[name].strip()]
+        if missing:
+            label = row.get("claim") if isinstance(row.get("claim"), str) and \
+                row["claim"].strip() else "(no claim)"
+            dropped.append(f"{label!r} missing {' and '.join(missing)}")
+            continue
+        kept.append(row)
+    if payload["findings"] and not kept:
+        # EVERY row in a non-empty answer was dropped: there is nothing left to act on, and
+        # `[]` here would misreport "the reviewer looked and found nothing" as "the reviewer
+        # answered and none of it could be acted on" — the exact conflation this function
+        # exists to refuse.
+        return None, f"every finding in this answer was dropped ({'; '.join(dropped)})"
+    return kept, ("; ".join(dropped) if dropped else "")
 
 
 def finding_id(round_: int, seat: str, severity: str, claim: str, evidence: str) -> str:
@@ -825,6 +849,7 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
         env=reviewer_env(),             # no reviewer writes bytecode into the reviewed tree
     )
     findings, identities, responded, silent = [], [], [], []
+    dropped_rows = []
     by_name = {r.get("name"): r for r in manifest.get("providers", [])}
     for spec in specs:
         record = by_name.get(spec.name)
@@ -846,6 +871,13 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
             silent.append((spec.name, "unreadable_findings"))
             continue
         responded.append(spec.name)
+        if why:
+            # A ROW WAS DROPPED, NOT THE SEAT: `parse_findings` kept every properly-evidenced
+            # finding in this answer and only skipped the malformed row(s) (see its own
+            # docstring). That must not vanish just because the seat otherwise responded
+            # cleanly — the journal is the record of what actually happened this round, and
+            # `responded` alone would read as if nothing had been dropped.
+            dropped_rows.append((spec.name, why))
         for row in rows:
             f = Finding(
                 id=finding_id(round_, spec.name, row["severity"], row["claim"],
@@ -866,7 +898,8 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
               seats_silent=tuple(sorted(silent)))
     digest = write_round(run_dir, r)
     log.record(journalmod.done(COUNCIL_KIND), operation_id=op, round=round_,
-               findings_sha256=digest, responded=len(responded), silent=len(silent))
+               findings_sha256=digest, responded=len(responded), silent=len(silent),
+               dropped_rows=dropped_rows)
     return r
 
 
@@ -1031,10 +1064,15 @@ def read_resolutions(run_dir, round_: int):
 #     the round — every later git command in this checkout is the repository's OTHER program
 #     running. What bounds that is `gitcmd.NO_HOOKS`, the `-c core.hooksPath=/dev/null` preset
 #     every hook-firing call in this package carries before its subcommand (`gitcmd.py:89`,
-#     held to by `test_every_hook_firing_call_carries_the_hooks_pin`). So the exclusion is
-#     bounded by a defence rather than merely accepted — for FORGE's git calls. It bounds
-#     nothing run outside that convention: the reviewer's own `git diff`, and the operator's
-#     commands in this checkout afterwards, still fire whatever is there.
+#     held to by `test_every_hook_firing_call_carries_the_hooks_pin`). The repo-local
+#     `.git/config` is the same gap one field over: `core.fsmonitor` names a program too, and
+#     it survives both `NO_HOOKS` (which only redirects `core.hooksPath`) and `NO_USER_CONFIG`
+#     (which only blanks the GLOBAL and SYSTEM files, never the repository's own). What bounds
+#     THAT is `gitcmd.NO_DAEMON_CACHE`'s `-c core.fsmonitor=false` (`gitcmd.py:50`), held to by
+#     `test_every_index_loading_call_carries_the_daemon_cache_flags`. So the exclusion is
+#     bounded by a defence rather than merely accepted — for FORGE's git calls, on both
+#     programs. It bounds nothing run outside that convention: the reviewer's own `git diff`,
+#     and the operator's commands in this checkout afterwards, still fire whatever is there.
 #   * A WRITE OUTSIDE THE CHECKOUT is invisible. A reviewer has a shell and a whole
 #     filesystem; this answers one question about one tree.
 #   * A WRITE THAT WAS UNDONE byte-for-byte before the panel returned leaves nothing behind.
@@ -1069,6 +1107,15 @@ _CHANGED_SAMPLE = 20
 # a reviewer that runs the suite writes neither directory. Nothing then needs exempting, and a
 # cache directory that appears anyway is a fact about the round worth refusing it over.
 #
+# THE SAME ATTACK, RELOCATED OUTSIDE THE TREE. `PYTHONDONTWRITEBYTECODE` stops a NEW `.pyc`
+# from being written; it says nothing about one already sitting wherever
+# `PYTHONPYCACHEPREFIX` points CPython to look, which need not be under `checkout` at all —
+# `worktree_identity` below only ever ranges over the tree it is handed. `reviewer_env` copies
+# `os.environ` wholesale, so an ambient value there is not one reviewer's problem: it is
+# handed to all three, one shared, external location the code under review can be replaced
+# from without ever touching a byte this bracket measures. `reviewer_env` now drops the
+# variable rather than leaving it to whatever the ambient environment happened to carry.
+#
 # WHAT THAT COSTS, written down because a guard whose gaps are unstated is read as covering
 # them — and this one now states a cost in the other direction: a reviewer that runs a tool
 # whose cache this environment does NOT suppress (`mypy`, `ruff`) writes into the tree and
@@ -1090,20 +1137,44 @@ def reviewer_env(base=None) -> dict:
     replaces it. `scripts/mutate.py` sets the same variable for the same class of problem —
     a process whose own import would otherwise write the bytes it is about to measure.
 
-    TWO NAMES, EACH DOING ONE THING. `PYTHONDONTWRITEBYTECODE` is read by every CPython child
-    at startup and stops `__pycache__`; `-p no:cacheprovider` disables the pytest plugin that
-    writes `.pytest_cache` at the rootdir, and is APPENDED to whatever `PYTEST_ADDOPTS` the
-    caller already had rather than replacing it — an operator's `--rootdir=…` is theirs, and
-    dropping it would change what the reviewer's suite does as a side effect of a guard.
+    THREE NAMES, EACH DOING ONE THING. `PYTHONDONTWRITEBYTECODE` is read by every CPython
+    child at startup and stops `__pycache__`; `-p no:cacheprovider` disables the pytest plugin
+    that writes `.pytest_cache` at the rootdir, and is APPENDED to whatever `PYTEST_ADDOPTS`
+    the caller already had rather than replacing it — an operator's `--rootdir=…` is theirs,
+    and dropping it would change what the reviewer's suite does as a side effect of a guard.
+    `PYTHONPYCACHEPREFIX` is DROPPED rather than set, and is the reason this is three names
+    and not two: `PYTHONDONTWRITEBYTECODE` stops a NEW `.pyc` being written, but says nothing
+    about one already sitting wherever this variable points CPython to look — which need not
+    be under the checkout at all. An ambient value here relocates the exact attack the
+    `__pycache__` exemption used to permit to a mirrored tree entirely OUTSIDE what
+    `worktree_identity` ranges over, and since `base` defaults to a wholesale copy of
+    `os.environ`, one ambient value reaches every reviewer this call builds a spec for — one
+    shared, external location the source under review can be replaced from. Dropped, not
+    pinned to a safe value: CPython treats an unset `PYTHONPYCACHEPREFIX` as "use the default
+    beside the source", which is the one location `_SKIP_DIRS` no longer exempts.
 
     WHAT IT DOES NOT DO. It is not a scrub: `fleet.forge_child_env`'s `gitcmd.HOSTILE_ENV`
     strip and `LLM_FORGE_DEPTH` guard are not applied here, so a reviewer inherits both. That
     is the position before this function existed and this changes neither half of it; the
     reviewer's council depth guard is `engine.child_env`'s, applied by `run_provider` on top
-    of whatever it is handed.
+    of whatever it is handed. Nor does dropping one redirector make this a scrub of that whole
+    CLASS: `PATH` (which binary `claude`/`codex`/`agy`/`git`/`python3` resolves to first),
+    `PYTHONPATH`/`PYTHONHOME` (where a Python this call spawns finds its modules), and
+    `NODE_OPTIONS` (`--require` preloads a script into a Node process before its own code
+    runs) are the same shape of hole and none of them is closed here. `NODE_OPTIONS` is
+    concretely live for at least one seat: measured on this machine, `claude` resolves
+    through `node_modules/@anthropic-ai/claude-code`, while `codex` and `agy` are native
+    binaries (musl and Go respectively) it does not touch — named per-seat rather than as one
+    CLASS the way `PATH` and `PYTHONPATH` are, because claiming it for all three would be
+    wrong on this machine's own binaries. Named here so that "not a scrub" has the same
+    specificity this paragraph asked of `reviewer_env` before a variable turned it from a
+    residual into a working bypass. `fleet.scrub_env` does not cover these either: it drops
+    values that point BACK into the ORIGINAL checkout, which is a different direction from a
+    reviewer redirecting somewhere else entirely.
     """
     env = dict(os.environ if base is None else base)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("PYTHONPYCACHEPREFIX", None)
     addopts = env.get("PYTEST_ADDOPTS") or ""
     env["PYTEST_ADDOPTS"] = f"{addopts} -p no:cacheprovider".strip()
     return env
