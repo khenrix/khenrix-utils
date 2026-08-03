@@ -1,6 +1,6 @@
 {
   "skill": "skill-tuneup",
-  "source_hash": "d2be1469c20ecb0249f9d7321211e9b2bf2f1c33fd7ab80fbd0391c31f061ff3",
+  "source_hash": "40300a93548ce780d8fc3919016ccd5a88314616eda775813718cb4419d5534b",
   "eval_set_hash": "4a736984af849d43dfc9106463783696b79392a312648f8f192e23e97327403b",
   "providers": [
     "claude"

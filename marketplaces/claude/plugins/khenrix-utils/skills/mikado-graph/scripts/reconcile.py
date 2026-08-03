@@ -111,14 +111,50 @@ def backup(path) -> Path | None:
     return None
 
 
+class ReconcileReadError(RuntimeError):
+    """A config file this engine will not treat as data it may replace."""
+
+
 def read_json_object(path: Path) -> dict:
+    """The JSON object at `path`, or `{}` when there is genuinely nothing there.
+
+    ABSENT AND UNPARSEABLE ARE DIFFERENT ANSWERS AND THIS IS WHERE THEY DIVERGE. Every
+    caller reads `{}` as "this CLI has none of the desired keys yet" and builds a full ADD
+    list from it; the apply path then hands that list to `write_json_object`, which does an
+    unconditional `write_text` over the whole file. So a settings file that exists and does
+    not parse — a half-written save, a merge conflict marker, a hand edit — used to be
+    silently replaced with a file containing only what khenrix wanted, and the user's
+    machine-specific configuration was gone. Reconcile is non-destructive by design; the
+    only way to keep that promise here is to refuse a file this engine cannot read.
+
+    ZERO-LENGTH IS DELIBERATELY STILL `{}`, which is the contract this reader has had since
+    the first commit (and had a second copy of in `agy_mcp_load`). A file created but not yet
+    written to is an ordinary state on a fresh machine — `write_json_object` itself passes
+    through it, since `write_text` truncates before it writes — and refusing it would refuse
+    the machine this engine exists to set up. A file with bytes in it that are not a JSON
+    object is not that state.
+
+    A NON-OBJECT REFUSES THROUGH THE SAME DOOR, and it is the input that made the old
+    `isinstance` line load-bearing in the wrong direction: `[1, 2]` and `"hello"` PARSE, so
+    the decode-error branch never saw them, and the old `return ... else {}` turned a file
+    with contents into the same `{}` an absent one returns. One refusal, both routes.
+    """
     if not path.exists() or path.stat().st_size == 0:
         return {}
     try:
         data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError as e:
+        raise ReconcileReadError(
+            f"{path} exists but is not readable as JSON ({e}). Reconcile will not treat an "
+            "unreadable config as an empty one: the caller would report every desired key as "
+            "missing and the apply path would write over the whole file. Fix or move the file, "
+            "then re-run.") from e
+    if not isinstance(data, dict):
+        raise ReconcileReadError(
+            f"{path} holds a JSON {type(data).__name__}, not an object. The same refusal as an "
+            "unparseable file and for the same reason — an empty object here is what an ABSENT "
+            "file returns, and the caller cannot tell the two apart.")
+    return data
 
 
 def write_json_object(path: Path, data: dict):
@@ -224,13 +260,11 @@ def agy_mcp_path() -> Path:
 
 
 def agy_mcp_load() -> dict:
-    p = agy_mcp_path()
-    if not p.exists() or p.stat().st_size == 0:
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except json.JSONDecodeError:
-        return {}
+    """Delegates so the refusal above is not one reader's private rule. This function had its
+    own copy of the absent/empty/decode-error logic, and `apply_mcp` rebuilds the whole file
+    from what it returns — so an unparseable mcp_config.json was replaced by khenrix's servers
+    alone, by the same route and one function over."""
+    return read_json_object(agy_mcp_path())
 
 
 def agy_mcp_current() -> dict:
