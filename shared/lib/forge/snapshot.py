@@ -144,6 +144,10 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
     itself the ambiguity, so raising is what the caller cannot accidentally ignore, and it
     matches how `baseline` and `fleet` reject what they cannot vouch for. Silence would be
     worst for a DIRECTORY, which drops a whole subtree rather than one file.
+
+    `skip_dirs` MATCHES A NAME AT EVERY DEPTH AND PRUNES REAL DIRECTORIES ONLY. A symlink
+    carrying one of those names is recorded as the symlink it is and not descended into — see
+    the loop below for the hole the other order left.
     """
     quota = quota or Quota.default()
     root = Path(root)
@@ -153,22 +157,34 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
     # check reaches scandir and routes here, and unreadability reaches only here.
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
                                                 onerror=_walk_error):
-        # Sorted for the reason screen.py sorts: the running totals below decide WHICH
-        # breach is reported first, so an unsorted walk makes a tree over two caps report
-        # a different line run to run.
-        dirnames[:] = sorted(d for d in dirnames if d not in skip_dirs)
         here = Path(dirpath)
-        # A symlink to a directory arrives in dirnames, so it would otherwise be neither
-        # recorded nor counted. Drop it from the walk and record the link itself.
-        for d in list(dirnames):
+        # Sorted for the reason screen.py sorts: the running totals below decide WHICH breach
+        # is reported first, so an unsorted walk makes a tree over two caps report a different
+        # line run to run.
+        #
+        # THE SYMLINK TEST COMES BEFORE THE `skip_dirs` TEST, and the other order was a hole.
+        # A symlink to a directory arrives in `dirnames`, so it would otherwise be neither
+        # recorded nor counted; filtering by NAME first meant a link *named* like a skipped
+        # directory never reached the branch that records it, and left NO entry at all.
+        # Measured: `tree/__pycache__ -> /elsewhere` and `tree/.git -> /elsewhere` both
+        # inventoried as nothing, so creating or removing one moved the tree and left
+        # byte-for-byte the inventory an untouched tree leaves. `review`'s bracket reads two
+        # such inventories as a checkout that stood still. A skipped name says "do not descend
+        # into this directory"; it cannot say "this path does not exist", and a link is not the
+        # directory whose name it borrowed.
+        kept = []
+        for d in sorted(dirnames):
             p = here / d
             if p.is_symlink():
-                dirnames.remove(d)
                 rel = str(p.relative_to(root))
                 count += 1
                 if (b := quota.breach(files=count, file_bytes=0, total_bytes=total)):
                     return {}, [b]
                 entries[rel] = _symlink_entry(p, rel)
+                continue          # recorded, and never descended into, whatever its name
+            if d not in skip_dirs:
+                kept.append(d)
+        dirnames[:] = kept
         for name in sorted(filenames):
             p = here / name
             rel = str(p.relative_to(root))

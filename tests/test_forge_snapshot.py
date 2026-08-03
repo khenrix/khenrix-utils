@@ -122,6 +122,43 @@ def test_git_is_skipped_by_default(tmp_path):
     assert "seed.txt" in entries
 
 
+def test_a_symlink_wearing_a_skipped_name_is_recorded_rather_than_vanishing(tmp_path):
+    """A SKIPPED NAME SAYS "DO NOT DESCEND", NEVER "THIS PATH DOES NOT EXIST".
+
+    `skip_dirs` was applied to `dirnames` BEFORE the branch that records a directory symlink,
+    so a link merely NAMED like a skipped directory never reached it and left no entry at all.
+    Measured: creating or removing `tree/.git -> elsewhere` moved the tree and left
+    byte-for-byte the inventory an untouched tree leaves — which `review`'s bracket reads as a
+    checkout that stood still, in the guard that decides whether a round's findings are
+    admissible. Nothing is descended into either way; only the link itself is recorded."""
+    outside = tmp_path / "elsewhere"; outside.mkdir()
+    (outside / "planted.txt").write_text("a reviewer wrote this\n")
+    d = tmp_path / "t"; d.mkdir()
+    (d / "kept.txt").write_text("a\n")
+    before, _ = snapshot.take(d, skip_dirs=(".git", "__pycache__"))
+    for name in (".git", "__pycache__"):
+        (d / name).symlink_to(outside)
+    after, breaches = snapshot.take(d, skip_dirs=(".git", "__pycache__"))
+    assert breaches == []
+    assert sorted(after) == [".git", "__pycache__", "kept.txt"]
+    assert all(after[n].kind == "symlink" for n in (".git", "__pycache__"))
+    assert not any(p.startswith((".git/", "__pycache__/")) for p in after), \
+        "recorded, and still never descended into"
+    assert snapshot.diff(before, after) == {".git": "added", "__pycache__": "added"}
+
+
+def test_a_real_directory_wearing_a_skipped_name_is_still_skipped(tmp_path):
+    """The other half: the pruning that `skip_dirs` is for is unchanged for the ordinary case
+    a real cache directory presents, at the root and at depth."""
+    d = tmp_path / "t"; d.mkdir()
+    (d / "kept.txt").write_text("a\n")
+    for rel in ("__pycache__", "pkg/__pycache__"):
+        (d / rel).mkdir(parents=True)
+        (d / rel / "mod.pyc").write_bytes(b"\x00compiled\n")
+    entries, _ = snapshot.take(d, skip_dirs=("__pycache__",))
+    assert sorted(entries) == ["kept.txt"]
+
+
 def test_quota_breach_fails_closed_with_no_partial_inventory(tmp_path):
     d = tmp_path / "t"; d.mkdir()
     for i in range(5):
