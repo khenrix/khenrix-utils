@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import os  # noqa: E402
 import pytest  # noqa: E402
+from forge import bundle as bundlemod  # noqa: E402
 from forge import storage, taskbundle  # noqa: E402
 
 
@@ -105,6 +106,46 @@ def test_a_breached_cap_is_a_refusal_and_names_the_cap_it_applied(tmp_path):
     tiny = storage.Quota(max_files=2, max_file_bytes=1 << 20, max_total_bytes=1 << 20)
     with pytest.raises(taskbundle.TaskBundleError, match="files: 5 > 2"):
         taskbundle.scan(tmp_path, entrypoint="SKILL.md", quota=tiny)
+
+
+def test_an_oversized_file_is_refused_before_it_is_read(tmp_path, monkeypatch):
+    """F1: the per-file cap must stop a runaway file BEFORE it is hashed, not merely
+    refuse the bundle after. A test that only checks for the raise passes even on the old
+    code, which walked and SHA-256'd every regular file first and only compared sizes
+    against the cap afterwards — so this one also proves `snapshot._digest` was never
+    called on the oversized file, not just that `scan()` eventually raised."""
+    root = tmp_path / "b"
+    root.mkdir()
+    (root / "SKILL.md").write_text("entry\n")
+    big = root / "big.bin"
+    big.write_bytes(b"x" * 4096)
+
+    real_digest = taskbundle.snapshot._digest
+
+    def _digest_or_fail(p):
+        if Path(p) == big:
+            pytest.fail(f"{p} was hashed even though it exceeds the per-file cap — the "
+                        "cap must be checked before the read, not after it")
+        return real_digest(p)
+
+    monkeypatch.setattr(taskbundle.snapshot, "_digest", _digest_or_fail)
+
+    tiny = storage.Quota(max_files=100, max_file_bytes=1024, max_total_bytes=1 << 20)
+    with pytest.raises(taskbundle.TaskBundleError, match="file_bytes: 4096 > 1024"):
+        taskbundle.scan(root, entrypoint="SKILL.md", quota=tiny)
+
+
+def test__rel_wraps_a_bundle_error_as_a_task_bundle_error(monkeypatch, tmp_path):
+    """F2: `_assert_contained` raises `bundle.BundleError`, a type this module's own
+    contract does not promise. Genuinely unreachable through `_rel`'s real call sites —
+    `p` always comes from `os.walk`, which never yields a literal `..` component for
+    `relative_to` to leave behind — so this forces the branch directly to pin the wrap
+    that wants to hold if that ever stops being true."""
+    def _boom(rel, what):
+        raise bundlemod.BundleError("forced for the test")
+    monkeypatch.setattr(taskbundle.bundlemod, "_assert_contained", _boom)
+    with pytest.raises(taskbundle.TaskBundleError, match="forced for the test"):
+        taskbundle._rel(tmp_path, tmp_path / "x")
 
 
 def test_the_caps_actually_applied_are_recorded_not_assumed(tmp_path):

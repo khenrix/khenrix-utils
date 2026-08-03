@@ -103,7 +103,18 @@ def _rel(root: Path, p: Path) -> str:
     rel = PurePosixPath(p.relative_to(root)).as_posix()
     # One spelling of the rule, imported rather than re-inlined: `bundle.py:191` re-inlined
     # `harvest._literal` and that divergence route is on this project's open-defect list.
-    bundlemod._assert_contained(rel, "a task bundle path")
+    #
+    # Wrapped rather than left to propagate: `_assert_contained` raises `bundle.BundleError`,
+    # a type this module's own contract does not promise. UNREACHABLE through `_rel`'s two
+    # call sites today — `p` always comes from `os.walk` under `root` (see `_walk`), and
+    # `os.walk` never yields a literal `..` component, which is the only way a successful
+    # `relative_to` above could still leave one for `_assert_contained` to catch. The wrap
+    # costs nothing and means that invariant is enforced here rather than leaned on by every
+    # future caller of `_rel`.
+    try:
+        bundlemod._assert_contained(rel, "a task bundle path")
+    except bundlemod.BundleError as e:
+        raise TaskBundleError(str(e)) from e
     if bundlemod._names_dotgit(rel):
         raise TaskBundleError(
             f"a task bundle may not carry git's own directory: {rel!r}. A `.git/config` "
@@ -111,7 +122,7 @@ def _rel(root: Path, p: Path) -> str:
     return rel
 
 
-def _entry(root: Path, p: Path) -> BundleEntry:
+def _entry(root: Path, p: Path, quota: storage.Quota) -> BundleEntry:
     st = p.lstat()
     if stat.S_ISLNK(st.st_mode):
         rel = _rel(root, p)
@@ -131,11 +142,19 @@ def _entry(root: Path, p: Path) -> BundleEntry:
         raise TaskBundleError(
             f"a task bundle may not carry a special file (FIFO, socket, device): "
             f"{_rel(root, p)!r}. It was NOT opened — a read-open on a FIFO blocks.")
-    return BundleEntry(_rel(root, p), "file", st.st_mode & 0o777,
-                       snapshot._digest(p), st.st_size)
+    rel = _rel(root, p)
+    # Checked BEFORE `_digest` opens and reads the file — `snapshot.take`'s own precedent
+    # (`st.st_size` against the cap ahead of the read, `snapshot.py:154`). A file that
+    # breaches the per-file cap is refused for the bytes it would have cost to hash, not
+    # after they were spent: measured before this fix, a 300 MB file under a 1 KB-per-file
+    # quota was fully SHA-256'd (~0.6s of I/O) before `scan()` ever raised. This is the read
+    # `Quota.for_task_bundle`'s docstring says these caps exist to prevent.
+    if (breach := quota.breach(files=0, file_bytes=st.st_size, total_bytes=0)):
+        raise TaskBundleError(f"this task bundle exceeds §20's caps — {rel}: {breach}")
+    return BundleEntry(rel, "file", st.st_mode & 0o777, snapshot._digest(p), st.st_size)
 
 
-def _walk(root: Path) -> list:
+def _walk(root: Path, quota: storage.Quota) -> list:
     """Every file and symlink under `root`, sorted, never following a directory symlink."""
     out = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -145,9 +164,9 @@ def _walk(root: Path) -> list:
         for name in list(dirnames):
             if (d / name).is_symlink():
                 dirnames.remove(name)
-                out.append(_entry(root, d / name))
+                out.append(_entry(root, d / name, quota))
         for name in filenames:
-            out.append(_entry(root, d / name))
+            out.append(_entry(root, d / name, quota))
     return sorted(out, key=lambda e: e.path)
 
 
@@ -160,13 +179,18 @@ def scan(root, *, entrypoint: str, quota: storage.Quota | None = None) -> TaskBu
     """
     root = Path(root)
     quota = quota or storage.Quota.for_task_bundle()
-    entries = _walk(root)
+    entries = _walk(root, quota)
     if not entries:
         raise TaskBundleError(
             f"{root} has no entries. An empty bundle hashes to a stable value and makes "
             "every later comparison vacuous while still answering True.")
-    breach = quota.breach(files=len(entries),
-                          file_bytes=max(e.size for e in entries),
+    # `file_bytes` is not re-checked here: `_entry` already refused any regular file whose
+    # size breached `quota.max_file_bytes` before it was hashed (before `entries` could ever
+    # hold it), and a symlink's size is always the fabricated 0 (`BundleEntry`'s docstring).
+    # So max(e.size for e in entries) could never be what raises by the time the walk has
+    # finished — only the file COUNT still needs the whole walk to be known, since a count
+    # breach reported mid-walk would misreport how many entries the bundle actually has.
+    breach = quota.breach(files=len(entries), file_bytes=0,
                           total_bytes=sum(e.size for e in entries))
     if breach:
         raise TaskBundleError(f"this task bundle exceeds §20's caps — {breach}")
