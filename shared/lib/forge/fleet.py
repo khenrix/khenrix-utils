@@ -53,10 +53,12 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitcmd
+from . import bundle as bundlemod
+from . import gitcmd, snapshot
 
 
 class FleetError(RuntimeError):
@@ -108,21 +110,57 @@ class Seat:
     verified: bool = False
 
 
-def _sha256_file(p: Path) -> str:
+def _sha256_file(fd: int) -> str:
     """Mirrors `baseline._sha256_file`. The two must agree byte-for-byte on how a file is
-    digested, since this compares its output against that one's manifest."""
-    h = hashlib.sha256()
-    with open(p, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    digested, since this compares its output against that one's manifest — and the agreement
+    is now by CONSTRUCTION on this side: `snapshot.digest_fd` is the one implementation, so
+    the third copy this function used to hold cannot drift from the other two.
+
+    A DESCRIPTOR, NEVER A PATH, and the signature is the guard rather than a note about one.
+    This runs over keys taken from a manifest READ OFF DISK (`baseline.read_filesystem_manifest`
+    type-checks them and nothing else), so `open(dest / rel)` re-resolves a name §8.1 does not
+    trust: an intermediate component that is a symlink puts a HOST file in front of the read
+    and the seat is reported `verified` against content it does not hold. `_manifest_leaf`
+    descends instead and hands this the descriptor that was actually opened.
+    """
+    return snapshot.digest_fd(fd)
 
 
-def _sha256_link(p: Path) -> str:
+def _sha256_link(at) -> str:
     """Mirrors `baseline._sha256_link` and `snapshot._symlink_entry` for the same reason —
     surrogateescape included, since a link target is a filesystem name and a strict encode
-    raises on a non-UTF-8 one."""
-    return hashlib.sha256(os.readlink(p).encode("utf-8", "surrogateescape")).hexdigest()
+    raises on a non-UTF-8 one.
+
+    Takes the `bundle._Contained` rather than a path, for `_sha256_file`'s reason: `readlink`
+    on a joined name resolves every component ahead of the leaf, so the target text reported
+    could be one from outside the seat entirely.
+    """
+    return hashlib.sha256(
+        os.readlink(at.leaf, dir_fd=at.fd).encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def _manifest_leaf(dest: Path, rel: str):
+    """`rel`'s parent inside `dest` as an open descriptor, or a `SeatError`.
+
+    THE READ HALF OF §8.1's THREAT MODEL, which the write half's sweep did not cover. The
+    keys this stands in front of come from `baseline.read_filesystem_manifest`, which
+    type-checks that they are strings and asserts nothing about their shape — so a manifest
+    edited between runs reaches the verification loop with `../../.ssh/id_rsa` or with a
+    component that is a symlink out of the seat, and `dest / rel` follows both without
+    complaint. That is not a weaker guard than the lexical ones the previous wave replaced;
+    it was NO guard, and it sits on the one loop whose answer is `Seat.verified`.
+
+    `bundle.contained` is IMPORTED rather than restated, matching `taskbundle._contained` and
+    `gate._contained`: this package's open-defect list already carries one re-inlined rule
+    that drifted. The wrap is theirs too — `BundleError` is a class no caller of `clone_seat`
+    has a name for, and an unnamed class out of a refusal path is a crash rather than a
+    refusal.
+    """
+    try:
+        return bundlemod.contained(dest, rel, "a baseline manifest path")
+    except bundlemod.BundleError as e:
+        raise SeatError(
+            f"the baseline manifest names a path the seat check will not follow: {e}") from e
 
 
 def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Seat:
@@ -287,27 +325,56 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
         head = gitcmd.git(dest, "rev-parse", "HEAD", env_extra=env).stdout.strip()
         if head != baseline.commit:
             raise SeatError(f"seat checked out {head[:12]}, expected {baseline.commit[:12]}")
+        # DESCENDED, NEVER JOINED, and this is the READ half of the same escape the write
+        # half was swept for. `dest / rel` resolves every component of a string §8.1 declares
+        # untrusted, and a `verified is True` computed through a redirected read is the
+        # cleaner-than-its-evidence verdict this loop exists to prevent — a seat whose content
+        # was never checked, reported as checked. See `_manifest_leaf`.
         for rel, want in (baseline.filesystem_manifest or {}).items():
-            p = dest / rel
-            # A symlink is checked by its TARGET TEXT, never hashed through: `_sha256_file`
-            # opens THROUGH it, so hashing one describes content from outside the tree the
-            # manifest claims to describe. The branch used to `continue`, because the
-            # manifest held the target's content and nothing this side could reproduce it
-            # without following the link; since Plan D's D-1 the manifest holds the target
-            # text, so the entry is now VERIFIED rather than excused. The link test also has
-            # to come before the absence check below: a correct seat can carry a link that
-            # dangles from the seat's own depth, and `is_file()` answers False for one.
-            if p.is_symlink():
-                if _sha256_link(p) != want:
-                    raise SeatError(f"seat symlink points elsewhere than the baseline: {rel}")
-                continue
-            # Absence is NOT skipped. A seat missing a path B1 contains is exactly the
-            # transport failure this assertion exists to catch, and skipping it would
-            # report `verified is True` for a seat that never received the file.
-            if not p.is_file():
-                raise SeatError(f"seat is missing a path the baseline manifest lists: {rel}")
-            if _sha256_file(p) != want:
-                raise SeatError(f"seat content differs from the baseline manifest: {rel}")
+            with _manifest_leaf(dest, rel) as at:
+                # `lstat` AT THE DESCRIPTOR, and the shape is read once: `is_symlink()` then
+                # `is_file()` were two resolutions of the same name with a window between
+                # them, on top of following whatever the name meant.
+                try:
+                    st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+                except OSError as e:
+                    # Absence is NOT skipped. A seat missing a path B1 contains is exactly the
+                    # transport failure this assertion exists to catch, and skipping it would
+                    # report `verified is True` for a seat that never received the file.
+                    raise SeatError(
+                        f"seat is missing a path the baseline manifest lists: {rel} "
+                        f"({e.strerror})") from e
+                # A symlink is checked by its TARGET TEXT, never hashed through: `_sha256_file`
+                # would read THROUGH it, so hashing one describes content from outside the tree
+                # the manifest claims to describe. The branch used to `continue`, because the
+                # manifest held the target's content and nothing this side could reproduce it
+                # without following the link; since Plan D's D-1 the manifest holds the target
+                # text, so the entry is now VERIFIED rather than excused. The link test also
+                # has to come before the regular-file test: a correct seat can carry a link
+                # that dangles from the seat's own depth, and every "is it a file" spelling
+                # answers False for one.
+                if stat.S_ISLNK(st.st_mode):
+                    if _sha256_link(at) != want:
+                        raise SeatError(
+                            f"seat symlink points elsewhere than the baseline: {rel}")
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    raise SeatError(
+                        f"seat is missing a path the baseline manifest lists: {rel} "
+                        f"(mode {oct(st.st_mode)})")
+                # `O_NOFOLLOW` on the leaf as well, and the `fstat` rather than the `lstat`
+                # above is what decides: between the two the name can have become something
+                # else, so the type that matters is the opened descriptor's.
+                fd = bundlemod.open_leaf(at, os.O_RDONLY, "a baseline manifest path")
+                try:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        raise SeatError(
+                            f"seat is missing a path the baseline manifest lists: {rel}")
+                    if _sha256_file(fd) != want:
+                        raise SeatError(
+                            f"seat content differs from the baseline manifest: {rel}")
+                finally:
+                    os.close(fd)
         verified = True
     except Exception:
         # The same argument the `finally` makes for the template dir, for the seat itself:

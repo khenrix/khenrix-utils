@@ -2363,3 +2363,60 @@ def test_the_calibrations_environment_reaches_every_command_it_runs(tmp_path):
     # run in a different environment measures a delta between two machines.
     assert cal.second_pass.exit_code == 0, \
         "the confirming pass did not run under the caller's environment"
+
+
+def test_a_step_cannot_name_the_gate_surface_through_a_symlinked_directory(tmp_path):
+    """THE READ HALF OF §8.1, in the module the write-half sweep did not reach.
+
+    `Manifest.setup`/`Manifest.verify` are decoded from `manifest.json` and `runner` rebuilds
+    `verify.Command` straight off them, so every `Step.cwd` and argv token here comes from a
+    record §8.1 says may have been edited between runs. `verify._contained` refuses `..` and
+    absolute and nothing else — a component that is a SYMLINK is lexically perfect.
+
+    Three separate consequences, asserted separately because they fail in different directions:
+
+    - `_command_paths` used to answer `is_file()`, which FOLLOWS every component, so the host
+      file entered the surface under a tree-relative name that describes nothing in the tree.
+    - `_surface_state` then hashed that host file's CONTENT into the gate delta.
+    - `_step_cwd` handed the same name to `Popen`, running the confirmed gate command outside
+      the verifier entirely.
+    """
+    repo = _surface_repo(tmp_path, [("sub/check.sh", "#!/bin/sh\nexit 0\n")])
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "check.sh").write_text("#!/bin/sh\nexit 1\n")
+    os.symlink(outside, Path(repo) / "evil")
+    assert (Path(repo) / "evil" / "check.sh").is_file(), \
+        "precondition: the link really does resolve to the host file"
+
+    surface = verify.gate_surface(repo, finspect.GeneratorContract(), command=verify.Command(
+        steps=(verify.Step(argv=("check.sh",), cwd="evil"),)))
+    assert "evil/check.sh" not in surface, \
+        "a host file reached through a link is not a file that defines this tree's gate"
+
+    with pytest.raises(verify.VerifyError, match="leaves the verifier"):
+        verify._step_cwd(Path(repo), verify.Step(argv=("true",), cwd="evil"), 0)
+
+    # And the content read, pinned directly: the delta must not be able to carry host bytes.
+    with pytest.raises(verify.VerifyError, match="does not stay inside this tree"):
+        verify._surface_state(Path(repo), ["evil/check.sh"])
+
+
+def test_a_materialized_sidecar_is_read_back_through_the_same_descent_it_was_written_with(
+        tmp_path):
+    """The write/read asymmetry, closed. `bundle.materialize` lays a sidecar down through the
+    full `contained` descent; `_materialized_sidecar` read the same `e.path` back off a plain
+    join, so a link at a directory component made the verifier compare the bundle's payload
+    against a HOST file — and report a match if the two happened to agree.
+
+    None is the answer rather than a raise, on this function's own stated rule: a path it
+    cannot vouch for can only ever mismatch, which is the fail-closed direction.
+    """
+    repo = _surface_repo(tmp_path, [("a.txt", "seed\n")])
+    outside = tmp_path / "outside"
+    outside.mkdir(exist_ok=True)
+    (outside / "planted.txt").write_text("host bytes\n")
+    os.symlink(outside, Path(repo) / "evil")
+    assert (Path(repo) / "evil" / "planted.txt").read_text() == "host bytes\n", \
+        "precondition: the join really does reach the host file"
+    assert verify._materialized_sidecar(Path(repo), "evil/planted.txt") is None

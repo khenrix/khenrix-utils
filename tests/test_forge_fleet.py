@@ -713,3 +713,67 @@ def test_clone_seat_refuses_a_seat_whose_symlink_points_somewhere_else(tmp_path)
     with pytest.raises(fleet.SeatError, match="symlink points elsewhere"):
         fleet.clone_seat(repo, tampered, tmp_path / "seats" / "s1",
                          name="claude", identity=IDENT)
+
+
+def test_clone_seat_refuses_a_manifest_path_that_leaves_the_seat(tmp_path):
+    """THE READ HALF OF §8.1, which the write half's sweep did not cover.
+
+    `baseline.read_filesystem_manifest` type-checks that a manifest's keys are strings and
+    asserts NOTHING about their shape, so a run directory edited between runs reaches this
+    loop with whatever was on disk — and `dest / rel` joined it with no guard of any kind,
+    weaker than the lexical rules the previous wave had already replaced elsewhere. A host
+    file that happened to hash to the recorded value would have made the seat `verified`
+    against content it does not hold.
+
+    Both lexical shapes are asserted because they fail differently: `..` is a literal the
+    kernel walks out of the tree with no symlink involved, and an absolute right-hand side
+    REPLACES the root rather than joining to it.
+    """
+    repo = make_repo(tmp_path)
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("HOST FILE, NOT PART OF THE BASELINE\n")
+    want = hashlib.sha256(secret.read_bytes()).hexdigest()
+    for rel in ("../secret.txt", str(secret)):
+        tampered = baseline.Baseline(
+            base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid, commit=b.commit,
+            ref=b.ref, dirty=b.dirty, sidecars=None,
+            filesystem_manifest={**b.filesystem_manifest, rel: want})
+        with pytest.raises(fleet.SeatError, match="will not follow"):
+            fleet.clone_seat(repo, tampered, tmp_path / "seats" / "s1",
+                             name="claude", identity=IDENT)
+
+
+def test_clone_seat_refuses_a_manifest_path_reached_through_a_symlinked_directory(tmp_path):
+    """The half no lexical rule sees, and the reason the fix is a descent rather than a check.
+
+    `pkg` is a link OUT of the seat and `pkg/secret.txt` names a perfectly ordinary host file
+    through it: no component is `..`, none is absolute, and `is_file()` answers True. Before
+    the descent the loop hashed that host file, compared it against the digest the manifest
+    carried for it, and returned `Seat.verified is True` — a clean verdict computed from
+    content the seat does not contain.
+
+    The link lives in the REPOSITORY, so the clone reproduces it into the seat: this is the
+    seat a correct clone actually produces, not one the test reached in and edited.
+    """
+    host = tmp_path / "host_pkg"
+    host.mkdir()
+    secret = host / "secret.txt"
+    secret.write_text("HOST FILE, NOT PART OF THE BASELINE\n")
+    repo = make_repo(tmp_path)
+    os.symlink(host, Path(repo) / "pkg")
+    _git(repo, "add", "pkg")
+    _git(repo, "commit", "-qm", "link out of the tree")
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk_baseline(repo, run)
+    assert (Path(repo) / "pkg" / "secret.txt").is_file(), \
+        "precondition: the link really does resolve to the host file"
+    tampered = baseline.Baseline(
+        base_commit=b.base_commit, tracked_tree_oid=b.tracked_tree_oid, commit=b.commit,
+        ref=b.ref, dirty=b.dirty, sidecars=None,
+        filesystem_manifest={**b.filesystem_manifest,
+                             "pkg/secret.txt": hashlib.sha256(secret.read_bytes()).hexdigest()})
+    with pytest.raises(fleet.SeatError, match=r"passes through 'pkg'"):
+        fleet.clone_seat(repo, tampered, tmp_path / "seats" / "s1",
+                         name="claude", identity=IDENT)

@@ -86,6 +86,7 @@ the same `HOSTILE_ENV` and pins the same /dev/null pair, so this module's strip 
 idempotent over its result and all it contributes is the checkout scrub.
 """
 import configparser
+import errno
 import fnmatch
 import hashlib
 import os
@@ -508,13 +509,67 @@ def _contained(rel: str) -> str | None:
 
 
 def _step_cwd(root: Path, step: Step, index: int) -> Path:
-    """Where a step runs — inside the verifier, or nowhere."""
+    """Where a step runs — inside the verifier, or nowhere.
+
+    BOTH HALVES, because `step.cwd` comes off `Manifest.setup`/`Manifest.verify` — decoded
+    from `manifest.json`, which §8.1 does not trust — and this one does not merely READ
+    through what the name resolves to, it RUNS the confirmed gate command there. `_contained`
+    refuses `..` and absolute; it cannot see a component that is a SYMLINK out of the tree,
+    and `run_command`'s docstring already promises a raise for "a cwd that leaves the tree".
+    The descent is what makes that sentence true for the second shape.
+
+    WHAT THE DESCENT CANNOT DO HERE, stated rather than implied by its presence: `subprocess`
+    takes a NAME for `cwd`, not a descriptor, so this returns a path and the kernel resolves it
+    once more at spawn. That leaves the same concurrent-writer residual `bundle._Contained`'s
+    docstring measures — a rename between this check and the exec — and it is a strictly
+    smaller window than the one the forged manifest used, which is now closed. The stdlib
+    offers no fd-taking `cwd`, so closing the rest is not available at this layer.
+    """
     rel = _contained(step.cwd or "")
     if rel is None:
         raise VerifyError(
             f"verify step {index} asks to run in {step.cwd!r}, which leaves the verifier; a "
             "step's cwd is relative to the clone root and must stay inside it")
-    return root / rel if rel else root
+    if not rel:
+        return root
+    # `bundle.contained` rather than `_leaf`, because this caller needs the REASON the descent
+    # stopped and `_leaf` collapses every reason to None. A component that is MISSING is not an
+    # escape: there is nothing there to resolve to somewhere else, and a cwd that does not
+    # exist has always been allowed through to `Popen`, which reports it exactly. Refusing it
+    # here would answer a misconfigured step in the vocabulary of a security refusal, and would
+    # break the one-rule agreement `_contained` and this function are pinned to.
+    escapes = True
+    at = None
+    try:
+        at = bundle.contained(root, rel, "a step cwd")
+    except bundle.BundleError as e:
+        if isinstance(e.__cause__, OSError) and e.__cause__.errno == errno.ENOENT:
+            escapes = False
+    if at is not None:
+        with at:
+            # THE LEAF TOO, and it is the component that matters most here: the descent proves
+            # the PARENTS, but `sub/dir` with `dir` itself a link to `/etc` would otherwise
+            # pass and the gate would run in `/etc`.
+            #
+            # A LEAF THAT IS NOT THERE IS NOT AN ESCAPE, and this arm is why the test is a
+            # symlink test rather than an existence test: a cwd that simply does not exist was
+            # always allowed through to `Popen`, which reports it precisely, and turning that
+            # into a VerifyError here would refuse a misconfigured step in the vocabulary of a
+            # security refusal. Only a link is refused, because only a link RESOLVES — to
+            # somewhere else.
+            try:
+                escapes = stat.S_ISLNK(
+                    os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False).st_mode)
+            except FileNotFoundError:
+                escapes = False
+            except OSError:
+                escapes = True
+    if escapes:
+        raise VerifyError(
+            f"verify step {index} asks to run in {step.cwd!r}, which leaves the verifier "
+            "through a symlinked path component; a step's cwd is relative to the clone root "
+            "and must stay inside it")
+    return root / rel
 
 
 def _kill_group(p: subprocess.Popen) -> None:
@@ -687,15 +742,45 @@ class Verifier:
     candidate_surface: tuple[str, ...]
 
 
-def _sha256_file(p: Path) -> str:
+def _sha256_fd(fd: int) -> str:
     """Deliberately NOT bound to `snapshot._digest`, `baseline._sha256_file` and
     `fleet._sha256_file`, which must agree with each other byte for byte. Nothing compares
-    this one against a manifest; see `_surface_state` for what that buys."""
+    this one against a manifest; see `_surface_state` for what that buys.
+
+    A DESCRIPTOR, for `fleet._sha256_file`'s reason and on the same threat model. The gate
+    surface is not a set of names this module produced: `_command_paths` derives part of it
+    from `Manifest.verify`, read back off `manifest.json`, which §8.1 declares untrusted. A
+    path-taking digest would re-resolve that name and describe whatever it now points at.
+    """
     h = hashlib.sha256()
-    with open(p, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 16), b""):
-            h.update(chunk)
+    while chunk := os.read(fd, 1 << 16):
+        h.update(chunk)
     return h.hexdigest()
+
+
+def _leaf(root: Path, rel: str, what: str):
+    """`rel`'s parent inside `root` as an open descriptor, or None when it does not stay there.
+
+    THE ACCESS HALF OF `_contained`, WHICH IS THE NAME HALF. The two are not alternatives and
+    neither subsumes the other: `_contained` normalizes a string into the name the TREE holds
+    — which is what a gate delta is computed over, so it cannot be skipped — while this
+    performs the read at a descriptor, which is what a string rule cannot do. `_contained`'s
+    own docstring already says a lexical rule "disagrees with the kernel whenever `a` is a
+    symlink"; this is the half that agrees with it.
+
+    LIVE ON A RECORD, not a latent shape. `Manifest.setup` and `Manifest.verify` are decoded
+    from `manifest.json` by `read_manifest`, `runner` rebuilds `verify.Command` straight off
+    them, and every `Step.cwd` and argv token then reaches `_command_paths` and `_surface_state`
+    — where an edited `check.sh` under a symlinked directory put a HOST file into the gate
+    surface and had its content hashed into the delta.
+
+    None rather than a raise, because both callers already have an answer for a path that is
+    not in the tree: `_command_paths` drops the step, `_surface_state` refuses.
+    """
+    try:
+        return bundle.contained(root, rel, what)
+    except bundle.BundleError:
+        return None
 
 
 def _surface_state(root: Path, paths) -> dict:
@@ -729,22 +814,39 @@ def _surface_state(root: Path, paths) -> dict:
     """
     state = {}
     for rel in paths:
-        p = root / rel
-        try:
-            st = os.lstat(p)
-            if stat.S_ISLNK(st.st_mode):
-                target = os.readlink(p).encode("utf-8", "surrogateescape")
-                state[rel] = f"symlink:{hashlib.sha256(target).hexdigest()}"
-            elif stat.S_ISREG(st.st_mode):
-                state[rel] = f"file:{st.st_mode & 0o777:o}:{_sha256_file(p)}"
-            else:
-                state[rel] = f"special:{stat.S_IFMT(st.st_mode)}"
-        except FileNotFoundError:
-            continue
-        except OSError as e:
+        # DESCENDED, NEVER JOINED — see `_leaf`. A REFUSAL rather than a skip, on this
+        # function's own argument two paragraphs up: a surface path that cannot be measured
+        # honestly must not get an identity that compares equal to itself across the two
+        # trees, and "it left the tree" is the sharpest version of cannot-be-measured.
+        at = _leaf(root, rel, "a gate-surface path")
+        if at is None:
             raise VerifyError(
-                f"the gate-surface path {rel!r} could not be read, so no gate delta over "
-                f"this tree would be honest: {e}") from e
+                f"the gate-surface path {rel!r} does not stay inside this tree, so no gate "
+                "delta computed over it would describe the tree it claims to")
+        with at:
+            try:
+                st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+                if stat.S_ISLNK(st.st_mode):
+                    target = os.readlink(at.leaf, dir_fd=at.fd).encode(
+                        "utf-8", "surrogateescape")
+                    state[rel] = f"symlink:{hashlib.sha256(target).hexdigest()}"
+                elif stat.S_ISREG(st.st_mode):
+                    # `O_NOFOLLOW`/`O_NONBLOCK` via `open_leaf`, and the MODE still comes from
+                    # the `stat` above: the two are one inode here because the open cannot
+                    # have followed anything.
+                    fd = bundle.open_leaf(at, os.O_RDONLY, "a gate-surface path")
+                    try:
+                        state[rel] = f"file:{st.st_mode & 0o777:o}:{_sha256_fd(fd)}"
+                    finally:
+                        os.close(fd)
+                else:
+                    state[rel] = f"special:{stat.S_IFMT(st.st_mode)}"
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                raise VerifyError(
+                    f"the gate-surface path {rel!r} could not be read, so no gate delta over "
+                    f"this tree would be honest: {e}") from e
     return state
 
 
@@ -851,21 +953,37 @@ def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
     two reads and an unreadable one would compare equal to itself and vanish from the delta.
     Here the comparison is against a payload the bundle already holds, so an unreadable path
     can only ever produce a mismatch — fail-closed either way, and one answer is enough.
+
+    THE READ SIDE OF THE PATH `bundle.materialize` WROTE, and it has to descend for the same
+    reason the write did. `bundle.materialize` lays this exact `e.path` down through the full
+    `contained` descent (`bundle.py`'s sidecar loop) and this function READ it back off a
+    plain join — the write hardened and the read left open, which is the asymmetry the read-half
+    sweep exists to find. An uncontainable path is None on the rule above: it is a path this
+    function cannot vouch for, so it can only ever mismatch, which is the fail-closed direction.
     """
-    p = root / rel
-    try:
-        st = os.lstat(p)
-        if stat.S_ISLNK(st.st_mode):
-            # A link's own mode is not meaningful and `bundle` fabricates 0 for it; the
-            # target TEXT is what materialization reproduces. Bytes, via surrogateescape,
-            # because a link target is a filesystem name — `.encode()` raises on the
-            # surrogates `os.readlink` puts there for a non-UTF-8 one.
-            return bundle.SidecarEntry(
-                rel, "symlink", 0, os.readlink(p).encode("utf-8", "surrogateescape"))
-        if stat.S_ISREG(st.st_mode):
-            return bundle.SidecarEntry(rel, "file", st.st_mode & 0o777, p.read_bytes())
-    except OSError:
+    at = _leaf(root, rel, "a materialized sidecar path")
+    if at is None:
         return None
+    with at:
+        try:
+            st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode):
+                # A link's own mode is not meaningful and `bundle` fabricates 0 for it; the
+                # target TEXT is what materialization reproduces. Bytes, via surrogateescape,
+                # because a link target is a filesystem name — `.encode()` raises on the
+                # surrogates `os.readlink` puts there for a non-UTF-8 one.
+                return bundle.SidecarEntry(
+                    rel, "symlink", 0,
+                    os.readlink(at.leaf, dir_fd=at.fd).encode("utf-8", "surrogateescape"))
+            if stat.S_ISREG(st.st_mode):
+                fd = bundle.open_leaf(at, os.O_RDONLY, "a materialized sidecar path")
+                try:
+                    return bundle.SidecarEntry(
+                        rel, "file", st.st_mode & 0o777, bundle.read_fd(fd))
+                finally:
+                    os.close(fd)
+        except OSError:
+            return None
     return None
 
 
@@ -1767,9 +1885,22 @@ def _command_paths(root: Path, command) -> set:
             if named_path is None:
                 continue
             rel = f"{base}/{named_path}" if base else named_path
-            p = root / rel
-            if p.is_file() or p.is_symlink():
-                named.add(rel)
+            # DESCENDED, NEVER JOINED — see `_leaf`, and this is the site that puts the name
+            # into the surface `_surface_state` then reads. `is_file()` FOLLOWS every
+            # component, so a token naming `evil/check.sh` where `evil` is a link out of the
+            # tree used to answer True and enter the surface as a tree-relative name that no
+            # longer describes anything in the tree. An uncontainable one is dropped, which is
+            # what this function already does with an escaping step.
+            at = _leaf(root, rel, "a gate-surface path")
+            if at is None:
+                continue
+            with at:
+                try:
+                    st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+                    named.add(rel)
     return named
 
 
