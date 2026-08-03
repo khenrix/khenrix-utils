@@ -66,6 +66,7 @@ cannot. Say so to the author rather than materializing something the manifest ca
 import hashlib
 import json
 import os
+import shutil
 import stat
 from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
@@ -422,8 +423,11 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
     here arrives in the seat unhashed and unnamed.
 
     A REFUSAL, NOT AN OVERWRITE, when the directory already exists. §8.1 gives every retry a
-    fresh clone and this module contains no delete of any kind: a second materialization into
-    a live seat would be the reset-and-rerun-in-place §8.1 forbids, one directory over.
+    fresh clone: a second materialization into a live seat would be the reset-and-rerun-in-place
+    §8.1 forbids, one directory over. This module deletes nothing it did not itself just
+    create — the one `rmtree` below is the failure path unwinding THIS call's own `mkdir`,
+    which the refusal above is what guarantees, and it is the only reason "a refused bundle
+    leaves nothing behind" is a true sentence rather than an intention (see the loop).
     """
     # EVERY PATH, KIND AND MODE RE-CHECKED, BEFORE ANYTHING IS CREATED. `scan` routes each path
     # through `_rel`, so a scanned bundle cannot carry a `..` or a `.git` component — but a
@@ -448,6 +452,14 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
         if not isinstance(e.mode, int) or isinstance(e.mode, bool) or not 0 <= e.mode <= 0o777:
             raise TaskBundleError(
                 f"{e.path!r}: mode is a permission triple in 0..0o777, not {e.mode!r}")
+    # The check over the entry SET, which the per-entry loop above cannot make and which the
+    # paragraph above was wrong to imply it covered. See `bundle._assert_no_collision`: two
+    # entries claiming one path used to be discovered by `FileExistsError` from the write
+    # loop, AFTER `dest` and the earlier entries existed.
+    try:
+        bundlemod._assert_no_collision([e.path for e in b.entries], "a task bundle path")
+    except bundlemod.BundleError as e:
+        raise TaskBundleError(str(e)) from e
     dest = task_dir(seat_path)
     if dest.exists():
         raise TaskBundleError(
@@ -455,34 +467,61 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
             "re-materializing into a live seat is a reset-and-rerun in place.")
     source_root = Path(source_root)
     dest.mkdir(parents=True)
-    for e in b.entries:
-        payload, link_target = _read_entry(source_root, e)
-        # BOTH SIDES DESCEND BY DESCRIPTOR, and the write side is the one that gets executed.
-        # Entries are laid down IN ORDER, so an earlier one can install a link that changes
-        # where a later one's NAME lands: `a -> .`, `a/b -> ..`, `a/b/c -> ..` and the file
-        # `a/b/c/hooks/pre-commit` passes `_check_rel` on every path and `_escapes` on every
-        # target, and used to put an executable at `<seat>/.git/hooks/pre-commit` that `git
-        # commit` ran — measured end to end through `read_task_bundle` -> `materialize`.
-        # `bundle.contained` resolves one component at a time against the previous component's
-        # open descriptor, `O_NOFOLLOW`, so there is no name left for a link to redirect.
-        with _contained(dest, e.path, "a task bundle path", create_dirs=True) as at:
-            if e.kind == "symlink":
-                os.symlink(link_target, at.leaf, dir_fd=at.fd)
-            else:
-                # `O_EXCL` because nothing in this module overwrites: `dest` was just created
-                # empty, so a leaf that already exists is a second entry claiming one path.
-                # Bytes then mode, in that order: a 0400 file created mode-first cannot be
-                # written to, so it is created 0600 and `fchmod`'d — on the DESCRIPTOR, which
-                # is also the only spelling that cannot be pointed at another file.
-                fd = bundlemod.open_leaf(
-                    at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "a task bundle path")
+    # THE PRE-WRITE CHECKS ARE NOT THE WHOLE OF "LEAVES NOTHING BEHIND", and the comment
+    # above used to be the whole of the argument for it. Two refusals live INSIDE this loop
+    # and cannot be hoisted out of it: `_read_entry` reads the source live, so entry 3's file
+    # can have been deleted or replaced since the scan (its own docstring says so), and the
+    # leaf write refuses anything that appeared under a concurrent writer. Measured before
+    # this `try`: a manifest whose second entry's source was gone left the seat holding
+    # `d/one.txt`, and the §8.1 retry that is meant to recover then refused with "already
+    # holds a task bundle" — the invariant broken and the recovery path wedged with it.
+    #
+    # `dest` is provably this call's to remove: the `dest.exists()` refusal above is what
+    # makes the `mkdir` the thing that created it. That is `fleet.clone_seat`'s own
+    # `dest_preexisted` distinction, and it is why the module docstring's "no delete of any
+    # kind" now says what it always meant — nothing this module did not just create.
+    try:
+        for e in b.entries:
+            payload, link_target = _read_entry(source_root, e)
+            # BOTH SIDES DESCEND BY DESCRIPTOR, and the write side is the one that gets
+            # executed. Entries are laid down IN ORDER, so an earlier one can install a link
+            # that changes where a later one's NAME lands: `a -> .`, `a/b -> ..`, `a/b/c -> ..`
+            # and the file `a/b/c/hooks/pre-commit` passes `_check_rel` on every path and
+            # `_escapes` on every target, and used to put an executable at
+            # `<seat>/.git/hooks/pre-commit` that `git commit` ran — measured end to end
+            # through `read_task_bundle` -> `materialize`. `bundle.contained` resolves one
+            # component at a time against the previous component's open descriptor,
+            # `O_NOFOLLOW`, so there is no name left for a link to redirect.
+            with _contained(dest, e.path, "a task bundle path", create_dirs=True) as at:
+                # `O_EXCL` because nothing in this module overwrites. What it refuses is now
+                # only what a CONCURRENT WRITER put there: `dest` was just created empty and
+                # `_assert_no_collision` has already refused a manifest that claims one path
+                # twice, which is what used to reach this open and raise `FileExistsError` —
+                # a class no caller of this module knows to catch.
                 try:
-                    written = 0
-                    while written < len(payload):
-                        written += os.write(fd, payload[written:])
-                    os.fchmod(fd, e.mode)
-                finally:
-                    os.close(fd)
+                    if e.kind == "symlink":
+                        os.symlink(link_target, at.leaf, dir_fd=at.fd)
+                    else:
+                        # Bytes then mode, in that order: a 0400 file created mode-first
+                        # cannot be written to, so it is created 0600 and `fchmod`'d — on the
+                        # DESCRIPTOR, which is also the only spelling that cannot be pointed
+                        # at another file.
+                        fd = bundlemod.open_leaf(
+                            at, os.O_WRONLY | os.O_CREAT | os.O_EXCL, "a task bundle path")
+                        try:
+                            written = 0
+                            while written < len(payload):
+                                written += os.write(fd, payload[written:])
+                            os.fchmod(fd, e.mode)
+                        finally:
+                            os.close(fd)
+                except OSError as err:
+                    raise TaskBundleError(
+                        f"{e.path!r} could not be laid down in the seat ({err.strerror}); "
+                        "something else is writing this bundle directory") from err
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
     return dest
 
 

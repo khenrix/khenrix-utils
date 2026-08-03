@@ -565,6 +565,16 @@ def test_a_chain_of_manifest_links_cannot_land_an_executable_outside_the_task_di
     The refusal is asserted on `materialize` ALONE — `verify_materialized` catches the residue
     afterwards by luck, and a test that also called it would pass on the unfixed code for the
     wrong reason.
+
+    WHICH DOOR IT IS REFUSED AT MOVED, AND THE TEST SAYS SO RATHER THAN HIDING IT. The descent
+    used to be what caught this chain, at `a/b`, after `a` had been written into the seat. It
+    is now caught one door earlier by `bundle._assert_no_collision`, and NOT by coincidence: a
+    chain of this shape is a collision by construction, because every link in it has to be both
+    an ENTRY and an ancestor of the next entry, and one name cannot be both. That closes the
+    only route by which an earlier entry could redirect a later one — so the assertion this
+    test could not make before is the one it now makes first: nothing was created AT ALL.
+    `test_the_write_half_refuses_a_link_planted_under_the_task_dir` is what still pins the
+    descent in the write loop, on the route that remains.
     """
     src = tmp_path / "deep" / "src"
     src.mkdir(parents=True)
@@ -589,25 +599,33 @@ def test_a_chain_of_manifest_links_cannot_land_an_executable_outside_the_task_di
                      E("a/b/c", "symlink", 0, "0" * 64, 0),
                      E("a/b/c/hooks/pre-commit", "file", 0o755, "0" * 64, 0))
     taskbundle.write_task_bundle(run, forged)
-    with pytest.raises(taskbundle.TaskBundleError, match="does not stay inside the tree"):
+    with pytest.raises(taskbundle.TaskBundleError,
+                       match="cannot be both an entry and the path to one"):
         taskbundle.materialize(taskbundle.read_task_bundle(run), src, s.path)
     gitdir = taskbundle.task_dir(s.path).parent.parent
     assert not (gitdir / "hooks" / "pre-commit").exists(), \
         "the executable must never reach the seat's git directory, not even briefly"
     assert not marker.exists()
+    assert not taskbundle.task_dir(s.path).exists(), \
+        "refused before the mkdir, so the retry §8.1 promises is not wedged by a stub dir"
 
 
-def test_the_write_half_refuses_the_same_chain_with_the_read_half_agreeing(tmp_path,
-                                                                          monkeypatch):
-    """The half of C0 the test above cannot reach, and the half that gets EXECUTED.
+def test_the_write_half_refuses_a_link_planted_under_the_task_dir(tmp_path, monkeypatch):
+    """The half of C0 that gets EXECUTED, on the one route still open to it.
 
-    With the chain in the source, the descent on the READ side refuses first — so that test
-    says nothing about whether the WRITE side would have written through the links. The two
-    are separately reachable: `_read_entry` re-reads the source per entry, and §8.1's own
-    model is a source that can change between reads, so an `a` that is a link when entry 1 is
-    read and a real directory when entry 2 is read passes the read half entirely. Stubbing
-    `_read_entry` to always agree is that source, made deterministic; the write loop is then
-    the only thing standing between the manifest and `<git-dir>/hooks/pre-commit`.
+    THE ROUTE THIS USED TO TAKE IS CLOSED, and the replacement is narrower on purpose. It used
+    to drive the four-link chain through a stubbed `_read_entry`, so that an EARLIER ENTRY
+    installed the filesystem a later entry's name resolved against. `_assert_no_collision` now
+    refuses that manifest before the `mkdir` (see the test above), so a test written that way
+    would pass without the write loop's descent existing at all — pinning nothing.
+
+    WHAT REMAINS IS A CONCURRENT WRITER, and it is not hypothetical enough to skip: `dest` is
+    inside the seat's git directory, `materialize` holds no lock, and the descent is the only
+    thing between a link that appears mid-loop and a write through it. The stub plants
+    `dest/a -> ..` while entry 1 is being read, which is that writer made deterministic —
+    every component of `a/b/hooks/pre-commit` is lexically clean, no entry collides with any
+    other, and the name alone still resolves two directories up. `create_dirs` makes `a` and
+    then OPENS it `O_NOFOLLOW`, so the link fails at the open instead of being written through.
     """
     src = tmp_path / "src"
     src.mkdir()
@@ -615,26 +633,30 @@ def test_the_write_half_refuses_the_same_chain_with_the_read_half_agreeing(tmp_p
     _, s = _seat(tmp_path)
     good = taskbundle.scan(src, entrypoint="SKILL.md")
     E = taskbundle.BundleEntry
-    forged = _forged(good,
-                     E("a", "symlink", 0, "0" * 64, 0),
-                     E("a/b", "symlink", 0, "0" * 64, 0),
-                     E("a/b/c", "symlink", 0, "0" * 64, 0),
-                     E("a/b/c/hooks/pre-commit", "file", 0o755, "0" * 64, 0))
-    agreeable = {"a": ".", "a/b": "..", "a/b/c": ".."}
-    monkeypatch.setattr(taskbundle, "_read_entry",
-                        lambda root, e: (b"#!/bin/sh\nexit 0\n", agreeable.get(e.path)))
-    with pytest.raises(taskbundle.TaskBundleError, match="does not stay inside the tree"):
-        taskbundle.materialize(forged, src, s.path)
+    forged = _forged(good, E("a/b/hooks/pre-commit", "file", 0o755, "0" * 64, 0))
     dest = taskbundle.task_dir(s.path)
+
+    planted = []
+
+    def _planting(root, e):
+        # `dest` exists by now — `materialize` creates it before the loop — so this is the
+        # writer racing the descent, not a bundle entry doing the work.
+        os.symlink("..", dest / "a")
+        planted.append((dest / "a").is_symlink())
+        return b"#!/bin/sh\nexit 0\n", None
+
+    monkeypatch.setattr(taskbundle, "_read_entry", _planting)
+    # NON-VACUITY IS IN THE MESSAGE: the refusal names the COMPONENT it stopped at, so this
+    # cannot pass on a lexical check of `"a/b/hooks/pre-commit"` — which is clean — nor on the
+    # collision rule, which sees one entry and no collision.
+    with pytest.raises(taskbundle.TaskBundleError,
+                       match=r"passes through 'a', which is not a directory"):
+        taskbundle.materialize(forged, src, s.path)
+    assert planted == [True], "the link must really have been in place when the descent ran"
     gitdir = dest.parent.parent
-    assert not (gitdir / "hooks" / "pre-commit").exists()
-    # NON-VACUITY, and it is the assertion that says the refusal came from the descent rather
-    # than from the stub or from the first entry: `a` really was laid down as a link into the
-    # task directory, so the loop reached `a/b` with `dest/a` already redirecting — the exact
-    # state a lexical check on `"a/b"` cannot see. Nothing here asserts the directory is
-    # empty: `materialize` promises "nothing left behind" only for a refusal taken BEFORE the
-    # mkdir, and §8.1 answers a part-written seat with a fresh clone rather than a cleanup.
-    assert (dest / "a").is_symlink() and os.readlink(dest / "a") == "."
+    assert not (gitdir / "hooks" / "pre-commit").exists(), \
+        "the write must never reach the seat's git directory, not even briefly"
+    assert not dest.exists(), "a refused bundle leaves nothing behind, including part-writes"
 
 
 def test_a_file_entry_reached_through_a_symlinked_directory_is_refused(tmp_path):
@@ -720,3 +742,57 @@ def test_a_cli_with_no_recorded_install_location_is_none_not_a_keyerror():
     The value for 'this closure could not be described' is already defined; a CLI with no
     install location is exactly that, and `ambient_verdict` reads it as False."""
     assert taskbundle.installed_closure("not-a-cli") is None
+
+
+def test_a_colliding_manifest_is_refused_in_this_module_s_own_class(tmp_path):
+    """A collision used to leak `FileExistsError` — a class no caller of this module catches.
+
+    Two entries claiming one path, and an entry claiming a path another entry needs as a
+    DIRECTORY, are both invisible to a per-entry check and both reached the `O_EXCL` open
+    with the leaf already created. `_decode` type-checks entry fields and never compares them
+    to each other, so §8.1's re-materialization from a recorded manifest is the live route.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")
+    E = taskbundle.BundleEntry
+    one = {e.path: e for e in good.entries}["SKILL.md"]
+    with pytest.raises(taskbundle.TaskBundleError, match="claimed by two entries"):
+        taskbundle.materialize(_forged(good, one, one), src, s.path)
+    with pytest.raises(taskbundle.TaskBundleError,
+                       match="cannot be both an entry and the path to one"):
+        taskbundle.materialize(
+            _forged(good, E("d", "file", 0o644, "0" * 64, 0),
+                    E("d/deep", "file", 0o644, "0" * 64, 0)), src, s.path)
+
+
+def test_a_refusal_inside_the_write_loop_still_leaves_nothing_behind(tmp_path):
+    """`materialize`'s stated invariant, on the paths its pre-write checks cannot reach.
+
+    The comment above the loop argued the invariant from "every path is checked ahead of the
+    mkdir" — but `_read_entry` reads the source LIVE, so an entry whose file has gone since
+    the scan refuses in the middle of the loop, after `dest` and the earlier entries exist.
+    Measured before the fix: the seat was left holding `d/one.txt`, and the §8.1 retry that is
+    meant to recover then refused with "already holds a task bundle" — the invariant broken
+    and the recovery path wedged with it.
+
+    The retry is asserted, not just the absence: a directory that is gone and a directory that
+    is gone AND lets the next materialization through are different claims, and only the
+    second is what §8.1 asks for.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")
+    present = {e.path: e for e in good.entries}["SKILL.md"]
+    gone = taskbundle.BundleEntry("never-scanned.txt", "file", 0o644, "0" * 64, 0)
+    dest = taskbundle.task_dir(s.path)
+    with pytest.raises(taskbundle.TaskBundleError, match="the source no longer names one"):
+        taskbundle.materialize(_forged(good, present, gone), src, s.path)
+    assert not dest.exists(), "a refused bundle leaves nothing behind"
+    # And the retry §8.1 promises really does get through afterwards.
+    assert taskbundle.materialize(_forged(good, present), src, s.path) == dest
+    assert (dest / "SKILL.md").is_file()
