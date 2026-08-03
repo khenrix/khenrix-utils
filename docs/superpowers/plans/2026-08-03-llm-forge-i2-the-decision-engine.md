@@ -10,6 +10,63 @@
 
 ---
 
+## Revisions — read this before any task
+
+This document was adversarially reviewed after it was written, and the review reproduced its
+defects by extracting the draft code out of these fenced blocks and running it. The blocks
+below are the **corrected** ones. If you are working one task in isolation, these are the
+places the original was wrong:
+
+- **Task 1 has already shipped** (`158114f`) and its text here has been brought back into
+  line with what landed. Three corrections: `global_identity` was declared as a test
+  *parameter* in 33 tests across Tasks 1, 4, 5 and 6, but `tests/forge_fixtures.py:70` is a
+  plain undecorated helper, so pytest resolved it as a fixture request and every one of those
+  tests **errored at setup** — the parameter is gone everywhere, because `make_repo` defaults
+  `local_identity=True` and none of them needed it. `_numstat`'s "measured" docstring printed
+  a two-cell binary row that git does not emit. And a `git apply --numstat` failure left both
+  of `Size`'s dimensions populated, so `Size.__post_init__` raised with a diagnosis that was
+  not true of the run; an unreadable patch now voids **both** dimensions, as does a fleet
+  whose seats all came back empty-handed.
+- **Task 2 (`progress`)**: `oscillation` answered `not_oscillating` over a completed fix that
+  recorded no checkpoint, because `sightings` dropped the record one function earlier — the
+  "gap in the evidence" its own docstring promised never reached the detector. The gap is now
+  counted in `oscillation` itself.
+- **Task 3 (`rubric`)**: an all-`unresolved` coverage report scored `unsatisfied_criteria=0`,
+  the **strongest** value on §12.5's top dimension, while `fallback_trigger` — in the same
+  module — called that identical report `undecidable`. There is now exactly one reading of a
+  report in the module and both consumers go through it, so the two answers cannot disagree.
+- **Task 4 (`review`)**: `ledger.Row(...)` was constructed without `requirement_sha256` and
+  took 15 tests down before they asserted anything. And `assert_ledger_is_out_of_reach`
+  scanned the checkout and `<git-dir>/khenrix-forge/review` but never `.../task` — so in a
+  linked worktree, the configuration §16 introduces, the ledger's bytes could sit in the
+  reviewer's own task bundle and the assertion passed. The scan now derives **every root a
+  reviewer can reach** and takes the rest of Decision 3's clone roots as a required argument.
+- **Task 5 (`review` cont.)**: a `rejected` resolution matched no branch in
+  `terminal_from_record`, so an open blocker somebody dismissed was appended to neither
+  roll-up and the run reported **`ready`**. Every member of `RESOLUTIONS` now has a reading
+  and one that does not is a refusal.
+- **Task 6 (`ultra`)**: `run_ultra` built findings with `round_=0` while `review.round_dir`
+  refuses anything below 1, so §13.1's findings could reach no record
+  `terminal_from_record` reads and Contradiction 6's resolution had no mechanism at all.
+  `round_` is now required and validated.
+- **Every checkpoint count in this document has been re-measured** by running the suites, and
+  five of them were wrong. Treat the numbers in the Step "Expected:" lines as measured.
+- **Every mutation list has been re-run**, and any entry that SURVIVED — a branch with no test
+  behind it — has had the missing test written. A mutation nobody killed is decoration. Four
+  survived: `progress`' pytest-banner guard (a nonzero non-pytest run answers `None` through
+  `ids or None` and never reaches it — only a ZERO exit does), `review`'s path-containment
+  branch (the test asserted a bare `"under"`, which the CONTENT message also contains, so it
+  passed with the branch removed), `review.loop`'s reverted-fix branch, and `Ultra`'s
+  "a review that did not run carries no findings" invariant.
+- **Two defects nobody had flagged, both found by running the corrected code.**
+  `ultra.measure_diff` ran `git diff` in the synthesis checkout — a tree whose `.git/config`
+  and `.gitattributes` the synthesis agent owned — without `gitcmd.NO_DIFF_DRIVERS`, which
+  `test_forge_seams.py` already fails the build over. And Task 5's `_clean_round` helper
+  listed a silent seat in `seats_responded` as well, describing a panel of four; the new
+  `Round.__post_init__` refuses that pair.
+
+---
+
 ## SCOPE NOTE — six tasks hold, but two of them are heavy. Read this before Task 1.
 
 The six-task decomposition at `docs/superpowers/plans/2026-08-03-llm-forge-i-the-decision-engine.md:20-27` is the agreed one and this document follows it. Two honest warnings:
@@ -76,6 +133,11 @@ Every task's requirements implicitly include this section.
 ---
 ### Task 1: The size gate decides a strategy, and a verify failure gets a class
 
+> **LANDED as `158114f`.** The text below has been corrected to match what shipped; the shipped
+> file carries a few more tests than the blocks here (it splits `_numstat`'s record parse into
+> its own function and tests each cell shape). Read it for the contract Task 3 consumes:
+> `Size.changed_lines` and `Size.changed_files` are `None` in **four** states, not one.
+
 **Files:**
 - Create: `shared/lib/forge/strategy.py`
 - Create: `tests/test_forge_strategy.py`
@@ -102,7 +164,7 @@ Every task's requirements implicitly include this section.
   - `strategy.INFRASTRUCTURE = "infrastructure"`, `SYNTHESIS_INTRODUCED = "synthesis_introduced"`, `REQUIREMENT_GAP = "requirement_gap"`, `FAILURE_CLASSES`
   - `strategy.fallback_disposition(failure_class: str | None) -> str` returning one of `PERMITTED = "permitted"`, `REFUSED = "refused"`, `UNDECIDABLE = "undecidable"`
   - `strategy.StrategyError(RuntimeError)`
-  - Task 3 consumes `Size.changed_lines`/`Size.changed_files` as the rubric's `diff_complexity` dimension.
+  - Task 3 consumes `Size.changed_lines`/`Size.changed_files` as the rubric's `diff_complexity` dimension. **Both are `None` in four states** — an omitted artifact, a patch `git apply --numstat` refused, a binary delta, and a fleet whose seats all came back empty-handed — and `Size.unmeasured` carries the reason for each. Task 3 must read them as UNKNOWN, never coerce them to 0: zero is the smallest possible diff and therefore the STRONGEST value on that dimension.
 
 **The input that would make this read cleaner than its evidence.** A candidate set whose patch forge cannot count — a **binary file**, a non-empty `omitted`, or a `git apply --numstat` that fails. Measured on git 2.53.0, `git apply --numstat -z` emits `-\t-\tb.bin` for a binary change: an implementation that `int()`s those cells or skips them counts a whole-blob rewrite as **zero changed lines**, the size lands under 400/15, and the run picks from-scratch fusion on a measurement nobody took. The second one: a `FAIL` whose coverage report is entirely `unresolved` — nothing was checkable — read as `synthesis_introduced`, which is the one class that *permits* fallback. Both are closed below, and both have a mutation in Step 8.
 
@@ -123,9 +185,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import bundle, coverage, ledger, strategy, verify  # noqa: E402
+from forge import bundle, coverage, strategy, verify  # noqa: E402
 
-from forge_fixtures import commit_all, global_identity, make_repo, write  # noqa: E402,F401
+from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
 
 def _repo(tmp_path):
@@ -154,7 +216,7 @@ def _cand(patch=b"", sidecars=(), omitted=()):
                                   omitted=tuple(omitted))
 
 
-def test_a_text_patch_is_counted_in_lines_and_files(tmp_path, global_identity):
+def test_a_text_patch_is_counted_in_lines_and_files(tmp_path):
     r = _repo(tmp_path)
     p = _patch(r, {"keep.txt": "a\nb\nc\n", "new.txt": "n\n"})
     s = strategy.measure(r, {"claude": _cand(p)})
@@ -164,7 +226,7 @@ def test_a_text_patch_is_counted_in_lines_and_files(tmp_path, global_identity):
     assert s.changed_lines == 5
 
 
-def test_a_binary_patch_makes_the_line_count_unknown_not_zero(tmp_path, global_identity):
+def test_a_binary_patch_makes_the_line_count_unknown_not_zero(tmp_path):
     """THE FAIL-OPEN. `git apply --numstat` prints `-` for a binary file (measured, git
     2.53.0). Counting it as 0 puts a whole-blob rewrite under the 400-line threshold."""
     r = _repo(tmp_path)
@@ -175,7 +237,30 @@ def test_a_binary_patch_makes_the_line_count_unknown_not_zero(tmp_path, global_i
     assert any("blob.bin" in u for u in s.unmeasured)
 
 
-def test_an_omitted_artifact_makes_the_whole_size_unknown(tmp_path, global_identity):
+def test_a_patch_git_cannot_read_voids_both_dimensions(tmp_path):
+    """THE FAIL-OPEN. A patch `git apply --numstat` refuses leaves the engine not knowing
+    which FILES it touched either, so a file count taken over the seats it COULD read is an
+    undercount reported as a total — and a `Size` naming a refusal beside two live dimensions
+    raises out of `__post_init__` with a diagnosis that is not true of the run."""
+    r = _repo(tmp_path)
+    good = _patch(r, {"keep.txt": "a\n"})
+    s = strategy.measure(r, {"claude": _cand(good),
+                             "codex": _cand(b"this is not a patch at all\n")})
+    assert s.changed_lines is None and s.changed_files is None
+    assert any("codex" in u for u in s.unmeasured)
+
+
+def test_a_fleet_that_produced_nothing_is_unknown_not_zero(tmp_path):
+    """The empty-set argument, reached without ever passing `{}`: three seats that each came
+    back empty-handed arrive here as a populated mapping, and 0/0 would select from-scratch
+    fusion mechanically over a fleet that produced no artifact."""
+    r = _repo(tmp_path)
+    s = strategy.measure(r, {n: _cand() for n in ("claude", "codex", "agy")})
+    assert s.changed_lines is None and s.changed_files is None
+    assert any("carries a tracked patch" in u for u in s.unmeasured)
+
+
+def test_an_omitted_artifact_makes_the_whole_size_unknown(tmp_path):
     r = _repo(tmp_path)
     p = _patch(r, {"keep.txt": "a\n"})
     s = strategy.measure(r, {"claude": _cand(p, omitted=("secret.link",))})
@@ -183,7 +268,7 @@ def test_an_omitted_artifact_makes_the_whole_size_unknown(tmp_path, global_ident
     assert any("omitted" in u for u in s.unmeasured)
 
 
-def test_a_text_sidecar_counts_and_a_binary_one_does_not(tmp_path, global_identity):
+def test_a_text_sidecar_counts_and_a_binary_one_does_not(tmp_path):
     r = _repo(tmp_path)
     txt = bundle.SidecarEntry(path="doc.md", kind="file", mode=0o644, payload=b"a\nb\n")
     binr = bundle.SidecarEntry(path="img.png", kind="file", mode=0o644, payload=b"\xff\xfe\x00")
@@ -195,7 +280,7 @@ def test_a_text_sidecar_counts_and_a_binary_one_does_not(tmp_path, global_identi
     assert any("img.png" in u for u in bad.unmeasured)
 
 
-def test_the_union_is_over_paths_not_a_sum_over_seats(tmp_path, global_identity):
+def test_the_union_is_over_paths_not_a_sum_over_seats(tmp_path):
     """§12.1 sizes the CHANGE, and three seats editing one file is one changed file."""
     r = _repo(tmp_path)
     p = _patch(r, {"keep.txt": "a\n"})
@@ -203,7 +288,7 @@ def test_the_union_is_over_paths_not_a_sum_over_seats(tmp_path, global_identity)
     assert s.changed_files == 1
 
 
-def test_an_empty_candidate_set_is_unknown_not_zero(tmp_path, global_identity):
+def test_an_empty_candidate_set_is_unknown_not_zero(tmp_path):
     r = _repo(tmp_path)
     s = strategy.measure(r, {})
     assert s.changed_lines is None and s.changed_files is None
@@ -238,8 +323,6 @@ over the threshold. Lines are summed per path across the seats' patches, because
 touching the same file really did produce two different amounts of change and the larger is
 not a safe stand-in for either.
 """
-import os
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -295,7 +378,7 @@ class Size:
                 "one of the two statements is false")
 
 
-def _numstat(repo, patch: bytes) -> tuple[dict, tuple[str, ...]]:
+def _numstat(repo, patch: bytes) -> tuple[dict | None, tuple[str, ...]]:
     """`git apply --numstat -z` over one patch: {path: lines} plus what could not be counted.
 
     THE PARSE IS GIT'S, NOT A HAND-WRITTEN ONE, for `bundle._covered`'s reason: a
@@ -303,15 +386,27 @@ def _numstat(repo, patch: bytes) -> tuple[dict, tuple[str, ...]]:
     reimplementing `unquote_c_style`. Under `-z` git emits `<added> TAB <deleted> TAB <path>
     NUL` with the name raw.
 
-    A `-` CELL IS A BINARY FILE AND IT IS NOT ZERO. Measured on git 2.53.0 against a patch
-    touching one text and one binary file:
+    A `-` CELL IS A BINARY FILE AND IT IS NOT ZERO. A binary row carries `-` in BOTH count
+    cells — it is three fields like every other record, not two. Measured on git 2.53.0
+    against a patch touching one binary and two text files:
 
-        -\tb.bin
-        2\t1\tt.txt
+        -\t-\tb.bin
+        1\t0\tnew.txt
+        1\t0\tt.txt
 
     `int("-")` raises and a `try/except: continue` would silently drop the path's lines,
     which is how a whole-blob rewrite lands under a 400-line threshold. The path is still
     counted; only its lines are refused, and the refusal is named.
+
+    THE `{path: lines}` HALF IS `None` WHEN THE PATCH COULD NOT BE READ AT ALL. That is a
+    different fact from "one of its paths has no line count", and it has to travel as one: a
+    patch git refused leaves the engine not knowing which FILES it touched either, so
+    `measure` must void BOTH of §12.1's dimensions rather than report a file count over the
+    seats it could read. Returning `({}, (reason,))` here instead leaves `per_path` populated
+    from the other seats and both dimensions `int`, and `Size.__post_init__`'s second check
+    then raises "this size names things it could not measure and yet reports both dimensions"
+    — an exception carrying a diagnosis that is not true of the run, in place of the
+    `Size(None, None, (reason,))` the caller asked for.
     """
     if not patch:
         return {}, ()
@@ -322,8 +417,8 @@ def _numstat(repo, patch: bytes) -> tuple[dict, tuple[str, ...]]:
         r = gitcmd.git(repo, "apply", "--numstat", "-z", str(f),
                        env_extra=gitcmd.READONLY, check=False, binary=True)
         if r.returncode != 0:
-            return {}, (f"git apply --numstat -> {r.returncode}: "
-                        f"{r.stderr.decode('utf-8', 'replace').strip()}",)
+            return None, (f"git apply --numstat -> {r.returncode}: "
+                          f"{r.stderr.decode('utf-8', 'replace').strip()}",)
         for rec in r.stdout.decode("utf-8", "surrogateescape").split("\0"):
             if not rec:
                 continue
@@ -373,6 +468,14 @@ def measure(repo, candidates) -> Size:
     (`verify.classify` returns HARVEST_INCOMPLETE before it reads the exit code). A size
     computed over a bundle that is missing artifacts is an undercount presented as a total,
     which is the shape §12.1's threshold is least able to survive.
+
+    THE THREE WAYS THIS RETURNS AN ENTIRELY UNKNOWN SIZE ARE ONE ARGUMENT MADE THREE TIMES.
+    No candidate at all, no candidate that carries anything, and a patch git could not read
+    are all states in which "0 lines across 0 files" is a true sentence about the arithmetic
+    and a false one about the run: `decide` would call it a small change and select
+    from-scratch fusion over an artifact set nobody measured. The second of those is not a
+    variant of the first — a fleet whose three seats each returned empty-handed arrives here
+    as a POPULATED mapping — and it is the one a caller reaches without ever passing `{}`.
     """
     if not isinstance(candidates, dict):
         raise StrategyError(f"the candidate set is a mapping of seat -> CandidateBundle, "
@@ -395,10 +498,17 @@ def measure(repo, candidates) -> Size:
 
     per_path: dict = {}
     unmeasured: list = []
+    unreadable = False
     for name in sorted(candidates):
         c = candidates[name]
         lines, why = _numstat(repo, c.tracked_patch)
         unmeasured.extend(f"{name}: {w}" for w in why)
+        if lines is None:
+            # Keep going rather than return here: the other seats' refusals are evidence the
+            # reader needs too, and a report naming one unreadable patch when three were
+            # unreadable is the same undercount this function refuses everywhere else.
+            unreadable = True
+            continue
         for path, n in lines.items():
             if n is None or per_path.get(path, 0) is None:
                 per_path[path] = None
@@ -413,12 +523,26 @@ def measure(repo, candidates) -> Size:
             else:
                 per_path[e.path] = per_path.get(e.path, 0) + n
 
+    if unreadable:
+        if not unmeasured:
+            # Belt and braces: `_numstat` returns None only alongside the reason it did, and
+            # this refuses the state where that stops being true rather than shipping a
+            # silent one — `Size` would raise on the bare None and say nothing useful.
+            unmeasured.append("a candidate's patch could not be read and nothing recorded why")
+        return Size(None, None, tuple(unmeasured))
+    if not per_path:
+        return Size(None, None, (
+            f"not one of the {len(candidates)} candidate(s) carries a tracked patch or a "
+            "sidecar, so there is no artifact to size; 0 lines across 0 files is the empty "
+            "set's own reading with seat names attached to it, and it would select "
+            "from-scratch fusion over a fleet that produced nothing",))
+
     changed_files = len(per_path)
     changed_lines = None if any(v is None for v in per_path.values()) \
         else sum(per_path.values())
     if changed_lines is None and not unmeasured:
-        # Belt and braces: `per_path` only ever holds None where a reason was appended, and
-        # this refuses the state where that stops being true rather than shipping a silent one.
+        # Belt and braces, as above: `per_path` only ever holds None where a reason was
+        # appended, and this refuses the state where that stops being true.
         unmeasured.append("a path's changed-line count is unknown and nothing recorded why")
     return Size(changed_lines, changed_files, tuple(unmeasured))
 ```
@@ -429,7 +553,7 @@ def measure(repo, candidates) -> Size:
 uvx --with pytest pytest -q tests/test_forge_strategy.py
 ```
 
-Expected: `6 passed`.
+Expected: `8 passed`.
 
 - [ ] **Step 5: Write the failing tests for the decision and the failure classification**
 
@@ -561,6 +685,18 @@ def test_a_fail_over_an_unresolved_report_classifies_as_nothing():
 def test_a_fail_with_no_report_at_all_classifies_as_nothing():
     cls, why = strategy.classify_failure(verify.FAIL, report=None)
     assert cls is None and "no coverage report" in why
+
+
+def test_a_fail_over_a_report_with_no_results_classifies_as_nothing():
+    """THIS TEST IS WHAT MAKES STEP 9's SIXTH MUTATION DISCRIMINATE. An empty report has no
+    contradiction, no unsatisfied claim and no unresolved one, so every roll-up reads clean —
+    and reading it clean is `synthesis_introduced`, the one class that PERMITS spending a
+    fallback, concluded from a report about nothing at all. Without this the `if not
+    report.results:` mutation SURVIVES, which is measured, not hypothetical."""
+    cls, why = strategy.classify_failure(verify.FAIL, report=coverage.Report((), (), (), ()))
+    assert cls is None
+    assert strategy.fallback_disposition(cls) == strategy.UNDECIDABLE
+    assert "no results at all" in why
 
 
 def test_a_contradicted_ledger_is_a_requirement_gap_whatever_the_criteria_say():
@@ -809,15 +945,13 @@ def fallback_disposition(failure_class) -> str:
     return REFUSED if failure_class == INFRASTRUCTURE else PERMITTED
 ```
 
-Delete the now-unused imports if the linter in `make verify` objects: `os` and `subprocess` are not used by the final file — remove both from the import block, leaving `import tempfile`, `from dataclasses import dataclass`, `from pathlib import Path`, and `from . import bundle as bundlemod, coverage, gitcmd, verify`.
-
 - [ ] **Step 8: Run the whole file**
 
 ```bash
 uvx --with pytest pytest -q tests/test_forge_strategy.py
 ```
 
-Expected: `24 passed`.
+Expected: `28 passed`.
 
 - [ ] **Step 9: Mutate every new branch**
 
@@ -831,6 +965,16 @@ scripts/mutate.py --file shared/lib/forge/strategy.py \
 
 scripts/mutate.py --file shared/lib/forge/strategy.py \
   --old '    if omitted:' \
+  --new '    if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_strategy.py
+
+scripts/mutate.py --file shared/lib/forge/strategy.py \
+  --old '    if unreadable:' \
+  --new '    if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_strategy.py
+
+scripts/mutate.py --file shared/lib/forge/strategy.py \
+  --old '    if not per_path:' \
   --new '    if False:' \
   -- uvx --with pytest pytest -q tests/test_forge_strategy.py
 
@@ -929,6 +1073,7 @@ EOF
   - `progress.FIX_KIND = "synthesis_fix"`
   - `progress.record_fix_start(log, *, operation_id, tree_oid)` / `progress.record_fix_done(log, *, operation_id, tree_oid, prog)`
   - `progress.Sighting(tree_oid: str, fingerprints: frozenset | None)`
+  - `progress.done_records(events) -> tuple[journal.Event, ...]`
   - `progress.sightings(events) -> tuple[Sighting, ...]`
   - `progress.OSCILLATING = "oscillating"`, `NOT_OSCILLATING = "not_oscillating"`, `OSCILLATION_UNKNOWN = "unknown"`
   - `progress.oscillation(events) -> tuple[str, str]`
@@ -1179,6 +1324,16 @@ def test_output_that_is_not_pytest_yields_unknown_never_the_empty_set():
     assert progress.pytest_fingerprints("make: *** [verify] Error 2\n", "", 2) is None
 
 
+def test_a_zero_exit_from_something_that_is_not_pytest_is_unknown_not_a_green_run():
+    """THE BANNER GUARD'S OWN TEST, and it has to be a ZERO exit. A nonzero non-pytest run
+    already answers `None` through `return ids or None`, so it never reaches the guard —
+    measured, the `_PYTEST_BANNERS` mutation SURVIVES on it. A zero exit does reach it, and
+    without the guard the empty set comes back as an honest green run: `compare` then reads
+    every later attempt as a strict improvement and the loop runs to its cap."""
+    assert progress.pytest_fingerprints("BUILD SUCCESSFUL in 3s\n", "", 0) is None
+    assert progress.pytest_fingerprints("", "", 0) is None
+
+
 def test_a_collection_error_yields_unknown_not_one_failing_id():
     """pytest exited nonzero and named no failing TEST. 'ERROR <module>' is not a test id,
     and reading it as one manufactures a fingerprint that can never shrink."""
@@ -1419,7 +1574,7 @@ def compare(before: Progress, after: Progress) -> str:
 uvx --with pytest pytest -q tests/test_forge_progress.py
 ```
 
-Expected: `18 passed`.
+Expected: `17 passed`.
 
 - [ ] **Step 12: Write the failing tests for the sightings, the oscillation detector and the cap**
 
@@ -1608,12 +1763,24 @@ def record_fix_done(log, *, operation_id: str, tree_oid, prog: Progress) -> None
                                      else sorted(prog.failing_test_fingerprints)))
 
 
+def done_records(events) -> tuple:
+    """Every completed synthesis fix, whatever it managed to record.
+
+    THIS EXISTS SO THE GAP IS COUNTABLE. `sightings` below is the SUBSET of these that could
+    form a `(tree, failing-test set)` pair; the difference between the two counts is exactly
+    the evidence `oscillation` does not have. Without it a fix that ran, completed and left no
+    checkpoint is discarded here and invisible there, and `oscillation` falls through to
+    `not_oscillating` — *the synthesis is still making progress* — over a fix it never saw.
+    """
+    return tuple(e for e in events if e.event == journalmod.done(FIX_KIND))
+
+
 def sightings(events) -> tuple:
     """Every completed fix that produced a usable tree id, oldest first.
 
     A done record with `tree_oid: None` produces NO sighting, because the pair cannot be
-    formed — and `oscillation` treats that absence as a gap in the evidence rather than as
-    the absence of a repeat.
+    formed. It is not thereby lost: `oscillation` counts `done_records` separately and reads
+    the difference as a gap in the evidence rather than as the absence of a repeat.
     """
     out = []
     for e in events:
@@ -1650,6 +1817,13 @@ def oscillation(events) -> tuple:
     `(oid, None)` twice; matching them would manufacture the stop signal out of two
     measurements nobody could take and report it as an observed recurrence.
 
+    A COMPLETED FIX THAT RECORDED NO CHECKPOINT FORMS NO PAIR EITHER, and it is counted HERE
+    rather than in `sightings`, which is the whole reason `done_records` exists. `sightings`
+    drops such a record — there is no tree to key on — so a detector reading only `sightings`
+    sees an empty log and answers `not_oscillating`: a fix that ran, completed and left no
+    checkpoint would read as *the synthesis is still making progress*, which is the verdict
+    §12.3 spends money on.
+
     A PROVEN REPEAT OUTRANKS A GAP. Once a pair has been seen twice the answer is
     `oscillating` whatever else is missing — `fingerprint.agreement_label`'s rule that a
     measured difference outranks an unmeasured field, in the other direction.
@@ -1658,8 +1832,12 @@ def oscillation(events) -> tuple:
     identifies — is a fix whose sighting was never recorded, so the answer below it is
     `unknown` rather than `not_oscillating`.
     """
-    seen, unmeasured = set(), 0
-    for s in sightings(events):
+    pairs = sightings(events)
+    seen = set()
+    # The fixes that completed and recorded no tree at all. `sightings` cannot carry them, so
+    # counting them here is the only place the absence survives into the answer.
+    unmeasured = len(done_records(events)) - len(pairs)
+    for s in pairs:
         if s.fingerprints is None:
             unmeasured += 1
             continue
@@ -1679,8 +1857,9 @@ def oscillation(events) -> tuple:
             "failure set repeat an earlier pair could not be measured")
     if unmeasured:
         return OSCILLATION_UNKNOWN, (
-            f"{unmeasured} completed fix(es) recorded no failing-test set, so their pairs "
-            "could not be formed and a recurrence among them would be invisible")
+            f"{unmeasured} completed fix(es) recorded no checkpoint or no failing-test set, "
+            "so their pairs could not be formed and a recurrence among them would be "
+            "invisible")
     return NOT_OSCILLATING, (
         f"{len(seen)} distinct (tree, failing-test set) pair(s) were recorded and none "
         "repeats")
@@ -1710,7 +1889,7 @@ def cap_remaining(manifest, events) -> int:
 uvx --with pytest pytest -q tests/test_forge_progress.py
 ```
 
-Expected: `30 passed`.
+Expected: `29 passed`.
 
 - [ ] **Step 16: Re-run the new tests under renamed test functions**
 
@@ -1720,7 +1899,7 @@ Rename every test in `tests/test_forge_progress.py` to `test_zz0`, `test_zz1`, �
 uvx --with pytest pytest -q tests/test_forge_progress.py
 ```
 
-Expected: `30 passed` — the same count. **Restore the original names.**
+Expected: `29 passed` — the same count. **Restore the original names.**
 
 - [ ] **Step 17: Mutate every new branch**
 
@@ -1743,6 +1922,11 @@ scripts/mutate.py --file shared/lib/forge/progress.py \
 scripts/mutate.py --file shared/lib/forge/progress.py \
   --old '        if s.fingerprints is None:' \
   --new '        if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_progress.py
+
+scripts/mutate.py --file shared/lib/forge/progress.py \
+  --old '    unmeasured = len(done_records(events)) - len(pairs)' \
+  --new '    unmeasured = 0' \
   -- uvx --with pytest pytest -q tests/test_forge_progress.py
 
 scripts/mutate.py --file shared/lib/forge/progress.py \
@@ -1801,7 +1985,7 @@ EOF
 - **Consumes:**
   - `coverage.Report(results, contradictions, unsatisfied, unresolved)` and `coverage.Result(row_id, criterion_index, method, satisfied, detail)` (`coverage.py:67-138`).
   - `verify.OUTCOMES` (`verify.py:128`).
-  - `strategy.Size` from Task 1, for the `diff_complexity` dimension.
+  - `strategy.Size` from Task 1, for the `diff_complexity` dimension. Its two numbers are independently nullable and are `None` in four distinct states (Task 1's Produces lists them); `dimensions_from` maps either `None` to `diff_complexity=None`, which makes the seat unrankable rather than the smallest-diff winner.
   - `seatrecord.SeatRecord(name, attempts)` / `seatrecord.Attempt` (`seatrecord.py:36-62`) — read by the caller, not by this module; this module takes the extracted numbers.
 - **Produces:**
   - `rubric.Dimensions(seat: str, unsatisfied_criteria: int | None, covered_criteria: int | None, gate_outcome: str | None, review_risk: int | None, diff_complexity: int | None)`
@@ -1924,8 +2108,7 @@ def test_a_seat_with_an_unmeasured_dimension_is_unrankable_not_worst():
 def test_strongest_refuses_to_name_a_seat_while_any_seat_is_unrankable():
     """THE FAIL-OPEN. Ranking only the measurable seats prints 'the strongest seat we could
     measure' as 'the strongest seat'."""
-    name, why = rubric.strongest([_d("agy"), _d("claude", diff_complexity_unset=True)]
-                                 if False else [_d("agy"), _d("claude", risk=None)])
+    name, why = rubric.strongest([_d("agy"), _d("claude", risk=None)])
     assert name is None
     assert "claude" in why and "review_risk" in why
 
@@ -2001,9 +2184,65 @@ def test_a_missing_report_yields_unmeasured_coverage_not_a_clean_one():
     d = rubric.dimensions_from("agy", report=None, gate_outcome=verify.PASS,
                                review_risk=0, size=strategy.Size(1, 1, ()))
     assert d.unsatisfied_criteria is None and d.covered_criteria is None
-```
 
-> The odd-looking conditional in `test_strongest_refuses_to_name_a_seat_while_any_seat_is_unrankable` is a leftover — write it plainly as `rubric.strongest([_d("agy"), _d("claude", risk=None)])`.
+
+def test_an_all_unresolved_report_is_unrankable_and_never_the_strongest_seat():
+    """THE FAIL-OPEN THIS MODULE IS MOST EXPOSED TO. `unsatisfied` and `contradictions` are
+    BOTH empty for a report nobody could check, so summing their lengths scores it 0 — the
+    strongest value on §12.5's first dimension — and the seat nobody could check then beats
+    the seat with one measured miss. `fallback_trigger` calls that same report `undecidable`,
+    so the two answers have to come from one reading."""
+    nobody = _report(_unknown("a"), _unknown("b"))
+    size = strategy.Size(10, 2, ())
+    blind = rubric.dimensions_from("agy", report=nobody, gate_outcome=verify.PASS,
+                                   review_risk=0, size=size)
+    assert blind.unsatisfied_criteria is None and blind.covered_criteria is None
+    assert rubric.fallback_trigger(nobody)[0] == rubric.TRIGGER_UNDECIDABLE
+    one_miss = rubric.dimensions_from("claude", report=_report(_ok(), _bad("b")),
+                                      gate_outcome=verify.PASS, review_risk=0, size=size)
+    assert one_miss.unsatisfied_criteria == 1
+    name, why = rubric.strongest([blind, one_miss])
+    assert name is None and "requirement_coverage" in why
+
+
+def test_the_trigger_and_the_top_dimension_agree_on_every_report_shape():
+    """Not "both were edited to match" — the same call, over every shape this module sees."""
+    size = strategy.Size(10, 2, ())
+    shapes = (None, coverage.Report((), (), (), ()), _report(_ok()), _report(_ok(), _bad("b")),
+              _report(_ok(), _unknown("b")), _report(_unknown("a")),
+              _report(_ok(), contradictions=("row b contradicts a unanimous rejection",)))
+    for report in shapes:
+        answer, _ = rubric.fallback_trigger(report)
+        d = rubric.dimensions_from("agy", report=report, gate_outcome=verify.PASS,
+                                   review_risk=0, size=size)
+        unmeasured = d.unsatisfied_criteria is None
+        assert unmeasured == (answer == rubric.TRIGGER_UNDECIDABLE), (report, answer)
+
+
+def test_the_module_reads_a_coverage_report_in_exactly_one_place():
+    """By construction rather than by both being remembered: a second `report.unresolved` is
+    a second chance for §12.4's answer and §12.5's top dimension to drift apart, and the
+    drift is silent and decides which seat the run calls strongest."""
+    src = (ROOT / "shared" / "lib" / "forge" / "rubric.py").read_text(encoding="utf-8")
+    for branch in ("if report.contradictions:", "if report.unsatisfied:",
+                   "if not report.results:", "if report.unresolved:"):
+        assert src.count(branch) == 1, branch
+
+
+def test_every_unknown_size_yields_an_unmeasured_complexity_and_never_a_zero():
+    """`strategy.measure` answers UNKNOWN in four states, not one: an omitted artifact, a
+    patch git could not read, a binary delta, and a fleet whose seats all came back
+    empty-handed. Zero is the SMALLEST diff and therefore the strongest value on this
+    dimension, so a coerced 0 here is C5's shape one field over."""
+    for size in (strategy.Size(None, None, ("nothing was measured",)),
+                 strategy.Size(None, 4, ("a binary delta",)),
+                 strategy.Size(120, None, ("a path this run could not name",))):
+        d = rubric.dimensions_from("agy", report=_report(_ok()), gate_outcome=verify.PASS,
+                                   review_risk=0, size=size)
+        assert d.diff_complexity is None, size
+        name, why = rubric.strongest([d, _d("claude")])
+        assert name is None and "diff_complexity" in why
+```
 
 - [ ] **Step 2: Run them to verify they fail**
 
@@ -2088,22 +2327,78 @@ class Dimensions:
                 raise RubricError(f"{name} is a whole number or None, not {v!r}")
 
 
+def _read_report(report) -> tuple:
+    """§12.4's reading of one coverage report — THE ONLY READING OF A REPORT IN THIS MODULE.
+
+    BOTH CONSUMERS COME THROUGH HERE, AND THAT IS THE ENTIRE POINT OF THE FUNCTION.
+    `fallback_trigger` answers §12.4's question and `dimensions_from` fills §12.5's TOP
+    dimension, and both are the same question about the same evidence: is there an accepted
+    claim this run knows to be missing, or could this run not tell? When those were two
+    separate readings they disagreed, silently and in the worst possible direction: an
+    all-`unresolved` report has an empty `unsatisfied` and an empty `contradictions`, so
+    `len(report.unsatisfied) + len(report.contradictions)` scored it **zero** — the STRONGEST
+    value on §12.5's first dimension — while `fallback_trigger`, in this same module, called that
+    identical report `undecidable`. The seat nobody could check outranked the seat with one
+    measured miss. Two spellings of one judgement cannot be kept in step by both being
+    remembered; one function cannot disagree with itself.
+
+    `undecidable` IS THE THIRD ANSWER AND IT IS THE ONE THIS FUNCTION EXISTS FOR. `unresolved`
+    means nobody could check. Folding it into `not_triggered` is §10.1's own example failure
+    — "marked present because os.replace appears" — arriving as §12's fallback decision.
+
+    §12.4: "a missing accepted row is a fallback trigger *and* a report line, regardless of
+    verify. This is the only thing that catches false-green." So a triggered answer is a
+    MEASUREMENT and outranks a gap — an unresolved criterion beside an unsatisfied one does
+    not soften the trigger, which is why the two `TRIGGERED` branches are read first.
+    """
+    if report is None:
+        return TRIGGER_UNDECIDABLE, (
+            "no coverage report was produced, so whether an accepted claim is missing is a "
+            "question nobody asked; §12.4 calls this check the only thing that catches a "
+            "false green")
+    if not isinstance(report, coveragemod.Report):
+        raise RubricError(f"a coverage.Report or None is required, "
+                          f"not {type(report).__name__}")
+    if report.contradictions:
+        return TRIGGERED, (f"{len(report.contradictions)} ledger contradiction(s): "
+                           f"{report.contradictions[0]}")
+    if report.unsatisfied:
+        return TRIGGERED, (f"{len(report.unsatisfied)} accepted claim(s) were checked and are "
+                           f"not satisfied: {report.unsatisfied[0]}")
+    if not report.results:
+        return TRIGGER_UNDECIDABLE, (
+            "this report holds no results at all, so it says nothing about any claim; an "
+            "all-empty report reading as a covered run is §10.1's own failure shape")
+    if report.unresolved:
+        return TRIGGER_UNDECIDABLE, (
+            f"{len(report.unresolved)} criterion/criteria are unresolved — nobody could check "
+            f"them ({report.unresolved[0]}) — so 'no accepted row is missing' is not something "
+            "this run measured")
+    return NOT_TRIGGERED, (f"all {len(report.results)} criteria were mechanically checked and "
+                           "satisfied, and no row contradicts a unanimous rejection")
+
+
 def dimensions_from(seat, *, report, gate_outcome, review_risk, size) -> Dimensions:
     """Extract §12.5's dimensions from the records that already hold them.
 
-    A MISSING REPORT YIELDS TWO NULLS, not two zeros. "No accepted criterion is unsatisfied"
-    and "nobody produced a coverage report" are the two states §10.1 exists to keep apart, and
-    zero would spell them the same way — with the unmeasured seat sorting first.
+    A REPORT THIS RUN COULD NOT READ YIELDS TWO NULLS, not two zeros — and which reports those
+    are is `_read_report`'s answer, not a second opinion formed here. "No accepted criterion
+    is unsatisfied" and "nobody could check whether one is" are the two states §10.1 exists to
+    keep apart, and zero would spell them the same way, with the unmeasured seat sorting
+    FIRST.
+
+    `diff_complexity` IS THE SAME SHAPE ONE DIMENSION OVER. `strategy.measure` returns
+    `Size(None, None, …)` for an omitted artifact, a patch git could not read, a binary delta
+    AND a fleet whose seats all came back empty-handed — four states, all of them UNKNOWN, and
+    every one of them scores 0 if the two dimensions are summed without being checked. Zero is
+    the smallest possible diff and therefore the STRONGEST value here. The reasons are on the
+    `Size` itself (`Size.unmeasured`, which `Size.__post_init__` guarantees is non-empty
+    whenever either dimension is None), and a reader printing `rank`'s refusal prints those
+    lines beside it.
     """
-    if report is None:
-        unsat = covered = None
-    elif not isinstance(report, coveragemod.Report):
-        raise RubricError(f"a coverage.Report or None is required, "
-                          f"not {type(report).__name__}")
-    elif not report.results:
-        # C4's shape: an all-empty report is not a clean one.
-        unsat = covered = None
-    else:
+    unsat = covered = None
+    answer, _why = _read_report(report)
+    if answer != TRIGGER_UNDECIDABLE:
         unsat = len(report.unsatisfied) + len(report.contradictions)
         covered = sum(1 for r in report.results
                       if r.method == "mechanically_checked" and r.satisfied is True)
@@ -2200,42 +2495,14 @@ def strongest(dims) -> tuple:
 
 
 def fallback_trigger(report) -> tuple:
-    """§12.4's check, as three answers.
+    """§12.4's check, as three answers. One line, because the reading is `_read_report`'s.
 
-    §12.4: "a missing accepted row is a fallback trigger *and* a report line, regardless of
-    verify. This is the only thing that catches false-green." So a triggered answer is a
-    MEASUREMENT and outranks a gap — an unresolved criterion beside an unsatisfied one does
-    not soften the trigger.
-
-    `undecidable` IS THE THIRD ANSWER AND IT IS THE ONE THIS FUNCTION EXISTS FOR. `unresolved`
-    means nobody could check. Folding it into `not_triggered` is §10.1's own example failure
-    — "marked present because os.replace appears" — arriving as §12's fallback decision.
+    THIS FUNCTION IS DELIBERATELY A FORWARDER AND MUST STAY ONE. The moment it grows a branch
+    of its own, §12.4's answer and §12.5's top dimension are two readings again, and the
+    version of this module that had two disagreed about the report that matters most: the one
+    nobody could check.
     """
-    if report is None:
-        return TRIGGER_UNDECIDABLE, (
-            "no coverage report was produced, so whether an accepted claim is missing is a "
-            "question nobody asked; §12.4 calls this check the only thing that catches a "
-            "false green")
-    if not isinstance(report, coveragemod.Report):
-        raise RubricError(f"a coverage.Report or None is required, "
-                          f"not {type(report).__name__}")
-    if report.contradictions:
-        return TRIGGERED, (f"{len(report.contradictions)} ledger contradiction(s): "
-                           f"{report.contradictions[0]}")
-    if report.unsatisfied:
-        return TRIGGERED, (f"{len(report.unsatisfied)} accepted claim(s) were checked and are "
-                           f"not satisfied: {report.unsatisfied[0]}")
-    if not report.results:
-        return TRIGGER_UNDECIDABLE, (
-            "this report holds no results at all, so it says nothing about any claim; an "
-            "all-empty report reading as a covered run is §10.1's own failure shape")
-    if report.unresolved:
-        return TRIGGER_UNDECIDABLE, (
-            f"{len(report.unresolved)} criterion/criteria are unresolved — nobody could check "
-            f"them ({report.unresolved[0]}) — so 'no accepted row is missing' is not something "
-            "this run measured")
-    return NOT_TRIGGERED, (f"all {len(report.results)} criteria were mechanically checked and "
-                           "satisfied, and no row contradicts a unanimous rejection")
+    return _read_report(report)
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -2244,11 +2511,11 @@ def fallback_trigger(report) -> tuple:
 uvx --with pytest pytest -q tests/test_forge_rubric.py
 ```
 
-Expected: `22 passed`.
+Expected: `26 passed`.
 
 - [ ] **Step 5: Re-run under renamed test functions**
 
-Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `22 passed`. **Restore the original names.**
+Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `26 passed`. **Restore the original names.**
 
 - [ ] **Step 6: Mutate every new branch**
 
@@ -2284,12 +2551,22 @@ scripts/mutate.py --file shared/lib/forge/rubric.py \
   -- uvx --with pytest pytest -q tests/test_forge_rubric.py
 
 scripts/mutate.py --file shared/lib/forge/rubric.py \
-  --old '    elif not report.results:' \
-  --new '    elif False:' \
+  --old '    if answer != TRIGGER_UNDECIDABLE:' \
+  --new '    if True:' \
+  -- uvx --with pytest pytest -q tests/test_forge_rubric.py
+
+scripts/mutate.py --file shared/lib/forge/rubric.py \
+  --old '    if d.unsatisfied_criteria is None or d.covered_criteria is None:' \
+  --new '    if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_rubric.py
+
+scripts/mutate.py --file shared/lib/forge/rubric.py \
+  --old '    if d.diff_complexity is None:' \
+  --new '    if False:' \
   -- uvx --with pytest pytest -q tests/test_forge_rubric.py
 ```
 
-Expected: every one exits 0 (CAUGHT). The fifth one is the totality mutation — if it SURVIVES, `test_no_two_distinct_seats_ever_compare_equal` is not reaching `_key`'s last element. Run `git status` after the wave; it must be clean.
+Expected: every one exits 0 (CAUGHT). The fifth one is the totality mutation — if it SURVIVES, `test_no_two_distinct_seats_ever_compare_equal` is not reaching `_key`'s last element. The seventh is C5's: `if True:` makes `dimensions_from` compute the two numbers off a report `_read_report` called `undecidable`, which is exactly the state where an all-`unresolved` report scores 0 and ranks strongest. Run `git status` after the wave; it must be clean.
 
 - [ ] **Step 7: Add the test file to the Makefile**
 
@@ -2343,13 +2620,16 @@ EOF
   - `review.review_dir(checkout, round_) -> Path`
   - `review.write_reviewer_inputs(checkout, round_, *, checkpoint, baseline_commit, baseline_tree, artifact_manifest, token, task_bundle_present) -> Path`
   - `review.launcher_prompt(bundle_path) -> str`
-  - `review.assert_ledger_is_out_of_reach(run_dir, *, checkout) -> None`
+  - `review.reviewer_roots(checkout) -> tuple[Path, ...]`
+  - `review.assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None` — `other_clones` is required, never defaulted
+  - `review.finding_id(round_: int, seat: str, severity: str, claim: str) -> str`
+  - `review.COUNCIL_KIND = "council_round"`
   - `review.reviewer_specs(names, *, prompt, timeout, cwd, token, workdir, cfg=None, build=engine.build_real_spec) -> list`
   - `review.parse_findings(text) -> tuple`
   - `review.Finding(id, round, seat, severity, claim, resolution)`; `review.Round(round, checkpoint, findings, identities, seats_responded, seats_silent)`
   - `review.round_dir(run_dir, round_) -> Path`; `review.findings_path(run_dir, round_) -> Path`
   - `review.write_round(run_dir, r: Round) -> str` (returns the content hash); `review.read_round(run_dir, round_) -> Round`
-  - `review.run_round(run_dir, *, round_, checkout, checkpoint, baseline_commit, baseline_tree, artifact_manifest, log, names=engine.DEFAULT_PROVIDERS, cfg=None, run_council=engine.run_council, build=engine.build_real_spec, probe=fingerprint.build, make_token=engine.make_sentinel) -> Round`
+  - `review.run_round(run_dir, *, round_, checkout, checkpoint, baseline_commit, baseline_tree, artifact_manifest, log, other_clones, names=engine.DEFAULT_PROVIDERS, cfg=None, run_council=engine.run_council, build=engine.build_real_spec, probe=fingerprint.build, make_token=engine.make_sentinel) -> Round`
   - Task 5 consumes `Round`, `read_round`, `run_round`, `SEVERITIES`, `RESOLUTIONS`. Task 6 imports `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED` (declared in Task 5).
 
 **The inputs that would make this read cleaner than its evidence — four of them.**
@@ -2379,7 +2659,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 from council import engine  # noqa: E402
 from forge import journal, ledger, review, storage  # noqa: E402
 
-from forge_fixtures import commit_all, global_identity, make_repo, write  # noqa: E402,F401
+from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
 
 def _checkout(tmp_path, name="synthesis"):
@@ -2396,9 +2676,14 @@ def _run_dir(tmp_path, name="run"):
 
 
 def _ledger(run_dir):
+    # `requirement_sha256` sits between `requirement_span` and `kind` and is REQUIRED
+    # (`ledger.py:156`): §10 asks for the requirement id "+ source span/hash", and one string
+    # cannot carry three facts a reader has to compare separately. Omitting it raises
+    # `TypeError` out of `Row.__init__` before any assertion in this file runs.
     row = ledger.Row(
         id=ledger.row_id("R1", "the cache layer is rejected"), requirement_id="R1",
-        requirement_span="spec.md:1-3", kind="architecture", component="core",
+        requirement_span="spec.md:1-3", requirement_sha256="0" * 64,
+        kind="architecture", component="core",
         semantic_claim="the cache layer is rejected", status="rejected", dependencies=(),
         seat_evidence=(), counterevidence="", acceptance_criteria=(),
         synthesis_evidence=None, verification_receipt=None, risk="", rationale="none")
@@ -2409,7 +2694,7 @@ def _ledger(run_dir):
     return l
 
 
-def test_the_reviewer_inputs_name_every_item_section_13_requires(tmp_path, global_identity):
+def test_the_reviewer_inputs_name_every_item_section_13_requires(tmp_path):
     co = _checkout(tmp_path)
     d = review.write_reviewer_inputs(co, 1, checkpoint="a" * 40, baseline_commit="b" * 40,
                                      baseline_tree="c" * 40, artifact_manifest=None,
@@ -2423,7 +2708,7 @@ def test_the_reviewer_inputs_name_every_item_section_13_requires(tmp_path, globa
     assert "git diff" in instr
 
 
-def test_a_missing_artifact_manifest_is_stated_to_the_reviewer(tmp_path, global_identity):
+def test_a_missing_artifact_manifest_is_stated_to_the_reviewer(tmp_path):
     """§16's manifest is a later plan's artifact. A four-item input set described as five is
     a reviewer told it has evidence it does not have."""
     co = _checkout(tmp_path)
@@ -2433,7 +2718,7 @@ def test_a_missing_artifact_manifest_is_stated_to_the_reviewer(tmp_path, global_
     assert "no out-of-band artifact manifest" in (d / "REVIEW.md").read_text()
 
 
-def test_a_missing_task_bundle_is_stated_rather_than_omitted(tmp_path, global_identity):
+def test_a_missing_task_bundle_is_stated_rather_than_omitted(tmp_path):
     co = _checkout(tmp_path)
     d = review.write_reviewer_inputs(co, 1, checkpoint="a" * 40, baseline_commit="b" * 40,
                                      baseline_tree="c" * 40, artifact_manifest=None,
@@ -2441,35 +2726,33 @@ def test_a_missing_task_bundle_is_stated_rather_than_omitted(tmp_path, global_id
     assert "no task bundle" in (d / "REVIEW.md").read_text()
 
 
-def test_the_review_directory_is_asked_for_never_joined(tmp_path, global_identity):
+def test_the_review_directory_is_asked_for_never_joined(tmp_path):
     co = _checkout(tmp_path)
     gd = subprocess.run(["git", "-C", str(co), "rev-parse", "--absolute-git-dir"],
                         check=True, capture_output=True, text=True).stdout.strip()
     assert review.review_dir(co, 2) == Path(gd) / "khenrix-forge" / "review" / "round-2"
 
 
-def test_the_ledger_is_out_of_reach_of_a_clean_checkout(tmp_path, global_identity):
+def test_the_ledger_is_out_of_reach_of_a_clean_checkout(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
-    review.assert_ledger_is_out_of_reach(run, checkout=co)   # does not raise
+    review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())   # does not raise
 
 
-def test_a_ledger_copied_into_the_checkout_is_caught_by_its_bytes(tmp_path, global_identity):
+def test_a_ledger_copied_into_the_checkout_is_caught_by_its_bytes(tmp_path):
     """STRUCTURAL, NOT TEXTUAL. §13 gives every reviewer a shell in this tree, so 'do not
     read the ledger' in prose is not a guarantee. The bytes must not be here under ANY name."""
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
-    (co / "notes.txt").write_bytes(storage.Path(storage.ledger_path(run)).read_bytes()
-                                   if hasattr(storage, "Path") else
-                                   Path(storage.ledger_path(run)).read_bytes())
+    (co / "notes.txt").write_bytes(Path(storage.ledger_path(run)).read_bytes())
     with pytest.raises(review.ReviewError) as e:
-        review.assert_ledger_is_out_of_reach(run, checkout=co)
+        review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())
     assert "notes.txt" in str(e.value)
 
 
-def test_a_ledger_copied_into_the_review_directory_is_caught(tmp_path, global_identity):
+def test_a_ledger_copied_into_the_review_directory_is_caught(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -2478,10 +2761,10 @@ def test_a_ledger_copied_into_the_review_directory_is_caught(tmp_path, global_id
                                      token="T", task_bundle_present=True)
     (d / "extra.json").write_bytes(Path(storage.ledger_path(run)).read_bytes())
     with pytest.raises(review.ReviewError):
-        review.assert_ledger_is_out_of_reach(run, checkout=co)
+        review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())
 
 
-def test_a_run_directory_inside_the_checkout_is_refused_outright(tmp_path, global_identity):
+def test_a_run_directory_inside_the_checkout_is_refused_outright(tmp_path):
     """The path check and the byte check are complementary, not redundant: a run directory
     UNDER the checkout puts the real ledger in the reviewer's tree with no copy involved."""
     co = _checkout(tmp_path)
@@ -2489,12 +2772,15 @@ def test_a_run_directory_inside_the_checkout_is_refused_outright(tmp_path, globa
     run.mkdir()
     _ledger(run)
     with pytest.raises(review.ReviewError) as e:
-        review.assert_ledger_is_out_of_reach(run, checkout=co)
-    assert "under" in str(e.value)
+        review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())
+    assert "which is under" in str(e.value)
+    # NOT a bare `"under" in ...`: the CONTENT message says "a copy under another name", so
+    # the loose assertion passes with the path branch removed — measured, that mutation
+    # SURVIVED. The two checks are complementary and this test is the path one's.
+    assert "exact bytes" not in str(e.value)
 
 
-def test_an_unreadable_directory_refuses_rather_than_scanning_nothing(tmp_path,
-                                                                     global_identity):
+def test_an_unreadable_directory_refuses_rather_than_scanning_nothing(tmp_path):
     """os.walk with no `onerror` returns [] for an unreadable subtree — measured on this
     project three times — and an empty scan finding no ledger reads as a clean tree."""
     run = _run_dir(tmp_path)
@@ -2506,17 +2792,83 @@ def test_an_unreadable_directory_refuses_rather_than_scanning_nothing(tmp_path,
     blind.chmod(0o000)
     try:
         with pytest.raises(review.ReviewError):
-            review.assert_ledger_is_out_of_reach(run, checkout=co)
+            review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())
     finally:
         blind.chmod(0o755)
 
 
-def test_a_missing_ledger_refuses_rather_than_certifying_absence(tmp_path, global_identity):
+def test_a_missing_ledger_refuses_rather_than_certifying_absence(tmp_path):
     run = _run_dir(tmp_path)
     co = _checkout(tmp_path)
     with pytest.raises(review.ReviewError) as e:
-        review.assert_ledger_is_out_of_reach(run, checkout=co)
+        review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())
     assert "no ledger" in str(e.value)
+
+
+def _worktree(main, dest, branch="synth"):
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(dest), "-b", branch],
+                   check=True, capture_output=True)
+    return dest
+
+
+def test_a_ledger_in_the_task_bundle_of_a_linked_worktree_is_caught(tmp_path):
+    """THE GUARANTEE THAT PASSED BY ACCIDENT. In an ordinary clone the git directory is under
+    the worktree, so one walk sweeps the task bundle up and the scan is total by luck. In a
+    LINKED WORKTREE — §16's synthesis worktree — the git dir is `<main>/.git/worktrees/<n>`,
+    outside the checkout, and `<git-dir>/khenrix-forge/task` is §20's bundle: the one place
+    Decision 3 names above all others, and the one a version that scanned only `.../review`
+    never looked at. Measured: that version PASSED this exact tree."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    main = _checkout(tmp_path, "main")
+    wt = _worktree(main, tmp_path / "synth")
+    assert review.reviewer_roots(wt) != (Path(wt).resolve(),), \
+        "a linked worktree's git dir is OUTSIDE it; if this holds the test proves nothing"
+    task = Path(subprocess.run(["git", "-C", str(wt), "rev-parse", "--absolute-git-dir"],
+                               check=True, capture_output=True,
+                               text=True).stdout.strip()) / "khenrix-forge" / "task"
+    task.mkdir(parents=True)
+    (task / "notes.json").write_bytes(Path(storage.ledger_path(run)).read_bytes())
+    with pytest.raises(review.ReviewError) as e:
+        review.assert_ledger_is_out_of_reach(run, checkout=wt, other_clones=())
+    assert "notes.json" in str(e.value)
+
+
+def test_an_ordinary_clone_and_a_worktree_are_scanned_by_the_same_rule(tmp_path):
+    """One rule, two configurations. In a clone the git dir is inside the checkout and the
+    root list is one entry; in a worktree it is two. Neither is a special case written by
+    hand, which is what makes the coverage structural."""
+    main = _checkout(tmp_path, "main")
+    wt = _worktree(main, tmp_path / "synth")
+    assert review.reviewer_roots(main) == (Path(main).resolve(),)
+    roots = review.reviewer_roots(wt)
+    assert len(roots) == 2 and not roots[1].is_relative_to(roots[0])
+
+
+def test_a_seat_clone_the_caller_names_is_scanned_too(tmp_path):
+    """Decision 3 lists the seats and the verifier as well, and this module cannot derive
+    their paths — `fleet.clone_seat` takes its destination from its caller. So the argument
+    is required: `()` is a claim, an omission is not."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    seat = _checkout(tmp_path, "seat-claude")
+    (seat / "copied.json").write_bytes(Path(storage.ledger_path(run)).read_bytes())
+    review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=())   # co is clean
+    with pytest.raises(review.ReviewError) as e:
+        review.assert_ledger_is_out_of_reach(run, checkout=co, other_clones=(seat,))
+    assert "copied.json" in str(e.value)
+
+
+def test_a_named_root_that_does_not_exist_is_a_refusal_not_an_empty_walk(tmp_path):
+    """`os.walk` over a missing directory yields nothing and calls `onerror` — measured,
+    `FileNotFoundError`. A root that could not be scanned must never read as a clean one."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    with pytest.raises(review.ReviewError):
+        review.assert_ledger_is_out_of_reach(run, checkout=co,
+                                             other_clones=(tmp_path / "never-created",))
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -2570,7 +2922,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -2590,7 +2941,11 @@ REVIEW_TIMEOUT_SEC = engine.MODE_TIMEOUT["deep"]
 _INPUTS = "inputs.json"
 _INSTRUCTIONS = "REVIEW.md"
 _TOKEN_FILE = "proof-token.txt"
-_REVIEW_SUBDIR = ("khenrix-forge", "review")
+# `<git-dir>/khenrix-forge/` holds BOTH this module's review inputs and §20's task bundle
+# (`taskbundle.task_dir`). Nothing below scans it by name — see `reviewer_roots` — because a
+# scan that names subdirectories covers the ones somebody remembered.
+_FORGE_SUBDIR = "khenrix-forge"
+_REVIEW_SUBDIR = (_FORGE_SUBDIR, "review")
 
 _FENCE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 
@@ -2776,18 +3131,62 @@ def _digests_under(root: Path, target: bytes, cap: int) -> list:
     return hits
 
 
-def assert_ledger_is_out_of_reach(run_dir, *, checkout) -> None:
+def reviewer_roots(checkout) -> tuple:
+    """Every root a reviewer sitting in `checkout` can read: the worktree, and its git dir.
+
+    TWO ROOTS, NOT ONE, AND THE SECOND IS WHY THIS IS A FUNCTION. In an ordinary clone the git
+    directory is INSIDE the worktree, so one walk over the checkout sweeps it up and a
+    single-root scan is total by luck. In a LINKED WORKTREE — the exact configuration §16's
+    synthesis worktree introduces, and the one `review_dir`'s docstring is already written for
+    — the git directory is `<main>/.git/worktrees/<name>`, outside the checkout entirely.
+    §20's task bundle lives at `<git-dir>/khenrix-forge/task` and reviewers ARE given it, so
+    in that configuration the one directory Decision 3 names above all others sat outside
+    every root the scan looked at, and the scan certified the tree clean. Measured: with a
+    copy of the ledger in the task bundle of a linked worktree, the two-root version of this
+    check PASSED.
+
+    THE WHOLE GIT DIRECTORY, NOT `khenrix-forge` UNDER IT. Naming a subdirectory covers the
+    ones somebody remembered — `review` was named and `task` was not, which is the entire
+    defect. A reviewer with a shell can read all of it, and in an ordinary clone the walk over
+    the checkout already does; one rule for both configurations is what makes the guarantee
+    STRUCTURAL rather than incidental.
+    """
+    co = Path(checkout).resolve()
+    out = gitcmd.git(checkout, "rev-parse", "--absolute-git-dir",
+                     env_extra=gitcmd.READONLY).stdout.strip()
+    if not out:
+        raise ReviewError(f"git named no git directory for {checkout}, so this run cannot "
+                          "enumerate the roots a reviewer in it could read")
+    gd = Path(out).resolve()
+    return (co,) if gd.is_relative_to(co) else (co, gd)
+
+
+def assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None:
     """§13's blindness, as a mechanical assertion rather than a sentence in a prompt.
 
     "The ledger path is not passed" is not enough: §13 sets every reviewer's cwd to this
     checkout and a reviewer has a shell, so the guarantee has to be that THE BYTES ARE NOT IN
     THE TREE. Two complementary checks, neither of which subsumes the other:
 
-      1. PATH. A run directory under the checkout puts the real ledger in the reviewer's tree
-         with no copy involved, and no content scan is needed to see it.
+      1. PATH. A run directory under one of the roots puts the real ledger in a tree the
+         review can read with no copy involved, and no content scan is needed to see it.
       2. CONTENT. A copy under another name has a different path and the same bytes, which is
-         what the digest sweep catches — over the worktree AND over the review inputs inside
-         the git directory, because those are the two places §13 puts things a reviewer reads.
+         what the digest sweep catches.
+
+    EVERY ROOT, AND THE LIST IS DERIVED RATHER THAN REMEMBERED. `reviewer_roots` answers the
+    two the reviewer sits in. `other_clones` is the rest of Decision 3's list — "not a seat,
+    not the synthesis checkout, not a verifier clone" — whose paths this module CANNOT derive,
+    because `fleet.clone_seat` takes its destination from its caller (`fleet.py:166`). It is
+    a REQUIRED argument and is never defaulted: `()` is a caller stating that no other clone
+    root exists at this moment, which is a claim somebody made and can be wrong out loud; an
+    omitted argument is a claim nobody made and is wrong silently.
+
+    A ROOT THAT COULD NOT BE SCANNED IS A REFUSAL, not a skip. `os.walk(onerror=_raise)` turns
+    a missing root, a root that is a file, and an unreadable subtree all into `ReviewError` —
+    measured: `os.walk` calls `onerror` with `FileNotFoundError` for a missing root and
+    `NotADirectoryError` for a file. The version of this function that wrote
+    `if review_root.is_dir():` skipped a root it could not see, which is the same false green
+    one level up.
 
     A MISSING LEDGER IS A REFUSAL. You cannot assert that bytes are out of reach without
     reading them, and "there is no ledger, so nothing was leaked" is a clean verdict produced
@@ -2805,24 +3204,26 @@ def assert_ledger_is_out_of_reach(run_dir, *, checkout) -> None:
         raise ReviewError(f"the ledger at {lp} could not be read ({e.strerror}), so its "
                           "containment could not be checked") from e
 
-    co = Path(checkout).resolve()
-    if lp.resolve().is_relative_to(co):
-        raise ReviewError(
-            f"the ledger is at {lp}, which is under the reviewer's checkout {co}. §13 gives "
-            "every reviewer a shell in this tree, so a ledger inside it is passed to the "
-            "review however carefully the prompt avoids naming it.")
+    roots = list(reviewer_roots(checkout))
+    for extra in other_clones:
+        p = Path(extra).resolve()
+        if p not in roots:
+            roots.append(p)
+    for root in roots:
+        if lp.resolve().is_relative_to(root):
+            raise ReviewError(
+                f"the ledger is at {lp}, which is under {root} — a tree §13's review can "
+                "read. §13 gives every reviewer a shell, so a ledger inside one of these "
+                "roots is passed to the review however carefully the prompt avoids naming it.")
     cap = storage.Quota.for_harvest().max_files
-    hits = _digests_under(co, blob, cap)
-    gd = Path(gitcmd.git(checkout, "rev-parse", "--absolute-git-dir",
-                         env_extra=gitcmd.READONLY).stdout.strip())
-    review_root = gd.joinpath(*_REVIEW_SUBDIR)
-    if review_root.is_dir():
-        hits += _digests_under(review_root, blob, cap)
+    hits = []
+    for root in roots:
+        hits += _digests_under(root, blob, cap)
     if hits:
         raise ReviewError(
-            f"the ledger's exact bytes are present in the reviewer's tree at {sorted(hits)}. "
-            "§13's blind review is the strongest call in this design; a copy under another "
-            "name defeats it as completely as passing the path would.")
+            f"the ledger's exact bytes are present at {sorted(set(hits))}, inside a root §13's "
+            "review can read. §13's blind review is the strongest call in this design; a copy "
+            "under another name defeats it as completely as passing the path would.")
 ```
 
 - [ ] **Step 4: Run the input tests**
@@ -2831,7 +3232,7 @@ def assert_ledger_is_out_of_reach(run_dir, *, checkout) -> None:
 uvx --with pytest pytest -q tests/test_forge_review.py
 ```
 
-Expected: `10 passed`. Fix the leftover `storage.Path` expression in `test_a_ledger_copied_into_the_checkout_is_caught_by_its_bytes` to plain `Path(storage.ledger_path(run)).read_bytes()` if it has not been already.
+Expected: `14 passed`.
 
 - [ ] **Step 5: Write the failing tests for the specs, the parser and the record**
 
@@ -2839,7 +3240,7 @@ Append to `tests/test_forge_review.py`:
 
 ```python
 # --------------------------------------------------------------------------- specs
-def test_every_reviewer_runs_from_the_synthesis_checkout(tmp_path, global_identity):
+def test_every_reviewer_runs_from_the_synthesis_checkout(tmp_path):
     co = _checkout(tmp_path)
     specs = review.reviewer_specs(["claude", "codex", "agy"], prompt="go",
                                   timeout=review.REVIEW_TIMEOUT_SEC, cwd=co,
@@ -2847,8 +3248,7 @@ def test_every_reviewer_runs_from_the_synthesis_checkout(tmp_path, global_identi
     assert {s.cwd for s in specs} == {str(co)}
 
 
-def test_the_codex_reviewer_uses_codex_exec_json_and_not_codex_review(tmp_path,
-                                                                     global_identity):
+def test_the_codex_reviewer_uses_codex_exec_json_and_not_codex_review(tmp_path):
     """MEASURED: `codex review` has no --json, so the engine's extractor would turn every
     review into a silent parse_failure and 'found nothing' would be unreadable from
     'could not be read'."""
@@ -2860,7 +3260,7 @@ def test_the_codex_reviewer_uses_codex_exec_json_and_not_codex_review(tmp_path,
     assert codex.extract is engine.extract_codex_json
 
 
-def test_a_reviewer_that_never_quoted_the_token_is_not_valid(tmp_path, global_identity):
+def test_a_reviewer_that_never_quoted_the_token_is_not_valid(tmp_path):
     """THE FAIL-OPEN. `seat.forge_spec`'s validator forces sentinel=None on a COPY of the
     spec regardless of what it carries, so a reviewer wired through it scores valid having
     read nothing. Reviewers get the council's own `evaluate`."""
@@ -2903,7 +3303,9 @@ def test_two_blocks_are_unreadable_because_nobody_may_pick_one():
     rows, why = review.parse_findings(
         '```json\n{"findings": []}\n```\n```json\n{"findings": [{"severity": "blocker",'
         ' "claim": "c"}]}\n```')
-    assert rows is None and "two" in why or "more than one" in why
+    # NOT `rows is None and "two" in why or "more than one" in why` — `and` binds tighter, so
+    # that reads `(A and B) or C`, and C is true of the message whatever `rows` is.
+    assert rows is None and "more than one" in why
 
 
 def test_a_severity_outside_the_declared_set_is_unreadable():
@@ -2971,6 +3373,22 @@ def test_a_finding_with_an_undeclared_resolution_cannot_be_recorded():
     with pytest.raises(review.ReviewError):
         review.Finding(id="x" * 12, round=1, seat="claude", severity="blocker",
                        claim="c", resolution="probably-fine")
+
+
+def test_a_round_validates_its_own_fields():
+    """`Round` is the record the TERMINAL reads and the only one in this plan that a
+    hand-built caller could populate freely. `read_round` builds one off disk, so these run
+    on the reconstructed record too."""
+    with pytest.raises(review.ReviewError):
+        review.Round(0, "a" * 40, (), (), (), ())            # `round_dir` refuses 0
+    with pytest.raises(review.ReviewError):
+        review.Round(1, "   ", (), (), (), ())               # an unnamed checkpoint
+    with pytest.raises(review.ReviewError):
+        review.Round(1, "a" * 40, (_finding(round_=2),), (), (), ())
+    with pytest.raises(review.ReviewError):
+        review.Round(1, "a" * 40, (), (), (), (("agy", ""),))
+    with pytest.raises(review.ReviewError):
+        review.Round(1, "a" * 40, (), (), ("claude",), (("claude", "parse_failure"),))
 ```
 
 - [ ] **Step 6: Run them to verify they fail**
@@ -3105,6 +3523,12 @@ class Round:
     findings, and zero findings reads as "no blockers". Each entry is `(seat, reason)`, and
     the reason is the council's own — `parse_failure`, `auth_or_quota`, `nonzero_exit`, or
     this module's `unreadable_findings` / `unreadable_result_file`.
+
+    IT VALIDATES ITSELF BECAUSE EVERY SIBLING RECORD IN THIS PLAN DOES — `Size`, `Decision`,
+    `Progress`, `Dimensions`, `Finding`, `Resolution`, `Ultra` — and because this is the one
+    the TERMINAL reads. A hand-built `Round` is exactly what `read_round` produces off disk,
+    so the checks below run on the record a crashed run is reconstructed from, not only on
+    the one this process just built.
     """
     round: int
     checkpoint: str
@@ -3112,6 +3536,39 @@ class Round:
     identities: tuple
     seats_responded: tuple
     seats_silent: tuple
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.round, int) or isinstance(self.round, bool) or self.round < 1:
+            raise ReviewError(f"a review round is numbered from 1, not {self.round!r}; "
+                              "`round_dir` refuses anything else and this record would then "
+                              "have nowhere to be written")
+        if not isinstance(self.checkpoint, str) or not self.checkpoint.strip():
+            raise ReviewError(
+                f"a round names the checkpoint it reviewed, not {self.checkpoint!r}: a review "
+                "of an unnamed tree cannot be re-derived by `--collect`")
+        wrong = sorted({type(f).__name__ for f in self.findings
+                        if not isinstance(f, Finding)})
+        if wrong:
+            raise ReviewError(f"a round's findings are Finding records, not {wrong}")
+        for f in self.findings:
+            if f.round != self.round:
+                raise ReviewError(
+                    f"finding {f.id} carries round {f.round} and is being recorded in round "
+                    f"{self.round}. `terminal_from_record` reads each record's OWN number, so "
+                    "a finding filed under the wrong one is classified at the wrong time — "
+                    "and 'fixed in the last round' is the branch that decides `degraded`.")
+        for entry in self.seats_silent:
+            if len(entry) != 2 or not all(isinstance(x, str) and x.strip() for x in entry):
+                raise ReviewError(
+                    f"a silent seat is recorded as (seat, reason) with both named, not "
+                    f"{entry!r}: an unnamed reason is a reviewer dropped from the panel with "
+                    "no record of why, which is the state `seats_silent` exists to prevent")
+        both = sorted(set(self.seats_responded) & {s for s, _ in self.seats_silent})
+        if both:
+            raise ReviewError(
+                f"{both} are recorded as having both answered and been silent; the terminal "
+                "counts the panel as `responded + silent`, so a seat in each is a panel of "
+                "four described by three reviewers")
 
 
 def round_dir(run_dir, round_: int) -> Path:
@@ -3197,7 +3654,7 @@ def read_round(run_dir, round_: int) -> Round:
 uvx --with pytest pytest -q tests/test_forge_review.py
 ```
 
-Expected: `27 passed`.
+Expected: `32 passed`.
 
 - [ ] **Step 9: Write the failing test for `run_round`**
 
@@ -3241,8 +3698,7 @@ def _probe(**kw):
                              closure=lambda cli: "closure-" + cli)
 
 
-def test_a_round_records_findings_a_silent_seat_and_three_identities(tmp_path,
-                                                                    global_identity):
+def test_a_round_records_findings_a_silent_seat_and_three_identities(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3252,7 +3708,7 @@ def test_a_round_records_findings_a_silent_seat_and_three_identities(tmp_path,
                "agy": ("", False, "auth_or_quota")}
     r = review.run_round(
         run, round_=1, checkout=co, checkpoint="a" * 40, baseline_commit="b" * 40,
-        baseline_tree="c" * 40, artifact_manifest=None,
+        baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
         log=journal.Journal(storage.journal_path(run)),
         run_council=_fake_council(tmp_path, answers=answers, record=seen),
         probe=_probe, make_token=lambda: "TOK")
@@ -3265,7 +3721,7 @@ def test_a_round_records_findings_a_silent_seat_and_three_identities(tmp_path,
     assert len(r.identities) == 3
 
 
-def test_the_council_never_writes_into_the_run_directory(tmp_path, global_identity):
+def test_the_council_never_writes_into_the_run_directory(tmp_path):
     """HAZARD 1. `run_council` ends with (workdir/'manifest.json').write_text — plain,
     non-atomic — and `storage.manifest_path(run_dir)` is the same filename, written once."""
     run = _run_dir(tmp_path)
@@ -3275,7 +3731,7 @@ def test_the_council_never_writes_into_the_run_directory(tmp_path, global_identi
     seen = {}
     review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                      baseline_commit="b" * 40, baseline_tree="c" * 40,
-                     artifact_manifest=None,
+                     artifact_manifest=None, other_clones=(),
                      log=journal.Journal(storage.journal_path(run)),
                      run_council=_fake_council(
                          tmp_path, answers={n: (ANSWER.format(tok="TOK"), True, "ok")
@@ -3287,7 +3743,7 @@ def test_the_council_never_writes_into_the_run_directory(tmp_path, global_identi
     assert Path(run) in seen["workdir"].parents
 
 
-def test_the_signal_handler_is_not_installed_and_retries_are_zero(tmp_path, global_identity):
+def test_the_signal_handler_is_not_installed_and_retries_are_zero(tmp_path):
     """HAZARD 2. The installed handler ends in os._exit(128+signum) (engine.py:942), which
     skips every finally — so `council_round_done` never lands on a plain Ctrl-C."""
     run = _run_dir(tmp_path)
@@ -3296,7 +3752,7 @@ def test_the_signal_handler_is_not_installed_and_retries_are_zero(tmp_path, glob
     seen = {}
     review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                      baseline_commit="b" * 40, baseline_tree="c" * 40,
-                     artifact_manifest=None,
+                     artifact_manifest=None, other_clones=(),
                      log=journal.Journal(storage.journal_path(run)),
                      run_council=_fake_council(
                          tmp_path, answers={n: (ANSWER.format(tok="TOK"), True, "ok")
@@ -3312,14 +3768,14 @@ def test_the_signal_handler_is_not_installed_and_retries_are_zero(tmp_path, glob
     assert set(seen["sentinels"]) == {"TOK"}
 
 
-def test_the_round_is_journalled_write_ahead(tmp_path, global_identity):
+def test_the_round_is_journalled_write_ahead(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
     log = journal.Journal(storage.journal_path(run))
     review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                      baseline_commit="b" * 40, baseline_tree="c" * 40,
-                     artifact_manifest=None, log=log,
+                     artifact_manifest=None, other_clones=(), log=log,
                      run_council=_fake_council(
                          tmp_path, answers={n: (ANSWER.format(tok="TOK"), True, "ok")
                                             for n in ("claude", "codex", "agy")},
@@ -3330,7 +3786,7 @@ def test_the_round_is_journalled_write_ahead(tmp_path, global_identity):
     assert journal.orphans(log.read()) == ()
 
 
-def test_a_round_refuses_to_start_when_the_ledger_is_reachable(tmp_path, global_identity):
+def test_a_round_refuses_to_start_when_the_ledger_is_reachable(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3338,13 +3794,13 @@ def test_a_round_refuses_to_start_when_the_ledger_is_reachable(tmp_path, global_
     with pytest.raises(review.ReviewError):
         review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                          baseline_commit="b" * 40, baseline_tree="c" * 40,
-                         artifact_manifest=None,
+                         artifact_manifest=None, other_clones=(),
                          log=journal.Journal(storage.journal_path(run)),
                          run_council=_fake_council(tmp_path, answers={}, record={}),
                          probe=_probe, make_token=lambda: "TOK")
 
 
-def test_a_truncated_result_text_is_not_what_gets_parsed(tmp_path, global_identity):
+def test_a_truncated_result_text_is_not_what_gets_parsed(tmp_path):
     """`run_provider` truncates `result_text` (engine._truncate). Parsing it would make a
     long, correct review whose JSON block fell past the cut read as unparseable."""
     run = _run_dir(tmp_path)
@@ -3353,7 +3809,7 @@ def test_a_truncated_result_text_is_not_what_gets_parsed(tmp_path, global_identi
     long_answer = ANSWER.format(tok="TOK")
     r = review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                          baseline_commit="b" * 40, baseline_tree="c" * 40,
-                         artifact_manifest=None,
+                         artifact_manifest=None, other_clones=(),
                          log=journal.Journal(storage.journal_path(run)),
                          run_council=_fake_council(
                              tmp_path,
@@ -3364,7 +3820,7 @@ def test_a_truncated_result_text_is_not_what_gets_parsed(tmp_path, global_identi
     assert len(r.findings) == 3 and r.seats_silent == ()
 
 
-def test_an_unreadable_result_file_is_a_silent_seat(tmp_path, global_identity):
+def test_an_unreadable_result_file_is_a_silent_seat(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3379,7 +3835,7 @@ def test_an_unreadable_result_file_is_a_silent_seat(tmp_path, global_identity):
 
     r = review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
                          baseline_commit="b" * 40, baseline_tree="c" * 40,
-                         artifact_manifest=None,
+                         artifact_manifest=None, other_clones=(),
                          log=journal.Journal(storage.journal_path(run)),
                          run_council=broken, probe=_probe, make_token=lambda: "TOK")
     assert r.seats_responded == ()
@@ -3420,7 +3876,7 @@ def _result_text(record) -> tuple:
 
 
 def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commit: str,
-              baseline_tree: str, artifact_manifest, log,
+              baseline_tree: str, artifact_manifest, log, other_clones,
               names=tuple(engine.DEFAULT_PROVIDERS), cfg=None,
               run_council=engine.run_council, build=engine.build_real_spec,
               probe=fingerprint.build, make_token=engine.make_sentinel) -> Round:
@@ -3439,7 +3895,7 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
     `probe` and `run_council` are injected and every test passes a fake: §5.2 prices a real
     panel in provider calls and a suite that spends them is one nobody runs.
     """
-    assert_ledger_is_out_of_reach(run_dir, checkout=checkout)
+    assert_ledger_is_out_of_reach(run_dir, checkout=checkout, other_clones=other_clones)
     token = make_token()
     task_present = Path(taskbundle_task_dir(checkout)).is_dir()
     inputs = write_reviewer_inputs(checkout, round_, checkpoint=checkpoint,
@@ -3521,11 +3977,11 @@ from .taskbundle import task_dir as taskbundle_task_dir
 uvx --with pytest pytest -q tests/test_forge_review.py
 ```
 
-Expected: `34 passed`.
+Expected: `39 passed`.
 
 - [ ] **Step 13: Re-run under renamed test functions**
 
-Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `34 passed`. **Restore the original names.**
+Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `39 passed`. **Restore the original names.**
 
 - [ ] **Step 14: Mutate every new branch**
 
@@ -3566,8 +4022,8 @@ scripts/mutate.py --file shared/lib/forge/review.py \
   -- uvx --with pytest pytest -q tests/test_forge_review.py
 
 scripts/mutate.py --file shared/lib/forge/review.py \
-  --old '    if lp.resolve().is_relative_to(co):' \
-  --new '    if False:' \
+  --old '        if lp.resolve().is_relative_to(root):' \
+  --new '        if False:' \
   -- uvx --with pytest pytest -q tests/test_forge_review.py
 
 scripts/mutate.py --file shared/lib/forge/review.py \
@@ -3618,7 +4074,7 @@ EOF
   - `review.READY = "ready"`, `DEGRADED = "degraded"`, `REVIEW_BLOCKED = "review_blocked"`
   - `review.terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple[str, str]`
   - `review.settle(run_dir, state, *, rounds_run, events) -> tuple`
-  - `review.loop(run_dir, *, checkout, checkpoint, baseline_commit, baseline_tree, artifact_manifest, log, manifest, fix, run=run_round) -> tuple[str, str]`
+  - `review.loop(run_dir, *, checkout, checkpoint, baseline_commit, baseline_tree, artifact_manifest, log, manifest, fix, other_clones, run=run_round) -> tuple[str, str]`
 
 **Contradiction 6, resolved here.** §14.2 gives a successful post-round-2 fix the terminal `review_blocked`; §13.1 says its own fix creates "no new loop, no new state", which lands an otherwise-clean run in `ready`. **This plan decides the terminal by the finding's resolution, not by which reviewer found it:** an unresolved blocker is `review_blocked`; a blocker that was fixed and verified but not re-reviewed is `degraded`. Identical evidence gets one terminal, `review_blocked` keeps meaning "a blocker is still open", and `degraded` is already a declared successor of `reviewing` (`runstate.py:1029-1030`).
 
@@ -3645,8 +4101,13 @@ def _blocker(round_=1, seat="claude", claim="unbounded cache"):
 
 
 def _clean_round(run, n, checkpoint="a" * 40, silent=()):
-    review.write_round(run, review.Round(n, checkpoint, (), (), ("claude", "codex", "agy"),
-                                         tuple(silent)))
+    # A silent seat is NOT also a responding one. `terminal_from_record` counts the panel as
+    # `responded + silent`, so listing agy in both describes a panel of four; `Round` refuses
+    # the pair outright.
+    quiet = {s for s, _ in silent}
+    review.write_round(run, review.Round(
+        n, checkpoint, (), (),
+        tuple(s for s in ("claude", "codex", "agy") if s not in quiet), tuple(silent)))
 
 
 def test_one_string_for_the_unreviewed_label():
@@ -3713,6 +4174,39 @@ def test_a_fix_that_broke_verify_leaves_the_finding_unresolved(tmp_path):
         == review.REVIEW_BLOCKED
 
 
+def test_a_rejected_blocker_is_still_an_open_one(tmp_path):
+    """THE FAIL-OPEN. `rejected` matched none of the branches, so the blocker was appended to
+    neither roll-up and vanished: measured, the run answered
+    `('ready', '1 round(s), every panel whole and no blocker left open')` over a blocker
+    somebody had dismissed. A `Resolution` records no rationale and no author, so this record
+    cannot tell a considered rejection from a finding nobody acted on."""
+    run = _run_dir(tmp_path)
+    b = _blocker()
+    review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                         ("claude", "codex", "agy"), ()))
+    review.write_resolutions(run, 1, (review.Resolution(b.id, "rejected", None, False),))
+    answer, why = review.terminal_from_record(run, rounds_run=1, events=())
+    assert answer == review.REVIEW_BLOCKED and "rejected" in why
+
+
+def test_every_declared_resolution_has_a_terminal_reading(tmp_path):
+    """TOTAL BY CONSTRUCTION, not by four branches happening to cover four values. A
+    resolution added to `RESOLUTIONS` later must land in a roll-up or raise — never
+    disappear."""
+    assert set(review.RESOLUTIONS) == set(review._READINGS)
+    for res in review.RESOLUTIONS:
+        run = _run_dir(tmp_path, f"run-{res}")
+        b = _blocker()
+        review.write_round(run, review.Round(1, "a" * 40, (b,), (),
+                                             ("claude", "codex", "agy"), ()))
+        row = (review.Resolution(b.id, res, "b" * 40, True) if res == "fixed"
+               else review.Resolution(b.id, res, None, False))
+        review.write_resolutions(run, 1, (row,))
+        answer, _ = review.terminal_from_record(run, rounds_run=1, events=())
+        assert answer != review.READY, res
+        assert answer in (review.REVIEW_BLOCKED, review.DEGRADED), (res, answer)
+
+
 def test_a_non_blocker_finding_does_not_block(tmp_path):
     run = _run_dir(tmp_path)
     minor = review.Finding(id=review.finding_id(1, "agy", "minor", "typo"), round=1,
@@ -3758,7 +4252,7 @@ def test_a_resolution_claiming_fixed_and_unverified_is_refused():
         review.Resolution("x" * 12, "fixed", "b" * 40, False)
 
 
-def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path, global_identity):
+def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3777,13 +4271,13 @@ def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path, global_id
 
     answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
-                              artifact_manifest=None, log=log, manifest=_Cap(),
-                              fix=fix, run=fake_round)
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(), fix=fix, run=fake_round)
     assert rounds == [1, 2]
     assert answer == review.REVIEW_BLOCKED
 
 
-def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path, global_identity):
+def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3802,13 +4296,43 @@ def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path, global
 
     answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
-                              artifact_manifest=None, log=log, manifest=_Cap(cap=0),
-                              fix=fix, run=fake_round)
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(cap=0), fix=fix, run=fake_round)
     assert calls == [], "a cap of zero funds no fix at all"
     assert answer == review.REVIEW_BLOCKED and "cap" in why
 
 
-def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path, global_identity):
+def test_a_fix_that_did_not_pass_verify_stops_the_loop_and_reports_unresolved(tmp_path):
+    """§13: "a fix that breaks verify is reverted and the finding reported unresolved."
+    Measured, this branch had NO test and its mutation SURVIVED — and without it the loop
+    records a reverted fix as `fixed`, advances `current` to a checkpoint that does not
+    exist, and buys round 2 on top of it."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    rounds = []
+
+    def fake_round(run_dir, *, round_, checkpoint, **kw):
+        b = _blocker(round_=round_)
+        r = review.Round(round_, checkpoint, (b,), (), ("claude", "codex", "agy"), ())
+        review.write_round(run_dir, r)
+        rounds.append(round_)
+        return r
+
+    def fix(findings, checkpoint):
+        return None, False              # reverted: no checkpoint, verify did not pass
+
+    answer, why = review.loop(run, checkout=co, checkpoint="a" * 40,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              manifest=_Cap(), fix=fix, run=fake_round)
+    assert rounds == [1], "a fix that broke verify does not buy a second round"
+    assert answer == review.REVIEW_BLOCKED and "verify" in why
+    assert [r.resolution for r in review.read_resolutions(run, 1)] == ["unresolved"]
+
+
+def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path):
     run = _run_dir(tmp_path)
     _ledger(run)
     co = _checkout(tmp_path)
@@ -3827,8 +4351,9 @@ def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path, global_identity):
         return head, True
 
     answer, _ = review.loop(run, checkout=co, checkpoint=head, baseline_commit="b" * 40,
-                            baseline_tree="c" * 40, artifact_manifest=None, log=log,
-                            manifest=_Cap(), fix=fix, run=fake_round)
+                            baseline_tree="c" * 40, artifact_manifest=None,
+                            other_clones=(), log=log, manifest=_Cap(), fix=fix,
+                            run=fake_round)
     from forge import progress
     kinds = [e.event for e in log.read()]
     assert journal.intent(progress.FIX_KIND) in kinds
@@ -3873,7 +4398,18 @@ REVIEW_BLOCKED = "review_blocked"
 TERMINALS = (READY, DEGRADED, REVIEW_BLOCKED)
 
 _BLOCKER = "blocker"
-_OPEN = ("open", "unresolved")
+# EVERY MEMBER OF `RESOLUTIONS` IS READ, and this pair is why. The version that spelled the
+# blocking set `("open", "unresolved")` left `rejected` matching NO branch: the blocker went
+# into neither roll-up, vanished from the verdict, and the run's headline read
+# `ready` — "every panel whole and no blocker left open" — over a blocker somebody had
+# dismissed. `rejected` BLOCKS. A `Resolution` records no rationale and no author, so
+# "somebody considered this finding and rejected it" and "nobody acted on this finding" are
+# the same bytes on disk, and `review_blocked` is what §13's last paragraph needs to mean the
+# second one. A rejection worth acting on is a recorded human judgement and belongs on the
+# ledger, where §10.1's method axis can carry who made it.
+_BLOCKING = ("open", "unresolved", "rejected")
+_FIXED = "fixed"
+_READINGS = (*_BLOCKING, _FIXED)
 
 
 @dataclass(frozen=True)
@@ -3964,9 +4500,10 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
 
     PRECEDENCE: `review_blocked` > `degraded` > `ready`.
 
-      * `review_blocked` — any blocker whose effective resolution is `open` or `unresolved`,
-        including every blocker in a round with no resolutions record at all. Absence of a fix
-        record is an unfixed blocker.
+      * `review_blocked` — any blocker whose effective resolution is `open`, `unresolved` or
+        `rejected`, including every blocker in a round with no resolutions record at all.
+        Absence of a fix record is an unfixed blocker, and so is a rejection this record
+        cannot attribute to anyone.
       * `degraded` — every blocker resolved, but something about the review is weaker than a
         clean one: a blocker fixed in the LAST round (nothing re-reviewed the fix), or any
         round in which a reviewer was silent. `VERIFIED_NOT_INDEPENDENTLY_REVIEWED` is the
@@ -3999,10 +4536,25 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
                     f"round {n}: {f.seat} raised a blocker ({f.claim!r}) and "
                     + ("no fix pass was recorded for that round"
                        if res is None else "this round's fix pass did not resolve it"))
-            elif fixed.resolution in _OPEN:
+                continue
+            if fixed.resolution not in _READINGS:
+                # Unreachable while `_READINGS` covers `RESOLUTIONS` — which a test asserts —
+                # and here anyway, because the failure it guards is the one this whole
+                # function exists to prevent: a blocker matching no branch is appended to
+                # neither roll-up and the run reports `ready` over a finding it never
+                # classified. A refusal is the only safe reading of an unread value.
+                raise ReviewError(
+                    f"round {n}: {f.seat}'s blocker carries resolution {fixed.resolution!r}, "
+                    f"which §13's terminal has no reading for. Every member of "
+                    f"{list(RESOLUTIONS)} must appear in `_READINGS`; one that does not "
+                    "disappears from the verdict rather than failing it.")
+            if fixed.resolution in _BLOCKING:
                 blocked.append(f"round {n}: {f.seat}'s blocker ({f.claim!r}) is "
-                               f"{fixed.resolution}")
-            elif fixed.resolution == "fixed" and n == rounds_run:
+                               f"{fixed.resolution}"
+                               + (" — a rejected finding carries no rationale and no author "
+                                  "on this record, so it is not distinguishable from one "
+                                  "nobody acted on" if fixed.resolution == "rejected" else ""))
+            elif n == rounds_run:
                 degraded.append(
                     f"round {n}: {f.seat}'s blocker ({f.claim!r}) was fixed at checkpoint "
                     f"{fixed.checkpoint} and no later round reviewed it — "
@@ -4047,7 +4599,7 @@ def _tree_of(checkout, commit):
 
 
 def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_tree: str,
-         artifact_manifest, log, manifest, fix, run=None) -> tuple:
+         artifact_manifest, log, manifest, fix, other_clones, run=None) -> tuple:
     """§13's bounded review loop. NOT a convergence loop, and it never buys a third round.
 
     §13: "Round-1 blocker → fix, verify, checkpoint, round 2. Round-2 blocker → terminal state
@@ -4055,6 +4607,11 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
     the number §5.2 priced, and the fix budget is `manifest.synthesis_fix_cap`, which is the
     number §5.2 priced separately — see `progress.cap_remaining` for why counting STARTS is
     what makes a crashed fix stay spent.
+
+    `other_clones` IS PASSED STRAIGHT THROUGH to `assert_ledger_is_out_of_reach` on every
+    round, and it is required here for that function's reason: the seat and verifier clone
+    paths are the caller's, and an argument nobody had to supply is Decision 3 enforced by
+    memory.
 
     `fix` IS INJECTED AND IS PLAN J'S. Its contract is
     `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool)`: apply the round's
@@ -4077,7 +4634,7 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
         n += 1
         r = runner(run_dir, round_=n, checkout=checkout, checkpoint=current,
                    baseline_commit=baseline_commit, baseline_tree=baseline_tree,
-                   artifact_manifest=artifact_manifest, log=log)
+                   artifact_manifest=artifact_manifest, other_clones=other_clones, log=log)
         blockers = [f for f in r.findings if f.severity == _BLOCKER]
         if not blockers:
             break
@@ -4119,7 +4676,7 @@ def loop(run_dir, *, checkout, checkpoint: str, baseline_commit: str, baseline_t
 uvx --with pytest pytest -q tests/test_forge_review.py
 ```
 
-Expected: `50 passed`.
+Expected: `59 passed`.
 
 - [ ] **Step 5: Assert the label has one spelling**
 
@@ -4158,8 +4715,13 @@ scripts/mutate.py --file shared/lib/forge/review.py \
   -- uvx --with pytest pytest -q tests/test_forge_review.py
 
 scripts/mutate.py --file shared/lib/forge/review.py \
-  --old '            elif fixed.resolution == "fixed" and n == rounds_run:' \
+  --old '            elif n == rounds_run:' \
   --new '            elif False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_review.py
+
+scripts/mutate.py --file shared/lib/forge/review.py \
+  --old '_BLOCKING = ("open", "unresolved", "rejected")' \
+  --new '_BLOCKING = ("open", "unresolved")' \
   -- uvx --with pytest pytest -q tests/test_forge_review.py
 
 scripts/mutate.py --file shared/lib/forge/review.py \
@@ -4213,7 +4775,7 @@ EOF
 
 **Interfaces:**
 
-- **Consumes:** `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, `review.SEVERITIES`, `review.Finding`, `review.finding_id` (Task 4/5); `gitcmd.git`, `gitcmd.NO_DAEMON_CACHE`, `gitcmd.READONLY`; `storage.atomic_write`; `journal.Journal`.
+- **Consumes:** `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, `review.SEVERITIES`, `review.Finding`, `review.finding_id`, `review.round_dir` (Task 4/5); `gitcmd.git`, `gitcmd.NO_DAEMON_CACHE`, `gitcmd.NO_DIFF_DRIVERS`, `gitcmd.READONLY`; `storage.atomic_write`; `journal.Journal`.
 - **Produces:**
   - `ultra.UltraError(RuntimeError)`
   - `ultra.TIMEOUT_MINUTES_DEFAULT = 30`, `ultra.TIMEOUT_MINUTES_MAX = 120`
@@ -4226,7 +4788,7 @@ EOF
   - `ultra.classify(exit_code, stdout, stderr) -> str | None`
   - `ultra.session_url(stderr) -> str | None`
   - `ultra.Ultra(status, reason, bugs, session_url, diff_measured, detail)`
-  - `ultra.run_ultra(run_dir, *, checkout, base, head, enabled=True, timeout_minutes=TIMEOUT_MINUTES_DEFAULT, target=None, run=subprocess.run) -> Ultra`
+  - `ultra.run_ultra(run_dir, *, checkout, base, head, round_, enabled=True, timeout_minutes=TIMEOUT_MINUTES_DEFAULT, target=None, file_limit=DIFF_FILE_LIMIT, line_limit=DIFF_LINE_LIMIT, run=subprocess.run) -> Ultra` — `round_` is required and at least 1
 
 **The input that would make this read cleaner than its evidence — three of them.**
 1. **A timeout value in seconds.** Measured 2026-08-03: `claude ultrareview --timeout <minutes>` (default 30). Every other timeout in forge and the council is seconds — `engine.MODE_TIMEOUT["deep"]` is 1200 and `verify.Step.timeout` defaults to 600. Passing 1200 here asks for a **20-hour** review. The guard is structural, not a comment: `argv` refuses anything outside `1..TIMEOUT_MINUTES_MAX`, so every seconds-shaped constant in this package is rejected at the call.
@@ -4256,7 +4818,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 from council import engine  # noqa: E402
 from forge import review, ultra, verify  # noqa: E402
 
-from forge_fixtures import commit_all, global_identity, make_repo, write  # noqa: E402,F401
+from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
 
 def _repo(tmp_path):
@@ -4295,13 +4857,13 @@ def test_a_target_is_the_last_positional():
     assert ultra.argv(timeout_minutes=30, target="main")[-1] == "main"
 
 
-def test_a_text_diff_is_measured(tmp_path, global_identity):
+def test_a_text_diff_is_measured(tmp_path):
     r, base, head = _repo(tmp_path)
     d = ultra.measure_diff(r, base, head)
     assert (d.files, d.lines) == (2, 2) and d.why == ""
 
 
-def test_a_binary_diff_leaves_the_line_count_unknown(tmp_path, global_identity):
+def test_a_binary_diff_leaves_the_line_count_unknown(tmp_path):
     r, base, _ = _repo(tmp_path)
     (r / "blob.bin").write_bytes(b"\x00\x01\x02\x03")
     head = commit_all(r, "binary")
@@ -4310,43 +4872,42 @@ def test_a_binary_diff_leaves_the_line_count_unknown(tmp_path, global_identity):
     assert "blob.bin" in d.why
 
 
-def test_an_oversized_diff_is_unavailable_without_spending(tmp_path, global_identity):
+def test_an_oversized_diff_is_unavailable_without_spending(tmp_path):
     r, base, head = _repo(tmp_path)
     run = _proc()
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head,
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1,
                         run=run, file_limit=1)
     assert u.status == ultra.UNAVAILABLE and u.reason == "diff_too_large"
     assert run.calls == [], "the local pre-flight must refuse before the remote is paid for"
 
 
-def test_an_unmeasurable_diff_runs_and_records_that_nobody_measured_it(tmp_path,
-                                                                      global_identity):
+def test_an_unmeasurable_diff_runs_and_records_that_nobody_measured_it(tmp_path):
     """The remote is the authority on its own limits. What must never happen is a record
     saying the diff was under the limit when its line count was never taken."""
     r, base, _ = _repo(tmp_path)
     (r / "blob.bin").write_bytes(b"\x00\x01\x02\x03")
     head = commit_all(r, "binary")
     run = _proc(0, json.dumps({"bugs": []}))
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, run=run)
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1, run=run)
     assert u.status == ultra.RAN and u.diff_measured is False
     assert len(run.calls) == 1
 
 
-def test_a_clean_json_payload_parses_into_findings(tmp_path, global_identity):
+def test_a_clean_json_payload_parses_into_findings(tmp_path):
     r, base, head = _repo(tmp_path)
     payload = {"bugs": [{"severity": "blocker", "description": "off-by-one",
                          "location": "a.txt:2"}]}
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head,
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1,
                         run=_proc(0, json.dumps(payload)))
     assert u.status == ultra.RAN and len(u.bugs) == 1
     assert u.bugs[0].severity == "blocker" and "off-by-one" in u.bugs[0].claim
 
 
-def test_an_exit_zero_with_unreadable_json_is_not_a_clean_review(tmp_path, global_identity):
+def test_an_exit_zero_with_unreadable_json_is_not_a_clean_review(tmp_path):
     """THE FAIL-OPEN. §13.1's five reasons do not cover this; folding it into 'found no
     bugs' is the false green this whole project keeps finding."""
     r, base, head = _repo(tmp_path)
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head,
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1,
                         run=_proc(0, "Review complete. Looks good!"))
     assert u.status == ultra.UNAVAILABLE and u.reason == "unreadable_output"
     assert u.bugs is None
@@ -4367,36 +4928,73 @@ def test_an_unrecognised_exit_one_is_exit_one_and_never_a_guess():
     assert ultra.classify(1, "", "something nobody has seen before") == "exit_1"
 
 
+def test_a_declared_phrase_matches_a_whole_token_and_not_a_substring():
+    """`zdr` is three characters. As a bare substring it labels any stderr that happens to
+    contain them — a path, a branch, a session id. Every reason degrades identically, so the
+    cost is not the verdict; it is the line a human reads to find out what went wrong."""
+    assert ultra.classify(1, "", "could not read /tmp/zdrafts/session.log") == "exit_1"
+    assert ultra.classify(1, "", "This organization has ZDR enabled.") == "zdr_org"
+
+
+def test_a_finding_this_module_produces_is_addressable_by_a_review_round(tmp_path):
+    """CONTRADICTION 6's mechanism, such as this plan has one. `review.round_dir` refuses a
+    round below 1, so a finding carrying round 0 fits in no record `terminal_from_record`
+    reads — §13.1's findings could not reach the terminal this plan assigns them at all."""
+    r, base, head = _repo(tmp_path)
+    payload = {"bugs": [{"severity": "blocker", "description": "off-by-one"}]}
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=3,
+                        run=_proc(0, json.dumps(payload)))
+    assert u.bugs[0].round == 3
+    assert review.round_dir(tmp_path / "run", u.bugs[0].round).name == "round-3"
+    # And a Round record really will hold it — `Round.__post_init__` checks the two agree.
+    assert review.Round(3, "a" * 40, u.bugs, (), ("ultrareview",), ()).round == 3
+    for bad in (0, -1, True, "1"):
+        with pytest.raises(ultra.UltraError):
+            ultra.run_ultra(tmp_path / f"run-{bad}", checkout=r, base=base, head=head,
+                            round_=bad, run=_proc(0, json.dumps(payload)))
+
+
 def test_a_zero_exit_classifies_as_nothing():
     assert ultra.classify(0, '{"bugs": []}', "") is None
 
 
-def test_a_timeout_records_the_session_url_and_says_the_review_is_still_running(
-        tmp_path, global_identity):
+def test_a_timeout_records_the_session_url_and_says_the_review_is_still_running(tmp_path):
     r, base, head = _repo(tmp_path)
 
     def run(argv, **kw):
         raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0), output="",
                                         stderr="session: https://claude.ai/review/abc123\n")
 
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, run=run)
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1, run=run)
     assert u.status == ultra.TIMED_OUT
     assert u.session_url == "https://claude.ai/review/abc123"
     assert "still running" in u.detail
 
 
-def test_no_ultra_skips_without_spending(tmp_path, global_identity):
+def test_a_review_that_did_not_run_cannot_carry_findings():
+    """`bugs=()` on any status but `ran` reads as "the review ran and reported nothing",
+    which is the one sentence an unavailable review must not be able to write. Measured, this
+    branch had no test at all and its mutation SURVIVED."""
+    for status in (ultra.UNAVAILABLE, ultra.TIMED_OUT, ultra.SKIPPED):
+        reason = "no_auth" if status == ultra.UNAVAILABLE else None
+        with pytest.raises(ultra.UltraError):
+            ultra.Ultra(status, reason, (), None, True, "an empty tuple is a review that ran")
+    with pytest.raises(ultra.UltraError):      # and the other direction
+        ultra.Ultra(ultra.RAN, None, None, None, True, "a review that ran reports its findings")
+
+
+def test_no_ultra_skips_without_spending(tmp_path):
     r, base, head = _repo(tmp_path)
     run = _proc()
-    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, enabled=False,
-                        run=run)
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1,
+                        enabled=False, run=run)
     assert u.status == ultra.SKIPPED and run.calls == [] and u.bugs is None
 
 
-def test_the_bugs_payload_lands_in_the_run_directory(tmp_path, global_identity):
+def test_the_bugs_payload_lands_in_the_run_directory(tmp_path):
     r, base, head = _repo(tmp_path)
     d = tmp_path / "run"
-    ultra.run_ultra(d, checkout=r, base=base, head=head,
+    ultra.run_ultra(d, checkout=r, base=base, head=head, round_=1,
                     run=_proc(0, json.dumps({"bugs": []})))
     assert json.loads((d / "ultrareview" / "bugs.json").read_text()) == {"bugs": []}
 
@@ -4442,8 +5040,8 @@ Every other timeout in forge and the council is SECONDS — `engine.MODE_TIMEOUT
 20-hour review. `argv` refuses anything outside 1..TIMEOUT_MINUTES_MAX, which makes the guard
 structural rather than a comment somebody has to have read.
 
-NOT MEASURED: whether `claude ultrareview` resolves a base branch in a clone with **no
-remote**. `--help` describes it as reviewing "the current branch (or a PR number / base
+NOT MEASURED: whether `claude ultrareview` resolves a base branch in a clone with
+**no remote**. `--help` describes it as reviewing "the current branch (or a PR number / base
 branch)" and `fleet.clone_seat` removes `origin` (`fleet.py:264-270`). Measuring it spends
 money, which this package's suite may not do, so it is stated here rather than assumed. §13.1's
 degrade path — exit 1 becomes `unavailable`, the run proceeds to handover — is what stands
@@ -4483,7 +5081,11 @@ REASONS = ("no_auth", "zdr_org", "diff_too_large", "usage_credits_off", "exit_1"
 
 # Declared phrases, in precedence order. A phrase list is a guess about someone else's
 # strings, so an exit 1 matching NONE of them is `exit_1` — named for what was observed
-# rather than for the nearest-looking cause.
+# rather than for the nearest-looking cause. Each is matched as a WHOLE TOKEN, not as a bare
+# substring: `zdr` is three characters, and as a substring it labels any stderr that happens
+# to contain them — a path, a session id, a branch name. All six reasons carry the same
+# `UNAVAILABLE` status and the same `bugs=None`, so a wrong label costs no verdict; it costs
+# the line a human reads to find out why the review did not happen.
 _PHRASES = (
     ("no_auth", ("not logged in", "please run /login", "claude.ai auth", "unauthorized")),
     ("zdr_org", ("zero data retention", "zdr")),
@@ -4493,6 +5095,11 @@ _PHRASES = (
 )
 
 _SESSION = re.compile(r"https?://[^\s'\"]*claude\.ai/[^\s'\"]+")
+
+
+def _mentions(text: str, phrase: str) -> bool:
+    """`phrase` as a whole token in `text`, which is already lower-cased."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None
 
 _SEVERITY_MAP = {"blocker": "blocker", "critical": "blocker", "high": "blocker",
                  "important": "important", "medium": "important",
@@ -4519,11 +5126,21 @@ def measure_diff(checkout, base: str, head: str) -> DiffSize:
     repository's own config. The presets go BEFORE the subcommand; after it git answers
     `error: unknown switch 'c'`, rc 129.
 
+    NO_DIFF_DRIVERS AFTER THE SUBCOMMAND, because `--no-ext-diff`/`--no-textconv` are diff
+    OPTIONS and not `-c` presets. This is the synthesis checkout — a tree whose `.git/config`
+    and `.gitattributes` the synthesis agent owned for its whole run — so `diff.external` and
+    `diff.<d>.command`/`textconv` each name a program `git diff` would run here, and
+    `core.hooksPath=/dev/null` stops none of them. `bundle.py:265` and `harvest.py:190` are
+    the two existing sites and this is the third; `test_forge_seams.py`'s
+    `test_every_diff_producing_call_disables_the_repositorys_diff_drivers` fails the build
+    without it, which is how this omission was found.
+
     A `-` CELL IS BINARY AND IT IS NOT ZERO, exactly as in `strategy._numstat`. Summing it as
     zero would report a whole-blob rewrite as under §13.1's 8,000-line limit.
     """
-    r = gitcmd.git(checkout, *gitcmd.NO_DAEMON_CACHE, "diff", "--numstat", "-z",
-                   f"{base}..{head}", env_extra=gitcmd.READONLY, check=False, binary=True)
+    r = gitcmd.git(checkout, *gitcmd.NO_DAEMON_CACHE, "diff", *gitcmd.NO_DIFF_DRIVERS,
+                   "--numstat", "-z", f"{base}..{head}",
+                   env_extra=gitcmd.READONLY, check=False, binary=True)
     if r.returncode != 0:
         return DiffSize(None, None,
                         f"git diff --numstat -> {r.returncode}: "
@@ -4572,7 +5189,7 @@ def classify(exit_code, stdout, stderr):
         return None
     low = f"{stdout or ''}\n{stderr or ''}".lower()
     for reason, phrases in _PHRASES:
-        if any(p in low for p in phrases):
+        if any(_mentions(low, p) for p in phrases):
             return reason
     return "exit_1"
 
@@ -4641,9 +5258,9 @@ def _bugs(payload, checkpoint_round: int) -> tuple:
     return tuple(out)
 
 
-def run_ultra(run_dir, *, checkout, base: str, head: str, enabled: bool = True,
+def run_ultra(run_dir, *, checkout, base: str, head: str, round_: int, enabled: bool = True,
               timeout_minutes: int = TIMEOUT_MINUTES_DEFAULT, target=None,
-              round_: int = 0, file_limit: int = DIFF_FILE_LIMIT,
+              file_limit: int = DIFF_FILE_LIMIT,
               line_limit: int = DIFF_LINE_LIMIT, run=subprocess.run) -> Ultra:
     """§13.1's single pass, from the synthesis checkout, after the council loop terminated.
 
@@ -4656,12 +5273,29 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, enabled: bool = True,
     size is unknown — a reason stated more confidently than the evidence. What the record does
     instead is carry `diff_measured=False`.
 
-    §13.1'S FINDINGS GET THE POST-ROUND-2 TREATMENT and this function does not apply it: fix →
+    `round_` IS REQUIRED AND IS AT LEAST 1, WHICH IS CONTRADICTION 6's WHOLE MECHANISM. A
+    `review.Finding` carrying round 0 can be written into NO record: `review.round_dir`
+    refuses anything below 1, so `review.write_round` cannot store it, and
+    `review.terminal_from_record` iterates `range(1, rounds_run + 1)` and would never read it.
+    A defaulted 0 therefore made §13.1's findings unreachable by the terminal that this plan's
+    headline decision assigns them — the resolution had no mechanism at all. With a real round
+    number the types line up end to end: this returns `Finding`s whose `round` a `Round`
+    record accepts, and the terminal reads them like any other round's.
+
+    §13.1'S FINDINGS GET THE POST-ROUND-2 TREATMENT AND THIS FUNCTION DOES NOT APPLY IT: fix →
     fresh-verifier verify → checkpoint → `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, with
     the terminal decided by `review.terminal_from_record` (a fixed-but-unreviewed blocker is
     `degraded`, an unresolved one is `review_blocked`). No new loop and no new state, exactly
-    as §13.1 says — the record and the transition are `review`'s.
+    as §13.1 says — the record and the transition are `review`'s. WHO writes these findings
+    into a `review.Round` and re-reads the terminal is PLAN J: nothing in this plan calls
+    `run_ultra`, and no test here exercises that wiring.
     """
+    if not isinstance(round_, int) or isinstance(round_, bool) or round_ < 1:
+        raise UltraError(
+            f"§13.1's findings are attributed to a review round numbered from 1, not "
+            f"{round_!r}. `review.round_dir` refuses anything below 1, so a finding carrying "
+            "round 0 can be written into no record `review.terminal_from_record` reads — and "
+            "Contradiction 6's resolution IS that terminal reading it.")
     if not enabled:
         return Ultra(SKIPPED, None, None, None, False,
                      "--no-ultra: §13.1 is default on and this run opted out, so no cloud "
@@ -4716,11 +5350,11 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, enabled: bool = True,
 uvx --with pytest pytest -q tests/test_forge_ultra.py
 ```
 
-Expected: `15 passed`.
+Expected: `19 passed`.
 
 - [ ] **Step 5: Re-run under renamed test functions**
 
-Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `15 passed`. **Restore the original names.**
+Rename every test to `test_zz0`…`test_zzN` and re-run. Expected: `19 passed`. **Restore the original names.**
 
 - [ ] **Step 6: Mutate every new branch**
 
@@ -4754,6 +5388,16 @@ scripts/mutate.py --file shared/lib/forge/ultra.py \
   --old '    if not enabled:' \
   --new '    if False:' \
   -- uvx --with pytest pytest -q tests/test_forge_ultra.py
+
+scripts/mutate.py --file shared/lib/forge/ultra.py \
+  --old '    if not isinstance(round_, int) or isinstance(round_, bool) or round_ < 1:' \
+  --new '    if False:' \
+  -- uvx --with pytest pytest -q tests/test_forge_ultra.py
+
+scripts/mutate.py --file shared/lib/forge/ultra.py \
+  --old '    return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None' \
+  --new '    return phrase in text' \
+  -- uvx --with pytest pytest -q tests/test_forge_ultra.py
 ```
 
 Expected: every one exits 0 (CAUGHT). Run `git status` after the wave; it must be clean.
@@ -4766,7 +5410,7 @@ Extend `FORGE_TESTS` with `tests/test_forge_ultra.py`.
 uvx --with pytest pytest -q tests/test_forge_*.py tests/test_council_*.py
 ```
 
-Expected: 1363 + the new tests, all passing, exit 0.
+Expected: the whole forge and council suite green, exit 0. Task 1 landed 28 of these already; every count in this document was re-measured by running the file, not by reading it.
 
 - [ ] **Step 8: Render, gate and commit**
 
@@ -4822,7 +5466,7 @@ Stated rather than claimed as covered, because Plan H's first durable lesson is 
 | §13 reviewer input set | 4 | §16's artifact manifest is `None` and **stated to the reviewer**. |
 | §13 in-process `run_council`, all three hazards | 4 | `workdir`, `install_signal_handler=False`, the sentinel. |
 | §13 codex through `codex exec --json` | 4 | Recorded deviation; `build_real_spec` already produces it. |
-| §13 the ledger path is not passed | 4 | Structural: path containment **and** a byte scan, with `os.walk(onerror=)`. |
+| §13 the ledger path is not passed | 4 | Structural over **every root a reviewer can reach**: `reviewer_roots` derives the worktree and — when it is elsewhere, as in a linked worktree — the git directory that holds §20's task bundle, and `other_clones` is a required argument carrying Decision 3's seat and verifier roots. Path containment **and** a byte scan on each, with `os.walk(onerror=)` turning a root that could not be scanned into a refusal. |
 | §13 content-addressed `review_findings`, on receipt | 4 | Write-once; `finding_id` is content-derived. |
 | §13 bounded round-1/round-2 loop | 5 | Never a third round; the cap bounds fixes independently. |
 | §13 `ready`/`review_blocked` transition reads the record | 5 | Plus `degraded`; a missing record or an orphan **raises**. |
