@@ -71,29 +71,51 @@ def load_skill_meta(skill: str, provider: str = "claude") -> tuple[str, str]:
             parse_frontmatter_field(text, "description"))
 
 
-def parse_verdict(raw: str) -> bool:
-    """True if the judge says the skill should activate."""
+def parse_verdict(raw: str):
+    """True/False if the judge said whether the skill should activate; None if it did not.
+
+    THREE ANSWERS, BECAUSE THERE ARE THREE STATES. This returned `False` for text it could
+    not read, and `False` is also a real verdict — so a judge that timed out, hit a quota
+    wall or answered in prose was recorded as having said "do not activate". Every
+    `near_miss` case expects exactly that, so a judge that never ran scored 100% on the
+    near-miss axis and the run wrote a receipt over it.
+    """
     s = (raw or "").strip()
+    if not s:
+        return None
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
         s = fence.group(1)
     cand = s[s.find("{"): s.rfind("}") + 1] if "{" in s and "}" in s else s
     try:
-        return bool(json.loads(cand).get("activate"))
-    except (json.JSONDecodeError, AttributeError):
-        return False
+        payload = json.loads(cand)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or "activate" not in payload:
+        return None
+    return bool(payload["activate"])
 
 
 def score(cases: list) -> dict:
-    """cases: list of {kind, expected, got}. Returns precision-ish accuracy split."""
-    fires = [c for c in cases if c["kind"] == "should_trigger"]
-    misses = [c for c in cases if c["kind"] == "near_miss"]
-    tp = sum(1 for c in fires if c["got"])
-    tn = sum(1 for c in misses if not c["got"])
-    total = len(cases)
+    """cases: list of {kind, expected, got, readable}. Accuracy over the cases that WERE read.
+
+    AN UNREADABLE CASE IS IN NEITHER NUMERATOR NOR DENOMINATOR, and it is reported. Counting
+    it correct is the fail-open this function was written with; counting it INCORRECT is the
+    mirror error, which manufactures a triggering failure out of a judge that never spoke.
+    The caller decides what a run with unreadable cases is worth — `run` below refuses to
+    report an accuracy at all when every case is unreadable.
+    """
+    readable = [c for c in cases if c.get("readable", c.get("got") is not None)]
+    unreadable = len(cases) - len(readable)
+    fires = [c for c in readable if c["kind"] == "should_trigger"]
+    misses = [c for c in readable if c["kind"] == "near_miss"]
+    tp = sum(1 for c in fires if c["got"] is True)
+    tn = sum(1 for c in misses if c["got"] is False)
+    total = len(readable)
     return {
         "should_trigger": {"correct": tp, "total": len(fires)},
         "near_miss": {"correct": tn, "total": len(misses)},
+        "unreadable": unreadable,
         "accuracy": round((tp + tn) / total, 4) if total else 0.0,
     }
 
@@ -127,10 +149,27 @@ def run(args) -> int:
             rec = m["providers"][0]
             raw = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
             got = parse_verdict(raw)
+            # `valid` and a readable verdict are TWO conditions and the second was assumed
+            # from the first: a valid run whose text is prose parses to no verdict at all.
+            readable = got is not None
             cases.append({"kind": kind, "prompt": prompt, "expected": kind == "should_trigger",
-                          "got": got})
-            print(f"  {'✓' if got == (kind == 'should_trigger') else '✗'} [{kind}] {prompt[:60]}")
+                          "got": got, "readable": readable,
+                          "why": ("" if readable else
+                                  ("the judge run was invalid: "
+                                   + str(rec.get("reason", "no reason recorded"))
+                                   if not rec.get("valid")
+                                   else "the judge answered, and no activate verdict could be "
+                                        "read from what it said"))})
+            mark = "✓" if readable and got == (kind == "should_trigger") else \
+                   ("?" if not readable else "✗")
+            print(f"  {mark} [{kind}] {prompt[:60]}")
     result = score(cases)
+    if result["unreadable"]:
+        print(f"  ⚠ {result['unreadable']} of {len(cases)} case(s) produced no readable "
+              "verdict and are counted in neither axis")
+    if result["unreadable"] == len(cases):
+        print("  ✗ no case produced a readable verdict — there is no measurement here")
+        return 1
     (workdir / "triggers-result.json").write_text(json.dumps({"skill": args.skill,
         "result": result, "cases": cases}, indent=2))
     print(f"\n  accuracy: {result['accuracy']}  "
@@ -228,12 +267,40 @@ def _self_test() -> int:
     ok.append(("plain name parsed", parse_frontmatter_field(fm, "name") == "x"))
     ok.append(("verdict true", parse_verdict('{"activate": true, "why": "y"}') is True))
     ok.append(("verdict fenced false", parse_verdict('```json\n{"activate": false}\n```') is False))
-    ok.append(("verdict garbage → false", parse_verdict("nope") is False))
+    # Not "false" — garbage with no JSON at all is unreadable, not a verdict of "don't
+    # activate" (the collapse the new three-state contract two lines below exists to fix).
+    ok.append(("verdict garbage → unreadable, not false", parse_verdict("nope") is None))
     r = score([{"kind": "should_trigger", "expected": True, "got": True},
                {"kind": "should_trigger", "expected": True, "got": False},
                {"kind": "near_miss", "expected": False, "got": False}])
     ok.append(("score accuracy 2/3", r["accuracy"] == round(2 / 3, 4)))
     ok.append(("score splits", r["should_trigger"]["correct"] == 1 and r["near_miss"]["correct"] == 1))
+    # A judge that did not answer is not a judge that answered "no". Before this, an
+    # invalid run read "" -> parse_verdict("") -> False, and every near_miss case
+    # (expected False) scored CORRECT — a dead judge measured 100% on that axis.
+    ok.append(("no verdict text is None, not False", parse_verdict("") is None))
+    ok.append(("prose with no JSON is None", parse_verdict("Sorry, I can't help.") is None))
+    ok.append(("a real verdict still reads", parse_verdict('{"activate": true}') is True))
+    ok.append(("a real negative still reads", parse_verdict('{"activate": false}') is False))
+    ok.append(("a fenced verdict still reads",
+               parse_verdict('```json\n{"activate": true}\n```') is True))
+    # Valid JSON that is still not a verdict: an array has no "activate" key to be missing
+    # from, and an object can omit the key outright. Both must read as unreadable, not crash
+    # `bool(payload["activate"])` and not silently resolve to `False`.
+    ok.append(("valid JSON that is not an object is None", parse_verdict("[1, 2, 3]") is None))
+    ok.append(("a JSON object without 'activate' is None",
+               parse_verdict('{"why": "no verdict given"}') is None))
+    dead = score([{"kind": "near_miss", "expected": False, "got": None, "readable": False},
+                  {"kind": "near_miss", "expected": False, "got": None, "readable": False}])
+    ok.append(("a dead judge scores 0, not 1.0", dead["accuracy"] == 0.0))
+    ok.append(("a dead judge's cases are counted unreadable", dead["unreadable"] == 2))
+    ok.append(("an unreadable case is in no denominator",
+               dead["near_miss"]["total"] == 0 and dead["should_trigger"]["total"] == 0))
+    mixed = score([{"kind": "near_miss", "expected": False, "got": False, "readable": True},
+                   {"kind": "should_trigger", "expected": True, "got": None, "readable": False}])
+    ok.append(("a mixed run scores only what it read",
+               mixed["accuracy"] == 1.0 and mixed["unreadable"] == 1
+               and mixed["should_trigger"]["total"] == 0))
     # --- arena mode (Task 14) ---
     ok.append(("arena verdict picks named winner",
                parse_arena_verdict('{"winner": "khenrix-wiki-add"}',
