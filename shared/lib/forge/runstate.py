@@ -1253,11 +1253,20 @@ def write_state(run_dir, state: State) -> None:
     A CACHE, NOT THE AUTHORITY. §14.2 makes git the ordering of record — `--collect`
     "reconstructs the checkpoint sequence and the last verify-passing OID even if every JSON
     file is torn" — so this file is an optimisation over a derivation from the synthesis
-    branch, and the derivation is the one that must win where they disagree. `runner.run` is
-    the only writer, and it writes the PHASE only, one `advance` at a time; the checkpoint
-    dimensions the branch would speak for stay `None` because nothing has committed one yet.
-    Nothing derives the branch side; whoever writes it owns that precedence, and should not
-    read a position here as evidence against what the branch says.
+    branch, and the derivation is the one that must win where they disagree. Nothing derives
+    the branch side; whoever writes it owns that precedence, and should not read a position
+    here as evidence against what the branch says.
+
+    THE ARGUMENT ABOVE RESTS ON WHAT THE WRITERS WRITE, so they are named rather than counted:
+    `runner._advance` and `review._persist`. It used to say "`runner.run` is the only writer",
+    which a later change falsified while the sentence went on carrying the precedence
+    argument. Both go through `advance`, which `dataclasses.replace`s the PHASE and nothing
+    else, so neither can move a checkpoint dimension; and no caller of either sets one — the
+    only construction that names them is `runner`'s initial `State`, with both `None`. So this
+    file still cannot state a checkpoint the branch would have to be argued with about. That
+    is a property of the two call sites, not of the graph: a third writer, or an existing one
+    handed a `State` carrying a checkpoint, would give this record something to disagree with,
+    and the derivation still wins.
 
     The body below is `write_seat`'s, one record over: the same publish-by-rename, the same
     refuse-before-publishing, the same round trip. They are not factored together because the
