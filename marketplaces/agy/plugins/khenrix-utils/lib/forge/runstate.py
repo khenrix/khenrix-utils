@@ -231,6 +231,7 @@ import os
 import stat
 from dataclasses import dataclass
 
+from . import bundle as bundlemod
 from . import gitcmd, journal, storage
 from .inspect import GeneratorContract
 from .verify import Step, VerifyError
@@ -615,6 +616,17 @@ def _carried_digest(root: bytes, porcelain: bytes, selected_paths) -> bytes:
     gate, and a manifest's, where JSON has only text — so `os.fsencode` puts them in the same
     alphabet.
 
+    AND ONE OF THOSE TWO CALL PATHS IS NOT TRUSTED, which is why `_path_digest` is handed the
+    root and the relative path rather than the join of them. The porcelain half is git's own
+    output and can be neither absolute nor `..`, and git tracks no path THROUGH a symlink; the
+    manifest half is `Manifest.selected_paths`, which `_texts` type-checks and nothing else.
+    `screen.py`'s guard covers the OPERATOR route into this selection, at the §5 gate; it is
+    not on the decoded route, and §8.1's model is a record edited between runs. Measured
+    through `write_manifest` -> `read_manifest` -> `drift`, all three reaching a read outside
+    the repository: `../../outside/secret.txt`, an absolute path, and `link/secret.txt` where
+    `link` is an in-repo symlink. The last is the one no lexical rule sees, and a selected
+    DIRECTORY compounds it — `_dir_digest` would then walk a whole host subtree.
+
     The length framing here is LOAD-BEARING, unlike `_status_digest`'s over the four parts. A
     path may contain anything but NUL, including the text of another entry's digest, so
     unframed `"a" + digest(a) + "b" + digest(b)` is byte for byte what one path literally named
@@ -627,20 +639,34 @@ def _carried_digest(root: bytes, porcelain: bytes, selected_paths) -> bytes:
     paths |= {os.fsencode(p) for p in selected_paths}
     h = hashlib.sha256()
     for rel in sorted(paths):
-        value = _path_digest(os.path.join(root, rel))
+        value = _path_digest(root, rel)
         for part in (rel, value):
             h.update(b"%d:" % len(part))
             h.update(part)
     return h.hexdigest().encode("ascii")
 
 
-def _path_digest(path: bytes) -> bytes:
-    """One path's content identity — total over every shape the OS will answer about, and
-    raising for none of THOSE.
+def _path_digest(root: bytes, rel: bytes) -> bytes:
+    """One carried path's content identity — total over every shape the OS will answer about,
+    and raising for none of THOSE.
+
+    THE ROOT AND THE RELATIVE PATH, NEVER THE JOIN. `os.path.join(root, rel)` hands the kernel
+    a name assembled from a record §8.1 does not trust, and every branch below then describes
+    whatever that name resolved to. `bundle.contained` descends one component at a time with
+    `O_NOFOLLOW` against the previous component's descriptor, so the leaf operations run at
+    `dir_fd=` and there is no name left to redirect — see `_carried_digest` for the three
+    routes this was measured on.
+
+    AN ESCAPE IS AN ANSWER, on the same argument the OSError arm makes below, and a DISTINCT
+    one. `uncontained` is not `error:2`: a path that left the tree and a path that is missing
+    are different facts about the record, and giving them one value would let either become
+    the other without moving the digest. It is stable across checks by construction — the
+    refusal is a property of the string — which is exactly what makes it safe to answer with
+    rather than raise: a forged selection reads as itself at t0 and at every check after.
 
     The totality stops at paths the OS refuses to be asked about, and deliberately. A NUL in a
     `selected_paths` entry survives `write_manifest`/`read_manifest` intact and raises
-    `ValueError: embedded null character` out of `os.lstat` before any of the branches below
+    `ValueError: embedded null character` out of the descent before any of the branches below
     run — measured, and it escapes `drift` and `reconstruct`. Catching it here would be worse
     than the crash: the value returned would be identical at t0 and at every later check, so a
     selected path that CANNOT exist would read as "nothing moved" for the life of the run.
@@ -664,26 +690,49 @@ def _path_digest(path: bytes) -> bytes:
     answers; collapsing them would let either become the other without moving the digest.
     """
     try:
-        st = os.lstat(path)
+        at = bundlemod.contained(root, rel, "a carried path")
+    except bundlemod.BundleError:
+        return b"uncontained"
+    with at:
+        return _digest_at(at.fd, at.leaf)
+
+
+def _digest_at(fd: int, name: bytes) -> bytes:
+    """`_path_digest`'s branches, over a leaf NAME and the descriptor of the directory holding
+    it — the shape both callers already have.
+
+    Separate from `_path_digest` because `_dir_digest` recurses into it with the descriptor
+    `os.fwalk` hands back, and re-joining a path there to call the descent again would undo
+    the descent for every entry underneath a selected directory.
+    """
+    try:
+        st = os.stat(name, dir_fd=fd, follow_symlinks=False)
     except OSError as e:
         return b"error:%d" % e.errno
     try:
         if stat.S_ISLNK(st.st_mode):
-            return b"link:" + hashlib.sha256(os.readlink(path)).hexdigest().encode("ascii")
+            target = os.readlink(name, dir_fd=fd)
+            return b"link:" + hashlib.sha256(target).hexdigest().encode("ascii")
         if stat.S_ISDIR(st.st_mode):
-            return _dir_digest(path)
+            return _dir_digest(fd, name)
         if stat.S_ISREG(st.st_mode):
-            h = hashlib.sha256()
-            with open(path, "rb") as fh:
-                for chunk in iter(lambda: fh.read(1 << 16), b""):
+            # `O_NOFOLLOW` because the `stat` above and this open are two syscalls, and
+            # `O_NONBLOCK` for `bundle.open_leaf`'s reason: a read-open on a FIFO that
+            # replaced this name in between would block with no timeout in the call path.
+            dfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            try:
+                h = hashlib.sha256()
+                while chunk := os.read(dfd, 1 << 16):
                     h.update(chunk)
+            finally:
+                os.close(dfd)
             return b"file:%d:" % bool(st.st_mode & 0o111) + h.hexdigest().encode("ascii")
     except OSError as e:
         return b"error:%d" % e.errno
     return b"special:%d" % stat.S_IFMT(st.st_mode)
 
 
-def _dir_digest(path: bytes) -> bytes:
+def _dir_digest(fd: int, name: bytes) -> bytes:
     """A selected DIRECTORY's contents. §2.2 contemplates selecting one explicitly, and
     `baseline.materialize`'s literal pathspec sweeps its whole contents into B — so a digest
     that stopped at the directory itself would be blind to every file the run is carrying
@@ -692,21 +741,29 @@ def _dir_digest(path: bytes) -> bytes:
     `baseline._walk_selected`'s rules, for its reasons: `.git` is pruned rather than
     post-filtered, and a linked directory is reported by its own target text rather than
     descended into. A directory that cannot be listed contributes its errno rather than
-    nothing, because os.walk's default is to swallow the error and yield an empty tree — which
-    would make an unreadable directory digest the same as an empty one.
+    nothing, because the walk's default is to swallow the error and yield an empty tree —
+    which would make an unreadable directory digest the same as an empty one.
+
+    `os.fwalk` RATHER THAN `os.walk`, and it is the half of the escape a fix at the caller
+    alone would have missed. This used to be handed a joined path and re-join one for every
+    leaf underneath it, so a selected directory that escaped once escaped for its whole
+    subtree — the digest then described an entire HOST tree. `fwalk` walks relative to a
+    descriptor and hands back the descriptor of each directory it is inside, so every leaf
+    below is named at a `dir_fd=` that descends from the one already proven contained.
     """
     h = hashlib.sha256()
     failures = []
-    for dirpath, dirnames, filenames in os.walk(path, followlinks=False,
-                                                onerror=failures.append):
+    for dirpath, dirnames, filenames, dirfd in os.fwalk(
+            name, dir_fd=fd, follow_symlinks=False, onerror=failures.append):
         dirnames[:] = sorted(n for n in dirnames if n != b".git")
-        leaves = [n for n in list(dirnames) if os.path.islink(os.path.join(dirpath, n))]
+        leaves = [n for n in list(dirnames)
+                  if stat.S_ISLNK(os.stat(n, dir_fd=dirfd,
+                                          follow_symlinks=False).st_mode)]
         for n in leaves:
             dirnames.remove(n)
-        for name in leaves + sorted(filenames):
-            leaf = os.path.join(dirpath, name)
-            rel = os.path.relpath(leaf, path)
-            for part in (rel, _path_digest(leaf)):
+        for leaf in leaves + sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, leaf), name)
+            for part in (rel, _digest_at(dirfd, leaf)):
                 h.update(b"%d:" % len(part))
                 h.update(part)
     for e in failures:

@@ -671,7 +671,7 @@ def test_two_different_carried_sets_cannot_be_made_to_digest_the_same(tmp_path):
     (tmp_path / "a").write_text("X")
     (tmp_path / "b").write_text("Y")
     root = os.fsencode(tmp_path)
-    imitation = "a" + runstate._path_digest(os.fsencode(tmp_path / "a")).decode() + "b"
+    imitation = "a" + runstate._path_digest(root, b"a").decode() + "b"
     (tmp_path / imitation).write_text("Y")
     assert runstate._carried_digest(root, b"", ["a", "b"]) \
         != runstate._carried_digest(root, b"", [imitation])
@@ -2004,3 +2004,70 @@ def test_the_index_digest_executes_nothing_the_repository_supplies(tmp_path):
 
     runstate.snapshot_index(repo)
     assert not ran.exists(), "snapshot_index ran a program the repository supplied"
+
+
+def test_a_manifest_selection_cannot_pull_a_host_file_into_the_carried_digest(tmp_path):
+    """§8.1's read half, on the route `screen.py`'s guard does not stand in front of.
+
+    `screen` refuses an absolute or `..` selection at the §5 gate — the OPERATOR route. The
+    DECODED route has no such door: `_texts` type-checks `selected_paths` and asserts nothing
+    about their shape, so a manifest edited between runs reaches `_carried_digest` with
+    whatever was written, and `os.path.join(root, rel)` resolved it.
+
+    Measured through the real record before the fix, all three reaching a read outside the
+    repository: the drift digest moved when a file OUTSIDE the repo was edited, which is the
+    whole proof — the digest claims to describe the tree.
+
+    `link/secret.txt` is the one that matters most: every component is lexically clean, so no
+    string rule can see it, and only descending with `O_NOFOLLOW` answers.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.txt"
+    secret.write_text("original\n")
+    repo = make_repo(tmp_path)
+    os.symlink(str(outside), Path(repo) / "link")
+    commit_all(repo, "link out of the tree")
+    assert (Path(repo) / "link" / "secret.txt").is_file(), \
+        "precondition: the link really does resolve to the host file"
+
+    for sel in ("../../outside/secret.txt", str(secret), "link/secret.txt"):
+        run = tmp_path / f"run-{abs(hash(sel))}"
+        run.mkdir()
+        runstate.write_manifest(run, _manifest(repo, selected_paths=(sel,)))
+        m = runstate.read_manifest(run)
+        assert runstate.drift(m, repo) == (), f"precondition: t0 is clean for {sel!r}"
+        secret.write_text("CHANGED OUTSIDE THE REPOSITORY\n")
+        assert runstate.drift(m, repo) == (), \
+            f"a digest over {sel!r} must not move when a HOST file moves"
+        secret.write_text("original\n")
+
+
+def test_a_selected_directory_that_escapes_does_not_digest_a_host_subtree(tmp_path):
+    """The recursion, which a fix at the join alone would have missed.
+
+    `_path_digest` dispatches a directory to `_dir_digest`, which used to walk with `os.walk`
+    over a joined path and re-join one for every leaf underneath it — so a selected directory
+    that escaped once escaped for its whole subtree. `os.fwalk` walks relative to the
+    descriptor the descent already proved contained.
+
+    The in-tree link is asserted separately from the escaping paths because it must still be
+    ANSWERED rather than refused: a link is its target TEXT, which is a real measurement of
+    something the tree really holds.
+    """
+    host = tmp_path / "hostdir"
+    host.mkdir()
+    (host / "secret.txt").write_text("original\n")
+    repo = make_repo(tmp_path)
+    os.symlink(str(host), Path(repo) / "linkdir")
+    commit_all(repo, "link")
+    root = os.fsencode(str(repo))
+
+    assert runstate._path_digest(root, b"../../hostdir") == b"uncontained"
+    assert runstate._path_digest(root, os.fsencode(str(host))) == b"uncontained"
+    # An in-tree link to a host directory is its TARGET TEXT, never walked into.
+    linked = runstate._path_digest(root, b"linkdir")
+    assert linked.startswith(b"link:")
+    (host / "secret.txt").write_text("CHANGED\n")
+    assert runstate._path_digest(root, b"linkdir") == linked, \
+        "the target text did not move, so neither may the digest"
