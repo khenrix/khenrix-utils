@@ -50,11 +50,26 @@ def _fake_run(script):
     return run
 
 
+def _node(tree, rel="tests/t.py"):
+    """The node id's FILE, really present in the candidate tree.
+
+    THE FIXTURE THESE TESTS DID NOT HAVE, and its absence is why `_test`'s node id reached
+    pytest with no containment check for the whole life of this module: every test here fakes
+    `run`, so no node id had ever named anything real, and a predicate whose fixtures never
+    touch the filesystem cannot be seen to be missing a filesystem guard.
+    """
+    p = Path(tree) / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("def f():\n    pass\n")
+    return rel
+
+
 def test_a_named_test_that_passes_is_mechanically_checked_and_satisfied(tmp_path):
     def script(argv):
         if "--collect-only" in argv:
             return 0, "tests/t.py::test_x\n"
         return 0, "1 passed"
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=_fake_run(script))
@@ -68,6 +83,7 @@ def test_a_named_test_that_fails_is_mechanically_checked_and_not_satisfied(tmp_p
         if "--collect-only" in argv:
             return 0, "tests/t.py::test_x\n"
         return 1, "1 failed"
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=_fake_run(script))
@@ -79,6 +95,7 @@ def test_a_vanished_test_is_unresolved_not_failed(tmp_path):
     """A claim whose test vanished is not a claim that was tested."""
     def script(argv):
         return 5, ""
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_gone"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=_fake_run(script))
@@ -97,6 +114,7 @@ def test_a_node_id_selecting_more_than_one_test_is_unresolved(tmp_path):
         if "--collect-only" in argv:
             return 0, "tests/t.py::test_x\ntests/t.py::test_y\n"
         return 0, "2 passed"
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=_fake_run(script))
@@ -110,6 +128,7 @@ def test_one_collected_node_that_is_not_the_named_one_is_unresolved(tmp_path):
         if "--collect-only" in argv:
             return 0, "tests/t.py::test_x[a]\n"
         return 0, "1 passed"
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=_fake_run(script))
@@ -117,6 +136,7 @@ def test_one_collected_node_that_is_not_the_named_one_is_unresolved(tmp_path):
 
 
 def test_a_usage_error_is_unresolved(tmp_path):
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"],
@@ -129,6 +149,7 @@ def test_a_pytest_that_cannot_be_launched_is_unresolved(tmp_path):
     branch where the call itself raises, and it is the one a missing interpreter takes."""
     def boom(argv, **kw):
         raise FileNotFoundError(2, "No such file or directory", "pytest")
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=boom)
@@ -146,6 +167,7 @@ def test_a_test_that_outruns_its_timeout_is_unresolved(tmp_path):
     def run(argv, **kw):
         rc, out = script(argv)
         return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="")
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
                           pytest_argv=["pytest"], run=run)
@@ -153,6 +175,7 @@ def test_a_test_that_outruns_its_timeout_is_unresolved(tmp_path):
 
 
 def test_no_pytest_runner_is_unresolved_never_manual_trace(tmp_path):
+    _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path, pytest_argv=None)
     assert (r.method, r.satisfied) == ("unresolved", None)
@@ -165,6 +188,7 @@ def test_the_test_predicate_runs_in_the_candidate_tree(tmp_path):
     def run(argv, **kw):
         seen["cwd"] = kw.get("cwd")
         return subprocess.CompletedProcess(argv, 0, stdout="tests/t.py::test_x\n", stderr="")
+    _node(tmp_path)
     coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                       row_id="a1", index=0, tree=tmp_path, pytest_argv=["pytest"], run=run)
     assert Path(seen["cwd"]) == tmp_path
@@ -526,6 +550,7 @@ def test_check_hands_the_pytest_runner_to_the_predicate(tmp_path):
         if "--collect-only" in argv:
             return 0, "tests/t.py::test_x\n"
         return 0, "1 passed"
+    _node(tmp_path)
     row = _row("R1", "alpha", acceptance_criteria=(
         _crit(kind="test", text="tests/t.py::test_x passes", node_id="tests/t.py::test_x"),))
     rep = coverage.check(_led([row]), tree=tmp_path, pytest_argv=["pytest"],
@@ -542,3 +567,173 @@ def test_check_refuses_a_value_that_is_not_a_ledger_in_this_modules_class(tmp_pa
     bad = _led([_row("R1", "alpha", dependencies=({"id": "x", "relation": "requires"},))])
     with pytest.raises(coverage.CoverageError):
         coverage.check(bad, tree=tmp_path)
+
+
+def test_a_symlink_leaf_is_never_parsed_through_by_the_symbol_predicate(tmp_path):
+    """C1: A MECHANICAL TRUE ABOUT A FILE OUTSIDE THE TREE. `_inside` deliberately declined to
+    resolve the FINAL component while `_symbol` then called `read_bytes()`, which follows one —
+    so `mod.py -> ../host.py` answered `(mechanically_checked, True)`, "mod.py defines secret",
+    about a file this predicate was never pointed at. Measured before the fix.
+
+    `unresolved` rather than a mechanical False, and it is `_hash`'s existing rule rather than
+    a new one: `_hash` already refuses to hash through a link because the invariant would then
+    describe content from outside the tree the ledger claims to describe. The narrowing costs a
+    reader work on an in-tree link; the other reading is §10.1's worked example with the sign
+    flipped."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tmp_path / "host.py").write_text("def secret():\n    pass\n")
+    os.symlink(tmp_path / "host.py", tree / "mod.py")
+    r = coverage.evaluate(_crit(kind="symbol", text="mod.py defines secret",
+                                path="mod.py", symbol="secret"),
+                          row_id="a1", index=0, tree=tree)
+    assert (r.method, r.satisfied) == ("unresolved", None)
+    assert "without following a link" in r.detail
+    # Non-vacuity: the same symbol in a REAL file in the tree is still found, so the refusal
+    # above is about the link and not about the predicate having stopped working.
+    (tree / "real.py").write_text("def secret():\n    pass\n")
+    ok = coverage.evaluate(_crit(kind="symbol", text="real.py defines secret",
+                                 path="real.py", symbol="secret"),
+                           row_id="a1", index=0, tree=tree)
+    assert (ok.method, ok.satisfied) == ("mechanically_checked", True)
+
+
+def test_a_symbol_path_through_a_symlinked_directory_is_never_read(tmp_path):
+    """The same escape one component up, which `lstat`-on-the-leaf could never have seen."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "mod.py").write_text("def secret():\n    pass\n")
+    os.symlink(tmp_path / "outside", tree / "pkg")
+    r = coverage.evaluate(_crit(kind="symbol", text="pkg/mod.py defines secret",
+                                path="pkg/mod.py", symbol="secret"),
+                          row_id="a1", index=0, tree=tree)
+    assert (r.method, r.satisfied) == ("unresolved", None)
+    assert "does not name a path inside the candidate tree" in r.detail
+
+
+def test_a_node_id_that_leaves_the_tree_is_never_handed_to_pytest(tmp_path):
+    """C2: COLLECTING AN OUT-OF-TREE NODE ID IMPORTS ITS `conftest.py`, WHICH RUNS.
+
+    `node_id` was the one `Criterion` field no guard stood in front of: `ledger._check_criterion`
+    guards `path`, and this predicate joins nothing — it hands the string to a real pytest with
+    `cwd=tree`. Both halves were measured on real pytest. EXECUTION: a `..`-prefixed id made
+    pytest walk out of the tree and import an outside `conftest.py`, which ran and wrote its
+    marker. VERDICT: that spelling then answered `unresolved`, because pytest prints collected
+    ids relative to the rootdir it picked and the `startswith` filter matched none — but the
+    SYMLINK spelling printed the id back unchanged, matched, ran, and answered
+    `(mechanically_checked, True)` about a test file entirely outside the tree.
+
+    So both spellings are pinned, and the assertion is that pytest was NEVER CALLED: a test
+    that only checked the verdict would pass on the unfixed code for the `..` spelling while
+    the conftest still executed.
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "mod.py").write_text("def f():\n    pass\n")
+    os.symlink(tmp_path / "outside", tree / "outside")
+    called = []
+
+    def run(argv, **kw):
+        called.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    for nid in ("../outside/mod.py::f", "outside/mod.py::f", "/etc/passwd::f"):
+        r = coverage.evaluate(_crit(kind="test", node_id=nid), row_id="a1", index=0,
+                              tree=tree, pytest_argv=["pytest"], run=run)
+        assert (r.method, r.satisfied) == ("unresolved", None), nid
+        assert "does not select a file inside the candidate tree" in r.detail, nid
+    assert called == [], \
+        "pytest imports the conftest.py beside whatever it collects, so an uncontained node " \
+        "id must not reach it at all — the verdict is not the property under test here"
+
+
+def test_a_node_id_that_is_a_link_to_an_in_tree_file_is_still_refused(tmp_path):
+    """The leaf half of the same rule. A link at the LAST component reaches another file by
+    the same means the descent refuses one component up, and pytest resolves it for itself."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    _node(tree)
+    os.symlink("tests/t.py", tree / "alias.py")
+    r = coverage.evaluate(_crit(kind="test", node_id="alias.py::f"), row_id="a1", index=0,
+                          tree=tree, pytest_argv=["pytest"],
+                          run=_fake_run(lambda argv: (0, "alias.py::f\n")))
+    assert (r.method, r.satisfied) == ("unresolved", None)
+
+
+def test_a_run_that_could_not_be_launched_after_collection_is_unresolved(tmp_path):
+    """AN UNTESTED BRANCH. `test_a_pytest_that_cannot_be_launched_is_unresolved` raises on the
+    FIRST call, so it exercises the collect-stage `except` and never the run-stage one. A
+    runner that vanished between the two measured nothing either."""
+    def run(argv, **kw):
+        if "--collect-only" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="tests/t.py::test_x\n",
+                                               stderr="")
+        raise FileNotFoundError(2, "No such file or directory", "pytest")
+    _node(tmp_path)
+    r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
+                          row_id="a1", index=0, tree=tmp_path,
+                          pytest_argv=["pytest"], run=run)
+    assert (r.method, r.satisfied) == ("unresolved", None)
+    assert "pytest could not be run" in r.detail
+
+
+def test_a_run_that_exits_four_is_not_scored_as_a_failed_test(tmp_path):
+    """THE OTHER UNTESTED BRANCH, and the one whose absence was dangerous.
+    `test_a_usage_error_is_unresolved` returns 4 from EVERY call, so it exits at the
+    collect stage and the run stage's own exit codes were pinned by nothing — a
+    `returncode == 1` widened to `>= 1` would score pytest's usage error (4), internal error
+    (3) and interrupt (2) as "the named test failed", which §12.4 acts on as a fallback
+    trigger. 0 and 1 are the only two exits that are a result of the named test."""
+    for rc in (2, 3, 4):
+        def run(argv, **kw):
+            if "--collect-only" in argv:
+                return subprocess.CompletedProcess(argv, 0, stdout="tests/t.py::test_x\n",
+                                                   stderr="")
+            return subprocess.CompletedProcess(argv, rc, stdout="", stderr="")
+        _node(tmp_path)
+        r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
+                              row_id="a1", index=0, tree=tmp_path,
+                              pytest_argv=["pytest"], run=run)
+        assert (r.method, r.satisfied) == ("unresolved", None), rc
+        assert "neither a pass nor a failure" in r.detail, rc
+
+
+def test_a_ledger_with_no_rows_is_refused_rather_than_reported_as_covered(tmp_path):
+    """C4: THE EMPTY-CRITERIA FAIL-OPEN, ONE CONTAINER OUT. The accepted-row-with-no-criteria
+    case was closed and this reached the same place by a shorter route — zero results, zero
+    `unsatisfied`, zero `unresolved`, zero contradictions: an all-empty `Report` that reads as
+    a fully covered run having checked nothing. `ledger._decode` refuses it on the way in, but
+    §12.2's partitioned synthesis builds a `Ledger` in process and never meets a decoder, which
+    is exactly the caller this function was written for."""
+    with pytest.raises(coverage.CoverageError, match="no rows"):
+        coverage.check(_led([]), tree=tmp_path)
+
+
+def test_a_mechanical_result_with_no_answer_is_refused_because_nothing_would_show_it(
+        tmp_path):
+    """I4: the OTHER half of `Result`'s pair, and it was open. The enforced half forbids an
+    answer where no measurement was taken; this forbids a MEASUREMENT WITH NO ANSWER, which is
+    the state that shows up nowhere: `(mechanically_checked, None)` is in neither
+    `Report.unsatisfied` (`satisfied is False`) nor `Report.unresolved`
+    (`method == "unresolved"`)."""
+    with pytest.raises(coverage.CoverageError, match="carries the answer it measured"):
+        coverage.Result("a1", 0, "mechanically_checked", None, "checked, but no answer")
+    # Non-vacuity: both real answers still construct.
+    for v in (True, False):
+        assert coverage.Result("a1", 0, "mechanically_checked", v, "x").satisfied is v
+
+
+def test_a_report_may_not_disagree_with_its_own_results(tmp_path):
+    """`Result` enforced its invariant in `__post_init__` and `Report` enforced nothing, so a
+    `Report` assembled out of honest `Result`s could still report a clean run over results that
+    say otherwise — a verdict reading cleaner than its evidence, built from valid parts. §12.4's
+    consumer populates this class for itself, which is the same argument `Result`'s docstring
+    makes about a rule that holds only on the path its author remembered."""
+    bad = coverage.Result("a1", 0, "mechanically_checked", False, "it failed")
+    with pytest.raises(coverage.CoverageError, match="not what its own results say"):
+        coverage.Report((bad,), (), (), ())
+    with pytest.raises(coverage.CoverageError, match="results are Result records"):
+        coverage.Report(({"row_id": "a1"},), (), (), ())
+    # Non-vacuity: the roll-up the results DO imply is accepted.
+    coverage.Report((bad,), (), ("a1[0]: it failed",), ())

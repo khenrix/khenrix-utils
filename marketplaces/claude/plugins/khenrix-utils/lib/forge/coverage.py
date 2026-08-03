@@ -52,6 +52,18 @@ class CoverageError(RuntimeError):
     """This coverage check cannot be described honestly."""
 
 
+def _lines(results, which: str) -> list:
+    """One roll-up, as the ONE spelling both `check` and `Report.__post_init__` read.
+
+    Two spellings of the same rule eventually disagree, and here the disagreement would be a
+    report whose own consistency check passes because it was computed the same wrong way
+    twice — so the producer and the audit share this function rather than each stating it.
+    """
+    keep = (lambda x: x.satisfied is False) if which == "unsatisfied" \
+        else (lambda x: x.method == "unresolved")
+    return [f"{x.row_id}[{x.criterion_index}]: {x.detail}" for x in results if keep(x)]
+
+
 @dataclass(frozen=True)
 class Result:
     """One criterion's outcome, on both axes.
@@ -90,6 +102,18 @@ class Result:
                 f"a {self.method!r} result may not carry satisfied={self.satisfied!r}: only a "
                 "mechanical check produces an answer, and a human's word in a measurement's "
                 "shape is the manufactured green §10.1 exists to forbid")
+        # THE OTHER HALF OF THE PAIR, and it was open. The sentence above forbids an answer
+        # where no measurement was taken; this forbids a MEASUREMENT WITH NO ANSWER, which is
+        # the state that reads as nothing at all: `(mechanically_checked, None)` is in neither
+        # `Report.unsatisfied` (`satisfied is False`) nor `Report.unresolved`
+        # (`method == "unresolved"`), so a criterion in it is checked, unanswered and invisible
+        # in every roll-up §12.4 and §10 read. `bool | None` describes three states and only
+        # three of the four combinations are ones this module can mean.
+        if self.method == "mechanically_checked" and not isinstance(self.satisfied, bool):
+            raise CoverageError(
+                f"a mechanically_checked result carries the answer it measured, not "
+                f"satisfied={self.satisfied!r}: a check with no answer appears in neither "
+                "roll-up, so it would be a criterion nobody can see was left open")
 
 
 @dataclass(frozen=True)
@@ -99,11 +123,31 @@ class Report:
     `unsatisfied` and `unresolved` are SEPARATE and that separation is the file's reason for
     existing: "checked and false" is a fallback trigger, "nobody could check" is a report line
     that must not be read as either a pass or a failure.
+
+    THE ROLL-UPS ARE RE-DERIVED IN `__post_init__`, for the reason `Result` enforces its own
+    invariant there rather than in a private factory: a rule that holds only on the path its
+    author remembered is what this module refuses everywhere else, and `Report` is a public
+    dataclass §12.4's consumer will populate for itself. `check` is the only producer today,
+    so nothing here changes what it emits — the check exists so a hand-built `Report` cannot
+    report a clean run over results that say otherwise, which is a verdict reading cleaner
+    than its evidence assembled out of honest parts.
     """
     results: tuple
     contradictions: tuple
     unsatisfied: tuple
     unresolved: tuple
+
+    def __post_init__(self) -> None:
+        wrong = sorted({type(r).__name__ for r in self.results
+                        if not isinstance(r, Result)})
+        if wrong:
+            raise CoverageError(f"a report's results are Result records, not {wrong}")
+        for name in ("unsatisfied", "unresolved"):
+            expected = tuple(_lines(self.results, name))
+            if tuple(getattr(self, name)) != expected:
+                raise CoverageError(
+                    f"this report's {name} is not what its own results say: it carries "
+                    f"{tuple(getattr(self, name))!r} beside {expected!r}")
 
 
 def _require_inputs(c) -> None:
@@ -132,36 +176,38 @@ def _require_inputs(c) -> None:
 
 
 def _inside(tree, rel):
-    """The path `rel` names INSIDE `tree`, or None because it names something outside it.
+    """`rel`'s parent inside `tree` as an OPEN DESCRIPTOR, or None because it names something
+    outside it. The caller closes it — `with _inside(...) as at:`.
 
     THE JOIN IS WHERE A CRITERION STOPS DESCRIBING THE CANDIDATE. `ledger.Criterion.path` is a
     bare `str` authored from three fallible seats' claims, and `Path(tree) / "/etc/passwd"` IS
     `/etc/passwd` while `../../` walks straight out — so an unchecked join reports a MECHANICAL
     check on a host file the ledger claims nothing about, which is a verdict reading cleaner
-    than its evidence in the most literal available way. `taskbundle._rel` applies the same
-    guard for the same reason and `ledger._check_criterion` refuses these at write; this is the
-    second gate, because a `Ledger` value built in-process never passed through the first.
+    than its evidence in the most literal available way. `taskbundle._check_rel` applies the
+    same guard for the same reason and `ledger._check_criterion` refuses these at write; this
+    is the second gate, because a `Ledger` value built in-process never passed through the
+    first.
 
-    TWO ESCAPES, AND ONLY ONE OF THEM IS VISIBLE IN THE STRING. `bundle._assert_contained`
-    catches the absolute and `..` forms — including the bare `".."`, whose PARENT is the tree
-    itself and so passes the check below untouched. That check exists for the escape no string
-    can see: an INTERMEDIATE SYMLINK COMPONENT, `link/f.py` where `link -> /etc`, so the parent
-    is resolved and compared against the resolved tree. Neither half subsumes the other.
+    WHAT THIS USED TO RETURN, AND WHY IT WAS THE SAME DEFECT ONE MODULE OVER. It answered a
+    `Path`, having compared `realpath` OF THE PARENT against `realpath` of the tree — a check
+    on a string, followed by a caller opening that string. `_symbol` then called `read_bytes()`
+    on it, which follows a symlink leaf, and reported `(mechanically_checked, True)` about a
+    file OUTSIDE the tree. Measured: `tree/mod.py -> ../host.py` answered "mod.py defines
+    secret" about `host.py`. `bundle.contained` descends component by component with
+    `O_NOFOLLOW` against the previous component's descriptor instead, and the caller opens the
+    leaf with `dir_fd=` — so the check and the use are one syscall and there is no name left
+    for a link to redirect. The `..` and absolute forms are still refused as STRINGS, inside
+    `contained`, because a literal `..` needs no symlink to leave the tree.
 
-    THE FINAL COMPONENT IS DELIBERATELY NEVER RESOLVED: a symlink leaf is a legal entry whose
-    TARGET TEXT is what `_hash` digests, and resolving it would reintroduce the
-    hash-through-the-link fail-open `_hash` exists to close.
+    THE LEAF IS STILL NEVER FOLLOWED, and now that is a property of the open rather than of
+    what this function declines to resolve: a symlink leaf is a legal entry whose TARGET TEXT
+    is what `_hash` digests, so `_hash` reads it with `os.readlink(dir_fd=)` and `_symbol`
+    refuses to parse through it at all.
     """
     try:
-        bundlemod._assert_contained(rel, "a coverage criterion path")
+        return bundlemod.contained(tree, rel, "a coverage criterion path")
     except bundlemod.BundleError:
         return None
-    p = Path(tree) / rel
-    root = os.path.realpath(tree)
-    parent = os.path.realpath(p.parent)
-    if parent != root and not parent.startswith(root + os.sep):
-        return None
-    return p
 
 
 def _escaped(c, *, row_id, index) -> Result:
@@ -176,6 +222,41 @@ def _escaped(c, *, row_id, index) -> Result:
                   f"{c.path!r} does not name a path inside the candidate tree, so no "
                   "predicate was run: a criterion that leaves the tree describes content "
                   "the ledger does not claim to describe")
+
+
+def _uncontained_node_file(node_id: str, tree):
+    """The detail line for a node id whose FILE half does not name a regular file inside
+    `tree`, or None because it does.
+
+    A STRING THIS ENGINE MAY NOT PASS TO PYTEST AT ALL, so the answer is a refusal line rather
+    than a run whose result is then discounted: pytest imports a `conftest.py` beside whatever
+    it collects, and that import is code execution decided by the node id. `unresolved` is the
+    verdict for the same reason `_escaped` gives — nobody looked — and it keeps the row out of
+    `Report.unsatisfied`, which §12.4 acts on.
+    """
+    why = (f"{node_id!r} does not select a file inside the candidate tree, so no predicate "
+           "was run: pytest imports the `conftest.py` beside whatever it collects, and a "
+           "node id that leaves the tree is code execution the ledger claims nothing about")
+    rel = node_id.split("::")[0]
+    if not rel:
+        return why
+    try:
+        at = bundlemod.contained(tree, rel, "a coverage criterion test id")
+    except bundlemod.BundleError as e:
+        return f"{why} ({e})"
+    with at:
+        # A LINK LEAF IS REFUSED ALONGSIDE, for the reason `_symbol` refuses one: the
+        # components are descended, so `evil/x.py` through a symlinked `evil/` is already out,
+        # and a link at the LEAF reaches the same file by the same means. Directories are let
+        # through — a node id naming one selects many tests, which the count guard below
+        # answers with the sentence that says why several is not one.
+        try:
+            st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+        except OSError as e:
+            return f"{why} ({e.strerror})"
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            return f"{why} (st_mode {st.st_mode:#o})"
+    return None
 
 
 def _test(c, *, row_id, index, tree, pytest_argv, run, **_) -> Result:
@@ -201,10 +282,35 @@ def _test(c, *, row_id, index, tree, pytest_argv, run, **_) -> Result:
 
     `-p no:cacheprovider` because the candidate tree is the artefact under measurement: a
     `.pytest_cache` written into it is this engine modifying what it is describing.
+
+    THE NODE ID'S FILE HALF IS CONTAINED, AND IT WAS CONTAINED NOWHERE. `node_id` was the one
+    `Criterion` field no guard stood in front of — `ledger._check_criterion` guards `path` and
+    this predicate joins nothing, it hands the string to pytest with `cwd=tree`. Both halves of
+    that were measured on real pytest. EXECUTION: an id of the form `../outside/mod.py::f` made
+    pytest walk up out of the tree and IMPORT `../outside/conftest.py`, which ran and wrote its
+    marker file — arbitrary code from outside the candidate, executed by a coverage check.
+    VERDICT: the `..` spelling then answered `unresolved`, because pytest prints collected ids
+    relative to the rootdir it picked and `startswith(...)` matched none of them — but the same
+    escape spelled as a SYMLINK (`tree/outside -> ../outside`, id `outside/mod.py::f`) printed
+    the id back unchanged, matched, ran, and answered `(mechanically_checked, True)` about a
+    test file entirely outside the tree. The escape is a fact about the filesystem, not about
+    the string, which is why the containment below is `bundle.contained`'s descent and not a
+    fourth spelling of "does this name look safe". (Both spelled with placeholders: the
+    packaging suite reads any `test_*`-shaped token in shipped forge prose as a CITATION to a
+    real test, and an illustration is not a citation anything can resolve.)
+
+    WHAT THAT DOES NOT CLOSE, and it must be said rather than implied by the guard's presence:
+    pytest resolves the id ITSELF, in another process, from the name — there is no way to hand
+    a subprocess a descriptor for it. So this establishes that the file half named a regular
+    file inside the tree AT THE MOMENT IT WAS CHECKED, and a tree mutated during the run can
+    still move it. That residual is bounded by who can write the candidate tree; the previous
+    state was unbounded by anything.
     """
     if not pytest_argv:
         return Result(row_id, index, "unresolved", None,
                       "no pytest runner is wired for this run, so no test-ID predicate exists")
+    if (bad := _uncontained_node_file(c.node_id, tree)) is not None:
+        return Result(row_id, index, "unresolved", None, bad)
     common = ["-p", "no:cacheprovider", "--no-header", "-q"]
     try:
         collected = run([*pytest_argv, "--collect-only", *common, c.node_id],
@@ -253,6 +359,12 @@ def _defines(tree_node, dotted: str) -> bool:
     bound inside `if TYPE_CHECKING:`, a `try:` block or a version guard reports False. Each
     sends the criterion to `Report.unsatisfied`, which costs a reader work; the opposite
     reading — treating a mention as a definition — is the manufactured green.
+
+    THE LOOP RETURNS ON ITS LAST ITERATION, ALWAYS: `"x".split(".")` is `["x"]`, so `parts` is
+    never empty, and its final element takes either the `i == len(parts) - 1` return or one of
+    the two `False` returns beside it. A trailing `return False` was there and was unreachable
+    — dead code under a docstring arguing two deliberate narrowings, which is the shape a
+    reader mistakes for a third.
     """
     parts = dotted.split(".")
     body = tree_node.body
@@ -278,7 +390,6 @@ def _defines(tree_node, dotted: str) -> bool:
         if not isinstance(found, ast.ClassDef):
             return False
         body = found.body
-    return False
 
 
 def _symbol(c, *, row_id, index, tree, **_) -> Result:
@@ -293,22 +404,43 @@ def _symbol(c, *, row_id, index, tree, **_) -> Result:
 
     A `SyntaxError` is `unresolved`, NEVER "symbol absent": an unparseable file is one nobody
     could look in, and reporting absence would be a measurement nobody took.
+
+    A SYMLINK LEAF IS `unresolved`, AND IT IS `_hash`'S RULE RATHER THAN A NEW ONE. `_hash`
+    already refuses to hash through a link because "the invariant would describe content from
+    OUTSIDE the tree the ledger claims to describe"; parsing through one says the same thing
+    about the same bytes. Before this, `read_bytes()` followed it and answered
+    `(mechanically_checked, True)` about whatever it named — measured. The narrowing costs a
+    reader work on an in-tree link; the opposite reading is a mechanical truth about a file
+    this predicate was never pointed at.
     """
-    p = _inside(tree, c.path)
-    if p is None:
+    at = _inside(tree, c.path)
+    if at is None:
         return _escaped(c, row_id=row_id, index=index)
-    if p.suffix != ".py":
-        return Result(row_id, index, "unresolved", None,
-                      f"{c.path!r} is not Python; no symbol evaluator is wired for it")
+    with at:
+        if Path(c.path).suffix != ".py":
+            return Result(row_id, index, "unresolved", None,
+                          f"{c.path!r} is not Python; no symbol evaluator is wired for it")
+        try:
+            fd = bundlemod.open_leaf(at, os.O_RDONLY, "a coverage criterion path")
+        except FileNotFoundError:
+            return Result(row_id, index, "mechanically_checked", False,
+                          f"{c.path!r} does not exist, so it does not define {c.symbol!r}")
+        except OSError as e:
+            return Result(row_id, index, "unresolved", None,
+                          f"{c.path!r} could not be opened without following a link "
+                          f"({e.strerror}), so nobody looked inside the file the criterion "
+                          "names; that is not the same as the symbol being absent")
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                return Result(row_id, index, "unresolved", None,
+                              f"{c.path!r} is not a regular file (st_mode {st.st_mode:#o}); "
+                              "no symbol evaluator is wired for one")
+            src = bundlemod.read_fd(fd)
+        finally:
+            os.close(fd)
     try:
-        src = p.read_bytes()
-    except FileNotFoundError:
-        return Result(row_id, index, "mechanically_checked", False,
-                      f"{c.path!r} does not exist, so it does not define {c.symbol!r}")
-    except OSError as e:
-        return Result(row_id, index, "unresolved", None, f"{c.path!r} could not be read: {e}")
-    try:
-        parsed = ast.parse(src, filename=str(p))
+        parsed = ast.parse(src, filename=str(c.path))
     except SyntaxError as e:
         return Result(row_id, index, "unresolved", None,
                       f"{c.path!r} does not parse ({e}); nobody could look inside it, which "
@@ -331,33 +463,56 @@ def _hash(c, *, row_id, index, tree, **_) -> Result:
     reading a regular file is `unresolved` — nobody managed to look.
 
     A path that LEAVES the tree is neither: see `_inside`. `lstat` alone does not close it —
-    it declines to follow the FINAL component and says nothing about an intermediate one.
+    it declines to follow the FINAL component and says nothing about an intermediate one, which
+    is why the components are now DESCENDED with `O_NOFOLLOW` and every operation below takes
+    `dir_fd=` rather than a name.
     """
-    p = _inside(tree, c.path)
-    if p is None:
+    at = _inside(tree, c.path)
+    if at is None:
         return _escaped(c, row_id=row_id, index=index)
-    try:
-        st = p.lstat()
-    except FileNotFoundError:
-        return Result(row_id, index, "mechanically_checked", False,
-                      f"{c.path!r} does not exist, so the invariant is unsatisfied")
-    except OSError as e:
-        return Result(row_id, index, "unresolved", None,
-                      f"{c.path!r} could not be stat'd: {e}")
-    if stat.S_ISLNK(st.st_mode):
-        got = hashlib.sha256(
-            os.readlink(p).encode("utf-8", "surrogateescape")).hexdigest()
-    elif not stat.S_ISREG(st.st_mode):
-        return Result(row_id, index, "mechanically_checked", False,
-                      f"{c.path!r} is not the regular file the invariant describes (st_mode "
-                      f"{st.st_mode:#o}). It was NOT opened: a read-open on a FIFO blocks "
-                      "until a writer appears, and there is no timeout in this call path.")
-    else:
+    with at:
         try:
-            got = snapshot._digest(p)
+            st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return Result(row_id, index, "mechanically_checked", False,
+                          f"{c.path!r} does not exist, so the invariant is unsatisfied")
         except OSError as e:
             return Result(row_id, index, "unresolved", None,
-                          f"{c.path!r} could not be read: {e}")
+                          f"{c.path!r} could not be stat'd: {e}")
+        if stat.S_ISLNK(st.st_mode):
+            try:
+                target = os.readlink(at.leaf, dir_fd=at.fd)
+            except OSError as e:
+                return Result(row_id, index, "unresolved", None,
+                              f"{c.path!r} could not be read as a link: {e}")
+            got = hashlib.sha256(target.encode("utf-8", "surrogateescape")).hexdigest()
+        elif not stat.S_ISREG(st.st_mode):
+            return Result(row_id, index, "mechanically_checked", False,
+                          f"{c.path!r} is not the regular file the invariant describes "
+                          f"(st_mode {st.st_mode:#o}). It was NOT opened: a read-open on a "
+                          "FIFO blocks until a writer appears, and there is no timeout in "
+                          "this call path.")
+        else:
+            # THE `fstat` IS NOT REDUNDANT WITH THE `stat` ABOVE. That one answered about a
+            # NAME; this one answers about the descriptor whose bytes are actually digested,
+            # and between the two the path can have become a link (refused by `O_NOFOLLOW`) or
+            # a FIFO (which `O_NONBLOCK` keeps from blocking and this refuses).
+            try:
+                fd = bundlemod.open_leaf(at, os.O_RDONLY, "a coverage criterion path")
+            except OSError as e:
+                return Result(row_id, index, "unresolved", None,
+                              f"{c.path!r} could not be read: {e}")
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return Result(row_id, index, "mechanically_checked", False,
+                                  f"{c.path!r} is not the regular file the invariant "
+                                  "describes")
+                got = snapshot.digest_fd(fd)
+            except OSError as e:
+                return Result(row_id, index, "unresolved", None,
+                              f"{c.path!r} could not be read: {e}")
+            finally:
+                os.close(fd)
     ok = got == c.sha256
     return Result(row_id, index, "mechanically_checked", ok,
                   f"{c.path}: {got} {'==' if ok else '!='} {c.sha256}")
@@ -479,6 +634,8 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
     write. So the refusal cannot live at write, and this is the other end of the same hole. An
     accepted claim nobody wrote a criterion for is `unresolved`, indexed `NO_CRITERION`.
 
+    A LEDGER WITH NO ROWS IS REFUSED, not reported as an empty run — see the comment below.
+
     `_check_rows` is imported rather than restated. `_contradictions` reads `d.relation` and
     `e.stance` off the nested lists, and a `Ledger` built in process — which §12.2 does by
     construction — can hold dicts there; `AttributeError` out of a public function is an error
@@ -490,6 +647,18 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
         ledger._check_rows(l.rows)
     except ledger.LedgerError as e:
         raise CoverageError(str(e)) from e
+    # A LEDGER WITH NO ROWS IS THE EMPTY-CRITERIA FAIL-OPEN ONE CONTAINER OUT. The paragraph
+    # above closes the row that declares no criteria; this closes the LEDGER that declares no
+    # rows, which reached the same place by a shorter route — zero results, zero `unsatisfied`,
+    # zero `unresolved`, zero contradictions, a run reported as fully covered having checked
+    # nothing. `ledger._decode` refuses it on the way in and says so in the same words, but
+    # §12.2's partitioned synthesis builds a `Ledger` in process and never meets a decoder,
+    # which is exactly the caller this function was written for.
+    if not l.rows:
+        raise CoverageError(
+            "this ledger has no rows, so there is nothing to check and an all-empty report "
+            "would read as a fully covered run. A ledger with no claims is a run with no "
+            "claims, which §10.1's own failure shape is made of.")
     results = []
     for r in l.rows:
         if r.status == "accepted" and not r.acceptance_criteria:
@@ -500,8 +669,5 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
         for i, c in enumerate(r.acceptance_criteria):
             results.append(evaluate(c, row_id=r.id, index=i, tree=tree,
                                     pytest_argv=pytest_argv, run=run))
-    unsatisfied = tuple(f"{x.row_id}[{x.criterion_index}]: {x.detail}"
-                        for x in results if x.satisfied is False)
-    unresolved = tuple(f"{x.row_id}[{x.criterion_index}]: {x.detail}"
-                       for x in results if x.method == "unresolved")
-    return Report(tuple(results), _contradictions(l), unsatisfied, unresolved)
+    return Report(tuple(results), _contradictions(l),
+                  tuple(_lines(results, "unsatisfied")), tuple(_lines(results, "unresolved")))
