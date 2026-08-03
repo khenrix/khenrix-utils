@@ -13,7 +13,7 @@ from forge import ledger, storage  # noqa: E402
 
 def _crit(**kw):
     base = dict(kind="prose", text="the thing works", path=None, symbol=None,
-                node_id=None, sha256=None, trace=None)
+                node_id=None, sha256=None, query=None, trace=None)
     base.update(kw)
     return ledger.Criterion(**base)
 
@@ -367,6 +367,15 @@ def test_a_criterion_may_not_carry_another_evaluators_input(tmp_path):
                                           node_id="tests/t.py::test_x"),))
     with pytest.raises(ledger.LedgerError, match="may not carry"):
         ledger.write_ledger(tmp_path, _led([bad]))
+    # `query` joined the record for `schema`, and the rule is one rule: it is refused on the
+    # other three kinds exactly as `node_id` is here, rather than being a slot only the loop
+    # above happens to name.
+    stray = _row(acceptance_criteria=(_crit(kind="symbol", text="storage.py defines it",
+                                            path="shared/lib/forge/storage.py",
+                                            symbol="atomic_write",
+                                            query="table users has column seq"),))
+    with pytest.raises(ledger.LedgerError, match="may not carry 'query'"):
+        ledger.write_ledger(tmp_path, _led([stray]))
 
 
 def test_a_criterion_kind_the_vocabulary_does_not_name_is_refused(tmp_path):
@@ -395,6 +404,64 @@ def test_a_trace_may_not_hang_on_a_mechanical_criterion(tmp_path):
                                           trace="I checked it by hand"),))
     with pytest.raises(ledger.LedgerError, match="trace"):
         ledger.write_ledger(tmp_path, _led([bad]))
+
+
+def test_a_schema_criterion_carries_a_predicate_because_10_1_calls_it_mechanical(tmp_path):
+    """§10.1 names FOUR mechanically-checkable kinds — test ID, SCHEMA QUERY, exact symbol,
+    file/hash invariant. `schema` used to require no fields at all, so a schema criterion was
+    a bare sentence: exactly what the rule above refuses for `symbol`, on a kind the spec puts
+    in the same list. It carries the query and the schema it runs against, like the other
+    three carry theirs.
+
+    Every schema fixture in the earlier suite supplied a trace, so the no-predicate path was
+    never exercised — measured, a `schema` criterion with no predicate inputs wrote and read
+    back clean."""
+    bare = _row(acceptance_criteria=(_crit(kind="schema",
+                                           text="the users table carries a seq column"),))
+    with pytest.raises(ledger.LedgerError, match="path.*query"):
+        ledger.write_ledger(tmp_path, _led([bare]))
+    half = _row(acceptance_criteria=(_crit(kind="schema",
+                                           text="the users table carries a seq column",
+                                           path="db/schema.sql"),))
+    with pytest.raises(ledger.LedgerError, match="'query' is empty"):
+        ledger.write_ledger(tmp_path, _led([half]))
+    good = _row(acceptance_criteria=(_crit(kind="schema",
+                                           text="the users table carries a seq column",
+                                           path="db/schema.sql",
+                                           query="table users has column seq"),))
+    ledger.write_ledger(tmp_path, _led([good]))
+
+
+def test_a_trace_may_not_stand_in_for_the_schema_evaluator_this_repo_does_not_have(tmp_path):
+    """THE TWO VERDICTS ARE NOT INTERCHANGEABLE. There is no schema evaluator in this
+    repository and none should be invented, so a `schema` criterion must answer `unresolved`
+    downstream — *nobody looked*. `manual_trace_confirmed` says *a human did*. A trace hanging
+    on a mechanical kind whose evaluator is missing is that substitution written down, and it
+    is §10.1's manufactured green wearing the other verdict: measured, `kind="schema"` with
+    `trace="I checked it by hand"` and no predicate inputs at all wrote and read back clean."""
+    bad = _row(acceptance_criteria=(_crit(kind="schema",
+                                          text="the users table carries a seq column",
+                                          path="db/schema.sql",
+                                          query="table users has column seq",
+                                          trace="I checked it by hand"),))
+    with pytest.raises(ledger.LedgerError, match="a trace may hang only on"):
+        ledger.write_ledger(tmp_path, _led([bad]))
+    assert ledger._TRACEABLE == ("prose",), \
+        "prose is the one kind with no predicate, and the only one a trace may hang on"
+
+
+def test_a_criterion_field_that_is_not_text_is_refused_before_a_path_is_joined(tmp_path):
+    """The required-field loop tests TRUTHINESS, and `7` is truthy — so an int `path` went
+    straight through it into `bundle._assert_contained`, which raised `TypeError` out of
+    `os.fspath`: an error escaping this module's declared class, on the one field it hands to
+    another module."""
+    bad = _row(acceptance_criteria=(_crit(kind="hash", text="p is unchanged", path=7,
+                                          sha256="0" * 64),))
+    with pytest.raises(ledger.LedgerError, match="path is a str, not int"):
+        ledger.write_ledger(tmp_path, _led([bad]))
+    numeric = _row(acceptance_criteria=(_crit(kind="prose", text=7),))
+    with pytest.raises(ledger.LedgerError, match="text is a str, not int"):
+        ledger.write_ledger(tmp_path, _led([numeric]))
 
 
 def test_the_degradation_is_recorded_in_the_ledger_not_only_in_a_report(tmp_path):

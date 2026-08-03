@@ -111,10 +111,22 @@ class Criterion:
     and a sentence with a symbol name in it is refused. The decoder is where that lives, because
     a rule stated only in prose is one the next author will not meet.
 
-    `trace` is a human's record of having traced the claim, and it is permitted ONLY on `prose`
-    and `schema` — the two kinds with no predicate. On a mechanical kind the predicate IS the
+    §10.1 NAMES FOUR MECHANICAL KINDS — test ID, SCHEMA QUERY, exact symbol, file/hash
+    invariant — so `schema` carries structured inputs like the other three: the query and the
+    schema it runs against. Requiring none of them made a schema criterion a bare sentence,
+    which is what the paragraph above refuses for `symbol`, on a kind the spec puts in the
+    same list.
+
+    `prose` is therefore the ONE kind with no predicate, and the only one `trace` — a human's
+    record of having traced the claim — may hang on. On a mechanical kind the predicate IS the
     evidence, and a human note beside it that could flip the method to `manual_trace_confirmed`
     is §10.1's manufactured green arriving by a second route.
+
+    THAT THIS REPOSITORY HAS NO SCHEMA EVALUATOR IS WHY `trace` IS REFUSED HERE, NOT WHY IT
+    WOULD BE ALLOWED. A `schema` criterion answers `unresolved` downstream — nobody looked —
+    and `manual_trace_confirmed` says a human did. Those are different verdicts, and letting
+    the missing evaluator become a human's word is the same manufactured green wearing the
+    other one.
     """
     kind: str
     text: str
@@ -122,6 +134,7 @@ class Criterion:
     symbol: str | None
     node_id: str | None
     sha256: str | None
+    query: str | None
     trace: str | None
 
 
@@ -324,22 +337,35 @@ def _render_cycle(succ, remaining, claims) -> str:
 # Which structured fields each criterion kind REQUIRES. Anything not listed for a kind must be
 # None: a criterion carrying a `node_id` under `kind="symbol"` is two evaluators' inputs in one
 # record and nothing says which one was meant.
+#
+# `schema` IS IN §10.1'S MECHANICAL LIST — "test ID, schema query, exact symbol, file/hash
+# invariant" — so it takes inputs like the other three: WHICH schema, and WHAT query. Naming
+# only the query would leave the target to the sentence, which is the failure `symbol` is
+# refused for; naming only the schema is a target with nothing asked of it.
 _CRITERION_FIELDS = {
     "test": ("node_id",),
     "symbol": ("path", "symbol"),
     "hash": ("path", "sha256"),
-    "schema": (),
+    "schema": ("path", "query"),
     "prose": (),
 }
-_CRITERION_OPTIONAL = ("path", "symbol", "node_id", "sha256")
-# The two kinds with no predicate are the only ones a human trace may hang on. See `Criterion`.
-_TRACEABLE = ("prose", "schema")
+_CRITERION_OPTIONAL = ("path", "symbol", "node_id", "sha256", "query")
+# `prose` is the ONE kind with no predicate, and so the only one a human trace may hang on.
+# That no schema evaluator exists here does not put `schema` back on this list: see `Criterion`.
+_TRACEABLE = ("prose",)
 
 
 def _check_criterion(c: Criterion, where: str) -> None:
     if c.kind not in CRITERION_KINDS:
         raise LedgerError(f"{where}: criterion kind is one of {list(CRITERION_KINDS)}, "
                           f"not {c.kind!r}")
+    # EVERY OTHER FIELD IS TEXT OR ABSENT. The required-field loop below tests truthiness and
+    # `7` is truthy, so an int `path` reached `_assert_contained` and raised `TypeError` out of
+    # `os.fspath` — the same escape as an unchecked element type, one level further down.
+    for name in ("text", "trace") + _CRITERION_OPTIONAL:
+        v = getattr(c, name)
+        if v is not None and not isinstance(v, str):
+            raise LedgerError(f"{where}: {name} is a str, not {type(v).__name__}")
     required = _CRITERION_FIELDS[c.kind]
     for name in required:
         if not getattr(c, name):
