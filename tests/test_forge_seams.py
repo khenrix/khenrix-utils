@@ -1881,3 +1881,18 @@ def test_the_installed_plugin_paths_have_one_spelling():
     for cli in installed:
         assert taskbundle.installed_closure(cli) is not None, \
             f"{cli} is installed and its closure hash must be producible"
+
+
+def test_the_engine_text_strip_has_one_spelling_across_sections_8_and_11():
+    """§8's rationale floor and §11's semantic hash must strip exactly the same text. They
+    were two functions once; the note-before-token order is measured, and a second copy that
+    reversed it would leave §11 labelling identically-prompted seats as differently-prompted
+    while §8 went on measuring the right thing."""
+    from council import engine as eng  # noqa: PLC0415
+    from forge import fingerprint, runner  # noqa: PLC0415
+    tok = eng.make_sentinel()
+    for body in ("", "short", "an argued conclusion about why nothing needs to change"):
+        text = eng.apply_sentinel(body, tok)
+        assert runner._rationale(text, tok) == fingerprint.without_engine_text(text, tok)
+    assert runner._rationale.__doc__ and "fingerprint.without_engine_text" in \
+        runner._rationale.__doc__, "the delegation must be stated where the rule was measured"

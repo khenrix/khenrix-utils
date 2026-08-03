@@ -57,14 +57,13 @@ kind — an attempt directory that already exists is a refusal, not something to
 so reclaiming one would make the number the operator agreed to a lie in the other direction.
 """
 import math
-import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from council import engine
 
-from . import (baseline as baselinemod, bundle, fleet, gate, harvest, journal, runstate,
-               seat as seatmod, storage, verify)
+from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
+               runstate, seat as seatmod, storage, verify)
 
 
 class RunnerError(RuntimeError):
@@ -295,12 +294,13 @@ def _rationale(answer: str, token: str) -> str:
     Removed rather than merely discounted by length: the instruction says "on its own line",
     and a rule that subtracted 21 characters would still credit a seat that pasted the token
     three times.
+
+    THE RULE ITSELF LIVES IN `fingerprint.without_engine_text`, because §11's nonce-stripped
+    semantic hash needs the identical strip and two spellings of one predicate eventually
+    disagree. This function is the §8 reading of it; the docstring above is why the rule is
+    what it is, and it stays here because this is where it was measured.
     """
-    if not token:
-        return answer
-    for supplied in (engine.SENTINEL_NOTE.format(token=token), token):
-        answer = re.sub(re.escape(supplied), "", answer, flags=re.IGNORECASE)
-    return answer
+    return fingerprint.without_engine_text(answer, token)
 
 
 def _process(result) -> str:
