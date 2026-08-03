@@ -18,11 +18,21 @@ THREE RULES ARE LOAD-BEARING (section 8, quoted) and each has its own test:
   does not proceed merely because it produced files."
 
 `Status` carries no `changed` field and no `rationale` field. Both are `classify_seat`'s
-inputs, not part of the record: `changed` only ever mattered as the fork between "produced a
-diff" and "argued none was needed", which `forge` already encodes, and `rationale` belongs on
-the richer per-seat record a caller assembles around this `Status` -- carrying it here would
-give this module a second, untyped place to hold prose that the surrounding record already
-owns.
+inputs, not part of the record, and `rationale` belongs on the richer per-seat record a
+caller assembles around this `Status` -- carrying it here would give this module a second,
+untyped place to hold prose that the surrounding record already owns.
+
+WHAT THAT COSTS FOR `changed` IS NOW REAL, and this sentence used to deny it: it said
+`forge` already encoded the fork between "produced a diff" and "argued none was needed".
+That was true while an argued zero-diff seat landed on `no_change`. It stopped being true
+when rule 3 below started degrading an unverified one to `partial`, which is also where
+unproven work lands -- so `forge == "partial"` no longer says which of the two happened, and
+NOTHING on this `Status` does. Not `artifacts` either: rule 3 fires before rule 4, so
+`changed=False` with `artifacts="usable"` is an admitted combination here, even though
+`runner.run_seat` cannot produce one (its `changed` is `bool(artifacts.paths)`, and an empty
+path set builds an empty bundle). The evidence that separates them is the artifact path set
+`changed` was computed FROM, which lives on the caller's record beside the rationale. A
+reader who needs the fork reads that record, not this object.
 
 PRECEDENCE. `classify_seat` checks these in a fixed order, and every rule below fires only if
 none above it already decided `forge`:
