@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from forge import preflight  # noqa: E402
+from forge import preflight, taskbundle  # noqa: E402
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 # A shape `scripts/lib/checks.py` recognises, built rather than pasted so this file holds no
@@ -25,6 +25,14 @@ _AKIA = "AKIA" + "IOSFODNN7EXAMPL"[:12] + "QRST"
 
 def _refusals(repo, selected=()):
     return preflight.refusals(preflight.inspect_repo(repo, selected))
+
+
+def _a_task_bundle(tmp_path=None):
+    """A minimal real TaskBundle, built through `scan` so it carries real hashes."""
+    import tempfile  # noqa: PLC0415
+    root = Path(tmp_path or tempfile.mkdtemp())
+    (root / "TASK.md").write_text("Do the thing.\n")
+    return taskbundle.scan(root, entrypoint="TASK.md")
 
 
 def test_a_clean_repository_has_no_refusals(tmp_path):
@@ -364,3 +372,171 @@ def test_preflight_writes_nothing_in_the_repository(tmp_path):
     assert set(after) == set(before), "preflight created or removed a file under .git"
     assert after == before, "preflight wrote to a file under .git"
     assert (Path(repo) / ".git" / "index").read_bytes() == index
+
+
+def test_a_task_naming_provider_specific_machinery_is_refused():
+    """§20: fail preflight for irreducibly provider-specific workflows, and ask for a
+    portable task bundle instead. Each string below names a thing that exists on ONE of the
+    three CLIs and cannot be carried by a file."""
+    for text, referent in (
+            ("Dispatch a subagent with subagent_type: Explore and merge its findings.",
+             "subagent_type"),
+            ("Read ${CLAUDE_PLUGIN_ROOT}/skills/x/SKILL.md and follow it.",
+             "CLAUDE_PLUGIN_ROOT"),
+            ("Run codex exec --json over the diff.", "codex exec"),
+            ("Call mcp__chrome-devtools__take_snapshot and describe the page.",
+             "mcp__chrome-devtools__take_snapshot"),
+            ("Look at ~/.codex/config.toml first.", "~/.codex")):
+        out = preflight.task_refusals(text)
+        assert out, f"not refused: {text!r}"
+        assert any(referent in line for line in out), (referent, out)
+        assert any("portable task bundle" in line for line in out), out
+
+
+def test_an_mcp_tool_name_is_reported_whole_and_not_truncated_at_its_first_hyphen():
+    """The referent is the WHOLE point of naming it. `[A-Za-z0-9_]+` stopped at the hyphen in
+    the server name, so the refusal said `mcp__chrome` about a task containing no such string
+    — an operator who greps their own instruction for it finds nothing and reads the refusal
+    as a detector bug, which is the same as not having a detector."""
+    (line,) = preflight.task_refusals("Call mcp__chrome-devtools__take_snapshot on the page.")
+    assert "'mcp__chrome-devtools__take_snapshot'" in line, line
+
+
+def test_a_bundle_does_not_make_a_provider_specific_referent_portable():
+    """§20 forbids automatic translation. A bundle carries FILES; it cannot turn a named
+    subagent type into something codex or agy has."""
+    b = _a_task_bundle()
+    out = preflight.task_refusals("Use subagent_type: Explore.", bundle=b)
+    assert out, "a supplied bundle cleared a refusal it cannot answer"
+
+
+def test_an_ambient_skill_is_refused_unless_all_three_closures_hash_identically():
+    """§20: use a named skill only when all three hash identically. `installed_closure`
+    answers None for a CLI that is not installed, and `ambient_verdict` reads None as False —
+    so three ABSENCES must not read as agreement."""
+    text = "Follow the /markitdown skill to convert the file."
+    assert preflight.task_refusals(text, closures={"claude": "a", "codex": "a", "agy": "a"}) == ()
+    out = preflight.task_refusals(text, closures={"claude": "a", "codex": "b", "agy": "a"})
+    assert out and any("markitdown" in line for line in out), out
+    three_absences = {"claude": None, "codex": None, "agy": None}
+    out2 = preflight.task_refusals(text, closures=three_absences)
+    assert out2, "three uninstalled CLIs hashed identically and licensed an ambient skill"
+    # The refusal names the mismatching hashes readably. `"not installed"[:12]` is
+    # `"not installe"`, which is the truncation reading as a hash prefix.
+    assert "not installed" in " ".join(out2), out2
+
+
+def test_the_second_form_an_operator_writes_a_skill_in_is_read_the_same_way():
+    """`/markitdown` and "use the markitdown skill" are one reliance, and only the first was
+    covered. A pattern nothing exercises is a pattern that can be deleted without a test
+    noticing, which is the same as not having it."""
+    text = "Use the markitdown skill on this PDF."
+    out = preflight.task_refusals(text, closures={"claude": "a", "codex": "b", "agy": "a"})
+    assert out and any("`markitdown`" in line for line in out), out
+    # The discrimination: the same sentence with the bar CLEARED is admitted, so the refusal
+    # above is about the closures and not about the sentence.
+    assert preflight.task_refusals(
+        text, closures={"claude": "a", "codex": "a", "agy": "a"}) == ()
+
+
+def test_a_closure_nobody_measured_is_not_reported_as_one_that_is_not_installed():
+    """Two different failures must not compare equal in the sentence an operator acts on. A
+    CLI absent from the mapping is one this caller never asked about; a CLI mapped to None is
+    one `installed_closure` looked for and could not describe. Both refuse — and the operator
+    fixes a different thing in each case."""
+    text = "Follow the /markitdown skill to convert the file."
+    (only_two,) = preflight.task_refusals(text, closures={"claude": "a", "codex": "b"})
+    assert "agy=not measured" in only_two, only_two
+    (absent,) = preflight.task_refusals(
+        text, closures={"claude": "a", "codex": "b", "agy": None})
+    assert "agy=not installed" in absent, absent
+    assert only_two != absent, "two different facts produced one sentence"
+
+
+def test_closures_this_engine_cannot_read_are_refused_rather_than_asked_for_a_get():
+    """`ambient_verdict` calls `.get`, so a list or a string left this gate as an
+    `AttributeError` — out of a function whose entire contract is that it answers in refusal
+    lines a caller can print."""
+    for bad in (["a", "a", "a"], "aaa", 5):
+        with pytest.raises(preflight.PreflightError):
+            preflight.task_refusals("Follow the /markitdown skill.", closures=bad)
+        with pytest.raises(preflight.PreflightError):
+            preflight.ambient_notes("Follow the /markitdown skill.", closures=bad)
+
+
+def test_a_bundle_does_not_clear_the_ambient_skill_bar_either(tmp_path):
+    """The bar must not consult `bundle`. The front end ALWAYS builds one and passes it, so a
+    `bundle is None` condition would make §20's three-closure check dead in the only
+    production caller — and a directory of files does not make `/markitdown` the same skill on
+    claude, codex and agy, which was the entire argument for the check."""
+    b = _a_task_bundle(tmp_path)
+    text = "Follow the /markitdown skill to convert the file."
+    out = preflight.task_refusals(text, bundle=b,
+                                  closures={"claude": "a", "codex": "b", "agy": "a"})
+    assert out and any("markitdown" in line for line in out), (
+        "a supplied bundle cleared the ambient-skill bar, which is the shape that made the "
+        "check unreachable from the CLI")
+
+
+def test_a_cleared_ambient_skill_produces_the_note_the_prompt_carries():
+    """`taskbundle.ambient_note` is what §20 asks the caller to add to the prompt, and until
+    this function existed it had no caller anywhere. A cleared skill yields a note; a skill
+    that did NOT clear yields none, because the refusal is the answer in that case."""
+    text = "Follow the /markitdown skill to convert the file."
+    agreed = {"claude": "a", "codex": "a", "agy": "a"}
+    notes = preflight.ambient_notes(text, closures=agreed)
+    assert len(notes) == 1 and "markitdown" in notes[0], notes
+    assert preflight.ambient_notes(text,
+                                   closures={"claude": "a", "codex": "b", "agy": "a"}) == ()
+    assert preflight.ambient_notes("no skills named here.", closures=agreed) == ()
+
+
+def test_a_skill_name_inside_a_url_is_not_read_as_an_ambient_skill_reference():
+    """The detector reports what it matched so an operator can see it — and a detector that
+    fires on a URL path segment teaches the operator to write around it, which is the same as
+    not having one."""
+    text = "See https://example.com/docs/markitdown for background; write your own converter."
+    assert preflight.task_refusals(text, closures={}) == ()
+
+
+def test_an_ordinary_absolute_path_is_not_read_as_an_ambient_skill_reference():
+    """The same hazard as the URL case by the same mechanism, one boundary over: `/home` in
+    `read /home/user/notes.md` IS preceded by whitespace, so the leading rule alone admitted
+    it and the refusal named an ambient `home` skill nobody has. A `/name` followed by another
+    path separator is a path segment, not an invocation.
+
+    Paired with its discrimination, because a rule that refused BOTH would pass the first
+    assertion for the wrong reason."""
+    mismatched = {"claude": "a", "codex": "b", "agy": "a"}
+    assert preflight.task_refusals(
+        "Read /home/user/notes.md and summarise it.", closures=mismatched) == ()
+    assert preflight.task_refusals(
+        "Read the file, then run /markitdown on it.", closures=mismatched), \
+        "the narrowing swallowed a real invocation as well"
+
+
+def test_a_skill_named_only_inside_a_fenced_block_is_still_a_reliance_on_it():
+    """The fail-open direction of the URL fix, named so it is a choice rather than an
+    oversight: a task whose fenced block runs `/markitdown` relies on that skill exactly as
+    much as one whose prose does, so fences are NOT stripped."""
+    text = "Run this:\n\n```\n/markitdown report.pdf\n```\n"
+    out = preflight.task_refusals(text, closures={"claude": "a", "codex": "b", "agy": "a"})
+    assert out and any("markitdown" in line for line in out), out
+
+
+def test_an_instruction_this_engine_could_not_read_is_refused_rather_than_cleared():
+    """() means 'examined and nothing stands in the way'. An unexamined task must not
+    borrow that sentence."""
+    for bad in ("", "   ", None, 5, b"bytes"):
+        try:
+            preflight.task_refusals(bad)
+        except preflight.PreflightError:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} was not refused")
+        try:
+            preflight.ambient_notes(bad, closures={"claude": "a", "codex": "a", "agy": "a"})
+        except preflight.PreflightError:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} produced a note for a task nobody could read")

@@ -464,7 +464,24 @@ class _Contained:
         # `os.fspath`, not `str`: a `bytes` root is a real caller (`runstate` keeps a
         # repository path in bytes so a non-UTF-8 one cannot raise), and `str(b"/x")` is the
         # literal text `b'/x'` — a name nothing on disk has.
-        fd = os.open(os.fspath(root), os.O_RDONLY | os.O_DIRECTORY)
+        #
+        # THE ROOT'S OWN OPEN IS WRAPPED, AND IT WAS THE ONE FAILURE THIS CLASS LET THROUGH
+        # RAW. Every other refusal below leaves as `BundleError`, and every caller in this
+        # package wraps that into its own declared class — `taskbundle._contained`,
+        # `fleet._contained`, `coverage._contained`, `verify._contained`. A missing or
+        # unopenable ROOT raised `FileNotFoundError`/`NotADirectoryError` straight past all
+        # four, so `taskbundle.materialize` over a run whose `task/` directory had been cleaned
+        # up left `runner.run_seat` as a bare `OSError` — a class no caller of this package's
+        # refusal paths has a name for. The MESSAGE names the root rather than `rel`, because
+        # "this tree is not there" and "this path leaves the tree" are different facts and only
+        # one of them is about the path.
+        try:
+            fd = os.open(os.fspath(root), os.O_RDONLY | os.O_DIRECTORY)
+        except OSError as e:
+            raise BundleError(
+                f"{what}: {root!r} is not a directory this engine can descend into "
+                f"({e.strerror}), so nothing can be said about whether {rel!r} stays inside "
+                "it") from e
         try:
             for part in parts[:-1]:
                 if create_dirs:

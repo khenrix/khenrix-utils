@@ -385,10 +385,48 @@ def read_task_bundle(run_dir) -> TaskBundle:
         raise TaskBundleError(
             f"{path} does not exist: this run recorded no task bundle, so there is nothing "
             "to say what the seats were given.") from e
+    except OSError as e:
+        # EVERY OTHER WAY THE OPEN CAN FAIL, under this module's own class. A DIRECTORY at
+        # this name raises `IsADirectoryError` and an unreadable one `PermissionError`;
+        # neither is a `FileNotFoundError`, so both used to leave a function whose declared
+        # failure mode is `TaskBundleError` as a bare `OSError`. `read_task_bundle_if_recorded`
+        # below is what makes that reachable in production: it hands the caller a promise that
+        # everything but "the file is not there" arrives as `TaskBundleError`, and that promise
+        # has to be true here, where the read happens, rather than restated one function down.
+        raise TaskBundleError(f"{path} could not be read: {e}") from e
     try:
         return _decode(json.loads(raw), path)
     except ValueError as e:
         raise TaskBundleError(f"{path} is not readable as JSON: {e}") from e
+
+
+def read_task_bundle_if_recorded(run_dir) -> TaskBundle | None:
+    """The run's bundle, or `None` because this run recorded none — and `None` for NOTHING ELSE.
+
+    `read_task_bundle`'s raise is right for a caller that knows a bundle exists;
+    `runner.run_seat` is a caller that does not, because runs predating §20 record none. So the
+    ABSENCE of the file is an answer here.
+
+    WHAT IS NOT AN ANSWER: a file that exists and this engine cannot read. Folding that into
+    `None` would launch three seats with nothing materialized while the launcher's
+    `prompt_identity` carries a `bundle_sha256` the front end computed from the same path a
+    moment earlier — a record claiming a bundle over seats that got none. Every failure but
+    "the file is not there" therefore propagates as `TaskBundleError`.
+
+    `os.path.lexists`, NOT `Path.exists()`. `exists()` resolves the link and answers False for
+    a DANGLING symlink at this name — so a `task-bundle.json` pointing at a file that has been
+    removed would read as "this run recorded none", which is the exact collapse the paragraph
+    above forbids, arriving by the one route the paragraph does not name. `lexists` sees the
+    link, the read below fails, and the caller learns the bundle is unreadable rather than
+    absent.
+
+    A FILE THAT VANISHES BETWEEN THE TWO CALLS RAISES, and that is correct rather than a race
+    to smooth over: something removed a run's task bundle while the run was reading it, and
+    `read_task_bundle`'s own message names the path.
+    """
+    if not os.path.lexists(storage.task_bundle_path(run_dir)):
+        return None
+    return read_task_bundle(run_dir)
 
 
 def task_dir(seat_path) -> Path:
@@ -455,9 +493,14 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
     except bundlemod.BundleError as e:
         raise TaskBundleError(str(e)) from e
     dest = task_dir(seat_path)
-    if dest.exists():
+    # `lexists`, for `read_task_bundle_if_recorded`'s reason and so this module holds ONE
+    # spelling of it: `Path.exists()` resolves the link and answers False for a DANGLING
+    # symlink at this name, and the `mkdir` below then raises `FileExistsError` — a class no
+    # caller of this module knows to catch, which is the same complaint the write loop's own
+    # `O_EXCL` comment makes two paragraphs down.
+    if os.path.lexists(dest):
         raise TaskBundleError(
-            f"{dest} already holds a task bundle. §8.1 gives a retry a FRESH clone; "
+            f"{dest} already holds something. §8.1 gives a retry a FRESH clone; "
             "re-materializing into a live seat is a reset-and-rerun in place.")
     source_root = Path(source_root)
     dest.mkdir(parents=True)

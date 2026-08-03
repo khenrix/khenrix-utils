@@ -81,16 +81,23 @@ Both join it onto the root — `rejections` stats it and walks it when it is a d
 passing one through would have preflight reading a host path it has already decided to
 refuse, and would report the same escape twice in two vocabularies.
 
-`refusals` IS THE WHOLE ANSWER a caller acts on, in one order: `rejections`, containment,
+`refusals` IS THE WHOLE ANSWER ABOUT THE REPOSITORY, in one order: `rejections`, containment,
 screen findings, screen breaches. The last two are different claims and stay adjacent rather
 than merged — a finding is "this looks like a credential", a breach is "we did not read
 this" — and both stop the run, because a screen that certifies what it did not open is worth
 no more than one that finds nothing.
+
+`task_refusals` IS THE SECOND ANSWER AND NEITHER SUBSUMES THE OTHER. §20 asks a question this
+static look cannot reach: not "what is in this tree" but "can this TASK be handed to three
+different CLIs at all". The task is not on `Report` because it does not arrive from the
+repository — it arrives with the front end, after the repository has been described — so it is
+a second function taking the instruction, and a caller at the confirmation gate reads both.
 """
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bundle, inspect, screen
+from . import bundle, inspect, screen, taskbundle
 
 
 class PreflightError(RuntimeError):
@@ -194,3 +201,190 @@ def refusals(report) -> tuple[str, ...]:
         raise PreflightError(f"a Report is required, not {type(report).__name__}")
     return (*report.rejections, *report.escaping,
             *(_secret_line(f) for f in report.secrets), *report.breaches)
+
+
+# §20's referents: things that exist on ONE of the three CLIs and that no file can carry. The
+# patterns are NARROW on purpose and each one names what it matched, because a detector whose
+# refusal does not say what it saw teaches an operator to rewrite around it — which is the same
+# as not having a detector. These are matched against the OPERATOR'S OWN task text, not against
+# a seat's merged stderr, so the phantom-match hazard `council.engine` documents at
+# TOOL_PERMISSION_SENTINELS does not apply here: nobody is echoing a file into this string.
+_PROVIDER_SPECIFIC = (
+    (re.compile(r"\bsubagent_type\b"), "a named subagent type"),
+    (re.compile(r"\$\{?CLAUDE_PLUGIN_ROOT\}?"), "a Claude plugin-root variable"),
+    (re.compile(r"\$\{?PLUGIN_ROOT\}?"), "a Codex plugin-root variable"),
+    (re.compile(r"\bcodex\s+exec\b"), "a codex-only subcommand"),
+    (re.compile(r"--dangerously-skip-permissions"), "a provider-only permission flag"),
+    # THE HYPHEN IS IN THE CLASS. An MCP tool name is `mcp__<server>__<tool>` and a server
+    # name carries hyphens (`mcp__chrome-devtools__take_snapshot`); without it the match was
+    # `mcp__chrome`, so the refusal named a five-character prefix of the thing it saw. Naming
+    # the referent is the one property these patterns exist to have, and a truncated one is
+    # worse than none: an operator who cannot find `mcp__chrome` in their own task reads the
+    # refusal as a bug in the detector.
+    (re.compile(r"\bmcp__[A-Za-z0-9_-]+"), "an MCP tool name"),
+    (re.compile(r"~/\.(?:claude|codex|gemini)\b"), "a provider configuration directory"),
+)
+
+# A named skill, in the two forms an operator writes one. BOTH BOUNDARIES ARE NARROWED, and
+# each one was measured against a task text nobody would write around:
+#
+#   * the leading boundary is a LINE START or whitespace and never a `/`, so a URL path
+#     segment (`https://x/docs/markitdown`) does not match;
+#   * the trailing boundary refuses a `/` too, so an ordinary absolute path in a task
+#     (`read /home/user/notes.md`) is not read as a reliance on an ambient `home` skill.
+#
+# A skill named inside a fenced code block IS matched, deliberately: a task whose fenced
+# block runs `/markitdown` relies on it exactly as much as one whose prose does, and
+# stripping fences would be the fail-open direction of the same choice.
+_AMBIENT_SKILL = (
+    re.compile(r"(?:^|(?<=\s))/([a-z][a-z0-9-]{2,63})(?![\w/-])"),
+    # `(?i:...)` around the LITERALS only, never `re.I` over the whole pattern: a
+    # case-insensitive capture returns `MARKITDOWN` and `markitdown` as two different skills
+    # for one reference, and each would get its own refusal line naming a skill that does not
+    # exist under that spelling.
+    re.compile(r"(?i:\buse (?:the )?)`?([a-z][a-z0-9-]{2,63})`?(?i: skill\b)"),
+)
+
+_PORTABLE_ASK = ("Supply a portable task bundle instead — a directory whose entrypoint states "
+                 "the task in provider-neutral terms, with every file it references beside it.")
+
+
+def task_refusals(instruction, *, bundle=None, closures=None) -> tuple[str, ...]:
+    """§20's refusal, about the TASK. `refusals` above answers about the REPOSITORY.
+
+    NEITHER SUBSUMES THE OTHER AND BOTH ARE READ, which is why this is a second function and
+    not a field on `Report`. `Report` describes one static look at a repository and
+    `gate.open_run` reads `refusals` off it; the task is not in scope there — it arrives with
+    the front end. A caller runs both before opening a run.
+
+    `()` MEANS EXAMINED AND NOTHING STANDS IN THE WAY. An instruction this function could not
+    read may not borrow that sentence, so a non-string, an empty string and whitespace all
+    RAISE rather than return the clean answer.
+
+    A BUNDLE CLEARS NOTHING HERE, AND `bundle` IS READ BY NO CONDITION BELOW. §20: do not
+    automatically translate provider-specific tools or subagent semantics. A bundle carries
+    files; it cannot give codex a subagent type, and it cannot make `/markitdown` the same
+    skill on three CLIs — which is the whole reason §20 asks for a three-way closure hash. The
+    parameter is kept because a caller reads more naturally passing what it has, and because a
+    future referent might genuinely be answerable by a file; it is NOT a licence, and a
+    `bundle is None` guard on the ambient bar would be dead code in the only production caller,
+    since the front end always builds one. What the caller does with a CLEARED ambient skill is
+    `ambient_notes` below.
+
+    `closures` IS THE THREE LIVE INSTALLED HASHES, `{cli: sha or None}`, and it is an ARGUMENT
+    because resolving it walks three plugin caches and this function is called at a gate.
+    `None` for a CLI is what `taskbundle.installed_closure` returns for one that is not
+    installed, and `ambient_verdict` reads any `None` as False — so three ABSENCES do not hash
+    identically. Passing `closures=None` means nobody resolved them, which is not the same as
+    resolving them and finding a mismatch: it is treated as the same refusal but says so in
+    different words, because a named skill relied on without the check is exactly what §20
+    forbids.
+    """
+    _readable(instruction)
+    _measurable(closures)
+    out = []
+    for pattern, what in _PROVIDER_SPECIFIC:
+        m = pattern.search(instruction)
+        if m:
+            out.append(
+                f"this task is not portable: it names {what} ({m.group(0)!r}), which two of the "
+                f"three seats do not have. §20 refuses to translate it automatically. "
+                f"{_PORTABLE_ASK}")
+    named = _named_skills(instruction)
+    if named and not _ambient_ok(closures):
+        why = ("the three installed closures were never resolved" if not closures else
+               "the three installed closures do not hash identically: " + _closure_line(closures))
+        for skill in named:
+            out.append(
+                f"this task relies on the ambient `{skill}` skill and {why}. §20 permits a "
+                "named skill only when all three installed copies hash identically and it "
+                f"is declared provider-neutral. {_PORTABLE_ASK}")
+    return tuple(out)
+
+
+def _readable(instruction) -> None:
+    """The instruction this engine is being asked about, or a refusal — never a clean `()`."""
+    if not isinstance(instruction, str):
+        raise PreflightError(
+            f"§20 resolves a task into a portable instruction, and this one is "
+            f"{type(instruction).__name__}. An empty answer here would say 'examined, nothing "
+            "stands in the way' about a task nobody examined.")
+    if not instruction.strip():
+        raise PreflightError(
+            "§20's resolution has nothing to resolve: this instruction is empty or whitespace. "
+            "A run opened over it would launch three seats with no task.")
+
+
+def _measurable(closures) -> None:
+    """`closures` is the three hashes or nobody's answer at all — and nothing in between.
+
+    `None` and `{}` are both "nobody resolved them" and both refuse a named skill. A LIST or a
+    string is neither: `ambient_verdict` calls `.get` on it, so it left this function as an
+    `AttributeError` out of a gate whose whole contract is that it answers in refusal lines.
+    """
+    if closures is not None and not isinstance(closures, dict):
+        raise PreflightError(
+            f"§20's closures are a mapping of cli name to hash-or-None, not "
+            f"{type(closures).__name__}. A shape this engine cannot read is not a mismatch it "
+            "can describe, and it must not arrive at the ambient bar as one.")
+
+
+def _named_skills(instruction: str) -> tuple[str, ...]:
+    named = []
+    for pattern in _AMBIENT_SKILL:
+        named += [m.group(1) for m in pattern.finditer(instruction)]
+    return tuple(sorted(set(named)))
+
+
+def _ambient_ok(closures) -> bool:
+    """`closures` unresolved is NOT `closures` resolved and disagreeing, and neither licenses
+    an ambient skill — but they are different facts and the refusal says which."""
+    return bool(closures) and taskbundle.ambient_verdict(closures)
+
+
+def _closure_line(closures) -> str:
+    """The three closures as an operator can act on them, with THREE readings kept apart.
+
+    NOT `(closures.get(c) or "not installed")[:12]`: that truncates to `not installe`, which
+    reads as a twelve-character hash prefix.
+
+    And "not measured" is not "not installed". A CLI absent from the mapping is one this
+    caller never asked about; a CLI mapped to `None` is one `installed_closure` looked for and
+    could not hash. Collapsing them would put a sentence about a missing installation in front
+    of an operator whose real problem is a caller that only resolved two of the three.
+
+    "not installed or unreadable" IS AS FAR AS THIS CAN GO, and the vaguer wording is the
+    honest one. `installed_closure` answers `None` for a CLI with no install location, for one
+    whose cache is absent or empty, AND for one whose closure raised while being walked; its
+    declared type is `str | None`, so the distinction is gone before this function is reached.
+    Writing "not installed" alone would name a cause this engine did not measure.
+    """
+    out = []
+    for c in ("claude", "codex", "agy"):
+        if c not in closures:
+            out.append(f"{c}=not measured")
+        elif not closures[c]:
+            out.append(f"{c}=not installed or unreadable")
+        else:
+            out.append(f"{c}={str(closures[c])[:12]}")
+    return ", ".join(out)
+
+
+def ambient_notes(instruction, *, closures) -> tuple[str, ...]:
+    """§20's note for every named skill this task may rely on, for the caller to add to the
+    prompt. `()` when nothing was named, and `()` when the bar was not cleared.
+
+    THIS IS `taskbundle.ambient_note`'s CALLER, and until it existed there was none:
+    `task_refusals` answers what STOPS a run, and §20's other half — declare it
+    provider-neutral in the prompt — needs a producer, or the check clears a skill and then
+    says nothing about it.
+
+    NOT CLEARED MEANS NO NOTE, not a hedged one. `task_refusals` has already refused that run;
+    emitting a note beside a refusal would put a sentence licensing the skill into the same
+    output that says it may not be used.
+    """
+    _readable(instruction)
+    _measurable(closures)
+    if not _ambient_ok(closures):
+        return ()
+    return tuple(taskbundle.ambient_note(s) for s in _named_skills(instruction))

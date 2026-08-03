@@ -796,3 +796,87 @@ def test_a_refusal_inside_the_write_loop_still_leaves_nothing_behind(tmp_path):
     # And the retry §8.1 promises really does get through afterwards.
     assert taskbundle.materialize(_forged(good, present), src, s.path) == dest
     assert (dest / "SKILL.md").is_file()
+
+
+def test_a_bundle_that_is_not_recorded_and_one_that_cannot_be_read_are_different_answers(
+        tmp_path):
+    """None means THIS RUN RECORDED NONE. It may not also mean 'the file is there and this
+    engine could not read it' — three seats would then be launched with nothing materialized
+    while the launcher's prompt_identity claims a bundle hash."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert taskbundle.read_task_bundle_if_recorded(run_dir) is None
+
+    path = storage.task_bundle_path(run_dir)
+    path.write_bytes(b"")                      # exists, zero-length
+    with pytest.raises(taskbundle.TaskBundleError):
+        taskbundle.read_task_bundle_if_recorded(run_dir)
+
+    path.write_bytes(b'{"version": 1}')        # exists, parses, is not a bundle
+    with pytest.raises(taskbundle.TaskBundleError):
+        taskbundle.read_task_bundle_if_recorded(run_dir)
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "TASK.md").write_text("do it\n")
+    b = taskbundle.scan(src, entrypoint="TASK.md")
+    taskbundle.write_task_bundle(run_dir, b)
+    assert taskbundle.read_task_bundle_if_recorded(run_dir) == b
+
+
+def test_a_task_bundle_path_that_is_there_but_unopenable_is_not_read_as_absent(tmp_path):
+    """Two more routes to the same collapse, neither of which `FileNotFoundError` covers.
+
+    A DANGLING SYMLINK is the one `Path.exists()` gets wrong: it resolves the link and answers
+    False, so a `task-bundle.json` pointing at a removed file read as 'this run recorded none'
+    — the run proceeding with nothing materialized while the manifest name is sitting right
+    there. `os.path.lexists` sees the link and the read below is what fails.
+
+    A DIRECTORY at the name is the one the reader got wrong: `read_bytes` raises
+    `IsADirectoryError`, which is an `OSError` and not a `FileNotFoundError`, so it left a
+    function whose declared failure class is `TaskBundleError` as a bare OSError — and a caller
+    catching this module's class would not have caught it.
+    """
+    run_dir = tmp_path / "dangling"
+    run_dir.mkdir()
+    os.symlink(tmp_path / "nowhere.json", storage.task_bundle_path(run_dir))
+    with pytest.raises(taskbundle.TaskBundleError):
+        taskbundle.read_task_bundle_if_recorded(run_dir)
+
+    other = tmp_path / "adir"
+    other.mkdir()
+    storage.task_bundle_path(other).mkdir()
+    with pytest.raises(taskbundle.TaskBundleError):
+        taskbundle.read_task_bundle_if_recorded(other)
+    with pytest.raises(taskbundle.TaskBundleError):
+        taskbundle.read_task_bundle(other)
+
+
+def test_the_bundle_hash_covers_the_entrypoint_and_not_only_the_files(tmp_path):
+    """§11 compares this value to decide 'identically prompted'. Two seats handed the same
+    files and told to start in different places were not identically prompted, and a hash
+    blind to that would say they were."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "A.md").write_text("a\n")
+    (src / "B.md").write_text("b\n")
+    a = taskbundle.scan(src, entrypoint="A.md")
+    b = taskbundle.scan(src, entrypoint="B.md")
+    assert {e.path for e in a.entries} == {e.path for e in b.entries}
+    assert taskbundle.bundle_hash(a) != taskbundle.bundle_hash(b)
+
+
+def test_a_dangling_link_where_the_bundle_goes_is_refused_in_this_modules_own_class(tmp_path):
+    """`Path.exists()` resolves the link and answers False for a dangling one, so the refusal
+    was skipped and `mkdir` raised `FileExistsError` — a class no caller of this module knows
+    to catch, out of the one call §8.1's retry depends on being readable."""
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    _, s = _seat(tmp_path)
+    b = taskbundle.scan(src, entrypoint="SKILL.md")
+    dest = taskbundle.task_dir(s.path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(tmp_path / "nowhere", dest)
+    with pytest.raises(taskbundle.TaskBundleError, match="already holds"):
+        taskbundle.materialize(b, src, s.path)

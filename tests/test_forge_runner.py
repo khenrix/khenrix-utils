@@ -22,8 +22,8 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import pytest  # noqa: E402
 from council import engine  # noqa: E402
-from forge import (baseline, bundle, fleet, gate, inspect as finspect,  # noqa: E402
-                   journal, runner, runstate, seat as seatmod, storage, verify)
+from forge import (baseline, bundle, fleet, gate, harvest, inspect as finspect,  # noqa: E402
+                   journal, runner, runstate, seat as seatmod, storage, taskbundle, verify)
 from forge_fixtures import commit_all, make_repo, write  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -2263,3 +2263,125 @@ def test_a_prior_attempt_its_own_reader_refuses_costs_no_provider_call(tmp_path)
     assert called == [], "the damaged record must be refused before a provider is paid"
     assert not runner.seat_dir(run, "claude", 2).exists(), \
         "and before the clone, which is what makes the refusal free"
+
+
+def _a_task_source(run, body="Refactor the thing.\n"):
+    """The run's OWN task source directory, and the name matters.
+
+    `_materialize_the_task` reads `storage.task_source_path(run_dir)` and nothing else, so a
+    scratch directory beside the run would make every assertion below pass or fail for a
+    reason that has nothing to do with what a real run does — §20 persists the resolved
+    instruction inside the run precisely so a resume does not depend on a tree that has gone.
+    """
+    src = storage.task_source_path(run)
+    src.mkdir()
+    (src / "TASK.md").write_text(body)
+    return src
+
+
+def test_a_run_with_a_task_bundle_materializes_it_into_every_seat(tmp_path):
+    """§20: 'materialize it identically in every clone'. The bundle lands in the seat's GIT
+    DIRECTORY (`taskbundle.task_dir`), which `harvest.record` never walks — `snapshot.take`
+    skips `.git` — so it is invisible to the artifact set by construction rather than by a
+    name rule.
+
+    EVERY seat, plural, because that is the claim: one seat would leave a per-seat condition
+    unmeasured, and §11 reads agreement off seats that were identically prompted.
+    """
+    repo, run, b, m = _open(tmp_path)
+    _a_task_source(run)
+    tb = taskbundle.scan(storage.task_source_path(run), entrypoint="TASK.md")
+    taskbundle.write_task_bundle(run, tb)
+
+    for name in ("claude", "codex"):
+        out = runner.run_seat(m, run, b, name=name, attempt=1, identity=IDENT, launch=_fake())
+        laid = taskbundle.task_dir(out.seat.path)
+        assert (laid / "TASK.md").read_text() == "Refactor the thing.\n"
+        taskbundle.verify_materialized(tb, out.seat.path)      # raises if a byte moved
+        # The bundle is NOT in the artifact set: it is engine-supplied, not the agent's work.
+        # Asserted on the INVENTORY rather than on `artifacts.paths`, because the path set is a
+        # Fsetup -> Fwork difference and a bundle present in both would difference itself out —
+        # so `"TASK.md" not in paths` would hold even if `harvest` were walking `.git`.
+        assert "TASK.md" not in out.artifacts.paths
+        assert not any("khenrix-forge" in p for p in harvest.record(out.seat.path)), \
+            "the engine-supplied bundle reached the seat's own inventory"
+
+
+def test_a_run_that_recorded_no_task_bundle_still_builds_its_seats(tmp_path):
+    """Runs that predate §20 record none, and an absent bundle is not a refusal."""
+    repo, run, b, m = _open(tmp_path)
+    out = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=_fake())
+    assert out.seat is not None
+    assert not taskbundle.task_dir(out.seat.path).exists(), \
+        "a run that recorded no bundle laid something down anyway"
+
+
+def test_a_task_bundle_that_cannot_be_read_stops_the_seat_before_the_provider_is_paid(tmp_path):
+    """The refusal has to land before `launch`, or a corrupt bundle costs a provider call and
+    the seat answers a task it was never given."""
+    repo, run, b, m = _open(tmp_path)
+    storage.task_bundle_path(run).write_bytes(b"{ not json")
+    calls = []
+    with pytest.raises(taskbundle.TaskBundleError):
+        runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=lambda **kw: calls.append(kw) or {})
+    assert calls == [], "a provider was launched over a bundle nobody could read"
+
+
+def test_a_seat_handed_bytes_its_manifest_does_not_describe_is_refused_before_the_launch(
+        tmp_path):
+    """`materialize` returns cleanly here, and that is the whole point of the case.
+
+    It reads the SOURCE live, so a file edited between the scan and the seat arrives in the
+    clone unhashed and unnamed — every path in the manifest exists, with different bytes.
+    `verify_materialized` re-deriving the manifest FROM THE SEAT is the only step that turns
+    that into a refusal; without it the run proceeds, `bundle_sha256` claims a hash of bytes no
+    seat holds, and §11 reads two such seats as identically prompted.
+    """
+    repo, run, b, m = _open(tmp_path)
+    src = _a_task_source(run)
+    tb = taskbundle.scan(src, entrypoint="TASK.md")
+    taskbundle.write_task_bundle(run, tb)
+    (src / "TASK.md").write_text("Refactor something else entirely.\n")
+
+    calls = []
+    with pytest.raises(taskbundle.TaskBundleError,
+                       match="does not match the authored manifest"):
+        runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=lambda **kw: calls.append(kw) or {})
+    assert calls == [], "a provider was paid to answer a task the seat was never handed"
+
+
+def test_a_task_bundle_whose_source_is_gone_stops_the_seat_rather_than_running_it_empty(
+        tmp_path):
+    """The manifest is recorded and the bytes it describes are not. A seat launched here would
+    be told to read an entrypoint it does not have, and would answer about nothing."""
+    repo, run, b, m = _open(tmp_path)
+    src = _a_task_source(run)
+    tb = taskbundle.scan(src, entrypoint="TASK.md")
+    taskbundle.write_task_bundle(run, tb)
+    (src / "TASK.md").unlink()
+    src.rmdir()
+
+    calls = []
+    with pytest.raises(taskbundle.TaskBundleError):
+        runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=lambda **kw: calls.append(kw) or {})
+    assert calls == []
+
+
+def test_a_retry_materializes_the_same_bundle_into_the_fresh_clone(tmp_path):
+    """§8.1 gives every retry a FRESH clone, and `materialize` refuses to write into a
+    directory that already holds a bundle — so a retry that re-used a seat would be refused
+    here rather than silently re-materializing. The attempt-2 clone is a new tree, so it is
+    not, and this is what says the two rules compose."""
+    repo, run, b, m = _open(tmp_path)
+    src = _a_task_source(run)
+    tb = taskbundle.scan(src, entrypoint="TASK.md")
+    taskbundle.write_task_bundle(run, tb)
+    first = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=_fake())
+    second = runner.run_seat(m, run, b, name="claude", attempt=2, identity=IDENT,
+                             launch=_fake())
+    assert first.seat.path != second.seat.path
+    for out in (first, second):
+        taskbundle.verify_materialized(tb, out.seat.path)

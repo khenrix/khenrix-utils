@@ -1963,3 +1963,54 @@ def test_the_unreviewed_label_is_spelled_in_exactly_one_place():
     assert holders == ["review.py"], holders
     assert not any("independently re-reviewed" in p.read_text(encoding="utf-8")
                    for p in root.glob("*.py"))
+
+
+def test_the_bundle_hash_the_launcher_claims_and_the_one_the_seat_gets_have_one_source():
+    """Two spellings of one predicate will eventually disagree.
+
+    `launch.make_launcher(bundle_sha256=…)` is what reaches `fingerprint.PromptIdentity`, and
+    `runner._materialize_the_task` is what reaches the seat's disk. This asserts both are
+    derived from `storage.task_bundle_path(run_dir)` through `taskbundle`'s own decoder and
+    from nothing else — read off the SOURCE, because a behavioural test would need a real CLI.
+    """
+    forge_dir = ROOT / "shared" / "lib" / "forge"
+    src = (forge_dir / "runner.py").read_text(encoding="utf-8")
+    body = src[src.index("def _materialize_the_task"):]
+    body = body[:body.index("\ndef ")]
+    assert "read_task_bundle_if_recorded(run_dir)" in body
+    assert "storage.task_bundle_path" not in body, (
+        "the materializer opens the manifest path itself instead of going through "
+        "taskbundle's decoder — that is the second spelling")
+
+    # And the decoder really is ONE decoder: the `if_recorded` variant must delegate to
+    # `read_task_bundle` rather than carry its own `json.loads`, or a field check added to one
+    # would silently not apply to the path `runner` takes.
+    tb = (forge_dir / "taskbundle.py").read_text(encoding="utf-8")
+    ifrec = tb[tb.index("def read_task_bundle_if_recorded"):]
+    ifrec = ifrec[:ifrec.index("\ndef ")] if "\ndef " in ifrec else ifrec
+    assert "return read_task_bundle(run_dir)" in ifrec, ifrec
+    assert "json.loads" not in ifrec and "_decode" not in ifrec, (
+        "read_task_bundle_if_recorded decodes the manifest itself — that is the second decoder")
+
+    cli = forge_dir / "cli.py"
+    if cli.exists():          # a later plan lands this; the assertion arms itself when it does
+        t = cli.read_text(encoding="utf-8")
+        assert "read_task_bundle(" in t or "read_task_bundle_if_recorded(" in t
+        assert "bundle_hash(" in t, (
+            "the CLI computes a bundle hash some other way than taskbundle.bundle_hash")
+
+
+def test_the_task_bundle_a_run_records_and_the_bytes_it_materializes_have_one_name():
+    """SEAM: `storage.task_source_path` is the ONLY name for the bundle's bytes, and
+    `runner._materialize_the_task` is what reads it. A second spelling here — the operator's
+    own directory, a path derived at the front end — is what §20's "persist the resolved
+    instruction" exists to prevent: `--collect` would then depend on a tree that may be gone.
+    """
+    forge_dir = ROOT / "shared" / "lib" / "forge"
+    src = (forge_dir / "runner.py").read_text(encoding="utf-8")
+    body = src[src.index("def _materialize_the_task"):]
+    body = body[:body.index("\ndef ")]
+    assert "storage.task_source_path(run_dir)" in body, body
+    holders = sorted(p.name for p in forge_dir.glob("*.py")
+                     if 'Path(run_dir) / "task"' in p.read_text(encoding="utf-8"))
+    assert holders == ["storage.py"], holders

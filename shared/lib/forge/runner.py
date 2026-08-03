@@ -63,7 +63,7 @@ from pathlib import Path
 from council import engine
 
 from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
-               runstate, seat as seatmod, seatrecord, storage, verify)
+               runstate, seat as seatmod, seatrecord, storage, taskbundle, verify)
 
 
 class RunnerError(RuntimeError):
@@ -564,12 +564,48 @@ def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
                         _payload(result.name, [*priors, _record(result)]))
 
 
+def _materialize_the_task(run_dir: Path, seat_path) -> None:
+    """§20's bundle into this seat, before anything else runs in it.
+
+    BEFORE `F0`, AND THE ORDER IS NOT WHAT KEEPS IT OUT OF THE ARTIFACT SET.
+    `taskbundle.task_dir` puts the bundle under the seat's GIT DIRECTORY, and `harvest.record`
+    walks with `snapshot.take`'s `.git` skip — so the inventory never sees it whatever the
+    order is. What the order buys is that the bundle is in place before the confirmed SETUP
+    command runs, which is the first thing in the seat that could read it.
+
+    A BUNDLE THAT CANNOT BE READ STOPS THE SEAT HERE, before `launch`. §5.2 quotes the provider
+    calls; spending one on a seat that was handed no task is the expensive half of this
+    refusal, and `read_task_bundle_if_recorded` is what keeps "not recorded" and "not readable"
+    from arriving at this line as the same value.
+
+    NOT AN ANSWER ABOUT THE CLONE. Nothing here is written into the worktree, so a seat whose
+    bundle was laid down and a seat that recorded none are the same tree to `clone_seat`'s
+    manifest check, which has already run by the time this is called.
+    """
+    b = taskbundle.read_task_bundle_if_recorded(run_dir)
+    if b is None:
+        return
+    taskbundle.materialize(b, storage.task_source_path(run_dir), seat_path)
+    # Read back what was written rather than trusting the writer. `materialize` copies from the
+    # SOURCE while `verify_materialized` re-derives from the SEAT, so they walk the same
+    # manifest from opposite ends — which is the only way "laid down" and "laid down what the
+    # manifest describes" stop being one claim. `_read_entry` reads the source live, so a byte
+    # that moved between the scan and now arrives in the seat unnoticed without this line.
+    taskbundle.verify_materialized(b, seat_path)
+
+
 def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) -> SeatResult:
     """Drive one attempt at one seat and record what it produced.
 
     The order is §7's, and every step of it is load-bearing:
 
-      clone -> F0 -> setup -> Fsetup -> launch -> Fwork -> artifact set -> candidate
+      clone -> task bundle -> F0 -> setup -> Fsetup -> launch -> Fwork -> artifact set
+      -> candidate
+
+    The task bundle sits where it does for one reason only: it must be in place before the
+    confirmed SETUP command runs, which is the first thing in this seat that could read it.
+    It is not what keeps the bundle out of the artifact set — `_materialize_the_task` says
+    what does.
 
     F0 and Fsetup are two inventories of the same tree with only the confirmed setup command
     between them, which is what lets `harvest.artifact_set` DIFFERENCE setup's output back
@@ -586,13 +622,16 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
     Raises `RunnerError` for an argument this function will not act on, for a seat that
     cannot be classified, and — through `_payload` — for a record this module's own reader
     refuses, which is the one new way this can refuse and is still that same class.
-    `fleet.SeatError`/`GitError` (the clone), `harvest.HarvestError`
-    (an inventory over quota), `verify.VerifyError` (a setup step that would not start or
-    timed out) and whatever the injected `launch` raises all propagate UNWRAPPED — each
-    already names the tree and the argument at fault. Past the clone the seat survives every
-    one of them, because nothing in this module deletes anything; the clone's own failure is
-    the exception, and it is `clone_seat` that cleans up after its refusal, so that a seat it
-    never finished building does not outlive the refusal as a half-populated tree.
+    `fleet.SeatError`/`GitError` (the clone), `taskbundle.TaskBundleError` (a recorded task
+    bundle that could not be read, or that did not arrive in the seat as its manifest
+    describes), `harvest.HarvestError` (an inventory over quota), `verify.VerifyError` (a setup
+    step that would not start or timed out) and whatever the injected `launch` raises all
+    propagate UNWRAPPED — each already names the tree and the argument at fault. Past the clone
+    the seat survives every one of them, because nothing in this module deletes anything; the
+    clone's own failure is the exception, and it is `clone_seat` that cleans up after its
+    refusal, so that a seat it never finished building does not outlive the refusal as a
+    half-populated tree. `materialize` unwinds its own half-written task directory on the same
+    terms and leaves the clone standing, which is what lets §8.1's fresh-attempt retry proceed.
     """
     run_dir = Path(run_dir)
     attempt = _count("attempt", attempt)
@@ -615,6 +654,11 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
 
     repo = manifest.repo_path
     st = fleet.clone_seat(repo, baseline, path, name=name, identity=identity)
+    # §20's bundle, into the clone `clone_seat` has just verified against B's manifest and
+    # before anything in the seat runs. `template_dir` is deliberately not used for this — see
+    # `taskbundle`'s module docstring for the three measured ways git's template path cannot
+    # carry a closure.
+    _materialize_the_task(run_dir, st.path)
     child_env = fleet.forge_child_env(repo)
 
     f0 = harvest.record(st.path)

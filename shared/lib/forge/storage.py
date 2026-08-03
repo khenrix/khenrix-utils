@@ -233,6 +233,18 @@ def task_bundle_path(run_dir) -> Path:
     return Path(run_dir) / "task-bundle.json"
 
 
+def task_source_path(run_dir) -> Path:
+    """Where the run keeps the BYTES its task-bundle manifest describes.
+
+    `task_bundle_path` holds the manifest — paths, kinds, modes, hashes. `materialize` needs
+    the content, and reading it from wherever the operator's directory happened to be would
+    make a resume depend on a tree that may be gone: §20 requires the resolved instruction be
+    persisted so `--collect` never depends on vanished conversation context. One name here, so
+    the writer and the reader cannot drift.
+    """
+    return Path(run_dir) / "task"
+
+
 def ledger_path(run_dir) -> Path:
     return Path(run_dir) / "ledger.json"
 
