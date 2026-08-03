@@ -67,6 +67,40 @@ def test_a_binary_diff_leaves_the_line_count_unknown(tmp_path):
     assert "blob.bin" in d.why
 
 
+def test_a_truncated_refusal_list_says_how_many_there_were(tmp_path):
+    """A SAMPLE IS NEVER READ AS THE WHOLE — `record_worktree_after`'s rule, one record over.
+    `why` spells out five refusals; without the count beside them a reader doing the obvious
+    arithmetic ("500 files, 5 unmeasured") is wrong by an order of magnitude, on the one
+    record whose job is to say how much of the diff was measured."""
+    r, base, _ = _repo(tmp_path)
+    for i in range(9):
+        (r / f"blob{i}.bin").write_bytes(bytes([0, 1, 2, i]))
+    head = commit_all(r, "nine binaries")
+    d = ultra.measure_diff(r, base, head)
+    assert d.lines is None
+    assert d.why.count("binary delta") == ultra._REFUSAL_SAMPLE, "the sample is still bounded"
+    assert "9 path(s) were refused" in d.why
+    # And a list that FITS is printed whole, with no count implying it was cut.
+    assert "were refused" not in ultra._why(("a: no count",))
+
+
+def test_a_diff_size_that_could_not_have_been_measured_is_refused():
+    """IT VALIDATES ITSELF, like every other record in this package — it was the one that did
+    not. A voided file count beside a line count describes no read git can perform, and an
+    absent count with no `why` is a refusal that declines to say what it refused, reaching the
+    operator as a blank in the line `run_ultra` writes."""
+    assert ultra.DiffSize(2, 2, "").files == 2                    # the complete case
+    assert ultra.DiffSize(2, None, "binary").lines is None
+    with pytest.raises(ultra.UltraError):
+        ultra.DiffSize(None, 5, "git said nothing about the files")
+    for bad in ((None, None, ""), (2, None, "   ")):
+        with pytest.raises(ultra.UltraError):
+            ultra.DiffSize(*bad)
+    for bad in (True, -1, "2", 1.0):
+        with pytest.raises(ultra.UltraError):
+            ultra.DiffSize(bad, 0, "")
+
+
 def test_an_oversized_diff_is_unavailable_without_spending(tmp_path):
     r, base, head = _repo(tmp_path)
     run = _proc()
@@ -96,6 +130,20 @@ def test_a_clean_json_payload_parses_into_findings(tmp_path):
                         run=_proc(0, json.dumps(payload)))
     assert u.status == ultra.RAN and len(u.bugs) == 1
     assert u.bugs[0].severity == "blocker" and "off-by-one" in u.bugs[0].claim
+    assert u.bugs[0].evidence == "a.txt:2", "the location is what a fix pass reads"
+
+
+def test_a_bug_with_no_location_records_that_it_had_none(tmp_path):
+    """`review.Finding` refuses an empty evidence string, so a payload naming no location says
+    so IN WORDS. Refusing the row instead would discard a finding out of a review that was
+    paid for and cannot be re-run, over a field this module has never measured the remote to
+    emit."""
+    r, base, head = _repo(tmp_path)
+    payload = {"bugs": [{"severity": "high", "description": "off-by-one"}]}
+    u = ultra.run_ultra(tmp_path / "run", checkout=r, base=base, head=head, round_=1,
+                        run=_proc(0, json.dumps(payload)))
+    assert u.status == ultra.RAN and u.bugs[0].severity == "blocker"
+    assert "named no location" in u.bugs[0].evidence
 
 
 def test_an_exit_zero_with_unreadable_json_is_not_a_clean_review(tmp_path):
@@ -194,10 +242,29 @@ def test_the_bugs_payload_lands_in_the_run_directory(tmp_path):
     assert json.loads((d / "ultrareview" / "bugs.json").read_text()) == {"bugs": []}
 
 
-def test_the_unreviewed_label_is_imported_and_not_respelled():
+def test_the_unreviewed_label_is_named_by_its_constant_and_never_respelled():
+    """WHAT THIS CAN AND CANNOT SAY. `ultra` APPLIES no label — the terminal does, in
+    `review.terminal_from_record` — so the only thing this module can get wrong about the
+    phrase is spelling it a second way. It refers to the constant BY NAME, in prose; it does
+    not import it, and the previous name of this test said it did. That claim was never true:
+    `"VERIFIED_NOT_INDEPENDENTLY_REVIEWED" in src` is satisfied by a docstring, and no code
+    path here reads the constant. The third assertion is the one with teeth."""
     src = (ROOT / "shared" / "lib" / "forge" / "ultra.py").read_text()
     assert "independently re-reviewed" not in src
-    assert "VERIFIED_NOT_INDEPENDENTLY_REVIEWED" in src
+    assert "VERIFIED_NOT_INDEPENDENTLY_REVIEWED" in src, \
+        "the module points at the constant rather than restating what it stands for"
+    assert review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED not in src, \
+        "the label's TEXT written out here would be the second spelling the constant exists " \
+        "to prevent, and a grep for either would find half the run's states"
+
+
+def test_every_severity_this_module_maps_to_is_one_review_declares():
+    """THE CROSS-MODULE VOCABULARY, PINNED WHERE ITS SIBLINGS ARE. `_bugs` builds
+    `review.Finding`s out of these values, and `Finding.__post_init__` refuses a severity
+    `review.SEVERITIES` does not declare — so a value added here alone turns a paid cloud
+    review into `unreadable_output`. Equality both ways: a severity review declares that
+    nothing here maps to is one §13.1's findings can never carry."""
+    assert set(ultra._SEVERITY_MAP.values()) == set(review.SEVERITIES)
 
 
 def test_the_module_says_what_it_did_not_measure():

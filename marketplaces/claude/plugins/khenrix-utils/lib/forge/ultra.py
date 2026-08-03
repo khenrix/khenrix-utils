@@ -30,7 +30,9 @@ payload at all.
 UNAVAILABILITY DEGRADES, NEVER FAILS. §13.1 names five reasons; this module declares SIX. The
 sixth, `unreadable_output`, covers an exit-0 whose `--json` payload does not parse, which the
 five do not — and folding that into "ran, found no bugs" is the false green every other module
-in this package is written against. The extension is deliberate and is recorded in the plan.
+in this package is written against. The extension is deliberate, not an oversight in reading
+§13.1: the five it names are all reasons the review did not START, and this one is a review
+that ran and came back unreadable.
 """
 import json
 import os
@@ -110,10 +112,39 @@ class DiffSize:
     `files is None` is a measurement that was VOIDED — the engine does not know which files
     the diff touches either — and is a different fact from `lines is None`, which is a file
     list this run has and a line count git declined to give it. `why` carries which.
+
+    IT VALIDATES ITSELF, like every other record in this package. It was the one that did not,
+    and the two things it now refuses are the two that would make it read cleaner than the
+    measurement behind it: a voided file count beside a line count (nothing could produce
+    one, and a consumer reading `lines` would be reading a number taken over a file list this
+    run does not have), and an absent count with no `why` — which is a refusal that declines
+    to say what it refused, and `run_ultra` puts `why` in the operator's line.
     """
     files: int | None
     lines: int | None
     why: str
+
+    def __post_init__(self) -> None:
+        for name in ("files", "lines"):
+            v = getattr(self, name)
+            if v is None:
+                continue
+            # `bool` explicitly: `True` is an `int` and would compare against §13.1's limits
+            # as 1, so a diff of "yes" would pass for a diff of one file.
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise UltraError(f"{name} is a count or None, not {v!r}")
+        if not isinstance(self.why, str):
+            raise UltraError(f"why is text, not {type(self.why).__name__}")
+        if self.files is None and self.lines is not None:
+            raise UltraError(
+                f"this record voids the file count and states {self.lines} changed line(s): a "
+                "line total is summed over the file list the same read produced, so there is "
+                "no measurement it could have come from")
+        if (self.files is None or self.lines is None) and not self.why.strip():
+            raise UltraError(
+                "a count this run could not take is a count this run says why it could not "
+                "take; an unexplained `None` reaches the operator as a blank in the line "
+                "`run_ultra` writes about why the review was or was not requested")
 
 
 def _numstat_z(blob: str) -> tuple:
@@ -189,6 +220,28 @@ def _numstat_z(blob: str) -> tuple:
     return files, (None if refusals else lines), tuple(refusals)
 
 
+# How many per-path refusals `measure_diff`'s `why` spells out. `record_worktree_after` is
+# the sibling rule: a bounded SAMPLE is never read as the whole, so the count goes beside it.
+# The version without one printed five lines out of fifty and read as five refusals — the
+# reader's own arithmetic ("500 files, 5 unmeasured") then came out wrong by an order of
+# magnitude, on a record whose entire job is to say how much of the diff was measured.
+_REFUSAL_SAMPLE = 5
+
+
+def _why(refusals) -> str:
+    """`measure_diff`'s explanation: a bounded sample of the per-path refusals, and how many
+    there were. Empty when nothing was refused, which is what `DiffSize` requires of a
+    measurement that is complete."""
+    refusals = tuple(refusals)
+    if not refusals:
+        return ""
+    shown = "; ".join(refusals[:_REFUSAL_SAMPLE])
+    if len(refusals) <= _REFUSAL_SAMPLE:
+        return shown
+    return (f"{len(refusals)} path(s) were refused a changed-line count; the first "
+            f"{_REFUSAL_SAMPLE}: {shown}")
+
+
 def _revision(name: str, value) -> str:
     """A checkpoint this module will hand `git diff` as one side of a range.
 
@@ -239,7 +292,7 @@ def measure_diff(checkout, base: str, head: str) -> DiffSize:
                         f"git diff --numstat -> {r.returncode}: "
                         f"{r.stderr.decode('utf-8', 'replace').strip()}")
     files, lines, refusals = _numstat_z(r.stdout.decode("utf-8", "surrogateescape"))
-    return DiffSize(files, lines, "; ".join(refusals[:5]))
+    return DiffSize(files, lines, _why(refusals))
 
 
 def argv(*, timeout_minutes: int, target) -> list:
@@ -388,9 +441,16 @@ def _bugs(payload, checkpoint_round: int) -> tuple:
                          if row.get(k)).strip()
         if not claim:
             raise ValueError("a bug carries a description")
+        # `review.Finding` requires evidence and refuses an empty string, so a payload that
+        # named no location is recorded as having named none — in words. The alternative was
+        # to refuse the ROW, which discards a finding out of a review that was paid for and
+        # cannot be re-run for free, over a field this module has never measured the remote to
+        # emit (the module docstring says the payload's shape is not something it knows).
+        where = str(row.get("location") or "").strip()
         out.append(review.Finding(
-            id=review.finding_id(checkpoint_round, "ultrareview", sev, claim),
+            id=review.finding_id(checkpoint_round, "ultrareview", sev, claim, where),
             round=checkpoint_round, seat="ultrareview", severity=sev, claim=claim,
+            evidence=where or "the ultrareview payload named no location for this bug",
             resolution="open"))
     return tuple(out)
 
@@ -410,14 +470,15 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, round_: int, enabled: 
     size is unknown — a reason stated more confidently than the evidence. What the record does
     instead is carry `diff_measured=False`.
 
-    `round_` IS REQUIRED AND IS AT LEAST 1, WHICH IS CONTRADICTION 6's WHOLE MECHANISM. A
-    `review.Finding` carrying round 0 can be written into NO record: `review.round_dir`
-    refuses anything below 1, so `review.write_round` cannot store it, and
-    `review.terminal_from_record` iterates `range(1, rounds_run + 1)` and would never read it.
-    A defaulted 0 therefore made §13.1's findings unreachable by the terminal Contradiction 6
-    assigns them to — the resolution had no mechanism at all. With a real round number the
-    types line up end to end: this returns `Finding`s whose `round` a `Round` record accepts,
-    and the terminal reads them like any other round's.
+    `round_` IS REQUIRED AND IS AT LEAST 1, AND THAT IS THE WHOLE MECHANISM BY WHICH §13.1's
+    FINDINGS REACH A TERMINAL AT ALL. A `review.Finding` carrying round 0 can be written into
+    NO record: `review.round_dir` refuses anything below 1, so `review.write_round` cannot
+    store it, and `review.terminal_from_record` iterates `range(1, rounds_run + 1)` and would
+    never read it. A defaulted 0 therefore made these findings unreachable by the one function
+    that decides §13.1's and §14.2's shared terminal — see `review.terminal_from_record`,
+    where the two are reconciled — so the reconciliation had no mechanism at all. With a real
+    round number the types line up end to end: this returns `Finding`s whose `round` a `Round`
+    record accepts, and the terminal reads them like any other round's.
 
     §13.1'S FINDINGS GET THE POST-ROUND-2 TREATMENT AND THIS FUNCTION DOES NOT APPLY IT: fix →
     fresh-verifier verify → checkpoint → `review.VERIFIED_NOT_INDEPENDENTLY_REVIEWED`, with
@@ -433,7 +494,7 @@ def run_ultra(run_dir, *, checkout, base: str, head: str, round_: int, enabled: 
             f"§13.1's findings are attributed to a review round numbered from 1, not "
             f"{round_!r}. `review.round_dir` refuses anything below 1, so a finding carrying "
             "round 0 can be written into no record `review.terminal_from_record` reads — and "
-            "Contradiction 6's resolution IS that terminal reading it.")
+            "that terminal reading it is the only way §13.1's findings reach a verdict.")
     if not enabled:
         return Ultra(SKIPPED, None, None, None, False,
                      "--no-ultra: §13.1 is default on and this run opted out, so no cloud "

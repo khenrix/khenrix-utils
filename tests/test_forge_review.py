@@ -269,9 +269,10 @@ def test_the_declared_mode_and_the_passed_timeout_are_the_same_number():
 
 # --------------------------------------------------------------------------- parsing
 def test_a_well_formed_block_parses():
+    row = {"severity": "blocker", "claim": "c", "evidence": "src.py:10"}
     rows, why = review.parse_findings(
-        'prose\n```json\n{"findings": [{"severity": "blocker", "claim": "c"}]}\n```\n')
-    assert rows == [{"severity": "blocker", "claim": "c"}] and why == ""
+        'prose\n```json\n{"findings": [' + json.dumps(row) + ']}\n```\n')
+    assert rows == [row] and why == ""
 
 
 def test_an_empty_findings_list_is_a_real_answer():
@@ -288,7 +289,7 @@ def test_no_block_at_all_is_unreadable_not_empty():
 def test_two_blocks_are_unreadable_because_nobody_may_pick_one():
     rows, why = review.parse_findings(
         '```json\n{"findings": []}\n```\n```json\n{"findings": [{"severity": "blocker",'
-        ' "claim": "c"}]}\n```')
+        ' "claim": "c", "evidence": "src.py:10"}]}\n```')
     # NOT `rows is None and "two" in why or "more than one" in why` — `and` binds tighter, so
     # that reads `(A and B) or C`, and C is true of the message whatever `rows` is.
     assert rows is None and "more than one" in why
@@ -296,14 +297,27 @@ def test_two_blocks_are_unreadable_because_nobody_may_pick_one():
 
 def test_a_severity_outside_the_declared_set_is_unreadable():
     rows, why = review.parse_findings(
-        '```json\n{"findings": [{"severity": "catastrophic", "claim": "c"}]}\n```')
+        '```json\n{"findings": [{"severity": "catastrophic", "claim": "c",'
+        ' "evidence": "src.py:10"}]}\n```')
     assert rows is None and "severity" in why
 
 
 def test_a_finding_with_no_claim_is_unreadable():
     rows, why = review.parse_findings(
-        '```json\n{"findings": [{"severity": "blocker"}]}\n```')
-    assert rows is None
+        '```json\n{"findings": [{"severity": "blocker", "evidence": "src.py:10"}]}\n```')
+    assert rows is None and "claim" in why
+
+
+def test_a_finding_that_cites_no_evidence_is_unreadable():
+    """REVIEW.md tells every reviewer to cite changed-file evidence for every finding, and a
+    demand nothing checks is a sentence rather than a requirement — the blocker line the
+    terminal prints would name a claim with nothing behind it. Refused like a missing claim,
+    which records the seat SILENT: `parse_findings` never returns a partial read."""
+    for block in ('{"findings": [{"severity": "blocker", "claim": "c"}]}',
+                  '{"findings": [{"severity": "blocker", "claim": "c", "evidence": "  "}]}',
+                  '{"findings": [{"severity": "blocker", "claim": "c", "evidence": 7}]}'):
+        rows, why = review.parse_findings(f"```json\n{block}\n```")
+        assert rows is None and "evidence" in why, block
 
 
 def test_malformed_json_is_unreadable():
@@ -312,16 +326,28 @@ def test_malformed_json_is_unreadable():
 
 
 # --------------------------------------------------------------------------- the record
-def _finding(round_=1, seat="claude", severity="blocker", claim="c", resolution="open"):
-    return review.Finding(id=review.finding_id(round_, seat, severity, claim), round=round_,
-                          seat=seat, severity=severity, claim=claim, resolution=resolution)
+def _finding(round_=1, seat="claude", severity="blocker", claim="c", resolution="open",
+             evidence="src.py:10"):
+    return review.Finding(
+        id=review.finding_id(round_, seat, severity, claim, evidence), round=round_,
+        seat=seat, severity=severity, claim=claim, evidence=evidence, resolution=resolution)
 
 
 def test_a_findings_id_is_content_derived_and_stable():
-    a = review.finding_id(1, "claude", "blocker", "the cache is unbounded")
-    b = review.finding_id(1, "claude", "blocker", "the cache is unbounded")
-    c = review.finding_id(2, "claude", "blocker", "the cache is unbounded")
+    a = review.finding_id(1, "claude", "blocker", "the cache is unbounded", "c.py:1")
+    b = review.finding_id(1, "claude", "blocker", "the cache is unbounded", "c.py:1")
+    c = review.finding_id(2, "claude", "blocker", "the cache is unbounded", "c.py:1")
     assert a == b and a != c and len(a) == 12
+
+
+def test_one_claim_cited_at_two_places_is_two_findings():
+    """Evidence is in the hash, so a reviewer that raises one wording against two call sites
+    — ordinary output — produces two ids rather than one written twice. Without this the
+    second `Finding` collided with the first, `Round` and `write_round` took the pair, and
+    `write_resolutions` refused it: a crash in `loop` AFTER the panel had been paid for."""
+    a = review.finding_id(1, "claude", "blocker", "unbounded cache", "cache.py:12")
+    b = review.finding_id(1, "claude", "blocker", "unbounded cache", "cache.py:88")
+    assert a != b
 
 
 def test_a_round_round_trips_through_disk(tmp_path):
@@ -352,13 +378,23 @@ def test_a_silent_seat_is_recorded_rather_than_dropped(tmp_path):
 def test_a_finding_with_an_undeclared_severity_cannot_be_recorded():
     with pytest.raises(review.ReviewError):
         review.Finding(id="x" * 12, round=1, seat="claude", severity="catastrophic",
-                       claim="c", resolution="open")
+                       claim="c", evidence="src.py:10", resolution="open")
 
 
 def test_a_finding_with_an_undeclared_resolution_cannot_be_recorded():
     with pytest.raises(review.ReviewError):
         review.Finding(id="x" * 12, round=1, seat="claude", severity="blocker",
-                       claim="c", resolution="probably-fine")
+                       claim="c", evidence="src.py:10", resolution="probably-fine")
+
+
+def test_a_finding_that_cites_nothing_cannot_be_recorded():
+    """The record's half of the same rule `parse_findings` applies to the answer: an empty
+    string would let "no evidence was given" be spelled exactly like "this field was never
+    filled in", and the fix pass reads this field to find what is being complained about."""
+    for blank in ("", "   "):
+        with pytest.raises(review.ReviewError):
+            review.Finding(id="x" * 12, round=1, seat="claude", severity="blocker",
+                           claim="c", evidence=blank, resolution="open")
 
 
 def test_a_round_validates_its_own_fields():
@@ -377,9 +413,22 @@ def test_a_round_validates_its_own_fields():
         review.Round(1, "a" * 40, (), (), ("claude",), (("claude", "parse_failure"),))
 
 
+def test_two_findings_sharing_one_id_are_refused_on_the_way_in(tmp_path):
+    """THE WRITE HALF OF `_one_row_per_finding`. Resolutions are keyed by finding id, so a
+    round holding the same id twice is resolved by whichever row a fix pass wrote last — and
+    `write_resolutions` then refuses the pair, crashing `loop` after the panel was paid for.
+    Reproduced: two `Finding`s with one id used to be accepted here and stored by
+    `write_round`, and only the resolutions write objected."""
+    f = _finding()
+    with pytest.raises(review.ReviewError) as e:
+        review.Round(1, "a" * 40, (f, f), (), ("claude",), ())
+    assert f.id in str(e.value)
+
+
 # --------------------------------------------------------------------------- the round
 ANSWER = ('I reviewed the diff.\n' + 'x' * 500 + '\nToken: {tok}\n'
-          '```json\n{{"findings": [{{"severity": "blocker", "claim": "unbounded cache"}}]}}\n```')
+          '```json\n{{"findings": [{{"severity": "blocker", "claim": "unbounded cache",'
+          ' "evidence": "cache.py:12"}}]}}\n```')
 
 
 def _fake_council(tmp_path, *, answers, record):
@@ -953,10 +1002,11 @@ class _Cap:
         self.review_rounds = rounds
 
 
-def _blocker(round_=1, seat="claude", claim="unbounded cache"):
-    return review.Finding(id=review.finding_id(round_, seat, "blocker", claim),
-                          round=round_, seat=seat, severity="blocker", claim=claim,
-                          resolution="open")
+def _blocker(round_=1, seat="claude", claim="unbounded cache", evidence="cache.py:12"):
+    return review.Finding(
+        id=review.finding_id(round_, seat, "blocker", claim, evidence),
+        round=round_, seat=seat, severity="blocker", claim=claim, evidence=evidence,
+        resolution="open")
 
 
 def _reviewing():
@@ -1074,6 +1124,20 @@ def test_a_rejected_blocker_is_still_an_open_one(tmp_path):
     assert answer == review.REVIEW_BLOCKED and "rejected" in why
 
 
+def test_every_terminal_this_module_declares_is_a_declared_successor_of_reviewing():
+    """THE CROSS-MODULE VOCABULARY, PINNED WHERE ITS SIBLINGS ARE. `settle` and `_stop` hand
+    `terminal_from_record`'s answer to `runstate.advance` from `reviewing`, which refuses an
+    edge §14 does not declare — so a terminal added here and not there turns every run that
+    reaches it into a `TransitionError` instead of a verdict. Held today by two lists agreeing
+    by hand, next door to `set(rubric.GATE_RANK) == set(verify.OUTCOMES)` and
+    `set(review.RESOLUTIONS) == set(review._READINGS)`, which are the same seam pinned."""
+    from forge import runstate
+    assert set(review.TERMINALS) <= runstate._EDGES["reviewing"], \
+        "a terminal `advance` would refuse the edge to is one no review can ever record"
+    assert set(review.TERMINALS) <= runstate.TERMINAL, \
+        "§13's three END the run; one with a successor is a run that reports and carries on"
+
+
 def test_every_declared_resolution_has_a_terminal_reading(tmp_path):
     """TOTAL BY CONSTRUCTION, not by four branches happening to cover four values. A
     resolution added to `RESOLUTIONS` later must land in a roll-up or raise — never
@@ -1094,8 +1158,9 @@ def test_every_declared_resolution_has_a_terminal_reading(tmp_path):
 
 def test_a_non_blocker_finding_does_not_block(tmp_path):
     run = _run_dir(tmp_path)
-    minor = review.Finding(id=review.finding_id(1, "agy", "minor", "typo"), round=1,
-                           seat="agy", severity="minor", claim="typo", resolution="open")
+    minor = review.Finding(id=review.finding_id(1, "agy", "minor", "typo", "doc.md:1"),
+                           round=1, seat="agy", severity="minor", claim="typo",
+                           evidence="doc.md:1", resolution="open")
     review.write_round(run, review.Round(1, "a" * 40, (minor,), (),
                                          ("claude", "codex", "agy"), ()))
     assert review.terminal_from_record(

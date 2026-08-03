@@ -148,9 +148,14 @@ End your answer with exactly ONE fenced JSON block, and nothing after it:
 {{"findings": [{{"severity": "blocker", "claim": "…", "evidence": "path:line"}}]}}
 ```
 
-`severity` is one of {severities}. An empty `findings` list is a valid answer and means you
-found nothing — but the block must be present, because a missing block is recorded as an
-answer that could not be read rather than as a clean review.
+`severity` is one of {severities}. `evidence` is REQUIRED on every finding and is the
+changed-file citation asked for above — a `path:line`, or the command whose output you are
+citing. A finding without one makes the whole answer unreadable, because a claim this run
+cannot check is not one it can act on.
+
+An empty `findings` list is a valid answer and means you found nothing — but the block must
+be present, because a missing block is recorded as an answer that could not be read rather
+than as a clean review.
 """
 
 
@@ -512,12 +517,19 @@ def parse_findings(text) -> tuple:
         if row.get("severity") not in SEVERITIES:
             return None, (f"a finding's severity is one of {list(SEVERITIES)}, not "
                           f"{row.get('severity')!r}")
-        if not isinstance(row.get("claim"), str) or not row["claim"].strip():
-            return None, "a finding carries a non-empty claim"
+        for name in ("claim", "evidence"):
+            if not isinstance(row.get(name), str) or not row[name].strip():
+                # `evidence` IS CHECKED HERE BECAUSE REVIEW.md DEMANDS IT. The instructions
+                # tell every reviewer to cite changed-file evidence for every finding, and a
+                # demand nothing checks is a sentence, not a requirement — the blocker line
+                # `terminal_from_record` prints would then name a claim with nothing behind
+                # it. Refusing the whole answer rather than the row is `parse_findings`' own
+                # rule: a partial read is recorded as a silent seat, never as a clean review.
+                return None, f"a finding carries a non-empty {name}"
     return payload["findings"], ""
 
 
-def finding_id(round_: int, seat: str, severity: str, claim: str) -> str:
+def finding_id(round_: int, seat: str, severity: str, claim: str, evidence: str) -> str:
     """Content-derived, never a counter — §10's rule for ledger rows, applied here.
 
     Coverage checks compare findings across rounds; if round 2 splits or inserts a finding
@@ -525,19 +537,36 @@ def finding_id(round_: int, seat: str, severity: str, claim: str) -> str:
     because "the same claim, raised again after a fix" is a different fact from "the same
     claim, still open", and the resolution field is not, because a finding's id must not
     change when it is resolved.
+
+    `evidence` IS IN THE HASH, so one claim cited at two places is two findings rather than
+    one id written twice. Without it a reviewer that raised the same wording against two
+    call sites — ordinary output — produced two `Finding`s sharing an id, which `Round`
+    accepted, `write_round` stored, and `write_resolutions` then refused, crashing the loop
+    AFTER the three-provider panel had been paid for. What collides now is a byte-identical
+    repeat, which carries nothing the first row does not.
     """
-    blob = "\0".join((str(round_), seat, severity, claim)).encode("utf-8")
+    blob = "\0".join((str(round_), seat, severity, claim, evidence)).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
 @dataclass(frozen=True)
 class Finding:
-    """One reviewer's one claim, at rest."""
+    """One reviewer's one claim, at rest.
+
+    `evidence` IS A FIELD AND IS NON-EMPTY, because REVIEW.md asks every reviewer to cite
+    changed-file evidence for every finding and a record that dropped it would make that the
+    one demand the prompt states and the record cannot show. It is what a fix pass reads to
+    find the thing being complained about, and what an operator reads beside
+    `terminal_from_record`'s blocker line. A producer with nothing to cite says so in words
+    rather than leaving it blank — an empty string is refused here, so "no evidence was
+    given" cannot be spelled the same way as "this field was never filled in".
+    """
     id: str
     round: int
     seat: str
     severity: str
     claim: str
+    evidence: str
     resolution: str
 
     def __post_init__(self) -> None:
@@ -547,7 +576,7 @@ class Finding:
         if self.resolution not in RESOLUTIONS:
             raise ReviewError(f"resolution is one of {list(RESOLUTIONS)}, "
                               f"not {self.resolution!r}")
-        for name in ("id", "seat", "claim"):
+        for name in ("id", "seat", "claim", "evidence"):
             v = getattr(self, name)
             if not isinstance(v, str) or not v.strip():
                 raise ReviewError(f"{name} is a non-empty string, not {v!r}")
@@ -563,9 +592,9 @@ class Round:
     the reason is the council's own — `parse_failure`, `auth_or_quota`, `nonzero_exit`, or
     this module's `unreadable_findings` / `unreadable_result_file` / `no_record`.
 
-    IT VALIDATES ITSELF BECAUSE EVERY SIBLING RECORD IN THIS PLAN DOES — `Size`, `Decision`,
-    `Progress`, `Dimensions`, `Finding`, `Resolution`, `Ultra` — and because this is the one
-    the TERMINAL reads. A hand-built `Round` is exactly what `read_round` produces off disk,
+    IT VALIDATES ITSELF BECAUSE EVERY SIBLING RECORD IN THIS PACKAGE DOES — `Size`,
+    `Decision`, `Progress`, `Dimensions`, `Finding`, `Resolution`, `DiffSize`, `Ultra` — and
+    because this is the one the TERMINAL reads. A hand-built `Round` is exactly what `read_round` produces off disk,
     so the checks below run on the record a crashed run is reconstructed from, not only on
     the one this process just built.
 
@@ -594,6 +623,21 @@ class Round:
                         if not isinstance(f, Finding)})
         if wrong:
             raise ReviewError(f"a round's findings are Finding records, not {wrong}")
+        ids = [f.id for f in self.findings]
+        repeated = sorted({i for i in ids if ids.count(i) > 1})
+        if repeated:
+            # THE WRITE HALF OF `_one_row_per_finding`. That function refuses two RESOLUTIONS
+            # for one finding, on both routes, because the terminal keys them by id and the
+            # extra row overwrites rather than conflicts. The findings half had no such guard,
+            # so two `Finding`s sharing an id were accepted here, stored by `write_round`, and
+            # refused by `write_resolutions` — a crash in `loop` after the panel was paid for,
+            # over ordinary reviewer output. `finding_id` now separates one claim cited twice;
+            # what reaches this branch is a repeat with no distinguishing content at all, or a
+            # record built by hand, and neither has a reading the terminal could give it.
+            raise ReviewError(
+                f"{repeated} identify more than one of this round's findings. Resolutions are "
+                "keyed by finding id, so two findings sharing one are resolved by whichever "
+                "row a fix pass wrote last — and `write_resolutions` refuses the pair outright.")
         for f in self.findings:
             if f.round != self.round:
                 raise ReviewError(
@@ -803,10 +847,19 @@ def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commi
             continue
         responded.append(spec.name)
         for row in rows:
-            findings.append(Finding(
-                id=finding_id(round_, spec.name, row["severity"], row["claim"]),
+            f = Finding(
+                id=finding_id(round_, spec.name, row["severity"], row["claim"],
+                              row["evidence"]),
                 round=round_, seat=spec.name, severity=row["severity"],
-                claim=row["claim"], resolution="open"))
+                claim=row["claim"], evidence=row["evidence"], resolution="open")
+            # A BYTE-IDENTICAL REPEAT IS ONE FINDING, and dropping the second is the only
+            # thing this record can represent: the id is content-derived, so the two are the
+            # same row and `Round` refuses the pair. Restating a blocker verbatim is ordinary
+            # model output, and the version without this crashed `loop` at
+            # `write_resolutions` — after §5.2's three-provider panel had been spent.
+            if any(f.id == prior.id for prior in findings):
+                continue
+            findings.append(f)
     r = Round(round=round_, checkpoint=checkpoint,
               findings=tuple(findings), identities=tuple(identities),
               seats_responded=tuple(sorted(responded)),
