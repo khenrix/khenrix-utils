@@ -60,11 +60,21 @@ class Result:
     result carrying `satisfied=True` would be a human's word rendered in the shape of a
     measurement, and that is §10.1's manufactured green arriving through the type system.
 
-    THE INVARIANT IS ENFORCED IN `__post_init__`, SO IT HOLDS FOR EVERY `Result` THAT EXISTS —
-    including the ones §12.4's consumer builds for itself. An earlier draft put the check in a
-    private factory and documented that a directly-constructed `Result` bypassed it; a rule
-    that holds only on the paths its author remembered is the shape this module refuses
+    THE INVARIANT IS ENFORCED IN `__post_init__`, SO IT HOLDS FOR EVERY `Result` A CONSTRUCTOR
+    PRODUCES — including the ones §12.4's consumer builds for itself. An earlier draft put the
+    check in a private factory and documented that a directly-constructed `Result` bypassed it;
+    a rule that holds only on the paths its author remembered is the shape this module refuses
     everywhere else, and `Report` is a public dataclass a later stage will populate.
+
+    THE STATES THAT SENTENCE DOES NOT COVER, stated for the same reason `gate.Confirmation`
+    states them: `__post_init__` is not a wall. `object.__new__` plus `object.__setattr__`
+    reaches past it, so does an unpickle that restores `__dict__` — which is what DEFAULT
+    dataclass pickling does, so a `Result` that made a round trip through `pickle` was never
+    re-checked — and so does a subclass overriding `__post_init__`. Nothing here is pickled or
+    subclassed today; the disclosure is here so the next reader learns the boundary from the
+    docstring rather than from a `manual_trace_confirmed` row carrying `satisfied=True`. Two
+    sibling docstrings disagreeing about how far their own enforcement reaches is the defect,
+    whichever one is optimistic.
     """
     row_id: str
     criterion_index: int
