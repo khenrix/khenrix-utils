@@ -41,10 +41,24 @@ none above it already decided `forge`:
    required" is a statement about the `completed`/`partial`/`failed` branches below, where
    verify never gates `forge`; a `no_change` claim is the one place the spec text asks verify
    to gate something directly ("no_change ... requires ... independent verification"), so
-   this branch reads it rather than merely recording it. Anything short of both raises
-   `SeatStatusError` rather than silently degrading to another status: an unargued or
-   unverified `no_change` is indistinguishable from a seat that did nothing, and refusing to
-   construct one is how that collapse is prevented rather than merely documented.
+   this branch reads it rather than merely recording it. A missing or decorative rationale
+   raises `SeatStatusError` rather than degrading: an unargued `no_change` is
+   indistinguishable from a seat that did nothing, and the rationale is the ONLY evidence
+   that tells those two apart, so its absence is a refusal.
+
+   THE VERIFICATION HALF DOES NOT RAISE WHEN THE MEASUREMENT WAS NEVER TAKEN. `no_change` is
+   a POST-VERIFICATION verdict, and §6 puts every verification in a fresh clone the builder
+   never had -- "running the confirmed command in the seat's own clone therefore measures
+   nothing", and `gate.quote` prices it: `verify_runs` counts the calibration and the
+   verifier clones and NOT the builders, while `setup_runs` counts the builders too. So
+   `verify == "not-run"` is the state EVERY seat is classified in at harvest time, not a
+   caller's mistake, and raising there would discard exactly the argued-but-not-yet-checked
+   conclusion §8 says must not be discarded. It degrades to `partial` instead -- real work
+   whose verdict cannot be taken yet -- which is still not `no_change`, so an unverified
+   claim can never read as a verified one. A verification that WAS taken and refuted the
+   claim (`verify == "fail"`, or a `setup` that never positively confirmed under a verify
+   that passed) still raises: that is a contradiction in the caller's own measurements, not
+   a measurement it is too early to have.
 4. `artifacts == "unusable"` (only reachable here with `changed is True`: the seat touched
    something and what it left behind cannot be used) -> `failed`. There is no partial credit
    for an unusable result.
@@ -140,13 +154,20 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
         forge = "failed"
     elif not changed:
         _require_rationale(rationale)
-        if setup != "pass" or verify != "pass":
+        if verify == "not-run":
+            # The claim is argued and not yet checked. See rule 3 in the module docstring:
+            # §6 runs every verification somewhere this seat is not, so this is where a
+            # seat's own classification always lands, and `partial` withholds the promotion
+            # without throwing the argument away.
+            forge = "partial"
+        elif setup != "pass" or verify != "pass":
             raise SeatStatusError(
                 "no_change requires independent verification: setup and verify must both "
                 f"have run and passed (setup={setup!r}, verify={verify!r}) -- a claim that "
                 "nothing needed to change is only as credible as the check that confirms "
                 "the current state is already correct")
-        forge = "no_change"
+        else:
+            forge = "no_change"
     elif artifacts == "unusable":
         forge = "failed"
     elif not proven_read:

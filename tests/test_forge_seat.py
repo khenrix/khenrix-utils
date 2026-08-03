@@ -111,6 +111,32 @@ def test_no_change_also_requires_independent_verification_not_only_a_rationale()
     assert s.forge == "no_change"
 
 
+def test_a_no_change_whose_verification_has_not_been_taken_yet_is_partial_not_a_refusal():
+    """The state EVERY seat is classified in, so a refusal here would discard every one.
+
+    §6 puts verification in a fresh clone the builder never had — "running the confirmed
+    command in the seat's own clone therefore measures nothing" — and `gate.quote` prices
+    that division: `verify_runs` counts the calibration and the verifier clones, `setup_runs`
+    counts the builders as well. So `runner.run_seat` classifies with `verify="not-run"` on
+    every seat there is, and a zero-diff seat's argued conclusion has to survive that without
+    being promoted to a verdict its evidence does not carry. `partial` is both: not
+    discarded, and not `no_change`.
+
+    `verify="fail"` is a different answer and stays a refusal — a measurement that was TAKEN
+    and contradicts the claim is not one it is merely too early to have. That is the case
+    directly above.
+    """
+    rationale = "the retry already backs off; adding one would double-sleep"
+    for setup_dim in ("pass", "not-run"):
+        s = seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
+                               changed=False, setup=setup_dim, verify="not-run",
+                               rationale=rationale)
+        assert (s.forge, s.verify) == ("partial", "not-run"), setup_dim
+    with pytest.raises(seat.SeatStatusError):
+        seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
+                           changed=False, setup="pass", verify="not-run")
+
+
 def test_a_rationale_present_but_not_substantive_is_still_refused():
     """A non-empty rationale is not automatically a substantive one — "ok" is exactly the
     seat-did-nothing case the rule exists to catch."""
