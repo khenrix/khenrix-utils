@@ -417,8 +417,38 @@ def materialize(b: TaskBundle, source_root, seat_path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         src = source_root / e.path
         if e.kind == "symlink":
-            os.symlink(os.readlink(src), target)
+            # Read live, off `source_root` — a `BundleEntry.sha256` is the hash of the
+            # TARGET TEXT (`_entry`'s own docstring), never the text itself, so this is the
+            # only place the real target is available at all. `_entry` checked `_escapes`
+            # on this exact value at scan time; a manifest that reaches `materialize` without
+            # ever passing through `scan` in this process (`read_task_bundle`'s decode, what
+            # §8.1's retry re-materializes from) never ran that check, and even a freshly
+            # scanned one is re-reading a `source_root` this function's own docstring already
+            # admits can change between `scan` and here. An escaping link laid down here is a
+            # live symlink INSIDE THE SEAT'S GIT DIRECTORY resolving to whatever host path was
+            # named — `verify_materialized` would catch it on its NEXT, separate call, but
+            # that is not a defence of this function: it must not return clean having written it.
+            link_target = os.readlink(src)
+            if bundlemod._escapes(e.path, link_target):
+                raise TaskBundleError(
+                    f"a task bundle symlink escapes the bundle: {e.path!r} -> "
+                    f"{link_target!r}. Materializing an escaping link points a seat at a "
+                    "host path nobody authored.")
+            os.symlink(link_target, target)
         else:
+            # The sibling check to the one above: a "file" entry is only as trustworthy as
+            # `source_root` still agrees it is a file. If that path has since become a
+            # symlink — the same source-changed-since-scan gap the branch above closes —
+            # `read_bytes()` follows it (measured: `Path.read_bytes` opens without
+            # `O_NOFOLLOW`) and would copy whatever host file it names into the seat as if
+            # the bundle had authored those bytes. `lstat`, not `stat`, for the reason
+            # `_entry` uses it at scan time: it must see the link, not what it points to.
+            st = src.lstat()
+            if not stat.S_ISREG(st.st_mode):
+                raise TaskBundleError(
+                    f"{e.path!r} is recorded as a file but the source no longer names one "
+                    f"(mode {oct(st.st_mode)}). Reading through whatever it now names would "
+                    "copy that content into the seat as if the bundle had authored it.")
             # Bytes then mode, in that order: a 0400 file written mode-first cannot be
             # written to. `chmod` after `write_bytes` is the only ordering that works for
             # every mode the manifest can carry.

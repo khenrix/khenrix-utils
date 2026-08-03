@@ -335,6 +335,59 @@ def test_a_manifest_path_that_escapes_is_refused_before_anything_is_written(tmp_
     taskbundle.verify_materialized(good, s.path)
 
 
+def test_a_symlink_target_that_escapes_is_refused_by_materialize_itself(tmp_path):
+    """C1: the symlink branch did `os.symlink(os.readlink(src), target)` and never checked
+    `bundle._escapes` on the target it just read, unlike `_entry` at scan time. A hand-built
+    decoded-bundle entry with a SAFE NAME -- passing `_check_rel` -- whose live source is a
+    symlink to `/etc/passwd` was written VERBATIM into the seat's git directory; `materialize`
+    returned cleanly and only a SEPARATE, subsequent `verify_materialized` call caught it, by
+    chance (`_walk` -> `_entry` happens to reuse `_escapes`).
+
+    This calls `materialize` ALONE and nothing else, so it pins the refusal to THIS function:
+    on the unfixed code nothing here raises, `pytest.raises` fails with "did not raise", and
+    a version of this test that also called `verify_materialized` would pass for the wrong
+    reason -- exactly the gap the finding names.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")   # scanned BEFORE the evil link exists
+    os.symlink("/etc/passwd", src / "evil_link")          # the source changes after the scan
+    _, s = _seat(tmp_path)
+    forged = taskbundle.TaskBundle(
+        good.version, good.entrypoint,
+        good.entries + (taskbundle.BundleEntry("evil_link", "symlink", 0, "0" * 64, 0),),
+        good.max_files, good.max_file_bytes, good.max_total_bytes)
+    with pytest.raises(taskbundle.TaskBundleError, match="escapes"):
+        taskbundle.materialize(forged, src, s.path)
+    evil = taskbundle.task_dir(s.path) / "evil_link"
+    assert not evil.is_symlink() and not evil.exists(), \
+        "the escaping link must never reach the seat, not even briefly"
+
+
+def test_a_file_entry_whose_source_became_a_symlink_is_refused_by_materialize_itself(tmp_path):
+    """The sweep for C1's sibling: the "file" branch trusted `source_root` unconditionally.
+    If the path a "file" entry names has since become a symlink -- the same source-changed-
+    since-scan gap the branch above closes -- `target.write_bytes(src.read_bytes())` follows
+    it (measured: `Path.read_bytes` opens without `O_NOFOLLOW`) and copies whatever host file
+    it names into the seat as if the bundle had authored those bytes. Same shape, same
+    function, one branch over.
+    """
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    good = taskbundle.scan(src, entrypoint="SKILL.md")    # SKILL.md scanned as a regular file
+    (src / "SKILL.md").unlink()
+    outside = tmp_path / "host_secret.txt"
+    outside.write_text("HOST FILE, NOT PART OF THE BUNDLE\n")
+    os.symlink(outside, src / "SKILL.md")                  # the source changes after the scan
+    _, s = _seat(tmp_path)
+    with pytest.raises(taskbundle.TaskBundleError, match="no longer names one"):
+        taskbundle.materialize(good, src, s.path)
+    landed = taskbundle.task_dir(s.path) / "SKILL.md"
+    assert not landed.exists(), "the host file's content must never reach the seat"
+
+
 def test_a_symlink_to_a_directory_survives_the_round_trip(tmp_path):
     """`_walk` treats a symlink TO a directory as an entry it does not descend, and that
     branch is the one shape `_tree` has no instance of: its `alias.md` points at a FILE.
