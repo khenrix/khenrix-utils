@@ -849,8 +849,14 @@ def test_a_verifier_setup_that_failed_is_named_beside_the_verdict(tmp_path):
     same evidence as one that ran in a prepared tree, and `run_setup` RETURNS a failing setup
     rather than raising — so without this the run exists nowhere in what a caller is handed.
 
-    Deliberately not an outcome: §6.2 has none for it, and which side it belongs to is open —
-    a candidate really can break the setup that passed in its own clone.
+    INVERTED 2026-08-04, and the half that was right is kept. §6.2 still has no outcome for
+    this and ATTRIBUTION is still open — a candidate really can break the setup that passed
+    in its own clone — so nothing here says whose fault it was. What changed is that the
+    prose caveat was standing beside a structured `PASS`, and this test asserted it:
+    "a PASS that never says the setup failed reads cleaner than its evidence" was the whole
+    mitigation, and prose does not repair a field `_verify_dim`, `classify_seat` and the
+    handover all branch on. `SETUP_REFUSED` is a RUNNER verdict saying only that §6 step 4
+    did not run, which is a fact rather than a judgement about a side.
     """
     setup = (verify.Step(argv=("sh", "-c", "exit 3")),)
     repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"))
@@ -861,9 +867,10 @@ def test_a_verifier_setup_that_failed_is_named_beside_the_verdict(tmp_path):
 
     outcome, reason, _v, _s = runner.verify_candidate(
         m, run, b, r.candidate, name="claude", identity=IDENT, calibration=cal)
-    assert outcome == verify.PASS, "the gate itself was green, and that is reported"
+    assert outcome == runner.SETUP_REFUSED, \
+        "the gate never ran, so there is no green to report"
     assert "setup command exited 3" in reason, \
-        "but a PASS that never says the setup failed reads cleaner than its evidence"
+        "and the reason still names the exit code rather than only its own refusal"
 
 
 def test_the_verifiers_setup_and_gate_run_in_the_calibrations_own_environment(tmp_path):
@@ -1554,8 +1561,12 @@ def test_the_gate_measurement_and_the_verifiers_setup_reach_the_seats_record(tmp
         lambda name, n, p: bool(write(p, "w.py", "the edit\n"))))
 
     assert result.status.setup == "pass", "the premise: the same command passed in the seat"
-    assert result.verification[0] == verify.PASS and "setup command exited 1" in \
+    assert result.verification[0] == runner.SETUP_REFUSED and "setup command exited 1" in \
         result.verification[1], "and failed in the verifier, where §6 takes the verdict"
+    # THE POINT OF THIS TEST SURVIVES THE OUTCOME CHANGE, and that is why the refusal is
+    # placed AFTER `on_measurement` rather than before it: the §6.1 reading and the verifier's
+    # `SetupResult` were both bought, and a refusal is exactly when someone needs them. The
+    # row assertions below are the evidence that neither was dropped at the seam.
 
     row = _attempt(run, "claude", 1)
     assert row["verifier_setup"] == {"exit_code": 1, "step_index": 0, "overlap": []}, \
@@ -2395,3 +2406,39 @@ def test_a_retry_materializes_the_same_bundle_into_the_fresh_clone(tmp_path):
     assert first.seat.path != second.seat.path
     for out in (first, second):
         taskbundle.verify_materialized(tb, out.seat.path)
+
+
+def test_a_verifier_whose_setup_failed_cannot_report_pass(tmp_path):
+    """A caveat in prose does not repair a field downstream code branches on.
+
+    `_with_setup_caveat` is right that ATTRIBUTION is open — a candidate really can break the
+    setup that passed in its own clone — and this does not settle it. It settles the VERDICT,
+    which is a different claim: a gate that ran in a tree the confirmed setup never finished
+    preparing has not measured the candidate, whoever's fault the setup failure was.
+    `SETUP_REFUSED` says only that §6 step 4 did not run.
+    """
+    setup = (verify.Step(argv=("sh", "-c", "exit 3")),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"))
+    r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=_fake(lambda p: write(p, "work.py", "the edit\n")))
+    cal = _calibrate(tmp_path, repo, b, m)
+
+    outcome, reason, _v, sr = runner.verify_candidate(
+        m, run, b, r.candidate, name="claude", identity=IDENT, calibration=cal)
+    assert outcome == runner.SETUP_REFUSED, \
+        "the gate ran in a tree the confirmed setup command failed to prepare"
+    assert sr is not None and sr.run.exit_code == 3, \
+        "and the measurement that was bought is still handed back, not replaced by prose"
+    assert runner._verify_dim(outcome) == "not-run"
+
+
+def test_a_verifier_setup_that_SUCCEEDS_still_reaches_the_gate(tmp_path):
+    """The guard against over-tightening: refusing on a zero-exit setup would refuse every run."""
+    setup = (verify.Step(argv=("sh", "-c", "exit 0")),)
+    repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"))
+    r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
+                        launch=_fake(lambda p: write(p, "work.py", "the edit\n")))
+    cal = _calibrate(tmp_path, repo, b, m)
+    outcome, _reason, _v, _s = runner.verify_candidate(
+        m, run, b, r.candidate, name="claude", identity=IDENT, calibration=cal)
+    assert outcome == verify.PASS

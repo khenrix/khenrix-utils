@@ -763,6 +763,16 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
 # equivalence", GATE_CHANGED is a fact about the gate, and FLAKY is the gate disagreeing with
 # itself over a pair §6.2 refuses to convert to a pass. They are absent from this table and
 # `_verify_dim` answers "not-run" for them — §8's own value for a measurement not taken.
+# A RUNNER VERDICT, DELIBERATELY NOT A MEMBER OF `verify.OUTCOMES`. That vocabulary's stated
+# contract is "every value `classify` can return", and `classify` cannot return this — it is
+# decided here, before §6 step 4 runs at all. Putting it there would also break three totality
+# tests that hold the vocabulary honest: `test_outcomes_holds_exactly_what_classify_can_return`
+# AST-walks `verify.py`'s own returns; `strategy.classify_failure` raises BY DESIGN for an
+# outcome it has no branch for, so §6.2 gaining a row is meant to fail loudly; and `GATE_RANK`
+# is contiguous 0-5 with no free integer, so ranking it would renumber around `GATE_CHANGED`
+# at rank 2 — re-blessing a known defect as a side effect of an unrelated fix.
+SETUP_REFUSED = "setup-refused"
+
 _VERIFY_DIM = {verify.PASS: "pass", verify.FAIL: "fail"}
 
 
@@ -771,7 +781,10 @@ def _verify_dim(outcome) -> str:
 
     FAIL-CLOSED ON THE INPUT SIDE FIRST: an outcome this engine does not produce must not
     fall through to the default, because "not-run" is a plausible-looking answer and a typo
-    would be read as "no verdict yet" forever.
+    would be read as "no verdict yet" forever. `SETUP_REFUSED` is checked BEFORE that guard
+    rather than added to `verify.OUTCOMES`: it is a runner verdict, `classify` cannot return
+    it, and admitting it to the vocabulary the guard reads would make the guard accept
+    exactly what it exists to refuse.
 
     THE TRANSLATION IS LOSSY AND THE RECORD IS NOT. Reading one of the four non-verdicts as
     "pass" would promote a seat on evidence nobody has; reading it as "fail" would make
@@ -781,6 +794,13 @@ def _verify_dim(outcome) -> str:
     carries `verification` beside `status`: §6.2's own word for what happened is written to
     the record, so `verify: "not-run"` is never all the record says.
     """
+    if outcome == SETUP_REFUSED:
+        # AHEAD OF THE INPUT GUARD, AND NAMED RATHER THAN ADMITTED TO `verify.OUTCOMES`. This
+        # is the one value reaching "not-run" having spent nothing on a gate: §6 step 4 did
+        # not execute, so there is no verdict to translate and nothing was measured to lose.
+        # Widening `OUTCOMES` to hold it would make the guard below accept a value `classify`
+        # cannot return, which is the opposite of what the guard is for.
+        return "not-run"
     if outcome not in verify.OUTCOMES:
         raise RunnerError(
             f"{outcome!r} is not one of §6.2's outcomes {verify.OUTCOMES}; §8's verify "
@@ -1133,6 +1153,19 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
         # BEFORE `assert_hooks_pinned`, which is the step the adversarial rig is refused at.
         if on_measurement is not None:
             on_measurement(v.candidate, setup_result)
+        if setup_result.run.exit_code != 0:
+            # §6 STEP 4 DOES NOT RUN. `_with_setup_caveat` put this in PROSE beside a
+            # structured PASS, and its argument — that ATTRIBUTION is open, because a
+            # candidate really can break the setup that passed in its own clone — is right
+            # and is not what this decides. The verdict is a different claim: a gate that ran
+            # in a tree the confirmed setup never finished preparing has not measured the
+            # candidate, whoever's fault the failure was. AFTER `on_measurement`, because the
+            # §6.1 reading above was bought and a refusal is exactly when someone needs it.
+            return (SETUP_REFUSED,
+                    f"the verifier's own setup command exited {setup_result.run.exit_code}, "
+                    "so §6 step 4 was not run: a gate result from a tree setup did not "
+                    "finish preparing measures the preparation, not the candidate.",
+                    v, setup_result)
     else:
         # NOTHING IS HANDED OVER IN THIS BRANCH, and the asymmetry is deliberate: there is no
         # `SetupResult` to hand over, and the call above has already delivered `v.candidate`,

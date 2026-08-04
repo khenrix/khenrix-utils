@@ -1390,12 +1390,19 @@ nine Criticals and twelve Highs against five entries.** Rewritten below, with th
 7. ⚠ **s1 M1 — `GIT_LITERAL_PATHSPECS` absent from `HOSTILE_ENV`.** `harvest.artifact_set` is one of
    the three unpinned sites, and with `LITERAL=1` ambient **the `git diff` L1.5 guards exits 0 with an
    empty patch.**
-8. **s4 remainder** — H3 oscillation (see 10); M2 `snapshot.take`'s undeclared `FileNotFoundError`;
+8. **`Status.setup` -> `Status.builder_setup`** — L1.2 closed the VERDICT half (a failing
+   verifier setup can no longer return `PASS`; `runner.SETUP_REFUSED` maps to `verify="not-run"`)
+   and corrected `seat.py`'s docstring, which claimed the field was a fresh-clone measurement
+   when `run_seat` fills it from the BUILDER's clone. The rename itself is an on-disk schema
+   change plus a required keyword across ~42 `classify_seat` call sites, 30 of them in
+   `test_forge_seat.py`, and it collides with the existing top-level `verifier_setup` key on the
+   attempt row — so it belongs in a task whose reviewer is looking at a rename, not as a rider.
+9. **s4 remainder** — H3 oscillation (see 10); M2 `snapshot.take`'s undeclared `FileNotFoundError`;
    M3 `Size` accepting `(0,0)`/negatives/bools; M4 `_dir_digest`; L1 the lost-journal/no-fixes collapse.
-9. **The blind-review boundary, really closed** — OS-level isolation for reviewers and seats, or
+10. **The blind-review boundary, really closed** — OS-level isolation for reviewers and seats, or
    holding the ledger in memory for the round. L1.4 fixes the direction bug and **writes the residual
    down**; this is the closure.
-10. **The oscillation wiring** — widen `review.py:1629`'s `fix` contract to return the candidate and
+11. **The oscillation wiring** — widen `review.py:1629`'s `fix` contract to return the candidate and
     baseline `Run`s, call `from_runs` before `record_fix_done`, consult `oscillation` per round.
     **Correction:** the earlier draft attributed this to "Plan K Tasks 3 and 4, which own the
     contract." They do not — K Task 3 is `--collect`'s argv surface and Task 4 is the review clone, and
@@ -1403,37 +1410,37 @@ nine Criticals and twelve Highs against five entries.** Rewritten below, with th
     that **K Task 4 changes `loop`'s signature** and therefore edits `review.py:1699-1703` — the exact
     `prog=progress.Progress(None, None)` call site this item is about. **Sequence it immediately after
     K Task 4, as one visit.**
-11. **s5** — C4 and all six Highs: council result files outside the bracket with no integrity re-check;
+12. **s5** — C4 and all six Highs: council result files outside the bracket with no integrity re-check;
     the review bundle inside `.git` with its path in argv and no digest; repo-local diff drivers and
     `git replace` refs unmeasured for reviewers' own `git diff`; **a fully-silent 0/3 panel classifying
     `degraded` (ships) rather than `review_blocked`**; ultrareview's absent journal and durable receipt;
     plus its seven Mediums.
-12. **s6** — `gc` deleting refs by namespace prefix rather than exact name+OID; the `PATCH_ONLY`
+13. **s6** — `gc` deleting refs by namespace prefix rather than exact name+OID; the `PATCH_ONLY`
     handover citing a patch nothing generates; `--collect` discarding §9 drift and §14.1 orphans; the
     cloud review's missing idempotency guard **whose own refusal text tells the operator to re-trigger
     it**; the seat-count denominator taken from a disk glob rather than `manifest.seats`; the verify
     command truncated to step 0; **the handover asserting the synthesis branch from the run id while
     measuring HEAD, with `--gc` then reclaiming the difference**; plus its five Mediums.
-13. **s7** — **"fusion, not selection" is unenforced** (the collector rejects only a tree identical to
+14. **s7** — **"fusion, not selection" is unenforced** (the collector rejects only a tree identical to
     B₁; `--strategy` is reported and `cli.py:772` says it cannot be checked); the eval-baseline
     contamination (**after L3.1**, which fixes the oracle that would penalise a corrected baseline);
     `--collect`'s re-payable review; `mutate.py`'s bytecode purge and missing path containment;
     `eval_trigger`'s type coercions (`"false"` → true; `null` → `"None"` → the abstention label);
     `reconcile`'s orphaned-marker destruction and `backup()` overwrite; `--seats 1` vs "all three CLIs".
-14. **s1 remainder** — the symlink gate referent; the make memo key **(fix together with `_scan_make`'s
+15. **s1 remainder** — the symlink gate referent; the make memo key **(fix together with `_scan_make`'s
     `--directory=`/`-C` parser gap — two holes in one detector)**; the calibration aggregate; the
     control-plane integrity tripwire; **Fwork byte-binding** (L1.5's other door); durable-state
     reconstruction; `Seat.verified` over `sidecars is None`; two index definitions; `_gate_taints`'
     `isinstance` gate; `_command_paths`' silent `continue`; `_AMBIENT_SKILL`'s short-path refusals;
     `screen.py` carrying this repo's allow-list into foreign repos; `fleet.clone_seat`'s bare
     `IndexError`; `Quote`'s unvalidated fields.
-15. **s2 remainder** — `no_change` with `proven_read=False`; **the executed-and-refuted check recorded
+16. **s2 remainder** — `no_change` with `proven_read=False`; **the executed-and-refuted check recorded
     as `not-run`**; §8.1's missing input half; `RunnerError`-as-retry; the empty fleet reaching
     `comparing`; `FLAKY` unreachable; `_clip`'s evidence truncation; `_verify_dim`'s collapse.
-16. **s3 remainder** — `installed_closure`'s permutation collision; `verify_materialized`'s copied
+17. **s3 remainder** — `installed_closure`'s permutation collision; `verify_materialized`'s copied
     fields **and** the size/cap-blind `bundle_hash`; the criterion-to-claim binding; seat provenance;
     the journal creation race; hash criteria not distinguishing a file from a symlink.
-17. **§18's live three-provider write smoke** — no in-repo receipt with the required provenance exists.
+18. **§18's live three-provider write smoke** — no in-repo receipt with the required provenance exists.
 
 ---
 
