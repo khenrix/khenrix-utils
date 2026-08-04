@@ -192,38 +192,87 @@ activate? Output ONLY JSON, no prose:
 {{"winner": "<exact skill name, or none>", "why": "<one short sentence>"}}"""
 
 
-def parse_arena_verdict(raw: str, competitors: list) -> str:
+OFF_ROSTER = "off-roster:"   # prefix for a winner the judge named that is on no roster
+
+
+def _canonical(w: str, competitors: list):
+    """The roster spelling of `w`, or None. Case-insensitive: SKILL.md `name` is
+    lowercase by frontmatter rule, so folding can never merge two real competitors,
+    and without it the fail-closed branch below would score a judge's "None" as a
+    hallucination — the mirror error, manufacturing a routing failure out of a
+    correct abstain."""
+    for c in competitors:
+        if w.lower() == str(c).lower():
+            return c
+    return None
+
+
+def parse_arena_verdict(raw: str, competitors: list):
+    """The roster name the judge picked, "none" if it picked none, None if it never answered.
+
+    THREE OUTCOMES ON THE SAME AXIS AS `parse_verdict`, PLUS A FOURTH FOR AN ANSWER THAT IS
+    NOT ON THE ROSTER. This returned the string "none" for text it could not read, and
+    "none" is also a real verdict that `arena.json` really expects (2 of the 6 cases in
+    evals/khenrix-audit/arena.json expect exactly it) — so a judge that timed out, hit a
+    quota wall or answered in prose was recorded as having correctly abstained, and scored
+    0.3333 on that file with a confusion matrix reading `none → none` for every one of them.
+    Unreadable is now None and is counted in neither axis (see `score_arena`).
+
+    A NAME THAT IS ON NO ROSTER IS ALSO NOT "none", and that was the same collapse one
+    branch over: the judge was told "exact skill name, or none", so naming something else
+    is a readable answer AND a routing failure, and rounding it to "none" scored it correct
+    against every `expected: "none"` case. It now returns an `off-roster:` string, which is
+    readable (it counts) and equals no `expected` (it counts as wrong), and which puts the
+    name the judge actually said into the confusion matrix where someone can see it.
+    """
     s = (raw or "").strip()
+    if not s:
+        return None
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
     if fence:
         s = fence.group(1)
     cand = s[s.find("{"): s.rfind("}") + 1] if "{" in s and "}" in s else s
     try:
-        w = str(json.loads(cand).get("winner", "none")).strip()
-    except (json.JSONDecodeError, AttributeError):
-        return "none"
-    if w in competitors:
-        return w
+        payload = json.loads(cand)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict) or "winner" not in payload:
+        return None
+    w = str(payload["winner"]).strip()
+    if not w:
+        return None            # the key arrived empty: a shape, not an answer
+    hit = _canonical(w, competitors)
+    if hit is not None:
+        return hit
     # The judge subprocess is a REAL claude CLI session on this machine, so when the
     # skill under judgment is actually installed here it can answer with its own
     # environment's plugin-qualified display form (e.g. "khenrix-utils:khenrix-audit")
     # instead of the roster's bare NAME it was told to use — verified live 2026-07-31:
     # two genuinely-correct khenrix-audit arena wins were silently scored "none" by an
-    # exact-match miss on exactly this prefix. Accept the bare suffix after the last
-    # ':' as the same skill; an unrelated/hallucinated name still falls through to "none".
-    bare = w.rsplit(":", 1)[-1]
-    return bare if bare in competitors else "none"
+    # exact-match miss on exactly this prefix. Accept the bare suffix after the last ':'
+    # as the same skill.
+    hit = _canonical(w.rsplit(":", 1)[-1], competitors)
+    return hit if hit is not None else f"{OFF_ROSTER}{w[:60]}"
 
 
 def score_arena(cases: list) -> dict:
+    """cases: list of {expected, got, readable}. Accuracy over the cases that WERE read.
+
+    Same contract as `score`: an unreadable case is in NEITHER numerator nor denominator
+    and is reported separately. Counting it correct is the fail-open this function was
+    written with (every `expected: "none"` case scored right off a judge that never spoke);
+    counting it incorrect is the mirror error. `run_arena` refuses to report an accuracy at
+    all when nothing was readable.
+    """
+    readable = [c for c in cases if c.get("readable", c.get("got") is not None)]
     confusion: dict = {}
     correct = 0
-    for c in cases:
+    for c in readable:
         confusion.setdefault(c["expected"], {})
         confusion[c["expected"]][c["got"]] = confusion[c["expected"]].get(c["got"], 0) + 1
         correct += c["expected"] == c["got"]
-    return {"accuracy": round(correct / len(cases), 4) if cases else 0.0,
-            "confusion": confusion}
+    return {"accuracy": round(correct / len(readable), 4) if readable else 0.0,
+            "confusion": confusion, "unreadable": len(cases) - len(readable)}
 
 
 def run_arena(args) -> int:
@@ -251,9 +300,26 @@ def run_arena(args) -> int:
         rec = m["providers"][0]
         raw = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
         got = parse_arena_verdict(raw, names + ["none"])
-        cases.append({"prompt": case["prompt"], "expected": case["expected"], "got": got})
-        print(f"  {'✓' if got == case['expected'] else '✗'} {case['prompt'][:60]} → {got}")
+        # `valid` and a readable verdict are TWO conditions — see run(): a valid run whose
+        # text is prose names no winner at all.
+        readable = got is not None
+        cases.append({"prompt": case["prompt"], "expected": case["expected"], "got": got,
+                      "readable": readable,
+                      "why": ("" if readable else
+                              ("the judge run was invalid: "
+                               + str(rec.get("reason", "no reason recorded"))
+                               if not rec.get("valid")
+                               else "the judge answered, and no winner could be read from "
+                                    "what it said"))})
+        mark = "✓" if readable and got == case["expected"] else ("?" if not readable else "✗")
+        print(f"  {mark} {case['prompt'][:60]} → {got}")
     result = score_arena(cases)
+    if result["unreadable"]:
+        print(f"  ⚠ {result['unreadable']} of {len(cases)} case(s) produced no readable "
+              "winner and are counted in neither axis")
+    if result["unreadable"] == len(cases):
+        print("  ✗ no case produced a readable winner — there is no measurement here")
+        return 1
     (workdir / "arena-result.json").write_text(json.dumps(
         {"skills": skills, "result": result, "cases": cases}, indent=2))
     print(f"\n  arena accuracy: {result['accuracy']}")
@@ -305,18 +371,60 @@ def _self_test() -> int:
     ok.append(("arena verdict picks named winner",
                parse_arena_verdict('{"winner": "khenrix-wiki-add"}',
                                    ["khenrix-wiki-add", "save"]) == "khenrix-wiki-add"))
-    ok.append(("arena verdict unknown → none",
-               parse_arena_verdict('{"winner": "bogus"}', ["a", "b"]) == "none"))
     ok.append(("arena verdict accepts plugin-qualified form of a real competitor",
                parse_arena_verdict('{"winner": "khenrix-utils:khenrix-audit"}',
                                    ["khenrix-audit", "khenrix-setup"]) == "khenrix-audit"))
-    ok.append(("arena verdict: plugin-qualified but NOT a competitor still → none",
-               parse_arena_verdict('{"winner": "claude-obsidian:wiki-lint"}',
-                                   ["khenrix-audit", "khenrix-setup"]) == "none"))
+    ok.append(("arena verdict says none when the judge says none",
+               parse_arena_verdict('{"winner": "none"}', ["a", "none"]) == "none"))
     ar = score_arena([{"expected": "a", "got": "a"}, {"expected": "a", "got": "b"},
                       {"expected": "none", "got": "none"}])
     ok.append(("arena accuracy 2/3", ar["accuracy"] == round(2 / 3, 4)))
     ok.append(("arena confusion", ar["confusion"]["a"]["b"] == 1))
+    # --- arena: a judge that never answered is not a judge that abstained -----------
+    # The same collapse as parse_verdict's, one function over and one release later. "none"
+    # is a REAL expected answer here (2 of the 6 cases in evals/khenrix-audit/arena.json),
+    # so every unreadable case scored CORRECT against it and a dead judge measured 0.3333
+    # with a `none → none` confusion row rather than 0.0 with an explicit refusal.
+    ok.append(("arena: no text is None, not none", parse_arena_verdict("", ["a", "none"]) is None))
+    ok.append(("arena: prose with no JSON is None",
+               parse_arena_verdict("Sorry, I can't help.", ["a", "none"]) is None))
+    ok.append(("arena: valid JSON that is not an object is None",
+               parse_arena_verdict("[1, 2, 3]", ["a", "none"]) is None))
+    ok.append(("arena: a JSON object without 'winner' is None",
+               parse_arena_verdict('{"why": "no winner given"}', ["a", "none"]) is None))
+    ok.append(("arena: an empty winner is a shape, not an answer",
+               parse_arena_verdict('{"winner": "   "}', ["a", "none"]) is None))
+    ok.append(("arena: a fenced winner still reads",
+               parse_arena_verdict('```json\n{"winner": "a"}\n```', ["a", "none"]) == "a"))
+    dead_a = score_arena([{"expected": "none", "got": None, "readable": False},
+                          {"expected": "none", "got": None, "readable": False}])
+    ok.append(("arena: a dead judge scores 0, not 1.0", dead_a["accuracy"] == 0.0))
+    ok.append(("arena: a dead judge's cases are counted unreadable", dead_a["unreadable"] == 2))
+    ok.append(("arena: an unreadable case is in no confusion row", dead_a["confusion"] == {}))
+    mixed_a = score_arena([{"expected": "a", "got": "a", "readable": True},
+                           {"expected": "none", "got": None, "readable": False}])
+    ok.append(("arena: a mixed run scores only what it read",
+               mixed_a["accuracy"] == 1.0 and mixed_a["unreadable"] == 1))
+    # --- arena: a name on no roster is not "none" either ----------------------------
+    # Readable (the judge spoke, in the right shape) but NOT an abstain, so it must score
+    # wrong against `expected: "none"` instead of right, and it must carry the name it said.
+    off = parse_arena_verdict('{"winner": "bogus"}', ["a", "b", "none"])
+    ok.append(("arena: an unrostered winner is off-roster, not none",
+               off.startswith(OFF_ROSTER) and "bogus" in off))
+    ok.append(("arena: plugin-qualified but NOT a competitor is off-roster too",
+               parse_arena_verdict('{"winner": "claude-obsidian:wiki-lint"}',
+                                   ["khenrix-audit", "none"]).startswith(OFF_ROSTER)))
+    ok.append(("arena: off-roster scores WRONG against an expected none",
+               score_arena([{"expected": "none", "got": off, "readable": True}])["accuracy"]
+               == 0.0))
+    # ...and the mirror error this change could have introduced: `name` is lowercase by
+    # frontmatter rule, so a judge answering "None" is a correct abstain in different case,
+    # NOT a hallucination. Folding is what keeps the fail-closed branch above honest.
+    ok.append(("arena: a capitalised None is still an abstain, not off-roster",
+               parse_arena_verdict('{"winner": "None"}', ["a", "none"]) == "none"))
+    ok.append(("arena: a capitalised competitor still resolves to its roster spelling",
+               parse_arena_verdict('{"winner": "Khenrix-Audit"}',
+                                   ["khenrix-audit", "none"]) == "khenrix-audit"))
     # --- min_chars regression (2026-07-31): a real judge verdict is short compact JSON
     # (~100-200 chars), well under fanout's council-answer floor. Pins the exact failure
     # this override fixes — without spec_.min_chars = 0 in run()/run_arena(), fanout scores
