@@ -41,12 +41,13 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass, fields
 from pathlib import Path
 
 from council import engine
 
-from . import fingerprint, gitcmd, journal as journalmod, snapshot, storage
+from . import fingerprint, fleet, gitcmd, journal as journalmod, snapshot, storage
 from .taskbundle import task_dir as taskbundle_task_dir
 
 SEVERITIES = ("blocker", "important", "minor")
@@ -1126,9 +1127,10 @@ _CHANGED_SAMPLE = 20
 _SKIP_DIRS = (".git",)
 
 
-def reviewer_env(base=None) -> dict:
+def reviewer_env(base=None, *, repo_path=None) -> dict:
     """The environment §13's panel runs under: `base`, with the writes a reviewer's ordinary
-    tools make into the tree BY SIDE EFFECT switched off at the source.
+    tools make into the tree BY SIDE EFFECT switched off at the source, and every redirector
+    that decides WHICH source a reviewer's tools read closed or rebuilt from a measured set.
 
     WHY AT THE SOURCE. The bracket around each round is the only thing standing between three
     concurrent write-capable reviewers and the checkout under review, and every name exempted
@@ -1153,26 +1155,103 @@ def reviewer_env(base=None) -> dict:
     pinned to a safe value: CPython treats an unset `PYTHONPYCACHEPREFIX` as "use the default
     beside the source", which is the one location `_SKIP_DIRS` no longer exempts.
 
-    WHAT IT DOES NOT DO. It is not a scrub: `fleet.forge_child_env`'s `gitcmd.HOSTILE_ENV`
-    strip and `LLM_FORGE_DEPTH` guard are not applied here, so a reviewer inherits both. That
-    is the position before this function existed and this changes neither half of it; the
-    reviewer's council depth guard is `engine.child_env`'s, applied by `run_provider` on top
-    of whatever it is handed. Nor does dropping one redirector make this a scrub of that whole
-    CLASS: `PATH` (which binary `claude`/`codex`/`agy`/`git`/`python3` resolves to first),
-    `PYTHONPATH`/`PYTHONHOME` (where a Python this call spawns finds its modules), and
-    `NODE_OPTIONS` (`--require` preloads a script into a Node process before its own code
-    runs) are the same shape of hole and none of them is closed here. `NODE_OPTIONS` is
-    concretely live for at least one seat: measured on this machine, `claude` resolves
-    through `node_modules/@anthropic-ai/claude-code`, while `codex` and `agy` are native
-    binaries (musl and Go respectively) it does not touch — named per-seat rather than as one
-    CLASS the way `PATH` and `PYTHONPATH` are, because claiming it for all three would be
-    wrong on this machine's own binaries. Named here so that "not a scrub" has the same
-    specificity this paragraph asked of `reviewer_env` before a variable turned it from a
-    residual into a working bypass. `fleet.scrub_env` does not cover these either: it drops
-    values that point BACK into the ORIGINAL checkout, which is a different direction from a
-    reviewer redirecting somewhere else entirely.
+    THE `HOSTILE_ENV` STRIP IS SPELLED HERE, NOT DELEGATED TO `fleet.scrub_env`. That function
+    was read before this was written, and it answers a DIFFERENT direction: it drops values
+    that point BACK into a `repo_path` it is given, which is a seat accidentally reusing the
+    checkout it was cloned FROM. A reviewer redirected to a location that has nothing to do
+    with any checkout — an ambient `GIT_DIR`, a `GIT_CONFIG_COUNT` injector — is the opposite
+    problem, so `gitcmd.HOSTILE_ENV` is imported and applied directly instead of restated,
+    which is what keeps this reviewer strip and `fleet.forge_child_env`'s seat strip reading
+    the same list rather than two lists a future change can drift apart. `repo_path` stays in
+    the signature: when a caller supplies one, `fleet.scrub_env` is still the right function
+    for what it actually does, and is applied on top of the strip above. `run_round` passes
+    none today — the only repository it has at that call is the checkout UNDER review, and
+    scrubbing values that point into the one tree a reviewer is there to read would remove
+    access the panel needs rather than access it should not have.
+
+    PATH IS REBUILT, NEVER DELETED. A reviewer with no `PATH` cannot find `git`, its own
+    toolchain, or itself, and the round fails for a reason that reads as a provider failure
+    after the round is already paid for. The rebuilt value is `os.defpath` plus the resolved
+    parent directory of each of `claude`/`codex`/`agy` that resolves — under the CALLER's own
+    `PATH` at call time, not one read from `base`: `base` may be a synthetic dict a caller or
+    a test composed with no `PATH` in it at all, and the three binaries live wherever THIS
+    process's own shims put them, not wherever `base` claims. If none of the three resolves,
+    this raises rather than handing back a `PATH` that is silently unusable.
+
+    `PYTHONPATH`/`NODE_OPTIONS` ARE EMPTIED; `PYTHONHOME` IS DELETED — the three are not
+    interchangeable. An empty `PYTHONPATH` or `NODE_OPTIONS` is unambiguous: an interpreter
+    reads zero additional search entries the same way whether the variable is empty or unset.
+    `PYTHONHOME` is measured rather than assumed: on this machine (CPython 3.14.4, both the
+    system interpreter and a fresh venv) `PYTHONHOME=""` and an unset `PYTHONHOME` produced
+    identical `sys.prefix` and `sys.path`. That equivalence is this build's behaviour, not a
+    documented guarantee every CPython release shares, and this function does not spend a
+    reviewer's round finding out it does not hold on whatever interpreter actually ran the
+    panel — `pop` is read as "no home" on every implementation, by construction, so it is
+    what this drops rather than a value that merely tested the same today.
+
+    `NODE_OPTIONS` REACHES `claude` AND NO OTHER REVIEWER. Measured on this machine: `claude`
+    resolves through `node_modules/@anthropic-ai/claude-code` and reads `NODE_OPTIONS`
+    (`--require` preloads a script before its own code runs) like any Node process; `codex` is
+    a static musl binary and `agy` is a Go binary, and neither is Node. Emptying this variable
+    closes one of three reviewers' preload hole and does nothing for the other two — a comment
+    claiming it protects all three would be a comment asserting something the code does not do.
+
+    THE SAME SHAPE ONE BRANCH OVER: THE DYNAMIC LINKER, NOT THE INTERPRETER. `PATH`,
+    `PYTHONPATH`/`PYTHONHOME` and `NODE_OPTIONS` are one mechanism — an interpreter or module
+    loader told where to read code from — and `LD_PRELOAD`/`LD_LIBRARY_PATH` are the same
+    hazard one layer down, at the ELF dynamic linker `ld.so` consults before ANY of a binary's
+    own code runs. Measured on this machine: `claude` resolves to a dynamically linked
+    executable (`claude.exe`, not a wrapper around a separate `node`) and `agy` is
+    dynamically linked against glibc; `LD_PRELOAD=<a built .so>` printed from a constructor
+    that ran before `--version` printed anything, for BOTH. `codex` is confirmed statically
+    linked (`ldd` reports "statically linked", no interpreter entry at all) and is unreached —
+    a THIRD reach pattern from `NODE_OPTIONS`'s, covering the other two seats instead of one,
+    which is exactly why a single "protects all three" sentence would be wrong for any of the
+    three variables in this docstring and none of them get one. Both are EMPTIED, not popped:
+    `ld.so` parses each as a delimited list, and an empty string parses to zero entries — no
+    "prefix of everything" reading exists for a list, which is what makes emptying safe here
+    where `PYTHONHOME` is not. This is a MEASURED PAIR, not a re-opened enumeration: the same
+    question was asked of `GOPATH` (irrelevant — it steers `go build`, not a binary already
+    compiled, and `agy` ships as one), `RUBYLIB`/`PERL5LIB`/`CLASSPATH` (irrelevant — none of
+    the three CLIs is a Ruby, Perl or JVM program), and `PYTHONSTARTUP` (irrelevant outside an
+    interactive REPL, which none of the three CLIs' own subprocesses run). `DYLD_*`, the same
+    mechanism's macOS name, is unmeasured — this machine has no macOS to measure it on, and
+    this docstring does not claim a machine it cannot see.
+
+    WHAT IS STILL OPEN. `LLM_FORGE_DEPTH` is not set here: the reviewer's own recursion guard
+    is `engine.child_env`'s `LLM_COUNCIL_DEPTH`, applied by `run_provider` on top of whatever
+    this hands it, and forge's `/llm-forge` recursion guard remains `fleet.forge_child_env`'s
+    alone — a reviewer is not a seat, gets no fresh clone and no hooks pin, and nothing here
+    claims otherwise.
     """
-    env = dict(os.environ if base is None else base)
+    env = {k: v for k, v in (base if base is not None else os.environ).items()
+          if k not in gitcmd.HOSTILE_ENV}
+    if repo_path is not None:
+        env = fleet.scrub_env(env, repo_path)
+    env.update(gitcmd.NO_USER_CONFIG)
+
+    caller_path = os.environ.get("PATH", os.defpath)
+    dirs = []
+    for name in ("claude", "codex", "agy"):
+        found = shutil.which(name, path=caller_path)
+        if found is None:
+            continue
+        d = os.path.dirname(os.path.abspath(found))
+        if d not in dirs:
+            dirs.append(d)
+    if not dirs:
+        raise ReviewError(
+            f"none of claude, codex or agy resolves under the caller's own PATH "
+            f"({caller_path!r}); a reviewer's PATH must not be silently unusable, because "
+            "discovering that costs a round that is already paid for")
+    env["PATH"] = os.pathsep.join((*dirs, os.defpath))
+
+    env["PYTHONPATH"] = ""
+    env["NODE_OPTIONS"] = ""
+    env.pop("PYTHONHOME", None)
+    env["LD_PRELOAD"] = ""
+    env["LD_LIBRARY_PATH"] = ""
+
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env.pop("PYTHONPYCACHEPREFIX", None)
     addopts = env.get("PYTEST_ADDOPTS") or ""

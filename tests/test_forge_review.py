@@ -1,6 +1,7 @@
 """§13's reviewer input set, the in-process council call, and the durable findings record."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1904,3 +1905,196 @@ def test_a_checkout_that_cannot_be_inventoried_whole_refuses(tmp_path):
     with pytest.raises(review.ReviewError) as e:
         review.worktree_identity(tmp_path / "not-there", storage.Quota.for_harvest())
     assert "inventoried whole" in str(e.value)
+
+
+# --------------------------------------------------------------- reviewer_env's redirectors
+
+
+def test_a_reviewer_cannot_inherit_a_path_that_puts_a_planted_binary_first(tmp_path,
+                                                                           monkeypatch):
+    """A write-capable reviewer with an inherited PATH runs whatever is first on it. The fix
+    is a REBUILT PATH, not a deleted one: a reviewer that cannot find git fails the round for
+    a reason that reads as a provider failure."""
+    evil = tmp_path / "evil"
+    evil.mkdir()
+    (evil / "git").write_text("#!/bin/sh\nexit 0\n")
+    (evil / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{evil}:{os.environ['PATH']}")
+    env = review.reviewer_env()
+    assert str(evil) not in env["PATH"]
+    assert env["PATH"], "PATH was removed rather than rebuilt"
+    assert shutil.which("git", path=env["PATH"]), "the rebuilt PATH cannot find git"
+
+
+def test_reviewer_env_raises_when_no_reviewer_binary_resolves_under_path(monkeypatch,
+                                                                         tmp_path):
+    """The other half of the same fail-open: a rebuilt PATH that resolves NONE of
+    claude/codex/agy is exactly as silently unusable as a deleted one and costs a paid round
+    to discover the same way. `os.defpath` alone (measured on this machine: `/bin:/usr/bin`)
+    resolves `git` but none of the three reviewer CLIs, which is what the empty PATH below
+    stands in for without depending on a system's exact defpath contents."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(review.ReviewError):
+        review.reviewer_env()
+
+
+def test_the_three_interpreter_variables_are_neutralised(monkeypatch, tmp_path):
+    for var, value in (("PYTHONPATH", str(tmp_path)), ("PYTHONHOME", str(tmp_path)),
+                       ("NODE_OPTIONS", "--require /tmp/evil.js")):
+        monkeypatch.setenv(var, value)
+    env = review.reviewer_env()
+    assert env.get("PYTHONPATH", "") == ""
+    assert "PYTHONHOME" not in env
+    assert env.get("NODE_OPTIONS", "") == ""
+
+
+def test_the_dynamic_linkers_redirectors_are_neutralised_too(monkeypatch, tmp_path):
+    """The sweep this task's brief asked for, one branch over: `LD_PRELOAD`/`LD_LIBRARY_PATH`
+    are the same hazard as `NODE_OPTIONS`/`PYTHONPATH` at the ELF dynamic linker instead of an
+    interpreter. Measured on this machine (see `reviewer_env`'s docstring): `claude` resolves
+    to a dynamically linked executable and `agy` is dynamically linked against glibc — a
+    constructor in an `LD_PRELOAD`-loaded `.so` ran and printed before either printed its own
+    `--version` output. `codex` is confirmed statically linked (`ldd` reports "statically
+    linked") and unreached — a different two-of-three than `NODE_OPTIONS`'s one-of-three.
+    Emptying is unambiguous here, unlike `PYTHONHOME`: `ld.so` parses each as a delimited list
+    and an empty string parses to zero entries, with no "prefix of everything" reading for a
+    list — so this is an env-dict assertion, like the interpreter variables above, not the
+    behavioural proof `PYTHONPYCACHEPREFIX`'s test needs."""
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "evil.so"))
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
+    env = review.reviewer_env()
+    assert env.get("LD_PRELOAD", "") == ""
+    assert env.get("LD_LIBRARY_PATH", "") == ""
+
+
+def _plant_a_pyc_under(prefix, src, code_text):
+    """Plant an honest-headered `.pyc` for `src` under `prefix`, carrying `code_text` instead
+    of what `src` actually holds — the same construction
+    `test_the_reviewer_environment_drops_pythonpycacheprefix` already does inline, factored
+    out so this test does not restate it a second way."""
+    import importlib._bootstrap_external as bootstrap
+    import importlib.util
+    st = src.stat()
+    code = compile(code_text, str(src), "exec")
+    old_prefix = sys.pycache_prefix
+    sys.pycache_prefix = str(prefix)
+    try:
+        cache = Path(importlib.util.cache_from_source(str(src)))
+    finally:
+        sys.pycache_prefix = old_prefix
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_bytes(bootstrap._code_to_timestamp_pyc(code, st.st_mtime, st.st_size))
+
+
+def test_an_ambient_pycache_prefix_cannot_serve_a_planted_pyc_to_a_reviewer(tmp_path,
+                                                                           monkeypatch):
+    """Measured on this project: with PYTHONDONTWRITEBYTECODE=1 set, `-B` stops WRITES, not
+    READS — a .pyc planted in the mirrored prefix tree, entirely outside the checkout, is
+    still loaded in preference to untouched source, and the in-tree bracket cannot see it.
+
+    DROPPED, NOT REPOINTED. `reviewer_env` already pops the variable and its docstring gives
+    the reason: CPython reads an unset value as "use the default beside the source", which is
+    the one location `_SKIP_DIRS` no longer exempts. Pinning it to some other directory would
+    put the reviewers back on a shared tree, differing from the ambient one only in who chose
+    it. The env assertion below is therefore ABSENCE, and the behavioural half underneath it is
+    what makes the difference between the two visible at all."""
+    prefix = tmp_path / "prefix"
+    prefix.mkdir()
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(prefix))
+    env = review.reviewer_env()
+    assert "PYTHONPYCACHEPREFIX" not in env
+
+    src = tmp_path / "m.py"
+    src.write_text("VALUE = 'SOURCE'\n")
+    _plant_a_pyc_under(prefix, src, "VALUE = 'PLANTED'\n")
+    got = subprocess.run([sys.executable, "-c",
+                          "import sys; sys.path.insert(0, %r); import m; print(m.VALUE)"
+                          % str(tmp_path)],
+                         env={**env, "PATH": env["PATH"]}, capture_output=True, text=True)
+    assert got.stdout.strip() == "SOURCE", got
+
+
+def test_the_hostile_git_variables_are_stripped_for_a_reviewer_too(monkeypatch, tmp_path):
+    """`fleet.forge_child_env` closes this for SEATS. A write-capable reviewer with a shell
+    under an ambient GIT_DIR is the same hazard, and reviewer_env's own docstring said so
+    while not doing it.
+
+    GIT_CONFIG_KEY_0/VALUE_0 are checked by EFFECT below, not by absence — matching
+    `test_forge_child_env_strips_gits_redirectors_and_pins_config` in test_forge_fleet.py and
+    the parametrised gate test in test_forge_verify.py: git reads that pair only under
+    GIT_CONFIG_COUNT, which IS in `gitcmd.HOSTILE_ENV` and IS asserted absent below. Asserting
+    KEY_0/VALUE_0 absent as well would be a second, reviewer-only strip list for names
+    `gitcmd.HOSTILE_ENV` deliberately leaves as inert strings — the "two spellings" defect
+    this task exists to close, approached from the other direction.
+    """
+    co = _checkout(tmp_path)
+    evil = tmp_path / "evil"
+    monkeypatch.setenv("GIT_DIR", str(tmp_path))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(evil))
+    env = review.reviewer_env()
+    for var in ("GIT_DIR", "GIT_CONFIG_COUNT"):
+        assert var not in env, var
+    r = subprocess.run(["git", "-C", str(co), "config", "--get", "core.hooksPath"],
+                       capture_output=True, text=True, env=env)
+    assert r.stdout.strip() == "", "core.hooksPath was injected via the config injector"
+
+
+def test_repo_path_delegates_the_complementary_scrub_to_fleet_scrub_env(tmp_path):
+    """`repo_path` is optional and, when given, is the one case `fleet.scrub_env` IS the
+    right function for: dropping a value that points back into a repository this call is
+    told about — the opposite direction from the `HOSTILE_ENV` strip above, which is why that
+    strip is spelled directly rather than routed through `scrub_env`. `run_round` passes none
+    today, because the only repository it has at that call is the checkout under review,
+    which the panel needs to read rather than be scrubbed away from — so this exercises the
+    parameter directly rather than through a caller that cannot use it."""
+    repo = _checkout(tmp_path)
+    marker = str(Path(repo) / "build")
+    scrubbed = review.reviewer_env({"A_BUILD_VAR": marker}, repo_path=repo)
+    assert "A_BUILD_VAR" not in scrubbed
+    kept = review.reviewer_env({"A_BUILD_VAR": marker})
+    assert kept["A_BUILD_VAR"] == marker, "no repo_path was given, so nothing was scrubbed"
+
+
+def test_node_options_reaches_one_reviewer_of_three_and_the_comment_says_so():
+    """`claude` is Node; `codex` is a static musl binary and `agy` is Go. A comment claiming
+    this variable protects all three would be a comment asserting something the code does not
+    do — which this project calls a defect."""
+    src = (ROOT / "shared" / "lib" / "forge" / "review.py").read_text()
+    i = src.index("NODE_OPTIONS")
+    window = src[max(0, i - 1200): i + 1200]
+    assert "one of the three" in window or "claude" in window.lower()
+
+
+def _ok_cp():
+    return subprocess.CompletedProcess(["x"], 0, "", "")
+
+
+def test_the_environment_reaches_all_three_children_rather_than_being_accepted_and_dropped(
+        monkeypatch, tmp_path):
+    """A signature check cannot see 'accepted and dropped'. This watches what each of three
+    children is handed at run_member, driving the REAL `run_round` -> `engine.run_council` ->
+    `engine.run_provider` chain — only `engine.run_member` itself is faked, mirroring
+    `test_run_council_hands_its_callers_environment_to_every_member`
+    (tests/test_council_seams.py) — rather than this file's own `_fake_council`, which never
+    reaches `run_member` and so cannot see whether `env` was accepted and then dropped."""
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path))
+    handed = []
+    monkeypatch.setattr(engine, "run_member",
+                        lambda argv, **kw: handed.append(kw.get("env")) or _ok_cp())
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    co = _checkout(tmp_path)
+    review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
+                     baseline_commit="b" * 40, baseline_tree="c" * 40,
+                     artifact_manifest=None, other_clones=(),
+                     log=journal.Journal(storage.journal_path(run)),
+                     probe=_probe, make_token=lambda: "TOK")
+    assert len(handed) == 3
+    for env in handed:
+        assert env.get("PYTHONPATH", "") == ""
+        assert "GIT_DIR" not in env
