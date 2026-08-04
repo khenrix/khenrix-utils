@@ -1122,6 +1122,14 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
     setup = verify.Command(steps=manifest.setup)
     if setup.steps:
         setup_result = verify.run_setup(v, setup, env=child_env)
+        # §6.1 RE-READ, in the same window and for the same reason `assert_hooks_pinned` is
+        # re-read below: this is the only point where candidate-owned setup has executed and
+        # the gate has not started. `core.hooksPath` was the ONE post-setup fact anything
+        # checked, and a stub interpreter written into `.venv/bin/` by the setup entrypoint
+        # moves neither it nor any tracked path — so a candidate could author the binary its
+        # own gate runs and still be told PASS. `supersedes` because the reading above was
+        # taken against a tree setup had not touched yet.
+        v = verify.remeasure_gate_surface(v, command=command)
         # BEFORE `assert_hooks_pinned`, which is the step the adversarial rig is refused at.
         if on_measurement is not None:
             on_measurement(v.candidate, setup_result)

@@ -960,6 +960,16 @@ def test_a_candidate_that_repoints_the_hooks_path_through_setup_does_not_reach_t
     hooks it supplied, through a file §7 harvests as ordinary work. `run_setup`'s overlap
     check cannot see it: `.git/config` is not a tracked path.
 
+    THIS PROVES A CAPABILITY AND ASSERTS ONE CONSEQUENCE OF IT, which is worth saying out
+    loud because the gap was found that way. A candidate that can rewrite the setup
+    entrypoint can do more than repoint hooks: it can write the gate's own interpreter into
+    a path §6.1 enumerated BEFORE setup ran, where no tracked file moves and this assertion
+    stays green. That second consequence is
+    `test_forge_verify.py::test_a_gate_binary_that_setup_creates_is_inside_the_measured_surface`
+    and the re-read that closes it is `verify.remeasure_gate_surface`, called from
+    `verify_candidate` between setup and `assert_hooks_pinned`. Whatever else this
+    capability reaches belongs beside them rather than in a third file.
+
     Reproduced end to end before the fix, and the run came back PASS — the founding premise
     failing, since a check the builder could rig is not a check. The second read is an
     ASSERTION and not a re-pin: re-pinning would restore the property and destroy the

@@ -2420,3 +2420,61 @@ def test_a_materialized_sidecar_is_read_back_through_the_same_descent_it_was_wri
     assert (Path(repo) / "evil" / "planted.txt").read_text() == "host bytes\n", \
         "precondition: the join really does reach the host file"
     assert verify._materialized_sidecar(Path(repo), "evil/planted.txt") is None
+
+
+def test_a_gate_binary_that_setup_creates_is_inside_the_measured_surface(tmp_path):
+    """WHAT ELSE CAN THE PROVEN CAPABILITY DO?
+
+    `test_forge_runner.py:951` proves a candidate can rewrite the setup entrypoint and then
+    asserts ONE consequence: `core.hooksPath`. This asserts the consequence that matters —
+    the entrypoint can write the gate's own interpreter.
+
+    §6.1's surface is enumerated in `build_verifier`, which runs BEFORE the confirmed setup
+    command. So a verify command naming `.venv/bin/pytest` is measured while that path does
+    not exist: the candidate edits `bootstrap.sh` to write a stub there, nothing tracked
+    moves, `core.hooksPath` is untouched, and the only post-setup check passes.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "bootstrap.sh", "#!/bin/sh\ntrue\n")
+    commit_all(repo, "add bootstrap")
+    command = verify.Command.parse([[".venv/bin/pytest"]])
+    v = _built(tmp_path, repo, command=command,
+               work=[("bootstrap.sh",
+                      "#!/bin/sh\nmkdir -p .venv/bin\n"
+                      "printf '#!/bin/sh\\nexit 0\\n' > .venv/bin/pytest\n"
+                      "chmod +x .venv/bin/pytest\n")])
+
+    assert ".venv/bin/pytest" not in set(v.candidate_surface), \
+        "precondition: the runner does not exist when the surface is first enumerated"
+
+    (v.path / "bootstrap.sh").chmod(0o755)
+    verify.run_setup(v, verify.Command.parse([["./bootstrap.sh"]]), env={})
+    v2 = verify.remeasure_gate_surface(v, command=command)
+
+    moved = set(v2.candidate.gate_delta or ())
+    assert ".venv/bin/pytest" in moved, (
+        f"the confirmed verify command's OWN interpreter was written by candidate-owned "
+        f"setup and is not in the delta ({sorted(moved)}); the clone is fresh and the gate "
+        "is not independent")
+
+
+def test_a_setup_that_writes_no_gate_file_moves_no_surface(tmp_path):
+    """The guard against over-tightening: ordinary setup output is not a gate change.
+
+    Without this, "the delta is non-empty" would be satisfied by every `.venv` a real
+    project installs, and the assertion above would pass while proving nothing.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "bootstrap.sh", "#!/bin/sh\ntrue\n")
+    commit_all(repo, "add bootstrap")
+    command = verify.Command.parse([["./run-tests.sh"]])
+    write(repo, "run-tests.sh", "#!/bin/sh\nexit 0\n")
+    commit_all(repo, "add gate")
+    v = _built(tmp_path, repo, command=command)
+
+    (v.path / "bootstrap.sh").chmod(0o755)
+    verify.run_setup(v, verify.Command.parse(
+        [["sh", "-c", "mkdir -p .venv/lib && echo x > .venv/lib/unrelated.py"]]), env={})
+    v2 = verify.remeasure_gate_surface(v, command=command)
+    assert v2.candidate.gate_delta == (), \
+        f"installing a toolchain is what setup is FOR: {v2.candidate.gate_delta}"

@@ -95,7 +95,7 @@ import stat
 import subprocess
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 from . import bundle, fleet, gitcmd, snapshot
@@ -741,6 +741,12 @@ class Verifier:
     contract: GeneratorContract
     baseline_surface: tuple[str, ...]
     candidate_surface: tuple[str, ...]
+    # THE PRE-MATERIALIZE READING, RETAINED BECAUSE IT CANNOT BE RE-DERIVED. `build_verifier`
+    # takes it in the one moment the clone holds exactly B1, and after the candidate is laid
+    # down and setup has run there is no tree left to read it from. `remeasure_gate_surface`
+    # needs it: §6.1's question is whether THIS tree's gate differs from the one the baseline
+    # was measured with, and an intermediate reading is a different question.
+    baseline_state: dict
 
 
 def _sha256_fd(fd: int) -> str:
@@ -934,7 +940,44 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
             delta=_gate_delta(before, _surface_state(seat.path, candidate_surface))),
         contract=contract,
         baseline_surface=baseline_surface,
-        candidate_surface=candidate_surface)
+        candidate_surface=candidate_surface,
+        baseline_state=before)
+
+
+def remeasure_gate_surface(v: "Verifier", *, command: "Command") -> "Verifier":
+    """§6.1's surface, ENUMERATED AND READ AGAIN after the confirmed setup command has run.
+
+    THE FIRST READ CANNOT SEE WHAT SETUP CREATES, AND SETUP IS CANDIDATE-OWNED. `build_verifier`
+    enumerates before the candidate's setup executes, so a verify command naming
+    `.venv/bin/pytest` is measured while that path does not exist — and a candidate that edits
+    the setup entrypoint to write a stub there moves nothing tracked, leaves `core.hooksPath`
+    alone, and earns a PASS over a gate it authored. `assert_hooks_pinned` was the only
+    post-setup fact anything checked.
+
+    THE ENUMERATION IS RE-RUN, NOT REUSED. `gate_surface` resolves the command's paths against
+    the tree, and the whole point is that the tree changed; reusing `v.candidate_surface` would
+    ask the pre-setup question a second time.
+
+    WHAT THIS DOES NOT CLOSE, because the re-read runs the SAME enumeration: a gate resolved
+    through PATH (`verify = [["pytest"]]` with setup prepending `.venv/bin`); a `make` recipe
+    invoking a stub, where `_command_paths` yields only the Makefile; interpreter-side rigging
+    — `sitecustomize.py`, a `.pth`, `PYTHONPATH`, a `-p` plugin — which is the
+    language-indirection gap this module already admits; a token `_command_paths` drops as
+    uncontained, absent from BOTH reads so the delta is empty twice; and a symlinked gate whose
+    referent is rewritten, since `_surface_state` hashes only target text. Those routes stay
+    open and are named rather than implied closed.
+    """
+    after_surface = gate_surface(v.path, v.contract, command=command)
+    return replace(
+        v,
+        candidate_surface=after_surface,
+        candidate=bundle.with_gate_measurement(
+            v.candidate,
+            surface=tuple(sorted(set(v.baseline_surface) | set(after_surface))),
+            delta=_gate_delta(v.baseline_state, _surface_state(v.path, after_surface)),
+            # NAMED, not silent: `build_verifier`'s reading is the write-ahead one the runner
+            # already handed to its sink, and this is a later reading of a tree setup changed.
+            supersedes=v.candidate))
 
 
 def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
