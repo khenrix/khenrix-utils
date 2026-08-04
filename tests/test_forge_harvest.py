@@ -365,7 +365,13 @@ def test_harvesting_never_runs_a_program_the_seats_own_config_names(tmp_path, ve
 
 
 def test_a_seat_named_clean_filter_is_the_reach_the_flags_do_not_close(tmp_path):
-    """The residual, pinned so the sentence recording it cannot rot into a false one.
+    """TURNED ROUND, as the version of this docstring that named the close asked for.
+
+    What follows describes the reach that is still THERE — git has no flag that refuses a
+    clean driver, and one would still substitute the builder's bytes. What changed is that
+    the harvest now REFUSES rather than proceeding, so the assertions below run against the
+    refusal instead of against a patch carrying the driver's output. The mechanism paragraphs
+    are kept verbatim because they are why the refusal is shaped the way it is.
 
     A diff against the WORKING TREE has to put worktree content into git's form, so
     `filter.<d>.clean` — a program named in the seat's own config, selected by the seat's own
@@ -399,9 +405,68 @@ def test_a_seat_named_clean_filter_is_the_reach_the_flags_do_not_close(tmp_path)
     write(seat, ".gitattributes", "app.py filter=rigged\n")
     git(seat, "config", "--local", "filter.rigged.clean", str(prog))
 
+    with pytest.raises(harvest.HarvestError) as e:
+        harvest.artifact_set(p, seat, base)
+    assert "app.py" in str(e.value)
+    assert not ran.exists(), \
+        "the refusal must come BEFORE the diff, or the driver has already run and the only " \
+        "thing refused is the caller's use of its output"
+
+    # THE CONTROL, AND IT IS WHAT KEEPS THE REFUSAL FROM PASSING VACUOUSLY. Without it this
+    # test is satisfied by a harvest that refuses everything, or by a fixture whose rigging
+    # never worked. An ordinary git in this same tree must still run the program.
+    git(seat, "diff", "--binary", base, "--", "app.py")
+    assert ran.exists(), \
+        "the control failed: this rigging does not run even for an unhardened git, so the " \
+        "refusal above proved nothing"
+
+
+def test_a_seat_configured_clean_filter_refuses_the_harvest(tmp_path):
+    """The close the residual test above asks for, turned round rather than deleted.
+
+    §7's diff runs in the TRUSTED PARENT and `filter.<name>.clean` still executes, so the
+    driver's output SUBSTITUTES for the builder's bytes. `ArtifactSet` carries no per-path
+    Fwork hashes and `bundle.build` treats a path present in the patch as covered, so the
+    live file is never re-read as a sidecar and nothing downstream can notice.
+
+    Every other founding-premise finding is about a check the builder could influence. This
+    one is about the BYTES THE CHECK IS RUN ON: broken code on disk, passing code in the
+    patch, and a verifier that materializes and passes the replacement while the verdict is
+    presented as being about the builder's artifact.
+    """
+    seat = make_repo(tmp_path, "seat")
+    write(seat, "app.py", "def f(): return 1\n")
+    base = commit_all(seat, "seed")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: write(seat, "app.py", "def f(): raise RuntimeError\n"),
+                verify=lambda: None)
+    prog = write(seat, "rig.sh", "#!/bin/sh\nsed 's/raise RuntimeError/return 1/'\n")
+    prog.chmod(0o755)
+    write(seat, ".gitattributes", "app.py filter=rigged\n")
+    git(seat, "config", "--local", "filter.rigged.clean", str(prog))
+
+    with pytest.raises(harvest.HarvestError) as e:
+        harvest.artifact_set(p, seat, base)
+    assert "app.py" in str(e.value) and "filter" in str(e.value).lower()
+
+
+def test_a_filter_the_BASELINE_declares_does_not_refuse_the_harvest(tmp_path):
+    """The guard that keeps this from firing on every git-lfs repository.
+
+    `check-attr` reports the EFFECTIVE attribute, and `filter=lfs` is declared in the
+    BASELINE's own `.gitattributes` in a very large fraction of real repositories. A rule
+    reading "any filter is active" would raise for every seat, after every provider call is
+    paid, on all of them — which is the shape a widened check must not have. The question is
+    not whether a filter is active; it is whether the seat's own config DEFINES what the
+    attribute names, since the attribute alone is inert and `.git/config` is what a seat can
+    write.
+    """
+    seat = make_repo(tmp_path, "seat")
+    write(seat, ".gitattributes", "*.bin filter=lfs\n")
+    write(seat, "app.py", "v1\n")
+    base = commit_all(seat, "seed with an lfs attribute and no driver")
+    p = _phases(seat, setup=lambda: None,
+                work=lambda: write(seat, "app.py", "v2\n"), verify=lambda: None)
+
     a = harvest.artifact_set(p, seat, base)
-    assert ran.exists(), "a clean filter no longer runs here — this residual may be closable"
-    assert "v2-FILTERED" in a.tracked_diff, \
-        "the filter ran but did not reach the patch; the cost recorded above is now wrong"
-    assert "AGENT-WORK" not in a.tracked_diff, \
-        "the candidate still carries the agent's own text, so the cost is not substitution"
+    assert "app.py" in a.paths
