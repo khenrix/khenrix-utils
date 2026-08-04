@@ -540,3 +540,54 @@ def test_an_instruction_this_engine_could_not_read_is_refused_rather_than_cleare
             pass
         else:
             raise AssertionError(f"{bad!r} produced a note for a task nobody could read")
+
+
+def _repo_with_tracked_secret(tmp_path):
+    """A tracked file holding a token this repo's own allow-list does NOT know.
+
+    Deliberately not AKIAIOSFODNN7EXAMPLE: that is one of three entries in
+    `SECRET_ALLOW_SHA`, so a fixture using it comes back clean even when the scanner works —
+    a fixture too well known to fail. This one matches `AKIA[0-9A-Z]{16}` and is not
+    allowlisted.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "config/settings.py", 'AWS_KEY = "AKIA' + 'Q7ZB3KXJ2M9WLPRT"\n')
+    commit_all(repo, "add config")
+    return repo
+
+
+def test_a_run_that_screened_nothing_does_not_report_what_a_clean_repo_reports(tmp_path):
+    """The external question: over how many files is this emptiness a claim?
+
+    `cli.py` passes `args.select or ()`, so the EMPTY selection is the default path — and
+    `screen_tree(root, [])` builds an empty target list, never enters the scan loop, and
+    returns `([], [])`: byte-for-byte what a fully screened clean repository returns. No
+    field on `Report` could tell an operator which of the two they were looking at.
+    """
+    repo = _repo_with_tracked_secret(tmp_path)
+    rep = preflight.inspect_repo(repo, ())
+    assert rep.screened > 0, \
+        "a report that opened no files must not be indistinguishable from a clean one"
+
+
+def test_the_screen_covers_what_B1_actually_carries(tmp_path):
+    """§3's stakes, in its own words: whatever the baseline contains is what N cloud-backed
+    full-permission agents read, and scanning the OUTPUT is too late.
+
+    `baseline.materialize` puts every TRACKED file into the filesystem manifest and B1, so a
+    screen over the selection alone certifies a set it does not cover.
+    """
+    repo = _repo_with_tracked_secret(tmp_path)
+    rep = preflight.inspect_repo(repo, ())          # nothing selected: the default path
+    assert rep.secrets, "a tracked credential reached B1 without entering the scanner"
+    assert preflight.refusals(rep), "and nothing refused the run over it"
+
+
+def test_a_genuinely_clean_repository_still_passes(tmp_path):
+    """The guard against over-tightening: widening the screen must not refuse ordinary repos."""
+    repo = make_repo(tmp_path)
+    write(repo, "app.py", "KEY = os.environ['KEY']\n")
+    commit_all(repo, "add app")
+    rep = preflight.inspect_repo(repo, ())
+    assert rep.secrets == ()
+    assert rep.screened > 0
