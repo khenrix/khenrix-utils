@@ -127,6 +127,17 @@ class Report:
     existing: "checked and false" is a fallback trigger, "nobody could check" is a report line
     that must not be read as either a pass or a failure.
 
+    THERE IS NO `traced` ROLL-UP, and the omission is a decision rather than an oversight. A
+    `manual_trace_confirmed` result is in neither list above, which was a real defect while
+    §12.4's two readers each carried their own gap predicate: a consumer reading only the
+    roll-ups saw a clean report over a claim no predicate had touched. `coverage.unmeasured`
+    closed that at the source — both readers now call it and neither infers completeness from
+    what the roll-ups happen to contain — so a third field would be a fifth positional element
+    on a public dataclass built at a dozen sites, added for a consumer that does not exist.
+    The day something renders roll-ups to a human rather than deciding on them, it needs this
+    field and `_lines` needs a third branch; until then `unmeasured(results)` is the answer
+    and it cannot drift from the results it reads.
+
     THE ROLL-UPS ARE RE-DERIVED IN `__post_init__`, for the reason `Result` enforces its own
     invariant there rather than in a private factory: a rule that holds only on the path its
     author remembered is what this module refuses everywhere else, and `Report` is a public
@@ -755,6 +766,23 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
             "claims, which §10.1's own failure shape is made of.")
     results = []
     for r in l.rows:
+        # ACCEPTED ROWS ONLY, and the reason is §10's, not tidiness. §12.4's trigger is a
+        # MISSING ACCEPTED ROW, and both readers print "N accepted claim(s)" — but this loop
+        # evaluated every row whatever its status, so a REJECTED row's satisfied criterion
+        # raised `covered_criteria` and an unsatisfied one fired the trigger about a claim
+        # the ledger had refused.
+        #
+        # That inverts the incentive exactly. §10 makes `rejected` first-class — "if all
+        # three seats considered and rejected a cache layer, that is the most valuable signal
+        # in the run" — so a rejected row keeps its criteria as audit evidence, and satisfying
+        # one means the seat built the thing the ledger said not to build. Counted as
+        # coverage, the seat that OBEYS the rejection fails the criterion and is charged a
+        # fallback, while the one that implements it anyway ranks stronger.
+        #
+        # The accepted-with-no-criteria refusal below stays where it is: it is about a row
+        # that IS accepted and declares nothing, which is the opposite failure.
+        if r.status != "accepted":
+            continue
         if r.status == "accepted" and not r.acceptance_criteria:
             results.append(Result(
                 r.id, NO_CRITERION, "unresolved", None,

@@ -463,6 +463,12 @@ def test_a_criterion_missing_its_evaluator_inputs_is_refused_in_this_modules_cla
                           row_id="a1", index=0, tree=tmp_path, pytest_argv=["pytest"])
 
 
+def _mk_sym(tmp_path):
+    """A criterion a real evaluator SATISFIES, so a coverage count has something to count."""
+    (tmp_path / "m.py").write_text("def f():\n    pass\n")
+    return _crit(kind="symbol", text="m defines f", path="m.py", symbol="f")
+
+
 def _row(rid, claim, status="accepted", **kw):
     base = dict(id=ledger.row_id(rid, claim), requirement_id=rid,
                 requirement_span="s:1", requirement_sha256="0" * 64, kind="behavior",
@@ -811,3 +817,33 @@ def test_a_genuinely_passing_test_is_still_satisfied(tmp_path):
 def test_a_genuinely_failing_test_is_still_unsatisfied(tmp_path):
     r = _outcome(tmp_path, "def test_x():\n    assert False\n")
     assert r.method == "mechanically_checked" and r.satisfied is False, r.detail
+
+
+def test_a_rejected_rows_satisfied_criterion_does_not_count_as_coverage(tmp_path):
+    """§12.4 says a MISSING ACCEPTED ROW is the fallback trigger, and both consumers print
+    "N accepted claim(s)" — but `check` evaluated every row whatever its status.
+
+    §10 makes `rejected` first-class: "if all three seats considered and rejected a cache
+    layer, that is the most valuable signal in the run". So a rejected row keeps its
+    criteria as audit evidence, and satisfying one means the seat did the thing the ledger
+    said not to do. Counted as coverage, that inverts the incentive exactly: the seat that
+    OBEYS the rejection fails the criterion and is charged a fallback, while the one that
+    IMPLEMENTS IT ANYWAY ranks stronger.
+    """
+    c = _mk_sym(tmp_path)
+    rep = coverage.check(_led([_row("R1", "the accepted thing", acceptance_criteria=(c,)),
+                               _row("R2", "the rejected thing", status="rejected",
+                                    acceptance_criteria=(c,))]),
+                         tree=tmp_path, pytest_argv=[])
+    rejected = [r for r in rep.results if r.row_id == ledger.row_id("R2", "the rejected thing")]
+    assert rejected == [], \
+        f"a rejected row contributed {len(rejected)} result(s) to §12.4's coverage numbers"
+
+
+def test_an_accepted_rows_criterion_is_still_counted(tmp_path):
+    """The guard against over-tightening: filtering to accepted rows must not empty the
+    report, or `check` refuses every ledger and §12.4 never fires at all."""
+    c = _mk_sym(tmp_path)
+    rep = coverage.check(_led([_row("R1", "the accepted thing", acceptance_criteria=(c,))]),
+                         tree=tmp_path, pytest_argv=[])
+    assert len(rep.results) == 1 and rep.results[0].satisfied is True

@@ -1166,7 +1166,18 @@ git commit -m "fix(forge): a skipped test exits zero, and zero was being read as
 
 ---
 
-## Task L2.3: the third roll-up, and coverage counted over rows nobody accepted
+## Task L2.3: coverage counted over rows nobody accepted
+
+> **The third roll-up was dropped during execution, and this is the record of why.** It was
+> scheduled because a consumer reading only `Report`'s roll-ups saw a clean report over a
+> claim no predicate had touched. **L2.1 closed that at the source** — `rubric` and `strategy`
+> both call `coverage.unmeasured(report.results)` now, and neither infers completeness from
+> what the roll-ups contain. Measured after L2.1: no module outside `coverage.py` reads
+> `.unsatisfied`/`.unresolved` as a display surface. So the field would be a fifth positional
+> element on a public dataclass built at a dozen sites, added for a consumer that does not
+> exist, against this plan's own YAGNI constraint. The reasoning is recorded in `Report`'s
+> docstring where the next author will meet it, with the condition that would make it
+> necessary. **The accepted-row filter below is the half that was load-bearing, and it ships.**
 
 **Files:** Modify `shared/lib/forge/coverage.py:55-64` (`_lines`), `:96-116` (`Result`), `:140-151` (`Report.__post_init__`), `:665-673` (`check`) · Test: `tests/test_forge_coverage.py`
 
