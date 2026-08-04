@@ -599,6 +599,10 @@ MCP_MIN_ATTEMPT = 5.0
 # server that only acts on EOF still gets one, and reading continues to the
 # attempt's deadline either way.
 MCP_STDIN_GRACE = 5.0
+# How long to wait for a child that has CLOSED ITS STDOUT to become reapable, so its exit
+# status can be read instead of guessed. Only ever paid on the branch that classifies on
+# exit status (see _mcp_probe_once), and the wait it bounds is normally microseconds.
+MCP_REAP_GRACE = 2.0
 
 
 def _mcp_probe_once(cmd, timeout, cwd=None, env=None):
@@ -690,6 +694,25 @@ def _mcp_probe_once(cmd, timeout, cwd=None, env=None):
     done.wait(max(0.0, deadline - time.monotonic()))
 
     answered = done.is_set()
+    # EOF ON STDOUT IS NOT THE SAME EVENT AS THE PROCESS BEING REAPABLE, and reading
+    # `poll()` as though it were is a race this check loses about 1% of the time under
+    # load. The kernel closes a dying task's descriptors partway through exit and only
+    # marks it a zombie afterwards, so the reader thread can see EOF while `poll()` still
+    # answers None — and `rc` is None with it, so `if self_exited and rc` below is False
+    # and a server that PROVABLY exited 1 falls through to MCP_UNPROVEN. MEASURED on this
+    # host: 4 of 300 probes of an `exit 1` server came back UNPROVEN under load, 0 of 300
+    # idle. That is a proven-dead MCP intermittently reported as unprovable — the exact
+    # decay the retry work was built to prevent — and it reached three tests in
+    # tests/test_doctor.py, each expecting FAIL and each passing on re-run.
+    #
+    # Waited for ONLY when the stream ended and the server said nothing, which is the one
+    # branch that classifies on exit status. A probe that got a tools/list answer returns
+    # on that answer, and one that never saw EOF has a child that really is still running.
+    if answered and not got:
+        try:
+            p.wait(timeout=MCP_REAP_GRACE)
+        except subprocess.TimeoutExpired:
+            pass                   # it closed stdout and kept running; terminate below
     self_exited = p.poll() is not None
     rc = p.returncode
     if not self_exited:

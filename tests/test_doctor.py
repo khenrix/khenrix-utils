@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -1554,6 +1555,94 @@ def test_a_server_that_dies_every_time_is_still_a_FAIL(tmp_path):
     assert "on all 3 attempt(s)" in c["detail"], "must say it was retried"
     assert "cannot reach the desktop app" in c["detail"], "must relay the diagnostic"
     assert counter.read_text().strip() == "3", "gave up before the budget allowed"
+
+
+# THE RACE, WIDENED INTO A CERTAINTY. `exec 1>&-` closes stdout, which is what delivers
+# EOF to the probe's reader thread; the process then stays alive across `sleep` before
+# exiting non-zero. That is exactly the ordering the kernel produces on its own during
+# exit -- descriptors closed, task not yet reapable -- held open long enough to assert on
+# rather than sampled and hoped for.
+MCP_DIES_AFTER_CLOSING_STDOUT = """#!/bin/sh
+echo "1password-mcp: cannot reach the desktop app" >&2
+exec 1>&-
+sleep 0.4
+exit 1
+"""
+
+
+def test_a_server_that_closes_stdout_before_exiting_is_still_PROVEN_broken(tmp_path):
+    """THE FLAKE, AND THE NON-HERMETIC THING WAS PROCESS REAPING, NOT THE FIXTURES.
+
+    `p.poll()` was read the instant the reader thread saw EOF. But EOF is the kernel
+    closing a dying task's descriptors, and the task only becomes reapable afterwards --
+    so poll() answers None for a process that has already stopped, `rc` is None with it,
+    and `if self_exited and rc` routes a server that PROVABLY exited 1 to UNPROVEN.
+
+    MEASURED on this host before the fix: 4 of 300 probes of an `exit 1` server came back
+    UNPROVEN under CPU load, 0 of 300 idle; 600 of 600 correct under the same load after.
+    Three checks in this file ride on that classification -- both MCP_DEAD tests and
+    test_a_server_that_dies_every_time_is_still_a_FAIL all expect FAIL, and ONE raced
+    attempt flips `all_broken` and turns the whole check into SKIP. A ~1% failure under
+    load that passes on re-run is the shape that teaches a reader to re-run instead of
+    read, which is what makes it worse than a check that is simply wrong.
+
+    Driven at the helper, like the budget test above, so the outcome is asserted directly
+    instead of through the PASS/FAIL/SKIP mapping the check-level tests already cover."""
+    if shutil.which("sleep") is None:
+        pytest.skip("no `sleep` on PATH: this fixture cannot hold the window open")
+    mcp = tmp_path / "dies-after-closing-stdout.sh"
+    mcp.write_text(MCP_DIES_AFTER_CLOSING_STDOUT)
+    mcp.chmod(0o755)
+    tools, err, outcome, retryable = doctor._mcp_probe_once([str(mcp)], timeout=5)
+    assert outcome == doctor.MCP_BROKEN, (outcome, err)
+    assert tools is None
+    assert "exited 1" in err, "the exit status must be READ, not guessed at: %r" % err
+    assert "cannot reach the desktop app" in err, "must still relay the diagnostic"
+    assert retryable is True, "one self-reported death is evidence, not yet proof"
+
+
+# Answers properly and then LINGERS instead of exiting -- which is what a real stdio MCP
+# server does; MCP_STRICT above exits as soon as stdin closes and so could not tell a
+# conditional reap wait from an unconditional one.
+MCP_ANSWERS_THEN_LINGERS = """#!/bin/sh
+saw_init=0
+while IFS= read -r line; do
+  case "$line" in
+    *notifications/initialized*) saw_init=1 ;;
+    *initialize*) echo '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}}}}' ;;
+    *tools/list*)
+      if [ "$saw_init" = 1 ]; then
+        echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"},{"name":"b"}]}}'
+      fi
+      ;;
+  esac
+done
+sleep 300
+"""
+
+
+def test_the_reap_wait_is_not_paid_by_a_server_that_answered(tmp_path):
+    """The discrimination check on the fix's cost, and the reason the guard reads `not
+    got` rather than just `answered`.
+
+    Waiting for a child to become reapable is only ever right on the branch that
+    classifies by exit status. Doing it whenever the stream ended would add
+    MCP_REAP_GRACE to every healthy probe against a server that stays alive after
+    answering -- which is what a real stdio MCP does -- and the doctor's whole argument
+    for probing is that it is cheap (measured p50 0.25s). The bound is the grace itself
+    against a ~0.05s healthy path, so it detects the fixed 2s wait and nothing else."""
+    if shutil.which("sleep") is None:
+        pytest.skip("no `sleep` on PATH: this fixture cannot linger")
+    mcp = tmp_path / "answers-then-lingers.sh"
+    mcp.write_text(MCP_ANSWERS_THEN_LINGERS)
+    mcp.chmod(0o755)
+    t0 = time.monotonic()
+    tools, err, outcome, _ = doctor._mcp_probe_once([str(mcp)], timeout=5)
+    elapsed = time.monotonic() - t0
+    assert outcome == doctor.MCP_OK, (outcome, err)
+    assert len(tools) == 2, tools
+    assert elapsed < doctor.MCP_REAP_GRACE, (
+        f"a probe that already had its answer paid the reap wait ({elapsed:.2f}s)")
 
 
 def test_a_proven_verdict_is_not_retried(tmp_path):
