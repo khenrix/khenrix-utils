@@ -90,3 +90,70 @@ def test_a_receipt_claiming_no_self_test_is_refused(tmp_path, monkeypatch):
     assert checks._receipt_is_certified(rec) is False
     rec["self_test"] = True
     assert checks._receipt_is_certified(rec) is True
+
+
+# ------------------------------------------------------------------ the blind A/B verdict
+def test_an_unreadable_comparison_is_not_a_tie():
+    """COMPARE_TMPL asks for "winner": "A" or "B" and never offers "tie" — so every tie this
+    harness produced was a parse failure, an empty answer, or an off-slot response wearing a
+    verdict's clothes. A judge that timed out yields raw="" -> {} -> "tie".
+
+    This is `eval_trigger.parse_verdict`'s already-fixed bug one module over: that function's
+    docstring names it exactly — "a judge that timed out, hit a quota wall or answered in
+    prose was recorded as having said 'do not activate'".
+    """
+    key = {"A": "with_skill", "B": "without_skill"}
+    for raw in ("", "the judge crashed", '{"winner": null}', '{"winner": "Q"}', "{"):
+        c = eval_harness.parse_comparison(raw, key)
+        assert c["winner_condition"] is None, \
+            f"an unreadable comparison ({raw!r}) resolved to {c['winner_condition']!r}"
+
+
+def test_a_real_verdict_still_resolves():
+    """The guard against over-tightening: if nothing resolved, the blind A/B would report
+    nothing and the collapse would be closed by making the signal useless."""
+    key = {"A": "with_skill", "B": "without_skill"}
+    assert eval_harness.parse_comparison('{"winner": "A"}', key)["winner_condition"] == "with_skill"
+    assert eval_harness.parse_comparison('{"winner": "B"}', key)["winner_condition"] == "without_skill"
+
+
+def test_unreadable_comparisons_are_excluded_from_the_tally_not_counted_as_ties():
+    """A dead judge inflated the tie column, which is the column that decides the winner."""
+    cs = [{"winner_condition": "with_skill", "winner_slot": "A"},
+          {"winner_condition": None, "winner_slot": "?"},
+          {"winner_condition": None, "winner_slot": "?"}]
+    t = eval_harness._blind_tally(cs)
+    assert t["with_skill"] == 1 and t["tie"] == 0
+    assert t["unreadable"] == 2, "two silent judges must be reported, not absorbed"
+    assert eval_harness.blind_winner(cs) == "with_skill"
+
+
+def test_a_constant_slot_preference_is_not_a_tie():
+    """The live witness: all six comparison.json files in this skill's own artifacts recorded
+    winner_slot "A". `blind_pair` alternates which condition sits in slot A by eval-id parity,
+    so a judge with a fixed slot preference maps to with, without, with, without... — a clean
+    3-3 that is indistinguishable from six genuinely matched pairs. Nothing read winner_slot.
+
+    n=6, one judge, one session: enough to show the collapse is real and unguarded, not
+    enough to claim this judge is generally position-biased.
+    """
+    cs = [{"winner_condition": c, "winner_slot": "A"}
+          for c in ("with_skill", "without_skill") * 3]
+    assert eval_harness.blind_winner(cs) == "slot_degenerate", \
+        "a judge that always answered the same slot is not a tie"
+
+
+def test_an_absent_slot_is_not_a_repeated_slot():
+    """The degeneracy check's own version of "nothing leaves the same record as nobody".
+
+    A comparison built without `winner_slot` — the self-test's own cases, or any caller
+    constructing one by hand — records no slot at all. Reading that as "every judgement chose
+    the same slot" made a missing field indistinguishable from a position-biased judge, and
+    turned three green self-test cases red.
+    """
+    no_slot = [{"winner_condition": "with_skill"}, {"winner_condition": "with_skill"},
+               {"winner_condition": "without_skill"}]
+    assert eval_harness.blind_winner(no_slot) == "with_skill"
+    assert eval_harness.blind_winner([{"winner_condition": "with_skill", "winner_slot": "?"},
+                                      {"winner_condition": "without_skill",
+                                       "winner_slot": "?"}]) == "tie"

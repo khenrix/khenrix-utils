@@ -181,10 +181,32 @@ def blind_winner(comparisons: list) -> str:
     """Aggregate the per-eval blind A/B verdicts into one winner: whichever
     condition won strictly more evals, else 'tie'. RECORDED in the receipt but
     ADVISORY — the commit gate is the assertion delta (see run()); the blind A/B
-    rewards concision on strong executors, so it must not gate."""
+    rewards concision on strong executors, so it must not gate.
+
+    UNREADABLE VERDICTS ARE EXCLUDED rather than counted as ties, because the tie column is
+    the one that decides the winner: a dead judge inflated it and looked like agreement.
+
+    A CONSTANT SLOT IS NOT A TIE, and this is the check the recorded field was waiting for.
+    `blind_pair` alternates which condition sits in slot A by eval-id parity, so a judge with
+    a fixed slot preference maps to with, without, with, without… — a clean N-N that reads as
+    N genuinely matched pairs. `winner_slot` was written to disk by every run and read by
+    nothing, which is what made position bias invisible.
+    """
+    readable = [c for c in comparisons if (c or {}).get("winner_condition") is not None]
+    if not readable:
+        return "unreadable"
+    # ONLY OVER SLOTS THAT WERE RECORDED. An ABSENT slot and a REPEATED slot are different
+    # facts, and reading the first as the second made every comparison built without the
+    # field — the self-test's own cases, and any caller that constructs one by hand — look
+    # like a position-biased judge. That is this project's own "nothing leaves the same record
+    # as nobody", written into the check for it.
+    slots = [(c or {}).get("winner_slot") for c in readable]
+    recorded = [x for x in slots if x not in (None, "", "?")]
+    if len(recorded) == len(readable) and len(recorded) > 1 and len(set(recorded)) == 1:
+        return "slot_degenerate"
     tally = {"with_skill": 0, "without_skill": 0, "tie": 0}
-    for c in comparisons:
-        cond = (c or {}).get("winner_condition", "tie")
+    for c in readable:
+        cond = c.get("winner_condition")
         tally[cond] = tally.get(cond, 0) + 1
     if tally["with_skill"] > tally["without_skill"]:
         return "with_skill"
@@ -257,10 +279,16 @@ def parse_comparison(raw: str, key: dict) -> dict:
     """Judge's blind verdict → comparison.json, de-anonymized via the key."""
     obj = extract_json(raw) or {}
     winner_slot = str(obj.get("winner", "")).strip().upper()[:1]
-    winner_condition = key.get(winner_slot)  # None on 'tie'/garbage
+    # `None`, NOT `"tie"`. COMPARE_TMPL asks for "A" or "B" and never offers a tie, so every
+    # tie this produced was a parse failure, an empty answer or an off-slot response wearing a
+    # verdict's clothes — a judge that timed out yields raw="" -> {} -> "tie". This is
+    # `eval_trigger.parse_verdict`'s already-fixed bug one module over, and that function's
+    # docstring names it: "a judge that timed out, hit a quota wall or answered in prose was
+    # recorded as having said 'do not activate'". Unreadable is its own state.
+    winner_condition = key.get(winner_slot)
     return {
         "winner_slot": winner_slot or "?",
-        "winner_condition": winner_condition or "tie",
+        "winner_condition": winner_condition,
         "reasoning": str(obj.get("reasoning", "")),
         "A": {**({"condition": key.get("A")}), **(obj.get("A") or {})},
         "B": {**({"condition": key.get("B")}), **(obj.get("B") or {})},
@@ -417,9 +445,17 @@ def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
     a, b, key = blind_pair(with_text, without_text, ev["id"])
     prompt = COMPARE_TMPL.format(prompt=ev["prompt"], assertions=_numbered(ev["assertions"]),
                                  a=a or "(empty)", b=b or "(empty)")
-    text, _ = run_text(judge, prompt, cfg, workdir / "compare", timeout=timeout, retries=2,
-                       readonly=False)  # retries=2: transient judge failure → false tie
-    return parse_comparison(text, key)
+    text, jrec = run_text(judge, prompt, cfg, workdir / "compare", timeout=timeout, retries=2,
+                          readonly=False)  # retries=2: transient judge failure → false tie
+    c = parse_comparison(text, key)
+    # THE JUDGE RECORD IS CARRIED OUT, on `grade`'s precedent. `compare` discarded it, so
+    # unlike `grade` — which has judge_ok/judge_reason — this path had no channel to report
+    # that its judge never spoke, and an unreadable verdict was indistinguishable from a
+    # considered one.
+    c["judge_ok"] = bool((jrec or {}).get("valid")) and c["winner_condition"] is not None
+    c["judge_reason"] = (None if c["judge_ok"]
+                         else ((jrec or {}).get("reason") or "no readable winner in the reply"))
+    return c
 
 
 # --------------------------------------------------------------------------- #
@@ -625,10 +661,16 @@ def run(args) -> int:
 
 
 def _blind_tally(comparisons: list) -> dict:
-    t = {"with_skill": 0, "without_skill": 0, "tie": 0}
+    """The counts behind `blind_winner`, with unreadable verdicts REPORTED rather than
+    absorbed into `tie`. A run whose judge died half the time and one whose judge genuinely
+    split are different runs, and the receipt should not spell them the same way."""
+    t = {"with_skill": 0, "without_skill": 0, "tie": 0, "unreadable": 0}
     for c in comparisons:
-        cond = (c or {}).get("winner_condition", "tie")
-        t[cond] = t.get(cond, 0) + 1
+        cond = (c or {}).get("winner_condition")
+        if cond is None:
+            t["unreadable"] += 1
+        else:
+            t[cond] = t.get(cond, 0) + 1
     return t
 
 
