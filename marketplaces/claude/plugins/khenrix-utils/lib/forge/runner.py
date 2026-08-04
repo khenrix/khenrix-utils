@@ -1,7 +1,8 @@
 """The fleet, driven end to end: three builder seats, each verified somewhere it never was
 (spec §4, §5 step 3, §6, §7, §8, §8.1, §9, §14.1).
 
-Seven plans built the pieces; this is the first caller that composes them. `run_seat` chains
+Every piece below was built and tested separately, in its own module; this is the first
+caller that composes them. `run_seat` chains
 clone -> F0 -> setup -> Fsetup -> launch -> Fwork -> artifact set -> candidate, classifies
 what came out through §8's four dimensions, and writes the seat's record where §14.2 says a
 `--collect` will look for it. `verify_candidate` then takes that candidate to a tree the
@@ -15,9 +16,9 @@ no implementation, so the phase after `comparing` would be one with nothing in i
 test passes a fake that writes into the seat and hands back a provider-shaped record, so the
 whole chain is exercised and only the provider is not. That is deliberate — §5.2 prices a
 real fleet in provider calls, and a suite that spends them is one nobody runs — but it means
-NOTHING HERE PROVES THE REAL PROVIDER PATH WORKS. The first real invocation is the skill's
-own eval, two plans away. The `launch` signature is kept narrow enough that the real adapter
-is obviously the same shape:
+NOTHING HERE PROVES THE REAL PROVIDER PATH WORKS. Nothing has invoked a real provider through
+this loop yet; the skill's own eval is the first thing that will. The `launch` signature is
+kept narrow enough that the real adapter is obviously the same shape:
 
     launch(*, name, seat_path, token, env) -> Mapping
 
@@ -1156,8 +1157,8 @@ def verify_candidate(manifest, run_dir, baseline, candidate, *, name, identity,
 # whole rather than through a set.
 _SEATS = tuple(engine.DEFAULT_PROVIDERS)
 
-# §14's chain, as far as this plan drives it. `synthesizing` is the next edge and it is
-# fusion, which this module deliberately does not reach — §10 through §13 have no
+# §14's chain, as far as this module's loop drives it. `synthesizing` is the next edge and
+# it is fusion, which this module deliberately does not reach — §10 through §13 have no
 # implementation, so a loop that entered `synthesizing` would be claiming a phase with
 # nothing in it. It is the ROUTE and not the graph: `runstate._EDGES` is still the only
 # statement of what follows what, `advance` is what refuses a step this route got wrong, and
@@ -1602,11 +1603,13 @@ def run(run_dir, repo, *, identity, launch) -> tuple:
     worth stating because "everything comes off the disk" would otherwise read as though it
     were complete. `gate.open_run` journals the confirmed author on the `confirm` done record
     — it did not, which meant a run could not say who authored its own commits at all — so
-    the answer IS on disk now and `_confirmed_policy` shows how a later plan reads it back.
-    What this loop does not yet do is CHECK the argument against it, and until it does, a
-    caller supplying a different one gets seats and verifiers attributed to a name the §5
-    gate never saw. Reading it instead of taking it is the same change one step further and
-    belongs with the plan that has a front end to fail at.
+    the answer IS on disk now, in the same journalled shape `_confirmed_policy` already knows
+    how to read back. What this loop does not yet do is CHECK the argument against it: no
+    caller compares `identity` to the journalled author, and until one does, a caller
+    supplying a different one gets seats and verifiers attributed to a name the §5 gate never
+    saw. Reading it instead of taking it is the same change one step further, and it needs a
+    front end that can refuse a mismatched run before anything is spent — which nothing here
+    is.
 
     THE ORDER, and each step's phase:
 

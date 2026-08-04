@@ -365,3 +365,58 @@ def test_no_shipped_forge_prose_dates_itself_to_a_commit():
     assert dated == [], (
         f"{dated} — shipped prose dates itself to a moment a reader cannot resolve; say "
         "what the constraint is instead of when it was written")
+
+
+# A shipped module may not cite a plan document: the plans are not shipped, so a reader of the
+# installed plugin is pointed at a file they do not have — and a citation is a claim about a
+# moment rather than about the code, which is the same defect `_TEMPORAL` catches one tense
+# over.
+#
+# `(?!-)` IS LOAD-BEARING, NOT A STYLE CHOICE. Without it the pronoun branch also matches "the
+# plan-mode" in `taskbundle`'s agy probe note (agy's actual mode name) and "a headless
+# plan-mode reviewer" in `review.py` — two correct sentences a naive sweep would corrupt. `-`
+# is a word boundary, so `\bplan\b` alone cannot tell "plan" the noun from "plan-" the prefix
+# of a compound word; the lookahead is what tells them apart.
+#
+# THE PRONOUN LIST IS NOT THE WHOLE SHAPE. A first draft of this pattern — "Decision N",
+# "Contradiction N", "Plan X", and (this|the|a later|a previous|an earlier|the next|a next)
+# plan — measured 15 citations across this package where a plain-text read found 18: it missed
+# "one plan away", "two plans away" and "Seven plans built the pieces" in `launch.py` and
+# `runner.py`, because a bare cardinal before "plan(s)" is a citation too and no pronoun in the
+# list spells it. The cardinal branch below closes that gap; a regex that only special-cased
+# the three known strings would still miss the next one written the same way.
+#
+# RUN OVER BOTH VIEWS. `_prose_blocks` + `_flat` catches a referent wrapped across two comment
+# lines, which no line-oriented grep finds (`harvest.py`'s "that decision belongs to a later
+# plan" spans exactly such a wrap); the WHOLE FILE flattened additionally catches a runtime
+# string literal, which the prose extraction misses.
+_PLAN_CITATION = re.compile(
+    r"\b(?:Decision \d+|Contradiction \d+|Plan [A-Z]\d?"
+    r"|(?:this|the|a later|a previous|an earlier|the next|a next"
+    r"|one|two|three|four|five|six|seven|eight|nine|ten|\d+) plans?)\b(?!-)", re.I)
+
+
+def test_no_shipped_forge_module_cites_a_plan_document():
+    """`(?!-)` is not a convenience: without it the pattern matches `the plan-mode` in
+    `taskbundle`'s agy probe note and `a headless plan-mode reviewer` in `review.py`, both of
+    which name agy's actual mode and neither of which is a plan. A detector that fires on a
+    correct sentence is one an author learns to write around."""
+    bad = []
+    for p in sorted((ROOT / "shared" / "lib" / "forge").glob("**/*.py")):
+        text = p.read_text()
+        for flat in map(_flat, _prose_blocks(text)):
+            for m in _PLAN_CITATION.finditer(flat):
+                bad.append(f"{p.name}: {m.group(0)!r} in prose")
+        whole = re.sub(r"\s+", " ", text)
+        for m in _PLAN_CITATION.finditer(whole):
+            bad.append(f"{p.name}: {m.group(0)!r} in {whole[max(0, m.start()-50):m.end()+30]!r}")
+    assert not bad, "\n".join(sorted(set(bad)))
+
+
+def test_launch_does_not_claim_it_has_no_production_caller():
+    """The substance half. A sweep that rewrote 'no production caller since Plan H' into 'no
+    production caller' would pass the pattern above while leaving a comment asserting
+    something the code does not do — `cli.start` has called `make_launcher` since Task 6."""
+    src = (ROOT / "shared" / "lib" / "forge" / "launch.py").read_text().lower()
+    assert "no production caller" not in src
+    assert "cli" in src, "the module no longer names the caller that exists"

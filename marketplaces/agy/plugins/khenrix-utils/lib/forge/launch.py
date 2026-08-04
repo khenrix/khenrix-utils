@@ -2,9 +2,10 @@
 
 NOTHING IN THIS PACKAGE'S SUITE CALLS A PROVIDER. `run_provider` and the fingerprint probe are
 both parameters with real defaults, and every test overrides them. §5.2 prices a real fleet in
-provider calls and a suite that spends them is one nobody runs — so the first real invocation
-is the skill's own eval, one plan away. What that costs is that NOTHING HERE PROVES THE REAL
-PROVIDER PATH WORKS; the signature is kept narrow enough that the shape is obviously the same.
+provider calls and a suite that spends them is one nobody runs — so nothing has invoked a real
+provider through this adapter yet, and the skill's own eval is the first thing that will. What
+that costs is that NOTHING HERE PROVES THE REAL PROVIDER PATH WORKS; the signature is kept
+narrow enough that the shape is obviously the same.
 
 WHY THIS FILE EXISTS AT ALL, beyond convenience: it is the one place `seat.forge_spec` is
 wired to a real provider, so §8.1's validator runs or it does not. Without that wiring seats
@@ -47,8 +48,9 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
 
     `env` IS `fleet.forge_child_env`'s scrubbed environment AND IT IS PASSED THROUGH. Accepting
     it and dropping it — which an earlier draft did, with a docstring calling the drop a
-    contract nicety — undoes three defences a previous plan paid for, in the one direction
-    nothing downstream can see, because the record comes back identical either way:
+    contract nicety — undoes three defences `fleet.forge_child_env` already paid for, in the
+    one direction nothing downstream can see, because the record comes back identical either
+    way:
 
       1. `LLM_FORGE_DEPTH` is never set. Without a forge guard, a seat that reaches for
          /llm-forge spawns three more write-enabled seats, each of which can spawn three more.
@@ -89,8 +91,8 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
     (measured: claude, codex and agy each answer `None`). `None` beside `None` is an absence
     on both sides, never a difference, so it contributes nothing to the label. It differs only
     when a caller supplies a `cfg` naming a DIFFERENT model per provider — one naming the same
-    model for all three makes all three equal (also measured) — and no production caller
-    supplies one at all yet, per the paragraph above.
+    model for all three makes all three equal (also measured) — and nothing that calls this
+    in production supplies one at all yet, per the paragraph above.
     """
     if not isinstance(prompt, str) or not prompt.strip():
         raise LaunchError("a seat is launched with a task, and this prompt is empty")

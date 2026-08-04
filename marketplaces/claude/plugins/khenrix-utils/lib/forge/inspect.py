@@ -372,10 +372,10 @@ def repo_facts(repo) -> RepoFacts:
         # every seat as a working path OUT of the repository — the clone reproduces the
         # link, and a permission-bypassed agent reads and writes straight through it.
         #
-        # That was NOT the reason recorded here until Plan D. It said the manifest "hashes
-        # through the link", which `baseline._entry_digest` no longer does (D-1: a link is
-        # its target text everywhere). Left alone, the refusal would have been standing on
-        # a justification that had become an argument for deleting it.
+        # The reason recorded here was corrected once already: it used to say the manifest
+        # "hashes through the link", which `baseline._entry_digest` no longer does — a link
+        # is its target text everywhere. Left uncorrected, the refusal would have been
+        # standing on a justification that had become an argument for deleting it.
         escaping_symlinks=[path for _, mode, path in entries if mode == "120000"
                            and _escaping_target(root, root / path) is not None],
         staged=staged, unstaged=unstaged, untracked=untracked)

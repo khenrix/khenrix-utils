@@ -6,8 +6,9 @@ checkout), Fsetup (after the engine's setup), Fwork (after the agent exits), Fve
 
 The artifact PATH set is Fsetup -> Fwork: setup's output (node_modules, .venv) is not the
 agent's work, and verify's output is recorded separately because §7.2 may admit it as a
-required deliverable under a declared generator contract — that decision belongs to a
-later plan, and discarding it here would foreclose it.
+required deliverable under a declared generator contract. Nothing decides that question yet
+— no caller folds Fverify content into the artifact set, and none refuses one either — so
+discarding it here would foreclose the option before anything exists to make the call.
 
 The artifact CONTENT is `git diff <B> <final>` over those paths, against the PINNED
 baseline commit — never the seat's own HEAD, which a seat that commits would leave empty.

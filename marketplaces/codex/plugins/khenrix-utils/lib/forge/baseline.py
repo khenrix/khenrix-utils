@@ -71,9 +71,10 @@ class Baseline:
     ref: str
     dirty: bool
     # None, never []. Spec §2's sidecar manifest — declared ignored inputs, empty
-    # directories, special files — has no producer yet, and a later plan consumes this field
-    # as authoritative: an empty list would tell it "there are none" when the truth is
-    # "nobody looked", which is the fail-OPEN reading of the two.
+    # directories, special files — has no producer yet: nothing in this package walks those
+    # three categories and fills the field. Whatever eventually consumes it must treat it as
+    # authoritative rather than as evidence: an empty list would say "there are none" when
+    # the truth is "nobody looked", which is the fail-OPEN reading of the two.
     sidecars: list | None = None
     filesystem_manifest: dict = field(default_factory=dict)
 
@@ -360,7 +361,9 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
         # describe content from outside the tree it claims to describe". `screen` breached
         # on the entry and `snapshot` digested the target TEXT, so B, F0 and the screen held
         # three different opinions about one path and `fleet` skipped it rather than choose.
-        # `_entry_digest` settles it: a link is its target text, everywhere (Plan D, D-1).
+        # `_entry_digest` settles it: a link is its target text, everywhere — `baseline`,
+        # `snapshot`, `fleet` and `bundle` all give one shape one identity, and `fleet` now
+        # VERIFIES the entry rather than skipping it (see its own comment on that check).
         # A DANGLING tracked link now enters the manifest too, where `is_file()` dropped it.
         p = repo / rel
         if rel and (p.is_symlink() or p.is_file()):

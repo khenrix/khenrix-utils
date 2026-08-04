@@ -41,7 +41,7 @@ here so the next reader finds the ordering rather than re-deriving that this fil
 make it — which is still the fact, and is why the joint above stays where it is.
 
 HOOKS. A hook that runs in a verifier is a builder-controlled check. Measured on git 2.53,
-the two options the plan offered are NOT equivalent:
+the two candidate mitigations are NOT equivalent:
 
     source repo's local core.hooksPath        NOT copied by `git clone` — so there is
                                               nothing in the clone's config to unset
@@ -378,7 +378,8 @@ class Run:
 class FixedPoint:
     """What running the gate to a fixed point measured.
 
-    THREE facts, not the `(Run, admitted)` pair the plan sketched, and the third is why.
+    THREE facts — `run`, `admitted`, `unexplained` — not the `(run, admitted)` pair that
+    would look sufficient, and the third is why.
     `run.exit_code == 0` with `admitted == ()` is what BOTH a gate that changed nothing and
     a gate that rewrote a tracked file no relation covers hand back — and §6.2 makes only
     the first a PASS. Measured: under the pair those two runs return equal values, so the

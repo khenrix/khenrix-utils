@@ -348,7 +348,8 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
                 # would read THROUGH it, so hashing one describes content from outside the tree
                 # the manifest claims to describe. The branch used to `continue`, because the
                 # manifest held the target's content and nothing this side could reproduce it
-                # without following the link; since Plan D's D-1 the manifest holds the target
+                # without following the link; since `baseline._entry_digest` digests a link's
+                # target TEXT rather than reading through it, the manifest holds the target
                 # text, so the entry is now VERIFIED rather than excused. The link test also
                 # has to come before the regular-file test: a correct seat can carry a link
                 # that dangles from the seat's own depth, and every "is it a file" spelling

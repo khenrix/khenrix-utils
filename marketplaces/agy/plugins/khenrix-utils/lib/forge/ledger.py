@@ -320,7 +320,7 @@ def edges(rows) -> tuple:
     passes under either arrow, `_check` calls `topological_order` only for its raise, and the
     sole signal is `test_the_order_covers_every_row_or_there_is_no_order`. An implementer who
     "fixes" that test instead of this function locks an inverted synthesis order in under a
-    green suite, and Plan I2's partitioned synthesis is its first consumer.
+    green suite — silently, because nothing outside this module calls `edges` yet to notice.
 
     A RELATION THIS DOES NOT NAME IS A `LedgerError` HERE, NOT A DROPPED EDGE. It used to be
     dropped, on the argument that `_check` refuses one before any sort runs — but this function

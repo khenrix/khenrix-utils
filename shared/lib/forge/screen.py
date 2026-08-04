@@ -177,8 +177,8 @@ def screen_tree(root, rel_paths, quota: Quota = None):
 
     A BREACH IS "WE DID NOT READ THIS", NOT "THIS IS DANGEROUS", and the difference is the
     caller's to act on. This module deliberately does NOT discriminate between a symlink
-    that escapes the repository and an ordinary in-tree one such as `docs/latest -> v2`
-    (Plan D, D-2), for two measured reasons:
+    that escapes the repository and an ordinary in-tree one such as `docs/latest -> v2`.
+    Discrimination stays OUT of screen, for two measured reasons:
 
     - "the normalized target stays under the root" is the obvious rule and it is UNSOUND
       here. Under a selection of `scratch`, `scratch/creds -> ../.env` stays under the root

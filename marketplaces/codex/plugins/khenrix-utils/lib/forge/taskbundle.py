@@ -45,19 +45,23 @@ word.
     `is_error: false`, `permission_denials: []`.
   * codex (`exec --dangerously-bypass-approvals-and-sandbox`, v0.145.0): READS IT. Quoted the
     sentinel; the transcript shows it opening the path directly.
-  * agy (v1.1.10): **NOT MEASURED, and NOT a refusal.** Both the plan-mode and JSON forms
-    answered `{"status":"ERROR","error":"timeout waiting for response"}` with `total_tokens: 0`
+  * agy (v1.1.10): **NOT MEASURED, and NOT a refusal.** Both the plan-mode — agy's own mode
+    name, not a citation of a planning document, so a future prose sweep should leave this
+    sentence alone — and JSON forms answered
+    `{"status":"ERROR","error":"timeout waiting for response"}` with `total_tokens: 0`
     — it never reached a model. The CONTROL is what makes that readable rather than a guess: an
     identical prompt against an ordinary WORKTREE file failed the same way, same error, same
     zero tokens. So this measures agy's transport on this machine (see `headless-invocation.md`
     on the mid-2026 consumer-OAuth wind-down), not its willingness to read under `.git`. The
     question stays open for agy and must be re-probed before anything relies on it.
 
-WHAT THE TWO YESES DO NOT LICENSE. Nothing in Plan I puts this path into a prompt, so no step
-here rests on the probe either way. Plan J is the first plan that hands a seat the pointer, and
-it may not wire agy's seat to it on two measurements out of three. A seat that cannot read its
-entrypoint cannot quote the sentinel and scores `failed`, which is the fail-closed direction —
-the run stays honest, but the reason string is unmapped.
+WHAT THE TWO YESES DO NOT LICENSE. No caller puts this path into a prompt today — `cli.start`
+composes the seat's prompt from the entrypoint text and `ambient_notes` alone, never from
+`task_dir` — so no step here rests on the probe either way. Wiring a seat to the pointer at
+all is still undone, and doing that for agy specifically would rest on two measurements out
+of three. A seat that cannot read its entrypoint cannot quote the sentinel and scores
+`failed`, which is the fail-closed direction — the run stays honest, but the reason string is
+unmapped.
 
 EMPTY DIRECTORIES ARE NOT CARRIED, and that is the same ceiling `snapshot.Entry` declares:
 directories are not inventoried, so a bundle that means to hand a seat an empty `output/`
