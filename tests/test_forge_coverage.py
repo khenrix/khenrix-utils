@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import hashlib  # noqa: E402
 import os  # noqa: E402
+import json
 import subprocess  # noqa: E402
 import pytest  # noqa: E402
 from forge import coverage, ledger  # noqa: E402
@@ -38,13 +39,26 @@ def _schema_crit(**kw):
     return _crit(**base)
 
 
-def _fake_run(script):
-    """A pytest stand-in. NO TEST HERE RUNS A REAL PROVIDER OR A REAL SUITE."""
+def _fake_run(script, *, outcome="passed", wasxfail=False, node="tests/t.py::test_x"):
+    """A pytest stand-in. NO TEST HERE RUNS A REAL PROVIDER OR A REAL SUITE.
+
+    IT WRITES A RECEIPT, because an exit code is no longer what decides the answer. A fake
+    that returned only `(rc, stdout)` modelled the contract `_test` used to have — and under
+    the current one it produces `unresolved` for every case, so the suite would go on passing
+    while testing nothing. `outcome=None` writes no receipt at all, which is how a caller asks
+    for "the runner exited and the named test never ran".
+    """
     calls = []
 
     def run(argv, **kw):
         calls.append(argv)
         rc, out = script(argv)
+        env = kw.get("env") or {}
+        path = env.get("FORGE_PYTEST_RECEIPT")
+        if path and "--collect-only" not in argv and outcome is not None:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"nodeid": node, "when": "call", "outcome": outcome,
+                                     "wasxfail": wasxfail}) + "\n")
         return subprocess.CompletedProcess(argv, rc, stdout=out, stderr="")
     run.calls = calls
     return run
@@ -86,7 +100,7 @@ def test_a_named_test_that_fails_is_mechanically_checked_and_not_satisfied(tmp_p
     _node(tmp_path)
     r = coverage.evaluate(_crit(kind="test", node_id="tests/t.py::test_x"),
                           row_id="a1", index=0, tree=tmp_path,
-                          pytest_argv=["pytest"], run=_fake_run(script))
+                          pytest_argv=["pytest"], run=_fake_run(script, outcome="failed"))
     assert (r.method, r.satisfied) == ("mechanically_checked", False), \
         "'checked mechanically, and the answer is no' must not land in `unresolved`"
 
@@ -684,7 +698,12 @@ def test_a_run_that_exits_four_is_not_scored_as_a_failed_test(tmp_path):
     collect stage and the run stage's own exit codes were pinned by nothing — a
     `returncode == 1` widened to `>= 1` would score pytest's usage error (4), internal error
     (3) and interrupt (2) as "the named test failed", which §12.4 acts on as a fallback
-    trigger. 0 and 1 are the only two exits that are a result of the named test."""
+    trigger. 0 and 1 are the only two exits that are a result of the named test.
+
+    THE VERDICT IS UNCHANGED AND ITS GROUND IS STRONGER. The answer no longer rests on the
+    exit code being outside {0, 1} — it rests on the run having recorded no `call` phase for
+    the named test, which is the same fact the skip and xfail cases turn on. The exit code is
+    now reported rather than relied on."""
     for rc in (2, 3, 4):
         def run(argv, **kw):
             if "--collect-only" in argv:
@@ -696,7 +715,7 @@ def test_a_run_that_exits_four_is_not_scored_as_a_failed_test(tmp_path):
                               row_id="a1", index=0, tree=tmp_path,
                               pytest_argv=["pytest"], run=run)
         assert (r.method, r.satisfied) == ("unresolved", None), rc
-        assert "neither a pass nor a failure" in r.detail, rc
+        assert "recorded no `call` phase" in r.detail and str(rc) in r.detail, rc
 
 
 def test_a_ledger_with_no_rows_is_refused_rather_than_reported_as_covered(tmp_path):
@@ -737,3 +756,58 @@ def test_a_report_may_not_disagree_with_its_own_results(tmp_path):
         coverage.Report(({"row_id": "a1"},), (), (), ())
     # Non-vacuity: the roll-up the results DO imply is accepted.
     coverage.Report((bad,), (), ("a1[0]: it failed",), ())
+
+
+# ---------------------------------------------------------------- real pytest outcomes
+def _real_tree(tmp_path, body):
+    """A tree with one real test file, run by a REAL pytest.
+
+    The suite's other `_test` cases hand `evaluate` a fake `(rc=0, "1 passed")`, which is why
+    a zero exit standing in for "the claim holds" survived: the fixture could not produce a
+    skip, an xfail, or a collection-only run, because it never ran pytest at all.
+    """
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    (tmp_path / "tests" / "t.py").write_text(body)
+    # `sys.executable`, NOT "python3": this repository's python3 cannot import pytest — the
+    # Makefile falls back to uvx for exactly that reason — so a hardcoded name runs an
+    # interpreter without it and every case here comes back `unresolved` for a harness
+    # reason, which is the shape these tests exist to refuse.
+    return [sys.executable, "-m", "pytest"]
+
+
+def _outcome(tmp_path, body, node="tests/t.py::test_x"):
+    argv = _real_tree(tmp_path, body)
+    return coverage.evaluate(_crit(kind="test", node_id=node),
+                             row_id="a1", index=0, tree=tmp_path, pytest_argv=argv)
+
+
+def test_a_SKIPPED_test_is_not_a_satisfied_claim(tmp_path):
+    """`@pytest.mark.skip` exits 0, and a zero exit was read as "the named test passed".
+
+    The test did not evaluate the claim. This is the fail-open in the MECHANICAL AXIS
+    ITSELF — the axis §10.1 rests on — so "never executed" reached the cleanest state the
+    vocabulary has: checked, and true.
+    """
+    r = _outcome(tmp_path, "import pytest\n\n@pytest.mark.skip\ndef test_x():\n    assert False\n")
+    assert r.method == "unresolved" and r.satisfied is None, \
+        f"a skipped test reported {r.method}/{r.satisfied}: {r.detail}"
+
+
+def test_an_XFAILING_test_whose_body_fails_is_not_a_satisfied_claim(tmp_path):
+    """An expected failure exits 0 while the body genuinely failed — so a FAILING test was
+    recorded as a satisfied claim."""
+    r = _outcome(tmp_path, "import pytest\n\n@pytest.mark.xfail\ndef test_x():\n    assert False\n")
+    assert not (r.method == "mechanically_checked" and r.satisfied is True), \
+        f"an xfailing test reported {r.method}/{r.satisfied}: {r.detail}"
+
+
+def test_a_genuinely_passing_test_is_still_satisfied(tmp_path):
+    """The guard against over-tightening: if nothing could reach satisfied, the mechanical
+    axis would be closed by making it useless."""
+    r = _outcome(tmp_path, "def test_x():\n    assert True\n")
+    assert r.method == "mechanically_checked" and r.satisfied is True, r.detail
+
+
+def test_a_genuinely_failing_test_is_still_unsatisfied(tmp_path):
+    r = _outcome(tmp_path, "def test_x():\n    assert False\n")
+    assert r.method == "mechanically_checked" and r.satisfied is False, r.detail
