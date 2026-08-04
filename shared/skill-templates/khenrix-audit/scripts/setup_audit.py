@@ -547,10 +547,32 @@ def load_declared(repo_root) -> dict:
         return {}
     with open(Path(repo_root) / "capabilities.toml", "rb") as f:
         caps = tomllib.load(f)
-    return {"mcp": {n: {"platform": e.get("platform")}
+    return {"mcp": {n: {"platform": e.get("platform"), "clis": e.get("clis")}
                     for n, e in (caps.get("mcp_servers") or {}).items()},
             "docs_mcp": {cli: list(v) if isinstance(v, dict) else v
                          for cli, v in (caps.get("docs_mcp") or {}).items()}}
+
+
+def _withheld(entry: dict, cli: str, platform: str) -> bool:
+    """True when capabilities.toml declares this server but not for THIS cli/host.
+
+    Two allow-lists read the same way: `platform` (the machine cannot launch it) and
+    `clis` (this CLI's MCP client cannot run it — see [mcp_servers.vercel]). Under either,
+    "declared and not live here" is the intended state, so reporting it as drift would be
+    a permanent false positive whose remediation ("run khenrix-setup to add it") is the
+    action the gate exists to prevent.
+
+    A MALFORMED `clis` IS TREATED AS NO GATE, deliberately unlike reconcile.py, which
+    refuses outright. This engine only reports — it never writes a live config — and a
+    check that raises takes the other nine down with it. Ignoring the gate errs toward
+    SAYING something ("declared-not-live"), which is visible; honouring an unreadable gate
+    would silently suppress a finding. reconcile.py still refuses at apply time, so a typo
+    cannot reach a live config through either path.
+    """
+    if entry.get("platform") and entry["platform"] != platform:
+        return True
+    gate = entry.get("clis")
+    return isinstance(gate, list) and cli not in gate
 
 
 def check_b4_drift(inv, ctx) -> list:
@@ -567,18 +589,30 @@ def check_b4_drift(inv, ctx) -> list:
         if not live and not any(i["cli"] == cli for i in inv["items"]):
             continue  # CLI absent on this machine — not drift
         for name in sorted(decl["mcp"]):
+            withheld = _withheld(decl["mcp"][name], cli, platform)
             if name not in live:
-                # Platform gate applies ONLY to the declared-not-live direction: a
-                # windows-only server absent on Linux isn't drift. A live server
-                # that is undeclared/managed-absent is still reportable regardless
-                # of any gate (see the loop below, which never consults `decl`).
-                gate = decl["mcp"][name].get("platform")
-                if gate and gate != platform:
+                # The gates apply ONLY to the declared-not-live direction: a windows-only
+                # server absent on Linux, or one withheld from this CLI, isn't drift. A
+                # live server that is undeclared/managed-absent is still reportable
+                # regardless (see the loop below, which never consults `decl`).
+                if withheld:
                     continue
                 out.append(finding("B4", 1, cli, "user", "mcp", [f"{cli}/{name}"],
                                    "state-divergence", "medium", "drift",
                                    {"direction": "declared-not-live"},
                                    ["run khenrix-setup to add it"]))
+            elif withheld:
+                # The state this gate exists to end, and the one the loop below cannot
+                # see: `set(live) - set(decl)` never contains a DECLARED name, so a server
+                # withheld from this CLI yet still live here was reported by nothing.
+                # That is precisely how agy ran for weeks with a vercel entry that stopped
+                # every headless run from reaching a model.
+                out.append(finding("B4", 2, cli, "user", "mcp", [f"{cli}/{name}"],
+                                   "state-divergence", "high", "drift",
+                                   {"direction": "withheld-but-live"},
+                                   ["remove from live config (khenrix-setup is additive "
+                                    "and will not); see the gate's comment in "
+                                    "capabilities.toml for the measurement"]))
         for name in sorted(set(live) - set(decl["mcp"])):
             pol = ctx.get("policies", {}).get(f"mcp:{name}")
             if pol and pol.get("desired_state") == "managed-absent":
@@ -611,12 +645,13 @@ def check_b5_cross_cli(inv, ctx) -> list:
     platform = ctx.get("platform", _PLATFORM)
     present_clis = [c for c in CLIS if any(i["cli"] == c for i in inv["items"])]
     for name in sorted(decl["mcp"]):
-        gate = decl["mcp"][name].get("platform")
-        if gate and gate != platform:
-            continue
         have = {c for c in present_clis
                 if any(m["name"] == name for m in _loaded(inv, "mcp", c))}
-        missing = set(present_clis) - have
+        # A CLI the server is withheld from is not "missing" it — cross-CLI parity is
+        # measured over the CLIs the declaration actually covers, or B5 would report
+        # every gated server as a hole on exactly the CLI that must not have it.
+        eligible = [c for c in present_clis if not _withheld(decl["mcp"][name], c, platform)]
+        missing = set(eligible) - have
         if have and missing:
             for cli in sorted(missing):
                 out.append(finding("B5", 1, cli, "user", "mcp", [f"{cli}/{name}"],

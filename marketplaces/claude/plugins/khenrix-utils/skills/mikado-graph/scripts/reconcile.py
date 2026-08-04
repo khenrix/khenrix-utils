@@ -173,13 +173,61 @@ def shell_command_executable(command: str) -> Path | None:
 
 
 # ----- desired state ---------------------------------------------------------
+def mcp_clis(name: str, spec: dict) -> tuple:
+    """The CLIs a declared MCP server may be reconciled onto — all of them unless
+    `clis = [...]` narrows it.
+
+    AN ALLOW-LIST IN THE SAME SHAPE AS `platform`, ASKING A DIFFERENT QUESTION. `platform`
+    gates on what the machine can launch; this gates on whose MCP client has to hold the
+    connection open, and the two diverge — a server every CLI on this host can spawn can
+    still be one that a particular client cannot talk to. See [mcp_servers.vercel] in
+    capabilities.toml for the measured case. Withheld, not broken: the declaration stays,
+    and the CLIs that are listed still get it.
+
+    AN UNKNOWN NAME REFUSES RATHER THAN PICKING A DIRECTION. Both silent answers are wrong
+    in a way nobody would notice: silently including means `clis = ["agi"]` still adds the
+    server to the CLI the gate was written to keep it off — the defect the gate exists to
+    prevent, now invisible — and silently excluding means one typo withholds a working
+    server from all three at once, reported as three rows that quietly stop appearing.
+    capabilities.toml is hand-edited and decides what gets WRITTEN into a live config, so
+    a gate this engine cannot read stops the run, exactly as an unreadable config does
+    (read_json_object).
+    """
+    raw = spec.get("clis")
+    if raw is None:
+        return CLIS
+    if not isinstance(raw, list) or not all(isinstance(c, str) for c in raw):
+        raise ReconcileReadError(
+            f"[mcp_servers.{name}] clis must be a list of CLI names, got {raw!r}. "
+            f"Known CLIs: {list(CLIS)}.")
+    if not raw:
+        raise ReconcileReadError(
+            f"[mcp_servers.{name}] clis is empty, so no CLI would ever be given this "
+            f"server. If that is the intent, delete the declaration instead — and note "
+            f"that deleting it is a NO-OP on its own (reconcile is additive-only; the "
+            f"live config needs explicit removal too).")
+    unknown = [c for c in raw if c not in CLIS]
+    if unknown:
+        raise ReconcileReadError(
+            f"[mcp_servers.{name}] clis names {unknown}, which this repo does not "
+            f"configure (known: {list(CLIS)}). Refusing rather than guessing — including "
+            f"would add the server to the CLI the gate was written to withhold it from, "
+            f"and excluding would withhold it everywhere with nothing to read as an error.")
+    return tuple(raw)
+
+
 def desired_mcp(caps: dict, cli: str) -> dict:
-    """name -> spec, platform-filtered, including the provider docs server."""
+    """name -> spec, platform- and CLI-gated, including the provider docs server."""
     out = {}
     hosts = host_platforms()
     for name, spec in caps.get("mcp_servers", {}).items():
+        # Validated BEFORE the platform skip so a malformed gate refuses on every host,
+        # not only on the ones that would have reached the server anyway.
+        clis = mcp_clis(name, spec)
         plat = spec.get("platform")
         if plat and plat not in hosts:
+            continue
+        if cli not in clis:
             continue
         out[name] = spec
     docs = caps.get("docs_mcp", {}).get(cli)

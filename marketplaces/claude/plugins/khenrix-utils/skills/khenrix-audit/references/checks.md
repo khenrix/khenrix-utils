@@ -34,13 +34,17 @@ any hash collision within a CLI is reported flat. Gated on `dedupe_rule`: inform
 codex/agy.
 
 ## B4 — Declared↔live drift
-Detects capabilities.toml declared-but-not-live, live-but-managed-absent (policy-driven), and
-live-but-undeclared ("unmanaged") MCP servers, per CLI. Evidence varies by direction:
-`{"direction": "declared-not-live"}`, `{"direction": "managed-absent-but-live", "reason": ...}`,
+Detects capabilities.toml declared-but-not-live, declared-but-withheld-yet-live,
+live-but-managed-absent (policy-driven), and live-but-undeclared ("unmanaged") MCP servers,
+per CLI. Evidence varies by direction: `{"direction": "declared-not-live"}`,
+`{"direction": "withheld-but-live"}`, `{"direction": "managed-absent-but-live", "reason": ...}`,
 or `{"direction": "unmanaged"}`. Without `--repo-root` the whole check is
 `{"error": "no canonical repo root"}` and marked `not_evaluated` (never a silent clean pass).
-The platform gate (`capabilities.toml [mcp_servers.*] platform=`) applies ONLY to the
-declared-not-live direction — a Windows-only server absent on Linux is not drift. "unmanaged"
+The two gates (`capabilities.toml [mcp_servers.*] platform=` and `clis=`) suppress the
+declared-not-live direction — a Windows-only server absent on Linux, or one withheld from this
+CLI, is not drift. A `clis=` gate flips that server to "withheld-but-live" when it IS live on a
+CLI it is gated off — high confidence, and the only check that sees it, since the "unmanaged"
+loop below never looks at a name capabilities.toml declares. "unmanaged"
 findings are low-confidence and re-reported every run by design (deliberately not
 self-suppressing) unless a ledger policy exists for that subject. A server name starting with
 `plugin:` (plugin-bundled MCP, e.g. `plugin:pw:pw`) never fires "unmanaged" — capabilities.toml
@@ -49,9 +53,10 @@ not a drift to fix.
 
 ## B5 — Cross-CLI capability drift
 Detects a declared MCP server present on at least one installed CLI but missing on another,
-respecting the same platform gate as B4 (not naive set equality). Evidence: `present_on`
-(the CLIs that do have it). A CLI-specific server correctly gated by `platform=` never fires
-here for the CLIs it's not meant to run on. Without `--repo-root` the whole check is
+respecting the same gates as B4 (not naive set equality). Evidence: `present_on`
+(the CLIs that do have it). Parity is measured only over the CLIs a declaration covers, so a
+server gated by `platform=` or `clis=` never fires here for the CLIs it's not meant to run on.
+Without `--repo-root` the whole check is
 `{"error": "no canonical repo root"}` and marked `not_evaluated` (never a silent empty pass) —
 mirrors B4.
 

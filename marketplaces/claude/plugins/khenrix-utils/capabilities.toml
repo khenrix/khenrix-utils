@@ -15,15 +15,37 @@
 version = 1
 
 # ---------------------------------------------------------------------------
-# MCP servers — portable across all three CLIs.
+# MCP servers — portable across all three CLIs unless a gate narrows them.
 # `platform` (linux|darwin|windows) gates an entry to matching OSes.
+# `clis` (a subset of claude|codex|agy) gates an entry to the CLIs whose MCP client can
+#   actually run it — same allow-list shape as `platform`, different question. Omit it for
+#   the normal case (every CLI). An unknown name is refused, not guessed (reconcile.py
+#   mcp_clis); withholding here does NOT remove a server already live — see google-drive.
 # `transport` is http (url) or stdio (command/args/env).
 # ---------------------------------------------------------------------------
 [mcp_servers.context7]
 transport = "http"
 url = "https://mcp.context7.com/mcp"
 
+# WITHHELD FROM agy (2026-08-04): while this server is in agy's mcpServers, a headless agy
+# run never reaches a model. A/B on this host, backing up ~/.gemini/config/mcp_config.json
+# and restoring between arms:
+#   vercel present -> `agy -p "Reply with exactly: OK"` hit a 160 s timeout, rc 124, no
+#                     output (an earlier eval: 12/12 runs failed at ~299 s, total_tokens 0)
+#   vercel removed -> the same prompt answered "OK" in 7 s, rc 0
+# RE-TEST by putting the entry back in that file and re-running that one-liner — two
+# minutes — and undo this gate if a newer agy passes.
+# NOT the server, the auth, npx, or a stale lock; each was tested and cleared. `npx -y
+# mcp-remote https://mcp.vercel.com` under agy's own BROWSER env reaches "Proxy established
+# successfully" in ~2 s; the cached token carries a live refresh_token; the stale
+# mcp-auth lock named a REUSED pid and deleting it left agy hanging; pointing `command`
+# straight at the installed mcp-remote binary hung too. agy holds 31 cached vercel tool
+# definitions (~/.gemini/antigravity-cli/mcp/vercel/), so it enumerated the server once —
+# it is the RECONNECT that hangs — and it runs the other two stdio servers here fine.
+# Withheld, not broken: claude and codex run it and keep it. Removing the declaration
+# instead would have been a no-op (see google-drive below).
 [mcp_servers.vercel]
+clis = ["claude", "codex"]
 transport = "stdio"
 command = "npx"
 args = ["-y", "mcp-remote", "https://mcp.vercel.com"]

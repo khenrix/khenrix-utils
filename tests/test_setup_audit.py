@@ -757,6 +757,67 @@ def test_b5_platform_gate_suppresses_and_fires(tmp_path):
     assert any("winonly" in h["subjects"][0] for h in hits_win)
 
 
+# --- per-CLI gates on declared servers --------------------------------------
+# Real false positive this closes, measured 2026-08-04: [mcp_servers.vercel] is withheld
+# from agy (its MCP client hangs on it — `agy -p "Reply with exactly: OK"` timed out at
+# 160 s with the entry live, answered in 7 s without), and B4/B5 reported the withheld CLI
+# twice, each time recommending "run khenrix-setup to add it" — the action the gate exists
+# to prevent.
+CAPS_CLIS = ('version = 1\n[mcp_servers.ctx]\ncommand = "npx"\n'
+             '[mcp_servers.gated]\ncommand = "npx"\nclis = ["claude", "codex"]\n')
+
+
+def test_b4_clis_gate_suppresses_declared_not_live_on_a_withheld_cli(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_CLIS)
+    inv = _mk_inv([sa.item("agy", "user", "mcp", "ctx", "/g", "loaded", endpoint_hash="e")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert not any("gated" in h["subjects"][0] for h in hits)
+    # …and the ungated server on a CLI that lacks it is still drift
+    hits2 = sa.check_b4_drift(_mk_inv([sa.item("agy", "user", "plugin", "khenrix-utils", "/g", "loaded")]),
+                              {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert any(h["evidence"].get("direction") == "declared-not-live"
+               and "ctx" in h["subjects"][0] for h in hits2)
+
+
+def test_b4_reports_a_withheld_server_that_is_nevertheless_live(tmp_path):
+    # The state the gate exists to end, and the one nothing else here can see: the
+    # "unmanaged" loop only walks live-minus-declared, and a withheld server IS declared.
+    repo = _repo_with_caps(tmp_path, CAPS_CLIS)
+    inv = _mk_inv([sa.item("agy", "user", "mcp", "gated", "/g", "loaded", endpoint_hash="e")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    hit = [h for h in hits if "gated" in h["subjects"][0]]
+    assert hit and hit[0]["evidence"]["direction"] == "withheld-but-live"
+    assert hit[0]["confidence"] == "high"
+    assert not any("khenrix-setup to add" in r for r in hit[0]["remediation"])
+    # the same entry on a CLI the declaration covers is simply in sync — no finding
+    inv_ok = _mk_inv([sa.item("claude", "user", "mcp", "gated", "/c", "loaded", endpoint_hash="e")])
+    assert not any(h["evidence"].get("direction") == "withheld-but-live"
+                   for h in sa.check_b4_drift(inv_ok, {"repo_root": repo, "policies": {},
+                                                       "platform": "linux"}))
+
+
+def test_b5_measures_parity_only_over_the_clis_a_declaration_covers(tmp_path):
+    repo = _repo_with_caps(tmp_path, CAPS_CLIS)
+    inv = _mk_inv([sa.item("claude", "user", "mcp", "gated", "/c", "loaded", endpoint_hash="e"),
+                   sa.item("claude", "user", "mcp", "ctx", "/c", "loaded", endpoint_hash="e2"),
+                   sa.item("agy", "user", "plugin", "khenrix-utils", "/g", "loaded")])
+    hits = sa.check_b5_cross_cli(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert not any("gated" in h["subjects"][0] for h in hits), "withheld CLI is not missing it"
+    assert any(h["cli"] == "agy" and "ctx" in h["subjects"][0] for h in hits), \
+        "an ungated server absent on an installed CLI is still parity drift"
+
+
+def test_a_malformed_clis_gate_is_reported_not_silently_honoured(tmp_path):
+    # The audit only reports, so it cannot refuse the way reconcile.py does without taking
+    # the other checks down with it. Ignoring an unreadable gate errs toward SAYING
+    # something; honouring one would silently suppress the finding.
+    repo = _repo_with_caps(tmp_path, 'version = 1\n[mcp_servers.bad]\ncommand = "npx"\nclis = "agy"\n')
+    inv = _mk_inv([sa.item("agy", "user", "plugin", "khenrix-utils", "/g", "loaded")])
+    hits = sa.check_b4_drift(inv, {"repo_root": repo, "policies": {}, "platform": "linux"})
+    assert any(h["evidence"].get("direction") == "declared-not-live"
+               and "bad" in h["subjects"][0] for h in hits)
+
+
 def test_trigger_surface_extracts_quotes_triggers_usewhen():
     d = ('Does X. Use when the user wants to file a link. '
          'Triggers: "add this to the wiki", "save this link".')
