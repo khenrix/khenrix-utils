@@ -1,6 +1,6 @@
 {
   "skill": "llm-forge",
-  "source_hash": "3e6489e6c42192b0dc436393529e7e2feef5a57cd2dd84638dcd3aa9d1610b1e",
+  "source_hash": "4c88e1060f6a56457edf8ffe12f963661c1e024b799c73e88ecc5be708918291",
   "eval_set_hash": "45e99ecffec18a7bfe9e9f588173a00164469de26f8d1ad44b020d8d891ce130",
   "providers": [
     "claude",

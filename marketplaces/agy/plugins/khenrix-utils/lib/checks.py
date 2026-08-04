@@ -122,6 +122,29 @@ def pricing_coverage(root: Path) -> list[str]:
 
 
 def scan_secrets(root: Path) -> list[str]:
+    """Secret shapes across every tracked file. Empty means CLEAN, so it may only be
+    empty over files this actually read.
+
+    NOT-SCANNED IS NOT CLEAN, AND `except OSError: continue` MADE IT SO. Every unreadable
+    tracked file was skipped in silence and the gate went green over it — a secret scanner
+    failing open, which is the one direction a scanner must never fail.
+
+    THE SPLIT IS ON ERRNO BECAUSE THE CAUSES ARE NOT ALIKE. ENOENT is ordinary: `git
+    ls-files` reads the INDEX, so a tracked file deleted from the working tree (mid-rebase,
+    a `rm` not yet staged, a broken symlink) is listed with no bytes on disk — and a file
+    with no working-tree bytes has no working-tree secret to leak, so skipping it is not
+    merely tolerable, it is correct. EACCES/EPERM on a root-owned or mode-000 file, EISDIR,
+    ENOTDIR, EIO and everything else are the opposite claim: the bytes are there and this
+    did not read them.
+
+    THE CALLER FAILS THE GATE, deliberately. These strings flow through `run_all` into
+    `render.check`, which prints each and exits 1 — so an unreadable tracked file turns
+    `make verify` red rather than green. That is the only honest disposition: this function's
+    emptiness IS the assertion "there are no secrets in this tree", `make verify` is the sole
+    reader of it, and an advisory warning printed beside a passing gate is a verdict reading
+    cleaner than its evidence. Fixing it costs one `chmod`; not fixing it is a clean bill of
+    health over a file nobody has looked at.
+    """
     files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
                            text=True, check=True).stdout.splitlines()  # splitlines: tolerate spaces in paths
     problems = []
@@ -132,7 +155,13 @@ def scan_secrets(root: Path) -> list[str]:
             continue
         try:
             text = (root / rel).read_text(errors="ignore")
-        except OSError:
+        except FileNotFoundError:
+            continue                    # tracked, absent from the working tree: no bytes here
+        except OSError as e:
+            problems.append(
+                f"{rel}: NOT SCANNED for secrets ({type(e).__name__}: "
+                f"{e.strerror or e}) — this file is tracked and its bytes were never read, "
+                f"so `make verify` cannot certify it. Make it readable and re-run.")
             continue
         for rx in SECRET_FAIL:
             m = rx.search(text)
@@ -446,6 +475,46 @@ def _self_test() -> int:
     _p.unlink()
     _d.rmdir()
     ok.append(("scan_path on missing file is empty", scan_path(Path("/nonexistent/xyz.json")) == []))
+    # scan_secrets: an unreadable TRACKED file must not be scanned as clean. Driven through
+    # a throwaway git repo because the function walks `git ls-files` (the INDEX), which is
+    # precisely why the tracked-but-deleted case exists and has to stay silent.
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        subprocess.run(["git", "init", "-q", str(_r)], check=True, capture_output=True)
+        (_r / "plain.txt").write_text("nothing to see\n")
+        (_r / "locked.txt").write_text("nothing to see either\n")
+        (_r / "gone.txt").write_text("nothing to see either\n")
+        subprocess.run(["git", "add", "-A"], cwd=_r, check=True, capture_output=True)
+        ok.append(("scan_secrets is clean over a readable tree", scan_secrets(_r) == []))
+        # ENOENT: tracked in the index, absent from the working tree. Ordinary, and there
+        # are no working-tree bytes to leak — it must stay silent or every rebase is noise.
+        (_r / "gone.txt").unlink()
+        ok.append(("a tracked-but-deleted file is skipped silently", scan_secrets(_r) == []))
+        # EACCES: the bytes ARE there and were not read. The PRECONDITION is checked by
+        # trying the read, not by `geteuid() != 0` — root defeats `chmod 000`, and so do
+        # some mounts and ACLs, so a euid test would still assert on a machine where the
+        # file is readable and fail there. An environment-sensitive assertion inside a
+        # commit gate is the same fail-open one layer up: it teaches its reader to re-run.
+        (_r / "locked.txt").chmod(0o000)
+        try:
+            (_r / "locked.txt").read_text()
+            _blocked = False
+        except OSError:
+            _blocked = True
+        if not _blocked:
+            ok.append(("SKIP: chmod 000 does not block this user (root or ACL), so there "
+                       "is no EACCES here to assert on", True))
+        else:
+            _p = scan_secrets(_r)
+            # `any` over the list, not `_p[0]`: this is a bare-script suite, so an
+            # IndexError from an empty result exits 1 exactly like a FAIL does and a
+            # mutation run would score it CAUGHT off a crash. Measured — see mutate.py.
+            ok.append(("an unreadable tracked file is reported, not skipped",
+                       len(_p) == 1 and any(x.startswith("locked.txt: NOT SCANNED")
+                                            for x in _p)))
+            ok.append(("...and it names the errno cause, not just the path",
+                       any("PermissionError" in x for x in _p)))
+        (_r / "locked.txt").chmod(0o644)
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

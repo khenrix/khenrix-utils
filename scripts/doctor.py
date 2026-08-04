@@ -945,12 +945,38 @@ NON_SECRET_LITERALS = frozenset(
      "unset", "default", "auto", "disabled", "enabled"})
 
 
-def rc_lines(path):
-    """Text lines of an rc file, or [] if it cannot be read. Read-only."""
+def rc_read(path):
+    """(lines, unreadable_reason) for an rc file. `unreadable_reason` is None when read.
+
+    TWO ANSWERS BECAUSE THERE ARE TWO FACTS, and squashing them into `[]` is how this
+    scanner failed open. An rc that could not be read yielded zero lines, so zero
+    findings, so `_rc_secrets` returned PASS — "no exported literal secrets in N shell rc
+    file(s)" — with that file counted in N. The count was the amplifier: the assurance
+    grew with the number of files, including the ones nobody read.
+
+    ENOENT IS NOT A REASON, on the same errno split as `checks.scan_secrets`. `rc_targets`
+    only lists paths that already resolved to a file, so an ENOENT here means it vanished
+    in between, and a file that is gone holds no bytes to leak. EACCES on a root-owned rc,
+    ELOOP, EIO and the rest are the opposite: the secrets are there and were not looked
+    for. Read-only either way.
+    """
     try:
-        return path.read_text(errors="replace").splitlines()
-    except OSError:
-        return []
+        return path.read_text(errors="replace").splitlines(), None
+    except FileNotFoundError:
+        return [], None
+    except OSError as e:
+        return [], f"{type(e).__name__}: {e.strerror or e}"
+
+
+def rc_lines(path):
+    """Text lines of an rc file, or [] if it cannot be read. Read-only.
+
+    ONLY FOR DISCOVERY. The `[]` here is deliberately ambiguous and is safe in
+    `rc_targets` alone, where failing to read a file costs one round of `source`
+    expansion and the file itself is still scanned (and its unreadability still
+    reported) by `scan_rc_file`. Anything that makes a CLAIM about the contents must
+    use `rc_read` and honour the reason."""
+    return rc_read(path)[0]
 
 
 def rc_value(raw):
@@ -1046,14 +1072,23 @@ def rc_targets(home):
 
 
 def scan_rc_file(path, home=None):
-    """[(display, lineno, varname, why)] for one rc file. NEVER the value."""
+    """(findings, unreadable_reason) for one rc file, findings as
+    [(display, lineno, varname, why)]. NEVER the value.
+
+    An empty findings list means CLEAN and is only allowed to when the bytes were read,
+    so the reason travels with it rather than being dropped here — see `rc_read`. Both
+    callers must branch on it: neither may report "no secrets" over a file it did not
+    open."""
     home = home or Path.home()
     try:
         display = "~/" + str(path.relative_to(home))
     except ValueError:
         display = str(path)
+    lines, unreadable = rc_read(path)
+    if unreadable:
+        return [], f"{display}: {unreadable}"
     found = []
-    for n, line in enumerate(rc_lines(path), 1):
+    for n, line in enumerate(lines, 1):
         m = EXPORT_RE.match(line)
         if not m:
             continue
@@ -1067,7 +1102,7 @@ def scan_rc_file(path, home=None):
         if (SECRETISH_NAME.search(name) and not LOCATION_NAME.search(name)
                 and plausible_literal_secret(value)):
             found.append((display, n, name, "credential-named variable holding a literal"))
-    return found
+    return found, None
 
 
 @check("no-plaintext-secrets-in-shell-rc")
@@ -1076,12 +1111,31 @@ def _rc_secrets():
     targets = rc_targets(home)
     if not targets:
         return "SKIP", "no shell rc files found under $HOME"
-    found = [f for p in targets for f in scan_rc_file(p, home)]
-    if not found:
+    scans = [scan_rc_file(p, home) for p in targets]
+    found = [f for fs, _ in scans for f in fs]
+    unread = [why for _, why in scans if why]
+    if not found and not unread:
         return "PASS", (f"no exported literal secrets in {len(targets)} shell rc "
                         f"file(s); references (${{VAR}}, op://, $(...)) are the "
                         f"correct pattern and pass")
+    if not found:
+        # FAIL, NOT SKIP, and not PASS. The UNPROVEN/SKIP precedent below belongs to the
+        # MCP probe, where the unknown is TRANSIENT and "re-run the doctor" is real advice;
+        # this one is a file mode, so it is identical on every run and re-running is not
+        # advice, it is a loop. And PASS is unavailable for the reason this check exists:
+        # its PASS is a security claim, and a claim over a file nobody opened reads cleaner
+        # than its evidence. One `chmod` clears it.
+        return "FAIL", (
+            f"{len(unread)} of {len(targets)} shell rc file(s) COULD NOT BE READ, so this "
+            f"is not a clean scan: {'; '.join(unread)}. The other "
+            f"{len(targets) - len(unread)} held no exported literal secrets, but nothing "
+            "is known about the file(s) above — they may hold credentials in plaintext. "
+            "Make them readable (`chmod u+r`) and re-run; if one is deliberately "
+            "root-owned, scan it as its owner.")
     where = "; ".join(f"{d}:{n} {name} [{why}]" for d, n, name, why in found)
+    if unread:
+        where += f" (AND {len(unread)} file(s) could not be read at all: "
+        where += "; ".join(unread) + " — that part of the tree is unscanned)"
     return "FAIL", (
         f"{len(found)} exported literal secret(s) in shell rc files: {where} "
         "— VALUES WITHHELD DELIBERATELY (printing one to prove it is exposed "
@@ -1384,7 +1438,16 @@ def main(argv=None):
         if not p.is_file():
             print(f"not a readable file: {p}", file=sys.stderr)
             return 2
-        for _, n, name, why in scan_rc_file(p):
+        found, unreadable = scan_rc_file(p)
+        if unreadable:
+            # `is_file()` above answers EXISTS, not READABLE, and the difference reaches a
+            # rewrite: migrate-secrets-to-1password.sh calls this "the single source of
+            # truth", and on empty stdout with exit 0 it prints "No literal secrets found
+            # — nothing to migrate" and stops. Exiting 2 lands in the `|| exit 2` it
+            # already has, so silence can never be read as clean.
+            print(f"not a readable file: {unreadable}", file=sys.stderr)
+            return 2
+        for _, n, name, why in found:
             print(f"{n}\t{name}\t{why}")
         return 0
 

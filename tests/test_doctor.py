@@ -1704,3 +1704,83 @@ def test_scan_rc_and_the_check_agree_on_what_is_a_secret(tmp_path):
 def test_scan_rc_exits_2_on_a_missing_file(tmp_path):
     r = run("--scan-rc", str(tmp_path / "nope"))
     assert r.returncode == 2, r.stdout
+
+
+# --- an rc file that was never read is not an rc file with no secrets in it ----
+#
+# `rc_lines` returned [] for both, so an unreadable rc produced zero findings and
+# the check PASSed -- "no exported literal secrets in N shell rc file(s)" -- with
+# that file counted in N. Same shape as checks.scan_secrets' `except OSError:
+# continue`, in the other secret scanner.
+
+def _make_unreadable(p):
+    """chmod 000 and CONFIRM it took, returning whether it did.
+
+    Root defeats mode bits, and so do some mounts and ACLs. Asserting anyway would
+    make these tests fail on those machines for a reason that has nothing to do with
+    the code -- and an environment-sensitive assertion inside a commit gate teaches
+    its reader to re-run instead of to read."""
+    p.chmod(0o000)
+    try:
+        p.read_text()
+    except OSError:
+        return True
+    return False
+
+
+def test_an_unreadable_rc_file_is_not_scanned_as_clean(tmp_path):
+    """THE FAIL-OPEN. Both rc files are clean; one of them cannot be opened. A PASS
+    here is a security claim over bytes nobody looked at."""
+    home = rc_home(tmp_path, __bashrc=CLEAN_RC, __zshrc=CLEAN_RC)
+    if not _make_unreadable(home / ".zshrc"):
+        pytest.skip("chmod 000 does not block this user (root or ACL): no EACCES to assert on")
+    try:
+        c, _ = rc_check(tmp_path, home)
+    finally:
+        (home / ".zshrc").chmod(0o644)
+    assert c["status"] == "FAIL", c
+    assert "COULD NOT BE READ" in c["detail"], c
+    assert ".zshrc" in c["detail"], "must name the file it could not read"
+    assert "chmod" in c["detail"], "must say what to do about it"
+
+
+def test_a_readable_clean_rc_still_passes_beside_the_new_refusal(tmp_path):
+    """The discrimination check: refusing an unreadable file must not turn every
+    clean machine red, or the fix is just a louder fail-open."""
+    c, _ = rc_check(tmp_path, rc_home(tmp_path, __bashrc=CLEAN_RC, __zshrc=CLEAN_RC))
+    assert c["status"] == "PASS", c
+
+
+def test_an_unreadable_rc_does_not_hide_a_secret_found_in_another_file(tmp_path):
+    """Both facts must survive: the finding is still reported AND the unscanned file
+    is still named. Reporting only the finding would let someone fix it and read the
+    next PASS as covering the file that was never opened."""
+    home = rc_home(tmp_path, __bashrc=f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n',
+                   __zshrc=CLEAN_RC)
+    if not _make_unreadable(home / ".zshrc"):
+        pytest.skip("chmod 000 does not block this user (root or ACL): no EACCES to assert on")
+    try:
+        c, out = rc_check(tmp_path, home)
+    finally:
+        (home / ".zshrc").chmod(0o644)
+    assert c["status"] == "FAIL", c
+    assert "GOOGLE_PLACES_API_KEY" in c["detail"], c
+    assert ".zshrc" in c["detail"], "the unscanned file must not be dropped"
+    assert FAKE_GOOGLE not in out, "the value must still never be printed"
+
+
+def test_scan_rc_exits_2_on_an_unreadable_file(tmp_path):
+    """THE MIGRATION SEAM. `is_file()` answers EXISTS, not READABLE, and
+    migrate-secrets-to-1password.sh reads empty stdout with exit 0 as 'No literal
+    secrets found — nothing to migrate.' Exit 2 lands in the `||` it already has."""
+    rc = tmp_path / "locked.bashrc"
+    rc.write_text(f'export GOOGLE_PLACES_API_KEY="{FAKE_GOOGLE}"\n')
+    if not _make_unreadable(rc):
+        pytest.skip("chmod 000 does not block this user (root or ACL): no EACCES to assert on")
+    try:
+        r = run("--scan-rc", str(rc))
+    finally:
+        rc.chmod(0o644)
+    assert r.returncode == 2, r.stdout
+    assert r.stdout.strip() == "", "silent stdout is exactly what reads as 'nothing to migrate'"
+    assert FAKE_GOOGLE not in r.stdout + r.stderr
