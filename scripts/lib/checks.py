@@ -145,29 +145,59 @@ def scan_secrets(root: Path) -> list[str]:
     cleaner than its evidence. Fixing it costs one `chmod`; not fixing it is a clean bill of
     health over a file nobody has looked at.
     """
-    files = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True,
-                           text=True, check=True).stdout.splitlines()  # splitlines: tolerate spaces in paths
+    # `-z`, BECAUSE WITHOUT IT GIT HANDS BACK A NAME IT WILL NOT ACCEPT BACK. `git ls-files`
+    # prints a QUOTED, C-escaped DISPLAY form for any path outside plain ASCII — a tracked
+    # `café.txt` arrives as `"caf\303\251.txt"` — and opening that literal raised
+    # FileNotFoundError, which the ENOENT branch below reads as an ordinary deletion. So the
+    # file was never scanned and the gate went green over it. Measured 2026-08-04.
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=root,
+                         capture_output=True, check=True).stdout
+    files = [b.decode("utf-8", "surrogateescape") for b in out.split(b"\0") if b]
     problems = []
     for rel in files:
         if rel.endswith(SCAN_SKIP_SUFFIX) or any(rel.startswith(d) for d in SCAN_SKIP_DIRS):
             continue
         if rel in SCAN_SKIP_PATHS:
             continue
+        # TWO NAMESPACES, BECAUSE A COMMIT SHIPS THE INDEX AND NOT THE WORKING TREE. The
+        # ENOENT argument above is sound about the working tree and was standing in for the
+        # whole claim: a token staged and then cleaned from the worktree WITHOUT staging the
+        # cleanup is still the bytes that get committed, and a working-tree-only scan calls
+        # that clean.
+        sources = []
         try:
-            text = (root / rel).read_text(errors="ignore")
+            sources.append(("working tree", (root / rel).read_text(errors="ignore")))
         except FileNotFoundError:
-            continue                    # tracked, absent from the working tree: no bytes here
+            pass                        # no working-tree bytes; the index read below still runs
         except OSError as e:
             problems.append(
                 f"{rel}: NOT SCANNED for secrets ({type(e).__name__}: "
                 f"{e.strerror or e}) — this file is tracked and its bytes were never read, "
                 f"so `make verify` cannot certify it. Make it readable and re-run.")
             continue
-        for rx in SECRET_FAIL:
-            m = rx.search(text)
-            if m and hashlib.sha256(m.group(0).encode()).hexdigest() not in SECRET_ALLOW_SHA:
-                problems.append(f"{rel}: matches secret pattern /{rx.pattern[:20]}…/")
-                break
+        blob = subprocess.run(["git", "cat-file", "-p", f":{rel}"], cwd=root,
+                              capture_output=True)
+        if blob.returncode == 0:
+            sources.append(("index", blob.stdout.decode("utf-8", "ignore")))
+        if not sources:
+            # `ls-files` named it and NEITHER namespace resolved. Emptiness here would be a
+            # clean bill of health over a file nobody read, which is the one direction this
+            # function may not fail in.
+            problems.append(
+                f"{rel}: NOT SCANNED for secrets — `git ls-files` names it, but it has "
+                f"neither working-tree bytes nor an index blob, so nothing was read.")
+            continue
+        for where, text in sources:
+            hit = False
+            for rx in SECRET_FAIL:
+                m = rx.search(text)
+                if m and hashlib.sha256(m.group(0).encode()).hexdigest() not in SECRET_ALLOW_SHA:
+                    problems.append(
+                        f"{rel} ({where}): matches secret pattern /{rx.pattern[:20]}…/")
+                    hit = True
+                    break
+            if hit:
+                break                   # one report per file; the namespaces are not two findings
     return problems
 
 
@@ -486,10 +516,22 @@ def _self_test() -> int:
         (_r / "gone.txt").write_text("nothing to see either\n")
         subprocess.run(["git", "add", "-A"], cwd=_r, check=True, capture_output=True)
         ok.append(("scan_secrets is clean over a readable tree", scan_secrets(_r) == []))
-        # ENOENT: tracked in the index, absent from the working tree. Ordinary, and there
-        # are no working-tree bytes to leak — it must stay silent or every rebase is noise.
+        # ENOENT: tracked in the index, absent from the working tree. Ordinary, and a CLEAN
+        # one must stay silent or every rebase is noise.
         (_r / "gone.txt").unlink()
-        ok.append(("a tracked-but-deleted file is skipped silently", scan_secrets(_r) == []))
+        ok.append(("a clean tracked-but-deleted file is silent", scan_secrets(_r) == []))
+        # ...AND THE SAME CASE CARRYING A SECRET IS NOT. The fixture above holds "nothing to
+        # see either", so it passed whether the file was skipped or scanned — a fixture too
+        # clean to distinguish the two. The index is what a commit ships, so a token staged
+        # and then removed from the worktree without staging the removal is still going out.
+        _tok = "AKIA" + "Q7ZB3KXJ2M9WLPRT"
+        (_r / "staged.txt").write_text(f"key = {_tok}\n")
+        subprocess.run(["git", "add", "staged.txt"], cwd=_r, check=True, capture_output=True)
+        (_r / "staged.txt").unlink()
+        ok.append(("a tracked-but-deleted file carrying a secret is reported",
+                   any("staged.txt" in p for p in scan_secrets(_r))))
+        subprocess.run(["git", "rm", "-q", "-f", "--cached", "staged.txt"],
+                       cwd=_r, check=True, capture_output=True)
         # EACCES: the bytes ARE there and were not read. The PRECONDITION is checked by
         # trying the read, not by `geteuid() != 0` — root defeats `chmod 000`, and so do
         # some mounts and ACLs, so a euid test would still assert on a machine where the

@@ -17,7 +17,8 @@ EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
-                 tests/test_council_seams.py tests/test_council_facade.py
+                 tests/test_council_seams.py tests/test_council_facade.py \
+                 tests/test_checks_secrets.py
 # The forge suite, split by weight. The fast subset — schema, state machine,
 # classification, journal parsing — is in `verify` and therefore in `precommit`. The clone-
 # and process-heavy subset is NOT, because `make verify` is the obvious confirmed verify
