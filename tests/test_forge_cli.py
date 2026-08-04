@@ -663,6 +663,79 @@ def test_collect_validates_its_whole_provenance_record_before_the_call_that_spen
         "them belong in front of the spend")
 
 
+def test_a_refused_collect_leaves_no_handover_record_for_gc_to_delete_the_run_on(
+        tmp_path, monkeypatch, capsys):
+    """§15's refusal to reclaim an uncollected run, defeated by the collect that refused it.
+
+    `handover.json` IS §15's LICENCE and `--collect` used to write it before it had validated
+    the record, so a run refused for a mistyped word was left claiming a delivery nobody made.
+    MEASURED against the code this test was written for: the collect below exits 1,
+    `read_handover` then answers non-None, `gc.usage` reports the run handed over, and `--gc`
+    with NO `--force` removes SEVEN paths — the synthesis worktree, its branch, all four
+    `refs/khenrix-forge/` refs and the run directory holding every seat record. The one thing
+    in this engine that deletes, acting on a claim a refusal wrote.
+
+    THE `--gc` ASSERTION IS THE ONE THAT MATTERS. A test that stopped at `read_handover` says
+    the file is absent; what an operator loses here is the run's evidence, and the only thing
+    that can say it is safe is the walk that would have deleted it.
+    """
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    run_id, repo = _run_id(run_dir), _repo_of(run_dir)
+    assert cli.main(["--collect", run_id, "--repo", repo, "--accept",
+                     "--strategy", "fusion"]) != 0
+    assert handover.read_handover(run_dir) is None, \
+        "a refused collect wrote the record §15 reads as its licence to delete this run"
+    assert [r.handed_over for r in cli.gcmod.usage(Path(repo))] == [False]
+    assert cli.main(["--gc", run_id, "--repo", repo]) != 0
+    assert "not marked handed over" in capsys.readouterr().out
+    assert (Path(run_dir) / handover.SYNTHESIS).exists() and run_dir.exists(), \
+        "the run this collect refused was reclaimed without --force"
+
+
+def test_collect_persists_the_handover_only_below_every_refusal_it_can_make():
+    """THE GENERAL FORM of the two tests around it, read off the source on the precedent of
+    `test_collect_validates_its_whole_provenance_record_before_the_call_that_spends`.
+
+    A fixture can drive one refusal at a time, and what is at issue is where the WRITE sits:
+    every statement above it can refuse, and the record is §15's licence to delete the run. The
+    rendering is inside the ordering rather than beside it — `handover.text` refuses an
+    `ultra.STATUSES` member that grew no line in the header — so a write hoisted one statement
+    up would be back to persisting a claim this function has not finished making.
+    """
+    src = (ROOT / "shared" / "lib" / "forge" / "cli.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "collect")
+
+    def called_at(attr):
+        return [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == attr]
+
+    writes = called_at("write_handover")
+    assert len(writes) == 1, f"the handover is persisted once, not {len(writes)} time(s)"
+    for attr in ("Provenance", "run_ultra", "text"):
+        lines = called_at(attr)
+        assert lines, f"collect no longer calls {attr}, so this ordering is about nothing"
+        assert writes[0] > max(lines), (
+            f"the handover record is written at line {writes[0]}, above `{attr}` at "
+            f"{lines} — everything this function can refuse belongs above the one file §15 "
+            "reads as its licence to delete the run")
+
+
+def test_the_collect_that_succeeds_writes_the_record_gc_reads_as_its_licence(tmp_path,
+                                                                             monkeypatch):
+    """THE DISCRIMINATION CHECK for the test above, which a `--collect` that wrote no record at
+    all would also pass. §15 then refuses every run the operator DID hand over, and `--force` —
+    the flag that waives the licence question entirely — becomes the one they type routinely,
+    over runs they have not read."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _collect_text(tmp_path, run_dir)
+    recorded = handover.read_handover(run_dir)
+    assert recorded is not None and recorded.run_id == _run_id(run_dir)
+    assert cli.main(["--gc", _run_id(run_dir), "--repo", _repo_of(run_dir)]) == 0
+    assert not run_dir.exists()
+
+
 def test_the_handover_reports_the_review_this_run_got_and_not_the_pre_spend_placeholder(
         tmp_path, monkeypatch):
     """The cost of validating the record before the spend: it is built carrying a placeholder

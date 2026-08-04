@@ -633,7 +633,6 @@ def collect(args, *, out) -> int:
         accepted=bool(args.accept), out_of_band=oob,
         baseline_owned=_baseline_owned(manifest),
         b1_files=_b1_files(run_dir), why=merge.why)
-    handover.write_handover(run_dir, h)
 
     rounds = _rounds_run(run_dir)
     events = journal.Journal(storage.journal_path(run_dir)).read()
@@ -682,7 +681,23 @@ def collect(args, *, out) -> int:
 
     # `replace` RE-RUNS `__post_init__`, so the record that renders is validated carrying the
     # review this run actually got and not on the strength of the placeholder above.
-    print(handover.text(h, dataclasses.replace(p, ultra=u)), file=out)
+    body = handover.text(h, dataclasses.replace(p, ultra=u))
+
+    # AND THE RECORD IS PERSISTED LAST, BECAUSE §15 READS IT AS THE LICENCE TO DELETE THIS RUN.
+    # `handover.json` is not a note about the collect: `gc.collect` refuses a run that has none
+    # and reclaims one that has it — the synthesis worktree, both of §9's ref namespaces and the
+    # whole run directory — with no `--force`. A `--collect` that goes on to REFUSE has handed
+    # nothing over, so the file it leaves behind is a false claim of exactly the kind §15's
+    # refusal exists to catch. Measured where this write used to sit, above the record that
+    # checks the two argv words: `--collect --strategy fusion` was refused at exit 1 and
+    # `read_handover` then answered non-None, `gc.usage` reported the run handed over, and
+    # `gc.collect` removed SEVEN paths unforced. Every refusal this function can make is now
+    # above this line, the rendering included — `handover.text` is the last of them, since its
+    # `_ultra_line` refuses a status added to `ultra.STATUSES` that grew no rendering here. An
+    # unwritten record costs the operator a re-collect; a wrongly written one costs them the
+    # run.
+    handover.write_handover(run_dir, h)
+    print(body, file=out)
     return 0
 
 
