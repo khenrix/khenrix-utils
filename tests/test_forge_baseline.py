@@ -628,3 +628,37 @@ def test_index_sha_none_is_the_explicit_opt_out(tmp_path):
     f = finspect.replace(finspect.repo_facts(repo), index_sha=None)
     b = baseline.materialize(repo, run, f, ["d.txt"], "r1")
     assert b.dirty is True and "d.txt" in _tree_paths(repo, b.tracked_tree_oid)
+
+
+def test_an_ignored_unselected_file_is_not_carried_into_the_baseline(tmp_path):
+    """THE ENGINE FACT AN EVAL ORACLE ASSERTED THE OPPOSITE OF.
+
+    `evals/llm-forge/evals.json` case 0 asserted that a pre-existing, ignored, unselected
+    `dist/bundle.js` "comes back as an out-of-band artifact listed with a sha256, a byte size
+    and an explicit cp command". It cannot: `materialize` inventories tracked files plus the
+    SELECTED paths, so the file is not in B1, and the synthesis is cloned from B1. A correct
+    answer — that the file is absent — was being graded wrong, which is worse than an eval
+    that merely fails to discriminate.
+
+    §16's out-of-band list is about something else: `cli._sidecars_of` runs git's porcelain
+    over the SYNTHESIS tree and names what the branch does not carry, which is a file present
+    THERE — one a build step produced during the run — not one sitting in the user's own
+    working tree that the run never read.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "src/app.py", "v1\n")
+    write(repo, ".gitignore", "dist/\n")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "seed")
+    write(repo, "src/app.py", "v2 uncommitted\n")        # tracked, modified
+    write(repo, "scratch/notes.md", "notes\n")           # untracked, SELECTED
+    write(repo, "dist/bundle.js", "built\n")             # ignored, NOT selected
+
+    run = tmp_path / "run"; run.mkdir()
+    b = _mk(repo, run, selected=["scratch/notes.md"])
+    manifest = b.filesystem_manifest or {}
+
+    assert "dist/bundle.js" not in manifest, \
+        "an ignored, unselected file entered B1 — the eval oracle would then be right and " \
+        "this test wrong, which is the disagreement worth failing over"
+    assert "scratch/notes.md" in manifest, "the selected untracked path is carried"
+    assert "src/app.py" in manifest, "and the tracked file is, with its uncommitted edit"
