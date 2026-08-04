@@ -32,3 +32,4 @@ docs/environment/observed-state.json
 
 # khenrix-audit per-run artifacts (machine state; ledger.json IS committed)
 docs/setup-audit/runs/
+.chunkmap/
