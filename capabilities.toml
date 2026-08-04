@@ -145,6 +145,12 @@ name = "khenrix-wiki-add"
 [[skills]]
 name = "khenrix-wiki-sync"
 
+# Shared skill — one body in shared/skills/llm-forge/, driving the bundled `forge` stdlib
+# engine (shared/lib/forge/ → each plugin's lib/), which in turn imports the council engine
+# beside it. Listed for discoverability; render.py globs shared/skills/.
+[[skills]]
+name = "llm-forge"
+
 # ---------------------------------------------------------------------------
 # Baseline settings/policy — mapped to each CLI's native settings by the skill.
 # Applied only when the target key is ABSENT (never overrides your tuning).

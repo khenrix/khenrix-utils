@@ -1,0 +1,15 @@
+The working tree of the fixture repository, as `find . -not -path './.git/*'` prints it.
+Files under `dist/` and `.venv/` are IGNORED (see gitignore.txt) and therefore appear here
+but not in git-ls-files.txt.
+
+.
+./.gitignore
+./Makefile
+./src
+./src/app.py
+./tests
+./tests/test_app.py
+./scratch
+./scratch/notes.md
+./dist
+./dist/bundle.js

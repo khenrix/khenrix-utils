@@ -5,10 +5,15 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Bootstrapped here rather than borrowed from whichever sibling suite happens to run first:
+# this file is named in FORGE_TESTS and can be handed to pytest alone, and an import that
+# works only in a full run is a suite that fails for the person bisecting it.
+sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 
 def _plugin(cli: str) -> Path:
@@ -72,17 +77,45 @@ def _make_variable(name: str) -> set:
 
 
 def test_every_forge_suite_is_named_in_the_makefile_gate():
-    """A suite the Makefile does not name is a suite `make council-test` never runs.
+    """A suite named in neither Makefile variable is a suite nothing runs.
 
     Invisible from inside the suite itself — every test in it passes locally and the gate
     stays green while covering nothing — and it has happened in this package before.
 
+    THE UNION, BECAUSE THE SUITE IS SPLIT BY WEIGHT. `FORGE_TESTS` is the fast half that
+    `council-test` (and so `verify`, and so `precommit`) runs; `FORGE_SLOW_TESTS` is the
+    clone- and process-heavy half that `forge-test-slow` runs, which `test` and `precommit`
+    both depend on. Asserting equality against `FORGE_TESTS` alone would forbid the split;
+    asserting it against the union alone would let a file sit in both, which double-runs it
+    and hides which gate actually covers it.
+
     Equality, not containment, so the other direction fails too: a RENAMED suite leaves a
-    dead name in the variable, and `pytest` is handed a path that no longer exists.
+    dead name in a variable, and `pytest` is handed a path that no longer exists.
     """
     on_disk = {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_forge_*.py")}
-    assert _make_variable("FORGE_TESTS") == on_disk, \
-        "add the new suite to FORGE_TESTS in the Makefile, or drop the stale name"
+    fast, slow = _make_variable("FORGE_TESTS"), _make_variable("FORGE_SLOW_TESTS")
+    assert fast | slow == on_disk, \
+        "add the new suite to FORGE_TESTS or FORGE_SLOW_TESTS, or drop the stale name"
+    assert fast & slow == set(), \
+        "a suite in both variables is run twice and gated by neither list alone"
+
+
+def test_the_heavy_forge_half_is_reached_by_a_commit_boundary_gate():
+    """Moving nine suites out of `verify` moves them out of `precommit`, unless `precommit`
+    names the target that runs them.
+
+    The forge-inside-forge argument is about `verify` specifically — it is this repository's
+    own obvious confirmed verify command, so a forge run would spawn clone fleets inside its
+    own verifier clones. It says nothing about `precommit`, which no forge run executes. A
+    split without this dependency leaves `baseline`, `fleet`, `harvest`, `bundle`, `verify`,
+    `runner` and `review` in no commit-boundary gate at all.
+    """
+    text = (ROOT / "Makefile").read_text()
+    deps = re.search(r"^precommit: ([^#\n]*)", text, re.M)
+    assert deps, "the Makefile no longer declares a precommit target"
+    assert "forge-test-slow" in deps.group(1).split(), deps.group(1)
+    assert re.search(r"^forge-test-slow:", text, re.M), \
+        "precommit depends on a target the Makefile does not define"
 
 
 def test_llm_forge_closure_covers_both_libs():
@@ -411,6 +444,109 @@ def test_no_shipped_forge_module_cites_a_plan_document():
         for m in _PLAN_CITATION.finditer(whole):
             bad.append(f"{p.name}: {m.group(0)!r} in {whole[max(0, m.start()-50):m.end()+30]!r}")
     assert not bad, "\n".join(sorted(set(bad)))
+
+
+_SKILL_MD = ROOT / "shared" / "skills" / "llm-forge" / "SKILL.md"
+
+
+def _skill_prose() -> str:
+    """SKILL.md as one line, blockquote markers gone.
+
+    Markdown WRAPS. A sentence quoted verbatim from the engine is written across three lines
+    of a `>` block in the body and as one string in `handover.py`, so a raw `in` test compares
+    a wrapped copy against an unwrapped constant and fails for a body that is exactly right.
+    Normalizing both sides is what makes the assertion about the WORDS rather than about the
+    line width someone happened to wrap at.
+    """
+    text = _SKILL_MD.read_text()
+    return " ".join(text.replace("\n>", "\n").split())
+
+
+def test_the_skill_states_what_verified_means_and_what_the_self_test_gates():
+    """Each of the two requires one sentence, and a provenance header will otherwise be read
+    as the stronger claim. Asserted against handover's own constant — normalized the same way
+    on both sides — so the header and the skill cannot drift apart."""
+    from forge import handover
+    body = _skill_prose()
+    assert " ".join(handover._VERIFIED_MEANS.split()) in body, \
+        "SKILL.md must carry handover._VERIFIED_MEANS verbatim"
+    assert "the self-test gates wiring, not judgment" in body
+
+
+def test_the_shipped_skill_body_cites_no_plan_document():
+    """The same rule the forge MODULES are held to, on the one shipped file that is prose all
+    the way down. The plans are not shipped, so a reader of the installed plugin is pointed at
+    a file they do not have — and `_PLAN_CITATION`'s own tuning (the `(?!-)` lookahead, the
+    bare-cardinal branch) is what keeps this from firing on a correct sentence."""
+    hits = sorted({m.group(0) for m in _PLAN_CITATION.finditer(_skill_prose())})
+    assert hits == [], f"{hits} — SKILL.md cites a plan document the reader does not have"
+
+
+def test_the_skill_quotes_the_numbers_gate_quote_actually_produces():
+    """The skill body prints a cost figure an operator decides on, and a figure nobody
+    recomputed is a comment asserting something the code does not do.
+
+    This caught a real one before it shipped: the body said "21 setup runs, 16 verify runs"
+    where `gate.quote` produces 18 and 9. Nothing else in the repository would have noticed —
+    the number is prose, and prose is where this project's defects live.
+
+    Driven through `gate.quote` over a real fixture repository rather than through the
+    arithmetic restated here, because a test that recomputes the formula agrees with a wrong
+    formula.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    from forge import gate, preflight
+    from forge_fixtures import make_repo
+
+    with tempfile.TemporaryDirectory() as td:
+        report = preflight.inspect_repo(make_repo(Path(td)), ())
+        body = _skill_prose()
+        for ultra, expect in ((True, (19, 18, 9, 56.7)), (False, (18, 17, 8, 53.3))):
+            q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=ultra)
+            calls, setup, verify_, disk = expect
+            assert (q.provider_calls, q.setup_runs, q.verify_runs, q.peak_disk_gb) == expect, \
+                f"ultrareview={ultra}: quote moved, so SKILL.md's cost paragraph is now wrong"
+            for shown in (str(calls), str(setup), str(verify_), str(disk)):
+                assert shown in body, (ultra, shown)
+
+
+def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
+    """Run the façade from a RENDERED plugin directory and prove it resolves the bundled
+    engine. The resolution is one `parents[3]` expression covering two layouts, and nothing
+    else in the suite exercises the plugin one."""
+    for cli_name in CLIS:
+        script = (ROOT / "marketplaces" / cli_name / "plugins" / "khenrix-utils"
+                  / "skills" / "llm-forge" / "scripts" / "forge.py")
+        assert script.is_file(), script
+        r = subprocess.run([sys.executable, str(script), "--help"],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, (cli_name, r.stderr)
+        for flag in ("--start", "--collect", "--gc", "--no-ultra"):
+            assert flag in r.stdout, (cli_name, flag)
+
+
+def test_the_rendered_facade_loads_the_plugins_OWN_engine_not_the_repos():
+    """`--help` exiting 0 proves an engine was found, not WHICH one. Inside this repo both
+    are reachable, so a `parents[4]`-shaped expression would resolve `shared/lib` and pass
+    every assertion above while being broken for the copy a marketplace actually installs.
+
+    A subprocess because the forge package is already imported from `shared/lib` by the
+    sibling suites in this session, and the first import wins.
+    """
+    script = (ROOT / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
+              / "skills" / "llm-forge" / "scripts" / "forge.py")
+    prog = (
+        "import importlib.util as u, sys;"
+        "s = u.spec_from_file_location('_facade', sys.argv[1]);"
+        "m = u.module_from_spec(s); s.loader.exec_module(m);"
+        "print(m.cli.__file__)"
+    )
+    r = subprocess.run([sys.executable, "-c", prog, str(script)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    expected = (ROOT / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
+                / "lib" / "forge" / "cli.py")
+    assert r.stdout.strip() == str(expected), r.stdout
 
 
 def test_launch_does_not_claim_it_has_no_production_caller():

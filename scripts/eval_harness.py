@@ -67,6 +67,38 @@ DETERMINISTIC_GATED = {
                           str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
     "khenrix-wiki-sync": ["python3", "-m", "unittest", "discover", "-s",
                           str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
+    # A read-only with-skill/baseline harness cannot exercise forge's defining behaviour —
+    # a clone fleet, three providers, a fresh verifier — and an ordinary judge receipt would
+    # certify prose while leaving the dangerous mechanics untouched. The gate is the hermetic
+    # forge suite, which `_write_receipt` runs and refuses to write on. It is a REAL suite,
+    # not a `--help`: handover's record and provenance rules, the CLI front end, and every
+    # refusal `--gc` makes before it deletes anything.
+    #
+    # NOTE the judge run still EXECUTES: `gate_ok = True` is applied AFTER it in `run()`, so
+    # routing makes the delta advisory, not the run free. The cost control is the cheap eval
+    # set beside this file.
+    #
+    # `uvx`, NOT `sys.executable` and not a hardcoded "python3", and that is a MEASUREMENT
+    # rather than a preference: this machine's interpreter is 3.14.4 against a stated 3.11
+    # floor and cannot import pytest at all (`python3 -c "import pytest"` → ModuleNotFoundError,
+    # rc=1), so both spellings would fail here for a reason that has nothing to do with forge.
+    # The two entries above survive on `python3` only because `unittest` is stdlib. This is
+    # the same fallback `RUN_PYTEST` in the Makefile takes for the same reason.
+    "llm-forge": ["uvx", "--with", "pytest", "pytest", "-q",
+                  str(ROOT / "tests" / "test_forge_handover.py"),
+                  str(ROOT / "tests" / "test_forge_cli.py"),
+                  str(ROOT / "tests" / "test_forge_gc.py")],
+}
+
+# WHICH gate earned this receipt, as a name a reader can check against the command above. A
+# single literal here was a false provenance string the moment a third skill was routed through
+# that dict — and a receipt exists to say what ran, so being wrong about that is worse than
+# recording nothing. A `KeyError` is the right failure for a skill routed through
+# DETERMINISTIC_GATED with no name: `.get(skill, "unknown")` would write the receipt anyway.
+DETERMINISTIC_GATE_NAMES = {
+    "khenrix-wiki-add":  "wikisync-unittests",
+    "khenrix-wiki-sync": "wikisync-unittests",
+    "llm-forge":         "forge-handover-cli-gc-suites",
 }
 
 
@@ -449,7 +481,7 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         rc = subprocess.run(DETERMINISTIC_GATED[skill])
         if rc.returncode != 0:  # unit tests are the gate — never bless a failing engine
             raise SystemExit(f"{skill} deterministic tests failed; not writing receipt")
-        rec.update(deterministic_gate="wikisync-unittests", self_test=True)
+        rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True)
     (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
 
 
@@ -531,9 +563,10 @@ def run(args) -> int:
         gate_ok = True
         bw = "n/a-orchestrator"
     elif args.skill in DETERMINISTIC_GATED:
-        # The read-only baseline reads the in-repo skill source, so the with-vs-without
-        # delta is meaningless (see DETERMINISTIC_GATED). The judge run is advisory; the
-        # receipt gate is the wikisync unit suite (enforced inside _write_receipt).
+        # For the wiki skills the read-only baseline reads the in-repo skill source, so the
+        # with-vs-without delta is meaningless; for llm-forge a read-only harness cannot drive
+        # a clone fleet at all. Either way the judge run is advisory and the receipt gate is
+        # the suite named in DETERMINISTIC_GATE_NAMES (enforced inside _write_receipt).
         gate_ok = True
         bw = "n/a-deterministic"
     if gate_ok:  # passing run → refresh the receipt
@@ -589,6 +622,14 @@ def self_test() -> int:
 
     def check(label, cond, detail=""):
         results.append((label, bool(cond), detail))
+
+    # Every DETERMINISTIC_GATED skill must have a gate NAME. `_write_receipt` indexes
+    # DETERMINISTIC_GATE_NAMES directly — deliberately, since a receipt that cannot say what
+    # gated it should not be written — but that KeyError would land at the END of a paid run.
+    # This check costs nothing and moves it to `make eval-test`.
+    check("every deterministic-gated skill names its gate",
+          set(DETERMINISTIC_GATED) == set(DETERMINISTIC_GATE_NAMES),
+          str(sorted(set(DETERMINISTIC_GATED) ^ set(DETERMINISTIC_GATE_NAMES))))
 
     # frontmatter stripping
     body = strip_frontmatter("---\nname: x\ndescription: y\n---\n\n# Title\nbody")

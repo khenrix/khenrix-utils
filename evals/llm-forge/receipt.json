@@ -1,0 +1,23 @@
+{
+  "skill": "llm-forge",
+  "source_hash": "e57630d9047ef94117335bcb817502f52257c1ca1ff3c739211d3b9c1d645f31",
+  "eval_set_hash": "45e99ecffec18a7bfe9e9f588173a00164469de26f8d1ad44b020d8d891ce130",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.2778,
+  "blind_winner": "n/a-deterministic",
+  "provenance": "eval",
+  "models": {
+    "claude": "claude-opus-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
+    "judge": "claude-opus-5"
+  },
+  "deterministic_gate": "forge-handover-cli-gc-suites",
+  "self_test": true
+}

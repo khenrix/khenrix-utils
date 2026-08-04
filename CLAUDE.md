@@ -59,9 +59,12 @@ Commit only when `run_summary.delta.pass_rate >= 0`. The blind A/B winner is rec
 advisory (not a gate) — on a strong executor it rewards the tighter baseline over a
 correct-but-thorough skill answer, so a non-negative-delta run isn't failed on a blind tie/loss.
 `skill-creator` (Claude) and Codex's native creator are optional accelerators on top; the
-harness is the baseline that also covers agy. `llm-council` is the exception — its
-model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness
-(see the process doc).
+harness is the baseline that also covers agy. `llm-council` is one exception — its
+model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness.
+The `DETERMINISTIC_GATED` skills (`khenrix-wiki-add`, `khenrix-wiki-sync`, `llm-forge`) are
+the other: their receipt is earned by a real test suite because a read-only harness cannot
+exercise what they do. Their judge run still costs tokens and is recorded as advisory — the
+receipt names which suite gated it (see the process doc).
 
 `make eval` writes `evals/<skill>/receipt.json` (skill source-closure hash + eval-set hash)
 on a passing run. **`make precommit`** is the commit-boundary gate: it checks render is in
@@ -70,6 +73,14 @@ stale/missing receipt fails). `make verify` only warns about stale receipts — 
 `make precommit` before committing a skill change. The source closure includes the bundled
 `scripts/lib/*` and `scripts/render.py`, so editing the reconcile engine correctly stales
 every skill. Seed receipts for the current blessed state with `eval_harness.py --seed-receipt`.
+
+`make precommit` also depends on **`make forge-test-slow`**, and that is load-bearing rather
+than incidental. The forge suite is split by weight: `FORGE_TESTS` (the fast half) runs inside
+`make verify`, while `FORGE_SLOW_TESTS` (the clone- and process-heavy half) deliberately does
+not — `make verify` is this repository's own obvious confirmed verify command, so a forge run
+would otherwise spawn clone fleets inside its own verifier clones. `precommit` is where those
+nine suites land instead; nothing runs `precommit` inside a verifier. Adding a `tests/test_forge_*.py`
+to neither variable is a suite nothing runs, and `test_forge_packaging.py` fails on it.
 
 ## Constraints
 

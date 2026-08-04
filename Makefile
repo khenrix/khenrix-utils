@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test doctor-test audit-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -18,22 +18,29 @@ DOCTOR_TESTS := tests/test_doctor.py
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py
+# The forge suite, split by weight. The fast subset — schema, state machine,
+# classification, journal parsing — is in `verify` and therefore in `precommit`. The clone-
+# and process-heavy subset is NOT, because `make verify` is the obvious confirmed verify
+# command for this very repository: a forge run would then spawn clone fleets four-plus
+# times inside its own verifier clones, inflating wall clock and manufacturing FLAKY
+# verdicts under contended execution.
 FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
-               tests/test_forge_baseline.py tests/test_forge_screen.py \
-               tests/test_forge_fleet.py tests/test_forge_packaging.py \
-               tests/test_forge_snapshot.py tests/test_forge_harvest.py \
-               tests/test_forge_seams.py tests/test_forge_bundle.py \
-               tests/test_forge_verify.py tests/test_forge_journal.py \
-               tests/test_forge_runstate.py tests/test_forge_preflight.py \
-               tests/test_forge_gate.py tests/test_forge_seat.py \
-               tests/test_forge_runner.py tests/test_forge_taskbundle.py \
+               tests/test_forge_screen.py tests/test_forge_packaging.py \
+               tests/test_forge_snapshot.py tests/test_forge_seams.py \
+               tests/test_forge_journal.py tests/test_forge_runstate.py \
+               tests/test_forge_preflight.py tests/test_forge_gate.py \
+               tests/test_forge_seat.py tests/test_forge_taskbundle.py \
                tests/test_forge_ledger.py tests/test_forge_coverage.py \
                tests/test_forge_fingerprint.py tests/test_forge_launch.py \
                tests/test_forge_seatrecord.py tests/test_forge_strategy.py \
                tests/test_forge_progress.py tests/test_forge_rubric.py \
-               tests/test_forge_review.py tests/test_forge_ultra.py \
-               tests/test_forge_handover.py tests/test_forge_cli.py \
-               tests/test_forge_gc.py
+               tests/test_forge_ultra.py tests/test_forge_handover.py
+
+FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \
+                    tests/test_forge_harvest.py tests/test_forge_bundle.py \
+                    tests/test_forge_verify.py tests/test_forge_runner.py \
+                    tests/test_forge_review.py tests/test_forge_gc.py \
+                    tests/test_forge_cli.py
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
@@ -93,18 +100,32 @@ verify: render doctor-test audit-test bats-test council-test eval-test ## Valida
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
-precommit: verify ## Commit-boundary gate: render in sync + every changed skill has a fresh eval receipt
+# THE SPLIT MOVES NINE SUITES OUT OF `verify`, AND `precommit` IS WHERE THEY LAND. `verify`
+# is reached by `precommit` and also by whoever picks a confirmed verify command for THIS
+# repository, which is the forge-inside-forge argument above the variables — a forge run
+# would spawn clone fleets inside its own verifier clones. `precommit` is neither: nothing
+# runs it inside a verifier. Without this dependency `baseline`, `fleet`, `harvest`,
+# `bundle`, `verify`, `runner` and `review` sit in no commit-boundary gate at all.
+precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + every changed skill has a fresh eval receipt
 	$(PY) scripts/render.py
 	@git diff --quiet -- marketplaces/ || { echo "✗ render drift: regenerate + stage rendered output ('git add marketplaces/')"; exit 1; }
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
 	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
 
-test: council-test ## Run the deterministic llm-council engine self-test + slow suites (no token cost)
+test: council-test forge-test-slow ## Run the deterministic llm-council engine self-test + slow suites (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
 	$(call RUN_PYTEST,-m slow tests/test_council_characterization.py tests/test_council_facade.py)
 
-council-test: ## Council engine (seat/characterization/seam/facade) + forge substrate suites, sans slow (no token cost)
+council-test: ## Council engine (seat/characterization/seam/facade) + fast forge suites, sans slow (no token cost)
 	$(call RUN_PYTEST,-m "not slow" $(COUNCIL_TESTS) $(FORGE_TESTS))
+
+# A HEAVY SUITE WITH NO TARGET IS A SUITE THAT ROTS, which is the failure `bats-test`'s own
+# comment is about one gate over: the `-m slow` line in `test` names only the two council
+# files, so a forge test given that marker would be run by nothing. `make test` runs this,
+# the receipt gate runs a subset of it through DETERMINISTIC_GATED, and `make precommit`
+# depends on it — three homes, and none of them is `make verify`.
+forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower)
+	$(call RUN_PYTEST,$(FORGE_SLOW_TESTS))
 
 # Wired into `verify` (and so into `precommit`) on purpose. A verifier whose own
 # tests nothing ever runs decays into exactly the "claims a capability, never

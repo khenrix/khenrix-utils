@@ -91,8 +91,8 @@ when the executor died, on a missing verdict when the judge did — and averaged
 side's mean, so it BIASES the delta — a `with_skill` error
 sinks it, a `without_skill` error inflates it and would otherwise earn a receipt off a
 baseline that never answered. The gate therefore fails closed whenever any run is invalid,
-for every skill whose gate IS the delta; `llm-council` and the `DETERMINISTIC_GATED` wiki
-skills are exempt because their receipts are earned by a self-test / unit suite instead. The
+for every skill whose gate IS the delta; `llm-council` and every `DETERMINISTIC_GATED` skill
+are exempt because their receipts are earned by a self-test / unit suite instead. The
 run summary prints a `⚠ INVALID RUN` line per occurrence. If one recurs with nothing else in
 flight, the eval is under-timed — raise the per-attempt cap with `make eval … TIMEOUT=<secs>`
 rather than `MODE=deep`, which would also change reasoning depth.
@@ -119,6 +119,27 @@ receipt gate. What earns the receipt is the model/mode wiring verified
 --self-test` and a live `--smoke` (inspect the manifest's `model`/`thinking` and
 `[mode: …]`). Its synthesis quality has a bespoke blind-review workspace under
 `evals/llm-council/` (authored with skill-creator).
+
+## Deterministically-gated skills (`DETERMINISTIC_GATED`)
+
+Some skills the judge harness cannot fairly gate route their receipt through a real test
+suite instead. `eval_harness.DETERMINISTIC_GATED` maps the skill to the command, and
+`DETERMINISTIC_GATE_NAMES` maps it to the NAME the receipt records — two tables rather than
+one, because a single hardcoded gate name became a false provenance string the moment a
+third skill was routed through the dict, on the one artifact whose whole job is to say what
+ran. A skill in the first table and not the second raises a `KeyError` rather than writing a
+receipt that cannot name its gate; `make eval-test` catches that before a paid run does.
+
+| Skill | Why the delta cannot gate it | Gate |
+|---|---|---|
+| `khenrix-wiki-add` / `khenrix-wiki-sync` | the read-only baseline can read the in-repo skill source and engine, so "skill-free" is contaminated | the wikisync unit suite |
+| `llm-forge` | a read-only with-skill/baseline harness cannot drive a clone fleet, three providers and a fresh verifier — a judge receipt would certify prose and leave the dangerous mechanics untouched | the hermetic forge handover/CLI/`--gc` suites |
+
+**The judge run still executes.** `gate_ok = True` is applied *after* it in `run()`, so
+routing makes the delta **advisory, not free** — the cost control is a cheap eval set. Read
+the recorded delta when triaging; do not treat it as the evidence in the receipt. The
+evidence is the suite named in `deterministic_gate`, which `_write_receipt` runs and refuses
+to write on.
 
 ## Maintenance runs (skill-tuneup)
 
