@@ -277,7 +277,15 @@ def run_all(root: Path = ROOT) -> list[str]:
 # Eval-receipt gate (Increment 7) — source-input closure → hash → freshness gate.
 # --------------------------------------------------------------------------- #
 LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundled into every skill
-GLOBAL_INPUTS = ["scripts/render.py"]  # render assembly affects EVERY rendered body
+# THE CERTIFIER AND THE TEST MANIFEST ARE INPUTS TO EVERY RECEIPT, and leaving them out meant
+# a gate could be NARROWED — a suite dropped from DETERMINISTIC_GATED, a test deleted from the
+# Makefile — while every existing receipt stayed fresh. A receipt says "this source was
+# certified"; what "certified" means is decided by these files, so a change to them has to
+# stale it exactly as a change to the skill does.
+GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
+                 "scripts/eval_harness.py",  # decides what the gate RUNS
+                 "scripts/lib/checks.py",    # decides what the gate ACCEPTS
+                 "Makefile"]                 # names the suites a gate can name
 # Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
 # capabilities.toml + house-style.md (+ overlays); llm-council bundles headless-invocation.md.
 SKILL_EXTRA = {
@@ -319,7 +327,11 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
         if base.is_dir():
             files += [p for p in base.rglob("*") if p.is_file()
                       and "__pycache__" not in p.parts and p.suffix != ".pyc"]
-    for rel in LIB_SCRIPTS + GLOBAL_INPUTS + SKILL_EXTRA.get(skill, []):
+    # `dict.fromkeys`, not a set: order is what `source_manifest` sorts and a duplicate is
+    # what happens when a file earns its place twice — `checks.py` is a GLOBAL_INPUT because
+    # it decides what the gate accepts, and llm-forge's SKILL_EXTRA because forge/screen.py
+    # reads its constants. Both reasons are right; hashing it twice is not.
+    for rel in dict.fromkeys(LIB_SCRIPTS + GLOBAL_INPUTS + SKILL_EXTRA.get(skill, [])):
         p = root / rel
         if p.is_file():
             files.append(p)
@@ -375,6 +387,26 @@ def _evald_skills(root: Path) -> list[str]:
                   if (p / "evals.json").exists())
 
 
+def _receipt_is_certified(rec: dict) -> bool:
+    """Whether this receipt records a certification that PASSED, as opposed to fresh inputs.
+
+    `receipt_gate` compared two hashes and nothing else, so a receipt carrying matching
+    hashes and `self_test: false` was accepted — "the certification failed" and "the
+    certification passed" left the same verdict at the gate. A seeded receipt is exempt and
+    says so in its own `provenance`: seeding is an explicit human act blessing a committed
+    state, not a claim that a suite ran.
+    """
+    if "self_test" in rec:
+        # PRESENT AND FALSE IS A FAILED CERTIFICATION, whatever the provenance says. Nothing
+        # writes that state today — `_write_receipt` raises rather than recording a failure —
+        # so reaching it means a receipt was edited or assembled by hand, which is exactly
+        # when the gate should refuse rather than read the field's neighbours for reassurance.
+        return rec["self_test"] is True
+    # ABSENT is the seeded shape: `--seed-receipt` blesses a committed state without running a
+    # gate, and says so in `provenance`. A receipt with neither is a receipt claiming nothing.
+    return str(rec.get("provenance", "")).startswith("seeded")
+
+
 def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
     out = []
     for skill in _evald_skills(root):
@@ -383,6 +415,9 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
             out.append(f"receipt: {skill} has no receipt — run `make eval SKILL={skill}` (or `--seed-receipt`)")
             continue
         rec = json.loads(rp.read_text())
+        if not _receipt_is_certified(rec):
+            out.append(f"receipt: {skill} records a certification that did not pass "
+                       f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")
         if rec.get("source_hash") != source_hash(root, skill):
             out.append(f"receipt: {skill} changed since last eval — run `make eval SKILL={skill}`")
         elif rec.get("eval_set_hash") != eval_set_hash(root, skill):

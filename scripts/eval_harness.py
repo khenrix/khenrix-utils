@@ -84,11 +84,48 @@ DETERMINISTIC_GATED = {
     # rc=1), so both spellings would fail here for a reason that has nothing to do with forge.
     # The two entries above survive on `python3` only because `unittest` is stdlib. This is
     # the same fallback `RUN_PYTEST` in the Makefile takes for the same reason.
-    "llm-forge": ["uvx", "--with", "pytest", "pytest", "-q",
-                  str(ROOT / "tests" / "test_forge_handover.py"),
-                  str(ROOT / "tests" / "test_forge_cli.py"),
-                  str(ROOT / "tests" / "test_forge_gc.py")],
+    # DERIVED FROM DISK, NOT RESTATED. This named three suites while the Makefile named
+    # thirty-one, and the omitted set included `test_forge_packaging.py` — the module that
+    # checks rendered-facade resolution and the quote prose — so breaking the facade left the
+    # certifying gate green. A hand-kept list is a second place to be right about what
+    # "certified" means, and it was already wrong.
+    "llm-forge": ["uvx", "--with", "pytest", "pytest", "-q"] + [
+        str(p) for p in sorted((ROOT / "tests").glob("test_forge_*.py"))],
 }
+
+
+_COUNT = re.compile(r"\b(\d+)\s+(passed|failed|skipped|error|errors|xfailed|xpassed)\b")
+
+
+def _pytest_counts(text: str) -> dict:
+    """pytest's own summary line, as numbers rather than as an exit code.
+
+    A receipt written on `returncode == 0` says a PROCESS finished. It does not say anything
+    ran: an all-skipped run exits 0, a run that collects nothing exits 5 but a wrapper can
+    swallow it, and `true` exits 0 having tested the empty set. The counts are what turn "the
+    command succeeded" into "these many tests executed and none was skipped".
+    """
+    out = {"tests_run": 0, "skipped": 0, "failed": 0}
+    for n, word in _COUNT.findall(text or ""):
+        n = int(n)
+        if word in ("passed", "xfailed", "xpassed"):
+            out["tests_run"] += n
+        elif word == "skipped":
+            out["skipped"] += n
+        elif word in ("failed", "error", "errors"):
+            out["failed"] += n
+            out["tests_run"] += n
+    return out
+
+
+def _counts_are_evidence(counts: dict) -> bool:
+    """Whether these counts can support a receipt.
+
+    A SKIP IN THE CERTIFYING SUITE IS A TEST THAT DID NOT RUN, and the receipt would say the
+    suite passed. That is stricter than `make verify`, deliberately: `verify` runs a suite,
+    this decides whether a run may be recorded as certification.
+    """
+    return counts["tests_run"] > 0 and counts["skipped"] == 0 and counts["failed"] == 0
 
 # WHICH gate earned this receipt, as a name a reader can check against the command above. A
 # single literal here was a false provenance string the moment a third skill was routed through
@@ -478,10 +515,20 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
             raise SystemExit("llm-council self-test failed; not writing receipt")
         rec.update(self_test=True, synthesis_review="manual-attested")
     elif skill in DETERMINISTIC_GATED:
-        rc = subprocess.run(DETERMINISTIC_GATED[skill])
+        cmd = DETERMINISTIC_GATED[skill]
+        rc = subprocess.run(cmd, capture_output=True, text=True)
+        print(rc.stdout[-2000:] if rc.stdout else "", end="")
         if rc.returncode != 0:  # unit tests are the gate — never bless a failing engine
             raise SystemExit(f"{skill} deterministic tests failed; not writing receipt")
-        rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True)
+        counts = _pytest_counts((rc.stdout or "") + (rc.stderr or ""))
+        if not _counts_are_evidence(counts):
+            # AN EXIT CODE IS NOT A TEST COUNT. An all-skipped run exits 0, and so does a
+            # command that runs nothing at all — both would have written a green receipt.
+            raise SystemExit(
+                f"{skill} deterministic gate exited 0 but its counts are not evidence "
+                f"({counts}); not writing receipt")
+        rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True,
+                   gate_command=cmd, gate_counts=counts)
     (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
 
 
