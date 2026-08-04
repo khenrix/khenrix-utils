@@ -28,10 +28,11 @@ from forge import (cli, fingerprint, handover, runstate, seat as seatmod,  # noq
                    storage, taskbundle, ultra)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
-# §19's window, as Task 9 will add it to `council.engine.MODE_TIMEOUT`. Injected into the
-# ENGINE's own table rather than around `cli._resolve_seat_timeout`, because the property
-# under test is that the CLI reads that table and no other source — a monkeypatched resolver
-# would pass for a CLI that invented a number.
+# §19's window. `council.engine.MODE_TIMEOUT` now carries it, but these tests still SET it:
+# injected into the ENGINE's own table rather than around `cli._resolve_seat_timeout`, because
+# the property under test is that the CLI reads that table and no other source — a
+# monkeypatched resolver would pass for a CLI that invented a number, and an unpatched test
+# would pass for one that hard-coded the same 3600.
 _FORGE_TIMEOUT = 3600
 
 # Long enough to clear `seat._MIN_RATIONALE_CHARS`: §8 refuses a zero-diff seat whose
@@ -380,9 +381,9 @@ def test_no_seat_window_is_invented_when_the_engine_names_none(tmp_path, capsys,
     REFUSAL rather than a fallback to `deep`'s 1200s review window — which would put a
     forty-minute builder seat under a twenty-minute cap.
 
-    `delitem(..., raising=False)` rather than an assertion that the key is absent: the entry
-    is Task 9's to add, and this test is about what happens without one whichever build it
-    runs in.
+    `delitem(..., raising=False)` rather than a plain `delitem`: the engine carries the entry
+    now, but this test is about what happens without one, and it must go on saying that in a
+    build where the entry was never added or has been rolled back.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(cli, "_closures", lambda: {"claude": "a", "codex": "a", "agy": "a"})

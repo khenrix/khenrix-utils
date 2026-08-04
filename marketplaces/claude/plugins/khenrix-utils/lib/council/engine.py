@@ -87,7 +87,23 @@ DEFAULT_MODE = "normal"
 # 1200 still clears the slowest seat by a wide margin. For big deep prompts prefer
 # --retries 0/1: a member that rode the window once will ride it again, and retries
 # multiply the wait.
-MODE_TIMEOUT = {"normal": 300, "deep": 1200}  # per-attempt seconds used when --timeout is unset
+# `forge` is a BUILD window, not a review window: a forge seat does the whole task in an
+# isolated clone — read, edit, test, commit — where `deep`'s 1200s sizes a single review turn.
+# The inputs that exist are all review-shaped and already sit ~3x apart (claude 533s and codex
+# 876s on one review prompt during this design's own review; agy re-probed at 608s on a SIMPLE
+# prompt, recorded in build_real_spec), so an hour is chosen to clear a build strictly larger
+# than any of them rather than fitted to a measurement of one.
+# UNMEASURED, AND THIS IS THE ENTRY'S OPEN DEPENDENCY: no seat of ANY adapter has been run for
+# an hour. What an hour-long three-adapter probe would settle is whether claude and codex stay
+# HEALTHY that long — a CLI that idles out, drops its session or truncates before the engine's
+# window closes makes 3600 a number no seat can reach, and the seat then dies carrying the
+# provider's own error rather than `timeout`. If such a probe ever finds either of them
+# unhealthy at this duration, THIS ENTRY IS WRONG; the fix is this number, never a second
+# timeout mechanism elsewhere. agy is the only seat with evidence at length, and it is also
+# the one whose --print-timeout tracks this value directly.
+# `--mode` offers only the keys of MODES, so this entry is not reachable from this CLI: the
+# forge front end reads it by name, and that is the only reader.
+MODE_TIMEOUT = {"normal": 300, "deep": 1200, "forge": 3600}  # per-attempt seconds
 
 # Map the abstract thinking tier to each provider's own flag value.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
@@ -203,6 +219,28 @@ AGY_STRUCTURED_TOOL_PERMISSION = [
     "permission that headless",
 ]
 
+# agy's own words for "I gave up waiting", read out of its structured `error` field and
+# NOWHERE ELSE. STRUCTURED-ONLY on the same argument as the tool-permission list above: these
+# are ordinary English phrases, and a seat reviewing this repository echoes this very list into
+# its merged stderr — which is how this engine lost a seat to a phantom, twice.
+# The first phrase is agy's, verbatim: on 1.1.8 every agy attempt in a 10-skill eval sweep died
+# at ~124s reporting `timeout waiting for response`, and every one of them was classified
+# `agy_error` — an unrecognised failure whose hint says "read result_text", when the actionable
+# truth was that the window was too small. A wrong reason is not a smaller failure than a wrong
+# outcome: it is what made a panel that had silently degraded to two seats look healthy.
+# That death is usually OUR OWN MARGIN firing: --print-timeout is set 5s inside the engine
+# window, so on a seat that runs long agy stops itself first and reports it here, while the
+# engine's `subprocess.TimeoutExpired` path would have called the same event `timeout`. Before
+# this mapping the two spellings of one event carried two different reasons.
+# The second is NOT observed from agy here. It is the gRPC status name (DEADLINE_EXCEEDED)
+# belonging to the same family as the RESOURCE_EXHAUSTED text agy does emit, so it is carried
+# as a forward guess; if it never fires, it costs nothing, because an unmatched error already
+# falls through to the retryable catch-all.
+AGY_STRUCTURED_TIMEOUT = [
+    "timeout waiting for response",
+    "deadline exceeded",
+]
+
 # Actionable next step per failure cause, carried into the manifest so the
 # synthesizer can tell the user something better than "the seat failed".
 REASON_HINTS = {
@@ -227,6 +265,12 @@ REASON_HINTS = {
                     "cause — read `result_text` for the provider's wording; retried"),
     "agy_error": ("agy returned status != SUCCESS with an error that matched no known cause "
                   "— read `result_text` for the provider's wording; retried"),
+    # Reached two ways that mean the same thing: this engine's own window closed on a live
+    # seat (scanned provenance), or agy reported its own wait in its structured `error` field.
+    # Retried on both paths.
+    "timeout": ("the seat did not answer inside the per-attempt window — retried; if it "
+                "keeps timing out, widen the window (--timeout, or the mode's MODE_TIMEOUT "
+                "entry) rather than adding a second, tighter one somewhere else"),
     "did_not_read_input": ("the seat answered without opening its input — check that its "
                            "read tools are approved and the prompt fits its context"),
     "non_substantive": "the seat returned a stub answer rather than a real one",
@@ -1104,7 +1148,21 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
             # simply never granted a tool. RETRYABLE like every other tool_permission —
             # reproduction is the signal, and a wrong `--mode`/flag combination recurs.
             return False, "tool_permission", result_text, True
-        return False, classify_sentinel(result_text) or "agy_error", result_text, True
+        sent = classify_sentinel(result_text)
+        if sent:
+            # A QUOTA WALL REPORTED AS A TIMEOUT IS A QUOTA WALL, and this ordering is why.
+            # `auth_or_quota` IS in STRUCTURED_TERMINAL_REASONS and `timeout` is not, so
+            # matching the timeout phrase first would turn a wall into three retried attempts.
+            return False, sent, result_text, True
+        if any(p in low for p in AGY_STRUCTURED_TIMEOUT):
+            # DO NOT ADD `timeout` TO `STRUCTURED_TERMINAL_REASONS`. `run_provider` terminates
+            # only on `structured and reason in STRUCTURED_TERMINAL_REASONS`, so putting it
+            # there would SILENTLY REMOVE COUNCIL'S TIMEOUT RETRIES — a seat that rode a slow
+            # window once would lose its remaining attempts, which is exactly the failure the
+            # removed 120s cap caused. `structured=True` here buys the PROVENANCE (this is agy
+            # speaking about itself, not a file it read), not terminality.
+            return False, "timeout", result_text, True
+        return False, "agy_error", result_text, True
     if exit_code == 0:
         seat = score_seat(result_text, spec.sentinel, spec.min_chars)
         if seat["status"] == "ok":
@@ -1869,8 +1927,9 @@ def self_test() -> int:
     check("codex-json: --json survives the read-only rewrite", "--json" in _cspec.argv)
     # Every reason the engine can EMIT must carry a hint. The three structured catch-alls
     # shipped with hint=None, so an operator got a bare token and skill-tuneup's pointer at
-    # "llm-council has the per-reason semantics" dangled.
-    for _r in ("claude_error", "codex_error", "agy_error"):
+    # "llm-council has the per-reason semantics" dangled. `timeout` shipped the same way and
+    # is the one an operator is most likely to be able to act on.
+    for _r in ("claude_error", "codex_error", "agy_error", "timeout"):
         check(f"hints: {_r} carries an actionable hint", bool(REASON_HINTS.get(_r)))
     # The provenance flag must reach the MANIFEST, not just the retry decision — consumers
     # are told to read it, and it was internal-only.
@@ -2029,6 +2088,40 @@ def self_test() -> int:
               _p0["reason"] == "agy_error")
         check("agy-json: an unrecognised structured reason still retries",
               _p0["attempts"] > 1)
+
+    # §19 — the forge window, and agy's own word for a wall.
+    _fw = MODE_TIMEOUT.get("forge", 0)
+    check("MODE_TIMEOUT has a forge entry of at least 3600", _fw >= 3600)
+    check("deep is unchanged", MODE_TIMEOUT["deep"] == 1200)
+    # A re-added cap bites hardest at the LONGEST window, so pin agy's print-timeout at the
+    # forge one: it must still be the engine timeout less the margin, and nothing tighter.
+    # The lookup is floored rather than indexed — a check that RAISES hides every check
+    # after it, so an absent entry must fail on its own line above, not here.
+    _fw_probe = max(_fw, 60)
+    _fsp = build_real_spec("agy", "p", _fw_probe, {}, "/tmp")
+    check("agy: print-timeout tracks the FORGE window too (no cap survived)",
+          _fsp.argv[_fsp.argv.index("--print-timeout") + 1] == f"{_fw_probe - 5}s")
+    _agy_to = json.dumps({"status": "ERROR",
+                          "error": "timeout waiting for response from the model"})
+    _tv, _tr, _tt, _ts = evaluate(0, _agy_to, "", _agy_spec)
+    check("agy: a structured timeout maps to reason `timeout` with provenance",
+          _tv is False and _tr == "timeout" and _ts is True)
+    check("agy: a structured timeout is NOT terminal, so council keeps its retries",
+          "timeout" not in STRUCTURED_TERMINAL_REASONS)
+    check("STRUCTURED_TERMINAL_REASONS still has exactly one member",
+          STRUCTURED_TERMINAL_REASONS == {"auth_or_quota"})
+    # A quota wall REPORTED as a timeout is a quota wall. classify_sentinel runs first and
+    # auth_or_quota IS terminal; ordering the timeout map ahead of it would retry a wall
+    # three times.
+    _both = json.dumps({"status": "ERROR",
+                        "error": "timeout waiting for response: RESOURCE_EXHAUSTED, "
+                                 "individual quota reached"})
+    check("agy: a wall reported as a timeout is still auth_or_quota",
+          evaluate(0, _both, "", _agy_spec)[1] == "auth_or_quota")
+    # Structured-only, on the soft-deny list's argument: these are ordinary English, and a
+    # seat that merely echoed them onto stderr must not be classified by them.
+    check("agy: the timeout phrases are structured-only, never merged-stderr sentinels",
+          all(classify_sentinel(p) is None for p in AGY_STRUCTURED_TIMEOUT))
 
     # D5 — process groups: subprocess.run's timeout reaps only the direct child, so an
     # agent CLI's helpers outlived the council. Prove the GRANDCHILD dies, not just the

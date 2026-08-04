@@ -68,9 +68,11 @@ def _resolve_seat_timeout() -> int:
     refusal rather than a fallback: `deep`'s 1200s is a review window, not a build window, and
     reaching for it here would put a forty-minute seat under a twenty-minute cap.
 
-    THE ENTRY DOES NOT EXIST IN THIS BUILD, so this refusal is what `--start` does today
-    rather than a branch kept for a future accident. Adding it is `council.engine`'s change to
-    make, not this module's.
+    The entry now exists — `council.engine` carries it, with the measurements and the one
+    unmeasured dependency it rests on written beside it there. This refusal is therefore the
+    guard for a build where it is missing or unusable (an older engine, a rolled-back one, a
+    value edited to something that is not a positive int), not the ordinary path. Changing the
+    window is still `council.engine`'s edit to make and not this module's.
     """
     t = engine.MODE_TIMEOUT.get("forge")
     if not isinstance(t, int) or isinstance(t, bool) or t < 1:
