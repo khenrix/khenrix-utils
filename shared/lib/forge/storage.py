@@ -194,6 +194,23 @@ def append_line(path, data: bytes) -> None:
             _fsync_dir(path.parent)
 
 
+# THE SAME RULE `_SEAT_NAME` STATES, FOR THE COMPONENT ONE LEVEL UP. `new_run_id` draws six
+# hex characters, but `cli.collect` and `gc.collect` take a run id OFF THE COMMAND LINE and
+# `run_root` interpolates it into a path, creates parents, and chmods the result — so an id of
+# "x/../../victim" created and chmod-0700'd a directory outside `forge_root()`. Measured
+# 2026-08-04.
+#
+# THE CHARACTER CLASS IS `gc`'S, NOT A SECOND OPINION ABOUT IT. `gc` had this rule first and
+# reasoned it out: dots are admitted INSIDE the name and not at the front, which keeps `.` and
+# `..` out without forbidding an operator's `r1.2`. Two spellings of one rule would have meant
+# `--gc r1.2` passing gc's validation and then dying with a `StorageError` from another module
+# over a message gc's own text contradicts. `gc` now references this one, on the precedent it
+# already set for `_FORGE_REF_PREFIXES`: the module that decides a value owns the strings that
+# spell it. The only thing added here is the length cap, so a run id cannot be the reason a
+# path is too long for the filesystem.
+_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
 def new_run_id() -> str:
     return secrets.token_hex(3)   # 6 hex chars; run_root() rejects a collision, see below
 
@@ -237,8 +254,27 @@ def run_root(repo_path, run_id: str, must_be_new: bool = True) -> Path:
     `gc.collect` are handed a run id off the command line, and a typo would otherwise leave an
     empty directory that the `--gc` walk then reports as a run. Each removes it with `rmdir`,
     which only ever succeeds while it is empty.
+
+    AND THAT CLEANUP IS WHY THE ID IS VALIDATED FIRST. `rmdir` undoes a typo; it does not undo
+    an escape, because an escape usually lands on a directory that is not empty. Measured
+    2026-08-04: `run_id="x/../../victim"` created `<state>/victim` and chmod-0700'd it. The
+    rule below is `_SEAT_NAME`'s, one level up, for the same stated reason.
     """
+    if not isinstance(run_id, str) or not _RUN_ID.match(run_id):
+        raise StorageError(
+            f"a run id is one path component of letters, digits, '-' and '_' (64 max), "
+            f"starting alphanumeric: {run_id!r}. It is interpolated into a directory name "
+            "under the forge state root, so anything else can create and chmod a directory "
+            "outside it — and the `rmdir` both read-only callers use to clean up only ever "
+            "succeeds while the target is empty.")
     p = forge_root() / f"{run_digest(repo_path)}-{run_id}"
+    if p.resolve().parent != forge_root().resolve():
+        # BELT AND BRACES, AND IT CATCHES WHAT THE PATTERN CANNOT: a `forge_root()` that is
+        # itself a symlink, or a pre-existing symlinked run directory, resolves out of the
+        # tree without the id containing a single suspicious character.
+        raise StorageError(
+            f"run id {run_id!r} resolves to {p.resolve()}, which is not an immediate child of "
+            f"the forge state root {forge_root()}; refusing to create it.")
     p.mkdir(mode=0o700, parents=True, exist_ok=not must_be_new)
     p.chmod(0o700)   # mkdir's mode is masked by umask; chmod is not
     return p

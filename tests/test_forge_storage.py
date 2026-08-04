@@ -492,3 +492,53 @@ def test_zero_oid_matches_repo_hash_width(tmp_path):
     assert set(z) == {"0"}
     head = gitcmd.git(repo, "rev-parse", "HEAD").stdout.strip()
     assert len(z) == len(head)
+
+
+def test_a_run_id_that_is_not_one_component_cannot_reach_outside_the_state_root(
+        tmp_path, monkeypatch):
+    """The external question: can this argument name a directory `forge_root` does not contain?
+
+    Not "does the regex match" — that would restate the implementation and pass for any
+    regex the implementation happened to hold. This asserts the PROPERTY the rule exists to
+    buy, so a future rewrite that keeps the property passes and one that loses it fails.
+
+    MEASURED before the rule existed: `run_root(repo, "x/../../victim")` created
+    `<state>/victim` and chmod-0700'd it, reachable from argv at `cli.py:593` before any
+    manifest is read.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for hostile in ("x/../../victim", "../victim", "a/b", "/abs", ".", "..", "", "x/",
+                    "-lead", ".lead", "a" * 65):
+        with pytest.raises(storage.StorageError) as e:
+            storage.run_root(tmp_path, hostile, must_be_new=True)
+        assert "run id" in str(e.value)
+    assert not (tmp_path / "state" / "victim").exists(), \
+        "a refused run id must not leave a directory behind"
+
+
+def test_a_run_root_is_always_an_immediate_child_of_forge_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    p = storage.run_root(tmp_path, "a1b2c3", must_be_new=True)
+    assert p.resolve().parent == storage.forge_root().resolve()
+    assert p.stat().st_mode & 0o7777 == 0o700
+
+
+def test_the_run_id_rule_admits_what_new_run_id_actually_draws(tmp_path, monkeypatch):
+    """A validator that refuses the engine's own ids would be found in production, not here.
+
+    `new_run_id` is `secrets.token_hex(3)`, so this also pins that the two stay compatible if
+    either moves.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for _ in range(50):
+        storage.run_root(tmp_path, storage.new_run_id(), must_be_new=True)
+    # And what `gc` documents an operator may type: dots INSIDE the name are legal, which is
+    # why the rule lives in one place instead of two disagreeing ones.
+    storage.run_root(tmp_path, "r1.2", must_be_new=True)
+
+
+def test_gc_and_storage_hold_ONE_run_id_rule_and_not_two(tmp_path, monkeypatch):
+    """Two spellings meant `--gc r1.2` passed gc's check and then raised from storage, over a
+    refusal naming a rule gc's own text contradicts."""
+    from forge import gc as gcmod
+    assert gcmod._RUN_ID is storage._RUN_ID
