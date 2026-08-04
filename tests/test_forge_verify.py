@@ -2478,3 +2478,41 @@ def test_a_setup_that_writes_no_gate_file_moves_no_surface(tmp_path):
     v2 = verify.remeasure_gate_surface(v, command=command)
     assert v2.candidate.gate_delta == (), \
         f"installing a toolchain is what setup is FOR: {v2.candidate.gate_delta}"
+
+
+def test_a_setup_command_that_moves_the_hook_path_is_caught_in_calibration(tmp_path):
+    """The calibration is the only run in the fleet with NO candidate, so it is the only run
+    that can tell "the operator's confirmed setup did this" from "the candidate did this".
+
+    `build_verifier` pins `core.hooksPath` and asserts it once, before materialization.
+    `assert_hooks_pinned` exists because THE CONFIRMED SETUP COMMAND RUNS AFTER THAT — and
+    `verify_candidate` takes that second read while `calibrate` did not, though it holds the
+    `Verifier` between `run_setup` and `fixed_point`.
+
+    The trigger is not adversarial, it is husky: `npm ci` runs `prepare`, `husky install`
+    writes `core.hooksPath`. Calibration then ran the gate under the repository's own hooks
+    and came back GREEN — §5 step 3, the pass whose whole purpose is finding infrastructure
+    problems before a provider spends a token — and every candidate verifier afterwards
+    raised "the candidate rewrote the verifier's git config", after three providers had been
+    paid, naming a candidate for the operator's own confirmed command.
+    """
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
+    setup = verify.Command.parse([["git", "config", "core.hooksPath", ".husky"]])
+    with pytest.raises(verify.VerifyError) as e:
+        _calibrate(tmp_path, repo, setup=setup)
+    assert "core.hooksPath" in str(e.value)
+    # THE PROPERTY, NOT A BANNED WORD. Asserting `"candidate" not in msg` was the fragile
+    # version: a sentence saying "no seat has run yet, so this is not a candidate's doing"
+    # would fail it while being exactly right. What matters is which artefact the operator is
+    # sent to read — their own confirmed setup command, or a seat's diff that does not exist.
+    msg = str(e.value)
+    assert "confirmed setup command" in msg and "no seat has run yet" in msg, (
+        f"the calibration has no candidate, so the message must attribute the write to the "
+        f"command that made it: {msg}")
+
+
+def test_a_calibration_whose_setup_leaves_the_pin_alone_still_calibrates(tmp_path):
+    """The guard against over-tightening: an ordinary setup must not now refuse §5 step 3."""
+    repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
+    cal = _calibrate(tmp_path, repo, setup=verify.Command.parse([["sh", "-c", "exit 0"]]))
+    assert cal.run.exit_code == 0
