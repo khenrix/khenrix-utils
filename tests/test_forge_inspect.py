@@ -548,3 +548,27 @@ def test_repo_facts_answers_for_the_repository_not_the_directory_it_was_asked_fr
     assert from_root.filtered_paths, "the fixture must actually carry a filter"
     assert from_root == from_sub
     assert finspect.rejections(from_root, []) == finspect.rejections(from_sub, [])
+
+
+def test_a_tracked_filename_that_is_not_utf8_does_not_crash_the_attribute_read(tmp_path):
+    """A tracked path is a BYTE STRING on POSIX and need not be valid UTF-8.
+
+    `check-attr -z` answers in bytes, and reading it in strict text mode raised
+    UnicodeDecodeError out of subprocess before the function saw a single field — so an
+    ordinary latin-1 `caf\\xe9.txt` took out preflight, and (once harvest gained its clean-filter
+    refusal) every harvest of a seat holding one.
+
+    Same class as `git ls-files` handing back a QUOTED name: git answers in bytes, and a
+    reader that assumes an encoding loses the files it was asked about.
+    """
+    repo = make_repo(tmp_path)
+    (repo / b"caf\xe9.txt".decode("latin-1")).write_bytes(b"x\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "latin-1 name")
+
+    facts = finspect.repo_facts(repo)         # must not raise
+    assert list(facts.filtered_paths) == [], "no filter is configured, so none may be reported"
+    # AND THE NAME SURVIVES THE ROUND TRIP, which is the half a bare "did not crash" misses:
+    # a reader that swallowed the byte would report a path git cannot resolve.
+    hits = finspect._filtered_paths(repo, [b"caf\xe9.txt".decode("latin-1")])
+    assert hits == [], hits
