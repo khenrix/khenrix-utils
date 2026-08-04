@@ -19,9 +19,46 @@ the row was written CAUGHT for a mutant that never executed a line. Reproduced o
 against `tests/test_forge_coverage.py`. Only exit 1, `tests failed`, is evidence the suite
 noticed the mutation; 0 is SURVIVED; 2, 3, 4, 5 and any status not in `_PYTEST_RC` are the
 run failing to happen, and each is refused BY NAME rather than scored, because a verdict must
-never read cleaner than its evidence. That makes this script pytest-shaped on purpose: a
-runner with other exit conventions has to be wrapped to pytest's before its status is handed
-here.
+never read cleaner than its evidence.
+
+REFUSING BY EXIT STATUS ONLY CLOSED THAT HOLE FOR PYTEST, AND THE ROW-KEEPING WORKAROUND IS
+THE EVIDENCE. Against a BARE-SCRIPT suite — `python3 scripts/lib/checks.py --self-test`,
+`scripts/eval_trigger.py --self-test`, anything whose failures are its own exit code — the
+interpreter exits 1 for an uncaught exception, which is the identical status a real failure
+reports. So the same unparseable mutant that pytest refused was still scored CAUGHT there,
+and plans in docs/superpowers/ carry the instruction "Discard any row whose mutant broke the
+syntax": a human filter standing in for a check, applied by whoever remembers. MEASURED
+2026-08-04 while mutating this repo's own `scripts/lib/checks.py`: three separate mutants
+exited 1 through a SyntaxError, a NameError and an IndexError, and all three printed CAUGHT.
+
+THE PATH IS CLOSED AT TWO SEAMS, one per cause.
+
+  1. THE MUTANT MUST PARSE, checked with `compile()` BEFORE it is written to disk. A `--new`
+     that leaves the file unparseable is refused for every runner at once — pytest's exit 2
+     and the bare script's exit 1 have the same origin, and this kills it upstream of both
+     rather than teaching each runner's status table about it. Only the ORIGINAL-parses case
+     is refused, so mutating a file that never parsed is still the operator's business, and
+     only `.py` files are checked because only they make the claim.
+
+  2. AN UNCAUGHT TRACEBACK ON STDERR IS THE BARE-SCRIPT SPELLING OF EXIT 2, and is refused
+     the same way. A process that dies of an exception writes `Traceback (most recent call
+     last):` and terminates on the exception line; a suite REPORTING failures does not. This
+     is the discriminator the exit code cannot carry, so it is read from the channel that
+     does carry it.
+
+WHAT IS STILL NOT CLOSED, AND WHAT TO DO ABOUT IT. A bare-script suite that CATCHES its own
+exception, prints no traceback and exits 1 anyway is indistinguishable from one reporting a
+failure, and no check here can separate them — the runner has thrown the distinction away
+before this process sees anything. For that, wrap the suite to pytest's conventions (exit 2
+when the run did not happen) before handing its status here; the two seams above are what
+make an unwrapped runner safe for the cases that actually occur, not a licence to skip that.
+
+AND SEAM 2 ERRS TOWARDS REFUSING, WHICH IS THE DIRECTION TO ERR IN. A suite that prints a
+caught traceback at column 0 and whose FINAL stderr line is itself exception-shaped trips
+both halves of the signature and is refused, though it did reach a verdict. That costs a row
+and a re-run; guessing the other way costs a covered row over a hole, which is the asymmetry
+the top of this file is about. Print a summary line after the traceback and the run scores
+normally.
 
     scripts/mutate.py --file shared/lib/forge/verify.py \
         --old 'VERIFIER_NAME = "verify"' --new 'VERIFIER_NAME = "claude"' \
@@ -44,6 +81,7 @@ or the stale bytecode outlives the source.
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -85,16 +123,61 @@ _PYTEST_RC = {1: "tests failed", 2: "interrupted, e.g. an error during collectio
               3: "internal error", 4: "usage error", 5: "no tests were collected"}
 _TESTS_FAILED = 1
 
+# The header CPython writes before an uncaught exception unwinds the process. Anchored to
+# column 0 and to a whole line: a harness that FORMATS a caught exception into its own
+# report indents the traceback it prints, and an indented one is a suite DESCRIBING a
+# failure rather than a process dying of one.
+_TRACEBACK_HEAD = re.compile(r"^Traceback \(most recent call last\):$", re.M)
+# The LAST line of that unwind: `ExceptionName: message`, or a bare `ExceptionName`, at
+# column 0. Required as well as the header, and it is the half that does most of the work:
+# `traceback.print_exc()` also writes its header at column 0, so a suite that prints a
+# caught traceback and then carries on reporting is told apart by what it says LAST. A dying
+# process always ends on the exception line; a reporting one goes on to say something else.
+_EXC_TAIL = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*(:|$)")
 
-def _run(cmd, env) -> int:
+
+def _parses(text: str, path: Path) -> bool:
     try:
-        return subprocess.run(cmd, cwd=ROOT, env=env).returncode
+        compile(text, str(path), "exec")
+    except SyntaxError:
+        return False
+    return True
+
+
+def _died_of_an_exception(stderr: str) -> str | None:
+    """The exception line, when `stderr` shows a process that was UNWOUND rather than a
+    suite that reported. None otherwise.
+
+    THE BARE-SCRIPT SPELLING OF PYTEST'S EXIT 2. A runner whose only failure signal is its
+    own exit code cannot distinguish `assert` from `SyntaxError`; both are 1. The traceback
+    is on a different channel and does distinguish them, so the evidence is read from there.
+    """
+    if not _TRACEBACK_HEAD.search(stderr or ""):
+        return None
+    lines = [ln for ln in (stderr or "").splitlines() if ln.strip()]
+    if lines and _EXC_TAIL.match(lines[-1]):
+        return lines[-1][:200]
+    return None
+
+
+def _run(cmd, env) -> tuple[int, str]:
+    """(returncode, stderr). stdout streams through; stderr is captured AND re-emitted.
+
+    Captured because `_died_of_an_exception` has to read it, re-emitted because the operator
+    still has to see it. stdout is left alone so pytest's report stays live — an interpreter
+    traceback never goes there, so nothing this needs is lost by not capturing it."""
+    try:
+        p = subprocess.run(cmd, cwd=ROOT, env=env, stderr=subprocess.PIPE, text=True)
     except OSError as e:
         # A command that cannot START is a usage error, and it has to be told apart from a
         # verdict HERE. The uncaught traceback exits 1, and 1 is the machine-readable spelling
         # of SURVIVED — so a harness building a mutation table off exit codes records a
         # survivor for a typo'd test command.
         raise _CannotRun(f"mutate: cannot run the test command {cmd[0]!r}: {e}") from e
+    if p.stderr:
+        sys.stderr.write(p.stderr)
+        sys.stderr.flush()
+    return p.returncode, p.stderr or ""
 
 
 def main() -> int:
@@ -139,6 +222,25 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
+    mutant_text = text.replace(args.old, args.new)
+    # SEAM 1: THE MUTANT MUST PARSE. Refused HERE — above the baseline run, above the write —
+    # because this is a fact about the two strings the operator typed and needs no evidence
+    # from a runner: a file that does not parse executes no line under any of them. Doing it
+    # first also means the tree never carries the broken file and no baseline run is spent on
+    # a mutation that was never going to produce a verdict.
+    #
+    # Refused only when the ORIGINAL parses — a file that never parsed is not this mutation's
+    # doing — and only for `.py`, the one suffix `compile()` says anything about.
+    if path.suffix == ".py" and _parses(text, path):
+        try:
+            compile(mutant_text, str(path), "exec")
+        except SyntaxError as e:
+            print(f"mutate: --new leaves {args.file} unparseable ({type(e).__name__}: "
+                  f"{e.msg} at line {e.lineno}), so the mutant cannot execute a line — "
+                  f"pytest would exit 2 and a bare script would exit 1, and neither is a "
+                  f"verdict about the mutation", file=sys.stderr)
+            return 2
+
     purge = args.purge or [ROOT / "shared" / "lib", ROOT / "tests"]
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
@@ -152,7 +254,7 @@ def main() -> int:
     # otherwise decide what the baseline runs.
     _purge_bytecode(purge)
     try:
-        base_rc = _run(cmd, env)
+        base_rc, _ = _run(cmd, env)
     except _CannotRun as e:
         print(e, file=sys.stderr)
         return 2
@@ -163,7 +265,7 @@ def main() -> int:
         return 2
     print("mutate: baseline green", file=sys.stderr)
 
-    mutant = text.replace(args.old, args.new).encode("utf-8")
+    mutant = mutant_text.encode("utf-8")
     try:
         path.write_bytes(mutant)
         # Read back rather than trust the write: this is the one fact everything else rests
@@ -179,7 +281,7 @@ def main() -> int:
         print(f"mutate: applied to {args.file}, purged {purged} __pycache__ dir(s)",
               file=sys.stderr)
         try:
-            rc = _run(cmd, env)
+            rc, rc_stderr = _run(cmd, env)
         except _CannotRun as e:
             print(e, file=sys.stderr)
             return 2
@@ -199,6 +301,18 @@ def main() -> int:
         why = _PYTEST_RC.get(rc, "unrecognized exit status")
         print(f"mutate: the mutated run exits {rc} ({why}), which is not a test failure — "
               f"nothing was measured, so this is not a verdict", file=sys.stderr)
+        return 2
+    # SEAM 2: exit 1 that arrived by the process being UNWOUND, not by the suite reporting.
+    # Checked after the status table above rather than instead of it: pytest routes this to
+    # exit 2 and is already refused there, and only a runner with no such status needs the
+    # stderr read. Refused rather than reported for the reason the whole file exists — a
+    # FALSE CAUGHT leaves nothing behind to re-examine.
+    exc = _died_of_an_exception(rc_stderr) if rc == _TESTS_FAILED else None
+    if exc:
+        print(f"mutate: the mutated run exits {rc}, but its stderr shows the process was "
+              f"unwound by an uncaught exception ({exc}) rather than the suite reporting a "
+              f"failure — the mutant did not run to a verdict, so this is not one",
+              file=sys.stderr)
         return 2
     verdict = "CAUGHT" if rc == _TESTS_FAILED else "SURVIVED"
     print(f"mutate: {verdict} (test command exit {rc})", file=sys.stderr)

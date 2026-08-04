@@ -98,11 +98,186 @@ def test_the_file_is_restored_whatever_the_verdict(tmp_path):
         assert target.read_text() == "VALUE = 'ORIGINAL'\n"
 
 
+def test_an_unparseable_mutant_is_refused_before_it_is_ever_written(tmp_path):
+    """SEAM 1. The status table above only ever saw this AFTER a runner had reported on
+    it, which meant each runner needed its own rule; a mutant that does not parse cannot
+    execute a line under ANY of them, so it is refused at the source. Checked with
+    `compile()` before the write, so the tree never carries the broken file at all."""
+    cmd, target = _harness(tmp_path, 1)          # the runner would say CAUGHT
+    cmd[cmd.index("--new") + 1] = "MUTATED'"     # ...but this leaves a quote unclosed
+    r = _run(cmd)
+    assert r.returncode == 2, r.stderr
+    assert "CAUGHT" not in r.stderr
+    assert "unparseable" in r.stderr and "SyntaxError" in r.stderr
+    assert target.read_text() == "VALUE = 'ORIGINAL'\n"
+    assert "baseline green" not in r.stderr, "it should refuse before spending a baseline run"
+
+
+def test_a_syntax_break_in_a_non_python_file_is_not_second_guessed(tmp_path):
+    """`compile()` speaks for `.py` and nothing else. A mutation to a .toml/.md must
+    still run, or the guard would refuse work it cannot actually judge."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    target = tmp_path / "conf.toml"
+    target.write_text('name = "ORIGINAL"\n')
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        "import pathlib, sys\n"
+        "text = pathlib.Path(sys.argv[1]).read_text()\n"
+        "sys.exit(1 if sys.argv[2] in text else 0)\n")
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "conf.toml", "--old", 'name = "ORIGINAL"', "--new", 'name = "MUTATED',
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(runner), str(target), "MUTATED"])
+    assert r.returncode == 0, r.stderr
+    assert "CAUGHT" in r.stderr
+
+
+def test_a_bare_script_suite_that_crashes_is_refused_not_scored_CAUGHT(tmp_path):
+    """SEAM 2, AND THE RESIDUAL THIS COMMIT EXISTS FOR. A runner whose only failure
+    signal is its own exit code reports 1 for an uncaught exception and 1 for a real
+    failure, so refusing statuses other than 1 did nothing here -- the same unparseable
+    mutant pytest refused was still scored CAUGHT. Measured on this repo three times.
+
+    The mutation here parses (so seam 1 lets it through) and makes the suite die of a
+    NameError rather than report: the run did not reach a verdict, so neither does this."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("def value():\n    return 'ORIGINAL'\n")
+    suite = tmp_path / "suite.py"
+    suite.write_text(
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "import mod\n"
+        "sys.exit(0 if mod.value() == 'ORIGINAL' else 1)\n" % str(tmp_path))
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "return 'ORIGINAL'", "--new", "return NOPE",
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(suite)])
+    assert r.returncode == 2, r.stderr
+    assert "CAUGHT" not in r.stderr
+    assert "uncaught exception" in r.stderr
+    assert "NameError" in r.stderr, "must name what unwound the process"
+    assert (tmp_path / "mod.py").read_text() == "def value():\n    return 'ORIGINAL'\n"
+
+
+def test_a_bare_script_suite_that_really_fails_is_still_CAUGHT(tmp_path):
+    """THE DISCRIMINATION CHECK, and the reason seam 2 reads the traceback rather than
+    just distrusting every non-pytest runner. A bare script that exits 1 by REPORTING is
+    a verdict and must stay one, or the fix would delete the workflow it was protecting."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("VALUE = 'ORIGINAL'\n")
+    suite = tmp_path / "suite.py"
+    suite.write_text(
+        "import pathlib, sys\n"
+        "text = pathlib.Path(%r).read_text()\n"
+        "ok = \"VALUE = 'ORIGINAL'\" in text\n"
+        "print('PASS' if ok else 'FAIL  value changed')\n"
+        "sys.exit(0 if ok else 1)\n" % str(tmp_path / "mod.py"))
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "'ORIGINAL'", "--new", "'MUTATED'",
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(suite)])
+    assert r.returncode == 0, r.stderr
+    assert "CAUGHT (test command exit 1)" in r.stderr
+
+
+def test_a_printed_traceback_is_not_a_process_that_died_of_one(tmp_path):
+    """The false-refusal seam 2 must not walk into. A suite that CATCHES an exception,
+    prints the traceback and then reports a failure has reached a verdict; refusing it
+    would manufacture 'nothing was measured' out of a measurement."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("VALUE = 'ORIGINAL'\n")
+    suite = tmp_path / "suite.py"
+    suite.write_text(
+        "import pathlib, sys, traceback\n"
+        "text = pathlib.Path(%r).read_text()\n"
+        "ok = \"VALUE = 'ORIGINAL'\" in text\n"
+        "if not ok:\n"
+        "    try:\n"
+        "        raise AssertionError('value changed')\n"
+        "    except AssertionError:\n"
+        "        traceback.print_exc()\n"
+        "    print('1 failed', file=sys.stderr)\n"
+        "sys.exit(0 if ok else 1)\n" % str(tmp_path / "mod.py"))
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "'ORIGINAL'", "--new", "'MUTATED'",
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(suite)])
+    assert r.returncode == 0, r.stderr
+    assert "CAUGHT (test command exit 1)" in r.stderr
+
+
+def test_an_indented_traceback_in_a_report_is_not_a_process_that_died(tmp_path):
+    """Pins the ANCHORING in the traceback header, which an earlier draft of this suite
+    left unmeasured -- the mutant `r"Traceback"` SURVIVED 16 tests.
+
+    A harness that formats a caught exception into its own report indents the traceback
+    and can sign off with an exception-shaped summary line, tripping both halves of the
+    crash signature at once. Refusing that would manufacture 'nothing was measured' out of
+    a real failure, so the header must start at column 0 to count."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("VALUE = 'ORIGINAL'\n")
+    suite = tmp_path / "suite.py"
+    suite.write_text(
+        "import pathlib, sys\n"
+        "ok = \"'ORIGINAL'\" in pathlib.Path(%r).read_text()\n"
+        "if not ok:\n"
+        "    sys.stderr.write('    Traceback (most recent call last):\\n')\n"
+        "    sys.stderr.write('      File \"suite.py\", line 1, in check\\n')\n"
+        "    sys.stderr.write('    AssertionError: value changed\\n')\n"
+        "    sys.stderr.write('AssertionError: 1 check failed\\n')\n"
+        "sys.exit(0 if ok else 1)\n" % str(tmp_path / "mod.py"))
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "'ORIGINAL'", "--new", "'MUTATED'",
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(suite)])
+    assert r.returncode == 0, r.stderr
+    assert "CAUGHT (test command exit 1)" in r.stderr
+
+
+def test_the_child_runners_stderr_reaches_the_operator_though_it_is_captured(tmp_path):
+    """Seam 2 needs the CHILD's stderr in a variable; the operator still needs it on the
+    terminal. Capturing without re-emitting would trade a false CAUGHT for a blind run.
+
+    The marker is written by the RUNNER, not by mutate.py. An earlier draft asserted on
+    'baseline green' -- one of mutate.py's OWN prints -- and so never touched the
+    passthrough at all: deleting the re-emit SURVIVED 16 tests. Both runs are counted,
+    because the baseline's diagnostics matter as much as the mutant's."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("VALUE = 'ORIGINAL'\n")
+    suite = tmp_path / "suite.py"
+    suite.write_text(
+        "import pathlib, sys\n"
+        "print('RUNNER-DIAGNOSTIC-MARKER', file=sys.stderr)\n"
+        "ok = \"'ORIGINAL'\" in pathlib.Path(%r).read_text()\n"
+        "sys.exit(0 if ok else 1)\n" % str(tmp_path / "mod.py"))
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "'ORIGINAL'", "--new", "'MUTATED'",
+              "--purge", str(tmp_path),
+              "--", sys.executable, str(suite)])
+    assert r.returncode == 0, r.stderr
+    assert r.stderr.count("RUNNER-DIAGNOSTIC-MARKER") == 2, (
+        "the runner's own stderr must reach the operator on BOTH the baseline and the "
+        "mutated run: " + r.stderr)
+
+
 def test_a_real_unparseable_mutant_under_real_pytest_is_not_a_verdict(tmp_path):
     """End-to-end against pytest itself, because the stub above could agree with a wrong table.
 
     This is the exact shape that was measured: the mutation deletes a closing bracket, the
     module fails to import, pytest reports one error during collection and exits 2.
+
+    SEAM 1 NOW CATCHES IT ONE STEP EARLIER, and the assertion follows the code rather than
+    the other way round: the refusal message is the parse refusal, not the exit-2 one, and
+    pytest is never launched. What this still pins end to end is the property the exit-2
+    rule was written for -- returncode 2, no CAUGHT, file restored -- reached by whichever
+    seam gets there first. The exit-2 path itself is pinned by the test below, on a mutant
+    that parses.
     """
     (tmp_path / "scripts").mkdir()
     shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
@@ -116,5 +291,27 @@ def test_a_real_unparseable_mutant_under_real_pytest_is_not_a_verdict(tmp_path):
               str(tmp_path / "test_mod.py")])
     assert r.returncode == 2, r.stderr
     assert "CAUGHT" not in r.stderr
-    assert "exits 2" in r.stderr
+    assert "unparseable" in r.stderr
     assert (tmp_path / "mod.py").read_text() == "METHODS = ('a', 'b')\n"
+
+
+def test_a_parseable_mutant_that_breaks_collection_still_exits_2_under_real_pytest(tmp_path):
+    """The exit-2 rule, kept pinned end to end now that seam 1 intercepts the syntax case.
+
+    This mutant PARSES -- it swaps an import for a module that does not exist -- so it
+    reaches pytest, which reports one error during collection and exits 2. The mutant
+    executed no assertion, so it is refused by name exactly as before."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy2(MUTATE, tmp_path / "scripts" / "mutate.py")
+    (tmp_path / "mod.py").write_text("import json\n\nMETHODS = ('a', 'b')\n")
+    (tmp_path / "test_mod.py").write_text(
+        "import mod\n\n\ndef test_it():\n    assert mod.METHODS == ('a', 'b')\n")
+    r = _run([sys.executable, str(tmp_path / "scripts" / "mutate.py"),
+              "--file", "mod.py", "--old", "import json", "--new", "import no_such_module_xyz",
+              "--purge", str(tmp_path),
+              "--", sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+              str(tmp_path / "test_mod.py")])
+    assert r.returncode == 2, r.stderr
+    assert "CAUGHT" not in r.stderr
+    assert "exits 2" in r.stderr and "collection" in r.stderr
+    assert (tmp_path / "mod.py").read_text() == "import json\n\nMETHODS = ('a', 'b')\n"
