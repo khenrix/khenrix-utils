@@ -264,16 +264,24 @@ def test_a_ledger_contradiction_counts_against_the_coverage_dimension():
 
 def test_a_recorded_human_trace_is_not_a_mechanically_checked_criterion():
     """§10.1's method axis, carried into the number seats are ordered by. A trace is a
-    human's word: it is not a miss, so it does not raise `unsatisfied_criteria`, and it is
-    not a mechanical check, so it must not raise `covered_criteria` either — and the reason
-    the trigger prints may not describe it as one."""
+    human's word: it is not a miss and it is not a mechanical check, and the reason the
+    trigger prints may not describe it as one.
+
+    WHAT CHANGED, and why the old consequence was the wrong one. This asserted that a trace
+    "does not raise `unsatisfied_criteria`" and therefore left the seat rankable at
+    `(0, 1)` — the fail-closed direction, on the argument that lowering `covered` without
+    raising `unsat` is the safe way round. It is not: §12.5 orders on `unsatisfied_criteria`
+    FIRST, so a report nobody checked scored the best possible value on the deciding
+    dimension and `covered` never got a say. A report holding a claim no predicate ran on is
+    now unrankable, which is what "this run did not measure that" has to mean.
+    """
     report = _report(_ok(), _traced("b"))
     answer, why = rubric.fallback_trigger(report)
-    assert answer == rubric.NOT_TRIGGERED
-    assert "1 of this report's 2 result(s) were mechanically checked" in why
+    assert answer == rubric.TRIGGER_UNDECIDABLE
+    assert "no predicate run" in why and "manual_trace_confirmed" in why
     d = rubric.dimensions_from("agy", report=report, gate_outcome=verify.PASS,
                                review_risk=0, size=strategy.Size(1, 1, ()))
-    assert d.unsatisfied_criteria == 0 and d.covered_criteria == 1
+    assert d.unsatisfied_criteria is None and d.covered_criteria is None
 
 
 def test_an_unmeasured_size_yields_an_unmeasured_complexity_not_zero():
@@ -364,7 +372,12 @@ def test_the_trigger_and_the_top_dimension_agree_on_every_report_shape():
         assert unmeasured == (d.covered_criteria is None), (report, answer)
         if answer == rubric.TRIGGER_UNDECIDABLE:
             assert unmeasured, (report, answer)
-        complete = report is not None and bool(report.results) and not report.unresolved
+        # COMPLETENESS FROM §10.1'S AXIS, NOT FROM `_read_report`'S BRANCHES. This line used
+        # to read `bool(report.results) and not report.unresolved` — the implementation
+        # restated — so it asked whether the code agreed with itself and could not see that
+        # `manual_trace_confirmed` is §10.1's OTHER way for a criterion to go unchecked.
+        complete = report is not None and bool(report.results) and all(
+            r.method == "mechanically_checked" for r in report.results)
         assert unmeasured == (not complete), (report, answer)
 
 
@@ -374,8 +387,14 @@ def test_the_module_reads_a_coverage_report_in_exactly_one_place():
     drift is silent and decides which seat the run calls strongest."""
     src = (ROOT / "shared" / "lib" / "forge" / "rubric.py").read_text(encoding="utf-8")
     for branch in ("if report.contradictions:", "if report.unsatisfied:",
-                   "if not report.results:", "if report.unresolved:"):
+                   "if not report.results:"):
         assert src.count(branch) == 1, branch
+    # `if report.unresolved:` is GONE rather than deduplicated, and that is the stronger
+    # result: it knew one of §10.1's two ways a criterion escapes checking, and its
+    # replacement — `coverage.unmeasured` — is a function both this module and `strategy`
+    # import, so the two cannot drift by one of them remembering a spelling.
+    assert src.count("if report.unresolved:") == 0
+    assert src.count("coveragemod.unmeasured(") == 1
 
 
 def test_no_function_but_the_one_reading_touches_a_report_at_all():
@@ -412,3 +431,55 @@ def test_every_unknown_size_yields_an_unmeasured_complexity_and_never_a_zero():
         assert d.diff_complexity is None, size
         name, why = rubric.strongest([d, _d("claude")])
         assert name is None and "diff_complexity" in why
+
+
+def test_a_report_of_traced_prose_is_not_rankable_on_the_top_dimension():
+    """DID A PREDICATE RUN ON EVERY RESULT? — the external question.
+
+    §10.1 names THREE ways a criterion escapes mechanical checking in one sentence:
+    "Everything else is marked `manual_trace_confirmed` or `unresolved`." The gap block knew
+    two. A report of traced prose therefore scored `unsatisfied_criteria=0` — the BEST
+    possible value on §12.5's top dimension — and came back fully rankable, over evidence no
+    predicate ever touched.
+
+    `test_the_trigger_and_the_top_dimension_agree_on_every_report_shape` could not see it: it
+    defines completeness as `bool(results) and not unresolved`, which is `_read_report`'s own
+    predicate restated, so it asks whether the code agrees with itself.
+    """
+    d = rubric.dimensions_from("agy", report=_report(_traced("a"), _traced("b")), gate_outcome=verify.FAIL,
+                               review_risk=0, size=strategy.Size(10, 1, ()))
+    assert d.unsatisfied_criteria is None and d.covered_criteria is None
+
+
+def test_a_MIXED_report_is_not_rankable_either():
+    """The realistic ledger, and the shape an `all(...)`/`any(...)` slip passes.
+
+    Four mechanically checked criteria beside one human trace is not "four fifths measured";
+    it is a report with a claim nobody checked, and §12.5's top dimension has no way to say
+    four fifths.
+    """
+    d = rubric.dimensions_from("agy", report=_report(_ok("a"), _ok("b"), _ok("c"), _ok("d"), _traced("e")), gate_outcome=verify.FAIL,
+                               review_risk=0, size=strategy.Size(10, 1, ()))
+    assert d.unsatisfied_criteria is None and d.covered_criteria is None
+
+
+def test_the_seat_that_measured_nothing_never_outranks_the_seat_that_measured():
+    """The ranking the gap produced, measured: the all-manual seat FAILED its gate and carried
+    higher review risk, and was named `strongest` over one that PASSED with a real miss.
+
+    Because a criterion's `kind` is the author's choice, that made the cheapest criterion to
+    write — prose with a trace — also the highest-scoring one, so the rubric rewarded
+    unfalsifiable criteria over testable ones.
+    """
+    manual = rubric.dimensions_from("agy", report=_report(*[_traced(chr(97 + i)) for i in range(10)]), gate_outcome=verify.FAIL,
+                               review_risk=0, size=strategy.Size(10, 1, ()))
+    assert manual.unsatisfied_criteria is None, \
+        "an unrankable seat cannot be named strongest, which is the whole defence"
+
+
+def test_a_fully_mechanical_report_is_still_rankable():
+    """The guard against over-tightening: if every report became unrankable, §12.5 would name
+    nobody for a new reason and the fix would be indistinguishable from deleting the rubric."""
+    d = rubric.dimensions_from("agy", report=_report(_ok("a"), _ok("b"), _bad("c")), gate_outcome=verify.FAIL,
+                               review_risk=0, size=strategy.Size(10, 1, ()))
+    assert d.unsatisfied_criteria == 1 and d.covered_criteria == 2

@@ -132,11 +132,17 @@ def _read_report(report) -> _Reading:
     coverage nobody finished reading is unrankable however loudly the trigger fired.
 
     A CONSEQUENCE WORTH STATING OUTRIGHT, because it decides how often `strongest` names
-    anybody: `coverage._schema` is `unresolved` by construction and `coverage._prose` is
-    `unresolved` for any criterion with no recorded trace, so a real ledger carrying either
-    kind produces a report this function calls incomplete. That is the intended reading —
-    those criteria genuinely were not checked — and a rubric that named a strongest seat over
-    them would be reporting an order it did not measure.
+    anybody: `coverage._schema` is `unresolved` by construction, and `coverage._prose` is
+    `unresolved` WITHOUT a recorded trace and `manual_trace_confirmed` WITH one — so a real
+    ledger carrying either kind produces a report this function calls incomplete, both ways
+    round. That is the intended reading — those criteria genuinely were not checked — and a
+    rubric that named a strongest seat over them would be reporting an order it did not
+    measure.
+
+    THIS PARAGRAPH USED TO STOP AT "no recorded trace", and the omission was the defect
+    rather than a description of it: a TRACED prose criterion is `manual_trace_confirmed`,
+    which the gap predicate did not know, so a report made of them read complete-and-clean
+    and scored the best possible value on the dimension §12.5 decides on first.
     """
     if report is None:
         return _Reading(TRIGGER_UNDECIDABLE, (
@@ -153,17 +159,23 @@ def _read_report(report) -> _Reading:
     if not report.results:
         gap = ("this report holds no results at all, so it says nothing about any claim; an "
                "all-empty report reading as a covered run is §10.1's own failure shape")
-    if report.unresolved:
-        gap = (f"{len(report.unresolved)} criterion/criteria are unresolved — nobody could "
-               f"check them ({report.unresolved[0]}) — so 'no accepted row is missing' is not "
-               "something this run measured")
+    # ONE PREDICATE, SHARED WITH `strategy.classify_failure`, NOT A SECOND SPELLING. This read
+    # `report.unresolved` and so knew one of §10.1's TWO ways a criterion escapes mechanical
+    # checking; `manual_trace_confirmed` is the other, and a report made of it scored the best
+    # possible value on §12.5's top dimension. The empty case above stays its own branch
+    # because `unmeasured(())` is `()` — see that function.
+    if (un := coveragemod.unmeasured(report.results)):
+        gap = (f"{len(un)} criterion/criteria had no predicate run on them — "
+               f"{un[0].row_id}[{un[0].criterion_index}] is {un[0].method} — so 'no accepted "
+               "row is missing' is not something this run measured")
     if gap is None:
         unsat = len(report.unsatisfied) + len(report.contradictions)
-        # A `manual_trace_confirmed` result is a HUMAN'S WORD and is deliberately not counted
-        # here: §10.1 keeps it off the mechanical axis, and counting it would put human
-        # diligence into a number §12.5 orders seats by. It is not a miss either — nobody
-        # said the claim was unmet — so it lowers `covered` without raising `unsat`, which is
-        # the fail-closed direction.
+        # Every result here is `mechanically_checked` — the gap above is what guarantees it —
+        # so this counts the satisfied ones. It used to run over reports holding a human's
+        # word as well, on the argument that lowering `covered` without raising `unsat` was
+        # the fail-closed direction. It is not: §12.5 orders on `unsatisfied_criteria` FIRST,
+        # so a report with nothing checked scored zero there and won the dimension outright,
+        # and `covered` never got a say.
         covered = sum(1 for r in report.results
                       if r.method == "mechanically_checked" and r.satisfied is True)
     else:

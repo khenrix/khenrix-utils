@@ -306,6 +306,13 @@ def _unknown(row="a"):
     return coverage.Result(row, 0, "unresolved", None, "no predicate exists for this row")
 
 
+def _traced(row="a"):
+    """§10.1's OTHER non-mechanical method, which this suite had no fixture for at all —
+    which is why every test here passed while `classify_failure` returned
+    `synthesis_introduced` over a report no predicate had touched."""
+    return coverage.Result(row, 0, "manual_trace_confirmed", None, "a human traced this claim")
+
+
 def test_infrastructure_outcomes_are_classified_and_never_permit_fallback():
     for outcome in (verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE, verify.HARVEST_INCOMPLETE):
         cls, why = strategy.classify_failure(outcome, report=_report(_ok()))
@@ -428,3 +435,47 @@ def test_an_outcome_added_to_verify_without_a_reading_here_fails_loudly(monkeypa
 def test_an_undeclared_failure_class_is_refused_by_the_disposition():
     with pytest.raises(strategy.StrategyError):
         strategy.fallback_disposition("probably_fine")
+
+
+def test_a_traced_report_does_not_buy_a_fallback(tmp_path):
+    """`synthesis_introduced` is the one class `fallback_disposition` PERMITS spending on, and
+    the sentence it printed claimed every criterion "was mechanically checked and satisfied"
+    when none had been. That is a verdict naming evidence it does not have.
+    """
+    cls, why = strategy.classify_failure(verify.FAIL, report=_report(_traced("a"), _traced("b")))
+    assert cls is None, "a report nobody checked cannot conclude the synthesis is at fault"
+    assert "no predicate run" in why and "mechanically checked" not in why
+
+
+def test_a_MIXED_report_does_not_buy_a_fallback_either(tmp_path):
+    """The realistic ledger. `all(...)` where `any(...)` belongs passes every all-or-nothing
+    case and fails only here."""
+    cls, _ = strategy.classify_failure(
+        verify.FAIL, report=_report(_ok("a"), _ok("b"), _ok("c"), _traced("d")))
+    assert cls is None
+
+
+def test_a_fully_mechanical_failing_report_still_reaches_synthesis_introduced(tmp_path):
+    """The guard against over-tightening: if nothing could reach it, §12.3 would never permit
+    a fallback and the fix would be indistinguishable from deleting the class."""
+    cls, why = strategy.classify_failure(verify.FAIL, report=_report(_ok("a"), _ok("b")))
+    assert cls == strategy.SYNTHESIS_INTRODUCED
+    assert strategy.fallback_disposition(cls) == strategy.PERMITTED
+
+
+def test_the_two_readers_never_disagree_over_any_shape_INCLUDING_the_traced_one(tmp_path):
+    """An agreement test between two COPIES cannot find a defect they share — measured, both
+    modules agreed on the traced shape and both were wrong. It is worth keeping only now that
+    the predicate is one function they both import, and only if the shape that broke them is
+    in the list.
+    """
+    from forge import rubric
+    shapes = (_report(_ok("a")), _report(_bad("a")), _report(_unknown("a")),
+              _report(_traced("a")), _report(_ok("a"), _traced("b")),
+              _report(_ok("a"), _unknown("b")), _report())
+    for rep in shapes:
+        gap_r = rubric.dimensions_from("agy", report=rep, gate_outcome=verify.FAIL,
+                                       review_risk=0,
+                                       size=strategy.Size(10, 1, ())).unsatisfied_criteria is None
+        gap_s = strategy.classify_failure(verify.FAIL, report=rep)[0] is None
+        assert gap_r == gap_s, f"the two readers disagree about {rep}"

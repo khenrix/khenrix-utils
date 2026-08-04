@@ -626,6 +626,30 @@ def _contradictions(l) -> tuple:
     return tuple(out)
 
 
+def unmeasured(results) -> tuple:
+    """Every result no predicate ran on — §10.1's `manual_trace_confirmed` AND `unresolved`.
+
+    ONE FUNCTION, BECAUSE TWO SPELLINGS OF ONE JUDGEMENT CANNOT BE KEPT IN STEP BY BOTH BEING
+    REMEMBERED. `rubric._read_report` and `strategy.classify_failure` each carried a copy that
+    knew `unresolved` and not `manual_trace_confirmed` — §10.1 names both in one sentence
+    ("Everything else is marked `manual_trace_confirmed` or `unresolved`") and each copy
+    caught one. The agreement test between the two modules passed throughout, because they
+    AGREED: an agreement test between two copies cannot find a defect they share.
+
+    WHAT IT COST, measured through `check` from a real ledger: a report of traced prose scored
+    `unsatisfied_criteria=0` — the best possible value on §12.5's top dimension — and came
+    back fully rankable, so a seat that failed its gate with no predicate run on any claim
+    outranked one that passed with a real miss. Since a criterion's `kind` is the author's
+    choice, that made the cheapest criterion to write also the highest-scoring one.
+
+    NOT A COMPLETE GAP PREDICATE ON ITS OWN, and callers must not treat it as one: an EMPTY
+    result list has no unmeasured member either, so `unmeasured(()) == ()`. "Nothing was
+    measured because there was nothing to measure" is a different sentence from "everything
+    was measured", and the empty case stays a separate branch in both callers.
+    """
+    return tuple(r for r in results if r.method != "mechanically_checked")
+
+
 def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
     """Every criterion on every row, plus the contradictions and the two roll-ups.
 
