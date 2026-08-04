@@ -220,6 +220,11 @@ class Quote:
     # say which budget an `attempt` value was spending.
     review_rounds: int
     synthesis_fix_cap: int
+    # WHAT THE TOTAL IS MADE OF, so a reader — human or test — can ask which STAGE a call was
+    # priced for rather than re-deriving the arithmetic. A test that recomputes the formula
+    # agrees with a wrong formula, which is how calls for a review nothing can convene
+    # survived a suite that checked the total against the prose.
+    terms: dict
 
 
 def _confirmed_count(name, value, source, *, floor=1) -> int:
@@ -338,7 +343,9 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
                  seats=seats, attempts=attempts,
-                 review_rounds=review_rounds, synthesis_fix_cap=review_fixes)
+                 review_rounds=review_rounds, synthesis_fix_cap=review_fixes,
+                 terms={"builders": builders, "synthesis": synthesis,
+                        "review": review, "review_fixes": review_fixes})
 
 
 # ---------------------------------------------------------------------------------------

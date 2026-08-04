@@ -569,3 +569,91 @@ def test_launch_does_not_claim_it_has_no_production_caller():
     src = (ROOT / "shared" / "lib" / "forge" / "launch.py").read_text().lower()
     assert "no production caller" not in src
     assert "cli" in src, "the module no longer names the caller that exists"
+
+
+# --------------------------------------------------------------- the quote against the engine
+def test_every_term_the_quote_prices_has_a_reachable_production_caller():
+    """PROSE-TO-FORMULA IS NOT FORMULA-TO-ENGINE.
+
+    `test_the_skill_quotes_the_numbers_gate_quote_actually_produces` pins SKILL.md against
+    `gate.quote`'s OUTPUT, so it guarantees the two agree and says nothing about whether the
+    engine can spend what they agree on. It is the strongest test in this file and it is
+    structurally blind to a term priced for a stage with no production caller: quote code and
+    prose can both count the same nonexistent phase and the test passes.
+
+    So this asks the external question — DOES ANYTHING CALL THIS? — per term, by walking the
+    engine for the callers that would spend it. A term priced above zero whose stage has no
+    reachable caller is a number an operator was shown and cannot be charged.
+
+    Deliberately not a full fake run: driving one would re-derive the wiring from the same
+    modules it is meant to audit. Reachability is the property, and it is answered by asking
+    the package who calls whom.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    from forge import gate, preflight
+    from forge_fixtures import make_repo
+
+    src = {p.name: p.read_text(encoding="utf-8")
+           for p in (ROOT / "shared" / "lib" / "forge").glob("*.py")}
+
+    def called_outside(fn: str, owner: str) -> bool:
+        """A production call to `fn` from some module other than the one defining it."""
+        for name, text in src.items():
+            if name == owner:
+                continue
+            for line in text.splitlines():
+                bare = line.split("#", 1)[0]
+                if f"{fn}(" in bare:
+                    return True
+        return False
+
+    with tempfile.TemporaryDirectory() as td:
+        report = preflight.inspect_repo(make_repo(Path(td)), ())
+        q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=True)
+
+    # WHO SPENDS THE TERM IS PART OF THE TERM. `synthesis` is one provider call and the ENGINE
+    # deliberately does not make it: SKILL.md is explicit that there is no `--synthesize` —
+    # the engine stops with the candidates verified, hands over a worktree and waits, because
+    # "picking a winner is the thing this skill exists not to do". That call is the
+    # orchestrator's own turn, so it is honestly priced and correctly has no engine caller.
+    # Pricing it is not the defect; pricing a stage NOTHING can spend is.
+    operator_spent = {"synthesis"}
+    # DECLARED UNBUILT, and this set is the finding rather than a suppression. §13's rounds and
+    # their post-round fixes are priced and CANNOT BE SPENT: `review.run_round` and
+    # `review.loop` have no production caller. Repricing them at zero is the honest end state
+    # and is NOT done here, because it stops `--review-rounds` moving `provider_calls` at all
+    # and so changes the confirmation protocol — `confirm` cross-checks the answer sheet
+    # against what was priced, and a whole family of gate tests exists to enforce that the
+    # quote responds to its inputs. That belongs in a task whose reviewer is looking at the
+    # gate, alongside the open question of whether `--review-rounds > 0` should simply be
+    # REFUSED while nothing can convene one. What this test buys today is that no NEW
+    # unreachable term can be added silently, and that these two cannot be quietly forgotten.
+    known_unbuilt = {"review", "review_fixes"}
+    # The remaining terms name the engine function that would spend them.
+    terms = {
+        "builders":     ("run_seat", "runner.py"),
+        "review":       ("run_round", "review.py"),
+        "review_fixes": ("loop", "review.py"),
+    }
+    # READ OFF THE QUOTE, never recomputed here: a test that restates the arithmetic agrees
+    # with a wrong formula, which is exactly how nine calls for an unbuilt review survived the
+    # suite that compares the total to the prose.
+    priced = q.terms
+    assert sum(priced.values()) == q.provider_calls, \
+        f"the terms {priced} do not add up to the total {q.provider_calls} shown to an operator"
+    unreachable = [t for t, (fn, owner) in terms.items()
+                   if priced.get(t, 0) > 0 and not called_outside(fn, owner)
+                   and t not in known_unbuilt]
+    assert not unreachable, (
+        f"the quote prices {unreachable} and no module outside their own calls them, so an "
+        f"operator is shown provider calls this engine cannot spend. Price the term at zero "
+        f"or wire the stage.")
+
+    # AND THE DECLARATION CANNOT OUTLIVE THE DEFECT: the day §13 gains a production caller,
+    # `known_unbuilt` is stale and this fails, so the set cannot quietly become a permanent
+    # exemption for a stage that now works.
+    still_unbuilt = {t for t in known_unbuilt
+                     if not called_outside(*terms[t])}
+    assert still_unbuilt == known_unbuilt, (
+        f"{sorted(known_unbuilt - still_unbuilt)} now has a production caller — drop it from "
+        "known_unbuilt, and reprice it")
