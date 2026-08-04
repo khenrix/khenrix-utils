@@ -2098,3 +2098,32 @@ def test_the_environment_reaches_all_three_children_rather_than_being_accepted_a
     for env in handed:
         assert env.get("PYTHONPATH", "") == ""
         assert "GIT_DIR" not in env
+
+
+def test_containment_is_asked_in_BOTH_directions(tmp_path):
+    """The check asked "is the ledger under a reviewer root?" and never the reverse.
+
+    A reviewer root INSIDE the run directory reaches `../ledger.json` by one relative hop —
+    and that is a READ, from the reviewer's ordinary cwd, so the write-measuring
+    `worktree_identity` bracket beside it is structurally incapable of seeing it. §13's
+    blindness is the strongest call in this design and this is the cheapest possible defeat
+    of it.
+
+    NOT a sibling assertion. An earlier draft asserted `ledger.parent != root.parent`, which
+    under the layout that draft chose was unequal BY CONSTRUCTION — a test that could not
+    fail, in the task whose whole subject is checks that cannot fail.
+    """
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    (run / "review").mkdir()
+    inside = _checkout(run / "review", "checkout")   # a real clone, inside the run directory
+    with pytest.raises(review.ReviewError) as e:
+        review.assert_ledger_is_out_of_reach(run, checkout=inside, other_clones=())
+    assert "ledger" in str(e.value).lower()
+
+
+def test_a_checkout_that_neither_contains_nor_is_contained_still_passes(tmp_path):
+    """The guard against over-tightening: the ordinary layout must not now refuse."""
+    run = _run_dir(tmp_path)
+    _ledger(run)
+    review.assert_ledger_is_out_of_reach(run, checkout=_checkout(tmp_path), other_clones=())
