@@ -91,11 +91,24 @@ def test_every_forge_suite_is_named_in_the_makefile_gate():
 
     Equality, not containment, so the other direction fails too: a RENAMED suite leaves a
     dead name in a variable, and `pytest` is handed a path that no longer exists.
+
+    THE GLOB IS `test_*` AND NOT `test_forge_*`, AND THAT ONE CHARACTER WAS THE WHOLE DEFECT.
+    Measured 2026-08-04: 42 suites on disk, 41 named — the orphan was `tests/test_mutate.py`,
+    13 tests pinning `mutate.py`'s false-CAUGHT guards, run by no target and invisible to the
+    very gate written to catch that class. Every variable is read, not just the forge pair,
+    because a suite's home is whichever list actually runs it.
     """
-    on_disk = {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_forge_*.py")}
+    on_disk = ({f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.py")}
+               | {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.bats")})
+    variables = ("FORGE_TESTS", "FORGE_SLOW_TESTS", "COUNCIL_TESTS",
+                 "DOCTOR_TESTS", "AUDIT_TESTS", "BATS_SUITES")
+    named = set()
+    for var in variables:
+        named |= _make_variable(var)
+    assert named == on_disk, (
+        f"suites that run in no target: {sorted(on_disk - named)}; "
+        f"names pointing at files that do not exist: {sorted(named - on_disk)}")
     fast, slow = _make_variable("FORGE_TESTS"), _make_variable("FORGE_SLOW_TESTS")
-    assert fast | slow == on_disk, \
-        "add the new suite to FORGE_TESTS or FORGE_SLOW_TESTS, or drop the stale name"
     assert fast & slow == set(), \
         "a suite in both variables is run twice and gated by neither list alone"
 
