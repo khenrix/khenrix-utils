@@ -25,6 +25,7 @@ NOTHING HERE INVENTS A TIMEOUT. §19 forbids a second timeout mechanism; the sea
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import shutil
 import sys
@@ -573,6 +574,19 @@ def _agreement(run_dir) -> str:
     return fingerprint.agreement_label(ids)
 
 
+# §13.1's result before there is one. `Provenance` types this field, and the record `collect`
+# validates BEFORE the spend therefore needs an `Ultra` to be a record at all; the only honest
+# one for a review nobody has asked for yet is a `skipped` whose detail says so. It never
+# reaches a header — `dataclasses.replace` puts the review's own result in its place — so the
+# detail is written for the one reader who would ever see it: somebody looking at a handover
+# where that replacement did not happen.
+_UNREQUESTED = ultra.Ultra(
+    ultra.SKIPPED, None, None, None, False,
+    "this run's record was validated before §13.1 was asked for and the placeholder it was "
+    "checked with was never replaced by the review's own result — so this line describes a "
+    "defect in `--collect` and NOT a review the operator declined")
+
+
 def collect(args, *, out) -> int:
     """§14's read-from-disk half: §13.1 once, §16's mergeability, and the handover text."""
     repo = Path(args.repo).resolve()
@@ -606,7 +620,8 @@ def collect(args, *, out) -> int:
     # from disk, and all three used to run AFTER the cloud review, so a run with nothing to
     # hand over paid $5-25 to be told so. The reads below are what the header is built from as
     # well, so the same ordering makes the whole handover provably constructible before the
-    # one call that cannot be taken back.
+    # one call that cannot be taken back — including `Provenance`, whose own refusals are
+    # argued where it is built.
     head = _rev(synth, "HEAD")
     tree = _rev(synth, "HEAD^{tree}")
     sidecars = _sidecars_of(synth)
@@ -627,11 +642,19 @@ def collect(args, *, out) -> int:
     unresolved = _unresolved(run_dir, rounds)
     strongest, agreement = _strongest(run_dir), _agreement(run_dir)
 
-    # THE SPEND, once, after everything above has agreed there is a handover to attach it to.
-    enabled = _confirmed_ultrareview(run_dir)
-    u = ultra.run_ultra(run_dir, checkout=synth, base=manifest.baseline_commit, head=head,
-                        round_=max(1, rounds), enabled=enabled)
-
+    # AND THE RECORD IS BUILT HERE, WHICH IS THE SAME RULE ONE VALIDATION FURTHER ON. Every
+    # check `Provenance.__post_init__` makes is over a value this function already holds by
+    # now — the two argv words, the seat rows, the confirmed verify command, §11's label, §13's
+    # terminal and its counts — and the ONLY one that needs §13.1's result is the type check on
+    # `ultra`. Built after the review, a mistyped `--strategy` or `--synthesis-outcome` bought
+    # $5-25 of cloud review and was then refused for a word, and `--strategy` is the likelier
+    # of the two to be mistyped because there are TWO strategy vocabularies: §5 step 2's answer
+    # sheet takes `gate.STRATEGY_RULES` (`size-gated`, `fusion`, `base-and-port`) while this
+    # flag reports what the fusion FOLLOWED, which is `strategy.STRATEGIES` (`from_scratch`,
+    # `partition`, `base_and_port`) — the same three ideas, and not one shared spelling.
+    #
+    # THE WHOLE RECORD RATHER THAN THOSE TWO CHECKS, because hoisting the two would leave the
+    # other dozen behind the call and put the next reader back where this one started.
     p = handover.Provenance(
         seats=seats, synthesis_outcome=args.synthesis_outcome,
         # `False`, AND IT IS A CONSTANT HERE RATHER THAN A FLAG. Nothing in this function runs
@@ -650,8 +673,16 @@ def collect(args, *, out) -> int:
         verify_seconds=None, strategy=args.strategy,
         strongest=strongest, agreement=agreement,
         review_terminal=terminal, review_rounds=rounds,
-        unresolved_findings=unresolved, ultra=u)
-    print(handover.text(h, p), file=out)
+        unresolved_findings=unresolved, ultra=_UNREQUESTED)
+
+    # THE SPEND, once, after everything above has agreed there is a handover to attach it to.
+    enabled = _confirmed_ultrareview(run_dir)
+    u = ultra.run_ultra(run_dir, checkout=synth, base=manifest.baseline_commit, head=head,
+                        round_=max(1, rounds), enabled=enabled)
+
+    # `replace` RE-RUNS `__post_init__`, so the record that renders is validated carrying the
+    # review this run actually got and not on the strength of the placeholder above.
+    print(handover.text(h, dataclasses.replace(p, ultra=u)), file=out)
     return 0
 
 

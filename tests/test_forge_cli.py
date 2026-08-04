@@ -601,6 +601,89 @@ def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
     assert not called, "a review was requested for a run that cannot say it agreed to one"
 
 
+@pytest.mark.parametrize("flag,value", [
+    # §5 step 2's answer sheet takes `gate.STRATEGY_RULES` — `size-gated`, `fusion`,
+    # `base-and-port` — and this flag reports what the fusion FOLLOWED, which is
+    # `strategy.STRATEGIES` (`from_scratch`, `partition`, `base_and_port`). The two vocabularies
+    # overlap in meaning and in NO spelling, so the words an operator most plausibly carries
+    # over from the `--start` they ran an hour earlier are exactly the ones `--collect` refuses.
+    ("--strategy", "fusion"),
+    ("--strategy", "base-and-port"),
+    ("--synthesis-outcome", "PASSED"),
+])
+def test_a_mistyped_collect_flag_is_refused_before_the_cloud_review_is_paid_for(
+        flag, value, tmp_path, monkeypatch, capsys):
+    """The sibling of the ordering two functions up, one validation over.
+
+    `--strategy` and `--synthesis-outcome` are checked by `handover.Provenance.__post_init__`,
+    and that record used to be built AFTER §13.1's pass — so an operator who mistyped either
+    word paid $5-25 for a cloud review and was then told the word is not in the vocabulary. The
+    assertion that matters is `not calls`: a test that only read the return code passes on the
+    ordering this one exists to refuse.
+    """
+    calls = []
+    monkeypatch.setattr(cli.ultra, "run_ultra",
+                        lambda *a, **kw: calls.append(kw) or _skipped_ultra())
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   flag, value])
+    assert rc != 0
+    out = capsys.readouterr().out
+    assert value in out, f"the refusal did not quote the word it refused: {out!r}"
+    assert not calls, "a mistyped flag bought a cloud review before it was refused"
+
+
+def test_collect_validates_its_whole_provenance_record_before_the_call_that_spends(tmp_path):
+    """THE GENERAL FORM OF THE TEST ABOVE, because the two flags are not two checks.
+
+    Every rule `Provenance.__post_init__` states is over a value `collect` already holds when
+    it has finished reading the disk — the two argv words, the seat rows, the confirmed verify
+    command, §11's agreement label, §13's terminal and its counts — and the ONLY one that needs
+    §13.1's result is the type check on `ultra`. Hoisting the two flag checks alone would leave
+    the other dozen behind the one call that cannot be taken back, which is the same defect
+    this test's parametrized sibling names, found again a week later.
+
+    Read off the SOURCE, in this file's own precedent: a behavioural test can drive one refusal
+    per fixture, and what is at issue is where the construction sits rather than which rule
+    fires. The alternative is a fixture per rule and a paid review whenever one is missed.
+    """
+    src = (ROOT / "shared" / "lib" / "forge" / "cli.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "collect")
+    spends = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+              and isinstance(n.func, ast.Attribute) and n.func.attr == "run_ultra"]
+    records = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+               and isinstance(n.func, ast.Attribute) and n.func.attr == "Provenance"]
+    assert len(spends) == 1, f"§13.1 is asked for once, not {len(spends)} time(s): {spends}"
+    assert records, "collect no longer builds the record this test is about"
+    assert max(records) < min(spends), (
+        f"a Provenance is constructed at line(s) {records} and §13.1's paid pass is asked for "
+        f"at line {spends[0]} — every refusal that record can make costs nothing, so all of "
+        "them belong in front of the spend")
+
+
+def test_the_handover_reports_the_review_this_run_got_and_not_the_pre_spend_placeholder(
+        tmp_path, monkeypatch):
+    """The cost of validating the record before the spend: it is built carrying a placeholder
+    `Ultra`, and `dataclasses.replace` is the only thing that puts §13.1's real result in its
+    place. Without that call the handover says the cloud review was never requested over a run
+    that paid for one — this package's usual overclaim printed backwards, and just as wrong.
+
+    MEASURED with `scripts/mutate.py`: replacing `dataclasses.replace(p, ultra=u)` with `p`
+    left `test_forge_cli.py` and `test_forge_handover.py` both green (79 passed, SURVIVED), so
+    nothing else in the suite holds the placeholder in.
+    """
+    ran = ultra.Ultra(ultra.RAN, None, (), None, True, "a test stood in for §13.1 and ran")
+    monkeypatch.setattr(cli.ultra, "run_ultra", lambda *a, **kw: ran)
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    text = _collect_text(tmp_path, run_dir)
+    assert "Ultrareview: 0 finding(s) reported" in text
+    assert cli._UNREQUESTED.detail not in text
+    assert "not requested" not in text, \
+        "the header describes a review nobody asked for over a run that got one"
+
+
 def test_the_handover_a_collect_prints_does_not_call_an_asserted_verdict_verified(
         tmp_path, monkeypatch, capsys):
     """`--collect --synthesis-outcome PASS` renders a verdict THIS ENGINE DID NOT MEASURE. It
