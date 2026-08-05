@@ -497,22 +497,24 @@ git commit -m "fix(forge): the parser a deferred fix was to be built on manufact
 
 ---
 
-## Task 4: Coverage's row identity, and the rows that produce no `Result`
+## Task 4: Coverage's row identity, and the rows that leave no record
 
 **Why fourth:** two findings, one visit, because both are `coverage`'s treatment of a ledger row's identity and fixing one without the other leaves the pair disagreeing.
 
-- **s3 M3** — `coverage.check` (`coverage.py:752`) calls `ledger._check_rows(l.rows)`, not `ledger._check`. `_check_rows` validates the rows; `_check` validates the ledger, which is where duplicate and stale row ids are caught. So `coverage.check` measures over identities nothing verified, and L2.1/L2.3 made it measure **more carefully** on them.
-- **s3 H2** — a row whose status is not `accepted` produces **no `Result` at all**. Forty unsettled claims render a clean report. L2.3's accepted-row filter (`coverage.check` now filters `r.status == "accepted"`) makes this strictly more consequential: the filter is correct, and the rows it drops now leave no trace anywhere.
+- **s3 M3** — `coverage.check` (`coverage.py:752`) calls `ledger._check_rows(l.rows)`, not `ledger._check(l)`. Verified: `_check_rows` validates the ROWS' shape; `_check` runs `_check_rows` **plus** `_check_scalars`, the version pin, the degradation-consistency rule, and a `seen = {}` pass that is where **duplicate row ids** are caught (`ledger.py:533-558`). So `coverage.check` keys every measurement below it by an id nothing verified is unique — and L2.1/L2.3 made it measure *more carefully* on them.
+- **s3 H2** — a row whose status is not `accepted` leaves **no record anywhere**. Verified at `coverage.py:784`: `if r.status != "accepted": continue`. Forty rejected or deferred claims render a report that names none of them, which reads as a run with nothing outstanding.
 
 **Files:**
-- Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/coverage.py` (`check`, ~`:744-760`)
+- Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/coverage.py` (`Report`, `check` ~`:750-798`)
 - Test: `/home/khenrix/git/khenrix-utils/tests/test_forge_coverage.py`
 
 **Interfaces:**
-- Consumes: `ledger._check(l)`, `ledger._check_rows(rows)`, `coverage.Result`, `coverage.unmeasured(results)`.
-- Produces: `coverage.check` raises on a ledger `_check` refuses; every non-`accepted` row produces a `Result` whose status is `unresolved` with a reason naming the row's actual status.
+- Consumes: `ledger._check(l)`, `ledger.LedgerError`; `coverage.Result(row_id, criterion_index, method, satisfied, detail)` — **those are the real field names, in that order**; `coverage.unmeasured(results)`; `coverage.NO_CRITERION` (which is `-1`, a criterion *index* sentinel, not a method).
+- Produces: `coverage.check` raises `CoverageError` on a ledger `_check` refuses. `Report` gains **`unmeasured_rows: tuple[tuple[str, str], ...]`** — `(row_id, status)` pairs for every row the coverage axis does not cover.
 
-**The fail-open this task must not have:** an `unresolved` `Result` for a rejected row must not be counted as a *gap in coverage* the way an accepted-but-uncriterioned row is — those are two different facts and §12.4's fallback fires on one of them. Read `NO_CRITERION`'s index and give the new state its own, so the roll-up can tell them apart.
+**The fail-open this task must not have — and the obvious implementation walks straight into it.** The tempting fix is to give each non-`accepted` row a `Result` with `method="unresolved"`. **Do not.** `_lines(results, "unresolved")` keeps every result whose `method == "unresolved"` (`coverage.py:65-66`) and `unmeasured(results)` counts `unresolved` **and** `manual_trace_confirmed` — so every rejected row would inflate the unmeasured count, fire §12.4's fallback and degrade §12.5's top dimension on **every ledger that rejected anything**. §10 calls a rejection "the most valuable signal in the run"; charging a fallback for it inverts the incentive exactly the way the accepted-rows-only filter was added to stop.
+
+A rejected row is **not on the coverage axis**. So it is recorded **beside** `results`, not in it: `results` keeps meaning "what a predicate was asked about", and the report stops reading as complete because it *names* what it did not cover. The second failure mode is the mirror: a `Report` that carried the field and no reader is a record nobody looks at — so a reader must exist, and `Report.__post_init__`'s existing consistency check is where it goes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -521,98 +523,101 @@ Append to `/home/khenrix/git/khenrix-utils/tests/test_forge_coverage.py`:
 ```python
 def test_check_refuses_a_ledger_with_duplicate_row_ids():
     """THE EXTERNAL QUESTION: does `check` measure over identities anything verified? It
-    called `_check_rows`, which validates rows; `_check` validates the LEDGER, and duplicate
-    and stale ids are a ledger-level property. So every measurement below was taken over ids
-    that may not be unique."""
+    called `_check_rows`, which validates the rows' SHAPE; `_check` is what runs the
+    duplicate-id pass (`ledger.py:555`). Every result below is keyed by row id."""
     l = _a_ledger_with_duplicate_ids()
-    with pytest.raises(Exception) as e:
-        coverage.check(l, _no_results())
-    assert "duplicate" in str(e.value).lower()
+    with pytest.raises(coverage.CoverageError, match="(?i)duplicate"):
+        coverage.check(l, tree=None)
 
 
-def test_a_rejected_row_leaves_a_result_rather_than_nothing():
-    """Forty unsettled claims used to render a clean report: a row that is not `accepted`
-    produced no `Result` at all, so the roll-up counted zero of them and the reader saw a
-    coverage report with nothing missing from it. `nothing` and `nobody` must not leave the
-    same record."""
+def test_a_rejected_row_is_named_rather_than_vanishing():
+    """`if r.status != "accepted": continue` dropped it with no record anywhere, so forty
+    rejected claims rendered a report naming none of them — which reads as a run with nothing
+    outstanding. `nothing` and `nobody` must not leave the same record."""
     l = _a_ledger(rows=[_row("c1", status="rejected"), _row("c2", status="accepted")])
-    report = coverage.check(l, _no_results())
-    ids = {r.claim_id for r in report.results}
-    assert ids == {"c1", "c2"}, ids
-    c1 = next(r for r in report.results if r.claim_id == "c1")
-    assert c1.status == "unresolved" and "rejected" in c1.reason
+    report = coverage.check(l, tree=None)
+    assert ("c1", "rejected") in report.unmeasured_rows
+    assert not any(x[0] == "c2" for x in report.unmeasured_rows)
 
 
-def test_a_rejected_rows_result_is_not_counted_as_a_missing_criterion():
-    """The discrimination check. §12.4's fallback fires on an accepted claim nobody wrote a
-    criterion for; a REJECTED claim with no criterion is not that, and folding the two would
-    make the fallback fire on every ledger that rejected anything."""
-    l = _a_ledger(rows=[_row("c1", status="rejected")])
-    report = coverage.check(l, _no_results())
-    c1 = report.results[0]
-    assert c1.index != coverage.NO_CRITERION
-    assert c1.index == coverage.NOT_ACCEPTED
+def test_a_rejected_row_is_not_charged_as_a_coverage_gap():
+    """THE FAIL-OPEN IN REVERSE, and the reason this row is not a `Result`. `unmeasured()`
+    counts `unresolved` and `manual_trace_confirmed`; a rejected row given `method=
+    "unresolved"` would fire §12.4's fallback and degrade §12.5's top dimension on every
+    ledger that rejected anything — inverting the incentive the accepted-rows-only filter
+    exists to protect. §10 calls a rejection the most valuable signal in the run."""
+    l = _a_ledger(rows=[_row("c1", status="rejected"), _row("c2", status="accepted")])
+    report = coverage.check(l, tree=None)
+    assert not any(r.row_id == "c1" for r in report.results)
+    assert not any(r.row_id == "c1" for r in coverage.unmeasured(report.results))
+    assert not any("c1" in line for line in report.unresolved)
+
+
+def test_the_unmeasured_rows_field_has_a_reader():
+    """A field nobody reads is a record nobody looks at, which is the same defect one layer
+    out. `Report.__post_init__` already recomputes its roll-ups through `_lines` for exactly
+    this reason — that every field it carries is checked by something."""
+    with pytest.raises(coverage.CoverageError):
+        coverage.Report((), (), (), (), unmeasured_rows=("c1",))   # not (id, status) pairs
 ```
 
-> `_a_ledger`, `_row` and `_no_results` follow the existing conventions in
+> `_a_ledger`, `_row` and `_a_ledger_with_duplicate_ids` follow the existing conventions in
 > `tests/test_forge_coverage.py` — read its helpers and extend them. `_a_ledger_with_duplicate_ids`
-> must build a ledger `ledger._check` refuses and `ledger._check_rows` accepts; if no such
-> ledger can be built, that is the finding — report it, because it would mean the two functions
-> are the same check under two names and s3 M3 is not a defect.
+> must build a ledger `_check_rows` accepts and `_check` refuses; that is constructible, verified
+> against `ledger.py:555`'s `seen` pass. `check`'s real signature is
+> `check(l, tree=..., pytest_argv=..., run=...)` — read it and pass what it takes.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `uvx --with pytest pytest -q tests/test_forge_coverage.py -k "duplicate_row_ids or rejected_row"`
-Expected: FAIL — three failures, the third on `AttributeError: module 'forge.coverage' has no attribute 'NOT_ACCEPTED'`.
+Run: `uvx --with pytest pytest -q tests/test_forge_coverage.py -k "duplicate_row_ids or rejected_row or unmeasured_rows"`
+Expected: FAIL — four failures, the last two on `TypeError: __init__() got an unexpected keyword argument 'unmeasured_rows'`.
 
-- [ ] **Step 3: Add the index and the two fixes**
+- [ ] **Step 3: Widen the identity check**
 
-In `/home/khenrix/git/khenrix-utils/shared/lib/forge/coverage.py`, beside `NO_CRITERION`:
-
-```python
-# A row that is not `accepted`. DISTINCT FROM `NO_CRITERION`, which is an accepted claim nobody
-# wrote a criterion for and is what §12.4's fallback fires on. A rejected claim with no
-# criterion is not a coverage gap — it is a claim the ledger settled the other way — and
-# folding the two would fire the fallback on every ledger that rejected anything.
-NOT_ACCEPTED = "not-accepted"
-```
-
-In `check`, change `ledger._check_rows(l.rows)` to `ledger._check(l)` with the reason in a comment:
+In `check`, change the guard — keeping the existing `CoverageError` wrapper, which exists so a caller of this module never meets a `LedgerError`:
 
 ```python
-        # `_check`, NOT `_check_rows`. `_check_rows` validates the ROWS; duplicate and stale
-        # row ids are a LEDGER-level property, and every measurement below is keyed by row id
-        # — so the narrower call measured carefully over identities nothing had verified.
+    try:
+        # `_check`, NOT `_check_rows`. `_check_rows` validates the ROWS' shape; `_check` also
+        # runs the scalars, the version pin, the degradation-consistency rule and the
+        # duplicate-id pass at `ledger.py:555`. Every result below is KEYED BY ROW ID, so the
+        # narrower call had this function measuring carefully over identities nothing had
+        # verified were unique.
         ledger._check(l)
+    except ledger.LedgerError as e:
+        raise CoverageError(str(e)) from e
 ```
 
-and give the non-accepted rows a `Result` rather than dropping them. The filter L2.3 added is correct and stays; what changes is that the dropped rows leave a record:
+- [ ] **Step 4: Name the rows the axis does not cover**
+
+Add the field to `Report` and collect it in `check`'s loop, beside the `continue` rather than instead of it:
 
 ```python
         if r.status != "accepted":
-            out.append(Result(claim_id=r.id, status="unresolved", index=NOT_ACCEPTED,
-                              reason=f"the ledger records this claim as {r.status!r}, so it "
-                                     "is not a claim coverage measures — recorded rather "
-                                     "than dropped, because a report that omitted it would "
-                                     "read as complete"))
+            # RECORDED, NOT MEASURED. The `continue` stays — see the paragraph above for why a
+            # rejected row must not reach the coverage axis — but dropping it with no record
+            # anywhere let forty unsettled claims render a report that names none of them. It
+            # goes BESIDE `results`, so `unmeasured()` and §12.4's fallback are untouched and
+            # the report still cannot read as complete.
+            skipped.append((r.id, r.status))
             continue
 ```
 
-Match `Result`'s actual field names and order — read the dataclass rather than trusting this block's keywords.
+`Report.__post_init__` validates it as `(row_id, status)` pairs of `str`, in the same place it recomputes its roll-ups through `_lines` — a field with no reader is the defect this whole module is written against.
 
-- [ ] **Step 4: Run the tests to verify they pass, then everything that reads a coverage report**
+- [ ] **Step 5: Run the tests to verify they pass, then everything that reads a coverage report**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_coverage.py tests/test_forge_rubric.py tests/test_forge_strategy.py tests/test_forge_ledger.py`
-Expected: PASS. `coverage.unmeasured` is the single exported predicate L2.1 introduced and both `rubric` and `strategy` import it — confirm neither gained a second copy as a side effect of this change.
+Expected: PASS. `unmeasured` is L2.1's single exported predicate and both `rubric` and `strategy` import it — confirm neither gained a second copy, and that neither now reads `unmeasured_rows` as though it were a coverage gap.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cd /home/khenrix/git/khenrix-utils
 make render
 git add shared/lib/forge/coverage.py tests/ marketplaces
 make verify
-git commit -m "fix(forge): forty unsettled claims rendered a clean report, measured on unverified ids"
+git commit -m "fix(forge): rows the coverage axis does not cover left no record at all"
 ```
 
 ---
@@ -1038,11 +1043,11 @@ Plan L deferred nineteen entries; seven were marked ⚠ *load-bearing* and are t
 - **Task 1's setuid half is worse than recorded, and is now measured at the bracket.** `review.worktree_identity` returns the identical digest either side of `chmod u+s` — so the claim is not "the inventory drops a bit" but "the round bracket three unattended reviewers are measured by reads a setuid binary as no change at all". The task asserts it there as well as at the leaf.
 - **Task 5's decision overshot.** Moving `GATE_CHANGED` to last also ranks it below `HARVEST_INCOMPLETE`, which is a second claim no finding argued. It moves to 4.
 - **Task 7's screen was placed after a ref write.** `manifest` is complete at `baseline.py:395` and the `update-ref` follows, so screening there means a refusal leaves nothing in the user's own repository.
-- **Task 4's premise held on inspection:** `ledger._check` runs `_check_rows` plus scalars, version, degradation consistency and a duplicate-id pass, so a ledger `_check_rows` accepts and `_check` refuses is constructible.
+- **Task 4's premises held, and its first IMPLEMENTATION was the fail-open it warned about.** `ledger._check` does run a duplicate-id pass `_check_rows` does not (`ledger.py:555`), and `coverage.py:784`'s `continue` does drop a rejected row with no record. But the draft fix gave those rows a `Result` with `method="unresolved"` — and `unmeasured()` counts `unresolved`, so every rejected row would have fired §12.4's fallback and degraded §12.5's top dimension, inverting the incentive §10 calls its most valuable signal. They are recorded BESIDE `results` instead. The draft also used four `Result` field names that do not exist.
 - **Task 2's premise held but its MECHANISM was backwards, and its test would have passed before the fix.** The variable is indeed absent from `HOSTILE_ENV` (`gitcmd.py:149-164`) and pinned only in `baseline.py:429` — but `LITERAL=1` does not stop a glob matching a literal name, it disables pathspec MAGIC. Measured, `:(literal)a.txt` and `:/` both answer `''` at **exit 0** under it, and the package passes one or the other at four sites including `verify.py:1232`'s `git add -f`. The finding is wider than Plan L recorded it.
 - **Task 3's three premises all reproduce** (run 2026-08-05; the answers are tabulated in its Step 1) — **and its first fix was wrong.** Narrowing `_PYTEST_BANNERS` to literal section rules would have returned `None` for every green `pytest -q` run, whose entire output is `35 passed in 0.08s`. The discriminator is now a line-anchored regex over pytest's shape, verified against seven real outputs.
 
-**3. Type consistency.** `snapshot.Entry`'s five fields are unchanged in name and order; only `mode`'s **domain** widens (Task 1). `coverage.NOT_ACCEPTED` is introduced in Task 4 and read only there and in its tests. `rubric.GATE_RANK` keeps its keys and changes its values (Task 5); nothing reads a literal rank in production. `fix`'s contract widens from 2 to 4 values in Task 6, and `review.loop` is the only caller. `gate.SCREEN_RACE` is *removed* in Task 7, so grep for it across `shared/` and `tests/` before deleting the constant.
+**3. Type consistency.** `snapshot.Entry`'s five fields are unchanged in name and order; only `mode`'s **domain** widens (Task 1). `coverage.Report` gains `unmeasured_rows` in Task 4 — `(row_id, status)` pairs beside `results`, never inside it, because `unmeasured(results)` counts `unresolved` and a rejected row placed there would fire §12.4's fallback on every ledger that rejected anything. `Result`'s five fields are `row_id, criterion_index, method, satisfied, detail` and `NO_CRITERION` is `-1`, a criterion INDEX — an earlier draft of the task invented `claim_id`, `status`, `index` and `reason`, none of which exist. `rubric.GATE_RANK` keeps its keys and changes its values (Task 5); nothing reads a literal rank in production. `fix`'s contract widens from 2 to 4 values in Task 6, and `review.loop` is the only caller. `gate.SCREEN_RACE` is *removed* in Task 7, so grep for it across `shared/` and `tests/` before deleting the constant.
 
 **4. Ordering constraint.** Task 1 changes the predicate Task 6's journal assertions run through (`snapshot.diff` is in `loop`'s bracket). Execute Task 1 before Task 6. Tasks 2–5 are independent of each other and of both.
 

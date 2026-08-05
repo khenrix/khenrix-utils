@@ -1,13 +1,13 @@
 {
   "skill": "llm-forge",
-  "source_hash": "a03d57bb3fb0d458b64830dc809796d266fc44790b071c9e5cb083acfcb6959e",
+  "source_hash": "dff923ade5d57be59eea9d76c625f565c547172566b7c68fa43f51c4337ae3cb",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.5,
+  "delta_pass_rate": 0.4584,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "models": {
@@ -23,6 +23,7 @@
     "pytest",
     "-q",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_baseline.py",
+    "/home/khenrix/git/khenrix-utils/tests/test_forge_brief.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_bundle.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_cli.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_coverage.py",
@@ -47,6 +48,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_seams.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_seat.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_seatrecord.py",
+    "/home/khenrix/git/khenrix-utils/tests/test_forge_smoke.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_snapshot.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_storage.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_strategy.py",
@@ -55,7 +57,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1609,
+    "tests_run": 1664,
     "skipped": 0,
     "failed": 0
   }
