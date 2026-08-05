@@ -199,7 +199,20 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
             if p.is_symlink():
                 entries[rel] = _symlink_entry(p, rel)
                 continue
-            st = p.stat()
+            try:
+                st = p.stat()
+            except OSError as e:
+                # A PATH THAT VANISHED BETWEEN THE LISTING AND THE STAT — or one this process
+                # cannot stat — IS A BREACH, NOT A CRASH. `take`'s contract is
+                # `(entries, breaches)` with `SnapshotError` for a tree it cannot walk, and a
+                # bare `FileNotFoundError` escaping here is an error class no caller of this
+                # module knows to catch: reproduced, a file removed mid-walk raised it
+                # straight out of a bracket measurement.
+                #
+                # A BREACH AND NOT A SKIP, because `take`'s own rule is that an incomplete
+                # inventory is never returned as a complete one — the caller FAILS CLOSED on
+                # a non-empty `breaches` and the entries dict comes back empty.
+                return {}, [f"{rel}: not inventoried — {type(e).__name__}: {e.strerror or e}"]
             # Before open(): a FIFO here would block the walk forever. stat() does not.
             if not stat.S_ISREG(st.st_mode):
                 entries[rel] = _special_entry(st, rel)

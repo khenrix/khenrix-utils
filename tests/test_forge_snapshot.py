@@ -363,3 +363,29 @@ def test_the_two_inventory_predicates_read_the_same_fields():
     assert fields == {"path", "digest", "mode", "size", "kind"}, (
         "Entry gained or lost a field — check that BOTH snapshot.diff and "
         "review._inventory_digest were updated, not just one")
+
+
+def test_a_path_that_vanishes_mid_walk_is_a_breach_not_a_crash(tmp_path):
+    """REPRODUCED: a file removed between the listing and the stat raised a bare
+    `FileNotFoundError` straight out of `take` — an error class no caller of this module
+    knows to catch, from a function whose contract is `(entries, breaches)` with
+    `SnapshotError` for a tree it cannot walk.
+
+    A BREACH AND NOT A SKIP, on `take`'s own rule: an incomplete inventory is never returned
+    as a complete one, so the entries dict comes back EMPTY and the caller fails closed. A
+    skip would leave a bracket measuring a tree with one file quietly missing from it."""
+    root = tmp_path / "t"; root.mkdir()
+    (root / "a.txt").write_text("x\n")
+    original = Path.stat
+
+    def _vanished(self, *a, **kw):
+        raise FileNotFoundError(2, "No such file or directory")
+
+    try:
+        Path.stat = _vanished
+        entries, breaches = snapshot.take(root)
+    finally:
+        Path.stat = original
+    assert entries == {}, "a partial inventory was returned as a complete one"
+    assert len(breaches) == 1 and "a.txt" in breaches[0], breaches
+    assert "not inventoried" in breaches[0], breaches
