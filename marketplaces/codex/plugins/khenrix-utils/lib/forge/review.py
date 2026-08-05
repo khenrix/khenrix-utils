@@ -1773,12 +1773,23 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
     by memory.
 
     `fix` IS INJECTED AND HAS NO PRODUCTION IMPLEMENTATION IN THIS PACKAGE. Its contract is
-    `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool)`: apply the round's
-    blockers, re-verify in a FRESH clone the builder never touched (§6), cut a checkpoint, and
-    say whether verify passed. A `(None, False)` or a `(_, False)` answer is §13's "a fix that
-    breaks verify is reverted and the finding reported unresolved" — this loop records that
-    and stops rather than trying again, because a second attempt at one round's blockers is
-    the convergence loop §13 refuses.
+    `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool, candidate_run,
+    baseline_run)`: apply the round's blockers, re-verify in a FRESH clone the builder never
+    touched (§6), cut a checkpoint, say whether verify passed, and hand back the two `Run`s
+    that verify produced. A `(None, False, …)` or a `(_, False, …)` answer is §13's "a fix
+    that breaks verify is reverted and the finding reported unresolved" — this loop records
+    that and stops rather than trying again, because a second attempt at one round's blockers
+    is the convergence loop §13 refuses.
+
+    THE LAST TWO ARE WHAT §12.3 IS MEASURED FROM, and the contract widened to carry them.
+    `progress.from_runs` needs the candidate's and the baseline's gate output to say which
+    failures are NEW; this call site used to hard-code `progress.Progress(None, None)`, so
+    every sighting was unmeasured by construction and `progress.oscillation` — specified by
+    Plan I₂, present in the package, reachable from nothing — could not fire whatever
+    happened. `None` for both IS a legitimate answer: a fix implementation that runs no gate
+    cannot produce a `Run`, and saying so is different from a caller that never heard of the
+    field. A 2-tuple is therefore REFUSED rather than padded, because padding makes those two
+    the same record and the second is a bug.
 
     EVERY ROUND IS BRACKETED BY A MEASUREMENT OF THE CHECKOUT, and the bracket is re-taken per
     round rather than once around the whole loop: `fix` edits that same tree between rounds,
@@ -1866,11 +1877,30 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
                 "is exhausted, so no fix was attempted"))
         op = f"review-fix-{n}"
         progress.record_fix_start(log, operation_id=op, tree_oid=_tree_of(checkout, current))
-        new_checkpoint, verified = fix(tuple(blockers), current)
+        answer = fix(tuple(blockers), current)
+        if not isinstance(answer, tuple) or len(answer) != 4:
+            # NOT PADDED. A 2-tuple padded with `None`s makes "this fix measured no run" and
+            # "this fix predates the contract" the same record, and the second is a caller bug
+            # while the first is an answer. §12.3's question cannot be answered from a value
+            # nobody supplied, and it must not LOOK answered.
+            raise ReviewError(
+                "§12.3's fix contract returns four values — (checkpoint|None, verified, "
+                "candidate_run|None, baseline_run|None) — and this one returned "
+                f"{len(answer) if isinstance(answer, tuple) else type(answer).__name__}. The "
+                "last two are what `progress.from_runs` needs; `None` for both is a fix "
+                "saying it measured no run, which is an answer, and a missing pair is not.")
+        new_checkpoint, verified, cand_run, base_run = answer
+        # MEASURED WHEN THE FIX MEASURED, AND `Progress(None, None)` ONLY WHEN IT DID NOT.
+        # The literal that used to sit here made every sighting unmeasured by construction,
+        # and `oscillation`'s own rule is that a sighting with unmeasured fingerprints forms
+        # NO PAIR — so the stop signal could not fire however many times the run oscillated.
+        prog = (progress.from_runs(cand_run, base_run)
+                if cand_run is not None and base_run is not None
+                else progress.Progress(None, None))
         progress.record_fix_done(
             log, operation_id=op,
             tree_oid=(_tree_of(checkout, new_checkpoint) if new_checkpoint else None),
-            prog=progress.Progress(None, None))
+            prog=prog)
         if not verified or not new_checkpoint:
             write_resolutions(run_dir, n, tuple(
                 Resolution(f.id, "unresolved", None, False) for f in blockers))
@@ -1880,5 +1910,23 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
         write_resolutions(run_dir, n, tuple(
             Resolution(f.id, "fixed", new_checkpoint, True) for f in blockers))
         current = new_checkpoint
+        # §12.3's STOP SIGNAL, and it is a stop rather than a verdict. The run has returned
+        # to a state it has already been in — fix A traded failure X for Y and fix B traded
+        # back — so another round buys nothing.
+        #
+        # `break`, NOT `_stop`, and the difference is what the record says. `_stop` is for a
+        # round whose blockers this loop has just written `unresolved`, and it REFUSES when
+        # the record classifies anything else — measured, it raised here, because an
+        # oscillating round has just written its blockers `fixed` after a verified fix. The
+        # round-cap exit two branches up takes the same `break`, and for the same reason: the
+        # loop stops buying rounds and `settle` owns the terminal classification, which is
+        # where it belongs. Nothing here gives `oscillation` a say in the verdict.
+        #
+        # `OSCILLATION_UNKNOWN` IS DELIBERATELY NOT A STOP. "We could not tell" ending a run
+        # that has rounds left would make every fix measuring no gate a terminal state — a
+        # verdict reading cleaner than its evidence, in the one place this whole mechanism
+        # exists to keep honest.
+        if progress.oscillation(log.read())[0] == progress.OSCILLATING:
+            break
     new, why = settle(run_dir, state, rounds_run=n, events=log.read())
     return new.phase, why

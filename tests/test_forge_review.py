@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 from council import engine  # noqa: E402
-from forge import journal, ledger, review, snapshot, storage  # noqa: E402
+from forge import (journal, ledger, progress, review, snapshot,  # noqa: E402
+                   storage, verify)
 
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
@@ -1268,7 +1269,9 @@ def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path):
         return r
 
     def fix(findings, checkpoint):
-        return checkpoint[:-1] + "f", True
+        # `None, None` is this fix saying it measured no run — an ANSWER, and the reason the
+        # 4-tuple is required rather than padded from a 2-tuple.
+        return checkpoint[:-1] + "f", True, None, None
 
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
@@ -1294,7 +1297,7 @@ def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path):
 
     def fix(findings, checkpoint):
         calls.append(checkpoint)
-        return checkpoint[:-1] + "f", True
+        return checkpoint[:-1] + "f", True, None, None
 
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
@@ -1324,7 +1327,7 @@ def test_a_fix_that_did_not_pass_verify_stops_the_loop_and_reports_unresolved(tm
         return r
 
     def fix(findings, checkpoint):
-        return None, False              # reverted: no checkpoint, verify did not pass
+        return None, False, None, None   # reverted: no checkpoint, verify did not pass
 
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
@@ -1351,8 +1354,17 @@ def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path):
     head = subprocess.run(["git", "-C", str(co), "rev-parse", "HEAD"], check=True,
                           capture_output=True, text=True).stdout.strip()
 
+    # A FIX THAT MEASURED TWO RUNS, so the journal carries a MEASURED pair rather than the
+    # `Progress(None, None)` this call site used to hard-code. That literal made every
+    # sighting unmeasured by construction, and `oscillation`'s own rule is that a sighting
+    # with unmeasured fingerprints forms no pair — so §12.3's stop could not fire, ever.
     def fix(findings, checkpoint):
-        return head, True
+        cand = verify.Run(exit_code=1, stdout="1 failed in 0.1s\nFAILED t.py::a - E\n",
+                          stderr="", duration_sec=0.1, step_index=0)
+        base = verify.Run(exit_code=1, stdout="2 failed in 0.1s\nFAILED t.py::a - E\n"
+                                              "FAILED t.py::b - E\n",
+                          stderr="", duration_sec=0.1, step_index=0)
+        return head, True, cand, base
 
     answer, _ = review.loop(run, state=_reviewing(), checkout=co, checkpoint=head,
                             baseline_commit="b" * 40,
@@ -1360,12 +1372,21 @@ def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path):
                             other_clones=(), log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
                               make_tree=_not_a_clone(co), manifest=_Cap(), fix=fix,
                             run=fake_round)
-    from forge import progress
     kinds = [e.event for e in log.read()]
     assert journal.intent(progress.FIX_KIND) in kinds
     assert journal.done(progress.FIX_KIND) in kinds
     assert journal.orphans(log.read()) == ()
     assert answer == review.READY
+    # THE EXTERNAL QUESTION: did anything call `from_runs`? Before this, nothing did — the
+    # pair on the journal was a literal, so it was `(None, None)` whatever the fix measured.
+    pairs = [e for e in log.read() if e.event == journal.done(progress.FIX_KIND)]
+    assert pairs, log.read()
+    done = pairs[-1]
+    # `record_fix_done` writes the pair as `new_failure_count` + `failure_fingerprints`, and
+    # `None` for either is "not measured". The candidate above failed t.py::a while the
+    # baseline failed a AND b, so nothing is NEW and the fingerprint set is the candidate's.
+    assert done.data["failure_fingerprints"] == ["t.py::a"], done
+    assert done.data["new_failure_count"] == 0, done
 
 
 def test_the_loop_writes_down_the_phase_it_classified(tmp_path):
@@ -1388,7 +1409,7 @@ def test_the_loop_writes_down_the_phase_it_classified(tmp_path):
                             baseline_commit="b" * 40, baseline_tree="c" * 40,
                             artifact_manifest=None, other_clones=(), log=log,
                             repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
-                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True, None, None), run=fake_round)
     assert answer == review.READY
     assert runstate.read_state(run).phase == review.READY
 
@@ -1413,7 +1434,7 @@ def test_a_loop_stopped_by_the_fix_cap_records_its_phase_and_the_records_reason(
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
                               repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
-                              make_tree=_not_a_clone(co), manifest=_Cap(cap=0), fix=lambda f, c: (c, True),
+                              make_tree=_not_a_clone(co), manifest=_Cap(cap=0), fix=lambda f, c: (c, True, None, None),
                               run=fake_round)
     assert answer == review.REVIEW_BLOCKED
     assert runstate.read_state(run).phase == review.REVIEW_BLOCKED
@@ -1444,7 +1465,7 @@ def test_a_refused_loop_leaves_the_run_where_it_was(tmp_path):
                     baseline_commit="b" * 40, baseline_tree="c" * 40,
                     artifact_manifest=None, other_clones=(), log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
                               make_tree=_not_a_clone(co), manifest=_Cap(),
-                    fix=lambda f, c: (c, True), run=fake_round)
+                    fix=lambda f, c: (c, True, None, None), run=fake_round)
     assert runstate.read_state(run) is None
 
 
@@ -1524,7 +1545,7 @@ def test_a_panel_that_wrote_into_the_checkout_makes_its_round_inadmissible(tmp_p
                     baseline_commit="b" * 40,
                     baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
                     log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
-                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True, None, None), run=fake_round)
     assert "src.py" in str(e.value)
 
 
@@ -1546,7 +1567,7 @@ def test_a_disturbed_checkout_buys_no_fix_and_no_second_round(tmp_path):
 
     def fix(findings, checkpoint):
         fixes.append(checkpoint)
-        return checkpoint, True
+        return checkpoint, True, None, None
 
     with pytest.raises(review.ReviewError) as e:
         review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
@@ -1912,7 +1933,7 @@ def test_the_bracket_does_not_fire_on_forges_own_writes(tmp_path):
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
                               repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
-                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=runner)
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True, None, None), run=runner)
     assert answer == review.READY, why
     assert journal.orphans(log.read()) == ()
     assert review.review_dir(co, 1).is_dir(), "the bundle really was written"
@@ -2259,7 +2280,7 @@ def test_loop_reviews_the_clone_and_never_the_worktree(tmp_path):
     review.loop(run_dir, state=_reviewing(), checkout=co, checkpoint=head,
                 baseline_commit=head, baseline_tree=_git(repo, "rev-parse", "HEAD^{tree}")
                 .stdout.strip(), artifact_manifest=(), log=_a_log(run_dir),
-                manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True),
+                manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True, None, None),
                 other_clones=(), repo=repo, run_id=run_id, identity=("F", "f@e.x"),
                 run=_runner)
     assert seen and all(p != co for p in seen), "reviewers must not sit in the worktree"
@@ -2277,7 +2298,103 @@ def test_loop_stops_rather_than_reviewing_the_worktree_when_the_clone_fails(tmp_
                     checkpoint=head, baseline_commit=head,
                     baseline_tree=_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip(),
                     artifact_manifest=(), log=_a_log(run_dir),
-                    manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True),
+                    manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True, None, None),
                     other_clones=(), repo=repo, run_id=run_id, identity=("F", "f@e.x"),
                     make_tree=_boom)
 
+
+
+def test_the_loop_refuses_a_fix_that_answers_the_old_contract(tmp_path):
+    """PADDING WOULD BE THE FAIL-OPEN. A 2-tuple padded to 4 with `None`s makes "this fix
+    measured no run" and "this fix predates the contract" the same record — and the second is
+    a bug in the caller while the first is a legitimate answer. §12.3's question must not
+    LOOK answered from a value nobody supplied."""
+    run_dir = _run_dir(tmp_path)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run_dir))
+
+    def fake_round(rd, **kw):
+        r = review.Round(kw["round_"], kw["checkpoint"], (_blocker(kw["round_"]),), (),
+                         ("claude", "codex", "agy"), ())
+        review.write_round(rd, r)
+        return r
+
+    with pytest.raises(review.ReviewError, match="four values"):
+        review.loop(run_dir, state=_reviewing(), checkout=co, checkpoint="a" * 40,
+                    baseline_commit="b" * 40, baseline_tree="c" * 40, artifact_manifest=None,
+                    other_clones=(), log=log, repo=tmp_path, run_id="aaaaaa",
+                    identity=("F", "f@e.x"), make_tree=_not_a_clone(co), manifest=_Cap(),
+                    fix=lambda f, c: (c[:-1] + "f", True), run=fake_round)
+
+
+def test_an_oscillating_run_stops_rather_than_buying_its_last_round(tmp_path):
+    """§12.3's STOP SIGNAL, wired. `oscillation` had ZERO production callers — Plan I2
+    specified this call and no plan scheduled it — and it could not have fired anyway,
+    because the pair on the journal was the literal `Progress(None, None)` and its own rule
+    is that a sighting with unmeasured fingerprints forms NO PAIR.
+
+    Two fixes returning the SAME tree and the SAME failing set is the recurrence §12.3 names:
+    fix A traded failure X for Y and fix B traded back, so another round buys nothing.
+    """
+    run_dir = _run_dir(tmp_path)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run_dir))
+    head = subprocess.run(["git", "-C", str(co), "rev-parse", "HEAD"], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+    rounds_seen = []
+
+    def fake_round(rd, **kw):
+        rounds_seen.append(kw["round_"])
+        r = review.Round(kw["round_"], kw["checkpoint"], (_blocker(kw["round_"]),), (),
+                         ("claude", "codex", "agy"), ())
+        review.write_round(rd, r)
+        return r
+
+    def fix(findings, checkpoint):
+        # The same tree and the same failing set every time — the pair repeating is the rule.
+        r = verify.Run(exit_code=1, stdout="1 failed in 0.1s\nFAILED t.py::a - E\n",
+                       stderr="", duration_sec=0.1, step_index=0)
+        return head, True, r, r
+
+    answer, why = review.loop(run_dir, state=_reviewing(), checkout=co, checkpoint=head,
+                              baseline_commit="b" * 40, baseline_tree="c" * 40,
+                              artifact_manifest=None, other_clones=(), log=log,
+                              repo=tmp_path, run_id="aaaaaa", identity=("F", "f@e.x"),
+                              make_tree=_not_a_clone(co), manifest=_Cap(cap=5, rounds=4),
+                              fix=fix, run=fake_round)
+    # THE CLAIM IS THE STOP, not a terminal string: the loop spent fewer than the four rounds
+    # it was given. `settle` owns the classification — it answers `degraded` here, §13's
+    # "verified but not independently reviewed", because the last fix landed and no round
+    # reviewed it — and asserting that string would be asserting `settle`'s job in a test
+    # about `oscillation`'s.
+    fixes = [e for e in log.read() if e.event == journal.done(progress.FIX_KIND)]
+    assert len(fixes) < 4, f"the loop bought every round despite oscillating: {len(fixes)}"
+    assert rounds_seen and max(rounds_seen) < 4, rounds_seen
+
+
+def test_an_unmeasurable_pair_does_not_stop_a_run_that_has_rounds_left(tmp_path):
+    """THE DISCRIMINATION CHECK. `oscillation` has THREE answers and only one is a stop:
+    `OSCILLATION_UNKNOWN` means "we could not tell", and ending a run on it would turn every
+    fix that measured no gate into a terminal verdict. A stop taken on an unmeasured pair is
+    a verdict reading cleaner than its evidence."""
+    run_dir = _run_dir(tmp_path)
+    co = _checkout(tmp_path)
+    log = journal.Journal(storage.journal_path(run_dir))
+    rounds = []
+
+    def fake_round(rd, **kw):
+        rounds.append(kw["round_"])
+        r = review.Round(kw["round_"], kw["checkpoint"], (_blocker(kw["round_"]),), (),
+                         ("claude", "codex", "agy"), ())
+        review.write_round(rd, r)
+        return r
+
+    answer, _ = review.loop(run_dir, state=_reviewing(), checkout=co, checkpoint="a" * 40,
+                            baseline_commit="b" * 40, baseline_tree="c" * 40,
+                            artifact_manifest=None, other_clones=(), log=log,
+                            repo=tmp_path, run_id="aaaaaa", identity=("F", "f@e.x"),
+                            make_tree=_not_a_clone(co), manifest=_Cap(),
+                            fix=lambda f, c: (c[:-1] + "f", True, None, None),
+                            run=fake_round)
+    assert rounds == [1, 2], "an unmeasured pair ended the loop before its rounds were spent"
