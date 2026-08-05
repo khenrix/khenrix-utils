@@ -10,6 +10,7 @@ A helper that quietly did neither — driven from a test with no `monkeypatch` i
 ordinary unit test.
 """
 import ast
+import contextlib
 import io
 import json
 import os
@@ -24,8 +25,8 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from council import engine  # noqa: E402
-from forge import (cli, fingerprint, gate, handover, runstate, seat as seatmod,  # noqa: E402
-                   storage, taskbundle, ultra)
+from forge import (cli, fingerprint, gate, handover, review as reviewmod,  # noqa: E402
+                   runstate, seat as seatmod, storage, taskbundle, ultra)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 # §19's window. `council.engine.MODE_TIMEOUT` now carries it, but these tests still SET it:
@@ -1309,3 +1310,139 @@ def test_a_sheet_with_no_setup_command_is_refused_rather_than_screened_as_clean(
                    "--answers", str(sheet)], out=out)
     assert rc != 0
     assert "names no `setup` command" in out.getvalue()
+
+
+def test_review_refuses_a_run_that_does_not_exist(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = _a_clean_repo(tmp_path)
+    out = io.StringIO()
+    rc = cli.main(["--review", "nosuchrun", "--repo", str(repo)], out=out)
+    assert rc != 0 and "has no run" in out.getvalue()
+
+
+def test_review_refuses_before_it_spends_when_there_is_no_ledger(tmp_path, monkeypatch):
+    """EVERY REFUSAL THIS VERB CAN MAKE FROM DISK COMES BEFORE THE THREE PROVIDER CALLS. This
+    is `collect`'s own rule one verb over, where it exists because a run with nothing to hand
+    over used to pay $5-25 to be told so. §13's blindness assertion refuses a run whose ledger
+    it cannot read, so a round convened without one would spend and THEN refuse.
+
+    Asserted with `run_round` monkeypatched to raise: the external question is not "does it
+    print the right sentence" but "did it reach the panel at all", and a test that only read
+    the message would pass over a verb that spent first and refused second."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    monkeypatch.setattr(reviewmod, "run_round", _never_convene)
+    out = io.StringIO()
+    rc = cli.main(["--review", _run_id(run_dir), "--repo",
+                   str(runstate.read_manifest(run_dir).repo_path)], out=out)
+    assert rc != 0
+    assert "no ledger" in out.getvalue(), out.getvalue()
+
+
+def _never_convene(*a, **kw):
+    raise AssertionError("the panel was convened past a refusal this verb makes from disk")
+
+
+def test_review_is_a_verb_and_says_that_it_spends(tmp_path, monkeypatch):
+    """THE EXTERNAL QUESTION: is the cost in the surface the operator reads? A verb that
+    convenes three cloud CLIs and whose help text does not say so is a spend nobody agreed
+    to at the place they decide to run it."""
+    # `--help` goes to REAL stdout, not the `out` stream this front end writes its own
+    # output to — measured, a first draft captured `out` and read an empty string.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
+        cli.main(["--help"], out=io.StringIO())
+    text = buf.getvalue()
+    assert "--review" in text, text
+    assert "SPENDS" in text, text
+
+
+def test_review_convenes_a_round_in_a_clone_and_never_in_the_worktree(tmp_path, monkeypatch):
+    """THE EXTERNAL QUESTION: where does the panel actually sit?
+
+    K4 built `clone_review_tree` and nothing called it. The synthesis worktree is a LINKED
+    worktree of the user's own repository — `.git` is a file pointing at the parent's git dir,
+    so `hooks/`, `config` and the object store are one ordinary relative path away — and three
+    unattended bypass-permissions reviewers in it is the hazard §4 exists for. So this asserts
+    the checkout `run_round` was handed is NOT the worktree, rather than asserting that some
+    function was called.
+    """
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = Path(runstate.read_manifest(run_dir).repo_path)
+    _fuse_something(run_dir)
+    _write_a_ledger(run_dir)
+
+    seen = {}
+
+    def _fake_round(rd, *, round_, checkout, checkpoint, **kw):
+        seen["checkout"] = Path(checkout)
+        seen["round"] = round_
+        r = reviewmod.Round(round_, checkpoint, (), (), ("claude", "codex", "agy"), ())
+        reviewmod.write_round(rd, r)
+        return r
+
+    monkeypatch.setattr(reviewmod, "run_round", _fake_round)
+    out = io.StringIO()
+    rc = cli.main(["--review", _run_id(run_dir), "--repo", str(repo)], out=out)
+    assert rc == 0, out.getvalue()
+    assert seen["round"] == 1
+    assert seen["checkout"] != run_dir / "synthesis", "the panel sat in the worktree"
+    assert (seen["checkout"] / ".git").is_dir(), \
+        "the review tree is not an independent repository"
+    assert "3 of 3 reviewers answered" in out.getvalue(), out.getvalue()
+
+
+def test_review_refuses_a_round_the_operator_never_paid_for(tmp_path, monkeypatch):
+    """§5 step 2 asks ONCE and §14.2 forbids rewriting the manifest, so the confirmed
+    `review_rounds` is a budget rather than a suggestion. A verb that kept convening rounds
+    would spend three provider calls per round against a number nobody agreed to."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = Path(runstate.read_manifest(run_dir).repo_path)
+    _fuse_something(run_dir)
+    _write_a_ledger(run_dir)
+    rounds = runstate.read_manifest(run_dir).review_rounds
+    for n in range(1, rounds + 1):
+        reviewmod.write_round(run_dir, reviewmod.Round(
+            n, "a" * 40, (), (), ("claude", "codex", "agy"), ()))
+    monkeypatch.setattr(reviewmod, "run_round", _never_convene)
+    out = io.StringIO()
+    rc = cli.main(["--review", _run_id(run_dir), "--repo", str(repo)], out=out)
+    assert rc != 0
+    assert "not one this run was quoted for" in out.getvalue(), out.getvalue()
+
+
+def test_review_refuses_a_synthesis_nobody_fused_into(tmp_path, monkeypatch):
+    """Three provider calls describing an empty delivery. `--collect` already refuses a tree
+    identical to B1's for the same reason; this refuses it BEFORE the spend rather than
+    after."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = Path(runstate.read_manifest(run_dir).repo_path)
+    _write_a_ledger(run_dir)
+    monkeypatch.setattr(reviewmod, "run_round", _never_convene)
+    out = io.StringIO()
+    rc = cli.main(["--review", _run_id(run_dir), "--repo", str(repo)], out=out)
+    assert rc != 0
+    assert "nobody fused into it" in out.getvalue(), out.getvalue()
+
+
+def _fuse_something(run_dir):
+    synth = run_dir / "synthesis"
+    (synth / "fused.py").write_text("print('fused')\n", encoding="utf-8")
+    _git(synth, "add", "-A")
+    _git(synth, "commit", "-qm", "fusion")
+
+
+def _write_a_ledger(run_dir):
+    from forge import ledger as ledgermod  # noqa: PLC0415
+    row = ledgermod.Row(
+        id=ledgermod.row_id("R1", "alpha"), requirement_id="R1", requirement_span="s:1",
+        requirement_sha256="0" * 64, kind="behavior", component="c", semantic_claim="alpha",
+        status="accepted", dependencies=(), seat_evidence=(), counterevidence="",
+        # A `symbol` criterion carries `path` and `symbol` and MAY NOT carry another
+        # evaluator's inputs — `_check_criterion` refuses those by name, because nothing
+        # would say which evaluator was meant.
+        acceptance_criteria=(ledgermod.Criterion(
+            kind="symbol", text="x is defined", path="a.py", symbol="x", node_id=None,
+            sha256=None, query=None, trace=None),),
+        synthesis_evidence=None, verification_receipt=None, risk="low", rationale="")
+    ledgermod.write_ledger(run_dir, ledgermod.Ledger(
+        ledgermod.VERSION, (row,), 10, ledgermod.DEGRADE_UNION_DIFF_BYTES, False))

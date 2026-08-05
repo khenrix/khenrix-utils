@@ -618,17 +618,22 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     # orchestrator's own turn, so it is honestly priced and correctly has no engine caller.
     # Pricing it is not the defect; pricing a stage NOTHING can spend is.
     operator_spent = {"synthesis"}
-    # DECLARED UNBUILT, and this set is the finding rather than a suppression. §13's rounds and
-    # their post-round fixes are priced and CANNOT BE SPENT: `review.run_round` and
-    # `review.loop` have no production caller. Repricing them at zero is the honest end state
-    # and is NOT done here, because it stops `--review-rounds` moving `provider_calls` at all
-    # and so changes the confirmation protocol — `confirm` cross-checks the answer sheet
-    # against what was priced, and a whole family of gate tests exists to enforce that the
-    # quote responds to its inputs. That belongs in a task whose reviewer is looking at the
-    # gate, alongside the open question of whether `--review-rounds > 0` should simply be
-    # REFUSED while nothing can convene one. What this test buys today is that no NEW
-    # unreachable term can be added silently, and that these two cannot be quietly forgotten.
-    known_unbuilt = {"review", "review_fixes"}
+    # DECLARED UNBUILT, and this set is the finding rather than a suppression.
+    #
+    # `review` CAME OFF THIS LIST BY BEING BUILT, which is the whole reason the test asserts
+    # set EQUALITY rather than a subset: `cli._review` is `run_round`'s first production
+    # caller, and the assertion went red the moment the term became reachable. A test that
+    # merely tolerated the list would have said nothing on the day the gap closed, and the
+    # list would still name a stage that now runs.
+    #
+    # `review_fixes` STAYS. `review.loop` still has no production caller: it needs a `fix`
+    # implementation to buy a second round and this package has none, so `--review` drives ONE
+    # round and stops. Repricing that term at zero is the honest end state and is NOT done
+    # here, because it stops `--review-rounds` moving `provider_calls` at all and so changes
+    # the confirmation protocol — `confirm` cross-checks the answer sheet against what was
+    # priced, and a whole family of gate tests enforces that the quote responds to its inputs.
+    # That belongs in a task whose reviewer is looking at the gate.
+    known_unbuilt = {"review_fixes"}
     # The remaining terms name the engine function that would spend them.
     terms = {
         "builders":     ("run_seat", "runner.py"),

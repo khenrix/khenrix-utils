@@ -35,7 +35,8 @@ from pathlib import Path
 from council import engine
 
 from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, launch,
-               preflight, review as reviewmod, runstate, storage, taskbundle, ultra, verify)
+               preflight, review as reviewmod, runstate, snapshot, storage, taskbundle,
+               ultra, verify)
 # `ledger` and NOTHING ELSE: this verb PERSISTS §10's rows and reads nothing off
 # them, so `coverage` and `rubric` stay out of this import block until something
 # ranks — a rank taken before §13's panel can be convened honestly would be a
@@ -860,6 +861,161 @@ def collect(args, *, out) -> int:
     return 0
 
 
+def _other_clone_roots(run_dir) -> tuple:
+    """Every clone root a reviewer must not find the ledger under, derived rather than listed.
+
+    `assert_ledger_is_out_of_reach` REQUIRES this and never defaults it, for its own stated
+    reason: `()` is a caller claiming no other clone root exists, which can be wrong out loud,
+    while an omitted argument is a claim nobody made and is wrong silently. So this enumerates
+    what is actually on disk — every seat attempt under `seats/` and every verifier clone —
+    rather than reciting the shapes `runner` builds, which would be a second spelling of a
+    layout that module owns.
+    """
+    root = Path(run_dir)
+    out = []
+    seats = root / "seats"
+    if seats.is_dir():
+        for seat in sorted(seats.iterdir()):
+            if seat.is_dir():
+                out.extend(sorted(a for a in seat.iterdir() if a.is_dir()))
+    for child in sorted(root.iterdir()):
+        # `runner.verifier_dir` is a SIBLING of `seats/` and its own docstring says why: a
+        # verifier nested under the seat directory would be one `rm -rf seats/<name>` away
+        # from taking the evidence with it. Matching on the prefix keeps that layout in
+        # `runner` rather than restating the join here.
+        if child.is_dir() and child.name.startswith("verify-"):
+            out.append(child)
+    return tuple(out)
+
+
+def _confirmed_author(events, manifest) -> tuple:
+    """The identity the operator agreed forge could work under, off the journal.
+
+    IT IS IN THE JOURNAL AND NOT THE MANIFEST, and `gate.open_run` says why: §14.2's list of
+    what the manifest holds does not include it, so the `confirm` operation's done record is
+    the only copy. `runner._confirmed_policy` reads its neighbour the same way for the same
+    reason.
+
+    FAILS CLOSED. A clone made under an invented identity is a clone whose commits are
+    attributed to somebody the operator never approved, and there is no safe default for a
+    name — so a missing or malformed record refuses rather than substituting one.
+    """
+    done = journal.done("confirm")
+    for e in reversed(events):
+        if e.event == done and e.operation_id == manifest.run_id:
+            author = e.data.get("author")
+            if (isinstance(author, (list, tuple)) and len(author) == 2
+                    and all(isinstance(x, str) and x.strip() for x in author)):
+                return (author[0], author[1])
+            raise CliError(
+                f"run {manifest.run_id}'s confirm record carries author={author!r}, which is "
+                "not the (name, email) pair §16 needs to attribute a clone's commits. There "
+                "is no safe default for whose name forge works under.")
+    raise CliError(
+        f"run {manifest.run_id} has no `confirm` record on its journal, so the identity the "
+        "operator agreed forge could work under cannot be read — and it is the only copy.")
+
+
+def _review(args, *, out) -> int:
+    """§13's review round — THE ONE VERB IN THIS FRONT END THAT CONVENES A REAL PANEL.
+
+    IT SPENDS. Three provider calls per round at the wired `--retries 0`, which §5.2 priced
+    and `--start` already quoted. Nothing below is reachable without them, so every refusal
+    this function can make from disk comes first — the run must exist, carry a manifest, carry
+    a synthesis worktree somebody fused in, and carry a ledger. That ordering is `collect`'s
+    own rule one verb over, where it exists because a run with nothing to hand over used to
+    pay $5-25 to be told so.
+
+    THE PANEL READS A FRESH CLONE AND NEVER THE SYNTHESIS WORKTREE. `clone_review_tree` is
+    what K4 built and this is its first production caller: the worktree is a LINKED worktree
+    of the user's own repository, where `.git` is a file pointing at the parent's git dir, and
+    three unattended bypass-permissions reviewers in it reach `hooks/`, `config` and the object
+    store by ordinary relative path. A failure to get that tree is a round that cannot be
+    convened, so there is no fallback here and deliberately no `except`.
+
+    WHAT §13'S BLINDNESS IS. `assert_ledger_is_out_of_reach` runs first and refuses a run whose
+    ledger it cannot read — but it asserts PATHS, and reviewers run as the operator's own UID
+    with a shell. The panel is blind BY CONSTRUCTION (not given the path, bytes not in its
+    tree, prompt does not name them) and not by containment; that function's docstring argues
+    it in full and `SKILL.md` tells the operator. This verb does not claim more.
+
+    ONE ROUND, NOT THE LOOP. `review.loop` needs a `fix` implementation to buy a second round,
+    and this package has none — so a verb that called it would refuse at the first blocker
+    having spent three calls. One round is what can honestly be driven today, and the terminal
+    is left to `--collect`, which reads the record rather than this function's return value.
+    """
+    repo = Path(args.repo).resolve()
+    run_dir = storage.run_root(repo, args.review, must_be_new=False)
+    if not storage.manifest_path(run_dir).exists():
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        return _fail(out, [f"{repo} has no run {args.review!r}: nothing under XDG_STATE_HOME "
+                           "records one, so there is no run to review."])
+    manifest = runstate.read_manifest(run_dir)
+    synth = run_dir / handover.SYNTHESIS
+    if not synth.is_dir():
+        return _fail(out, [f"run {manifest.run_id} has no synthesis worktree at {synth}, so "
+                           "there is no candidate to review. Re-run `--start`, or create it "
+                           "and fuse there."])
+    if not storage.ledger_path(run_dir).exists():
+        return _fail(out, [
+            f"run {manifest.run_id} has no ledger. §13's blindness assertion refuses a check "
+            "whose evidence is missing, so the round cannot be convened — write the ledger "
+            f"and hand it over with `--ledger {manifest.run_id} --ledger-file <path>` first."])
+
+    head = _rev(synth, "HEAD")
+    tree = _rev(synth, "HEAD^{tree}")
+    if tree == manifest.tracked_tree_oid:
+        return _fail(out, [
+            f"run {manifest.run_id}'s synthesis tree is still B1's ({tree}), so nobody fused "
+            "into it and there is no candidate for a panel to read. Three provider calls "
+            "would be spent describing an empty delivery."])
+
+    round_ = _rounds_run(run_dir) + 1
+    if round_ > manifest.review_rounds:
+        return _fail(out, [
+            f"run {manifest.run_id} has recorded {round_ - 1} round(s) and the operator "
+            f"confirmed {manifest.review_rounds}. §5 step 2 asks once and §14.2 forbids "
+            "rewriting the manifest, so this round is not one this run was quoted for."])
+
+    log = journal.Journal(storage.journal_path(run_dir))
+    quota = storage.Quota.for_harvest()
+    others = _other_clone_roots(run_dir)
+    tree_dir = reviewmod.clone_review_tree(
+        repo, run_dir, run_id=manifest.run_id, round_=round_, checkpoint=head,
+        identity=_confirmed_author(log.read(), manifest))
+
+    before_digest, before = reviewmod.worktree_identity(tree_dir, quota)
+    reviewmod.record_worktree_before(log, round_=round_, digest=before_digest,
+                                     entries=len(before))
+    r = reviewmod.run_round(
+        run_dir, round_=round_, checkout=tree_dir, checkpoint=head,
+        baseline_commit=manifest.base_commit, baseline_tree=manifest.tracked_tree_oid,
+        artifact_manifest=None, log=log,
+        other_clones=tuple(others) + (Path(synth),))
+    after_digest, after = reviewmod.worktree_identity(tree_dir, quota)
+    reviewmod.record_worktree_after(log, round_=round_, digest=after_digest,
+                                    entries=len(after),
+                                    changed=snapshot.diff(before, after))
+
+    print(f"round {round_}: {len(r.seats_responded)} of "
+          f"{len(r.seats_responded) + len(r.seats_silent)} reviewers answered", file=out)
+    for seat, why in r.seats_silent:
+        print(f"  silent: {seat} ({why})", file=out)
+    for f in r.findings:
+        print(f"  [{f.severity}] {f.seat}: {f.claim} — {f.evidence}", file=out)
+    if after_digest != before_digest:
+        # SAID, NOT SWALLOWED. The bracket moving means the findings describe a tree that did
+        # not stand still, and `terminal_from_record` is what refuses over it — this line is so
+        # the operator learns it here rather than from a terminal two verbs later.
+        print("  the review tree MOVED during the round, so these findings describe a state "
+              "this run cannot vouch for", file=out)
+    print(f"Next: `--collect {manifest.run_id}` reads the record and classifies it.", file=out)
+    return 0
+
+
 def _ledger(args, *, out) -> int:
     """§10's claim ledger, authored by the ORCHESTRATOR and persisted by this engine.
 
@@ -964,6 +1120,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="persist the §10 claim ledger the ORCHESTRATOR authored, which "
                            "§13's review and §12.5's rank both read and neither can be "
                            "reached without")
+    verb.add_argument("--review", metavar="RUN_ID",
+                      help="convene §13's review panel over a run's synthesis candidate — "
+                           "SPENDS three provider calls per round")
     verb.add_argument("--gc", metavar="RUN_ID",
                       help="§15's cleanup for one run, or `--gc all` for the disk report")
     ap.add_argument("--repo", default=".", help="the repository the run is about")
@@ -1019,6 +1178,8 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             return collect(args, out=out)
         if args.ledger:
             return _ledger(args, out=out)
+        if args.review:
+            return _review(args, out=out)
         return _gc(args, out=out)
     except (CliError, preflight.PreflightError, gate.GateError, taskbundle.TaskBundleError,
             # §15's refusals, which are the whole of what `--gc` says when it will not delete

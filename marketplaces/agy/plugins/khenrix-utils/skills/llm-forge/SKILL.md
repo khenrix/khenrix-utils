@@ -202,7 +202,34 @@ If you commit nothing, `--collect` refuses: a synthesis tree whose tree oid is s
 own is a run nobody fused into, and describing it would report a merge-ready branch over an
 empty delivery.
 
-## 5. `--collect` — mergeability and the handover
+## 5. `--review` — convene §13's blind panel over your fusion
+
+```bash
+python3 "$FORGE" --review <run-id> --repo /path/to/repo
+```
+
+**This spends.** Three provider calls — one per reviewer, at the `--retries 0` §13 wires —
+priced in the quote `--start` already showed you. Run it after you have fused and committed
+in the synthesis worktree and handed over the ledger; it refuses, before spending anything,
+a run with no ledger, a synthesis tree nobody fused into, and a round beyond the number the
+operator confirmed.
+
+The panel reads **its own clone** taken at your fusion commit, never the synthesis worktree
+— that worktree is a linked worktree of your repository, where `.git` is a file pointing at
+the parent's git directory, and three unattended reviewers in it reach `hooks/`, `config`
+and the object store by an ordinary relative path.
+
+**What its blindness is and is not.** Reviewers run as your user with a shell, and §13's
+blindness is asserted against the ledger's path rather than enforced by the operating
+system. A reviewer that goes looking can read the run's ledger, journal and seat clones by
+absolute path. Treat the panel as **blind by construction, not by containment** — it is not
+given the path, the bytes are not in its tree, and the prompt does not name them. Moving the
+clone elsewhere would not change this, which is why it is not done.
+
+One round per invocation. `--collect` reads the record and classifies it; a round **no
+reviewer answered** is `review_blocked`, not `degraded`, because no review happened at all.
+
+## 6. `--collect` — mergeability and the handover
 
 ```bash
 python3 "$FORGE" --collect <run-id> --repo /path/to/repo \
@@ -270,14 +297,11 @@ Relay the header **as printed**. Six things in it will look like defects and are
   heterogeneous on purpose — three different CLIs at three different versions — so their
   prompt fingerprints differ by construction. Agreement here is **provenance, never a
   correctness argument**; `identically-prompted` is what two attempts of one seat get.
-- **`Council: no review round was convened.`** §13's review loop is built, tested and has no
-  production caller, so every run prints this. It is not a round that failed or was skipped
-  for cause — it is a stage that does not run yet, which is also why most of the quote's
-  provider calls cannot be spent. When it does run, note what its blindness is and is not:
-  reviewers run as your user with a shell, in a clone beside the run directory, and §13's
-  blindness is asserted against the ledger's path rather than enforced by the operating
-  system. A reviewer that goes looking can read the run's ledger, journal and seat clones.
-  Treat the panel as **blind by construction, not by containment**.
+- **`Council: no review round was convened.`** Printed when you did not run `--review`.
+  It is not a round that failed or was skipped for cause — it is a stage nobody asked for.
+  Run `--review <run-id>` (below) to convene one; the post-round FIX loop is still unbuilt,
+  so a second round cannot be bought and `--review-rounds` above 1 prices calls that cannot
+  be spent.
 - **`Ultrareview: N finding(s) reported`.** Reported, and nothing more: §13.1's findings get
   no post-round fix, no fresh verification and no terminal, because that wiring does not
   exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — the number is
@@ -300,7 +324,7 @@ nothing stronger:
 > a fresh verifier clone at the final checkpoint. It does not mean the change has no new
 > defects, and it is not a review.
 
-## 6. `--gc` — mandatory, not tidy
+## 7. `--gc` — mandatory, not tidy
 
 ```bash
 python3 "$FORGE" --gc all  --repo /path/to/repo    # disk report, deletes nothing
@@ -337,7 +361,7 @@ the tree is fine; a modified tracked file or an untracked one is not.
 leaves a registered worktree and branch behind — that run has no handover record, so
 `--gc <run-id>` refuses it. `--gc <run-id> --force` is the reclaim for exactly that shape.
 
-## 7. Rules for you, the orchestrator
+## 8. Rules for you, the orchestrator
 
 - **Everything is argv, never a shell.** Every command the engine runs and every command it
   prints is a token list. If you are composing a `&&`, you are composing two steps.
