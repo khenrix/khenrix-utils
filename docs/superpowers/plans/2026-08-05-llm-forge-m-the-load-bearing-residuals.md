@@ -143,7 +143,7 @@ to:
             entries[rel] = Entry(rel, _digest(p), stat.S_IMODE(st.st_mode), st.st_size, "file")
 ```
 
-Apply the same change to `_special_entry` if it masks with `0o777` — read it first; a special entry whose mode is recorded differently from a regular one is the same defect wearing the other branch.
+**`_special_entry` masks the same way and must change too** — verified, `snapshot.py:132` reads `st.st_mode & 0o777`. A special entry whose mode is recorded differently from a regular one is the same defect wearing the other branch, and a FIFO with the setgid bit would stay invisible while a regular file no longer was.
 
 - [ ] **Step 4: Compare `kind` in `diff`**
 
@@ -933,7 +933,14 @@ Plan L deferred nineteen entries; seven were marked ⚠ *load-bearing* and are t
 
 **1. Spec coverage.** Every ⚠ entry from Plan L's deferral list has a task: item 2 → Task 1; item 7 → Task 2; item 5 → Task 3; items 4 and 6 → Task 4 (grouped, because both are coverage's treatment of a row's identity and fixing one alone leaves the pair disagreeing); item 3 → Task 5; item 12 → Task 6; item 1 → Task 7. Nothing marked ⚠ is deferred again.
 
-**2. Placeholder scan.** Three deliberate under-specifications, each named in its task with the reason: `progress.oscillation`'s call parameters (Task 6 Step 3 — it must be called with what it takes, not what a plan guessed); `test_an_unreadable_path_in_b1_fails_the_run_closed`'s body (Task 7 Step 1 — the breach mechanism is `screen_tree`'s and the suite already provokes one); and `_a_run_with_failures` (Task 6 — its shape is `progress.from_runs`'s). Each names the file to read first. No "TBD", no "add error handling", no "similar to Task N".
+**2. Placeholder scan.** Two deliberate under-specifications remain, each named in its task with the reason: `test_an_unreadable_path_in_b1_fails_the_run_closed`'s body (Task 7 Step 1 — the breach mechanism is `screen_tree`'s and `tests/test_forge_screen.py` already provokes one) and `_a_run_with_failures` (Task 6 — its shape is `progress.from_runs`'s two arguments, `.stdout`/`.stderr`/`.exit_code`). `progress.oscillation`'s call was a third and is now written out, measured rather than guessed. No "TBD", no "add error handling", no "similar to Task N".
+
+**2b. What measurement changed after the first draft**, recorded because a plan whose premises were never checked is a plan that schedules work nobody verified exists:
+- **Task 1's `kind` half was overstated.** Its two FIFO tests passed before any fix — `_special_entry` folds the file type into the digest — so the finding is structural duplication, not a reproducible miss, and the tests were replaced.
+- **Task 5's decision overshot.** Moving `GATE_CHANGED` to last also ranks it below `HARVEST_INCOMPLETE`, which is a second claim no finding argued. It moves to 4.
+- **Task 7's screen was placed after a ref write.** `manifest` is complete at `baseline.py:395` and the `update-ref` follows, so screening there means a refusal leaves nothing in the user's own repository.
+- **Task 4's premise held on inspection:** `ledger._check` runs `_check_rows` plus scalars, version, degradation consistency and a duplicate-id pass, so a ledger `_check_rows` accepts and `_check` refuses is constructible.
+- **Task 2's premise held:** `GIT_LITERAL_PATHSPECS` is absent from `HOSTILE_ENV` (`gitcmd.py:149-164`) and pinned to `"0"` only in `baseline.py:429`.
 
 **3. Type consistency.** `snapshot.Entry`'s five fields are unchanged in name and order; only `mode`'s **domain** widens (Task 1). `coverage.NOT_ACCEPTED` is introduced in Task 4 and read only there and in its tests. `rubric.GATE_RANK` keeps its keys and changes its values (Task 5); nothing reads a literal rank in production. `fix`'s contract widens from 2 to 4 values in Task 6, and `review.loop` is the only caller. `gate.SCREEN_RACE` is *removed* in Task 7, so grep for it across `shared/` and `tests/` before deleting the constant.
 
