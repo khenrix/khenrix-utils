@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-upgrade",
-  "source_hash": "b7ad5b671d2fa30225cfec09eae5895bdb533dfed0af77d7df157e073ec48717",
+  "source_hash": "63a0bb9e400b4a71978144a8e9636949ae27dedbcf69e2738639174f5bdb0896",
   "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
   "providers": [
     "claude"
