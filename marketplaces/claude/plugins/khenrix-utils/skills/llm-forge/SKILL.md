@@ -22,13 +22,14 @@ the strongest candidate promoted as-is. The engine deliberately has no `--synthe
 stops with the candidates verified on disk, hands you a synthesis worktree, and waits.
 Picking a winner is the thing this skill exists not to do.
 
-**And that is an instruction to you, not a property the collector checks.** `--collect`
-refuses a synthesis tree identical to B1 and nothing more: it never compares your tree
-against the candidates, never requires claims from more than one, and `--strategy` is
-recorded as you typed it — the CLI says outright that it cannot be verified. So a wholesale
-copy of one candidate plus a whitespace change passes, and `--strategy from_scratch` is
-accepted over winner promotion. The guarantee is yours to keep; the engine can only refuse
-the one case where you kept nothing at all.
+**And it is mostly an instruction to you, not a property the collector checks.**
+`--collect` refuses two things and no more: a synthesis tree identical to **B1** (you kept
+nothing) and one identical to **a seat's candidate** (you promoted a winner). Both are tree-oid
+comparisons, so a wholesale copy plus *any* edit — one whitespace change is enough — passes.
+Beyond those two, nothing: it never requires claims from more than one candidate, and
+`--strategy` is recorded exactly as you typed it, which the CLI says outright it cannot
+verify. `--strategy from_scratch` over a lightly-edited winner is accepted. The guarantee is
+yours to keep; the engine refuses only the two cases where the tree itself gives you away.
 
 > **Cost.** A default run (3 seats × 3 attempts, 2 review rounds, cloud ultrareview on) is
 > **19 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~63.3 GB

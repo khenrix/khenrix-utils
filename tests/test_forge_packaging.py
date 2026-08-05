@@ -673,3 +673,22 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     assert still_unbuilt == known_unbuilt, (
         f"{sorted(known_unbuilt - still_unbuilt)} now has a production caller — drop it from "
         "known_unbuilt, and reprice it")
+
+
+def test_the_skill_does_not_understate_what_the_collector_refuses():
+    """SKILL.md said `--collect` "refuses a synthesis tree identical to B1 AND NOTHING MORE"
+    and that it "never compares your tree against the candidates". `_refuse_a_seats_candidate`
+    has done exactly that comparison since Plan K — so the prose understated the engine.
+
+    AN UNDERSTATEMENT IS A DEFECT TOO, and this suite already enforces the other direction
+    (`test_the_skill_claims_only_what_the_engine_does`). A reader told a check does not exist
+    designs around its absence; one told it does exist relies on it. Both need the text to
+    match the code.
+    """
+    md = (ROOT / "shared/skills/llm-forge/SKILL.md").read_text()
+    src = (ROOT / "shared/lib/forge/cli.py").read_text()
+    assert "def _refuse_a_seats_candidate" in src
+    assert "never compares your tree against the candidates" not in md, \
+        "the prose denies a comparison the collector makes"
+    assert "identical to **a seat's candidate**" in md, \
+        "the prose must name the second refusal it actually makes"
