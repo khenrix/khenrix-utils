@@ -194,6 +194,7 @@ smoke-llm-forge: ## Live 3-provider WRITE smoke through the real forge adapter (
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test
 	$(PY) scripts/lib/checks.py --self-test
+	$(PY) scripts/lib/portability.py --self-test
 	$(PY) scripts/cli_sources.py --self-test
 	$(PY) scripts/lib/reconcile_test.py
 	$(PY) scripts/claude_session_stats.py --self-test
