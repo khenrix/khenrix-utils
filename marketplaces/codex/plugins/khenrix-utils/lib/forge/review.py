@@ -47,7 +47,8 @@ from pathlib import Path
 
 from council import engine
 
-from . import fingerprint, fleet, gitcmd, journal as journalmod, snapshot, storage
+from . import (fingerprint, fleet, gitcmd, journal as journalmod, snapshot, storage,
+               taskbundle)
 from .taskbundle import task_dir as taskbundle_task_dir
 
 SEVERITIES = ("blocker", "important", "minor")
@@ -358,6 +359,43 @@ def reviewer_roots(checkout) -> tuple:
                           "enumerate the roots a reviewer in it could read")
     gd = Path(out).resolve()
     return (co,) if gd.is_relative_to(co) else (co, gd)
+
+
+# The ref a review clone is taken at. §4's construction path is `--revision=<ref>`, so the
+# checkpoint needs a name before it can be cloned from. Under §9's own namespace, so `--gc`'s
+# walk reclaims it with everything else this run created.
+REVIEW_REF = "refs/khenrix-forge/{run_id}/review-{round_}"
+
+
+class _AtCheckpoint:
+    """The three fields `fleet.clone_seat` reads off a baseline, answered for a REVIEW clone.
+
+    A shim rather than a `baseline.Baseline`, because a `Baseline` is B1's record and this is
+    not B1 — but it carries all three, and every one of them is an honest statement about a
+    checkpoint:
+
+      * `.ref` (`fleet.py:195`) is the name the clone is taken at, and the run id is split out
+        of it, which is why `REVIEW_REF` sits in §9's namespace.
+      * `.commit` (`fleet.py:326`) is compared against the clone's `HEAD` and raises `SeatError`
+        on a mismatch. For a review clone the honest value IS the checkpoint: that is the
+        commit the round reviews, and the assertion is the one that catches a clone that landed
+        somewhere else.
+      * `.filesystem_manifest` (`fleet.py:333`) is read as `(… or {})`, and `{}` is the true
+        statement "no filesystem manifest is asserted over this tree" — a review clone is taken
+        at a checkpoint, not restored from an inventory.
+
+    A SHIM CARRYING ONLY `.ref` WAS THE FIRST DRAFT AND COULD NOT DRIVE THE FUNCTION AT ALL.
+    Measured: `fleet.clone_seat` raised `AttributeError: '_AtRef' object has no attribute
+    'commit'` — which is not a `FleetError`, so the `except` below would not have caught it and
+    the refusal it raises would never have been reached. The argument that a shim should carry
+    less because "a checkpoint is not B1" had it backwards: carrying less did not avoid stating
+    something false, it avoided stating anything, and the function needs the statements.
+    """
+
+    def __init__(self, ref: str, commit: str) -> None:
+        self.ref = ref
+        self.commit = commit
+        self.filesystem_manifest = {}
 
 
 def assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None:
@@ -1635,9 +1673,92 @@ def _stop(run_dir, state, *, rounds_run: int, events, note: str) -> tuple:
     return terminal, f"{why}; {note}"
 
 
+def clone_review_tree(repo, run_dir, *, run_id: str, round_: int, checkpoint: str,
+                      identity) -> Path:
+    """A fresh clone at `checkpoint` for one review round. Returns the checkout path.
+
+    WHY A CLONE AND NOT THE SYNTHESIS WORKTREE. §16 lets the synthesis tree be a linked
+    worktree because its author is the trusted invoking orchestrator. §13's reviewers are not:
+    they are three unattended bypass-permissions agents with `cwd` set to that tree. In a
+    linked worktree `.git` is a file resolving to the parent's git directory, so `hooks/`,
+    `config` and the object store are reachable by ordinary relative path — and `_SKIP_DIRS`
+    prunes `.git` from the round bracket, so a reviewer that writes `.git/hooks/pre-commit`
+    leaves the before and after digests identical and the round reports the tree undisturbed.
+    §4 built independent clones for exactly this hazard and this is that construction, reused
+    rather than restated: `fleet.clone_seat` is what carries `--no-local`, `--no-hardlinks`,
+    the empty template, the config pins and `remote remove origin`.
+
+    A SECOND `.git`-ONLY BRACKET OVER THE PARENT WAS THE ALTERNATIVE AND WAS NOT TAKEN. It
+    measures the hazard rather than deleting it: it must range over the object store, which is
+    the largest thing on disk and which git itself writes during the round, and it fires after
+    the hook is already on disk. Detection is not containment.
+
+    THE INDEPENDENCE IS ASSERTED, NOT ASSUMED. `.git` must be a DIRECTORY here; a file is a
+    linked worktree and is the exact thing this call exists to avoid handing a reviewer. "the
+    clone failed" and "the clone succeeded and is a worktree" are two different failures and
+    only one of them is loud on its own.
+
+    WHAT THIS DOES NOT CLOSE, AND IT IS SAID HERE RATHER THAN LEFT TO BE INFERRED FROM THE
+    PARAGRAPHS ABOVE. The clone removes the reviewer's reach into the USER's git directory. It
+    does not remove the reviewer's reach out of its own tree: this checkout is
+    `<run-dir>/review/round-<n>/checkout`, and a reviewer with a shell — which the blindness
+    assertion's own docstring assumes it has — reaches `../../../ledger.json`, the panel's
+    in-flight `../council/<name>.result.txt`, and `../../../seats/<seat>/attempt-<n>` by
+    ordinary relative path. `assert_ledger_is_out_of_reach` answers a narrower question: that
+    the ledger's bytes are not INSIDE the roots it was given. The residual is inherited rather
+    than introduced — the synthesis worktree this replaces sat one directory further up the
+    same tree — but a §13 round convened over it is a blind review only as far as the reviewer
+    chooses to be blind, and no record here says otherwise. Moving the review root outside the
+    run directory, and adding it to `other_clones` so the assertion still ranges over it, is
+    the close; it is not this task.
+    """
+    ref = REVIEW_REF.format(run_id=run_id, round_=round_)
+    try:
+        gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                   "update-ref", ref, checkpoint, env_extra=gitcmd.READONLY)
+    except gitcmd.GitError as e:
+        raise ReviewError(
+            f"round {round_}'s checkpoint {checkpoint} could not be named at {ref} ({e}), so "
+            "there is no ref to clone the review tree from") from e
+
+    dest = Path(round_dir(run_dir, round_)) / "checkout"
+    try:
+        fleet.clone_seat(repo, _AtCheckpoint(ref, checkpoint), dest,
+                            name=f"review-{round_}", identity=identity)
+    except fleet.FleetError as e:
+        raise ReviewError(
+            f"round {round_}'s review tree could not be cloned at {checkpoint} ({e}). The "
+            "round is not convened — reviewing the synthesis worktree instead would put three "
+            "unattended agents in a tree sharing the user's git directory.") from e
+
+    dot = dest / ".git"
+    if not dot.is_dir():
+        raise ReviewError(
+            f"{dot} is not a directory, so {dest} is not an independent repository and a "
+            "reviewer in it can reach a git directory that is not its own. The round is not "
+            "convened.")
+
+    bundle = taskbundle.read_task_bundle_if_recorded(run_dir)
+    if bundle is not None:
+        # `run_round` tells the panel "there is no task bundle in this checkout" when it finds
+        # none, so a review tree without one judges a candidate without the task it was given.
+        # The pair is `handover.create_synthesis_worktree`'s: materialize from the run's own
+        # recorded bytes, then re-derive the manifest FROM THIS TREE, so "laid down" and "laid
+        # down what the manifest describes" stay two claims.
+        try:
+            taskbundle.materialize(bundle, storage.task_source_path(run_dir), dest)
+            taskbundle.verify_materialized(bundle, dest)
+        except taskbundle.TaskBundleError as e:
+            raise ReviewError(
+                f"round {round_}'s review tree {dest} was cloned and this run's task bundle "
+                f"did not arrive in it ({e}), so the panel would judge a candidate without "
+                "the task. The round is not convened.") from e
+    return dest
+
+
 def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
          baseline_tree: str, artifact_manifest, log, manifest, fix, other_clones,
-         run=None) -> tuple:
+         repo, run_id: str, identity, run=None, make_tree=clone_review_tree) -> tuple:
     """§13's bounded review loop. NOT a convergence loop, and it never buys a third round.
 
     §13: "Round-1 blocker → fix, verify, checkpoint, round 2. Round-2 blocker → terminal state
@@ -1666,6 +1787,20 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
     inadmissible, so nothing may be spent acting on them — and the refusal itself is left to
     `terminal_from_record`, which reads the pair back off the journal. A crash between the
     write and the verdict therefore reaches the same answer.
+
+    EVERY ROUND READS A FRESH CLONE AND NEVER THE SYNTHESIS WORKTREE. `checkout` is the tree
+    `fix` edits and is the handover surface §16 lets be a linked worktree on the trust of its
+    author; the panel is three unattended bypass-permissions agents, which that trust does not
+    cover. `make_tree` builds the round's own clone at the round's own checkpoint through §4's
+    construction, and a failure there stops the loop rather than falling back — the fallback is
+    the hazard.
+
+    WHAT THE CLONE DOES NOT COVER. It removes the reviewer's reach into the USER's git
+    directory; it does not remove its reach OUT of its own tree. A round convened over
+    `run_dir/review/round-<n>/checkout` is one relative path from the ledger, from the panel's
+    in-flight answers under `run_dir/review/round-<n>/council/` and from every candidate clone
+    under `run_dir/seats/`. `assert_ledger_is_out_of_reach` is the check that ranges over that,
+    and it is why `other_clones` is required rather than defaulted.
 
     THE PHASE IS PERSISTED ON EVERY EXIT THAT RETURNS ONE. `state` is §14's position on the way
     in — `reviewing`, or `advance` refuses the edge — and each of the three returns below goes
@@ -1696,12 +1831,21 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
     n = 0
     while n < rounds:
         n += 1
-        before_digest, before = worktree_identity(checkout, quota)
+        # A FRESH TREE PER ROUND, because `fix` edits the synthesis worktree between rounds and
+        # each round must be read at ITS OWN checkpoint. `make_tree` raising stops the loop
+        # where it stands: a round that could not get its own tree is a round that cannot be
+        # convened, and falling back to `checkout` would put three unattended reviewers in a
+        # tree that shares the user's git directory — the whole hazard, reintroduced by an
+        # `except`. There is deliberately no `except` here.
+        tree = make_tree(repo, run_dir, run_id=run_id, round_=n, checkpoint=current,
+                         identity=identity)
+        before_digest, before = worktree_identity(tree, quota)
         record_worktree_before(log, round_=n, digest=before_digest, entries=len(before))
-        r = runner(run_dir, round_=n, checkout=checkout, checkpoint=current,
+        r = runner(run_dir, round_=n, checkout=tree, checkpoint=current,
                    baseline_commit=baseline_commit, baseline_tree=baseline_tree,
-                   artifact_manifest=artifact_manifest, other_clones=other_clones, log=log)
-        after_digest, after = worktree_identity(checkout, quota)
+                   artifact_manifest=artifact_manifest,
+                   other_clones=tuple(other_clones) + (Path(checkout),), log=log)
+        after_digest, after = worktree_identity(tree, quota)
         record_worktree_after(log, round_=n, digest=after_digest, entries=len(after),
                               changed=snapshot.diff(before, after))
         if after_digest != before_digest:

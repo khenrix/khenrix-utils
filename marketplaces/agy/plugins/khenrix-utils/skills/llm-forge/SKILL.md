@@ -1,6 +1,6 @@
 ---
 name: llm-forge
-description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~19 provider calls across 17 coexisting clones and peaks near 56.7 GB of disk, so it is for changes that justify the spend; `--start` prints the full quote before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
+description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~19 provider calls across 19 coexisting clones and peaks near 63.3 GB of disk, so it is for changes that justify the spend; `--start` prints the full quote before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
 allowed-tools: Bash, Read
 ---
 
@@ -31,9 +31,9 @@ accepted over winner promotion. The guarantee is yours to keep; the engine can o
 the one case where you kept nothing at all.
 
 > **Cost.** A default run (3 seats × 3 attempts, 2 review rounds, cloud ultrareview on) is
-> **19 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~56.7 GB
-> under `XDG_STATE_HOME` across 17 coexisting clones** — 1 calibration + 9 builder + 7
-> verifier — none of which is reclaimed until you run `--gc`. The cloud ultrareview is
+> **19 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~63.3 GB
+> under `XDG_STATE_HOME` across 19 coexisting clones** — 1 calibration + 9 builder + 7
+> verifier + 2 review — none of which is reclaimed until you run `--gc`. The cloud ultrareview is
 > priced separately in **usage credits ($5–25, or one of three one-time free runs)**.
 >
 > **That quote is an UPPER BOUND, and about half of it cannot be spent today.** §13's review
@@ -150,7 +150,7 @@ A JSON object. Every command is a **list of argv lists** — nothing here runs a
 `--no-ultra` belongs on `--start`. It does not merely turn the cloud review off — it moves
 the quote's **provider calls, setup runs, verify runs and peak disk**, because the review's
 findings would have earned a post-round fix plus a fresh verifier setup and verify — measured
-on a default run, 19 calls / 18 setup / 9 verify / ~56.7 GB become 18 / 17 / 8 / ~53.3. Note
+on a default run, 19 calls / 18 setup / 9 verify / ~63.3 GB become 18 / 17 / 8 / ~60.0. Note
 that those are movements in the UPPER BOUND: the post-review fix it subtracts is one of the
 calls the cost note above says cannot be spent today, so what `--no-ultra` actually saves
 right now is the **$5–25 in usage credits**, not a provider call. The
@@ -303,7 +303,7 @@ python3 "$FORGE" --gc <run-id> --repo /path/to/repo [--force]
 ```
 
 A finished run keeps every seat clone, every verifier clone and every interrupted write —
-the ~56.7 GB peak is what accumulates until you reclaim it. `--gc all` reports total disk
+the ~63.3 GB peak is what accumulates until you reclaim it. `--gc all` reports total disk
 held per run and marks each **handed over** / **NOT handed over** / **handover record
 UNREADABLE** (three states, because an unreadable record is not a "no"). It sums only the
 runs it could measure and says how many it could not.

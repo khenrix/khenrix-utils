@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 from council import engine  # noqa: E402
 from forge import journal, ledger, review, snapshot, storage  # noqa: E402
 
-from forge_fixtures import commit_all, make_repo, write  # noqa: E402
+from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 
 def _checkout(tmp_path, name="synthesis"):
@@ -1273,7 +1273,8 @@ def test_the_loop_stops_at_two_rounds_and_never_buys_a_third(tmp_path):
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
-                              manifest=_Cap(), fix=fix, run=fake_round)
+                              repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=fix, run=fake_round)
     assert rounds == [1, 2]
     assert answer == review.REVIEW_BLOCKED
 
@@ -1298,7 +1299,8 @@ def test_the_loop_stops_when_the_synthesis_fix_cap_is_exhausted(tmp_path):
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
-                              manifest=_Cap(cap=0), fix=fix, run=fake_round)
+                              repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(cap=0), fix=fix, run=fake_round)
     assert calls == [], "a cap of zero funds no fix at all"
     assert answer == review.REVIEW_BLOCKED and "cap" in why
 
@@ -1327,7 +1329,8 @@ def test_a_fix_that_did_not_pass_verify_stops_the_loop_and_reports_unresolved(tm
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
-                              manifest=_Cap(), fix=fix, run=fake_round)
+                              repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=fix, run=fake_round)
     assert rounds == [1], "a fix that broke verify does not buy a second round"
     assert answer == review.REVIEW_BLOCKED and "verify" in why
     assert [r.resolution for r in review.read_resolutions(run, 1)] == ["unresolved"]
@@ -1354,7 +1357,8 @@ def test_the_loop_records_a_fix_pair_on_the_journal(tmp_path):
     answer, _ = review.loop(run, state=_reviewing(), checkout=co, checkpoint=head,
                             baseline_commit="b" * 40,
                             baseline_tree="c" * 40, artifact_manifest=None,
-                            other_clones=(), log=log, manifest=_Cap(), fix=fix,
+                            other_clones=(), log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=fix,
                             run=fake_round)
     from forge import progress
     kinds = [e.event for e in log.read()]
@@ -1383,7 +1387,8 @@ def test_the_loop_writes_down_the_phase_it_classified(tmp_path):
     answer, _ = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                             baseline_commit="b" * 40, baseline_tree="c" * 40,
                             artifact_manifest=None, other_clones=(), log=log,
-                            manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
+                            repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
     assert answer == review.READY
     assert runstate.read_state(run).phase == review.READY
 
@@ -1407,7 +1412,8 @@ def test_a_loop_stopped_by_the_fix_cap_records_its_phase_and_the_records_reason(
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
-                              manifest=_Cap(cap=0), fix=lambda f, c: (c, True),
+                              repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(cap=0), fix=lambda f, c: (c, True),
                               run=fake_round)
     assert answer == review.REVIEW_BLOCKED
     assert runstate.read_state(run).phase == review.REVIEW_BLOCKED
@@ -1436,7 +1442,8 @@ def test_a_refused_loop_leaves_the_run_where_it_was(tmp_path):
     with pytest.raises(review.ReviewError):
         review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                     baseline_commit="b" * 40, baseline_tree="c" * 40,
-                    artifact_manifest=None, other_clones=(), log=log, manifest=_Cap(),
+                    artifact_manifest=None, other_clones=(), log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(),
                     fix=lambda f, c: (c, True), run=fake_round)
     assert runstate.read_state(run) is None
 
@@ -1516,7 +1523,8 @@ def test_a_panel_that_wrote_into_the_checkout_makes_its_round_inadmissible(tmp_p
         review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                     baseline_commit="b" * 40,
                     baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
-                    log=log, manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
+                    log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=fake_round)
     assert "src.py" in str(e.value)
 
 
@@ -1544,7 +1552,8 @@ def test_a_disturbed_checkout_buys_no_fix_and_no_second_round(tmp_path):
         review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                     baseline_commit="b" * 40,
                     baseline_tree="c" * 40, artifact_manifest=None, other_clones=(),
-                    log=log, manifest=_Cap(), fix=fix, run=fake_round)
+                    log=log, repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=fix, run=fake_round)
     assert "sneaked.txt" in str(e.value), "the refusal is the tree's, not something else's"
     assert rounds == [1] and fixes == []
     from forge import progress
@@ -1892,7 +1901,8 @@ def test_the_bracket_does_not_fire_on_forges_own_writes(tmp_path):
     answer, why = review.loop(run, state=_reviewing(), checkout=co, checkpoint="a" * 40,
                               baseline_commit="b" * 40, baseline_tree="c" * 40,
                               artifact_manifest=None, other_clones=(), log=log,
-                              manifest=_Cap(), fix=lambda f, c: (c, True), run=runner)
+                              repo=tmp_path, run_id='aaaaaa', identity=('F', 'f@e.x'),
+                              make_tree=_not_a_clone(co), manifest=_Cap(), fix=lambda f, c: (c, True), run=runner)
     assert answer == review.READY, why
     assert journal.orphans(log.read()) == ()
     assert review.review_dir(co, 1).is_dir(), "the bundle really was written"
@@ -2127,3 +2137,137 @@ def test_a_checkout_that_neither_contains_nor_is_contained_still_passes(tmp_path
     run = _run_dir(tmp_path)
     _ledger(run)
     review.assert_ledger_is_out_of_reach(run, checkout=_checkout(tmp_path), other_clones=())
+
+
+def _not_a_clone(co):
+    """A `make_tree` that hands the round the checkout itself.
+
+    The bracket and fix-budget tests write into `checkout` and measure that the round noticed;
+    a real clone would move the bracket off the tree they write into and they would pass for
+    the wrong reason. Containment is a different claim, asserted against the real `make_tree`
+    by `test_loop_reviews_the_clone_and_never_the_worktree` — where this stub would be the
+    defect rather than the fixture."""
+    return lambda *a, **k: co
+
+
+def _a_log(run_dir):
+    return journal.Journal(storage.journal_path(run_dir))
+
+
+def _a_manifest(*, review_rounds=1, cap=3):
+    return _Cap(cap=cap, rounds=review_rounds)
+
+
+def _a_clean_round(run, n, checkpoint):
+    """`_clean_round` writes the round; `loop` also needs it back, because `run` is the
+    callback whose return value the loop reads `findings` off."""
+    _clean_round(run, n, checkpoint)
+    return review.Round(n, checkpoint, (), (), ("claude", "codex", "agy"), ())
+
+
+def _a_run_with_a_checkpoint(tmp_path, *, with_bundle=False):
+    """A repo, a run directory, a run id, and a real commit to clone a review tree at.
+
+    NOT DEFINED BY THE PLAN — its Task 4 tests call this and never write it. Built here from
+    the fixtures this suite already uses, so the clone is taken at a commit that exists in a
+    repository `fleet.clone_seat` can actually clone from.
+    """
+    repo = make_repo(tmp_path, "repo")
+    write(repo, "src.py", "print('hi')\n")
+    commit_all(repo, "base")
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    run_id = "aaaaaa"
+    run_dir = tmp_path / "run"; run_dir.mkdir()
+    # §9's namespace, which is what `_AtCheckpoint` splits the run id back out of.
+    _git(repo, "update-ref", f"refs/khenrix-forge/{run_id}/base", head)
+    if with_bundle:
+        # RECORDED, not merely present on disk: `read_task_bundle_if_recorded` answers `None`
+        # for a run that wrote no manifest, so a bare source directory leaves the clone with
+        # nothing to materialize and the assertion measures the fixture rather than the code.
+        from forge import taskbundle as _tb
+        src = storage.task_source_path(run_dir)
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "TASK.md").write_text("do the thing\n", encoding="utf-8")
+        _tb.write_task_bundle(run_dir, _tb.scan(src, entrypoint="TASK.md"))
+    return repo, run_dir, run_id, head
+
+
+def test_clone_review_tree_gives_the_panel_its_own_git_directory(tmp_path):
+    """In a LINKED WORKTREE `.git` is a file reaching the parent's hooks, config and object
+    store by ordinary relative path — and `_SKIP_DIRS` prunes exactly that path from the
+    bracket, so a reviewer writing `.git/hooks/pre-commit` leaves both digests identical."""
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path)
+    dest = review.clone_review_tree(repo, run_dir, run_id=run_id, round_=1,
+                                    checkpoint=head, identity=("F", "f@e.x"))
+    assert (dest / ".git").is_dir(), "a review tree must not share the user's .git"
+    assert _git(dest, "rev-parse", "HEAD").stdout.strip() == head
+
+
+def test_clone_review_tree_ships_no_push_target(tmp_path):
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path)
+    dest = review.clone_review_tree(repo, run_dir, run_id=run_id, round_=1,
+                                    checkpoint=head, identity=("F", "f@e.x"))
+    assert _git(dest, "remote").stdout.split() == []
+
+
+def test_clone_review_tree_carries_the_task_bundle(tmp_path):
+    """`run_round` tells the panel "there is no task bundle in this checkout" when it is
+    absent, so a review tree without one judges a candidate without the task it was given."""
+    from forge import taskbundle
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path, with_bundle=True)
+    dest = review.clone_review_tree(repo, run_dir, run_id=run_id, round_=1,
+                                    checkpoint=head, identity=("F", "f@e.x"))
+    # `taskbundle.task_dir`, which ASKS git for the git dir — there is no
+    # `review.taskbundle_task_dir`, and a join onto `dest / ".git"` would be right here by
+    # luck and wrong on the worktree this whole task exists because of.
+    assert taskbundle.task_dir(dest).is_dir()
+
+
+def test_clone_review_tree_is_taken_at_the_checkpoint_and_says_so_when_it_is_not(tmp_path):
+    """`fleet.clone_seat` compares the clone's HEAD against `baseline.commit` and raises
+    `SeatError` on a mismatch — so the shim has to carry the checkpoint as its commit, and
+    carrying only `.ref` raises `AttributeError` instead, which `except FleetError` does not
+    catch. Measured on the real function before this was written."""
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path)
+    dest = review.clone_review_tree(repo, run_dir, run_id=run_id, round_=1,
+                                    checkpoint=head, identity=("F", "f@e.x"))
+    assert _git(dest, "rev-parse", "HEAD").stdout.strip() == head
+    with pytest.raises(review.ReviewError):
+        review.clone_review_tree(repo, run_dir, run_id=run_id, round_=2,
+                                 checkpoint="b" * 40, identity=("F", "f@e.x"))
+
+
+def test_loop_reviews_the_clone_and_never_the_worktree(tmp_path):
+    seen = []
+
+    def _runner(run_dir, *, round_, checkout, checkpoint, **kw):
+        seen.append(Path(checkout))
+        return _a_clean_round(run_dir, round_, checkpoint)
+
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path)
+    co = run_dir / "synthesis"
+    review.loop(run_dir, state=_reviewing(), checkout=co, checkpoint=head,
+                baseline_commit=head, baseline_tree=_git(repo, "rev-parse", "HEAD^{tree}")
+                .stdout.strip(), artifact_manifest=(), log=_a_log(run_dir),
+                manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True),
+                other_clones=(), repo=repo, run_id=run_id, identity=("F", "f@e.x"),
+                run=_runner)
+    assert seen and all(p != co for p in seen), "reviewers must not sit in the worktree"
+
+
+def test_loop_stops_rather_than_reviewing_the_worktree_when_the_clone_fails(tmp_path):
+    """A round that could not get its own tree is a round that cannot be convened. An
+    `except` that fell back to `checkout` is the whole hazard, reintroduced."""
+    def _boom(*a, **kw):
+        raise review.ReviewError("no disk")
+
+    repo, run_dir, run_id, head = _a_run_with_a_checkpoint(tmp_path)
+    with pytest.raises(review.ReviewError, match="no disk"):
+        review.loop(run_dir, state=_reviewing(), checkout=run_dir / "synthesis",
+                    checkpoint=head, baseline_commit=head,
+                    baseline_tree=_git(repo, "rev-parse", "HEAD^{tree}").stdout.strip(),
+                    artifact_manifest=(), log=_a_log(run_dir),
+                    manifest=_a_manifest(review_rounds=1), fix=lambda f, c: (c, True),
+                    other_clones=(), repo=repo, run_id=run_id, identity=("F", "f@e.x"),
+                    make_tree=_boom)
+

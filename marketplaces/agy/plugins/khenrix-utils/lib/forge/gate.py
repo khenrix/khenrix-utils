@@ -283,7 +283,11 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     verifier_runs = seats + 1 + review_fixes
     setup_runs = _CALIBRATION_PASSES + builders + verifier_runs
     verify_runs = _CALIBRATION_PASSES + verifier_runs
-    clones = _CALIBRATION_CLONES + builders + verifier_runs
+    # §13's review rounds each take their own clone at their own checkpoint — the containment
+    # `review.clone_review_tree` exists for, taken through `fleet.clone_seat` with `--no-local
+    # --no-hardlinks` like every other. It is one per ROUND and not one per reviewer: the panel
+    # reads one tree together, which is what makes the round's bracket a single measurement.
+    clones = _CALIBRATION_CLONES + builders + verifier_runs + review_rounds
     peak_disk_gb = round(clones * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
 
     ultra_line = ("$5-25 in usage credits, or one of the 3 one-time free runs (§13.1, default "
@@ -325,7 +329,10 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
         f"'three no-hardlink clones plus three dependency trees' divided by the fleet it "
         f"prices. The {clones} are calibration {_CALIBRATION_CLONES} (§5 step 3) + builders "
         f"{builders} (§8.1 preserves a failed attempt's clone rather than resetting in place) "
-        f"+ verifiers {verifier_runs} (§6, fresh per candidate). §8.1's \"preserved as partial "
+        f"+ verifiers {verifier_runs} (§6, fresh per candidate) + review {review_rounds} "
+        f"(§13, one per round: reviewers get their own clone at the round's checkpoint rather "
+        f"than the synthesis worktree, which shares the user's git directory). §8.1's "
+        f"\"preserved as partial "
         "input\" is the SPECIFIC rule and wins over §15's general auto-removal of known-failed "
         "temporary clones, which would otherwise reclaim the retries; nothing reclaims the rest "
         "until `--gc`. Not counted: the synthesis worktree, which §4 keeps a worktree so it "

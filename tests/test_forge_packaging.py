@@ -514,7 +514,7 @@ def test_the_skill_quotes_the_numbers_gate_quote_actually_produces():
     with tempfile.TemporaryDirectory() as td:
         report = preflight.inspect_repo(make_repo(Path(td)), ())
         body = _skill_prose()
-        for ultra, expect in ((True, (19, 18, 9, 56.7)), (False, (18, 17, 8, 53.3))):
+        for ultra, expect in ((True, (19, 18, 9, 63.3)), (False, (18, 17, 8, 60.0))):
             q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=ultra)
             calls, setup, verify_, disk = expect
             assert (q.provider_calls, q.setup_runs, q.verify_runs, q.peak_disk_gb) == expect, \

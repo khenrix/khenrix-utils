@@ -197,8 +197,8 @@ def test_peak_disk_is_every_clone_that_coexists_not_the_builder_fleet(tmp_path):
     """
     q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
     per_clone = 10.0 / 3           # §5.2's own upper bound, over the fleet it was stated for
-    clones = 1 + 3 * 3 + (3 + 1 + 2 + 1)
-    assert clones == 17
+    clones = 1 + 3 * 3 + (3 + 1 + 2 + 1) + 2   # + one review clone per round (§13)
+    assert clones == 19
     assert q.peak_disk_gb == pytest.approx(round(clones * per_clone, 1), abs=0.05)
     assert q.peak_disk_gb != 10.0, "§5.2's fleet figure is one term of the peak, not the peak"
     assert any("--gc" in line for line in q.lines), q.lines
