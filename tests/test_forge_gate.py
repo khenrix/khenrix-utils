@@ -2088,3 +2088,19 @@ def test_the_gate_no_longer_announces_a_gap_it_has_closed(tmp_path):
         "the constant outlived its gap; a name nothing uses is the next reader's false lead"
     # The §3 screen LINE itself stays — it reports what was scanned and is not a gap.
     assert any("§3 screen" in l for l in lines), lines
+
+
+def test_a_one_seat_run_is_told_it_cannot_fuse_before_it_spends(tmp_path):
+    """`seats` has a floor of 1 and the skill's description promises "all three agentic
+    CLIs". Reproduced: `runner._fleet` resolves seats=1 to ('claude',) — a legitimate cheap
+    run, and not the thing the description sells, since there is nothing to fuse with one
+    candidate.
+
+    A LINE AND NOT A REFUSAL: refusing would remove a mode the flag exists to offer. What
+    must not happen is an operator paying for it believing they bought a fusion."""
+    r = _report(tmp_path)
+    q = gate.quote(r, seats=1, attempts=1, review_rounds=0, seat_timeout_sec=3600)
+    assert any("cannot produce a FUSION" in l for l in q.lines), q.lines
+    q3 = gate.quote(r, seats=3, attempts=1, review_rounds=0, seat_timeout_sec=3600)
+    assert not any("cannot produce a FUSION" in l for l in q3.lines), \
+        "the line must not fire on the fleet the skill is actually for"

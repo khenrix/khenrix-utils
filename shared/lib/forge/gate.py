@@ -318,6 +318,21 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
 
     blocked = preflight.refusals(report)
     lines = []
+    if seats < 2:
+        # SAID AT THE GATE, BEFORE THE SPEND. `seats` has a floor of 1 and the skill's own
+        # description promises "all three agentic CLIs" — so a one-seat run is permitted and
+        # is not the thing the description sells. There is nothing to FUSE with one candidate:
+        # §16's deliverable is "a new answer assembled from the best of all three", and a
+        # fleet of one can only produce that one seat's work.
+        #
+        # A LINE, NOT A REFUSAL. A single seat is a legitimate cheap run — a smoke of the
+        # machinery, or a deliberate one-provider build — and refusing it would remove a mode
+        # the flag exists to offer. What must not happen is an operator paying for it while
+        # believing they bought a fusion.
+        lines.append(
+            f"seats: {seats}, so this run cannot produce a FUSION. §16's deliverable is an "
+            "answer assembled from several candidates and there will be one; `--collect` "
+            "will describe that seat's own work. Use --seats 3 for what this skill is for.")
     if blocked:
         lines.append(f"refused first: preflight names {len(blocked)} thing(s) that stop this "
                      "run, so nothing below is spent until they are cleared (§5 step 1's "
