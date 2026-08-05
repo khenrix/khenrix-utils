@@ -281,16 +281,23 @@ git commit -m "fix(forge): one ambient variable made every unpinned git diff exi
 
 **The fail-open this task must not have:** narrowing the banner set must not make an ordinary green pytest run return `None`, which would turn every §12.3 progress question `unresolved` and make the whole mechanism decline by construction. The banner must be one pytest actually prints on every run — verify against real output rather than reasoning about it.
 
-- [ ] **Step 1: Measure what pytest actually prints**
+- [ ] **Step 1: Confirm the three defects still reproduce**
 
-```bash
-cd /home/khenrix/git/khenrix-utils
-uvx --with pytest pytest -q tests/test_forge_progress.py 2>&1 | tail -3
-uvx --with pytest pytest tests/test_forge_progress.py 2>&1 | tail -3
-uvx --with pytest pytest -q tests/does_not_exist.py 2>&1 | tail -3; echo "exit=$?"
+Run the three inputs through the live parser and read the answers:
+
+```
+progress.pytest_fingerprints("ok  \t3 passed\n", "", 0)
+progress.pytest_fingerprints("short test summary info\nFAILED t.py::test_x[a b]\nFAILED t.py::test_x[a c]\n", "", 1)
+progress.pytest_fingerprints("short test summary info\nFAILED t.py::test_x - E\n!!! Interrupted !!!\n", "", 4)
 ```
 
-Record the three tails in the commit message. The third is pytest's exit 4, and it is the input the third defect is about.
+Measured 2026-08-05, all three reproduce:
+
+| input | answer | what it means |
+|---|---|---|
+| go test output, exit 0 | `frozenset()` | another runner read as a green pytest run |
+| two parametrized failures | `frozenset({'t.py::test_x[a'})` | **two different failures, one id** |
+| collection interrupted, exit 4 | `frozenset({'t.py::test_x'})` | a partial set reported as complete |
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -319,10 +326,28 @@ def test_another_runners_output_is_not_read_as_pytest():
 
 
 def test_a_real_green_pytest_run_is_still_an_honest_empty_set():
-    """The discrimination check for the narrowing above: if the banner set is narrowed to
-    something pytest does not always print, every progress question turns `unresolved` and
-    §12.3 declines by construction. Measured output, not a guess."""
-    assert progress.pytest_fingerprints("=== 12 passed in 0.31s ===\n", "", 0) == frozenset()
+    """THE DISCRIMINATION CHECK FOR THE NARROWING, and it caught a wrong first draft: a green
+    `pytest -q` run prints NO section rule and NO session header — its whole output is
+    `35 passed in 0.08s` — so narrowing to literal section rules would have returned `None`
+    for every clean gate run and made §12.3 decline on its most common case. Measured output,
+    verbatim, not a guess."""
+    assert progress.pytest_fingerprints(
+        "...................................    [100%]\n35 passed in 0.08s\n", "", 0
+    ) == frozenset()
+    # ...and the full-output form, which is a different shape entirely.
+    assert progress.pytest_fingerprints(
+        "============================= test session starts =====================\n"
+        "platform linux -- Python 3.14.6, pytest-9.1.1\n\n35 passed in 0.08s\n", "", 0
+    ) == frozenset()
+
+
+def test_a_make_recipe_that_merely_says_passed_is_not_pytest():
+    """The other side of the same discrimination. `" passed"` as a bare substring matched a
+    Makefile echoing "all tests passed" — and returned an HONEST-LOOKING empty failure set
+    for a gate this parser never read."""
+    assert progress.pytest_fingerprints("all tests passed\n", "", 0) is None
+    assert progress.pytest_fingerprints(
+        "test result: ok. 7 passed; 0 failed; finished in 0.01s\n", "", 0) is None
 
 
 def test_a_collection_error_is_not_a_complete_failure_set():
@@ -362,11 +387,29 @@ In `/home/khenrix/git/khenrix-utils/shared/lib/forge/progress.py`:
 _FAILED = re.compile(r"^FAILED (.+?)(?: - .*)?$", re.MULTILINE)
 
 # The evidence that this output came from pytest AT ALL. `" passed"` and `" failed"` used to
-# be in here and are not banners — they are two words go test, cargo test and most other
-# runners print, so this parser answered outside its own declared domain. These three are
-# pytest's own section rules and its summary line's shape.
-_PYTEST_BANNERS = ("short test summary info", "=== FAILURES ===", "= test session starts =")
+# be in here as bare substrings and are not banners — they are two words go test, cargo test
+# and jest all print, so this parser answered outside its own declared domain.
+#
+# A SUBSTRING TUPLE CANNOT EXPRESS THIS, AND THE FIRST DRAFT OF THIS FIX WAS WRONG. It
+# narrowed to three literal section rules, and MEASURED, a green `pytest -q` run prints none
+# of them — its entire output is `35 passed in 0.08s`. That narrowing would have returned
+# `None` for every clean gate run and made §12.3 decline on its most common case: the
+# fail-open's mirror image, and a verdict reading dirtier than its evidence.
+#
+# So the discriminator is pytest's own SHAPE, anchored at line start: its full-output header,
+# its section rules, or a summary line that is a count followed by `in <float>s`. Verified
+# against seven real outputs — pytest -q green, pytest -q red, pytest full green, go test,
+# cargo test, jest, and a make recipe echoing "all tests passed" — the first three match and
+# the last four do not.
+_PYTEST_BANNER = re.compile(
+    r"^=+ test session starts =+$"
+    r"|^=+ (FAILURES|short test summary info) =+"
+    r"|^\d+ (passed|failed|error|skipped)\b.*\bin \d+\.\d+s",
+    re.MULTILINE)
 ```
+
+and change the guard in `pytest_fingerprints` from the `any(b in text for b in
+_PYTEST_BANNERS)` membership test to `if not _PYTEST_BANNER.search(text): return None`.
 
 and in `pytest_fingerprints`, replace the final `return ids or None` with:
 
@@ -941,6 +984,7 @@ Plan L deferred nineteen entries; seven were marked ⚠ *load-bearing* and are t
 - **Task 7's screen was placed after a ref write.** `manifest` is complete at `baseline.py:395` and the `update-ref` follows, so screening there means a refusal leaves nothing in the user's own repository.
 - **Task 4's premise held on inspection:** `ledger._check` runs `_check_rows` plus scalars, version, degradation consistency and a duplicate-id pass, so a ledger `_check_rows` accepts and `_check` refuses is constructible.
 - **Task 2's premise held:** `GIT_LITERAL_PATHSPECS` is absent from `HOSTILE_ENV` (`gitcmd.py:149-164`) and pinned to `"0"` only in `baseline.py:429`.
+- **Task 3's three premises all reproduce** (run 2026-08-05; the answers are tabulated in its Step 1) — **and its first fix was wrong.** Narrowing `_PYTEST_BANNERS` to literal section rules would have returned `None` for every green `pytest -q` run, whose entire output is `35 passed in 0.08s`. The discriminator is now a line-anchored regex over pytest's shape, verified against seven real outputs.
 
 **3. Type consistency.** `snapshot.Entry`'s five fields are unchanged in name and order; only `mode`'s **domain** widens (Task 1). `coverage.NOT_ACCEPTED` is introduced in Task 4 and read only there and in its tests. `rubric.GATE_RANK` keeps its keys and changes its values (Task 5); nothing reads a literal rank in production. `fix`'s contract widens from 2 to 4 values in Task 6, and `review.loop` is the only caller. `gate.SCREEN_RACE` is *removed* in Task 7, so grep for it across `shared/` and `tests/` before deleting the constant.
 
