@@ -34,7 +34,11 @@ Plan K's Order-of-work section defines a follow-on it calls **Plan L**, whose L0
 **Why first:** `snapshot.py` is the inventory the whole package's before/after brackets are taken with — `review.loop`'s round bracket, `harvest`'s artifact set, `verify`'s worktree identity. Two of its fields are blind, and both blindnesses were found *inside* the path of a fix Plan L shipped:
 
 - **`snapshot.py:206`** records `st.st_mode & 0o777`, which drops setuid, setgid and sticky. `chmod u+s` on a tracked file leaves a **byte-identical inventory**, so the round bracket L1.4 rests on reports the tree undisturbed after a reviewer made a binary setuid.
-- **`snapshot.diff` (`snapshot.py:210`)** compares content, mode and size and **not `kind`**. The docstring already concedes this and calls the coverage "incidental". The FIFO/symlink collision demonstrated at `test_forge_review.py:1852` was never carried to `harvest`, which is L1.5's own path — so a builder's artifact replaced by a FIFO of the same size is a silent drop.
+- **`snapshot.diff` (`snapshot.py:210`)** compares content, mode and size and **not `kind`**, while `review._inventory_digest` (`review.py:1337`) DOES include it and says so in a comment. That is **two definitions of "did this path change", maintained separately** — this project's recurring shape, and the one that produced "an agreement test between two copies of a predicate that passes because they agree and are both wrong".
+
+  **MEASURED, AND THE FINDING IS NARROWER THAN PLAN L RECORDED IT.** The plan's first draft asserted that a file replaced by a FIFO is a silent drop in `harvest`. It is not: `_special_entry` folds the file type into the DIGEST (`sha256(f"special:{S_IFMT}")`) and `_symlink_entry` digests the target text, so every constructible type change already moves the digest. Both proposed FIFO tests **passed before any fix** — exactly the "test that confirms the code agrees with itself" failure this plan exists to prevent. The reproduction attempts are in the commit that corrected this task.
+
+  So the `kind` change is **structural, not a reproducible miss**: it collapses two predicates into one so that a future change to `_special_entry`'s digest cannot silently separate them. It ships with a test that asserts the structural property, never a fabricated miss.
 
 **Files:**
 - Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/snapshot.py` (the `Entry` mode mask ~`:206`; `diff` ~`:210-240`)
@@ -80,35 +84,44 @@ def test_the_inventory_sees_setgid_and_sticky_too(tmp_path):
         assert yield_mode == mode, (mode, yield_mode)
 
 
-def test_diff_reports_a_file_replaced_by_a_fifo(tmp_path):
-    """`diff`'s docstring conceded that `kind` is not compared and called the coverage
-    "incidental — via the digest, and via the mode 0 / size 0 the symlink branch records".
-    A FIFO of the same name is exactly the case where the incidental coverage is absent from
-    `harvest`, which is where a builder's artifact goes missing."""
-    root = tmp_path / "t"; root.mkdir()
-    p = root / "artifact"
-    p.write_text("", encoding="utf-8")
-    before, _ = snapshot.take(root)
-    p.unlink()
-    os.mkfifo(p)
-    after, _ = snapshot.take(root)
-    assert snapshot.diff(before, after) == {"artifact": "modified"}
+def test_diff_compares_kind_even_when_every_other_field_matches():
+    """ONE PREDICATE, NOT TWO. `review._inventory_digest` includes `kind` and says so;
+    `snapshot.diff` did not. Today they agree on every tree that can be built, because
+    `_special_entry` folds the file type into the digest and `_symlink_entry` digests the
+    target text — so this is not a reproducible miss and no test here should pretend it is
+    (two drafts of this task asserted a FIFO miss that PASSED before any fix).
 
-
-def test_diff_compares_kind_even_when_every_other_field_matches(tmp_path):
-    """The predicate stated directly, over hand-built entries, so the claim does not depend on
-    a filesystem happening to produce two entries that agree on four fields."""
+    What it is, is two definitions of "did this path change" maintained separately, one field
+    apart. This states the predicate directly over hand-built entries, which is the only way
+    to assert it: a filesystem cannot produce two entries that agree on digest, mode and size
+    and differ in kind, and that is precisely why the gap is invisible until the day
+    `_special_entry`'s digest changes.
+    """
     a = {"x": snapshot.Entry("x", "d", 0o644, 0, "file")}
-    b = {"x": snapshot.Entry("x", "d", 0o644, 0, "fifo")}
+    b = {"x": snapshot.Entry("x", "d", 0o644, 0, "special")}
     assert snapshot.diff(a, b) == {"x": "modified"}
+
+
+def test_the_two_inventory_predicates_read_the_same_fields():
+    """The structural claim, asserted where it can actually fail: `review._inventory_digest`
+    builds its row from five fields and `snapshot.diff` must compare the same five. A future
+    field added to `Entry` and wired into one of them is the next instance of this defect."""
+    import dataclasses
+    fields = {f.name for f in dataclasses.fields(snapshot.Entry)}
+    assert fields == {"path", "digest", "mode", "size", "kind"}, (
+        "Entry gained or lost a field — check that BOTH snapshot.diff and "
+        "review._inventory_digest were updated, not just one")
 ```
 
-> `os` must be imported at the top of the suite if it is not already. `test_the_inventory_sees_setgid_and_sticky_too` is written with a `for` loop and a plain `assert`; the `yield_mode` name is a local, not a generator — do not turn this into a `pytest.mark.parametrize` that hides which bit failed.
+> `os` is no longer needed by these tests — the FIFO cases were removed as unreproducible. `test_the_inventory_sees_setgid_and_sticky_too` is written with a `for` loop and a plain `assert`; the `yield_mode` name is a local, not a generator — do not turn this into a `pytest.mark.parametrize` that hides which bit failed.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_snapshot.py -k "setuid or setgid or fifo or kind"`
-Expected: FAIL — the first two on `before != after` / mode inequality, the last two on `diff` returning `{}`.
+Expected: FAIL — the first two on `before != after` / mode inequality, and
+`test_diff_compares_kind_even_when_every_other_field_matches` on `diff` returning `{}`.
+`test_the_two_inventory_predicates_read_the_same_fields` should PASS already: it is the
+invariant the change must not break, written first so a break is visible.
 
 - [ ] **Step 3: Widen the mode mask**
 
