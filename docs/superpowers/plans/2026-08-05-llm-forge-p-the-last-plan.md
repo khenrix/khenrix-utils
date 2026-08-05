@@ -291,13 +291,33 @@ suite. And **three more that K4's review clone had already closed**, measured 20
 the single most useful number in this log: a plan built from a review's findings is a plan
 built from claims, and better than a quarter of them were already false.
 
-**Genuinely open.** P5a's remaining s1 items (the symlink gate referent; the make memo key
-with `_scan_make`'s `--directory=`/`-C` gap; the calibration aggregate; the control-plane
-tripwire; Fwork byte-binding; durable-state reconstruction; `Seat.verified` over
-`sidecars is None`; two index definitions; `_gate_taints`' isinstance gate;
-`_command_paths`' silent continue; `_AMBIENT_SKILL`'s short-path refusals; `screen.py`'s
-allow-list in foreign repos). P5b's remainder and P5c in full. P4a, P4b, P4j.
-P4m's orphaned-marker half. P6b (skill charts — eleven tasks, nothing landed). P7.
+**Genuinely open, and honestly scoped.**
+
+- **A real `--resume`.** Re-entering a run at its recorded phase and deciding which seats
+  still owe attempts against §8.1's preserved clones. `--start` now NAMES an abandoned run
+  so nobody silently pays the quote twice, which is the expensive half; re-entry itself is a
+  larger change and is not claimed. **Parallel builders are coupled to it**: K6's wall-clock
+  bound is `seats × attempts × window` *only because the seats run serially*, so the two must
+  land together or the quoted ceiling stops being one.
+- **P5a's remaining s1 items** — the symlink gate referent; the make memo key together with
+  `_scan_make`'s `--directory=`/`-C` gap (two holes in one detector, fix as one); the
+  calibration aggregate; the control-plane integrity tripwire; Fwork byte-binding;
+  durable-state reconstruction; `Seat.verified` over `sidecars is None`; two index
+  definitions; `_gate_taints`' isinstance gate; `_AMBIENT_SKILL`'s short-path refusals;
+  `screen.py` carrying this repo's allow-list into foreign repos.
+- **P5b's remainder** — `no_change` with `proven_read=False`; the executed-and-refuted check
+  recorded as `not-run`; §8.1's missing input half; `RunnerError`-as-retry; the empty fleet
+  reaching `comparing`; `_clip`'s evidence truncation; `_verify_dim`'s collapse.
+- **P5c in full** — `installed_closure`'s permutation collision; `verify_materialized`'s
+  copied fields and the size/cap-blind `bundle_hash`; the criterion-to-claim binding; seat
+  provenance; the journal creation race; hash criteria not distinguishing a file from a
+  symlink.
+- **s4's tail** — `snapshot.take`'s undeclared `FileNotFoundError`; `_dir_digest`; the
+  lost-journal/no-fixes collapse.
+
+Every one of them still owes P0 its reproduction first — and on this plan's own record,
+better than a quarter of the findings examined turned out to be already closed or simply
+false.
 
 **Each of those still owes P0 its reproduction first**, and the log above is why: of the
 twenty-two items examined, four did not survive contact with the code.
