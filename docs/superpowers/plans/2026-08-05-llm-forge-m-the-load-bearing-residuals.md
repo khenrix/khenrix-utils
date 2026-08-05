@@ -184,7 +184,21 @@ git commit -m "fix(forge): the bracket every measurement rests on could not see 
 
 ## Task 2: `GIT_LITERAL_PATHSPECS` is not in `HOSTILE_ENV`
 
-**Why second:** `harvest.artifact_set` is one of three sites that run `git diff` without pinning it, and with `GIT_LITERAL_PATHSPECS=1` ambient the `git diff` L1.5 guards **exits 0 with an empty patch**. `baseline.py:429` pins it OFF for its own index build and `baseline.py:426` explains why in full — so the reason is already written down in this repository, one module over, and the variable is simply absent from the tuple every other call site scrubs.
+**Why second:** `GIT_LITERAL_PATHSPECS=1` ambient makes the `git diff` L1.5 guards **exit 0 with an empty patch**. `baseline.py:429` pins it OFF for its own index build and `baseline.py:426` explains why in full — so the reason is already written down in this repository, one module over, and the variable is simply absent from the tuple every other call site scrubs.
+
+**THE MECHANISM IS NOT GLOBBING, AND THE FIRST DRAFT OF THIS TASK HAD IT BACKWARDS.** Its test used a filename containing `[1]` on the theory that `LITERAL=1` stops a glob matching. Measured: that test **passes before any fix** — with `LITERAL=1` the literal name `a[1].txt` matches the file `a[1].txt` perfectly well; it is the *unset* case that treats the name as a glob.
+
+What `LITERAL=1` actually disables is **pathspec magic**, and this package passes magic almost everywhere:
+
+| site | pathspec | what it becomes under `LITERAL=1` |
+|---|---|---|
+| `bundle.py:287` | `:(literal)<path>` | a literal filename `":(literal)<path>"` — matches nothing |
+| `harvest.py:105` | `:(literal)<path>` | same |
+| `verify.py:1232` | `:(literal)<path>` on `git add -f` | same — **the verifier stages nothing** |
+| `runstate.py:543` | `:/` on `ls-files` | a literal path named `:/` — matches nothing |
+| `baseline.py:433` | `:/` on `add -u` | **already pinned OFF**, with a comment saying `add -u` "would look for a directory named `:/`" |
+
+Measured on git 2.53 in a repo holding one modified tracked file: `diff --name-only -- :(literal)a.txt` answered `a.txt` clean and **`''` with `LITERAL=1`, exit 0 both times**; `ls-files --full-name -- :/` did the same. So the blast radius is wider than "the diff L1.5 guards": `verify.py:1232` is a `git add -f` that stages **nothing** and reports success, which is a candidate verified over an empty change. `baseline.py` already knows this exact mechanism and pins against it; nowhere else does.
 
 **Files:**
 - Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/gitcmd.py` (`HOSTILE_ENV`, ~`:149-164`)
@@ -203,23 +217,41 @@ Append to `/home/khenrix/git/khenrix-utils/tests/test_forge_seams.py`:
 ```python
 def test_an_ambient_literal_pathspecs_cannot_blind_a_git_this_package_runs(tmp_path,
                                                                            monkeypatch):
-    """THE EXTERNAL QUESTION, and it is not "is the name in the tuple". With
-    GIT_LITERAL_PATHSPECS=1 ambient, git takes every pathspec as a literal string — so a
-    pathspec containing a glob character matches nothing, `git diff` exits 0, and the empty
-    patch is read as "this seat changed nothing". `harvest.artifact_set` is one of three
-    unpinned sites and it is the one L1.5's guard runs through.
+    """THE EXTERNAL QUESTION, and it is not "is the name in the tuple".
+
+    `GIT_LITERAL_PATHSPECS=1` disables pathspec MAGIC, and this package passes magic at four
+    sites — `:(literal)<path>` in `bundle`, `harvest` and `verify`, and `:/` in `runstate`.
+    Under an ambient `1` each becomes a literal filename that matches nothing, and git EXITS 0
+    over it: an empty patch read as "this seat changed nothing", and at `verify.py:1232` a
+    `git add -f` that stages nothing and reports success.
 
     Asserted through `gitcmd.git` rather than by reading HOSTILE_ENV, because a test that
-    reads the tuple passes over exactly the member nobody added to it.
+    reads the tuple passes over exactly the member nobody added to it. And asserted on MAGIC
+    rather than on a glob: a draft of this test used a `[1]` filename on the theory that
+    LITERAL stops globbing, and it passed before any fix — under LITERAL a literal name
+    matches its file perfectly well.
     """
     repo = make_repo(tmp_path)
-    write(repo, "a[1].txt", "one\n")
+    write(repo, "a.txt", "one\n")
     commit_all(repo, "seed")
-    write(repo, "a[1].txt", "two\n")
+    write(repo, "a.txt", "two\n")
     monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
-    out = _git_through_package(repo, "diff", "--name-only", "--", "a[1].txt")
-    assert out.strip() == "a[1].txt", (
-        "an ambient GIT_LITERAL_PATHSPECS changed what a git this package runs could see")
+    out = _git_through_package(repo, "diff", "--name-only", "--", ":(literal)a.txt")
+    assert out.strip() == "a.txt", (
+        "an ambient GIT_LITERAL_PATHSPECS blinded a pathspec this package actually passes")
+
+
+def test_the_top_level_magic_runstate_passes_survives_it_too(tmp_path, monkeypatch):
+    """The discrimination check on the OTHER magic in use. `runstate.py:543` passes `:/`, and
+    `baseline.py:433` already pins LITERAL off for exactly this — its comment says `add -u`
+    "would look for a directory named `:/`". One of the two was defended and the other was
+    not, which is the same predicate protected in one place and not the next."""
+    repo = make_repo(tmp_path)
+    write(repo, "a.txt", "one\n")
+    commit_all(repo, "seed")
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    out = _git_through_package(repo, "ls-files", "--full-name", "--", ":/")
+    assert out.strip() == "a.txt"
 
 
 def _git_through_package(repo, *args):
@@ -231,18 +263,21 @@ def _git_through_package(repo, *args):
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `uvx --with pytest pytest -q tests/test_forge_seams.py -k "literal_pathspecs"`
-Expected: FAIL — `assert '' == 'a[1].txt'`. If it PASSES on your machine, do not proceed: measure why (`git --version`, and whether the shell exported the variable) before concluding the hole is closed.
+Expected: FAIL — both, on `assert '' == 'a.txt'`. If either PASSES on your machine, do not proceed: measure why (`git --version`, and whether the shell exported the variable) before concluding the hole is closed.
 
 - [ ] **Step 3: Add the entry**
 
 In `/home/khenrix/git/khenrix-utils/shared/lib/forge/gitcmd.py`, inside `HOSTILE_ENV`, after `GIT_TEMPLATE_DIR`:
 
 ```python
-    # What turns every pathspec into a literal string. `baseline.py:426` already pins this OFF
-    # for its own index build and says why in full; the variable was never added to the tuple
-    # every OTHER call site scrubs, so an ambient `1` reached `harvest.artifact_set`'s
-    # `git diff` — which then exits 0 with an empty patch, and an empty patch is read as "this
-    # seat changed nothing". A silent, exit-0 blinding of the change detector.
+    # What turns every pathspec into a literal string, DISABLING PATHSPEC MAGIC — which this
+    # package passes at four sites: `:(literal)<path>` in `bundle`, `harvest` and `verify`,
+    # and `:/` in `runstate`. Under an ambient `1` each becomes a filename that matches
+    # nothing and git EXITS 0 over it, so `harvest`'s diff reports an empty patch (read as
+    # "this seat changed nothing") and `verify.py:1232`'s `git add -f` stages nothing and
+    # reports success — a candidate verified over an empty change. `baseline.py:426` already
+    # pins this off for its own `:/` and says why in full; the variable was simply never added
+    # to the tuple every OTHER call site scrubs. A silent, exit-0 blinding.
     "GIT_LITERAL_PATHSPECS",
 ```
 
@@ -983,7 +1018,7 @@ Plan L deferred nineteen entries; seven were marked ⚠ *load-bearing* and are t
 - **Task 5's decision overshot.** Moving `GATE_CHANGED` to last also ranks it below `HARVEST_INCOMPLETE`, which is a second claim no finding argued. It moves to 4.
 - **Task 7's screen was placed after a ref write.** `manifest` is complete at `baseline.py:395` and the `update-ref` follows, so screening there means a refusal leaves nothing in the user's own repository.
 - **Task 4's premise held on inspection:** `ledger._check` runs `_check_rows` plus scalars, version, degradation consistency and a duplicate-id pass, so a ledger `_check_rows` accepts and `_check` refuses is constructible.
-- **Task 2's premise held:** `GIT_LITERAL_PATHSPECS` is absent from `HOSTILE_ENV` (`gitcmd.py:149-164`) and pinned to `"0"` only in `baseline.py:429`.
+- **Task 2's premise held but its MECHANISM was backwards, and its test would have passed before the fix.** The variable is indeed absent from `HOSTILE_ENV` (`gitcmd.py:149-164`) and pinned only in `baseline.py:429` — but `LITERAL=1` does not stop a glob matching a literal name, it disables pathspec MAGIC. Measured, `:(literal)a.txt` and `:/` both answer `''` at **exit 0** under it, and the package passes one or the other at four sites including `verify.py:1232`'s `git add -f`. The finding is wider than Plan L recorded it.
 - **Task 3's three premises all reproduce** (run 2026-08-05; the answers are tabulated in its Step 1) — **and its first fix was wrong.** Narrowing `_PYTEST_BANNERS` to literal section rules would have returned `None` for every green `pytest -q` run, whose entire output is `35 passed in 0.08s`. The discriminator is now a line-anchored regex over pytest's shape, verified against seven real outputs.
 
 **3. Type consistency.** `snapshot.Entry`'s five fields are unchanged in name and order; only `mode`'s **domain** widens (Task 1). `coverage.NOT_ACCEPTED` is introduced in Task 4 and read only there and in its tests. `rubric.GATE_RANK` keeps its keys and changes its values (Task 5); nothing reads a literal rank in production. `fix`'s contract widens from 2 to 4 values in Task 6, and `review.loop` is the only caller. `gate.SCREEN_RACE` is *removed* in Task 7, so grep for it across `shared/` and `tests/` before deleting the constant.
