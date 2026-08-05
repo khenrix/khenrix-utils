@@ -11,6 +11,7 @@ ordinary unit test.
 """
 import ast
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -25,8 +26,10 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from council import engine  # noqa: E402
-from forge import (cli, fingerprint, gate, handover, review as reviewmod,  # noqa: E402
-                   runstate, seat as seatmod, storage, taskbundle, ultra)
+from forge import (cli, fingerprint, gate, handover, journal,  # noqa: E402
+                   review as reviewmod,
+                   runstate, seat as seatmod, storage, taskbundle, ultra,
+                   verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
 # §19's window. `council.engine.MODE_TIMEOUT` now carries it, but these tests still SET it:
@@ -1535,3 +1538,90 @@ def test_the_rank_declines_permanently_and_says_so(tmp_path):
     assert "no strongest seat can be named" in why
     # ...and never a promise of pending wiring.
     assert "not yet" not in why and "until" not in why, why
+
+
+def test_the_handover_names_every_step_of_the_verify_command(tmp_path, monkeypatch):
+    """REPRODUCED BEFORE THE FIX: a confirmed two-step command rendered as its first step
+    alone, so §16.1's "Verified" sentence named a gate narrower than the one that ran.
+
+    §5.1's own motivating example is two steps in two directories. ` && ` is the accurate
+    join rather than a cosmetic one — `verify._run` breaks on the first non-zero exit, so
+    the gate passes only if every step does."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    m = runstate.read_manifest(run_dir)
+    two = verify.Command.parse([["make", "verify"], ["make", "lint"]]).steps
+    monkeypatch.setattr(runstate, "read_manifest",
+                        lambda rd: dataclasses.replace(m, verify=two))
+    # The command only reaches the header beside a REPORTED outcome — the two branches at
+    # handover.py:745/753 are the only places it renders — so the evidence flags are supplied.
+    synth = run_dir / "synthesis"
+    head = _git(synth, "rev-parse", "HEAD").stdout.strip()
+    log = tmp_path / "verify.log"
+    log.write_text("ok\n")
+    out = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", str(m.repo_path),
+                   "--handover-target", "review", "--verified-at", head,
+                   "--verify-exit", "0", "--verify-log", str(log)], out=out)
+    assert rc == 0, out.getvalue()
+    assert "make verify && make lint" in out.getvalue(), out.getvalue()
+
+
+def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monkeypatch):
+    """§13.1 spends $5-25 and `ultra.py` carried NO journal reference at all (measured: 0).
+    A crash between the invocation and the report lost the fact that money had been spent,
+    and the refusal an operator then sees tells them to re-run `--collect` — which made the
+    double charge the documented path.
+
+    THE EXTERNAL QUESTION: does a second `--collect` reach the remote again?"""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    repo = str(runstate.read_manifest(run_dir).repo_path)
+    calls = []
+
+    def _spend(rd, **kw):
+        calls.append(kw)
+        return ultra.Ultra("ran", None, (), "https://x/y", True, None)
+
+    monkeypatch.setattr(ultra, "run_ultra", _spend)
+    for _ in range(2):
+        out = io.StringIO()
+        assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
+                         "--handover-target", "review"], out=out) == 0, out.getvalue()
+    assert len(calls) == 1, f"the cloud review was requested {len(calls)} times"
+    assert "already run" in out.getvalue(), out.getvalue()
+
+
+def test_an_orphaned_ultra_request_is_retried_rather_than_replayed(tmp_path, monkeypatch):
+    """An `intent` with no `done` is a request whose outcome NOBODY knows — it may have
+    reached the remote and it may not. §14.1 retries an unknown outcome and never repeats a
+    known one, and that is the direction that cannot silently drop a finding."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    log = journal.Journal(storage.journal_path(run_dir))
+    log.record(journal.intent("ultrareview"), operation_id="ultra-x", round=1)
+    calls = []
+    monkeypatch.setattr(ultra, "run_ultra",
+                        lambda rd, **kw: (calls.append(1),
+                                          ultra.Ultra("ran", None, (), None, True, None))[1])
+    out = io.StringIO()
+    cli.main(["--collect", _run_id(run_dir), "--repo",
+              str(runstate.read_manifest(run_dir).repo_path),
+              "--handover-target", "review"], out=out)
+    assert len(calls) == 1, "an orphaned request was replayed as though its outcome was known"
+
+
+def test_a_replayed_ultra_keeps_no_bugs_and_no_review_apart(tmp_path, monkeypatch):
+    """`bugs=None` and `bugs=()` are DIFFERENT and `ultra.Ultra` refuses `None` on a `ran`
+    status for exactly that reason: "the review ran and found nothing" and "no review ran"
+    are the false green this module exists to prevent. A round-trip through the journal that
+    collapsed them would reintroduce it one storage layer down."""
+    f = reviewmod.Finding(id="a" * 12, round=1, seat="ultra", severity="blocker",
+                          claim="c", evidence="e", resolution="open")
+    for bugs in ((), (f,)):
+        row = cli._finding_row(f)
+        assert cli._finding_of(row) == f
+        u = ultra.Ultra("ran", None, bugs, None, True, None)
+        assert u.bugs is not None
+    with pytest.raises(cli.CliError):
+        cli._finding_of({"id": "x"})

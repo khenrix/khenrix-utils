@@ -41,6 +41,7 @@ from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, 
 # them, so `coverage` and `rubric` stay out of this import block until something
 # ranks — a rank taken before §13's panel can be convened honestly would be a
 # verdict with no adversary.
+from . import journal as journalmod
 from . import ledger as ledgermod
 from . import fix as fixmod
 from . import progress
@@ -790,6 +791,66 @@ def _refuse_a_head_that_is_not_the_branch(synth, manifest) -> None:
         )
 
 
+_FINDING_FIELDS = ("id", "round", "seat", "severity", "claim", "evidence", "resolution")
+
+
+def _finding_row(f) -> dict:
+    """One `review.Finding` as JSON, by its OWN field list.
+
+    `review` ships no public serializer, and spelling the seven names here would be a second
+    copy that drifts the day an eighth is added — so the tuple above is the one place, and
+    `_finding_of` reads it back through the same tuple.
+    """
+    return {k: getattr(f, k) for k in _FINDING_FIELDS}
+
+
+def _finding_of(row) -> reviewmod.Finding:
+    """The inverse, refusing a row that is missing a field rather than defaulting one.
+
+    A defaulted `severity` would turn a blocker into whatever the default is, on a record
+    §13.1's findings are read out of — so a partial row is an error, not a finding.
+    """
+    if not isinstance(row, dict) or any(k not in row for k in _FINDING_FIELDS):
+        raise CliError(f"a recorded §13.1 finding carries {_FINDING_FIELDS}, not {row!r}")
+    return reviewmod.Finding(**{k: row[k] for k in _FINDING_FIELDS})
+
+
+_ULTRA_KIND = "ultrareview"
+
+
+def _ultra_already_spent(events):
+    """§13.1's recorded result, or `None` because this run has not paid for one yet.
+
+    THE DURABLE RECEIPT §13.1 NEVER HAD. `ultra.run_ultra` spends $5-25 and this package
+    journalled nothing about it, so a crash between the invocation and the report lost the
+    fact that money had been spent — and the refusal an operator then sees tells them to
+    re-run `--collect`, which spent it again. That made the double charge the documented
+    path rather than an accident.
+
+    A COMPLETED RECORD IS REPLAYED, AN ORPHANED ONE IS NOT. An `intent` with no `done` is a
+    request whose outcome nobody knows: it may have reached the remote and it may not, so
+    this returns `None` and the caller requests again. That is the direction §14.1 chooses
+    everywhere else — an unknown outcome is retried and a KNOWN one is never repeated — and
+    it is the one that cannot silently drop a finding.
+    """
+    done = journalmod.done(_ULTRA_KIND)
+    for e in reversed(list(events)):
+        if e.event != done:
+            continue
+        d = e.data
+        status = d.get("status")
+        if status not in ultra.STATUSES:
+            # A record this engine cannot read is not a receipt. Requesting again costs money
+            # and is the safe direction: reporting a status nobody can interpret would put an
+            # unreadable value into §16.1's header.
+            return None
+        rows = d.get("bugs")
+        bugs = None if rows is None else tuple(_finding_of(r) for r in rows)
+        return ultra.Ultra(status, d.get("reason"), bugs, d.get("session_url"),
+                           bool(d.get("diff_measured")), d.get("detail"))
+    return None
+
+
 def collect(args, *, out) -> int:
     """§14's read-from-disk half: §13.1 once, §16's mergeability, and the handover text."""
     repo = Path(args.repo).resolve()
@@ -875,7 +936,18 @@ def collect(args, *, out) -> int:
         # flag, because a flag is exactly how an asserted verdict would come to be printed
         # under the "Verified here means" sentence.
         synthesis_measured=False,
-        verify_command=" ".join(manifest.verify[0].argv) if manifest.verify else "",
+        # EVERY STEP, NOT `verify[0]`. §5.1's verify command is a LIST of argv lists — its
+        # own motivating example is `cd frontend && npm ci` as two steps in two directories —
+        # and rendering only the first told the operator the gate was narrower than the one
+        # that actually ran. Reproduced: a confirmed `[["make","verify"],["make","lint"]]`
+        # reported as `make verify`, with the lint step nowhere in the handover.
+        #
+        # ` && ` IS THE ACCURATE SHELL EQUIVALENT AND NOT A COSMETIC JOIN: `verify._run`
+        # iterates the steps and `break`s on the first non-zero exit, so the gate passes only
+        # if every step does — which is what `&&` means. A space-join would render two
+        # commands as one unrunnable line.
+        verify_command=" && ".join(" ".join(st.argv) for st in manifest.verify)
+        if manifest.verify else "",
         # `None`, for the same reason and by the same rule `Provenance` states: a duration
         # beside an unmeasured verdict would time a run this engine says it did not perform,
         # and that record is refused. There is no `--synthesis-seconds` for a verdict nobody
@@ -886,9 +958,38 @@ def collect(args, *, out) -> int:
         unresolved_findings=unresolved, ultra=_UNREQUESTED)
 
     # THE SPEND, once, after everything above has agreed there is a handover to attach it to.
+    #
+    # WRITE-AHEAD, AND IDEMPOTENT, because this is the only thing `--collect` does that costs
+    # money and it had NEITHER. §13.1 is $5-25 and `ultra.py` carried no journal reference at
+    # all (measured: zero), so a crash between the invocation and the report left nothing
+    # saying money had been spent — and the next `--collect` spent it again. The engine's own
+    # refusal text tells an operator to re-run this verb, which made the second charge the
+    # documented path.
+    #
+    # The intent/done pair is `journal`'s, exactly as every other spending operation in this
+    # package uses it, and the DONE record is the durable receipt: a completed ultra is
+    # replayed from it rather than re-requested.
     enabled = _confirmed_ultrareview(run_dir)
-    u = ultra.run_ultra(run_dir, checkout=synth, base=manifest.baseline_commit, head=head,
-                        round_=max(1, rounds), enabled=enabled)
+    log = journal.Journal(storage.journal_path(run_dir))
+    u = _ultra_already_spent(log.read())
+    if u is None:
+        op = f"ultra-{manifest.run_id}"
+        log.record(journal.intent(_ULTRA_KIND), operation_id=op, round=max(1, rounds))
+        u = ultra.run_ultra(run_dir, checkout=synth, base=manifest.baseline_commit, head=head,
+                            round_=max(1, rounds), enabled=enabled)
+        # `bugs` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
+        # and `handover` then called `len()` on it. `None` and `()` are DIFFERENT here and the
+        # round-trip must keep them apart: `ultra.Ultra` refuses `bugs=None` on a `ran` status
+        # precisely because "the review ran and found nothing" and "no review ran" are the
+        # false green this module exists to prevent.
+        log.record(journal.done(_ULTRA_KIND), operation_id=op,
+                   status=u.status, reason=u.reason,
+                   bugs=None if u.bugs is None else [_finding_row(b) for b in u.bugs],
+                   session_url=u.session_url, diff_measured=bool(u.diff_measured),
+                   detail=u.detail)
+    else:
+        print(f"§13.1 was already run for this run ({u.status}); replaying its recorded "
+              "result rather than paying for it twice.", file=out)
 
     # `replace` RE-RUNS `__post_init__`, so the record that renders is validated carrying the
     # review this run actually got and not on the strength of the placeholder above.
