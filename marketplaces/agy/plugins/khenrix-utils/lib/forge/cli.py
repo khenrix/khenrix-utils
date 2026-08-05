@@ -33,8 +33,8 @@ from pathlib import Path
 
 from council import engine
 
-from . import (fingerprint, gate, gitcmd, handover, journal, launch, preflight,
-               review as reviewmod, runstate, storage, taskbundle, ultra, verify)
+from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, launch,
+               preflight, review as reviewmod, runstate, storage, taskbundle, ultra, verify)
 from . import gc as gcmod
 from . import baseline as baselinemod
 from . import runner as runnermod
@@ -254,6 +254,20 @@ def start(args, *, out, make_launcher=None) -> int:
         at=runstate.read_manifest(run_dir).baseline_commit, run_dir=run_dir)
     print(f"run: {run_id}", file=out)
     print(f"synthesis worktree: {synth}", file=out)
+    # THE FLEET IS ALREADY PAID FOR, SO THIS REPORTS RATHER THAN REFUSES — and "fail closed"
+    # is satisfied by never writing a brief that describes a run it could not read, not by
+    # destroying a run whose providers have already answered. The refusal is printed where the
+    # operator is looking, and the "Next:" line below never claims a brief that is not there.
+    #
+    # THE TUPLE IS THE WHOLE OF WHAT THE READ CAN RAISE, and a narrower one would make the
+    # comment above false: `runstate.read_seat` raises `StateError` for a damaged record and
+    # `brief_path` raises `GitError` through git — both are bare `RuntimeError` subclasses that
+    # no `except` further out catches, so either would kill a paid-for run at the last print.
+    try:
+        print(f"fusion brief: {briefmod.write(run_dir, synth)}", file=out)
+    except (briefmod.BriefError, runstate.StateError, gitcmd.GitError, OSError,
+            storage.StorageError) as e:
+        print(f"  ✗ no fusion brief was written: {e}", file=out)
     for line in _seat_table(run_dir):
         print(f"  {line}", file=out)
     print(f"Next: fuse in the synthesis worktree, then `--collect {run_id}`.", file=out)

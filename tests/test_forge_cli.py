@@ -960,3 +960,43 @@ def test_the_selected_untracked_files_are_named_as_the_baselines_in_the_handover
     assert "seed.txt" in b1 and "scratch/notes.txt" in b1
     assert "seed.txt" not in owned and "scratch/notes.txt" in owned
     assert "yours, not forge's" in text
+
+
+def test_start_writes_a_fusion_brief_the_handover_will_not_report_as_a_deliverable(
+        tmp_path, monkeypatch):
+    """The fusion is the product and §16 hands it to the orchestrator hours later in a
+    compacted context. An unscaffolded worktree is where that goes wrong.
+
+    AND THE SCAFFOLDING MAY NOT CHANGE WHAT §16 SAYS ABOUT THE DELIVERY. A brief inside the
+    worktree is a `??` record, which `_sidecars_of` keeps and `mergeability` reads as an
+    out-of-band artifact — so every run would report `PATCH_ONLY` and the handover would tell
+    the user to copy the engine's own file into their repository."""
+    from forge import brief as briefmod
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = run_dir / handover.SYNTHESIS
+    p = briefmod.brief_path(synth)
+    body = p.read_text(encoding="utf-8")
+    assert body.startswith("# Fusion brief")
+    assert "Pairwise path overlap" in body
+    assert [s.path for s in cli._sidecars_of(synth)] == [], \
+        "the brief entered the handover's out-of-band set"
+
+
+def test_start_prints_the_absolute_path_of_the_brief_it_wrote(tmp_path, monkeypatch):
+    """It is deliberately not beside the fusion, so the operator is told where it IS."""
+    from forge import brief as briefmod
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(cli, "_closures", lambda: {"claude": "a", "codex": "a", "agy": "a"})
+    monkeypatch.setitem(engine.MODE_TIMEOUT, "forge", _FORGE_TIMEOUT)
+    monkeypatch.setitem(_FAKE, "refuse", None)
+    repo = _a_clean_repo(tmp_path)
+    buf = io.StringIO()
+    rc = cli.main(["--start", "--repo", str(repo), "--task", str(_a_task(tmp_path)),
+                   "--answers", str(_answers(tmp_path)), "--attempts", "1"],
+                  out=buf, make_launcher=_a_fake_make_launcher)
+    assert rc == 0, buf.getvalue()
+    run_dir = storage.run_root(repo, re.search(r"^run: (\S+)$", buf.getvalue(), re.M).group(1),
+                               must_be_new=False)
+    want = briefmod.brief_path(run_dir / handover.SYNTHESIS)
+    assert f"fusion brief: {want}" in buf.getvalue()
+    assert want.is_absolute()

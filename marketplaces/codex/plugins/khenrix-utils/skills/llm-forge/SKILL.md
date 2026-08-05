@@ -87,6 +87,19 @@ python3 "$FORGE" --start \
 **B1**, launches the fleet, verifies each candidate — and **stops at `comparing`**. It
 prints the run id, the synthesis worktree path, and a seat table.
 
+It also writes a **fusion brief** for you and prints its absolute path: each seat's verify
+outcome, the paths each seat changed, the pairwise path-overlap matrix, and the paths exactly
+one seat touched. It is membership, not rank — nothing in it says which seat is strongest. A
+seat whose path set was not recorded is named as such and is excluded from the overlap counts
+and from the sole-toucher list, because "only this seat touched that file" is a claim about
+every seat.
+
+It is written **beside** the synthesis worktree rather than inside it, in the worktree's own
+git directory. A file inside the tree would be an untracked artifact, and the handover reads
+untracked artifacts as things you have to copy out by hand — so scaffolding in the worktree
+would downgrade every delivery to a patch and hand you a `cp` command for the engine's own
+notes. Open it at the path `--start` prints; `--gc` removes it with the worktree.
+
 ### The answer sheet
 
 A JSON object. Every command is a **list of argv lists** — nothing here runs a shell, so
