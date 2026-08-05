@@ -85,7 +85,7 @@ class SeatResult:
 
     `run` is the SETUP run — the only command this module runs inside a seat — and it is
     `None` when the manifest confirmed no setup steps, which is the same thing
-    `status.setup == "none"` records. It is not a verify run: §6 puts that in another
+    `status.builder_setup == "none"` records. It is not a verify run: §6 puts that in another
     tree entirely.
 
     `verifier_setup` is §6's own setup run in the verifier clone, and `None` until one has
@@ -415,7 +415,7 @@ def _record(result: SeatResult) -> dict:
         "status": None if s is None else {
             "process": s.process, "artifacts": s.artifacts,
             "proven_read": s.proven_read, "forge": s.forge,
-            "setup": s.setup, "verify": s.verify},
+            "builder_setup": s.builder_setup, "verify": s.verify},
         "verification": None if result.verification is None else {
             "outcome": result.verification[0], "reason": result.verification[1]},
         "verification_refused": result.verification_refused,
@@ -726,7 +726,7 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
             # present when the builder exited", so an empty one is a seat that left the tree
             # as setup handed it over.
             changed=bool(artifacts.paths),
-            setup=setup_dim,
+            builder_setup=setup_dim,
             # Never anything else from this module. §6 verifies in a clone the builder never
             # had, so at harvest time this measurement has not been taken — and §8 has a rule
             # for one that has not.
@@ -936,7 +936,7 @@ def reclassify_seat(run_dir, result: SeatResult, outcome: str, reason: str, *,
             artifacts=result.status.artifacts,
             proven_read=result.status.proven_read,
             changed=bool(result.artifacts.paths),
-            setup=result.status.setup,
+            builder_setup=result.status.builder_setup,
             verify=dim,
             rationale=_rationale(answer, result.token))
     except seatmod.SeatStatusError as e:

@@ -201,7 +201,7 @@ def test_a_launch_that_writes_nothing_is_not_discarded_as_failed(tmp_path):
     assert r.artifacts.paths == (), "the premise: the launch left the tree as setup handed it"
     assert r.status.forge != "failed"
     assert r.status.forge == "partial"
-    assert (r.status.setup, r.status.verify) == ("pass", "not-run"), \
+    assert (r.status.builder_setup, r.status.verify) == ("pass", "not-run"), \
         "§6 verifies elsewhere, so a seat's own verify dimension is never anything else"
     assert r.candidate.tracked_patch == b"" and r.candidate.sidecars == ()
     assert r.status.artifacts == "unusable", "nothing was produced, and that is recorded"
@@ -247,7 +247,7 @@ def test_a_setup_failures_own_output_is_recorded_and_not_only_its_exit_code(tmp_
     repo, run, b, m = _open(tmp_path, setup=setup)
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=_fake())
 
-    assert r.status.forge == "failed" and r.status.setup == "fail"
+    assert r.status.forge == "failed" and r.status.builder_setup == "fail"
     row = _attempt(run, "claude", 1)
     assert row["setup_run"]["exit_code"] == 3
     assert "why" in row["setup_run"]["stderr"]
@@ -324,9 +324,9 @@ def test_a_confirmation_that_named_no_setup_never_records_a_passing_setup(tmp_pa
     assert r.run is None, "the premise: no setup command was run in this seat"
     assert (r.status.process, r.status.artifacts, r.status.proven_read) \
         == ("valid", "usable", True), "every other dimension is at its strongest reading"
-    assert r.status.setup == "none"
-    assert _attempt(run, "claude", 1)["status"]["setup"] == "none"
-    assert r.status.setup not in ("pass", "not-run"), \
+    assert r.status.builder_setup == "none"
+    assert _attempt(run, "claude", 1)["status"]["builder_setup"] == "none"
+    assert r.status.builder_setup not in ("pass", "not-run"), \
         "never a fabricated pass, and never a withheld measurement either"
 
 
@@ -345,7 +345,7 @@ def test_the_seats_status_is_written_where_a_resume_will_read_it(tmp_path):
     assert storage.seat_state_path(run, "agy").is_file()
     row = _attempt(run, "agy", 1)
     assert row["status"] == {"process": "valid", "artifacts": "usable", "proven_read": True,
-                             "forge": "completed", "setup": "pass", "verify": "not-run"}
+                             "forge": "completed", "builder_setup": "pass", "verify": "not-run"}
     assert row["artifacts"]["paths"] == ["seed.txt"]
     assert row["candidate"]["tracked_patch_bytes"] == len(r.candidate.tracked_patch) > 0
     assert row["attempt"] == 1 and row["path"] == str(r.path)
@@ -383,7 +383,7 @@ def test_a_setup_failure_is_failed_and_never_spends_a_provider_call(tmp_path):
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT, launch=launch)
 
     assert launch.calls == [], "a seat whose verdict is already `failed` buys nothing more"
-    assert r.status.forge == "failed" and r.status.setup == "fail"
+    assert r.status.forge == "failed" and r.status.builder_setup == "fail"
     assert r.launch_result is None and r.run.exit_code != 0
     assert not (r.path / "never.py").exists()
     assert _attempt(run, "claude", 1)["launch"] is None, \
@@ -862,7 +862,7 @@ def test_a_verifier_setup_that_failed_is_named_beside_the_verdict(tmp_path):
     repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate("exit 0"))
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
                         launch=_fake(lambda p: write(p, "work.py", "the edit\n")))
-    assert r.status.setup == "fail", "the premise: the same setup fails in the seat too"
+    assert r.status.builder_setup == "fail", "the premise: the same setup fails in the seat too"
     cal = _calibrate(tmp_path, repo, b, m)
 
     outcome, reason, _v, _s = runner.verify_candidate(
@@ -891,7 +891,7 @@ def test_the_verifiers_setup_and_gate_run_in_the_calibrations_own_environment(tm
     repo, run, b, m = _open(tmp_path, setup=setup, gate=GATE, seed=_gate(guard))
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
                         launch=_fake(lambda p: write(p, "work.py", "the edit\n")))
-    assert r.status.setup == "pass", "the premise: the seat's own setup sees the guard too"
+    assert r.status.builder_setup == "pass", "the premise: the seat's own setup sees the guard too"
     cal = _calibrate(tmp_path, repo, b, m)
 
     outcome, reason, _v, _s = runner.verify_candidate(
@@ -996,7 +996,7 @@ def test_a_candidate_that_repoints_the_hooks_path_through_setup_does_not_reach_t
 
     r = runner.run_seat(m, run, b, name="claude", attempt=1, identity=IDENT,
                         launch=_fake(rig))
-    assert r.status.setup == "pass" and "setup.sh" in r.candidate.tracked_patch.decode(), \
+    assert r.status.builder_setup == "pass" and "setup.sh" in r.candidate.tracked_patch.decode(), \
         "the premise: the rig is ordinary harvested work and the seat's own setup was green"
     cal = _calibrate(tmp_path, repo, b, m)
 
@@ -1065,7 +1065,7 @@ def test_a_zero_diff_seat_reaches_no_change_once_its_claim_has_been_verified(tmp
 
     done = runner.reclassify_seat(run, r, outcome, reason)
     assert (done.status.verify, done.status.forge) == ("pass", "no_change")
-    assert done.status.setup == "pass", "§8 asks for BOTH halves and neither substitutes"
+    assert done.status.builder_setup == "pass", "§8 asks for BOTH halves and neither substitutes"
 
     row = _attempt(run, "claude", 1)
     assert row["status"]["forge"] == "no_change", "and the promotion reached the record"
@@ -1490,7 +1490,7 @@ def test_a_no_toolchain_fleet_that_changed_nothing_is_verified_rather_than_lost(
         "the premise's first half: no seat changed anything"
     assert {r.run for r in results} == {None}, \
         "and its second: no setup command ran in any of them"
-    assert {(r.status.setup, r.status.verify, r.status.forge) for r in results} \
+    assert {(r.status.builder_setup, r.status.verify, r.status.forge) for r in results} \
         == {("none", "pass", "no_change")}
     for r in results:
         assert runner.verifier_dir(run, r.name).is_dir(), \
@@ -1560,7 +1560,7 @@ def test_the_gate_measurement_and_the_verifiers_setup_reach_the_seats_record(tmp
     (result,) = runner.run(run, repo, identity=IDENT, launch=_per_seat(
         lambda name, n, p: bool(write(p, "w.py", "the edit\n"))))
 
-    assert result.status.setup == "pass", "the premise: the same command passed in the seat"
+    assert result.status.builder_setup == "pass", "the premise: the same command passed in the seat"
     assert result.verification[0] == runner.SETUP_REFUSED and "setup command exited 1" in \
         result.verification[1], "and failed in the verifier, where §6 takes the verdict"
     # THE POINT OF THIS TEST SURVIVES THE OUTCOME CHANGE, and that is why the refusal is
@@ -1829,7 +1829,7 @@ def test_a_run_whose_confirmation_named_no_setup_is_driven_end_to_end(tmp_path):
     (result,) = runner.run(run, repo, identity=IDENT,
                            launch=_per_seat(lambda name, n, p: bool(write(p, "w.py", "w\n"))))
 
-    assert result.run is None and result.status.setup == "none", \
+    assert result.run is None and result.status.builder_setup == "none", \
         "no setup ran in the seat, and the record says there was none rather than a pass"
     assert result.verification[0] == verify.PASS
     assert result.status.forge == "completed", \

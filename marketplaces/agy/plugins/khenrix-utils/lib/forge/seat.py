@@ -9,14 +9,15 @@ what the confirmed verify command did, independently, in a fresh clone the seat 
 because a seat-writable verdict is the exact thing a candidate could rig to read cleaner than
 its evidence.
 
-`setup` IS THE BUILDER'S CLONE, NOT THE VERIFIER'S, and this paragraph said otherwise until
-2026-08-04. `runner.run_seat` fills it from the setup run in the SEAT's clone, before the
+`builder_setup` IS THE BUILDER'S CLONE, NOT THE VERIFIER'S — and the field NAME now says
+so, since the old bare `setup` read exactly like §6's verifier setup one struct over. This
+paragraph said otherwise until 2026-08-04. `runner.run_seat` fills it from the setup run in the SEAT's clone, before the
 agent starts — which is a real and useful fact (a seat whose setup failed never had a working
 tree to build in) and is not the fresh-clone measurement the sentence above claims. The
 verifier's own setup is recorded separately, as `verifier_setup` on the attempt row, carrying
 the exit code and step index rather than a dimension word. What made the mislabelling matter
 was that a failing verifier setup then reached the gate anyway and could return `PASS`, so a
-record read `setup=pass verify=pass forge=completed` over a verifier whose setup exited 3;
+record read `builder_setup=pass verify=pass forge=completed` over a verifier whose setup exited 3;
 `runner.SETUP_REFUSED` closes that, and the two facts now have two names. RENAMING this field
 to `builder_setup` is the honest end state and is deferred: it is an on-disk schema change
 plus a required keyword across ~42 `classify_seat` call sites, and it belongs in a task whose
@@ -53,8 +54,8 @@ none above it already decided `forge`:
 1. `process == "invalid"` -> `failed`, unconditionally. An invalid process taints every other
    signal; nothing an invalid process produced can be trusted regardless of what its
    artifacts, proof token, setup or verify claim.
-2. `setup == "fail"` -> `failed`, unconditionally, and checked BEFORE artifacts or
-   proven_read are read at all. This ordering is what makes "a setup='fail' seat with usable
+2. `builder_setup == "fail"` -> `failed`, unconditionally, and checked BEFORE artifacts or
+   proven_read are read at all. This ordering is what makes "a builder_setup='fail' seat with usable
    artifacts and no proof token is failed, not partial" true rather than accidental --
    see test_a_setup_failure_does_not_proceed_on_the_strength_of_its_files and
    test_a_setup_failure_pre_empts_the_partial_rule_not_just_the_completed_one beside it.
@@ -80,7 +81,7 @@ none above it already decided `forge`:
    whose verdict cannot be taken yet -- which is still not `no_change`, so an unverified
    claim can never read as a verified one. A verification that WAS taken and refuted the
    claim still raises, and it is two states rather than one: `verify == "fail"` is the gate
-   contradicting the claim outright, and a `setup` that is neither `"pass"` nor `"none"`
+   contradicting the claim outright, and a `builder_setup` that is neither `"pass"` nor `"none"`
    under a verify that DID pass is a caller that took the later measurement while
    withholding the earlier one. Neither is a measurement it is too early to have.
 
@@ -165,7 +166,7 @@ class Status:
     artifacts: str
     proven_read: bool
     forge: str
-    setup: str
+    builder_setup: str
     verify: str
 
 
@@ -192,20 +193,20 @@ def _require_rationale(rationale) -> None:
 
 
 def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: bool,
-                   setup: str, verify: str, rationale: str | None = None) -> Status:
+                   builder_setup: str, verify: str, rationale: str | None = None) -> Status:
     """Classify one seat's outcome per section 8. See the module docstring for the exact
     precedence this function implements, in the same order, with the reasoning for each step.
     """
     _require_literal("process", process, _PROCESS)
     _require_literal("artifacts", artifacts, _ARTIFACTS)
-    _require_literal("setup", setup, _SETUP)
+    _require_literal("builder_setup", builder_setup, _SETUP)
     _require_literal("verify", verify, _VERIFY)
     _require_bool("proven_read", proven_read)
     _require_bool("changed", changed)
 
     if process == "invalid":
         forge = "failed"
-    elif setup == "fail":
+    elif builder_setup == "fail":
         forge = "failed"
     elif not changed:
         _require_rationale(rationale)
@@ -215,11 +216,11 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
             # seat's own classification always lands, and `partial` withholds the promotion
             # without throwing the argument away.
             forge = "partial"
-        elif setup not in _CONFIRMED_SETUP or verify != "pass":
+        elif builder_setup not in _CONFIRMED_SETUP or verify != "pass":
             raise SeatStatusError(
                 "no_change requires independent verification: verify must have run and "
                 f"passed and setup must be one of {list(_CONFIRMED_SETUP)} "
-                f"(setup={setup!r}, verify={verify!r}) -- a claim that nothing needed to "
+                f"(builder_setup={builder_setup!r}, verify={verify!r}) -- a claim that nothing needed to "
                 "change is only as credible as the check that confirms the current state is "
                 "already correct")
         else:
@@ -228,14 +229,14 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
         forge = "failed"
     elif not proven_read:
         forge = "partial"
-    elif setup not in _CONFIRMED_SETUP:
+    elif builder_setup not in _CONFIRMED_SETUP:
         forge = "partial"
     else:
         forge = "completed"
 
     assert forge in _FORGE, forge  # every branch above must land in the declared set
     return Status(process=process, artifacts=artifacts, proven_read=proven_read,
-                  forge=forge, setup=setup, verify=verify)
+                  forge=forge, builder_setup=builder_setup, verify=verify)
 
 
 # --------------------------------------------------------------------------- #

@@ -14,14 +14,14 @@ from forge import seat  # noqa: E402
 # The base case used by several tests: every dimension at its strongest reading, so a single
 # override below shows that ONE dimension moving is enough to change the verdict.
 _BASE = dict(process="valid", artifacts="usable", proven_read=True, changed=True,
-             setup="pass", verify="pass")
+             builder_setup="pass", verify="pass")
 
 
 def test_useful_artifacts_without_the_proof_token_are_partial_not_completed():
     """§8: the seat did the work and did not prove it read the task. Collapsing this into
     `completed` is what let a silently-failed seat read as success."""
     s = seat.classify_seat(process="valid", artifacts="usable", proven_read=False,
-                           changed=True, setup="pass", verify="pass")
+                           changed=True, builder_setup="pass", verify="pass")
     assert s.forge == "partial"
 
 
@@ -30,9 +30,9 @@ def test_a_no_change_without_a_rationale_is_refused():
     has to be argued, or `no_change` is indistinguishable from a seat that did nothing."""
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="pass")
+                           changed=False, builder_setup="pass", verify="pass")
     s = seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="pass",
+                           changed=False, builder_setup="pass", verify="pass",
                            rationale="the retry already backs off; adding one would double-sleep")
     assert s.forge == "no_change"
 
@@ -40,9 +40,9 @@ def test_a_no_change_without_a_rationale_is_refused():
 def test_a_failing_verify_is_recorded_and_does_not_change_the_forge_status():
     """§8: passing verify is RECORDED, not required, for a seat to inform synthesis."""
     a = seat.classify_seat(process="valid", artifacts="usable", proven_read=True,
-                           changed=True, setup="pass", verify="fail")
+                           changed=True, builder_setup="pass", verify="fail")
     b = seat.classify_seat(process="valid", artifacts="usable", proven_read=True,
-                           changed=True, setup="pass", verify="pass")
+                           changed=True, builder_setup="pass", verify="pass")
     assert a.forge == b.forge == "completed"
     assert (a.verify, b.verify) == ("fail", "pass")
 
@@ -50,7 +50,7 @@ def test_a_failing_verify_is_recorded_and_does_not_change_the_forge_status():
 def test_a_setup_failure_does_not_proceed_on_the_strength_of_its_files():
     """§8, verbatim: "A setup failure does not proceed merely because it produced files.\""""
     s = seat.classify_seat(process="valid", artifacts="usable", proven_read=True,
-                           changed=True, setup="fail", verify="not-run")
+                           changed=True, builder_setup="fail", verify="not-run")
     assert s.forge == "failed"
 
 
@@ -58,7 +58,7 @@ def test_the_four_dimensions_are_independent():
     """A status that can be reconstructed from one field has collapsed. Every dimension must
     vary while the others are held."""
     base = dict(process="valid", artifacts="usable", proven_read=True, changed=True,
-                setup="pass", verify="pass")
+                builder_setup="pass", verify="pass")
     assert seat.classify_seat(**{**base, "process": "invalid"}).forge == "failed"
     assert seat.classify_seat(**{**base, "artifacts": "unusable"}).forge != "completed"
     assert seat.classify_seat(**{**base, "proven_read": False}).forge == "partial"
@@ -73,7 +73,7 @@ def test_a_setup_failure_pre_empts_the_partial_rule_not_just_the_completed_one()
     token is failed, not partial." Usable artifacts and a missing proof token are, on their
     own, exactly the partial rule's trigger — this shows setup='fail' is checked first and
     wins over it, not merely over a seat that would otherwise have been `completed`."""
-    s = seat.classify_seat(**{**_BASE, "proven_read": False, "setup": "fail",
+    s = seat.classify_seat(**{**_BASE, "proven_read": False, "builder_setup": "fail",
                               "verify": "not-run"})
     assert s.forge == "failed"
 
@@ -91,7 +91,7 @@ def test_setup_that_never_ran_does_not_let_a_seat_read_as_completed():
     `verify` — not `setup` — as the one dimension exempt from that default. A seat otherwise
     strong enough to be `completed` degrades to `partial` instead of reading as clean on
     evidence that was never collected."""
-    s = seat.classify_seat(**{**_BASE, "setup": "not-run"})
+    s = seat.classify_seat(**{**_BASE, "builder_setup": "not-run"})
     assert s.forge == "partial"
 
 
@@ -104,8 +104,8 @@ def test_a_run_with_no_setup_command_withheld_nothing_and_is_not_degraded_for_it
     evidence that was never owed. The case above holds the other half: a command that exists
     and did not run still degrades.
     """
-    assert seat.classify_seat(**{**_BASE, "setup": "none"}).forge == "completed"
-    assert seat.classify_seat(**{**_BASE, "setup": "not-run"}).forge == "partial"
+    assert seat.classify_seat(**{**_BASE, "builder_setup": "none"}).forge == "completed"
+    assert seat.classify_seat(**{**_BASE, "builder_setup": "not-run"}).forge == "partial"
 
 
 def test_a_zero_diff_seat_in_a_no_toolchain_repository_is_verified_not_refused():
@@ -120,7 +120,7 @@ def test_a_zero_diff_seat_in_a_no_toolchain_repository_is_verified_not_refused()
     """
     rationale = "the retry already backs off; adding one would double-sleep"
     base = dict(process="valid", artifacts="unusable", proven_read=True, changed=False,
-                setup="none", rationale=rationale)
+                builder_setup="none", rationale=rationale)
     assert seat.classify_seat(**base, verify="pass").forge == "no_change"
     assert seat.classify_seat(**base, verify="not-run").forge == "partial"
     with pytest.raises(seat.SeatStatusError):
@@ -144,12 +144,12 @@ def test_no_change_also_requires_independent_verification_not_only_a_rationale()
     rationale = "the retry already backs off; adding one would double-sleep"
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="fail", rationale=rationale)
+                           changed=False, builder_setup="pass", verify="fail", rationale=rationale)
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="not-run", verify="pass", rationale=rationale)
+                           changed=False, builder_setup="not-run", verify="pass", rationale=rationale)
     s = seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="pass", rationale=rationale)
+                           changed=False, builder_setup="pass", verify="pass", rationale=rationale)
     assert s.forge == "no_change"
 
 
@@ -171,12 +171,12 @@ def test_a_no_change_whose_verification_has_not_been_taken_yet_is_partial_not_a_
     rationale = "the retry already backs off; adding one would double-sleep"
     for setup_dim in ("pass", "not-run"):
         s = seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                               changed=False, setup=setup_dim, verify="not-run",
+                               changed=False, builder_setup=setup_dim, verify="not-run",
                                rationale=rationale)
         assert (s.forge, s.verify) == ("partial", "not-run"), setup_dim
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="not-run")
+                           changed=False, builder_setup="pass", verify="not-run")
 
 
 def test_a_rationale_present_but_not_substantive_is_still_refused():
@@ -184,10 +184,10 @@ def test_a_rationale_present_but_not_substantive_is_still_refused():
     seat-did-nothing case the rule exists to catch."""
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="pass", rationale="ok")
+                           changed=False, builder_setup="pass", verify="pass", rationale="ok")
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(process="valid", artifacts="unusable", proven_read=True,
-                           changed=False, setup="pass", verify="pass", rationale="   ")
+                           changed=False, builder_setup="pass", verify="pass", rationale="   ")
 
 
 def test_an_unrecognized_literal_is_refused_rather_than_silently_carried_through():
@@ -198,7 +198,7 @@ def test_an_unrecognized_literal_is_refused_rather_than_silently_carried_through
     with pytest.raises(seat.SeatStatusError):
         seat.classify_seat(**{**_BASE, "process": "ok"})
     with pytest.raises(seat.SeatStatusError):
-        seat.classify_seat(**{**_BASE, "setup": "unknown"})
+        seat.classify_seat(**{**_BASE, "builder_setup": "unknown"})
 
 
 def test_proven_read_and_changed_must_be_real_booleans():

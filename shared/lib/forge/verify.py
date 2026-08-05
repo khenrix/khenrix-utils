@@ -1431,7 +1431,7 @@ class Calibration:
     the run's confirmation named NO setup command, so none was run here. `gate.Confirmation`
     admits an empty setup in as many words — it refuses only an empty VERIFY — and this field
     used to be typed as though it could not happen, which made §5 step 3 raise for every
-    repository that needs no toolchain. It is the same fact `runner`'s `status.setup ==
+    repository that needs no toolchain. It is the same fact `runner`'s `status.builder_setup ==
     "none"` records one module over — NOT its `"not-run"`, which is §8's value for a
     confirmed command whose measurement was withheld and is a different state entirely; this
     sentence named that one, and the two sharing a spelling in `seat` is what made a
