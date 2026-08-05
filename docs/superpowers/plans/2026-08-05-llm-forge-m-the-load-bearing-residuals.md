@@ -523,7 +523,21 @@ git commit -m "fix(forge): forty unsettled claims rendered a clean report, measu
 
 **Why fifth, and why it is a decision rather than an edit:** `rubric.GATE_RANK` is contiguous 0–5 with no free integer, and `GATE_CHANGED` sits at rank 2 — **above `FLAKY` and `FAIL`**. So a candidate that rewrote the gate ranks better than one whose tests merely failed. `runner.py:773-775` records that L1.2 deliberately did **not** renumber, because renumbering around a known defect re-blesses it as a side effect of an unrelated fix. This task is where the decision is made deliberately.
 
-**The decision, and it is the plan's, not the implementer's:** `GATE_CHANGED` moves to **last** — rank 5 — and everything below it shifts up one. §6.2's own disposition is that a candidate which changed the gate cannot be compared on the gate's evidence at all; ranking it second says the opposite. A candidate that honestly failed is strictly more useful than one whose PASS cannot be trusted.
+**The decision, and it is the plan's, not the implementer's.** The map is currently:
+
+```
+0 PASS   1 BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE   2 GATE_CHANGED   3 FLAKY   4 FAIL   5 HARVEST_INCOMPLETE
+```
+
+`GATE_CHANGED` moves **below `FAIL`** and `FLAKY` and `FAIL` shift up one:
+
+```
+0 PASS   1 BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE   2 FLAKY   3 FAIL   4 GATE_CHANGED   5 HARVEST_INCOMPLETE
+```
+
+§6.2's own disposition is that a candidate which changed the gate cannot be compared on the gate's evidence at all; ranking it second says the opposite. A candidate that honestly failed is strictly more useful than one whose PASS cannot be trusted.
+
+**It does NOT move to last, and the first draft of this task said it should.** That would put `GATE_CHANGED` below `HARVEST_INCOMPLETE`, which is a *different* claim and one nothing here has argued: `HARVEST_INCOMPLETE` means the engine could not read the candidate's artifacts, so there is nothing to merge at all, while a gate-rewriting candidate still has reviewable code behind an untrustworthy verdict. Ranking "unusable" above "untrustworthy" is a second decision, and this task takes only the one the finding names.
 
 **Files:**
 - Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/rubric.py:29-40`
@@ -547,6 +561,10 @@ def test_a_candidate_that_rewrote_the_gate_ranks_below_one_that_honestly_failed(
     opposite: rewrite the gate and outrank the seat whose tests merely failed."""
     assert rubric.GATE_RANK[verify.GATE_CHANGED] > rubric.GATE_RANK[verify.FAIL]
     assert rubric.GATE_RANK[verify.GATE_CHANGED] > rubric.GATE_RANK[verify.FLAKY]
+    # ...and NOT last. A candidate whose artifacts could not be harvested has nothing to
+    # merge at all; a gate-rewriting one has reviewable code behind an untrustworthy verdict.
+    # That is a second decision and this task does not take it.
+    assert rubric.GATE_RANK[verify.GATE_CHANGED] < rubric.GATE_RANK[verify.HARVEST_INCOMPLETE]
 
 
 def test_the_rank_map_is_total_over_every_outcome_verify_can_produce():
@@ -572,14 +590,19 @@ Expected: FAIL on the first (2 is not > 4/5). The second and third should PASS a
 
 - [ ] **Step 3: Renumber**
 
-In `/home/khenrix/git/khenrix-utils/shared/lib/forge/rubric.py`, move `verify.GATE_CHANGED` to the highest rank and shift the outcomes below it up by one. Write the reason above the map:
+In `/home/khenrix/git/khenrix-utils/shared/lib/forge/rubric.py`, move `verify.GATE_CHANGED` to rank 4 and shift `FLAKY` and `FAIL` up one, leaving `HARVEST_INCOMPLETE` last. Write the reason above the map:
 
 ```python
-# `GATE_CHANGED` IS LAST, DELIBERATELY, AND IT USED TO BE SECOND. §6.2's disposition is that a
-# candidate which rewrote the gate cannot be compared on the gate's evidence at all, and rank 2
-# — above FLAKY and above FAIL — said the opposite: rewrite the gate and outrank the seat whose
-# tests honestly failed. `runner.py` recorded the deferral rather than renumbering as a side
-# effect of an unrelated fix; this is the deliberate decision, taken on its own.
+# `GATE_CHANGED` SITS BELOW `FAIL`, DELIBERATELY, AND IT USED TO SIT SECOND. §6.2's disposition
+# is that a candidate which rewrote the gate cannot be compared on the gate's evidence at all,
+# and rank 2 — above FLAKY and above FAIL — said the opposite: rewrite the gate and outrank the
+# seat whose tests honestly failed. `runner.py` recorded the deferral rather than renumbering as
+# a side effect of an unrelated fix; this is the deliberate decision, taken on its own.
+#
+# IT IS NOT LAST. `HARVEST_INCOMPLETE` stays worst: the engine could not read that candidate's
+# artifacts, so there is nothing to merge at all, where a gate-rewriting candidate still has
+# reviewable code behind a verdict nobody can trust. Ranking "unusable" above "untrustworthy"
+# is a SECOND decision and nothing here has argued it.
 ```
 
 Then delete the paragraph at `runner.py:773-775` that records the deferral and replace it with one sentence saying it was taken — a comment describing a decision that has since been made is a stale docstring, which is a finding this project has already logged four times.
