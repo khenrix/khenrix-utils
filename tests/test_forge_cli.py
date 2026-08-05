@@ -1625,3 +1625,26 @@ def test_a_replayed_ultra_keeps_no_bugs_and_no_review_apart(tmp_path, monkeypatc
         assert u.bugs is not None
     with pytest.raises(cli.CliError):
         cli._finding_of({"id": "x"})
+
+
+def test_the_seat_denominator_is_the_fleet_paid_for_not_the_records_on_disk(tmp_path,
+                                                                            monkeypatch):
+    """REPRODUCED BEFORE THE FIX: `storage.seat_names` globs the seats that left a RECORD
+    FILE, so a seat whose launcher died before `runner._record` ran is absent entirely and
+    §16.1 reports "1 of 1 seats completed" for a three-seat run — a denominator that shrank
+    to fit its numerator, by the one route `_seat_lines`' own docstring does not cover.
+
+    THE EXTERNAL QUESTION: how many seats does the header count when a record is missing?"""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    m = runstate.read_manifest(run_dir)
+    assert len(_seat_names(run_dir)) == m.seats, "the fixture must start with a full fleet"
+    # A seat whose record never landed.
+    storage.seat_state_path(run_dir, "agy").unlink()
+    rows = cli._seat_lines(run_dir, m)
+    assert len(rows) == m.seats, [r.name for r in rows]
+    gone = next(r for r in rows if r.name == "agy")
+    assert (gone.forge, gone.artifacts) == ("failed", "unusable"), gone
+
+
+def _seat_names(run_dir):
+    return storage.seat_names(run_dir)

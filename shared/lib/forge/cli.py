@@ -42,6 +42,7 @@ from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, 
 # ranks — a rank taken before §13's panel can be convened honestly would be a
 # verdict with no adversary.
 from . import journal as journalmod
+from . import runner as runnermod
 from . import ledger as ledgermod
 from . import fix as fixmod
 from . import progress
@@ -287,13 +288,13 @@ def start(args, *, out, make_launcher=None) -> int:
     except (briefmod.BriefError, runstate.StateError, gitcmd.GitError, OSError,
             storage.StorageError) as e:
         print(f"  ✗ no fusion brief was written: {e}", file=out)
-    for line in _seat_table(run_dir):
+    for line in _seat_table(run_dir, runstate.read_manifest(run_dir)):
         print(f"  {line}", file=out)
     print(f"Next: fuse in the synthesis worktree, then `--collect {run_id}`.", file=out)
     return 0
 
 
-def _seat_lines(run_dir) -> tuple:
+def _seat_lines(run_dir, manifest=None) -> tuple:
     """§16.1's first line, built from the RECORDS ON DISK.
 
     NEVER FROM A RESULTS TUPLE. `runner.run` returns one `SeatResult` per seat that produced
@@ -316,8 +317,27 @@ def _seat_lines(run_dir) -> tuple:
     it adds to §16.1's denominator and to none of its numerators — but it is a substitution,
     and the alternative (dropping the row) is the denominator shrinking again.
     """
+    # THE DENOMINATOR IS THE FLEET THE OPERATOR PAID FOR, NOT THE RECORDS ON DISK, and this
+    # is the second shrink — the paragraph above closes the first. `storage.seat_names` globs
+    # the seats that left a RECORD FILE, so a seat whose launcher died before `runner._record`
+    # ran is absent from the glob entirely and §16.1 reports "1 of 1 seats completed" for a
+    # three-seat run. Reproduced: one recorded seat in a run directory answers a denominator
+    # of 1. `runner._fleet` is the ONE place a confirmed count resolves to names — reused
+    # rather than restated, because a second copy of that rule is how the two spellings of
+    # this denominator came to disagree in the first place.
+    #
+    # A seat with no record renders `failed`/`unusable`, which is what the paragraph above
+    # already argues for a seat with no verdict: it adds to the denominator and to none of the
+    # numerators, and the alternative is the shrink this comment is about.
+    try:
+        expected = tuple(runnermod._fleet(manifest)) if manifest is not None else ()
+    except runnermod.RunnerError:
+        # A manifest whose count exceeds the providers that exist is `run`'s refusal to make,
+        # not this reader's — reporting it here would raise out of a handover.
+        expected = ()
+    names = list(dict.fromkeys([*expected, *storage.seat_names(run_dir)]))
     lines = []
-    for name in storage.seat_names(run_dir):
+    for name in names:
         rec = runstate.read_seat(run_dir, name) or {}
         attempts = rec.get("attempts") or []
         last = attempts[-1] if attempts else {}
@@ -331,12 +351,12 @@ def _seat_lines(run_dir) -> tuple:
     return tuple(lines)
 
 
-def _seat_table(run_dir) -> tuple:
+def _seat_table(run_dir, manifest=None) -> tuple:
     """What `--start` prints about the fleet it just ran, off the same rows §16.1 counts."""
     return tuple(
         f"{s.name}: {s.forge}, artifacts {s.artifacts}, verify "
         f"{s.verify_outcome or 'not run'}"
-        for s in _seat_lines(run_dir))
+        for s in _seat_lines(run_dir, manifest))
 
 
 def _rev(checkout, rev: str) -> str:
@@ -908,7 +928,7 @@ def collect(args, *, out) -> int:
 
     rounds = _rounds_run(run_dir)
     events = journal.Journal(storage.journal_path(run_dir)).read()
-    seats = _seat_lines(run_dir)
+    seats = _seat_lines(run_dir, manifest)
     terminal = _review_terminal(run_dir, rounds, events)
     unresolved = _unresolved(run_dir, rounds)
     strongest, agreement = _strongest(run_dir), _agreement(run_dir)
