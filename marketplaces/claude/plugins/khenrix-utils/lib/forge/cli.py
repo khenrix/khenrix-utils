@@ -1020,6 +1020,26 @@ def collect(args, *, out) -> int:
         # names the OID and the exact exit status so a reader can re-derive both.
         body = f"{body}\n\nSynthesis verify evidence: {evidence}."
 
+    # §9's DRIFT AND §14.1's ORPHANS, WHICH THIS FUNCTION COMPUTED AND THREW AWAY.
+    # `runstate.reconstruct` measures both — it is the first statement of this verb — and
+    # every line below used `recon.manifest` and nothing else. So a delivery described
+    # against a repository that had MOVED under the run, or a run holding an operation that
+    # started and never finished, read exactly like one where neither was true.
+    #
+    # STATED, NOT REFUSED. The handover is still constructible and the operator still needs
+    # it; what they must not do is read it as describing a repository it no longer describes.
+    # That is the same disposition §5's acceptable gaps get — told once, in the operator's own
+    # words, beside the artifact rather than inside §16.1's fixed vocabulary.
+    if recon.diverged:
+        body = (f"{body}\n\n§9 DRIFT: {', '.join(recon.diverged)} moved in {repo} since this "
+                "run recorded it. The handover above describes the run's own snapshot, so "
+                "re-read anything below that depends on the repository's current state.")
+    if recon.orphans:
+        ops = ", ".join(sorted({e.operation_id for e in recon.orphans}))
+        body = (f"{body}\n\n§14.1 ORPHANS: {len(recon.orphans)} operation(s) started and "
+                f"recorded no result ({ops}). Their outcome is UNKNOWN — not failed — so "
+                "anything they would have written may be missing from the record above.")
+
     # AND THE RECORD IS PERSISTED LAST, BECAUSE §15 READS IT AS THE LICENCE TO DELETE THIS RUN.
     # `handover.json` is not a note about the collect: `gc.collect` refuses a run that has none
     # and reclaims one that has it — the synthesis worktree, both of §9's ref namespaces and the

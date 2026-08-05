@@ -1648,3 +1648,34 @@ def test_the_seat_denominator_is_the_fleet_paid_for_not_the_records_on_disk(tmp_
 
 def _seat_names(run_dir):
     return storage.seat_names(run_dir)
+
+
+def test_collect_reports_the_drift_and_orphans_it_already_measured(tmp_path, monkeypatch):
+    """REPRODUCED BY READING: `runstate.reconstruct` is `--collect`'s first statement and it
+    computes BOTH `diverged` and `orphans`; every line after it read `recon.manifest` and
+    nothing else. So a delivery described against a repository that had moved under the run,
+    or a run holding an operation that started and never finished, read exactly like one
+    where neither was true.
+
+    Stated rather than refused — the handover is still constructible and the operator still
+    needs it; what they must not do is read it as describing a repository it no longer does.
+    """
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    repo = str(runstate.read_manifest(run_dir).repo_path)
+    log = journal.Journal(storage.journal_path(run_dir))
+    log.record(journal.intent("something"), operation_id="op-unfinished")
+    real = runstate.reconstruct
+
+    def _drifted(rd, r):
+        rec = real(rd, r)
+        return dataclasses.replace(rec, diverged=("status", "refs/heads/main"))
+
+    monkeypatch.setattr(runstate, "reconstruct", _drifted)
+    out = io.StringIO()
+    assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
+                     "--handover-target", "review"], out=out) == 0, out.getvalue()
+    text = out.getvalue()
+    assert "§9 DRIFT" in text and "refs/heads/main" in text, text
+    assert "§14.1 ORPHANS" in text and "op-unfinished" in text, text
+    assert "UNKNOWN — not failed" in text, text
