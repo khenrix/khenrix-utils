@@ -1424,13 +1424,6 @@ def test_review_refuses_a_synthesis_nobody_fused_into(tmp_path, monkeypatch):
     assert "nobody fused into it" in out.getvalue(), out.getvalue()
 
 
-def _fuse_something(run_dir):
-    synth = run_dir / "synthesis"
-    (synth / "fused.py").write_text("print('fused')\n", encoding="utf-8")
-    _git(synth, "add", "-A")
-    _git(synth, "commit", "-qm", "fusion")
-
-
 def _write_a_ledger(run_dir):
     from forge import ledger as ledgermod  # noqa: PLC0415
     row = ledgermod.Row(
