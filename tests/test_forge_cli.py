@@ -1439,3 +1439,56 @@ def _write_a_ledger(run_dir):
         synthesis_evidence=None, verification_receipt=None, risk="low", rationale="")
     ledgermod.write_ledger(run_dir, ledgermod.Ledger(
         ledgermod.VERSION, (row,), 10, ledgermod.DEGRADE_UNION_DIFF_BYTES, False))
+
+
+
+def test_collect_refuses_a_head_that_is_not_the_branch_it_delivers(tmp_path, monkeypatch):
+    """THE EXTERNAL QUESTION: can the report and the delivered command describe DIFFERENT
+    commits? Not "is there a symbolic-ref call".
+
+    Everything `--collect` reports is measured from the worktree's HEAD; the command it hands
+    the operator is `git merge --no-ff <branch>`, named from the RUN ID. Reproduced before the
+    fix: fuse on the branch, then detach in the worktree — HEAD is the base, the branch is the
+    fusion, and the handover described one while delivering the other. `--gc` then deletes the
+    branch, reclaiming the difference.
+    """
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = _fuse_something(run_dir)
+    on_branch = _git(synth, "rev-parse", "HEAD").stdout.strip()
+    base = runstate.read_manifest(run_dir).base_commit
+    _git(synth, "checkout", "-q", "--detach", base)
+    assert _git(synth, "rev-parse", "HEAD").stdout.strip() != on_branch, \
+        "the fixture did not actually move HEAD off the branch"
+    out = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo",
+                   str(runstate.read_manifest(run_dir).repo_path)], out=out)
+    assert rc != 0
+    assert "DETACHED HEAD" in out.getvalue(), out.getvalue()
+
+
+def test_collect_refuses_a_worktree_parked_on_another_branch(tmp_path, monkeypatch):
+    """The other half, and it renders a DIFFERENT sentence on purpose: "on the wrong branch"
+    and "on no branch" are two states, and telling an operator with a detached HEAD to switch
+    branches is advice for a problem they do not have."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = _fuse_something(run_dir)
+    _git(synth, "checkout", "-q", "-b", "somewhere-else")
+    out = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo",
+                   str(runstate.read_manifest(run_dir).repo_path)], out=out)
+    assert rc != 0
+    text = out.getvalue()
+    assert "somewhere-else" in text and "DETACHED" not in text, text
+
+
+def test_collect_still_accepts_the_ordinary_worktree(tmp_path, monkeypatch):
+    """THE DISCRIMINATION CHECK. `create_synthesis_worktree` uses `-b`, so the ordinary path
+    already satisfies this — a refusal that also fired on the normal case would be a gate
+    nobody could pass."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    _fuse_something(run_dir)
+    out = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo",
+                   str(runstate.read_manifest(run_dir).repo_path),
+                   "--handover-target", "review"], out=out)
+    assert rc == 0, out.getvalue()

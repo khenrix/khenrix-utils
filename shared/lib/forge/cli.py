@@ -735,6 +735,50 @@ def _refuse_a_seats_candidate(repo, run_dir, *, run_id: str, tree: str,
                 "band; this engine will not hand it over under a fusion's header.")
 
 
+def _refuse_a_head_that_is_not_the_branch(synth, manifest) -> None:
+    """The synthesis worktree's HEAD is the branch this handover is about to deliver.
+
+    MEASURED, AND THE TWO CAN DIFFER. Everything below is built from `HEAD` — the tree oid
+    `mergeability` compares, the evidence line, the out-of-band set — while the command handed
+    to the operator is `git merge --no-ff <branch>`, whose name comes from the RUN ID
+    (`handover.branch`). Nothing between read `symbolic-ref`, so a worktree whose HEAD had
+    moved off the branch produced a report describing one commit and a command delivering
+    another. Reproduced: fuse and commit on the branch, then `git checkout --detach <base>` in
+    the worktree — HEAD is the base and the branch is the fusion.
+
+    BOTH DIRECTIONS ARE WRONG AND THE SECOND IS WORSE. HEAD behind the branch reports "nothing
+    fused" and merges the fusion. HEAD ahead of it, or detached, describes work the merge does
+    not carry — and `--gc` then deletes the branch by name, reclaiming the difference with
+    nothing left naming it.
+
+    THE INVARIANT IS ALREADY INTENDED. `handover.create_synthesis_worktree` uses `-b` and
+    never the detach flag, and its docstring gives the reason in one sentence: "a detached HEAD
+    leaves the commits unreachable and the next `git gc` deletes the deliverable". It was
+    enforced at creation and nowhere at collection, which is a rule that holds only on the path
+    its author remembered — the shape this package refuses everywhere else.
+    """
+    want = "refs/heads/" + handover.branch(manifest.run_id, handover.SYNTHESIS)
+    r = gitcmd.git(synth, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                   "symbolic-ref", "--quiet", "HEAD", env_extra=gitcmd.READONLY, check=False)
+    have = r.stdout.strip()
+    if not have:
+        # A DETACHED HEAD IS ITS OWN SENTENCE. `symbolic-ref --quiet` exits 1 with no output
+        # there, and folding it in with "on the wrong branch" would tell an operator to switch
+        # branches when what they have is a HEAD pointing at no branch at all.
+        raise CliError(
+            f"the synthesis worktree at {synth} has a DETACHED HEAD, so the commits you fused "
+            f"are not on {want} — the branch this handover would tell you to merge, and the "
+            "one `--gc` deletes. Re-attach with `git -C "
+            f"{synth} checkout {handover.branch(manifest.run_id, handover.SYNTHESIS)}` "
+            "before collecting.")
+    if have != want:
+        raise CliError(
+            f"the synthesis worktree at {synth} is on {have} and this handover is about "
+            f"{want}. Everything reported below is measured from HEAD while the merge command "
+            "names the branch, so the report and the command would describe different commits."
+        )
+
+
 def collect(args, *, out) -> int:
     """§14's read-from-disk half: §13.1 once, §16's mergeability, and the handover text."""
     repo = Path(args.repo).resolve()
@@ -770,6 +814,7 @@ def collect(args, *, out) -> int:
     # well, so the same ordering makes the whole handover provably constructible before the
     # one call that cannot be taken back — including `Provenance`, whose own refusals are
     # argued where it is built.
+    _refuse_a_head_that_is_not_the_branch(synth, manifest)
     head = _rev(synth, "HEAD")
     tree = _rev(synth, "HEAD^{tree}")
 
