@@ -287,7 +287,16 @@ suite. And **three more that K4's review clone had already closed**, measured 20
 - **P4j — `mutate.py`'s bytecode purge.** `_purge_bytecode` already exists and is the
   script's stated reason for being; only the path containment was missing, and that landed.
 
-**Seven of the twenty-five items examined did not survive contact with the code.** That is
+- **`_gate_taints`' isinstance gate** — attempted and REVERTED, measured 2026-08-05. The
+  `isinstance(candidate_run, FixedPoint)` looked like a silent skip of the
+  undeclared-rewrite taint. It is the documented contract: `classify`'s own docstring says
+  an orchestrator "that supplies a green `Run` from anywhere gets the same PASS it would get
+  from `calibrate`", and enumerates what a PASS rests on — the exit code, the bundle, and the
+  two measurements above — with `unexplained` deliberately not among them. Adding a taint for
+  the plain-`Run` path made PASS unreachable for a supported input and broke four tests that
+  exist to keep it reachable.
+
+**Eight of the twenty-six items examined did not survive contact with the code.** That is
 the single most useful number in this log: a plan built from a review's findings is a plan
 built from claims, and better than a quarter of them were already false.
 
