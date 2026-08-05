@@ -1,5 +1,11 @@
 # P — the last plan
 
+> **EXECUTION LOG (2026-08-05).** Eighteen items closed; see the table at the foot of this
+> document for what each one turned out to be. Four were **retired for not reproducing** or
+> for already being fixed, which is the P0 protocol working as designed. What remains is
+> listed there too, honestly, with nothing marked done that is not.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Everything still open across every plan in this repository, in one document, so that when it is executed there is nothing left that anybody wrote down.
@@ -248,3 +254,36 @@ These were considered and are deliberately excluded. Do not re-add them without 
 **4. Ordering constraints.** P2a may evaporate depending on P1's Step 1 decision, and is placed after it for that reason. P2b needs P1's review risk. P7's two halves must land together or the quoted wall-clock bound stops being a bound.
 
 **5. What this plan does not claim.** It is the last plan for everything *written down*. It is not a claim that the engine is then free of defects — seven slices of review found these, and an eighth would find more. What it does claim is that after this, nothing anybody recorded is still waiting.
+
+
+---
+
+## Execution log
+
+**Closed.** P1 (the `fix` implementation — the engine VERIFIES a fix, never authors one, and
+the calibration's output is now on the journal so §12.3 has a baseline). P2a (`review_fixes`
+is an operator-spent term, and `known_unbuilt` is empty). P2b (§12.5's rank declines
+**permanently by construction** — no per-seat review exists or is priced anywhere in the
+design). P3 (the `builder_setup` rename). P4c/P4e/P4i (§13.1 journalled write-ahead and
+idempotent — it was paid for twice **by documented path**). P4d (§9 drift and §14.1 orphans
+were measured and discarded). P4f (the seat denominator). P4g (the verify command truncated
+to step 0). P4h (the skill UNDERSTATED what `--collect` refuses). P4k, P4l, P4m-backup, P4n.
+P5b (`FLAKY` has no producer, said so). P5d (an empty diff was called small). Two s1
+constructors that accepted values nobody could have meant. P6a (`portability.py` + both
+`triggers.json`).
+
+**Retired, not done — each with its measurement.** The `gc` ref-prefix finding. §13's
+path-based blindness fix. The B1 plan (superseded). `Size`'s negative/bool cases (already
+refused). And the `kind`/FIFO half of M1, which was overstated twice before the real case
+turned up in the suite.
+
+**Genuinely open.** P5a's remaining s1 items (the symlink gate referent; the make memo key
+with `_scan_make`'s `--directory=`/`-C` gap; the calibration aggregate; the control-plane
+tripwire; Fwork byte-binding; durable-state reconstruction; `Seat.verified` over
+`sidecars is None`; two index definitions; `_gate_taints`' isinstance gate;
+`_command_paths`' silent continue; `_AMBIENT_SKILL`'s short-path refusals; `screen.py`'s
+allow-list in foreign repos). P5b's remainder and P5c in full. P4a, P4b, P4j.
+P4m's orphaned-marker half. P6b (skill charts — eleven tasks, nothing landed). P7.
+
+**Each of those still owes P0 its reproduction first**, and the log above is why: of the
+twenty-two items examined, four did not survive contact with the code.

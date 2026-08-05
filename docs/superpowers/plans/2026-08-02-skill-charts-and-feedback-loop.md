@@ -26,7 +26,7 @@
 
 ## Execution order
 
-Tasks 1→6 in order (lint before charts would fail `make verify` — so the lint is **not wired** until Task 4, after all charts exist). Then Task 9 (the llm-council panel bump — numbered out of sequence, added later), then Task 7 (the self-run, whose deep council reviews thereby exercise the new panel), then Task 8 (repo hygiene) last of all. If plan `2026-07-30-per-provider-eval-gating` is unexecuted, run it first — Task 7's self-run then validates both plans' surfaces at once.
+Tasks 1→6 in order (lint before charts would fail `make verify` — so the lint is **not wired** until Task 4, after all charts exist). Then Task 9 (the llm-council panel bump — numbered out of sequence, added later), then Task 7 (the self-run, whose deep council reviews thereby exercise the new panel), then Task 10 (clean-room ultra study — research only, can also run any time earlier), then Task 11 (forge's council-for-cloud-review swap — risky, checkpointed), then Task 8 (repo hygiene) last of all. If plan `2026-07-30-per-provider-eval-gating` is unexecuted, run it first — Task 7's self-run then validates both plans' surfaces at once.
 
 ## File Structure
 
@@ -729,13 +729,30 @@ Verified inventory (2026-08-04) of what "stale" concretely means right now:
 
 - [ ] **Step 8: Post-checks** — `git status --porcelain` empty; `git worktree list` single entry; `git branch` shows only `main`; `make verify` green.
 
-Steps 3–5 are safe to run at any point; Steps 1–2 and 6 only at the end (forge runs must be collected first, and a plan is archived only after its work landed).
+Steps 3–5 are safe to run at any point; Step 6 only at the end (a plan is archived only after its work landed). Steps 1–2 normally run at the end too, with one exception: Task 11 requires them EARLY as its precondition — every ultra-era forge run must be collected and gc'd before the ultra vocabulary is removed from the code that reads it.
 
 ---
 
-### Task 9: llm-council panel — Fable 5 for deep, Opus 5 for normal (executes after Task 6, BEFORE Task 7's self-run)
+### Task 9: llm-council panel — Fable 5 on the claude seat (max normal / `ultracode` deep), Sol at `ultra` for deep (executes after Task 6, BEFORE Task 7's self-run)
 
-The claude seat's deep-mode model becomes `claude-fable-5`; normal stays `claude-opus-5`.
+End state per the user (2026-08-05): the claude seat runs `claude-fable-5` in BOTH
+modes — `max` effort for normal, `ultracode` for deep; the codex seat's deep tier
+becomes `ultra`; agy is unchanged (no higher tier exists). All three probed on
+2026-08-05, garbage-value controls included:
+
+- **claude 2.1.220** — `ultracode` is real but undocumented: help enumerates
+  `low, medium, high, xhigh, max`; garbage (`banana-zzz`) draws "Unknown --effort value
+  … ignoring it and using the default" while `ultracode` is accepted silently. The
+  warn-and-IGNORE is the failure mode to guard: a future CLI dropping the tier would
+  silently downgrade the seat to default effort. Step 4 asserts the warning's absence.
+- **codex 0.146.0** (silently updated from 0.145.0 mid-plan — enumerate CLI versions at
+  execution) — `model_reasoning_effort="ultra"` runs end-to-end and the exec header
+  prints `reasoning effort: ultra`; garbage passes the CLI but the API rejects it with
+  a 400 and exit 1 — codex fails CLOSED, the safer mode. The interactive picker labels
+  the tier "Max and Ultra consume usage limits faster".
+- **agy 1.1.8** — `--effort ultra` refused: `invalid --effort "ultra" (valid: low,
+  medium, high)`. No equivalent exists; the deep seat stays Flash (High), and the
+  engine's standing "caps at high" note gains this re-probe date.
 Verified 2026-08-04, which makes this a one-cell edit: `claude-fable-5` is already in
 `capabilities.toml [models]` (so khenrix-setup/khenrix-upgrade receipts are NOT touched —
 no capabilities.toml edit), `scripts/pricing.toml` already has a `[claude-fable-5]` table,
@@ -750,32 +767,60 @@ reviews execute on the new panel — free integration evidence.
 - Modify: `shared/lib/council/engine.py` (MODES deep/claude cell)
 - Modify: `shared/skills/llm-council/SKILL.md` (mode description — see Step 2)
 
-- [ ] **Step 1: Edit the one cell** — in `shared/lib/council/engine.py`'s `MODES` table:
+- [ ] **Step 1: Edit three cells** — in `shared/lib/council/engine.py`'s `MODES` table:
 
 ```python
-    "deep": {
+    "normal": {
         "claude": {"model": "claude-fable-5",          "thinking": "max"},
+        # codex + agy normal cells unchanged
+    },
+    "deep": {
+        "claude": {"model": "claude-fable-5",          "thinking": "ultracode"},
+        "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
+        # agy unchanged — no tier above (High) exists, re-probed 2026-08-05
+    },
 ```
 
-Nothing else in the table changes (normal/claude is already `claude-opus-5`).
+The flag mappings need no edit — both `CLAUDE_EFFORT.get(thinking, thinking)` and
+`CODEX_EFFORT.get(thinking, thinking)` pass unknown tiers through verbatim — but update
+both maps' comments with the 2026-08-05 probe results (ultracode valid-undocumented on
+claude with warn-and-ignore on garbage; ultra valid on codex with fail-closed 400 on
+garbage; agy enum unchanged). The cross-CLI feedback loop's per-provider record for
+this finding is exactly the three probe results above.
 
 - [ ] **Step 2: Make the SKILL.md stop claiming "same models"** — the Models section
 currently says the two modes are "same models, differ only in how hard they think" and
-names the panel inline ("currently Claude Opus 5, …"). Both become false with a per-mode
-model split. Update to: normal = Opus 5 (high) / GPT-5.6 Sol (high) / Gemini 3.6 Flash
-(High); deep = **Fable 5 (max)** / GPT-5.6 Sol (max) / Gemini 3.6 Flash (High — no max
-tier exists). While there, check whether the SKILL.md still points at "the MODES table at
-the top of scripts/fanout.py" — the engine moved to `shared/lib/council/engine.py` and
-fanout.py is a facade; if the pointer is stale, fix it (Stale-reference).
+names the panel inline ("currently Claude Opus 5, …"). Both become false with per-mode
+tiers. Update to: normal = **Fable 5 (max)** / GPT-5.6 Sol (high) / Gemini 3.6 Flash
+(High); deep = **Fable 5 (ultracode)** / GPT-5.6 Sol (**ultra**) / Gemini 3.6 Flash
+(High — no higher tier exists, re-probed 2026-08-05). While there, check whether the
+SKILL.md still points at "the MODES table at the top of scripts/fanout.py" — the engine
+moved to `shared/lib/council/engine.py` and fanout.py is a facade; if the pointer is
+stale, fix it (Stale-reference).
 
 - [ ] **Step 3: Deterministic gate** — `python3 shared/skills/llm-council/scripts/fanout.py --self-test` green; `make council-test` green.
 
 - [ ] **Step 4: Live smoke of the CHANGED seat in BOTH modes (blocking)** — a panel bump
 is the structurally-blind review case (the outgoing panel would be reviewing its own
 replacement), so integration evidence is the compensating control, not a nicety: run the
-engine's `--smoke` against the claude seat in normal AND deep, and confirm from the
-manifest that the resolved model is `claude-opus-5` / `claude-fable-5` respectively and
-the seat scores valid. A smoke that only covers one mode proves nothing about the other.
+engine's `--smoke` against the CHANGED seats — claude in normal AND deep, codex in
+deep — and confirm from the manifest that the resolved model/tier matches the table.
+Assertions, each guarding a probed failure mode:
+  1. **claude, both modes: stderr contains no "Unknown --effort" warning** — the CLI
+     warn-and-ignores an unrecognized tier, silently downgrading the seat to default
+     effort. (codex needs no such assertion — it fails closed with a 400.)
+  2. **codex, deep: the exec header line reads `reasoning effort: ultra`** — direct
+     provenance, observed in the 2026-08-05 probe.
+  3. **Measure durations and RESIZE BOTH windows in the same commit.** The 1200s deep
+     window was sized on max-effort measurements (fable@max 649s, sol@max 374–796s);
+     `ultracode` and `ultra` are unmeasured above those. And the **300s normal window
+     is now presumptively too small**: normal mode carries fable@max, whose only
+     substantive measurement is 649s — without a resize, routine normal councils
+     manufacture timeouts (the agy print-timeout lesson: a fixed sub-engine cap turns
+     slow success into failure that gates CLOSED). Expect normal → ~900s pending the
+     smoke's number; deep → raise if the smoke rides past ~1000s.
+  4. The manifest's `[mode: …]` line reflects each run — provenance, not vibes.
+A smoke that only covers one mode/seat proves nothing about the others.
 
 - [ ] **Step 5: Render + receipt + commit** — `python3 scripts/render.py`, then
 `make eval SKILL=llm-council` (writes the self-test-gated receipt; this task touches
@@ -799,11 +844,83 @@ no longer claims the two modes share models. Smoked live in both modes."
 ```
 
 **Cost note, stated plainly:** on this machine the weekly **Fable sub-cap is the binding
-budget** (measured 96% consumed on 2026-07-19 while the all-models cap sat at 82%). Deep
-councils will now draw from that narrowest pool — a deliberate trade of budget for
-max-confidence reviews. If the Fable cap walls mid-run, `--model-claude claude-opus-5`
-is the documented per-run override; record the substitution (the receipt's `models`
-field already captures it).
+budget** (measured 96% consumed on 2026-07-19 while the all-models cap sat at 82%). With
+Fable on the claude seat in BOTH modes, **every council run** — not just deep — now draws
+from that narrowest pool, at max effort or above; and codex's own UI warns that Max and
+Ultra "consume usage limits faster" on its side too. This is a deliberate trade of
+budget for review quality, made 2026-08-05. If the Fable cap walls mid-run,
+`--model-claude claude-opus-5` is the documented per-run override; record the
+substitution (the receipt's `models` field already captures it).
+
+---
+
+### Task 10: Clean-room study — absorb ultrareview/ultraplan MECHANICS into llm-council (research + design, no code)
+
+llm-council uses no ultra feature today; this task is about learning from how they
+work. Ground rules first, because the repo already has a standing practice ("the
+LICENSED install is the source — leaked mirrors out of bounds for any vendor"):
+
+| Source | Status |
+|---|---|
+| Official docs (`code.claude.com/docs/en/ultrareview`, `/ultraplan`) — both fetched and summarized 2026-08-02/05 | **Primary.** Documented behavior is the clean-room spec. |
+| Observed behavior of the licensed local client (`claude ultrareview --help`, launch dialogs, our own runs) | **In bounds.** |
+| `ccu.galdoron.com` (Claude Code Unleashed analysis) | **Skim for behavioral concepts only** — an unverified secondary; never copy quoted prompt text into any deliverable. |
+| `6missedcalls/ultraplan` | **Tainted for text** — its README says it derives from recovered internal prompts incl. Anthropic-employee-only sections. May be cited as evidence such workflows exist; its recovered rule text is never read into a design. |
+| `xorespesp/claude-code` (reconstructed client source) | **Out of bounds entirely** — a reconstructed mirror of licensed code, per the repo's standing practice. |
+| `majiayu000/claude-skill-registry` ultraplan | Community-original recipe — usable as prior art, explicitly NOT the extracted original. |
+
+The documented mechanics worth absorbing (from the official docs, already in hand):
+
+1. **Independent verification of findings before reporting** — ultrareview's core claim
+   ("every reported finding is independently reproduced and verified"). llm-council has
+   no verification phase: a seat's finding goes straight into synthesis. In-house prior
+   art already exists — the 2026-08-04 local review pass ran 5 reviewers → per-finding
+   confidence scoring → ≥80 filter, and it caught 12 real defects; the eval harness's
+   blind A/B is a cousin.
+2. **A machine-readable findings payload** (`bugs.json` / `--json`) — council output is
+   prose; a structured findings contract would let forge's gate and skill-tuneup consume
+   council verdicts mechanically.
+3. **Named limits in refusals** — ultrareview refuses an oversized diff naming the limit
+   in effect, the diff's size, and the worst files. `review-material` fails closed but
+   names nothing.
+4. **A cost quote before launch** — forge's `--start` already does this; council does not.
+5. **Ultraplan's sectioned plan-review loop** — per-section verdicts/comments rather than
+   one blob reply; council review prompts already approximate this ad hoc (this plan's
+   own council rounds used per-category verdict contracts).
+
+- [ ] **Step 1: Write the design addendum** — `docs/superpowers/specs/<date>-council-verified-findings-design.md`, proposing at minimum: a `--verify-findings` council phase (each phase-1 finding assigned to a DIFFERENT-family seat with a refute-first prompt; only confirmed findings reported, refuted ones listed with their refutation), a structured findings JSON contract, named limits in `review-material` refusals, and the per-section plan-review output contract as a documented prompt shape. Each with a cost estimate (a verify phase roughly doubles seat calls). Reuse `fanout.py`/engine — no new orchestration machinery.
+- [ ] **Step 2: CHECKPOINT** — present the addendum to the user; nothing is implemented in this task.
+- [ ] **Step 3: File the worklist entry** — implementation belongs to a future llm-council tuneup run (gate: fanout `--self-test` + live `--smoke` + `make council-test` + self-test-gated receipt), with the addendum as its input. Record it in the tuneup log as a `deferred` finding with this plan as the trigger.
+
+### Task 11: llm-forge — the council replaces the cloud ultrareview (RISKY — explicit sign-off at its checkpoint)
+
+Forge currently prices "cloud ultrareview on" into a default run and implements it as
+`shared/lib/forge/ultra.py` (statuses `RAN/UNAVAILABLE/TIMED_OUT/SKIPPED`), threaded
+into the handover record (`handover.py::_ultra_line`, which warns that a fifth status
+member added to `ultra.STATUSES` must be handled). The swap: the collect-phase deep
+review runs as an llm-council fan-out over the fused diff — read-only, three families,
+local — instead of the billed cloud review.
+
+- [ ] **Step 1: Read before designing** — `shared/lib/forge/{ultra,review,gate,cli,handover}.py` and the forge SKILL.md cost section. Establish what `review.py`'s existing "2 review rounds" already do versus what the ultra step adds; the design must not duplicate an existing council-shaped round.
+- [ ] **Step 2: Precondition — no live ultra-era runs.** The handover records of existing forge runs carry the ultra status vocabulary; code that no longer knows it cannot honestly `--collect`/`--gc` them. So Task 8's Steps 1–2 (collect + gc every forge run, branches gone) execute EARLY, as this task's precondition — the "only at the end" note in Task 8 yields to this ordering. After the swap, a leftover ultra-era run directory is a stop-and-ask, never a parse-anyway.
+
+- [ ] **Step 3: Design decision + CHECKPOINT (hard stop)** — the END STATE is fixed by the user: **zero ultra traces in both skills**. The proposal to present: delete `ultra.py`; the fused-diff deep review becomes a council fan-out owned by `review.py` (or a sibling module with a neutral name); the opt-out flag is renamed (`--no-ultra` → decided at checkpoint, e.g. `--skip-fused-review`) with the same skip-vs-refused semantics `_ultra_line`'s docstring fought for; the handover line names the council review and its seat count. What the user still decides: the flag name, and whether the fused-diff review defaults to `deep` mode (3 seats at max ≈ the old cloud review's depth) or `normal`. **Sign-off before any edit** — this changes what a forge run buys and what its handover attests.
+- [ ] **Step 4: TDD against the forge suites** — the forge test suites are the receipt gate (`deterministic_gate: forge-handover-cli-gc-suites`); extend `tests/test_forge_verify.py` / handover tests FIRST for the new review backend + renamed status semantics, then implement. Depth guard: the council engine's `LLM_COUNCIL_DEPTH` must be respected — forge invokes the council at top level only.
+- [ ] **Step 5: Update the SKILL.md** — the default-run quote re-prices the review step from "$5–25 usage credits" to ~3 provider calls at deep mode; `--start`'s printed quote must match; every prose mention of the cloud review goes.
+- [ ] **Step 6: Zero-trace acceptance (BLOCKING)** —
+
+```bash
+grep -ril "ultra" shared/lib/forge/ shared/lib/council/ \
+     shared/skills/llm-forge/ shared/skills/llm-council/ \
+     marketplaces/*/plugins/khenrix-utils/lib/forge/ \
+     marketplaces/*/plugins/khenrix-utils/lib/council/ \
+     marketplaces/*/plugins/khenrix-utils/skills/llm-forge/ \
+     marketplaces/*/plugins/khenrix-utils/skills/llm-council/ tests/test_forge_*.py
+```
+
+Expected: **no output.** (llm-council's sources carry no ultra references today — verified 2026-08-05 — so this asserts forge's removal AND guards council's future.) The planning docs under `docs/superpowers/` are exempt: they document the study and this removal; scrubbing history is not the goal.
+- [ ] **Step 7: Gates + staging** — `make eval SKILL=llm-forge` (suites), render, stage `shared/lib/forge/` + the three `marketplaces/*/plugins/khenrix-utils/lib/forge/` copies + `shared/skills/llm-forge/SKILL.md` + its three rendered skill copies + `evals/llm-forge/receipt.json`, `make precommit`, one commit.
+- [ ] **Scope honesty:** the forge suites are large (test_forge_verify alone is ~2,255 lines) and the handover vocabulary is guarded; if Step 3's approved design implies a diff beyond a proportionate task, STOP and graduate this task into its own plan document rather than absorbing it here.
 
 ---
 
@@ -819,12 +936,10 @@ findings for the NEXT llm-council / khenrix-upgrade tuneup runs, not tasks here:
   `claude ultrareview`, which has one). Requires claude.ai/code + a GitHub repo, and it
   **disconnects Remote Control** while active (both occupy claude.ai/code). Therefore
   it CANNOT be a council seat — fanout seats are headless, parallel and unattended.
-  What fits instead: llm-council SKILL.md guidance that a PLANNING-shaped high-stakes
-  ask has a complementary path — the user drafts/reviews via `/ultraplan`'s richer
-  review surface, and the council's job is adversarial review of the resulting plan
-  artifact (the workflow this very plan went through, plus a better review UI). That
-  guidance edit belongs to a future llm-council tuneup (its own gate: fanout
-  `--self-test` + `--smoke`).
+  **Superseded 2026-08-05 by Task 10:** rather than pointing users at the cloud
+  surface, the decision is to absorb the documented MECHANICS (verified findings,
+  structured payload, sectioned plan review) into llm-council itself, clean-room from
+  the official docs. The facts above stand; the recommendation changed.
 - **Codex**: no plan mode; nearest counterpart is `codex cloud` [EXPERIMENTAL]
   ("browse tasks from Codex Cloud and apply changes locally") + `codex apply` for the
   local↔cloud handoff, and `codex exec review` as the headless review analogue.
