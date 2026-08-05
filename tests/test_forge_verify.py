@@ -2516,3 +2516,34 @@ def test_a_calibration_whose_setup_leaves_the_pin_alone_still_calibrates(tmp_pat
     repo = _generator_repo(tmp_path, "#!/bin/sh\nexit 0\n")
     cal = _calibrate(tmp_path, repo, setup=verify.Command.parse([["sh", "-c", "exit 0"]]))
     assert cal.run.exit_code == 0
+
+
+def test_a_gate_path_this_engine_cannot_stat_stays_in_the_surface(tmp_path):
+    """"COULD NOT LOOK" MUST NOT READ AS "NOT PART OF THE GATE". `_command_paths` dropped a
+    path on ANY OSError, so a gate file the engine could not stat — EACCES, ELOOP, a mount
+    that went away — vanished from §6.1's surface, and a candidate rewriting it was reported
+    as an ordinary change rather than `gate_changed`.
+
+    FileNotFoundError stays a drop, and that is the discrimination: a command naming a path
+    the tree does not hold names nothing. Every other error is unknown gate-defining-ness,
+    and the surface exists precisely so a candidate cannot quietly gut what judges it."""
+    root = tmp_path / "r"; root.mkdir()
+    (root / "gate.sh").write_text("#!/bin/sh\nexit 0\n")
+    cmd = verify.Command.parse([["./gate.sh"]])
+    assert "gate.sh" in verify._command_paths(root, cmd)
+
+    real = os.stat
+
+    def _blind(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    try:
+        os.stat = _blind
+        assert "gate.sh" in verify._command_paths(root, cmd), \
+            "an unreadable gate path was dropped from the surface"
+    finally:
+        os.stat = real
+
+    # ...and a path the tree genuinely does not hold is still absent.
+    assert "absent.sh" not in verify._command_paths(
+        root, verify.Command.parse([["./absent.sh"]]))

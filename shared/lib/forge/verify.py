@@ -1977,7 +1977,19 @@ def _command_paths(root: Path, command) -> set:
             with at:
                 try:
                     st = os.stat(at.leaf, dir_fd=at.fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    # THE ONE OSError THAT IS AN ANSWER. A command naming a path the tree
+                    # does not hold names nothing, so it is not part of §6.1's surface.
+                    continue
                 except OSError:
+                    # EVERY OTHER OSError IS "COULD NOT LOOK", AND DROPPING IT WAS A
+                    # FAIL-OPEN. A path this engine cannot stat — EACCES, ELOOP, a mount that
+                    # went away — is one whose gate-defining-ness is UNKNOWN, and a surface
+                    # that omits it reports a candidate rewriting it as an ordinary change
+                    # rather than `gate_changed`. Included, because "we could not look" must
+                    # not read as "this is not part of the gate": the whole point of the
+                    # surface is that a candidate cannot quietly gut what judges it.
+                    named.add(rel)
                     continue
                 if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
                     named.add(rel)
