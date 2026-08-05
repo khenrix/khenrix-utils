@@ -662,3 +662,57 @@ def test_an_ignored_unselected_file_is_not_carried_into_the_baseline(tmp_path):
         "this test wrong, which is the disagreement worth failing over"
     assert "scratch/notes.md" in manifest, "the selected untracked path is carried"
     assert "src/app.py" in manifest, "and the tracked file is, with its uncommitted edit"
+
+
+def test_a_secret_that_appeared_after_preflight_does_not_reach_b1(tmp_path):
+    """§3's screen runs at PREFLIGHT and the gate reuses its report, so anything written
+    between the two entered B1 unscreened and three cloud CLIs read it. `gate.SCREEN_RACE`
+    was that gap — declared to the operator rather than closed.
+
+    THE WINDOW IS NARROWER THAN "anything written after preflight", and a first draft of this
+    test missed it: a COMMIT after `repo_facts` moves HEAD and `materialize` already refuses
+    that as drift, so the test passed without the screen existing. `SCREEN_RACE`'s own words
+    are the specific case — "the index hash does not move for an unstaged edit or for a NEW
+    FILE UNDER A SELECTED DIRECTORY" — and that is what this builds. Measured before the fix:
+    B1 was built and its manifest held `src/creds.env`.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "src/a.py", "a\n")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "seed")
+    f = finspect.repo_facts(repo)                       # the screen ran HERE
+    # No commit and no `git add`: the index hash does not move, so nothing downstream notices.
+    write(repo, "src/creds.env", "AWS_ACCESS_KEY_ID=AKIA" + "Q7ZB3KXJ2M9WLPRT" + "\n")
+    run = tmp_path / "run"; run.mkdir()
+    with pytest.raises(baseline.BaselineError, match="(?i)secret|finding"):
+        baseline.materialize(repo, run, f, ["src"], "r1")
+
+
+def test_the_post_b1_screen_refuses_before_it_writes_a_ref(tmp_path):
+    """`open_run`'s rule, one module over: every refusal comes before every write, so a run
+    that is not going to happen leaves NOTHING in the user's own repository — no ref, no
+    object. Its docstring records that rule being broken three times for one structural
+    reason, so the placement is asserted rather than assumed."""
+    repo = make_repo(tmp_path)
+    write(repo, "src/a.py", "a\n")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "seed")
+    f = finspect.repo_facts(repo)
+    write(repo, "src/creds.env", "AWS_ACCESS_KEY_ID=AKIA" + "Q7ZB3KXJ2M9WLPRT" + "\n")
+    run = tmp_path / "run"; run.mkdir()
+    with pytest.raises(baseline.BaselineError, match="(?i)secret|finding"):
+        baseline.materialize(repo, run, f, ["src"], "r1")
+    refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/khenrix-forge/").stdout
+    assert refs.strip() == "", f"a refused baseline left a ref behind: {refs!r}"
+
+
+def test_the_post_b1_screen_actually_looked_at_something(tmp_path):
+    """THE FAILURE THIS TASK IS MOST EXPOSED TO: a check that passes because it looked at
+    nothing. `read_filesystem_manifest`'s own docstring makes the same argument about an
+    empty manifest one function over. So the screened set is asserted non-empty and to hold
+    the repository's TRACKED paths, not merely the operator's selection."""
+    repo = make_repo(tmp_path)
+    write(repo, "app.py", "print('hi')\n")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "seed")
+    run = tmp_path / "run"; run.mkdir()
+    b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
+    assert "app.py" in b.filesystem_manifest, b.filesystem_manifest
+    assert len(b.filesystem_manifest) > 1, "the screened set is the tracked set, not a subset"

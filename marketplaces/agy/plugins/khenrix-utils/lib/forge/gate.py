@@ -977,15 +977,15 @@ REMOTES_AND_CONFIGURATION = "remotes-and-configuration-unrecorded"
 # something.
 GC_UNBUILT = "gc-unbuilt"
 GENERATOR_CONTRACT_EMPTY = "generator-contract-empty"
-# §3's screen covers the tracked set plus the selection, and `gate.open_run` REUSES the report
-# `preflight` took — so a file created or edited between the two is force-added into B1 with no
-# scan, because `materialize` guards only the real index hash and that does not move for an
-# unstaged edit. Same shape as GATE_SURFACE_EMPTY one field over: the verdict qualifies itself
-# rather than being displaced, on the condition that the operator is told once, before a token
-# is spent.
-SCREEN_RACE = "screen-predates-the-baseline"
-ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GENERATOR_CONTRACT_EMPTY,
-                   SCREEN_RACE)
+# `SCREEN_RACE` WAS HERE AND IS CLOSED. It declared that §3's screen ran at preflight while
+# `open_run` reused that report, so a file created or edited between the two was force-added
+# into B1 with no scan — `materialize` guarded only the index hash, which does not move for an
+# unstaged edit or a new file under a selected directory. `baseline.materialize` now screens
+# the path set B1 ACTUALLY HOLDS, after the manifest is built and before the ref is written,
+# so there is no window left to lose. The gap line is deleted with it: a gap announced after
+# it has been closed tells an operator to accept a risk that is not there and trains them to
+# skim the ones that matter — the same rule as GATE_SURFACE_EMPTY's, broken the other way.
+ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GENERATOR_CONTRACT_EMPTY)
 
 # §5 step 2's first policy, spelled as the two branches a later phase can act on. §5 writes
 # the second as "continue as degraded"; the value is the branch name, and `degraded` is also
@@ -1339,13 +1339,6 @@ def must_show(report, quote_, command, *, setup) -> tuple[str, ...]:
         f"§3 screen: {report.screened} file(s) read — every tracked path plus your selection, "
         f"which is what B1 carries to three cloud CLIs. {len(report.secrets)} finding(s), "
         f"{len(report.breaches)} unreadable")
-    lines.append(
-        f"gap {SCREEN_RACE}: that screen ran at preflight and this gate reuses its report. "
-        "Baseline construction guards the index hash, which does not move for an unstaged "
-        "edit or for a new file under a selected directory — so anything written between the "
-        "two, by you or by an editor or a watcher, enters B1 unscreened. Nothing after this "
-        "point reads those bytes before three providers do.")
-
     lines += [
         f"gap {REMOTES_AND_CONFIGURATION}: §9 protects seven things and the t0 snapshot "
         "records five. A remote added or a repository-local config key set while the run is "

@@ -56,7 +56,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitcmd, snapshot, storage
+from . import gitcmd, screen, snapshot, storage
 
 
 class BaselineError(RuntimeError):
@@ -393,6 +393,45 @@ def materialize(repo, run_dir, facts, selected_untracked: list, run_id: str,
     # `fleet.clone_seat` checks a seat's content against, and a run loop that rebuilds B from
     # the run directory has no other source for it. See `read_filesystem_manifest`.
     _record_filesystem_manifest(run_dir, manifest)
+
+    # THE SCREEN §3 ASKS FOR, TAKEN WHERE IT CANNOT LOSE A RACE. `preflight`'s screen runs
+    # before the gate and the gate reuses its report, so anything written in between entered
+    # B1 unscreened and three cloud CLIs read it — `gate.SCREEN_RACE` was that gap, declared
+    # to the operator rather than closed. The window is narrower than "anything written
+    # after preflight" and that is what made it invisible: a COMMIT moves HEAD and is already
+    # refused as drift, but an unstaged edit and a NEW FILE UNDER A SELECTED DIRECTORY move
+    # no index hash at all. Measured: a `src/creds.env` written after `repo_facts` with `src`
+    # selected reached B1's manifest with nothing raised.
+    #
+    # HERE, BEFORE THE REF. `manifest` is complete at this line and the `update-ref` that puts
+    # B1 in the USER'S OWN repository is below it, so a refusal leaves nothing behind — no
+    # ref, no object. That is `open_run`'s rule ("every refusal comes before every write"),
+    # whose docstring records it being broken three times for one structural reason.
+    #
+    # THE SET IS `manifest`, which is `git ls-files -z` plus the selection — what B1 actually
+    # carries — and not `selected_untracked`, because the whole finding is that those differ.
+    # TRACKED SYMLINKS EXCLUDED, exactly as `preflight` excludes them and for its reason:
+    # `screen_tree` reports every link as a breach ("links are never followed"), a link's own
+    # bytes are the target TEXT rather than a credential, and where it points is already
+    # adjudicated — `inspect.rejections` refuses one that escapes the repository and an
+    # in-tree one names a file that is in this same list and screened on its own merits.
+    # Passing them through turned every ordinary repository holding a tracked link into a
+    # refusal, which is the noise `preflight` calls out one module over. Measured: three of
+    # this suite's own symlink tests went red before this line existed.
+    screenable = sorted(r for r in manifest if not (Path(facts.root) / r).is_symlink())
+    findings, breaches = screen.screen_tree(facts.root, screenable)
+    if breaches:
+        # `screen_tree`'s contract, verbatim: "a non-empty `breaches` means the caller must
+        # FAIL the run closed with that message — never silently scan less than it claimed to".
+        raise BaselineError(
+            f"B1 holds {len(breaches)} path(s) this screen could not read: {breaches[:4]}. "
+            "§3 fails closed on what it could not scan, because 'we did not read this' and "
+            "'this is clean' are two answers and only one of them is safe to build on.")
+    if findings:
+        raise BaselineError(
+            f"B1 carries {len(findings)} secret finding(s): {findings[:4]}. This screen runs "
+            "over what B1 ACTUALLY HOLDS, so it covers what preflight's could not — anything "
+            "written between that screen and this one. B1 is what three cloud CLIs receive.")
 
     if not dirty:
         ref = f"refs/khenrix-forge/{run_id}/base"

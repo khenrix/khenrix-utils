@@ -2070,3 +2070,21 @@ def test_open_run_cannot_be_reached_around_the_disk_check(tmp_path):
     c = gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers())
     with pytest.raises(TypeError, match="quote_"):
         gate.open_run(r, c, "r1")
+
+
+def test_the_gate_no_longer_announces_a_gap_it_has_closed(tmp_path):
+    """THE RULE IN THE OTHER DIRECTION. A verdict must never read cleaner than its evidence
+    AND never dirtier: a gap line for a race that has been closed tells an operator to accept
+    a risk that is not there, and trains them to skim the gap lines that do matter.
+
+    `baseline.materialize` screens the path set B1 actually holds, after the manifest and
+    before the ref, so `screen-predates-the-baseline` has no window left to describe."""
+    r = _report(tmp_path)
+    q = gate.quote(r, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    lines = gate.must_show(r, q, verify.Command.parse([["true"]]),
+                           setup=verify.Command.parse([["true"]]))
+    assert not any("screen-predates-the-baseline" in l for l in lines), lines
+    assert not hasattr(gate, "SCREEN_RACE"), \
+        "the constant outlived its gap; a name nothing uses is the next reader's false lead"
+    # The §3 screen LINE itself stays — it reports what was scanned and is not a gap.
+    assert any("§3 screen" in l for l in lines), lines

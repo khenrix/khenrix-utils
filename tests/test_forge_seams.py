@@ -1005,7 +1005,13 @@ def test_the_policy_detector_sees_an_aliased_reference():
 # containment, so BOTH directions still fire: the consumer disappearing was the original
 # subject of this tripwire, and an unvetted second one is what it watches for now. Adding a
 # name here is the decision the test's docstring asks you to make deliberately.
-_POLICY_CONSUMERS = ["shared/lib/forge/preflight.py"]
+# `baseline.py` IS THE SECOND CONSUMER, ADDED DELIBERATELY. It screens the path set B1
+# actually holds, after the manifest is built and before the ref is written — closing the
+# window `gate.SCREEN_RACE` used to declare, where a file written between preflight's screen
+# and B1's construction entered the baseline unscanned. The docstring below asks for the
+# wiring to be asserted BY MEASUREMENT rather than by this textual sweep, so
+# `test_a_secret_that_reaches_b1_after_preflight_stops_the_run` sits below beside its pair.
+_POLICY_CONSUMERS = ["shared/lib/forge/baseline.py", "shared/lib/forge/preflight.py"]
 
 
 def test_preflight_consults_both_refusals_and_what_they_name_it_refuses():
@@ -2253,3 +2259,24 @@ def test_the_top_level_magic_runstate_passes_survives_it_too(tmp_path, monkeypat
     # `make_repo` seeds a file of its own, so the claim is that `:/` still reaches the
     # tracked set — not that this repository holds exactly one path.
     assert "a.txt" in listed and len(listed) > 1, listed
+
+
+def test_a_secret_that_reaches_b1_after_preflight_stops_the_run(tmp_path):
+    """THE MEASUREMENT `_POLICY_CONSUMERS` ASKS FOR, for the consumer added beside preflight.
+
+    A module may import a policy and drop its answer on the floor — that is the shape the
+    textual sweep above cannot see and this test exists to close. The window is the specific
+    one `SCREEN_RACE` named: a new file under a SELECTED directory moves no index hash, so
+    nothing between preflight and B1 notices it. Measured before the screen existed, B1 was
+    built and its manifest held the secret.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "src/a.py", "a\n")
+    _git(repo, "add", "-A"); _git(repo, "commit", "-qm", "seed")
+    facts = finspect.repo_facts(repo)
+    write(repo, "src/creds.env", "AWS_ACCESS_KEY_ID=AKIA" + "Q7ZB3KXJ2M9WLPRT" + "\n")
+    run = tmp_path / "run"; run.mkdir()
+    with pytest.raises(baseline.BaselineError, match="(?i)secret|finding"):
+        baseline.materialize(repo, run, facts, ["src"], "r1")
+    refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/khenrix-forge/").stdout
+    assert refs.strip() == "", "a refused baseline left a ref in the user's own repository"
