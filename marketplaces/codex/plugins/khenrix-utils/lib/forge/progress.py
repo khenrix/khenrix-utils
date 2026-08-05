@@ -39,10 +39,35 @@ FIX_KIND = "synthesis_fix"
 # pytest's own short-summary line. `FAILED <nodeid>` and `ERROR <nodeid>` both appear there,
 # and only `FAILED` names a TEST — an `ERROR` row is a module that could not be collected, so
 # reading it as a failing test invents a fingerprint that can never shrink.
-_FAILED = re.compile(r"^FAILED (\S+)", re.MULTILINE)
-# The evidence that this output came from pytest at all. Without one of these the text is
-# some other runner's and nothing below may be read out of it.
-_PYTEST_BANNERS = ("short test summary info", "=== FAILURES ===", " passed", " failed")
+# The id runs to END OF LINE, minus pytest's own ` - <reason>` suffix. `(\S+)` stopped at the
+# first space, so `FAILED t.py::check[a b]` captured `t.py::check[a` and two DIFFERENT
+# parametrized failures compared equal — this project's recurring defect shape, sitting in the
+# parser §12.3's progress question is answered from. Parametrized ids routinely hold spaces.
+_FAILED = re.compile(r"^FAILED (.+?)(?: - .*)?$", re.MULTILINE)
+# The evidence that this output came from pytest AT ALL. `" passed"` and `" failed"` used to
+# be in here as bare substrings and are not banners — they are two words go test, cargo test
+# and jest all print, and a Makefile echoing "all tests passed" matched too. This parser then
+# answered `frozenset()` for output it had never read: the confident form of the fail-open,
+# "pytest ran and nothing failed", about another runner entirely.
+#
+# A SUBSTRING TUPLE CANNOT EXPRESS THIS, AND THE FIRST DRAFT OF THE FIX WAS WRONG. It narrowed
+# to three literal section rules, and MEASURED, a green `pytest -q` run prints none of them —
+# its entire output is `35 passed in 0.08s`. That would have returned `None` for every clean
+# gate run and made §12.3 decline on its commonest case: the fail-open's mirror image, and a
+# verdict reading dirtier than its evidence.
+#
+# So the discriminator is pytest's own SHAPE, anchored at line start: its session header, its
+# section rules, or a summary line that is a count followed by `in <float>s` — bare as `-q`
+# prints it AND decorated with `=` rules as full mode does, since this suite's own
+# `PYTEST_GREEN` is the decorated form and a regex anchored on `^\d` passed over it.
+# Verified against ten real outputs: five pytest shapes (-q green, -q red, decorated green,
+# decorated red, full header) all match; go test, cargo test, jest, a make recipe echoing
+# "all tests passed", and a bare make error do not.
+_PYTEST_BANNER = re.compile(
+    r"^=+ test session starts =+$"
+    r"|^=+ (FAILURES|short test summary info) =+"
+    r"|^=*\s*\d+ (passed|failed|error|errors|skipped)\b.*\bin \d+\.\d+s",
+    re.MULTILINE)
 
 
 class ProgressError(RuntimeError):
@@ -99,21 +124,30 @@ def pytest_fingerprints(stdout: str, stderr: str, exit_code: int):
     a set of failing ids can say a named test is among them, and can never say a named test
     ran and passed.
 
-    A ZERO EXIT WITH A BANNER IS AN HONEST EMPTY SET: pytest ran, and nothing failed. A
-    NONZERO exit with a banner and no `FAILED` line is `None`, not `frozenset()` — pytest's
-    exits 2, 3 and 4 (collection error, internal error, usage error) all reach that state, and
-    an empty set there is the subset-of-everything fail-open this module exists to close.
+    A ZERO EXIT WITH A BANNER IS AN HONEST EMPTY SET: pytest ran, and nothing failed. ONLY
+    EXITS 0 AND 1 ANSWER AT ALL: 0 is "all passed" and 1 is "tests failed", and both print a
+    complete summary. 2, 3, 4 and 5 are interrupted, internal error, usage error and
+    no-tests-collected — a run that died partway gives a LOWER BOUND on what failed, and a
+    subset returned as the whole set is the fail-open this module exists to close, whether the
+    subset is empty or holds one element.
     """
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise ProgressError(f"an exit code is an int, not {exit_code!r}")
     text = f"{stdout or ''}\n{stderr or ''}"
-    if not any(b in text for b in _PYTEST_BANNERS):
+    if not _PYTEST_BANNER.search(text):
         return None
     ids = frozenset(_FAILED.findall(text))
     if exit_code == 0:
         # A green pytest run that nonetheless printed FAILED lines is a contradiction, and
         # believing either half would be a verdict over evidence that disagrees with itself.
         return None if ids else frozenset()
+    if exit_code != 1:
+        # pytest's 2, 3, 4 and 5 are interrupted, internal error, usage error and no-tests
+        # collected. A run that printed one `FAILED` and then died gives a LOWER BOUND, and
+        # the docstring above already calls an empty set there "the subset-of-everything
+        # fail-open this module exists to close" — a one-element set is that same fail-open
+        # with one element in it. Only 0 and 1 are exits whose output is a complete answer.
+        return None
     return ids or None
 
 

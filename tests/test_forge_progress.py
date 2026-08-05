@@ -334,3 +334,80 @@ def test_the_other_operations_in_a_real_journal_are_not_read_as_fixes(tmp_path):
     assert progress.sightings(events) == (progress.Sighting("a" * 40, frozenset({"t::x"})),)
     assert progress.oscillation(events)[0] == progress.NOT_OSCILLATING
     assert progress.cap_remaining(_Cap(3), events) == 2
+
+
+def test_two_parametrized_failures_do_not_compare_equal():
+    """`\\S+` truncated at the first space, so `test_x[a b]` and `test_x[a c]` both captured
+    `test_x[a` — two DIFFERENT failures with one id. That is this project's recurring defect
+    shape, sitting in the parser §12.3's progress question is answered from."""
+    out = ("=========================== short test summary info ===========================\n"
+           "FAILED tests/t.py::test_x[a b] - AssertionError\n"
+           "FAILED tests/t.py::test_x[a c] - AssertionError\n"
+           "=== 2 failed in 0.10s ===\n")
+    ids = progress.pytest_fingerprints(out, "", 1)
+    assert ids is not None
+    assert len(ids) == 2, ids
+    assert "tests/t.py::test_x[a b]" in ids
+
+
+def test_another_runners_output_is_not_read_as_pytest():
+    """THE DOMAIN CLAIM IS "pytest, recognised by its own banner", and `" passed"` is not a
+    banner — it is two words go test, cargo test and jest all print. A parser answering
+    outside its declared domain is the fail-open, and `frozenset()` is the confident form
+    of it: "pytest ran and nothing failed", about a runner it never read."""
+    assert progress.pytest_fingerprints("go test ./...\nok  \t3 passed\n", "", 0) is None
+    assert progress.pytest_fingerprints(
+        "test result: ok. 7 passed; 0 failed; finished in 0.01s\n", "", 0) is None
+    assert progress.pytest_fingerprints("all tests passed\n", "", 0) is None
+
+
+def test_a_real_green_pytest_run_is_still_an_honest_empty_set():
+    """THE DISCRIMINATION CHECK FOR THE NARROWING, and it caught a wrong first draft: a green
+    `pytest -q` run prints NO section rule and NO session header — its whole output is
+    `35 passed in 0.08s` — so narrowing to literal section rules would have returned `None`
+    for every clean gate run and made §12.3 decline on its most common case. Measured output,
+    verbatim, not a guess."""
+    assert progress.pytest_fingerprints(
+        "...................................    [100%]\n35 passed in 0.08s\n", "", 0
+    ) == frozenset()
+    assert progress.pytest_fingerprints(
+        "============================= test session starts ==============================\n"
+        "platform linux -- Python 3.14.6, pytest-9.1.1\n\n35 passed in 0.08s\n", "", 0
+    ) == frozenset()
+
+
+def test_a_collection_error_is_not_a_complete_failure_set():
+    """pytest exit 4. The run printed one FAILED line and then died, so the set is a LOWER
+    BOUND and `ids or None` returned it as the answer. A subset reported as the whole set is
+    the fail-open this module's own docstring says it exists to close — closed on the
+    no-FAILED-line branch and left open on the one-FAILED-line branch."""
+    out = ("=========================== short test summary info ===========================\n"
+           "FAILED tests/t.py::test_x - AssertionError\n"
+           "!!! Interrupted: 1 error during collection !!!\n")
+    assert progress.pytest_fingerprints(out, "", 4) is None
+
+
+def test_an_ordinary_test_failure_still_reads():
+    """The discrimination check for the exit-code narrowing: exit 1 is pytest's ordinary
+    "tests failed" and must still produce a set, or the mechanism declines on its main case."""
+    out = ("=========================== short test summary info ===========================\n"
+           "FAILED tests/t.py::test_x - AssertionError\n"
+           "=== 1 failed, 11 passed in 0.4s ===\n")
+    assert progress.pytest_fingerprints(out, "", 1) == frozenset({"tests/t.py::test_x"})
+
+
+def test_the_banner_reads_both_shapes_pytest_prints_a_summary_in():
+    """THE DISCRIMINATION THIS SUITE'S OWN FIXTURE CAUGHT. `-q` prints `35 passed in 0.08s`
+    bare; full mode prints `=== 10 passed in 1.1s ===` decorated with rules. A regex anchored
+    on `^\\d` reads the first and passes over the second — and `PYTEST_GREEN` above is the
+    decorated one, so the narrowing broke a test that had been green for months.
+
+    Both shapes, stated together, because "narrow the domain" and "still answer on every real
+    pytest run" are the two halves of this fix and each is a way to get it wrong."""
+    assert progress.pytest_fingerprints("35 passed in 0.08s\n", "", 0) == frozenset()
+    assert progress.pytest_fingerprints(
+        "======================= 10 passed in 1.1s =======================\n", "", 0
+    ) == frozenset()
+    assert progress.pytest_fingerprints(
+        "=============== 2 failed, 8 passed in 1.2s ===============\n"
+        "FAILED t.py::a - E\n", "", 1) == frozenset({"t.py::a"})
