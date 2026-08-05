@@ -114,7 +114,7 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
     stopping at 16 is wrong by three, in the operator's favour, which is the direction that
     matters.
     """
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     builders, synthesis, review, fixes = 3 * 3, 1, 2 * 3, 2 + 1
     assert (builders, synthesis, review, fixes) == (9, 1, 6, 3)
     assert q.provider_calls == builders + synthesis + review + fixes == 19, q.lines
@@ -124,7 +124,7 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
 
 def test_a_review_round_costs_a_reviewer_each_and_one_synthesis_fix(tmp_path):
     """The discrimination check for the term above: only the review terms may move with it."""
-    rounds = [gate.quote(_report(tmp_path), review_rounds=n).provider_calls for n in (0, 1, 2)]
+    rounds = [gate.quote(_report(tmp_path), review_rounds=n, seat_timeout_sec=3600).provider_calls for n in (0, 1, 2)]
     assert rounds == [11, 15, 19], rounds
     assert rounds[0] == 3 * 3 + 1 + 1, \
         "with no review, only builders, synthesis and ultrareview's own fix are left"
@@ -142,8 +142,8 @@ def test_ultrareviews_own_fix_is_an_invocation_the_quote_cannot_leave_out(tmp_pa
     `--no-ultra` is the discrimination check and the answer to "then make it optional": it is
     a parameter, and turning it off must move exactly those three scalars and nothing else.
     """
-    on = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
-    off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, ultrareview=False)
+    on = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, ultrareview=False, seat_timeout_sec=3600)
     assert (on.provider_calls, on.setup_runs, on.verify_runs) == (19, 18, 9), on.lines
     assert (off.provider_calls, off.setup_runs, off.verify_runs) == (18, 17, 8), off.lines
     assert "$" in on.ultrareview and "$" not in off.ultrareview
@@ -156,9 +156,9 @@ def test_the_council_default_retry_setting_is_shown_but_never_summed(tmp_path):
     pinned by differencing the review term OUT of the total, which is the only way to show
     which of the two numbers the total was built from.
     """
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     assert any(str(2 * 3 * 3) in line and "--retries 2" in line for line in q.lines), q.lines
-    no_review = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=0)
+    no_review = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=0, seat_timeout_sec=3600)
     assert q.provider_calls - no_review.provider_calls == 2 * 3 + 2, \
         "two rounds cost 6 reviewer calls and 2 fixes — the wired --retries 0 term, not 18"
 
@@ -167,7 +167,7 @@ def test_ultrareview_is_quoted_as_money_not_as_a_count(tmp_path):
     """§13.1: $5-25 in usage credits, or one of three one-time free runs. An integer field
     would render as one more row in a column of call counts — free, beside numbers that
     are."""
-    q = gate.quote(_report(tmp_path))
+    q = gate.quote(_report(tmp_path), seat_timeout_sec=3600)
     assert "$" in q.ultrareview and "5-25" in q.ultrareview, q.ultrareview
     assert isinstance(q.ultrareview, str)
     assert str(q.provider_calls) not in q.ultrareview
@@ -179,7 +179,7 @@ def test_the_quote_names_the_per_candidate_setup_it_cannot_avoid(tmp_path):
     them — calibration is setup+verify TWICE (§5 step 3, and §5.2 says "x2"), and a builder
     retry gets a FRESH clone (§8.1), so the builder term is seats x attempts.
     """
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     calibration, builders, verifiers = 2, 3 * 3, 3 + 1 + 2 + 1
     assert q.setup_runs == calibration + builders + verifiers == 18, q.lines
     assert q.setup_runs >= 5, "the plan's floor holds, but at under a third of the real figure"
@@ -187,8 +187,8 @@ def test_the_quote_names_the_per_candidate_setup_it_cannot_avoid(tmp_path):
 
 def test_a_builder_retry_is_a_fresh_clone_and_so_a_fresh_setup(tmp_path):
     """§8.1's discrimination check: attempts is the only input that may move this term."""
-    one = gate.quote(_report(tmp_path), seats=3, attempts=1)
-    three = gate.quote(_report(tmp_path), seats=3, attempts=3)
+    one = gate.quote(_report(tmp_path), seats=3, attempts=1, seat_timeout_sec=3600)
+    three = gate.quote(_report(tmp_path), seats=3, attempts=3, seat_timeout_sec=3600)
     assert three.setup_runs - one.setup_runs == 3 * (3 - 1)
     assert three.verify_runs == one.verify_runs, \
         "a builder clone is never verified, so its retries cannot move the verify count"
@@ -198,7 +198,7 @@ def test_the_builders_own_clone_is_not_counted_as_a_verification(tmp_path):
     """§7 lists `Fverify` among a seat's four inventories and §6 overrules it in as many
     words: verification runs in a clone the builder never had, so running the gate where the
     builder was is not one of these runs."""
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     assert q.verify_runs == 2 + (3 + 1 + 2 + 1) == 9, q.lines
     assert q.verify_runs < q.setup_runs, "setup also runs in every builder clone"
 
@@ -211,7 +211,7 @@ def test_peak_disk_is_every_clone_that_coexists_not_the_builder_fleet(tmp_path):
     only". Quoting the fleet as the peak is a scalar wrong by ~5x in the operator's favour, and
     a line naming the exclusion does not rescue a field something else compares.
     """
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     per_clone = 10.0 / 3           # §5.2's own upper bound, over the fleet it was stated for
     clones = 1 + 3 * 3 + (3 + 1 + 2 + 1) + 2   # + one review clone per round (§13)
     assert clones == 19
@@ -226,8 +226,8 @@ def test_a_preserved_retry_clone_is_disk_the_peak_has_to_carry(tmp_path):
     extra attempts per seat is six more clones on disk — and not one more verify, since a
     builder clone is never the tree a candidate is verified in (§6).
     """
-    one = gate.quote(_report(tmp_path), seats=3, attempts=1)
-    three = gate.quote(_report(tmp_path), seats=3, attempts=3)
+    one = gate.quote(_report(tmp_path), seats=3, attempts=1, seat_timeout_sec=3600)
+    three = gate.quote(_report(tmp_path), seats=3, attempts=3, seat_timeout_sec=3600)
     assert three.peak_disk_gb - one.peak_disk_gb == pytest.approx(6 * 10.0 / 3, abs=0.05)
     assert three.verify_runs == one.verify_runs
 
@@ -238,19 +238,82 @@ def test_every_line_of_the_quote_names_the_section_it_came_from(tmp_path):
     conditional first line is the one that had no citation."""
     repo = make_repo(tmp_path)
     _git(repo, "update-index", "--skip-worktree", "seed.txt")
-    for q in (gate.quote(_report(tmp_path)), gate.quote(preflight.inspect_repo(repo))):
+    for q in (gate.quote(_report(tmp_path), seat_timeout_sec=3600), gate.quote(preflight.inspect_repo(repo), seat_timeout_sec=3600)):
         assert q.lines
         missing = [line for line in q.lines if "§" not in line]
         assert missing == [], missing
 
 
-def test_wall_clock_is_declined_rather_than_invented(tmp_path):
-    """§5.2 asks for wall clock, and preflight cannot answer: the setup and verify commands
-    are named at §5 step 2, which is why `Report.gate_surface` is None. A number here would
-    be one nobody measured."""
+def test_the_quote_bounds_wall_clock_rather_than_declining_to(tmp_path):
+    """§5.2 lists wall clock. A duration cannot be measured statically; a BOUND can, because
+    builders run serially under one window each. This test replaces the one that asserted the
+    decline — `preflight` still cannot answer, but the window is the caller's and it is now
+    required rather than invented here.
+
+    THE ASSERTION QUOTES THE RENDERED CASE. The line writes `UPPER BOUND` in capitals, on
+    purpose, because the whole risk is a reader taking it for an estimate — a `.lower()` here
+    would pass over a line that stopped shouting."""
     report = _report(tmp_path)
     assert report.gate_surface is None
-    assert any("wall clock: not quoted" in line for line in gate.quote(report).lines)
+    q = gate.quote(report, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    line = next(l for l in q.lines if l.startswith("wall clock"))
+    assert "UPPER BOUND" in line
+    assert "9.0 h" in line and "not quoted" not in line
+
+
+def test_the_wall_clock_line_says_what_it_excludes(tmp_path):
+    """A bound that named only what it covers reads as a ceiling for the whole run."""
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2,
+                   seat_timeout_sec=3600)
+    line = next(l for l in q.lines if l.startswith("wall clock"))
+    assert "setup" in line and "verify" in line
+
+
+def test_an_unusable_seat_window_is_refused_and_never_defaulted(tmp_path):
+    """§19's second-timeout-mechanism failure arriving through a default."""
+    for bad in (0, -1, None, True, "3600"):
+        with pytest.raises(gate.GateError, match="seat_timeout_sec"):
+            gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2,
+                       seat_timeout_sec=bad)
+
+
+def test_must_show_screens_the_setup_command_too(tmp_path):
+    """Setup runs 18 times on a default run — the more expensive miss, and the one the
+    detector was never pointed at.
+
+    THE ASSERTION HAS TO PICK A BRANCH. Both branches of the new block start with the words
+    `setup command`, so `any("setup command" in l)` would match the CLEAN one too and pass
+    with the detector wired to nothing. What distinguishes them is the finding."""
+    repo = make_repo(tmp_path)
+    write(repo, "Makefile", "setup:\n\t@claude -p 'go'\n")
+    commit_all(repo, "gates")
+    report = preflight.inspect_repo(repo)
+    q = gate.quote(report, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    lines = gate.must_show(report, q, verify.Command.parse([["true"]]),
+                           setup=verify.Command.parse([["make", "setup"]]))
+    hit = [l for l in lines if "the setup command reaches a provider CLI" in l]
+    assert len(hit) == 1, lines
+    assert f"setup runs {q.setup_runs} times" in hit[0]
+    assert not any("no provider spend was found in it" in l for l in lines)
+
+
+def test_a_clean_setup_command_says_it_was_followed_and_claims_nothing_more(tmp_path):
+    """The other branch, asserted separately — because "screened and clean" and "screened and
+    dirty" are the two records this whole argument is about keeping apart."""
+    report = _report(tmp_path)
+    q = gate.quote(report, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    lines = gate.must_show(report, q, verify.Command.parse([["true"]]),
+                           setup=verify.Command.parse([["true"]]))
+    assert any("no provider spend was found in it" in l for l in lines)
+    assert not any("the setup command reaches a provider CLI" in l for l in lines)
+
+
+def test_must_show_refuses_a_missing_setup_command(tmp_path):
+    """An unscreened command and a screened-clean one must not leave the same record."""
+    report = _report(tmp_path)
+    q = gate.quote(report, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
+    with pytest.raises(gate.GateError, match="setup Command"):
+        gate.must_show(report, q, verify.Command.parse([["true"]]), setup=None)
 
 
 def test_a_refused_run_is_named_above_its_price(tmp_path):
@@ -258,19 +321,19 @@ def test_a_refused_run_is_named_above_its_price(tmp_path):
     happen. Paired with the clean repository below, which must not carry the line."""
     repo = make_repo(tmp_path)
     _git(repo, "update-index", "--skip-worktree", "seed.txt")
-    blocked = gate.quote(preflight.inspect_repo(repo))
+    blocked = gate.quote(preflight.inspect_repo(repo), seat_timeout_sec=3600)
     assert blocked.lines[0].startswith("refused first:"), blocked.lines
 
 
 def test_a_clean_repository_is_priced_without_a_refusal_line(tmp_path):
-    assert not gate.quote(_report(tmp_path)).lines[0].startswith("refused first:")
+    assert not gate.quote(_report(tmp_path), seat_timeout_sec=3600).lines[0].startswith("refused first:")
 
 
 def test_the_quote_refuses_anything_that_is_not_a_preflight_report(tmp_path):
     with pytest.raises(gate.GateError):
-        gate.quote(str(make_repo(tmp_path)))
+        gate.quote(str(make_repo(tmp_path)), seat_timeout_sec=3600)
     with pytest.raises(gate.GateError):
-        gate.quote(_report(tmp_path), seats=0)
+        gate.quote(_report(tmp_path), seats=0, seat_timeout_sec=3600)
 
 
 # --------------------------------------------------------------------- the §5.2 detector
@@ -772,7 +835,7 @@ def _state(monkeypatch, tmp_path):
 
 def _report_and_quote(tmp_path):
     r = _report(tmp_path)
-    return r, gate.quote(r)
+    return r, gate.quote(r, seat_timeout_sec=3600)
 
 
 AUTHOR = ("Ada Lovelace", "ada@example.invalid")
@@ -809,7 +872,7 @@ def test_a_repository_whose_gate_cannot_be_seen_is_shown_to_the_human(tmp_path):
     bare = make_repo(tmp_path, "bare")
     r = preflight.inspect_repo(bare)
     cmd = verify.Command.parse([["true"]])
-    shown = gate.must_show(r, gate.quote(r), cmd)
+    shown = gate.must_show(r, gate.quote(r, seat_timeout_sec=3600), cmd, setup=verify.Command.parse([['true']]))
     assert any(gate.GATE_SURFACE_EMPTY in line for line in shown), shown
 
     gated = make_repo(tmp_path, "gated")
@@ -817,7 +880,7 @@ def test_a_repository_whose_gate_cannot_be_seen_is_shown_to_the_human(tmp_path):
     write(gated, "tests/test_x.py", "def test_x():\n    pass\n")
     commit_all(gated, "a gate the rules can see")
     r2 = preflight.inspect_repo(gated)
-    shown2 = gate.must_show(r2, gate.quote(r2), cmd)
+    shown2 = gate.must_show(r2, gate.quote(r2, seat_timeout_sec=3600), cmd, setup=verify.Command.parse([['true']]))
     assert not any(gate.GATE_SURFACE_EMPTY in line for line in shown2), shown2
     assert any("Makefile" in line and "tests/test_x.py" in line for line in shown2), shown2
 
@@ -842,7 +905,7 @@ def test_the_empty_surface_is_measured_with_the_command_or_it_is_a_false_alarm(t
     assert verify.gate_surface(r.facts.root, r.contract,
                                command=verify.Command.parse([["./check.sh"]])) == ("check.sh",)
 
-    shown = gate.must_show(r, gate.quote(r), verify.Command.parse([["./check.sh"]]))
+    shown = gate.must_show(r, gate.quote(r, seat_timeout_sec=3600), verify.Command.parse([["./check.sh"]]), setup=verify.Command.parse([['true']]))
     assert not any(gate.GATE_SURFACE_EMPTY in line for line in shown), shown
 
 
@@ -863,12 +926,12 @@ def test_the_generator_contract_line_is_read_off_the_report_it_was_handed(tmp_pa
     r = _report(tmp_path)
     cmd = verify.Command.parse([["true"]])
     assert r.contract.relations == (), "the premise: a real repository declares none"
-    assert any(gate.GENERATOR_CONTRACT_EMPTY in line for line in gate.must_show(r, gate.quote(r),
-                                                                                cmd))
+    assert any(gate.GENERATOR_CONTRACT_EMPTY in line for line in gate.must_show(r, gate.quote(r, seat_timeout_sec=3600),
+                                                                                cmd, setup=verify.Command.parse([['true']])))
 
     declared = dataclasses.replace(
         r, contract=r.contract.__class__(id="render-x", relations=(("shared/**", "gen/**"),)))
-    shown = gate.must_show(declared, gate.quote(declared), cmd)
+    shown = gate.must_show(declared, gate.quote(declared, seat_timeout_sec=3600), cmd, setup=verify.Command.parse([['true']]))
     assert not any(gate.GENERATOR_CONTRACT_EMPTY in line for line in shown), shown
     assert any("render-x" in line and "shared/** -> gen/**" in line for line in shown), \
         "an operator agreeing to a contract has to be shown which rewrites it admits"
@@ -891,7 +954,7 @@ def test_reading_the_surface_at_this_gate_runs_nothing_the_repository_supplied(t
     _git(repo, "config", "core.fsmonitor", str(hook))
 
     r = preflight.inspect_repo(repo)
-    gate.must_show(r, gate.quote(r), verify.Command.parse([["true"]]))
+    gate.must_show(r, gate.quote(r, seat_timeout_sec=3600), verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']]))
     assert not (repo / "HOOK-RAN").exists(), "git ran the repository's fsmonitor for us"
 
     _git(repo, "status", "--porcelain")
@@ -909,7 +972,7 @@ def test_every_gap_the_gate_shows_is_one_the_confirmation_can_cite(tmp_path):
     rather than in a handover that never mentions it.
     """
     r, q = _report_and_quote(tmp_path)
-    shown = gate.must_show(r, q, verify.Command.parse([["true"]]))
+    shown = gate.must_show(r, q, verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']]))
     named = {line.split(":")[0][len("gap "):] for line in shown if line.startswith("gap ")}
     assert named <= set(gate.ACCEPTABLE_GAPS), named
     assert {gate.REMOTES_AND_CONFIGURATION,
@@ -933,12 +996,12 @@ def test_the_gate_shows_the_refusals_the_operator_may_not_answer_past(tmp_path):
     _git(repo, "update-index", "--skip-worktree", "seed.txt")
     r = preflight.inspect_repo(repo)
 
-    shown = gate.must_show(r, gate.quote(r), verify.Command.parse([["true"]]))
+    shown = gate.must_show(r, gate.quote(r, seat_timeout_sec=3600), verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']]))
     assert set(preflight.refusals(r)) <= set(shown), shown
     assert any("§2.3" in line and "open_run" in line for line in shown), shown
     assert not any("§2.3" in line and "open_run" in line
-                   for line in gate.must_show(clean, gate.quote(clean),
-                                              verify.Command.parse([["true"]])))
+                   for line in gate.must_show(clean, gate.quote(clean, seat_timeout_sec=3600),
+                                              verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']])))
 
 
 def test_the_quote_shown_is_the_quote_that_was_priced(tmp_path):
@@ -946,13 +1009,13 @@ def test_the_quote_shown_is_the_quote_that_was_priced(tmp_path):
     `--no-ultra` is not shown the default's numbers. Differenced against the same report,
     which is the only way to show which quote the lines came from."""
     r = _report(tmp_path)
-    on, off = gate.quote(r), gate.quote(r, ultrareview=False)
+    on, off = gate.quote(r, seat_timeout_sec=3600), gate.quote(r, ultrareview=False, seat_timeout_sec=3600)
     cmd = verify.Command.parse([["true"]])
-    assert set(on.lines) <= set(gate.must_show(r, on, cmd))
-    assert set(off.lines) <= set(gate.must_show(r, off, cmd))
+    assert set(on.lines) <= set(gate.must_show(r, on, cmd, setup=verify.Command.parse([['true']])))
+    assert set(off.lines) <= set(gate.must_show(r, off, cmd, setup=verify.Command.parse([['true']])))
     assert on.lines != off.lines, "the premise: --no-ultra moves the lines it is shown by"
-    assert "$5-25" in " ".join(gate.must_show(r, on, cmd))
-    assert "$5-25" not in " ".join(gate.must_show(r, off, cmd)), \
+    assert "$5-25" in " ".join(gate.must_show(r, on, cmd, setup=verify.Command.parse([['true']])))
+    assert "$5-25" not in " ".join(gate.must_show(r, off, cmd, setup=verify.Command.parse([['true']]))), \
         "a run priced without ultrareview must not be shown its money line"
 
 
@@ -962,24 +1025,24 @@ def test_the_gate_shows_a_verify_command_that_spends_rather_than_only_pricing_it
     that reaches nothing."""
     repo = _repo_shaped_like_this_one(tmp_path)
     r = preflight.inspect_repo(repo)
-    q = gate.quote(r)
-    shown = gate.must_show(r, q, verify.Command.parse([["make", "eval"]]))
+    q = gate.quote(r, seat_timeout_sec=3600)
+    shown = gate.must_show(r, q, verify.Command.parse([["make", "eval"]]), setup=verify.Command.parse([['true']]))
     assert any(line.startswith(gate.SPENDS) for line in shown), shown
     assert not any(line.startswith(gate.SPENDS)
-                   for line in gate.must_show(r, q, verify.Command.parse([["true"]])))
+                   for line in gate.must_show(r, q, verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']])))
 
 
 def test_must_show_refuses_what_it_cannot_speak_for(tmp_path):
     r, q = _report_and_quote(tmp_path)
     cmd = verify.Command.parse([["true"]])
     with pytest.raises(gate.GateError):
-        gate.must_show(r.facts, q, cmd)
+        gate.must_show(r.facts, q, cmd, setup=verify.Command.parse([['true']]))
     with pytest.raises(gate.GateError):
-        gate.must_show(r, q.lines, cmd)
+        gate.must_show(r, q.lines, cmd, setup=verify.Command.parse([['true']]))
     with pytest.raises(gate.GateError):
         # An unparsed spec: the surface would resolve against no command and report the empty
         # condition for any repository at all.
-        gate.must_show(r, q, [["true"]])
+        gate.must_show(r, q, [["true"]], setup=verify.Command.parse([['true']]))
 
 
 def test_the_confirmation_records_both_policies_or_refuses(tmp_path):
@@ -1046,7 +1109,7 @@ def test_a_per_step_cwd_reaches_the_manifest_only_through_a_step(tmp_path, monke
     step = verify.Step(argv=("npm", "ci"), cwd="frontend", env={"CI": "1"}, timeout=90)
     c = gate.confirm(r, q, _answers(setup=[step], verify=[verify.Step(argv=("true",))]))
     assert c.setup == (step,)
-    back = runstate.read_manifest(gate.open_run(r, c, "r1", quote_=gate.quote(r))).setup[0]
+    back = runstate.read_manifest(gate.open_run(r, c, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))).setup[0]
     assert (back.argv, back.cwd, back.env, back.timeout) == \
         (("npm", "ci"), "frontend", {"CI": "1"}, 90)
 
@@ -1073,10 +1136,10 @@ def test_a_confirmed_run_writes_its_manifest_exactly_once(tmp_path, monkeypatch)
     _state(monkeypatch, tmp_path)
     r, q = _report_and_quote(tmp_path)
     c = gate.confirm(r, q, _answers())
-    run = gate.open_run(r, c, "r1", quote_=gate.quote(r))
+    run = gate.open_run(r, c, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert runstate.read_manifest(run).verify == c.verify
     with pytest.raises(gate.GateError, match="already has a directory"):
-        gate.open_run(r, c, "r1", quote_=gate.quote(r))
+        gate.open_run(r, c, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     with pytest.raises(runstate.ManifestError):
         runstate.write_manifest(run, runstate.read_manifest(run))
 
@@ -1094,7 +1157,7 @@ def test_the_manifest_records_the_repository_git_names(tmp_path, monkeypatch):
     r = preflight.inspect_repo(repo / "sub")
     assert str(r.repo) != str(r.facts.root), "the premise: the caller named a subdirectory"
 
-    run = gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1", quote_=gate.quote(r))
+    run = gate.open_run(r, gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers()), "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     m = runstate.read_manifest(run)
     assert m.repo_path == str(r.facts.root)
     assert runstate.drift(m, repo) == (), "t0 is taken here, so nothing has moved yet"
@@ -1114,7 +1177,7 @@ def test_the_run_records_the_baseline_it_was_opened_over(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     write(repo, "seed.txt", "the user's uncommitted work\n")
     r = preflight.inspect_repo(repo)
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1", quote_=gate.quote(r)))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers()), "r1", quote_=gate.quote(r, seat_timeout_sec=3600)))
 
     assert m.baseline_commit != m.base_commit, "the premise: B1 is a commit of its own"
     assert m.forge_refs == {m.baseline_ref: m.baseline_commit}
@@ -1136,7 +1199,7 @@ def test_a_refused_repository_never_reaches_a_manifest(tmp_path, monkeypatch):
     assert preflight.refusals(r), "the premise: this repository is refused"
 
     with pytest.raises(gate.GateError):
-        gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r))
+        gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert not state.exists(), "a refused run left a directory behind"
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
         "and no ref in the user's repository"
@@ -1168,8 +1231,8 @@ def test_the_gate_opens_a_run_on_a_repository_whose_identity_is_only_global(tmp_
 
     r = preflight.inspect_repo(repo)
     assert r.facts.unstaged, "the premise: dirty, so B1 is a commit that must be authored"
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
-                                             "r1", quote_=gate.quote(r)))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers()),
+                                             "r1", quote_=gate.quote(r, seat_timeout_sec=3600)))
     assert m.baseline_commit != m.base_commit, "B1 is a commit of its own, and it was authored"
 
 
@@ -1190,8 +1253,8 @@ def test_b1_carries_the_identity_the_operator_confirmed_and_not_the_one_lying_ab
     write(repo, "seed.txt", "the user's uncommitted work\n")
 
     r = preflight.inspect_repo(repo)
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
-                                             "r1", quote_=gate.quote(r)))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers()),
+                                             "r1", quote_=gate.quote(r, seat_timeout_sec=3600)))
     ident = _git(repo, "log", "-1", "--format=%an|%ae", m.baseline_commit).stdout.strip()
     assert ident == f"{AUTHOR[0]}|{AUTHOR[1]}", ident
 
@@ -1272,11 +1335,11 @@ def test_the_seats_and_attempts_the_quote_priced_are_what_the_manifest_records(t
     _state(monkeypatch, tmp_path)
     for run_id, seats, attempts in (("r1", 2, 4), ("r2", 5, 1)):
         r = _report(tmp_path)
-        q = gate.quote(r, seats=seats, attempts=attempts, review_rounds=2)
+        q = gate.quote(r, seats=seats, attempts=attempts, review_rounds=2, seat_timeout_sec=3600)
         c = gate.confirm(r, q, _answers())
         assert (c.seats, c.attempts) == (seats, attempts), \
             "the confirmation takes the shape off the quote that was shown"
-        m = runstate.read_manifest(gate.open_run(r, c, run_id, quote_=gate.quote(r)))
+        m = runstate.read_manifest(gate.open_run(r, c, run_id, quote_=gate.quote(r, seat_timeout_sec=3600)))
         assert (m.seats, m.attempts) == (seats, attempts)
         assert f"builders {seats}x{attempts}={seats * attempts}" in q.lines[0], \
             "and the price the operator read was computed from the same two numbers"
@@ -1305,7 +1368,7 @@ def test_a_quote_whose_shape_is_not_a_count_never_becomes_a_record(tmp_path, fie
     with pytest.raises(gate.GateError):
         gate.confirm(r, dataclasses.replace(q, **{field: value}), _answers())
     with pytest.raises(gate.GateError):
-        gate.quote(r, **{field: value})
+        gate.quote(r, **{field: value}, seat_timeout_sec=3600)
 
 
 @pytest.mark.parametrize("value", [-1, True, 2.0, "2", None])
@@ -1317,8 +1380,8 @@ def test_the_round_count_the_quote_prices_is_refused_the_same_way(tmp_path, valu
     spelling of it. Zero is the discrimination check below."""
     r = _report(tmp_path)
     with pytest.raises(gate.GateError):
-        gate.quote(r, review_rounds=value)
-    assert gate.quote(r, review_rounds=0).provider_calls < gate.quote(r).provider_calls, \
+        gate.quote(r, review_rounds=value, seat_timeout_sec=3600)
+    assert gate.quote(r, review_rounds=0, seat_timeout_sec=3600).provider_calls < gate.quote(r, seat_timeout_sec=3600).provider_calls, \
         "the discrimination check: the floor is 0 and a run priced there is a real run"
 
 
@@ -1342,17 +1405,17 @@ def test_a_run_shape_the_manifest_will_not_record_reaches_nothing_of_the_users(t
     write(repo, "seed.txt", "the user's uncommitted work\n")
     r = preflight.inspect_repo(repo)
     assert r.facts.unstaged, "the premise: dirty, so an opened run authors B1 and writes a ref"
-    q = gate.quote(r)
+    q = gate.quote(r, seat_timeout_sec=3600)
 
     for i, seats in enumerate((True, 2.0, "3")):
         with pytest.raises(gate.GateError):
             gate.open_run(r, gate.confirm(r, dataclasses.replace(q, seats=seats), _answers()),
-                          f"refused{i}", quote_=gate.quote(r))
+                          f"refused{i}", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert not state.exists(), "a run that will not happen left a directory behind"
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
         "and a ref in the user's own repository"
 
-    run = gate.open_run(r, gate.confirm(r, q, _answers()), "ok", quote_=gate.quote(r))
+    run = gate.open_run(r, gate.confirm(r, q, _answers()), "ok", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert runstate.read_manifest(run).seats == q.seats
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 1, \
         "the discrimination check: an ordinary shape does make the ref the rows above must not"
@@ -1388,7 +1451,7 @@ def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, t
     write(repo, "seed.txt", "the user's uncommitted work\n")
     r = preflight.inspect_repo(repo)
     assert r.facts.unstaged, "the premise: dirty, so an opened run authors B1 and writes a ref"
-    q = gate.quote(r)
+    q = gate.quote(r, seat_timeout_sec=3600)
 
     for i, bad in enumerate(_A_STEP_THE_MANIFEST_REFUSES):
         with pytest.raises((gate.GateError, verify.VerifyError)):
@@ -1396,7 +1459,7 @@ def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, t
             # what this wave moved: the value refuses itself now, so `confirm` is never
             # reached — and a test pinned to `confirm` would have to be rewritten to say so.
             step = verify.Step(argv=("true",), **bad)
-            gate.open_run(r, gate.confirm(r, q, _answers(**{key: [step]})), f"refused{i}", quote_=gate.quote(r))
+            gate.open_run(r, gate.confirm(r, q, _answers(**{key: [step]})), f"refused{i}", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert not state.exists(), "a run that will not happen left a directory behind"
     assert not list(state.rglob("baseline.index")), "…and the index copy B1 is built through"
     assert not list(state.rglob("events.jsonl")), "…and a journal for a run that never opened"
@@ -1404,7 +1467,7 @@ def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, t
         "…and a ref in the USER's own repository, which is the leftover that escapes the run dir"
 
     ok = verify.Step(argv=("true",), cwd="", env={"CI": "1"}, timeout=45)
-    run = gate.open_run(r, gate.confirm(r, q, _answers(**{key: [ok]})), "ok", quote_=gate.quote(r))
+    run = gate.open_run(r, gate.confirm(r, q, _answers(**{key: [ok]})), "ok", quote_=gate.quote(r, seat_timeout_sec=3600))
     # The discrimination check names the same four things: without it a fixture pointed at
     # the wrong state directory would pass every assertion above while measuring nothing, and
     # `baseline.index` in particular was reported ABSENT by the last wave.
@@ -1426,17 +1489,17 @@ def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):
     state = _state(monkeypatch, tmp_path)
     repo = _repo_shaped_like_this_one(tmp_path)
     r = preflight.inspect_repo(repo)
-    q = gate.quote(r)
+    q = gate.quote(r, seat_timeout_sec=3600)
     spending = gate.confirm(r, q, _answers(verify=[["make", "eval"]]))
     with pytest.raises(gate.GateError, match="provider CLI"):
-        gate.open_run(r, spending, "r1", quote_=gate.quote(r))
+        gate.open_run(r, spending, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert not state.exists(), "a refused run left a directory behind"
 
     priced = gate.confirm(r, q, _answers(verify=[["make", "precommit"]]))
     assert any(f.startswith(gate.REMEDY)
                for f in gate.provider_invoking_verify(repo, verify.Command(priced.verify))), \
         "the discrimination check: this command is priced rather than refused"
-    assert runstate.read_manifest(gate.open_run(r, priced, "r2", quote_=gate.quote(r))).verify == priced.verify
+    assert runstate.read_manifest(gate.open_run(r, priced, "r2", quote_=gate.quote(r, seat_timeout_sec=3600))).verify == priced.verify
 
 
 def test_the_gate_records_what_the_operator_accepted(tmp_path, monkeypatch):
@@ -1479,7 +1542,7 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
                     author=("Grace Hopper", "grace@example.invalid"))),
     ]
     for run_id, sheet in sheets:
-        run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id, quote_=gate.quote(r))
+        run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id, quote_=gate.quote(r, seat_timeout_sec=3600))
 
         events = journal.Journal(storage.journal_path(run)).read()
         done = [e for e in events if e.event == journal.done("confirm")]
@@ -1502,11 +1565,11 @@ def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch
     r, q = _report_and_quote(tmp_path)
     for bad in ({"setup": (), "verify": ()}, _answers()):
         with pytest.raises(gate.GateError):
-            gate.open_run(r, bad, "r1", quote_=gate.quote(r))
+            gate.open_run(r, bad, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     with pytest.raises(gate.GateError):
-        gate.open_run(r.facts, _confirmation(), "r1", quote_=gate.quote(r))
+        gate.open_run(r.facts, _confirmation(), "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     with pytest.raises(gate.GateError):
-        gate.open_run(r, _confirmation(), "", quote_=gate.quote(r))
+        gate.open_run(r, _confirmation(), "", quote_=gate.quote(r, seat_timeout_sec=3600))
 
 
 # Every field of a `Confirmation`, and one value the gate would have refused if the answer
@@ -1759,7 +1822,7 @@ def test_the_manifest_records_the_selection_the_run_was_opened_over(tmp_path, mo
     write(repo, "ignored.txt", "and not this one\n")
     r = preflight.inspect_repo(repo, ["wanted.txt"])
 
-    m = runstate.read_manifest(gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r)))
+    m = runstate.read_manifest(gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r, seat_timeout_sec=3600)))
     assert m.selected_paths == ("wanted.txt",)
     tree = _git(repo, "ls-tree", "-r", "--name-only", m.tracked_tree_oid).stdout.split()
     assert "wanted.txt" in tree and "ignored.txt" not in tree, \
@@ -1784,10 +1847,10 @@ def test_the_manifest_records_the_contract_the_report_carried(tmp_path, monkeypa
     declared = dataclasses.replace(
         r, contract=r.contract.__class__(id="render-x", relations=(("src/*", "gen/*"),)))
 
-    m = runstate.read_manifest(gate.open_run(declared, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(declared)))
+    m = runstate.read_manifest(gate.open_run(declared, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(declared, seat_timeout_sec=3600)))
     assert m.generator_contract.id == "render-x"
     assert m.generator_contract.relations == (("src/*", "gen/*"),)
-    plain = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r2", quote_=gate.quote(r)))
+    plain = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r2", quote_=gate.quote(r, seat_timeout_sec=3600)))
     assert plain.generator_contract.relations == (), \
         "a report that declared no relation gained one on the way to the manifest"
 
@@ -1800,7 +1863,7 @@ def test_the_manifest_says_when_the_run_was_opened(tmp_path, monkeypatch):
     _state(monkeypatch, tmp_path)
     r, q = _report_and_quote(tmp_path)
     before = datetime.now(timezone.utc)
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(r)))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(r, seat_timeout_sec=3600)))
     after = datetime.now(timezone.utc)
 
     stamp = datetime.fromisoformat(m.created_at)
@@ -1843,13 +1906,13 @@ def test_nothing_in_this_module_runs_the_repositorys_own_program(tmp_path, monke
     write(repo, "seed.txt", "uncommitted, so B is a commit of its own\n")
     r = preflight.inspect_repo(repo)
     cmd = verify.Command.parse([["make", "verify"]])
-    q = gate.quote(r)
-    gate.must_show(r, q, cmd)
+    q = gate.quote(r, seat_timeout_sec=3600)
+    gate.must_show(r, q, cmd, setup=verify.Command.parse([['true']]))
     c = gate.confirm(r, q, _answers(verify=[["make", "verify"]]))
     assert not (repo / "HOOK-RAN").exists() and not list(fired.iterdir()), \
         "something before the operator's answer ran a program the repository supplied"
 
-    gate.open_run(r, c, "r1", quote_=gate.quote(r))
+    gate.open_run(r, c, "r1", quote_=gate.quote(r, seat_timeout_sec=3600))
     assert not (repo / "HOOK-RAN").exists(), \
         "materialize dropped NO_DAEMON_CACHE from a call that loads the index"
     assert not list(fired.iterdir()), \
@@ -1875,14 +1938,14 @@ def test_the_priced_synthesis_fix_cap_is_the_recorded_one(tmp_path, monkeypatch)
     _state(monkeypatch, tmp_path)
     repo = make_repo(tmp_path)
     report = preflight.inspect_repo(repo)
-    q = gate.quote(report, review_rounds=2, ultrareview=True)
+    q = gate.quote(report, review_rounds=2, ultrareview=True, seat_timeout_sec=3600)
     assert (q.review_rounds, q.synthesis_fix_cap) == (2, 3)
-    assert gate.quote(report, review_rounds=2, ultrareview=False).synthesis_fix_cap == 2
-    assert gate.quote(report, review_rounds=0, ultrareview=False).synthesis_fix_cap == 0
+    assert gate.quote(report, review_rounds=2, ultrareview=False, seat_timeout_sec=3600).synthesis_fix_cap == 2
+    assert gate.quote(report, review_rounds=0, ultrareview=False, seat_timeout_sec=3600).synthesis_fix_cap == 0
 
     c = gate.confirm(report, q, _answers())
     assert (c.review_rounds, c.synthesis_fix_cap) == (2, 3)
-    run = gate.open_run(report, c, "r-cap", quote_=gate.quote(report))
+    run = gate.open_run(report, c, "r-cap", quote_=gate.quote(report, seat_timeout_sec=3600))
     back = runstate.read_manifest(run)
     assert (back.review_rounds, back.synthesis_fix_cap) == (2, 3), \
         "the priced number and the recorded number are the same number"
@@ -1904,8 +1967,8 @@ def test_the_ultrareview_decision_is_answered_once_and_must_match_what_was_price
     Quote the operator was shown, which is the invariant living in the value."""
     _state(monkeypatch, tmp_path)
     report = _report(tmp_path)
-    priced_on = gate.quote(report)
-    priced_off = gate.quote(report, ultrareview=False)
+    priced_on = gate.quote(report, seat_timeout_sec=3600)
+    priced_off = gate.quote(report, ultrareview=False, seat_timeout_sec=3600)
     assert priced_on.provider_calls > priced_off.provider_calls
 
     answers = _answers(ultrareview=True)
@@ -1938,8 +2001,8 @@ def test_the_ultrareview_answer_is_journalled_where_collect_will_look_for_it(tmp
     _state(monkeypatch, tmp_path)
     for run_id, on in (("ultra-on", True), ("ultra-off", False)):
         r = _report(tmp_path)
-        q = gate.quote(r, ultrareview=on)
-        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id, quote_=gate.quote(r))
+        q = gate.quote(r, ultrareview=on, seat_timeout_sec=3600)
+        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id, quote_=gate.quote(r, seat_timeout_sec=3600))
         done = [e for e in journal.Journal(storage.journal_path(run)).read()
                 if e.event == journal.done("confirm")]
         assert len(done) == 1, done
@@ -1966,16 +2029,16 @@ def test_the_gate_is_not_green_because_this_machine_has_room(tmp_path):
     autouse fixture that silenced the check everywhere would be indistinguishable from never
     having wired it."""
     r = _report(tmp_path)
-    q = gate.quote(r, seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(r, seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(gate, "free_bytes", lambda _p: 1_000_000_000)
-        lines = gate.must_show(r, q, verify.Command.parse([["true"]]))
+        lines = gate.must_show(r, q, verify.Command.parse([["true"]]), setup=verify.Command.parse([['true']]))
     assert "§4 rejects this run" in lines[0]
 
 
 def test_a_run_that_does_not_fit_is_refused(monkeypatch, tmp_path):
     monkeypatch.setattr(gate, "free_bytes", lambda _p: 1_000_000_000)
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     why = gate.refuse_for_disk(q, root=tmp_path)
     # The peak is READ off the quote rather than spelled here, so this assertion cannot drift
     # away from what the operator was actually shown.
@@ -1984,7 +2047,7 @@ def test_a_run_that_does_not_fit_is_refused(monkeypatch, tmp_path):
 
 def test_a_run_that_fits_is_not_refused(monkeypatch, tmp_path):
     monkeypatch.setattr(gate, "free_bytes", lambda _p: 500_000_000_000)
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     assert gate.refuse_for_disk(q, root=tmp_path) is None
 
 
@@ -1994,7 +2057,7 @@ def test_unreadable_free_space_is_not_read_as_enough_space(monkeypatch, tmp_path
     def _boom(_p):
         raise gate.GateError("free space at /x could not be read: I/O error")
     monkeypatch.setattr(gate, "free_bytes", _boom)
-    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     why = gate.refuse_for_disk(q, root=tmp_path)
     assert why and "could not be read" in why and "1.0 GB free" not in why
 
@@ -2004,6 +2067,6 @@ def test_open_run_cannot_be_reached_around_the_disk_check(tmp_path):
     refuse a short disk" — the tests above ask that — but "can a caller open a run without
     the check running at all", which a default would answer yes."""
     r = _report(tmp_path)
-    c = gate.confirm(r, gate.quote(r), _answers())
+    c = gate.confirm(r, gate.quote(r, seat_timeout_sec=3600), _answers())
     with pytest.raises(TypeError, match="quote_"):
         gate.open_run(r, c, "r1")

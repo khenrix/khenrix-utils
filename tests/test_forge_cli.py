@@ -1290,3 +1290,22 @@ def test_a_verify_log_within_the_cap_is_cited_by_size_and_digest(tmp_path, monke
     assert rc == 0, buf.getvalue()
     digest = hashlib.sha256(log.read_bytes()).hexdigest()[:12]
     assert f"log 9 byte(s) sha256:{digest}" in buf.getvalue()
+
+
+def test_a_sheet_with_no_setup_command_is_refused_rather_than_screened_as_clean(tmp_path,
+                                                                                monkeypatch):
+    """§5.2's provider-invocation screen covers setup, and setup runs once per builder clone
+    AND once per verifier clone — 18 times on a default run against 9 verifies. A sheet with
+    no setup command is not a run with no setup step; it is a run whose setup nobody screened,
+    and that must not reach the operator wearing the clean branch's sentence."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    sheet = tmp_path / "no-setup.json"
+    sheet.write_text(json.dumps({
+        "verify": [["true"]], "on_calibration_failure": "abort", "strategy": "size-gated",
+        "author": ["Ada Lovelace", "ada@example.invalid"]}))
+    repo = _a_clean_repo(tmp_path)
+    out = io.StringIO()
+    rc = cli.main(["--start", "--repo", str(repo), "--task", str(_a_task(tmp_path)),
+                   "--answers", str(sheet)], out=out)
+    assert rc != 0
+    assert "names no `setup` command" in out.getvalue()

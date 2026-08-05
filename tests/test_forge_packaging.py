@@ -515,7 +515,7 @@ def test_the_skill_quotes_the_numbers_gate_quote_actually_produces():
         report = preflight.inspect_repo(make_repo(Path(td)), ())
         body = _skill_prose()
         for ultra, expect in ((True, (19, 18, 9, 63.3)), (False, (18, 17, 8, 60.0))):
-            q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=ultra)
+            q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=ultra, seat_timeout_sec=3600)
             calls, setup, verify_, disk = expect
             assert (q.provider_calls, q.setup_runs, q.verify_runs, q.peak_disk_gb) == expect, \
                 f"ultrareview={ultra}: quote moved, so SKILL.md's cost paragraph is now wrong"
@@ -609,7 +609,7 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
 
     with tempfile.TemporaryDirectory() as td:
         report = preflight.inspect_repo(make_repo(Path(td)), ())
-        q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=True)
+        q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=True, seat_timeout_sec=3600)
 
     # WHO SPENDS THE TERM IS PART OF THE TERM. `synthesis` is one provider call and the ENGINE
     # deliberately does not make it: SKILL.md is explicit that there is no `--synthesize` —

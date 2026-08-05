@@ -248,12 +248,18 @@ def _confirmed_count(name, value, source, *, floor=1) -> int:
         raise GateError(str(e)) from e
 
 
-def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> Quote:
+def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
+          seat_timeout_sec) -> Quote:
     """Price the worst case of a run over `report`'s repository.
 
     A `preflight.Report` is required rather than a path: the quote reads the repository's
     SHAPE — that a static look happened, and what it already refuses — not its contents. A
     caller who has not run preflight has not reached §5 step 2 yet.
+
+    `seat_timeout_sec` IS REQUIRED AND HAS NO DEFAULT. It is §19's window, and §19 exists
+    because a second timeout mechanism silently degraded a three-seat panel to two. A default
+    here would be this function inventing the number the bound below is computed from, which
+    is the same defect one layer out.
 
     `ultrareview` defaults True because §13.1 is titled "default on"; `--no-ultra` sets it
     False. It moves three scalars and not just the money line, because §13.1's findings get
@@ -271,6 +277,12 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     seats = _confirmed_count("seats", seats, "§5.2's quote")
     attempts = _confirmed_count("attempts", attempts, "§5.2's quote")
     review_rounds = _confirmed_count("review_rounds", review_rounds, "§5.2's quote", floor=0)
+    if not isinstance(seat_timeout_sec, int) or isinstance(seat_timeout_sec, bool) \
+            or seat_timeout_sec < 1:
+        raise GateError(
+            f"seat_timeout_sec={seat_timeout_sec!r} is not a window this run can be bounded "
+            "by. §19 forbids a second timeout mechanism, so this does not pick one — resolve "
+            "it from `council.engine.MODE_TIMEOUT['forge']` and pass it.")
 
     builders = seats * attempts
     synthesis = 1
@@ -290,6 +302,12 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     # reads one tree together, which is what makes the round's bracket a single measurement.
     clones = _CALIBRATION_CLONES + builders + verifier_runs + review_rounds
     peak_disk_gb = round(clones * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
+
+    # SERIAL, WHICH IS WHY THE PRODUCT IS A BOUND. `runner.run` drives the seats in a
+    # generator over the fleet's names, one after another, and each attempt gets the whole
+    # window — so `seats x attempts x window` is the longest the builders can take and is
+    # reached only if every attempt runs to its cap.
+    builder_hours = builders * seat_timeout_sec / 3600.0
 
     ultra_line = ("$5-25 in usage credits, or one of the 3 one-time free runs (§13.1, default "
                   "on); --no-ultra opts out. Its fix is one of the post-review synthesis "
@@ -338,9 +356,13 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
         "temporary clones, which would otherwise reclaim the retries; nothing reclaims the rest "
         "until `--gc`. Not counted: the synthesis worktree, which §4 keeps a worktree so it "
         "shares the parent's objects",
-        "wall clock: not quoted — a duration is measured by running the gate, and §5 step 3's "
-        "calibration is the first time anything does. Nothing static reads one off a command, "
-        "and the surface `must_show` resolves is a file list rather than a timing",
+        f"wall clock: builders alone have an UPPER BOUND of {builder_hours:.1f} h = "
+        f"{builders} builder run(s) x {seat_timeout_sec}s, because §7's seats run one after "
+        "another and each attempt gets the whole §19 window. It is a bound and not an "
+        "estimate: a run whose seats all finish early takes a fraction of it. NOT INCLUDED — "
+        f"the {setup_runs} setup runs, the {verify_runs} verify runs, §13's review rounds, "
+        "§13.1's cloud review, and every clone. Those are shell and network time this engine "
+        "cannot bound statically, so the real ceiling is above this number rather than near it",
         "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
         "line §13.1 prices in money. Shell-command time is the wall-clock line above",
         "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
@@ -1232,7 +1254,7 @@ def refuse_for_disk(quote_, *, root=None) -> str | None:
             "space, reduce --seats or --attempts, and re-price.")
 
 
-def must_show(report, quote_, command) -> tuple[str, ...]:
+def must_show(report, quote_, command, *, setup) -> tuple[str, ...]:
     """Everything a human must see before answering §5 step 2, in the order it matters.
 
     THE COMMAND IS AN ARGUMENT BECAUSE THE FIRST LINE CANNOT BE READ OFF A REPORT.
@@ -1256,11 +1278,12 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
     the user's own. The other half of "engine-built" is that reading it must run nothing the
     repository supplies; `verify._enumerate` carries `NO_DAEMON_CACHE` so that holds here.
 
-    WHAT IS NOT SCREENED, stated because the detector's findings below read as though the
-    whole confirmation had been read: `provider_invoking_verify` is run on the VERIFY command
-    alone, which is §5.2's own scope and the vocabulary its findings are written in. A SETUP
-    command that reaches a provider CLI is not detected, and it is the more expensive miss —
-    setup runs once per builder clone and once per verifier clone.
+    BOTH COMMANDS ARE SCREENED, AND `setup` IS REQUIRED FOR THE REASON THE VERIFY COMMAND IS.
+    §5.2's rule is about a command that transitively reaches a provider CLI, and it is worse
+    for setup than for verify: setup runs once per builder clone AND once per verifier clone —
+    18 times on a default run against 9 verifies — so an unscreened setup is the more expensive
+    miss. `None` is refused rather than read as "no setup", because a command nobody screened
+    and one screened clean must not leave the same record.
     """
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
@@ -1272,6 +1295,9 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
         raise GateError(f"a verify Command is required, not {type(command).__name__}; the "
                         "surface below is §6.1's answer for the RESOLVED gate, and an "
                         "unresolved one reports the empty condition for any repository")
+    if getattr(setup, "steps", None) is None:
+        raise GateError(f"a setup Command is required, not {type(setup).__name__}; §5.2's "
+                        "provider-invocation rule covers it and it runs more often than verify")
 
     lines = list(preflight.refusals(report))
     if lines:
@@ -1353,6 +1379,20 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
             "repository's own generators do")
     lines += list(quote_.lines)
     lines += list(provider_invoking_verify(report.facts.root, command))
+
+    setup_findings = provider_invoking_verify(report.facts.root, setup)
+    if setup_findings:
+        lines.append(
+            f"the setup command reaches a provider CLI in {len(setup_findings)} place(s) — "
+            f"{'; '.join(setup_findings[:4])}"
+            f"{' …' if len(setup_findings) > 4 else ''}. §5.2 refuses one that does, or prices "
+            f"it as its own explicit line, and setup runs {quote_.setup_runs} times on this "
+            "quote — so this spend is a multiple of the quote above and is not in it")
+    else:
+        lines.append(
+            "setup command: followed to the end and no provider spend was found in it. That "
+            "is this reader's answer over what it can follow, never a claim that the command "
+            "is cheap")
     return tuple(lines)
 
 

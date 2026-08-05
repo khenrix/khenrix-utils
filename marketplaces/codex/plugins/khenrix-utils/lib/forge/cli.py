@@ -214,15 +214,24 @@ def start(args, *, out, make_launcher=None) -> int:
     timeout = _resolve_seat_timeout()
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
-                        review_rounds=args.review_rounds, ultrareview=not args.no_ultra)
+                        review_rounds=args.review_rounds, ultrareview=not args.no_ultra,
+                        seat_timeout_sec=timeout)
     if "verify" not in answers:
         # `must_show` resolves §6.1's surface from the confirmed command, so the sheet has to
         # carry one before the operator can be shown anything. `gate.confirm` gives the same
         # refusal for the same key; this one exists because the line above it needs the value.
         raise CliError("the answer sheet names no `verify` command, and §6.1's gate surface — "
                        "the first thing §5 step 2 shows — is resolved from it")
+    if "setup" not in answers:
+        # §5.2's provider-invocation rule covers setup and setup runs more often than verify.
+        # A sheet with no setup command is not a run with no setup step — it is a run whose
+        # setup nobody screened.
+        raise CliError("the answer sheet names no `setup` command, and §5.2's "
+                       "provider-invocation screen covers it — it runs once per builder clone "
+                       "and once per verifier clone, more often than verify does")
     command = verify.Command(steps=_steps(answers["verify"]))
-    for line in gate.must_show(report, quote_, command):
+    for line in gate.must_show(report, quote_, command,
+                               setup=verify.Command(steps=_steps(answers["setup"]))):
         print(f"  {line}", file=out)
 
     # ONE DECISION, WRITTEN ONCE. `--no-ultra` priced the quote above and answers §5 step 2

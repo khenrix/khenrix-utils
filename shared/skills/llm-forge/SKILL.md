@@ -36,6 +36,11 @@ the one case where you kept nothing at all.
 > verifier + 2 review — none of which is reclaimed until you run `--gc`. The cloud ultrareview is
 > priced separately in **usage credits ($5–25, or one of three one-time free runs)**.
 >
+> The gate also prints a **wall-clock upper bound** for the builders — `seats × attempts ×`
+> the §19 window, ~9 h on a default run, because the seats run one after another and each
+> attempt gets the whole window. It is a bound, not an estimate, and it excludes setup, verify,
+> review and the cloud review, so the real ceiling is above it.
+>
 > **That quote is an UPPER BOUND, and about half of it cannot be spent today.** §13's review
 > rounds and their post-round fixes — 9 of the 19 calls — are priced for a stage that has no
 > production caller: `review.run_round` and `review.loop` are built and tested and nothing
