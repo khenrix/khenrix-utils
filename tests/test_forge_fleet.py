@@ -777,3 +777,18 @@ def test_clone_seat_refuses_a_manifest_path_reached_through_a_symlinked_director
     with pytest.raises(fleet.SeatError, match=r"passes through 'pkg'"):
         fleet.clone_seat(repo, tampered, tmp_path / "seats" / "s1",
                          name="claude", identity=IDENT)
+
+
+def test_a_malformed_baseline_ref_is_a_fleet_error_not_an_indexerror(tmp_path):
+    """REPRODUCED: `baseline.ref.split("/")[2]` raised a bare `IndexError` for `refs/short`.
+    An `IndexError` out of a public function is an error class no caller of this module knows
+    to catch, so a malformed baseline surfaced as a crash rather than as this module's own
+    refusal naming the value that was wrong."""
+    class BadRef:
+        ref = "refs/short"
+        commit = "a" * 40
+        filesystem_manifest = {}
+
+    with pytest.raises(fleet.FleetError, match="third component"):
+        fleet.clone_seat(tmp_path, BadRef(), tmp_path / "x", name="a",
+                         identity=("A", "a@b.invalid"))

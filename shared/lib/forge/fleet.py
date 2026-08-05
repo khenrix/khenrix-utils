@@ -192,7 +192,18 @@ def clone_seat(repo, baseline, dest, *, name, identity, template_dir=None) -> Se
             f"cannot give seat {name!r} an identity: a name AND an email are required, "
             f"got {identity!r}. Refusing to write an empty one — the seat would look "
             "healthy and then be unable to commit.")
-    run_id = baseline.ref.split("/")[2]     # refs/khenrix-forge/<run-id>/base
+    # NAMED, NOT INDEXED BLIND. `baseline.ref.split("/")[2]` raised a bare `IndexError` for
+    # any ref shorter than three components — reproduced with `refs/short` — and an
+    # `IndexError` out of a public function is an error class no caller of this module knows
+    # to catch, so a malformed baseline surfaced as a crash rather than as this module's own
+    # refusal saying which value was wrong.
+    parts = baseline.ref.split("/")
+    if len(parts) < 3 or not parts[2]:
+        raise FleetError(
+            f"a baseline ref carries the run id as its third component "
+            f"(refs/khenrix-forge/<run-id>/base), and {baseline.ref!r} has "
+            f"{len(parts)} — this seat cannot be told which run it belongs to.")
+    run_id = parts[2]
     branch = f"forge/{run_id}/{name}"
     # Asked of git rather than pattern-matched here, and asked BEFORE the clone: a name
     # that cannot be a ref otherwise surfaces as a raw GitError from `checkout -b` after

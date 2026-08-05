@@ -227,6 +227,42 @@ class Quote:
     # survived a suite that checked the total against the prose.
     terms: dict
 
+    def __post_init__(self) -> None:
+        """A quote is what an operator AGREES TO, so it may not carry a nonsense number.
+
+        REPRODUCED: `Quote(provider_calls=-5, seats=-1, …)` was accepted whole, and every
+        field downstream reads the run's shape off this record — `confirm` cross-checks it,
+        `open_run` writes it into the manifest, §4's disk rejection compares against
+        `peak_disk_gb`. A negative call count shown at §5 step 2 is a price nobody could
+        agree to, and this is the one dataclass in the module with nothing standing behind
+        its constructor.
+
+        `quote` VALIDATES ITS INPUTS ALREADY, through `_confirmed_count`, so nothing this
+        module builds can fail here. What this closes is the OTHER door: §12.4's consumer
+        and every test builds a `Quote` directly, exactly as `Report` and `Confirmation` are
+        built directly — and both of those validate for the same reason.
+        """
+        for name in ("provider_calls", "setup_runs", "verify_runs", "seats", "attempts",
+                     "review_rounds", "synthesis_fix_cap"):
+            v = getattr(self, name)
+            # `bool` is an `int` subclass and is what a boolean-ish config parse leaves
+            # behind — the same value `_confirmed_count` refuses one function down.
+            if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+                raise GateError(
+                    f"a quote's {name} is a count an operator can agree to, not {v!r}")
+        if not isinstance(self.peak_disk_gb, (int, float)) or \
+                isinstance(self.peak_disk_gb, bool) or self.peak_disk_gb < 0:
+            raise GateError(
+                f"a quote's peak_disk_gb is what §4 refuses a run against, not "
+                f"{self.peak_disk_gb!r}")
+        if not isinstance(self.ultrareview, str) or not self.ultrareview.strip():
+            raise GateError(
+                "a quote's ultrareview line is §13.1's price in the operator's own words, "
+                f"not {self.ultrareview!r}")
+        if not isinstance(self.terms, dict):
+            raise GateError(f"a quote's terms are a mapping of stage to count, not "
+                            f"{type(self.terms).__name__}")
+
 
 def _confirmed_count(name, value, source, *, floor=1) -> int:
     """`runstate`'s own predicate for a run-shape count, raised in this module's vocabulary.

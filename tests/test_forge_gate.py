@@ -2104,3 +2104,22 @@ def test_a_one_seat_run_is_told_it_cannot_fuse_before_it_spends(tmp_path):
     q3 = gate.quote(r, seats=3, attempts=1, review_rounds=0, seat_timeout_sec=3600)
     assert not any("cannot produce a FUSION" in l for l in q3.lines), \
         "the line must not fire on the fleet the skill is actually for"
+
+
+def test_a_quote_cannot_carry_a_number_nobody_could_agree_to(tmp_path):
+    """REPRODUCED: `Quote(provider_calls=-5, seats=-1, …)` was accepted whole. A quote is
+    what an operator AGREES TO at §5 step 2, and everything downstream reads the run's shape
+    off it — `confirm` cross-checks it, `open_run` writes it into the manifest, §4's disk
+    rejection compares against `peak_disk_gb`.
+
+    `quote` validates its own inputs through `_confirmed_count`, so this closes the OTHER
+    door: §12.4's consumer and every test build a `Quote` directly, exactly as `Report` and
+    `Confirmation` are built directly — and both of those validate for the same reason."""
+    good = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2,
+                      seat_timeout_sec=3600)
+    for field, bad in (("provider_calls", -5), ("seats", -1), ("attempts", True),
+                       ("peak_disk_gb", -1.0), ("ultrareview", ""), ("terms", ())):
+        with pytest.raises(gate.GateError):
+            dataclasses.replace(good, **{field: bad})
+    # ...and the real quote still round-trips, or the guard is refusing its own producer.
+    assert dataclasses.replace(good, seats=3) == good
