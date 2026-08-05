@@ -194,6 +194,33 @@ def run() -> int:
         ok.append(("backup of an absent file is None",
                    reconcile.backup(Path(td) / "absent.json") is None))
 
+    # AN ORPHANED MARKER DESTROYED USER TEXT, in two steps. Reproduced: a file holding a
+    # BEGIN with no END reads as "no managed block", so the ADD branch appends a whole block
+    # below it; the NEXT run then finds the ORPHAN's BEGIN and the NEW block's END, treats
+    # everything between as the managed span, and replaces it — taking every line the user
+    # wrote in between. Reconcile's stated invariant is that it never removes
+    # machine-specific config.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "house-style.md").write_text("HOUSE\n")
+        tgt = d / "CLAUDE.md"
+        caps = {"_dir": d, "instructions": {"source": "house-style.md", "overlays": {},
+                                            "targets": {"claude": str(tgt)}}}
+        for label, body in (
+                ("an unpaired begin",
+                 "notes\n" + reconcile.MANAGED_BEGIN + "\nIMPORTANT USER TEXT\n"),
+                ("an unpaired end",
+                 "notes\n" + reconcile.MANAGED_END + "\nIMPORTANT USER TEXT\n"),
+                ("inverted markers",
+                 reconcile.MANAGED_END + "\nIMPORTANT USER TEXT\n" + reconcile.MANAGED_BEGIN)):
+            tgt.write_text(body)
+            rows, apply = reconcile.instructions_report("claude", caps)
+            wrote = apply(True)
+            ok.append((f"{label} is refused and writes nothing",
+                       rows[0][1] == "REFUSED"
+                       and "IMPORTANT USER TEXT" in tgt.read_text()
+                       and all("nothing written" in w for w in wrote)))
+
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

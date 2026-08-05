@@ -873,6 +873,29 @@ def instructions_report(cli: str, caps: dict):
     block = managed_block(caps, cli)
     cur = target.read_text() if target.exists() else ""
     i, j = cur.find(MANAGED_BEGIN), cur.find(MANAGED_END)
+    # AN ORPHANED MARKER IS REFUSED, NEVER GUESSED AT, and it DESTROYED user text before
+    # this check existed. Reproduced in two steps: a file holding a BEGIN with no END (a
+    # truncated write, a hand edit, a bad merge) reads as `present = False`, so the ADD
+    # branch APPENDS a whole block below it. The next run then finds the ORPHAN's BEGIN and
+    # the NEW block's END, treats everything between as the managed span, and replaces it —
+    # taking every line the user had written in between with it.
+    #
+    # Reconcile's stated invariant is that it never removes machine-specific config, so the
+    # only safe answer to "these markers do not pair" is to say so and change nothing.
+    if (i == -1) != (j == -1):
+        which = "begin" if i != -1 else "end"
+        rows = [[str(target), "REFUSED",
+                 f"a khenrix-managed {which} marker has no partner — this file's managed "
+                 "span cannot be identified, and guessing at it would replace whatever sits "
+                 "between the orphan and the next marker. Repair the markers by hand."]]
+        return rows, (lambda update_drift: [
+            f"instructions: {target} has an unpaired khenrix-managed marker; nothing written"])
+    if i != -1 and j < i:
+        rows = [[str(target), "REFUSED",
+                 "the khenrix-managed end marker precedes its begin marker — the span is "
+                 "not readable and replacing it would delete the file's own content"]]
+        return rows, (lambda update_drift: [
+            f"instructions: {target} has inverted khenrix-managed markers; nothing written"])
     present = i != -1 and j != -1
     if present and cur[i:j + len(MANAGED_END)] == block:
         rows = [[str(target), "MATCH", "house-style block up to date"]]
