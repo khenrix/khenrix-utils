@@ -9,8 +9,10 @@ what came out through §8's four dimensions, and writes the seat's record where 
 builder never had and runs §6's five steps there, in §6's order. `reclassify_seat` feeds §6's
 answer back into §8. `run` is the loop that calls all three, in that order, for every seat the
 §5 gate priced — journalled write-ahead, driven off the run directory and nothing else, and
-stopping at three verified candidates with NOTHING CHOOSING BETWEEN THEM: §10 through §13 have
-no implementation, so the phase after `comparing` would be one with nothing in it.
+stopping at three verified candidates with NOTHING CHOOSING BETWEEN THEM. §10 through §13 are
+built and tested; what this loop does not do is REACH them, and the front end is where that
+edge belongs — a phase taken here would choose between candidates inside the loop that made
+them.
 
 **`launch` IS INJECTED, AND NOTHING IN THIS PACKAGE'S SUITE INVOKES A REAL PROVIDER.** Every
 test passes a fake that writes into the seat and hands back a provider-shaped record, so the
@@ -1663,7 +1665,8 @@ def run(run_dir, repo, *, identity, launch) -> tuple:
 
     IT STOPS AT `comparing`, with the fleet's candidates verified on disk and NOTHING CHOOSING
     BETWEEN THEM. §10 through §13 — the claim ledger, the agreement rule, the strategy and the
-    review — have no implementation, so the next edge is a phase with nothing in it. The
+    review — are built and tested; this loop reaches none of them, and that is the front end's
+    edge to take rather than a gap in the modules. The
     returned tuple is one `SeatResult` per seat that produced one, which is not always
     `manifest.seats` of them: a seat every one of whose attempts was REFUSED has no verdict to
     return, and the loop reports that by absence rather than by inventing one. Its record is

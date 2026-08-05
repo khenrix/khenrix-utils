@@ -1000,3 +1000,161 @@ def test_start_prints_the_absolute_path_of_the_brief_it_wrote(tmp_path, monkeypa
     want = briefmod.brief_path(run_dir / handover.SYNTHESIS)
     assert f"fusion brief: {want}" in buf.getvalue()
     assert want.is_absolute()
+
+
+def _a_ledger_payload(*, claim="records carry a monotonic seq"):
+    """§10's shape as a dict, one row, one mechanically-checkable criterion.
+
+    EVERY FIELD `ledger._decode` REQUIRES IS HERE, and the first draft of this helper had
+    eight of them missing — so the one test that proved the verb WORKS failed while the two
+    refusal tests passed, which is the shape where a fixture certifies its own bugs. Measured
+    against the real decoder: `Ledger` needs `degrade_threshold_bytes`; `Row` needs
+    `requirement_span` and `requirement_sha256`; `Criterion` carries all EIGHT of `kind`,
+    `text`, `path`, `symbol`, `node_id`, `sha256`, `query`, `trace` — absent is refused, and
+    the four a `symbol` criterion does not use must be present as `None` rather than omitted.
+    """
+    from forge import ledger as ledgermod
+    return {
+        "version": ledgermod.VERSION,
+        "union_diff_bytes": 1,
+        # RECORDED, NOT DEFAULTED: `_check` refuses a threshold that is not the one this
+        # engine applies, and refuses a `degraded` flag that disagrees with the arithmetic.
+        "degrade_threshold_bytes": ledgermod.DEGRADE_UNION_DIFF_BYTES,
+        "degraded": False,
+        "rows": [{
+            "id": ledgermod.row_id("R1", claim),
+            "requirement_id": "R1",
+            "requirement_span": "TASK.md:1-4",
+            "requirement_sha256": "0" * 64,
+            "kind": "behavior",
+            "component": "core",
+            "semantic_claim": claim,
+            "status": "accepted",
+            "dependencies": [],
+            "seat_evidence": [{"seat": "claude", "stance": "supports",
+                               "evidence": "seq column added", "prompt_sha256": "0" * 64}],
+            "counterevidence": "",
+            "acceptance_criteria": [{"kind": "symbol", "text": "a.py defines seq",
+                                     "path": "a.py", "symbol": "seq", "node_id": None,
+                                     "sha256": None, "query": None, "trace": None}],
+            "synthesis_evidence": None,
+            "verification_receipt": None,
+            "risk": "low",
+            "rationale": "the task asks for it",
+        }],
+    }
+
+
+def _a_ledger_file(path, **kw):
+    path.write_text(json.dumps(_a_ledger_payload(**kw)), encoding="utf-8")
+    return path
+
+
+def test_the_fixture_this_suite_calls_valid_is_one_the_decoder_accepts(tmp_path):
+    """THE TEST THAT WOULD HAVE CAUGHT THE FIXTURE. Without it, "the verb persists a valid
+    ledger" and "the verb refuses an invalid one" both pass over a fixture that is invalid,
+    and the suite reports a working verb it never exercised."""
+    from forge import ledger as ledgermod
+    l = ledgermod.decode_payload(_a_ledger_payload())
+    assert len(l.rows) == 1 and ledgermod.ledger_hash(l)
+
+
+def test_ledger_verb_persists_the_orchestrators_ledger(tmp_path, monkeypatch):
+    """§13's `assert_ledger_is_out_of_reach` REFUSES a run with no ledger, so without this
+    verb the review this engine prices can never be convened at all."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    src = _a_ledger_file(tmp_path / "ledger.json")
+    buf = io.StringIO()
+    rc = cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir),
+                   "--ledger-file", str(src)], out=buf)
+    assert rc == 0, buf.getvalue()
+    assert storage.ledger_path(run_dir).exists()
+    assert "1 row(s)" in buf.getvalue()
+
+
+def test_the_persisted_ledger_is_the_one_the_orchestrator_handed_in(tmp_path, monkeypatch):
+    """Round-tripped through the module's own reader, so "written" and "written as what was
+    given" stay two claims."""
+    from forge import ledger as ledgermod
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    src = _a_ledger_file(tmp_path / "ledger.json")
+    cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir),
+              "--ledger-file", str(src)], out=io.StringIO())
+    want = ledgermod.decode_payload(_a_ledger_payload())
+    assert ledgermod.ledger_hash(ledgermod.read_ledger(run_dir)) == \
+        ledgermod.ledger_hash(want)
+
+
+def test_ledger_verb_refuses_a_ledger_the_module_will_not_write(tmp_path, monkeypatch):
+    """`write_ledger`'s refusals are the validation. A verb that caught and reported them as
+    "written" would put an unchecked ledger where §12.5 will read a rank off it.
+
+    The payload is well-formed EXCEPT for the property under test — an empty `rows`, which
+    `_decode` refuses because it "reads as a run with no claims, which the coverage check
+    reports as fully covered having checked nothing". A fixture broken in several ways at once
+    would pass this test on the wrong refusal."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    payload = _a_ledger_payload()
+    payload["rows"] = []
+    src = tmp_path / "ledger.json"
+    src.write_text(json.dumps(payload), encoding="utf-8")
+    buf = io.StringIO()
+    rc = cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir),
+                   "--ledger-file", str(src)], out=buf)
+    assert rc == 1
+    assert "rows is a non-empty list" in buf.getvalue()
+    assert not storage.ledger_path(run_dir).exists()
+
+
+def test_ledger_verb_refuses_a_row_whose_id_does_not_hash_its_own_claim(tmp_path,
+                                                                       monkeypatch):
+    """§10's ids are content-derived. This is the refusal a hand-authored ledger most
+    plausibly trips, and the one whose absence would let coverage compare a stale identity
+    under a stable-looking key."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    payload = _a_ledger_payload()
+    payload["rows"][0]["semantic_claim"] = "something else entirely"
+    src = tmp_path / "ledger.json"
+    src.write_text(json.dumps(payload), encoding="utf-8")
+    buf = io.StringIO()
+    rc = cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir),
+                   "--ledger-file", str(src)], out=buf)
+    assert rc == 1 and not storage.ledger_path(run_dir).exists()
+
+
+def test_ledger_verb_refuses_a_run_that_does_not_exist_without_opening_one(tmp_path):
+    """`storage.run_root` CREATES. A verb that asked for a run and left a directory behind
+    would make `--gc` and `run_dirs` see a run nobody started."""
+    src = _a_ledger_file(tmp_path / "ledger.json")
+    buf = io.StringIO()
+    rc = cli.main(["--ledger", "zzzzzz", "--repo", str(tmp_path),
+                   "--ledger-file", str(src)], out=buf)
+    assert rc == 1 and "has no run" in buf.getvalue()
+    assert storage.run_dirs(tmp_path) == ()
+
+
+def test_ledger_verb_refuses_being_called_without_a_file(tmp_path, monkeypatch):
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    buf = io.StringIO()
+    rc = cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir)], out=buf)
+    assert rc == 1 and "--ledger-file" in buf.getvalue()
+
+
+def test_persisting_a_ledger_does_not_make_a_strongest_seat_appear(tmp_path, monkeypatch):
+    """PLAN K PERSISTS THE LEDGER AND RANKS NOTHING OFF IT. §12.5's order needs the coverage,
+    the gate outcome, §13's review risk and §12.1's measured size together, and this plan
+    wires none of the last three — so the honest answer stays "no strongest seat", with the
+    reason naming the missing coverage rather than the missing ledger.
+
+    This is a REGRESSION PIN, not a description of a limitation: a later change that makes
+    `_strongest` name somebody without also wiring what §12.5 ranks on has to fail here."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    who, why = cli._strongest(run_dir)
+    assert who is None and "recorded none" in why
+
+    src = _a_ledger_file(tmp_path / "ledger.json")
+    cli.main(["--ledger", _run_id(run_dir), "--repo", _repo_of(run_dir),
+              "--ledger-file", str(src)], out=io.StringIO())
+    who, why = cli._strongest(run_dir)
+    assert who is None
+    assert "no coverage report over it" in why and "recorded none" not in why

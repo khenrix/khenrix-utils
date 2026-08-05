@@ -100,6 +100,26 @@ untracked artifacts as things you have to copy out by hand — so scaffolding in
 would downgrade every delivery to a patch and hand you a `cp` command for the engine's own
 notes. Open it at the path `--start` prints; `--gc` removes it with the worktree.
 
+## 3. `--ledger` — hand the engine the claim ledger you wrote
+
+```bash
+python3 "$FORGE" --ledger <run-id> --repo /path/to/repo --ledger-file /path/to/ledger.json
+```
+
+The ledger is **yours**, not the engine's: writing it means reading all three artifact sets,
+which is the fusion work. The engine validates it and stores it — every refusal you see is a
+row that would otherwise be ranked on or asserted blind against.
+
+Do this **before** anything that reviews or ranks. A run with no ledger cannot be reviewed at
+all — the blindness assertion refuses a check whose evidence is missing.
+
+Storing it is not trusting it. This engine validates the ledger's structure and **reads nothing
+back off it**: the handover still reports that no strongest seat can be named, because ranking
+seats needs the review risk and the measured size as well, and neither is wired. A rank taken
+off a ledger you wrote, before an independent panel has had the chance to contradict it, would
+be a verdict with nothing behind it.
+
+
 ### The answer sheet
 
 A JSON object. Every command is a **list of argv lists** — nothing here runs a shell, so
@@ -166,7 +186,7 @@ the detector. A task relying on a **named ambient skill** (`/markitdown`, "use t
 skill") is permitted only when all three installed copies hash identically — otherwise the
 same refusal, because three CLIs running "the same skill" is a claim the engine checks.
 
-## 3. Fuse — your job, in the synthesis worktree
+## 4. Fuse — your job, in the synthesis worktree
 
 `--start` leaves a worktree at `<run-dir>/synthesis` on a new branch
 `forge/<run-id>/synthesis`, created at B1 with the task bundle materialized into it. Read
@@ -177,7 +197,7 @@ If you commit nothing, `--collect` refuses: a synthesis tree whose tree oid is s
 own is a run nobody fused into, and describing it would report a merge-ready branch over an
 empty delivery.
 
-## 4. `--collect` — mergeability and the handover
+## 5. `--collect` — mergeability and the handover
 
 ```bash
 python3 "$FORGE" --collect <run-id> --repo /path/to/repo \
@@ -258,7 +278,7 @@ nothing stronger:
 > a fresh verifier clone at the final checkpoint. It does not mean the change has no new
 > defects, and it is not a review.
 
-## 5. `--gc` — mandatory, not tidy
+## 6. `--gc` — mandatory, not tidy
 
 ```bash
 python3 "$FORGE" --gc all  --repo /path/to/repo    # disk report, deletes nothing
@@ -295,7 +315,7 @@ the tree is fine; a modified tracked file or an untracked one is not.
 leaves a registered worktree and branch behind — that run has no handover record, so
 `--gc <run-id>` refuses it. `--gc <run-id> --force` is the reclaim for exactly that shape.
 
-## 6. Rules for you, the orchestrator
+## 7. Rules for you, the orchestrator
 
 - **Everything is argv, never a shell.** Every command the engine runs and every command it
   prints is a token list. If you are composing a `&&`, you are composing two steps.

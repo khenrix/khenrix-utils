@@ -35,6 +35,11 @@ from council import engine
 
 from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, launch,
                preflight, review as reviewmod, runstate, storage, taskbundle, ultra, verify)
+# `ledger` and NOTHING ELSE: this verb PERSISTS §10's rows and reads nothing off
+# them, so `coverage` and `rubric` stay out of this import block until something
+# ranks — a rank taken before §13's panel can be convened honestly would be a
+# verdict with no adversary.
+from . import ledger as ledgermod
 from . import gc as gcmod
 from . import baseline as baselinemod
 from . import runner as runnermod
@@ -462,11 +467,20 @@ def _b1_files(run_dir) -> tuple:
 def _strongest(run_dir) -> tuple:
     """§12.5's `(seat | None, why)` pair.
 
-    IT NAMES NOBODY IN THIS BUILD, and the reason is a missing producer rather than a missing
-    reading. `rubric.strongest` ranks `rubric.Dimensions` records, and `rubric.dimensions_from`
-    needs a coverage report over §10's claim ledger, §6.2's outcome, §13's review risk and
-    §12.1's measured size. §10 through §13 have no implementation, so nothing writes a ledger
-    into a run directory and there is nothing to rank.
+    IT NAMES NOBODY IN THIS BUILD, and after `--ledger` the reason is no longer that nothing
+    writes a ledger. `rubric.dimensions_from` needs FOUR things — a coverage report over §10's
+    claim ledger, §6.2's outcome, §13's review risk and §12.1's measured size — and this front
+    end wires the outcome and, now, the ledger. It reaches no coverage runner, convenes no
+    review and measures no size.
+
+    THE BINDING ONE IS THE REVIEW RISK, NOT THE COVERAGE, and it is worth naming exactly
+    because the coverage is the plausible-looking answer. `rubric._unmeasured` walks §12.5's
+    order and returns the FIRST dimension a seat cannot be ranked on — coverage, then gate
+    outcome, then review risk, then diff complexity. So even a run whose coverage report were
+    complete and whose gate outcome were `PASS` would still be unrankable at the third
+    dimension, for every seat, until §13's review is wired. A rank here would therefore not be
+    a rank taken over a quarter of the rubric; it would be one taken over a rubric this front
+    end cannot fill in at all.
 
     NAMING THE BEST-DESCRIBED SEAT INSTEAD WOULD BE THE FAIL-OPEN `rubric.strongest` ITSELF
     REFUSES: "ranking the measurable ones and reporting their winner turns 'the strongest seat
@@ -715,6 +729,60 @@ def collect(args, *, out) -> int:
     return 0
 
 
+def _ledger(args, *, out) -> int:
+    """§10's claim ledger, authored by the ORCHESTRATOR and persisted by this engine.
+
+    WHY THIS IS A VERB AND NOT A GENERATOR. §10 says writing the ledger "requires reading all
+    three artifact sets"; §13 says the orchestrator consults it AFTER independent findings; §16
+    makes the orchestrator the synthesis author. So there is nothing here for this engine to
+    author, and everything for it to CHECK — which is `ledger.write_ledger`, whose refusals are
+    the validation. This function adds no check of its own and catches none of its.
+
+    WHY IT EXISTS AT ALL. `review.assert_ledger_is_out_of_reach` refuses a run whose ledger it
+    cannot read, and it is `run_round`'s first statement — so without a written ledger §13's
+    review is unreachable rather than merely unrun.
+
+    NOTHING IN THIS FRONT END READS THE LEDGER BACK. §12.5's rank needs four things together —
+    a coverage report over these rows, §6.2's gate outcome, §13's review risk and §12.1's
+    measured size — and this build reaches only the gate outcome. So `_strongest` still names
+    nobody and says which of the four is missing. A rank taken off a ledger the ORCHESTRATOR
+    authored, with the blind panel that could contradict it not yet convened, would be a
+    verdict with no adversary. Storing it is not trusting it.
+
+    IT REFUSES A RUN THAT DOES NOT EXIST rather than opening one. `storage.run_root` creates,
+    which is why `collect` removes the directory it made on that path; this does the same.
+    """
+    if not args.ledger_file:
+        raise CliError("--ledger needs --ledger-file: the rows are the orchestrator's and "
+                       "there is nothing for this engine to write without them")
+    repo = Path(args.repo).resolve()
+    run_dir = storage.run_root(repo, args.ledger, must_be_new=False)
+    if not storage.manifest_path(run_dir).exists():
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        return _fail(out, [f"{repo} has no run {args.ledger!r}: nothing under XDG_STATE_HOME "
+                           "records one, so there is no run to give a ledger to."])
+    text = _read(args.ledger_file, f"the ledger {args.ledger_file}")
+    try:
+        payload = json.loads(text)
+    except ValueError as e:
+        raise CliError(f"the ledger {args.ledger_file} is not readable as JSON: {e}") from e
+    if not isinstance(payload, dict):
+        raise CliError(f"§10's ledger is an object, not a {type(payload).__name__}")
+    try:
+        l = ledgermod.decode_payload(payload)
+        ledgermod.write_ledger(run_dir, l)
+    except ledgermod.LedgerError as e:
+        # NOT CAUGHT AND REPORTED AS WRITTEN. Every refusal in that module is a row §12.5 would
+        # otherwise be ranked on and §13 would otherwise be asserted blind against.
+        raise CliError(f"this ledger was not written: {e}") from e
+    print(f"ledger: {storage.ledger_path(run_dir)} "
+          f"({len(l.rows)} row(s), hash {ledgermod.ledger_hash(l)})", file=out)
+    return 0
+
+
 def _gc(args, *, out) -> int:
     """§15's cleanup, or its disk report when the run id is `all`.
 
@@ -761,6 +829,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="open a run: preflight, §5's gate, the fleet, §6's verification")
     verb.add_argument("--collect", metavar="RUN_ID",
                       help="read a run back off disk, run §13.1, and print §16's handover")
+    verb.add_argument("--ledger", metavar="RUN_ID",
+                      help="persist the §10 claim ledger the ORCHESTRATOR authored, which "
+                           "§13's review and §12.5's rank both read and neither can be "
+                           "reached without")
     verb.add_argument("--gc", metavar="RUN_ID",
                       help="§15's cleanup for one run, or `--gc all` for the disk report")
     ap.add_argument("--repo", default=".", help="the repository the run is about")
@@ -779,6 +851,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="--collect: where the work went, so §15 can define 'unmerged'")
     ap.add_argument("--accept", action="store_true",
                     help="--collect: the user accepts delivery with no merge target")
+    ap.add_argument("--ledger-file", dest="ledger_file",
+                    help="--ledger: the JSON file holding §10's rows. Validated by "
+                         "`ledger.write_ledger`'s own refusals and written only if it passes "
+                         "every one of them")
     ap.add_argument("--synthesis-outcome", dest="synthesis_outcome",
                     help="--collect: the verify verdict the orchestrator REPORTS. This engine "
                          "does not run it, and the handover says so rather than calling it "
@@ -803,6 +879,8 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             return start(args, out=out, make_launcher=make_launcher)
         if args.collect:
             return collect(args, out=out)
+        if args.ledger:
+            return _ledger(args, out=out)
         return _gc(args, out=out)
     except (CliError, preflight.PreflightError, gate.GateError, taskbundle.TaskBundleError,
             # §15's refusals, which are the whole of what `--gc` says when it will not delete

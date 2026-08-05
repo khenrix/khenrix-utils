@@ -795,6 +795,21 @@ def write_ledger(run_dir, l: Ledger) -> None:
     storage.atomic_write(path, blob)
 
 
+def decode_payload(payload) -> Ledger:
+    """A `Ledger` out of an ALREADY-PARSED object, through the ONE decoder `read_ledger` uses.
+
+    So a ledger handed in on the command line is checked by the same code that checks one read
+    back off disk, rather than by a second reading of the same schema — the divergence route
+    this module's own refusals would then be split across.
+
+    `_decode` TAKES THE OBJECT, NOT THE BYTES. Its first statement is `if not isinstance(raw,
+    dict): raise`, and `read_ledger` is what parses the JSON before calling it. Re-encoding the
+    payload here would raise `a ledger is an object, not bytes` for every well-formed ledger —
+    measured.
+    """
+    return _decode(payload, "the supplied ledger")
+
+
 def read_ledger(run_dir) -> Ledger:
     """What is currently claimed.
 
