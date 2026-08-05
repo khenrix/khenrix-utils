@@ -1,0 +1,35 @@
+{
+  "adapter_sha256": "d90d1061f76b1c1820b85add471d114587878ceedfe5bcd9bba486a69e8f40b4",
+  "cli_versions": {
+    "agy": "1.1.10",
+    "claude": "2.1.220 (Claude Code)",
+    "codex": "codex-cli 0.146.0"
+  },
+  "original_checkout_unchanged": true,
+  "providers": [
+    {
+      "exit_code": 0,
+      "marker_text": "FORGE-SMOKE claude",
+      "provider": "claude",
+      "quoted_token": true,
+      "valid": true,
+      "wrote_marker": true
+    },
+    {
+      "exit_code": 0,
+      "marker_text": "FORGE-SMOKE codex",
+      "provider": "codex",
+      "quoted_token": true,
+      "valid": true,
+      "wrote_marker": true
+    },
+    {
+      "exit_code": 0,
+      "marker_text": "FORGE-SMOKE agy",
+      "provider": "agy",
+      "quoted_token": true,
+      "valid": true,
+      "wrote_marker": true
+    }
+  ]
+}

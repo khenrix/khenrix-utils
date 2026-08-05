@@ -303,6 +303,24 @@ def forge_spec(name: str, prompt: str, timeout: int, **kw) -> engine.ProviderSpe
     spec = engine.build_real_spec(name, prompt, timeout, cfg, workdir)
     spec.min_chars = 0
     spec.validator = _forge_validator
+    if name == "agy":
+        # `--add-dir <seat>`, BECAUSE `spec.cwd` IS NOT AGY'S WORKSPACE. Measured live
+        # 2026-08-05 through this very function: asked to create a file "in your current
+        # working directory" with `cwd` set to the seat clone, agy wrote it to
+        # `~/.gemini/antigravity-cli/scratch/` and ANSWERED that it had created it in the
+        # current working directory. Exit 0, `status: SUCCESS`, sentinel quoted — so the seat
+        # scored `valid` having put nothing in its clone at all.
+        #
+        # Two things that makes false, neither of which any test in this package could see,
+        # because every one of them injects a fake launcher:
+        #   - §4's isolation. That scratch directory is FIXED and SHARED — not per seat, not
+        #     under the run directory, and not reclaimed by `--gc`. Two agy seats in different
+        #     runs write to one place, so run N+1's seat can read run N's work.
+        #   - the seat's own answer, which describes a file that is not where it says.
+        # With `--add-dir` the same prompt writes into the seat. The council does not need it
+        # (its agy seat is read-only under `--mode plan`), which is why it is added HERE and
+        # not in `build_real_spec`.
+        spec.argv = [spec.argv[0], "--add-dir", str(workdir), *spec.argv[1:]]
     return spec
 
 

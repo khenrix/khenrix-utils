@@ -294,3 +294,32 @@ def test_read_proof_fails_closed_on_a_missing_token():
     `partial`, never `completed`."""
     assert seat.read_proof("anything at all", None) is False
     assert seat.read_proof("", "SENTINEL-abc") is False
+
+
+def test_the_agy_seat_is_given_its_clone_as_a_workspace(tmp_path):
+    """MEASURED LIVE, AND NO FAKE LAUNCHER COULD HAVE FOUND IT. With `spec.cwd` set to the
+    seat clone and no `--add-dir`, agy wrote its file to `~/.gemini/antigravity-cli/scratch/`
+    and ANSWERED that it had created it in the current working directory — exit 0,
+    `status: SUCCESS`, sentinel quoted, so the seat scored `valid` with nothing in its clone.
+
+    That scratch path is FIXED and SHARED: not per seat, not under the run directory, not
+    reclaimed by `--gc`. So it breaks §4's isolation across RUNS, not just within one.
+
+    The assertion is that the seat path reaches agy's workspace flag — the external question
+    — rather than that some literal argv list matches, which would pass over the day
+    `build_real_spec` reorders its flags.
+    """
+    spec = seat.forge_spec("agy", "P", 600, cfg={}, workdir=str(tmp_path))
+    argv = [str(a) for a in spec.argv]
+    assert "--add-dir" in argv, argv
+    assert argv[argv.index("--add-dir") + 1] == str(tmp_path)
+
+
+def test_the_other_two_seats_do_not_get_the_flag(tmp_path):
+    """The discrimination check: `--add-dir` is agy's own flag and passing it to a CLI that
+    does not take it is an argv error at launch, on the one path this package cannot test
+    against a fake."""
+    for name in ("claude", "codex"):
+        argv = [str(a) for a in seat.forge_spec(name, "P", 600, cfg={},
+                                                workdir=str(tmp_path)).argv]
+        assert "--add-dir" not in argv, (name, argv)
