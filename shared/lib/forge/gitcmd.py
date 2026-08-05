@@ -161,6 +161,20 @@ HOSTILE_ENV = (
     # measured on git 2.53 with both pins set, `GIT_TEMPLATE_DIR=<dir> git init inner`
     # installed the template's pre-commit and the next commit in `inner` ran it.
     "GIT_TEMPLATE_DIR",
+    # What turns every pathspec into a literal string, DISABLING PATHSPEC MAGIC — which this
+    # package passes at four sites: `:(literal)<path>` in `bundle`, `harvest` and `verify`,
+    # and `:/` in `runstate`. Under an ambient `1` each becomes a filename that matches
+    # nothing and git EXITS 0 over it, so `harvest`'s diff reports an empty patch (read as
+    # "this seat changed nothing") and `verify`'s `git add -f` stages nothing and reports
+    # success — a candidate verified over an empty change. Measured on git 2.53:
+    # `diff --name-only -- :(literal)a.txt` answers the path clean and `''` at exit 0 with
+    # the variable set; `ls-files -- :/` does the same. `baseline.py:426` already pins this
+    # off for its own `:/` and says why in full; it was simply never added to the tuple every
+    # OTHER call site scrubs. A silent, exit-0 blinding.
+    #
+    # NOT a globbing question, which is how this was first mis-stated: under LITERAL a name
+    # containing `[1]` matches its own file perfectly well. It is the MAGIC that dies.
+    "GIT_LITERAL_PATHSPECS",
 )
 
 

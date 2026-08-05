@@ -2209,3 +2209,47 @@ def test_the_run_directory_naming_scheme_has_one_home():
     holders = sorted(p.name for p in forge_dir.glob("*.py")
                      if '"XDG_STATE_HOME"' in p.read_text(encoding="utf-8"))
     assert holders == ["storage.py"], holders
+
+
+def _git_through_package(repo, *args):
+    return gitcmd.git(repo, *args, env_extra=gitcmd.READONLY).stdout
+
+
+def test_an_ambient_literal_pathspecs_cannot_blind_a_git_this_package_runs(tmp_path,
+                                                                           monkeypatch):
+    """THE EXTERNAL QUESTION, and it is not "is the name in the tuple".
+
+    `GIT_LITERAL_PATHSPECS=1` disables pathspec MAGIC, and this package passes magic at four
+    sites — `:(literal)<path>` in `bundle`, `harvest` and `verify`, and `:/` in `runstate`.
+    Under an ambient `1` each becomes a literal filename that matches nothing, and git EXITS
+    0 over it: an empty patch read as "this seat changed nothing", and at `verify`'s
+    `git add -f` a stage of nothing that reports success.
+
+    Asserted through `gitcmd.git` rather than by reading HOSTILE_ENV, because a test that
+    reads the tuple passes over exactly the member nobody added to it. And asserted on MAGIC
+    rather than on a glob: a draft used a `[1]` filename on the theory that LITERAL stops
+    globbing, and it passed before any fix — under LITERAL a literal name matches its file.
+    """
+    repo = make_repo(tmp_path)
+    write(repo, "a.txt", "one\n")
+    commit_all(repo, "seed")
+    write(repo, "a.txt", "two\n")
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    out = _git_through_package(repo, "diff", "--name-only", "--", ":(literal)a.txt")
+    assert out.strip() == "a.txt", \
+        "an ambient GIT_LITERAL_PATHSPECS blinded a pathspec this package actually passes"
+
+
+def test_the_top_level_magic_runstate_passes_survives_it_too(tmp_path, monkeypatch):
+    """The discrimination check on the OTHER magic in use. `runstate` passes `:/`, and
+    `baseline.py:433` already pins LITERAL off for exactly this — its comment says `add -u`
+    "would look for a directory named `:/`". One of the two was defended and the other was
+    not, which is the same predicate protected in one place and not the next."""
+    repo = make_repo(tmp_path)
+    write(repo, "a.txt", "one\n")
+    commit_all(repo, "seed")
+    monkeypatch.setenv("GIT_LITERAL_PATHSPECS", "1")
+    listed = _git_through_package(repo, "ls-files", "--full-name", "--", ":/").split()
+    # `make_repo` seeds a file of its own, so the claim is that `:/` still reaches the
+    # tracked set — not that this repository holds exactly one path.
+    assert "a.txt" in listed and len(listed) > 1, listed
