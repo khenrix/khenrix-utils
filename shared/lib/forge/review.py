@@ -850,14 +850,40 @@ def _result_text(record) -> tuple:
     (`engine.py:1263`). A long, correct review whose fenced block fell past the cut would
     read as `unreadable_findings`, and this module's whole contract is that "could not be
     read" and "found nothing" stay apart — so a truncation defect must not manufacture one.
+
+    AND THE BYTES PARSED ARE THE BYTES THAT WERE VALIDATED, which re-reading a PATH does not
+    give you by itself. `run_provider` validates an answer — length floor, sentinel quote —
+    then writes it and hands back the path; this function read that path back with nothing
+    binding the two. REPRODUCED: with the record unchanged, rewriting the file between the
+    two reads returned the new content and `""` for the reason, so a `[blocker]` replaced by
+    "this candidate is clean" parsed exactly as cleanly as the original.
+
+    THE WINDOW IS INSIDE THE ROUND AND IS NOT HYPOTHETICAL. `run_council` waits for every
+    provider, so the race is not with this call — it is BETWEEN REVIEWERS: seat A writes its
+    result and exits, seat B runs on as the same user with a shell, and the council workdir
+    (`<run-dir>/review/round-N/council/`) sits OUTSIDE the tree the round brackets, so a write
+    there moves no digest anywhere.
+
+    A MISSING DIGEST IS A REFUSAL, not a pass. `run_provider` records one for every seat as of
+    the same change that added this check, so a record without one did not come from this
+    engine — and "nobody could show these are the validated bytes" must not read as "here is
+    what the reviewer said". Both failures come back as a REASON, which `run_round` turns into
+    a SILENT seat: a seat whose answer cannot be trusted said nothing, and §13 counts it as
+    nothing rather than as a clean review.
     """
     path = record.get("result_file")
     if not isinstance(path, str) or not path:
         return None, "unreadable_result_file"
     try:
-        return Path(path).read_text(encoding="utf-8", errors="replace"), ""
+        blob = Path(path).read_bytes()
     except OSError:
         return None, "unreadable_result_file"
+    want = record.get("result_sha256")
+    if not isinstance(want, str) or not want:
+        return None, "result_digest_missing"
+    if hashlib.sha256(blob).hexdigest() != want:
+        return None, "result_file_changed"
+    return blob.decode("utf-8", errors="replace"), ""
 
 
 def run_round(run_dir, *, round_: int, checkout, checkpoint: str, baseline_commit: str,

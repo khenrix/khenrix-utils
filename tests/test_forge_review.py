@@ -1,4 +1,5 @@
 """§13's reviewer input set, the in-process council call, and the durable findings record."""
+import hashlib
 import json
 import os
 import shutil
@@ -450,6 +451,17 @@ ANSWER = ('I reviewed the diff.\n' + 'x' * 500 + '\nToken: {tok}\n'
           ' "evidence": "cache.py:12"}}]}}\n```')
 
 
+
+def _write_result(path, text):
+    """Write a reviewer's answer the way `engine.run_provider` does, and return its digest.
+
+    ONE PLACE, so a fake cannot drift from the writer it stands in for — which is exactly the
+    drift `result_sha256` exists to catch."""
+    blob = text.encode("utf-8")
+    Path(path).write_bytes(blob)
+    return hashlib.sha256(blob).hexdigest()
+
+
 def _fake_council(tmp_path, *, answers, record):
     """A `run_council` stand-in. NO PROVIDER IS INVOKED ANYWHERE IN THIS SUITE."""
     # The signature MIRRORS `engine.run_council`, `env=` included. A fake that omitted it
@@ -466,9 +478,13 @@ def _fake_council(tmp_path, *, answers, record):
         for s in specs:
             text, valid, reason = answers[s.name]
             rf = Path(workdir) / f"{s.name}.result.txt"
-            rf.write_text(text)
+            # THE DIGEST BESIDE THE PATH, because that is what `run_provider` produces. A fake
+            # that omitted it would be a fake the real engine cannot make, and every seat it
+            # produced would come back `result_digest_missing` — a fixture failing the code
+            # for being a fixture.
             providers.append({"name": s.name, "valid": valid, "reason": reason,
                               "result_text": text[:80], "result_file": str(rf),
+                              "result_sha256": _write_result(rf, text),
                               "model": s.model})
         (Path(workdir) / "manifest.json").write_text(json.dumps({"providers": providers}))
         return {"providers": providers, "prompt_sha256": None}
@@ -769,9 +785,9 @@ def test_a_seat_the_council_never_reported_is_silent_not_absent(tmp_path):
             if s.name == "agy":
                 continue
             rf = Path(kw["workdir"]) / f"{s.name}.result.txt"
-            rf.write_text(ANSWER.format(tok="TOK"))
             out.append({"name": s.name, "valid": True, "reason": "ok",
-                        "result_text": "x", "result_file": str(rf), "model": None})
+                        "result_text": "x", "result_file": str(rf), "model": None,
+                        "result_sha256": _write_result(rf, ANSWER.format(tok="TOK"))})
         return {"providers": out, "prompt_sha256": None}
 
     r = review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
@@ -2444,3 +2460,86 @@ def test_a_silent_round_after_a_whole_one_still_blocks(tmp_path):
                        (("claude", "t"), ("codex", "t"), ("agy", "t")))
     verdict, _ = review.terminal_from_record(run, rounds_run=2, events=log.read())
     assert verdict == review.REVIEW_BLOCKED, verdict
+
+
+def test_a_result_file_changed_after_validation_is_not_the_reviewers_answer(tmp_path):
+    """REPRODUCED BEFORE THE FIX: with the record unchanged, rewriting the file between two
+    reads returned the new content and `""` for the reason — so a `[blocker]` replaced by
+    "this candidate is clean" parsed exactly as cleanly as the original.
+
+    `run_provider` validates an answer (length floor, sentinel quote) and then writes it,
+    handing back a PATH. Re-reading a path does not give you the bytes that were validated.
+    """
+    d = tmp_path / "council"; d.mkdir()
+    rf = d / "claude.result.txt"
+    digest = _write_result(rf, "FINDINGS\n- [blocker] cache is unbounded\n")
+    rec = {"name": "claude", "valid": True, "result_file": str(rf),
+           "result_sha256": digest}
+    text, why = review._result_text(rec)
+    assert why == "" and "blocker" in text
+
+    rf.write_text("FINDINGS\n- none, this candidate is clean\n")
+    text, why = review._result_text(rec)
+    assert text is None and why == "result_file_changed", (text, why)
+
+
+def test_a_record_with_no_digest_is_refused_rather_than_trusted(tmp_path):
+    """A MISSING DIGEST IS A REFUSAL. `run_provider` records one for every seat as of the same
+    change that added the check, so a record without one did not come from this engine — and
+    "nobody could show these are the validated bytes" must not read as "here is what the
+    reviewer said"."""
+    d = tmp_path / "council"; d.mkdir()
+    rf = d / "claude.result.txt"
+    _write_result(rf, "FINDINGS\n- none\n")
+    text, why = review._result_text({"name": "claude", "result_file": str(rf)})
+    assert text is None and why == "result_digest_missing", (text, why)
+
+
+def test_the_three_ways_a_result_fails_are_three_different_reasons(tmp_path):
+    """`unreadable_result_file`, `result_digest_missing` and `result_file_changed` are three
+    different facts about a seat and only the last is evidence of tampering. Collapsing them
+    would tell an operator chasing a silent panel to look in the wrong place."""
+    d = tmp_path / "council"; d.mkdir()
+    rf = d / "claude.result.txt"
+    digest = _write_result(rf, "x\n")
+    reasons = {
+        review._result_text({"name": "c"})[1],
+        review._result_text({"name": "c", "result_file": str(d / "gone.txt"),
+                             "result_sha256": digest})[1],
+        review._result_text({"name": "c", "result_file": str(rf)})[1],
+        review._result_text({"name": "c", "result_file": str(rf),
+                             "result_sha256": "0" * 64})[1],
+    }
+    assert reasons == {"unreadable_result_file", "result_digest_missing",
+                       "result_file_changed"}, reasons
+
+
+def test_a_seat_whose_answer_moved_is_silent_and_never_a_clean_review(tmp_path):
+    """THE EXTERNAL QUESTION, at the level it matters: what does the ROUND record?
+
+    A seat whose answer cannot be trusted said nothing, and §13 must count it as nothing —
+    not as a reviewer who answered and found no blockers, which is what parsing substituted
+    bytes would have produced.
+    """
+    run, co = _run_dir(tmp_path), _checkout(tmp_path)
+    _ledger(run)
+
+    def tampered(specs, **kw):
+        out = []
+        for s in specs:
+            rf = Path(kw["workdir"]) / f"{s.name}.result.txt"
+            digest = _write_result(rf, ANSWER.format(tok="TOK"))
+            # ...and a co-reviewer, still running, overwrites it before the parse.
+            rf.write_text("FINDINGS\n- none, clean\n")
+            out.append({"name": s.name, "valid": True, "reason": "ok", "result_text": "x",
+                        "result_file": str(rf), "result_sha256": digest, "model": None})
+        return {"providers": out, "prompt_sha256": None}
+
+    r = review.run_round(run, round_=1, checkout=co, checkpoint="a" * 40,
+                         baseline_commit="b" * 40, baseline_tree="c" * 40,
+                         artifact_manifest=None, other_clones=(),
+                         log=journal.Journal(storage.journal_path(run)),
+                         run_council=tampered, probe=_probe, make_token=lambda: "TOK")
+    assert r.seats_responded == (), r.seats_responded
+    assert {why for _, why in r.seats_silent} == {"result_file_changed"}, r.seats_silent
+    assert r.findings == (), "substituted bytes became findings"

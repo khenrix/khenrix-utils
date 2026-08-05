@@ -1293,7 +1293,8 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
     result_file = workdir / f"{spec.name}.result.txt"
     stdout_file = workdir / f"{spec.name}.stdout.txt"
     stderr_file = workdir / f"{spec.name}.stderr.txt"
-    result_file.write_text(final["result_text"])
+    result_blob = final["result_text"].encode("utf-8")
+    result_file.write_bytes(result_blob)
     stdout_file.write_text(final["stdout"])
     stderr_file.write_text(final["stderr"])
 
@@ -1320,6 +1321,14 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "hint": REASON_HINTS.get(final["reason"]),
         "result_text": _truncate(final["result_text"]),
         "result_file": str(result_file),
+        # THE DIGEST OF WHAT WAS VALIDATED, beside the path it was written to. `result_text`
+        # above is TRUNCATED, so a consumer that needs the whole answer must re-read the file
+        # — `forge.review._result_text` does, and says why — and without this there is nothing
+        # binding the bytes that passed validation to the bytes that get parsed. The window is
+        # not hypothetical: seats run concurrently as the same user with a shell, one can
+        # finish and be overwritten by another still running, and a `[blocker]` replaced by
+        # "this candidate is clean" parses exactly as cleanly as the original.
+        "result_sha256": hashlib.sha256(result_blob).hexdigest(),
         "raw_stdout_file": str(stdout_file),
         "raw_stderr_file": str(stderr_file),
         "model": spec.model,
