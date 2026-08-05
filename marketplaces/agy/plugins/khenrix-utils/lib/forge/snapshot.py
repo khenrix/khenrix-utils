@@ -129,7 +129,11 @@ def _special_entry(st: os.stat_result, rel: str) -> Entry:
     a FIFO replaced by a socket at the same path read as modified.
     """
     kind_bits = f"special:{stat.S_IFMT(st.st_mode)}".encode()
-    return Entry(rel, hashlib.sha256(kind_bits).hexdigest(), st.st_mode & 0o777, 0, "special")
+    # `S_IMODE` here for the reason it is used in `take` — fixing the regular-file branch
+    # and leaving this one is the same hole wearing the other branch, and a setgid FIFO would
+    # stay invisible while a setgid file no longer was.
+    return Entry(rel, hashlib.sha256(kind_bits).hexdigest(), stat.S_IMODE(st.st_mode), 0,
+                 "special")
 
 
 def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
@@ -203,24 +207,41 @@ def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
             total += st.st_size
             if (b := quota.breach(files=0, file_bytes=st.st_size, total_bytes=total)):
                 return {}, [f"{rel}: {b}"]
-            entries[rel] = Entry(rel, _digest(p), st.st_mode & 0o777, st.st_size, "file")
+            # `S_IMODE`, NOT `& 0o777`. The permission mask dropped setuid, setgid and
+            # sticky, so `chmod u+s` on a tracked file left a byte-identical inventory and
+            # every bracket written in terms of this predicate reported the tree undisturbed
+            # — measured through `review.worktree_identity`, which is the round bracket three
+            # unattended bypass-permissions reviewers are judged by. The FILE TYPE bits stay
+            # out: `kind` already carries that answer, and two fields answering one question
+            # is how this package builds two spellings of a predicate.
+            entries[rel] = Entry(rel, _digest(p), stat.S_IMODE(st.st_mode), st.st_size,
+                                 "file")
     return entries, []
 
 
 def diff(before: dict, after: dict) -> dict:
-    """path -> added | removed | modified. Compares content, mode and size only.
+    """path -> added | removed | modified. Compares content, mode, size and KIND.
 
-    `kind` is deliberately NOT compared, so a file replaced by a symlink at the same path
-    is caught only incidentally — via the digest, and via the mode 0 / size 0 the symlink
-    branch records. That is reliable in practice but it is a side effect, not a rule: a
-    consumer that needs the type change itself must compare `kind` for itself.
+    `kind` USED TO BE LEFT OUT, with a docstring calling the coverage "a side effect, not a
+    rule" — a file replaced by a symlink was caught "only incidentally, via the digest and
+    via the mode 0 / size 0 the symlink branch records". Meanwhile `review._inventory_digest`
+    DID include it, and says so in its own comment. That is two definitions of "did this path
+    change" maintained one field apart, which is the shape that produced an agreement test
+    between two copies of a predicate passing because they agreed and were both wrong.
+
+    NO RECORDED MISS, AND THAT IS THE POINT. Measured: `_special_entry` folds the file type
+    into the digest and `_symlink_entry` digests the target text, so every type change a
+    filesystem can produce already moves the digest — the two predicates agree today on every
+    tree that can be built. The field is compared so they cannot stop agreeing silently the
+    day `_special_entry`'s digest changes.
     """
     out = {}
     for path, e in after.items():
         old = before.get(path)
         if old is None:
             out[path] = "added"
-        elif (old.digest, old.mode, old.size) != (e.digest, e.mode, e.size):
+        elif (old.digest, old.mode, old.size, old.kind) != \
+                (e.digest, e.mode, e.size, e.kind):
             out[path] = "modified"
     for path in before:
         if path not in after:

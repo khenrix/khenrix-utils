@@ -1859,10 +1859,20 @@ def test_a_directory_git_ignores_is_measured_like_any_other(tmp_path):
 
 
 def test_a_path_whose_type_changed_moves_the_identity(tmp_path):
-    """`snapshot.diff` deliberately does NOT compare `kind`, so the digest has to — and this
-    is the pair where every other field agrees. A symlink whose target TEXT is `special:4096`
-    digests to `sha256(b"special:4096")` at mode 0 and size 0; `snapshot._special_entry` gives
-    a FIFO (S_IFMT 4096) at mode 0 the same three. Without `kind` the swap is invisible."""
+    """BOTH predicates now see it, and this test is why the second one was fixed.
+
+    This is the pair where every other field agrees: a symlink whose target TEXT is
+    `special:4096` digests to `sha256(b"special:4096")` at mode 0 and size 0, and
+    `snapshot._special_entry` gives a FIFO (S_IFMT 4096) at mode 0 the same three. So the
+    collision IS constructible — which `snapshot.diff` answered `{}` for, while
+    `_inventory_digest` caught it on `kind`. Two definitions of "did this path change", one
+    field apart, with a case that separates them sitting in this file the whole time.
+
+    The assertion below used to read `snapshot.diff(...) == {}` with the comment "the diff has
+    nothing to say about this one, which is why the digest must". That is the defect asserted:
+    `harvest` reads `snapshot.diff`, so a builder's artifact swapped this way was dropped
+    silently. `diff` compares `kind` now, and both halves of the pair are asserted here.
+    """
     co = _checkout(tmp_path)
     quota = storage.Quota.for_harvest()
     p = Path(co) / "swap"
@@ -1874,8 +1884,8 @@ def test_a_path_whose_type_changed_moves_the_identity(tmp_path):
     after, after_entries = review.worktree_identity(co, quota)
     a, b = before_entries["swap"], after_entries["swap"]
     assert (a.digest, a.mode, a.size) == (b.digest, b.mode, b.size) and a.kind != b.kind
-    assert snapshot.diff(before_entries, after_entries) == {}, \
-        "the diff has nothing to say about this one, which is why the digest must"
+    assert snapshot.diff(before_entries, after_entries) == {"swap": "modified"}, \
+        "the diff must see the swap too — `harvest` reads it, and read it as no change"
     assert before != after
 
 

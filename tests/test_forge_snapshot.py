@@ -273,3 +273,93 @@ def test_the_walk_order_is_sorted_so_the_first_breach_is_deterministic(tmp_path)
         (nested / name / "f.txt").write_text("x\n")
     entries, _ = snapshot.take(nested)
     assert list(entries) == ["a/f.txt", "m/f.txt", "z/f.txt"], "dirnames unsorted"
+
+
+def test_the_review_round_bracket_sees_a_setuid_bit(tmp_path):
+    """THE EXTERNAL QUESTION, asked at the level the answer matters: not "does Entry hold a
+    mode" but "can the round bracket distinguish these two trees". Measured before the fix,
+    `worktree_identity` returned the SAME digest either side of `chmod u+s` — so a reviewer
+    could make a binary setuid in its own tree and the round read `after == before`: tree
+    undisturbed, findings admissible, fix budget spent on them.
+
+    It reaches through `review.worktree_identity` on purpose. A test at `snapshot.take` alone
+    leaves the composition unasserted, which is how `kind` came to be carried by review's
+    digest and not by `snapshot.diff`, one field apart, for however long.
+    """
+    from forge import review  # noqa: PLC0415
+    root = tmp_path / "t"; root.mkdir()
+    p = root / "run.sh"; p.write_text("#!/bin/sh\n", encoding="utf-8")
+    p.chmod(0o755)
+    quota = storage.Quota(max_files=1000, max_file_bytes=10 ** 7, max_total_bytes=10 ** 8)
+    before, _ = review.worktree_identity(root, quota)
+    p.chmod(0o4755)
+    after, _ = review.worktree_identity(root, quota)
+    assert before != after, "the round bracket read a setuid binary as no change at all"
+
+
+def test_the_inventory_sees_a_setuid_bit(tmp_path):
+    """The same claim at the leaf, so a failure says WHICH layer lost the bit."""
+    root = tmp_path / "t"; root.mkdir()
+    p = root / "run.sh"; p.write_text("#!/bin/sh\n", encoding="utf-8")
+    p.chmod(0o755)
+    before, breaches = snapshot.take(root)
+    assert breaches == []
+    p.chmod(0o4755)
+    after, breaches = snapshot.take(root)
+    assert breaches == []
+    assert before != after, "chmod u+s left a byte-identical inventory"
+    assert snapshot.diff(before, after) == {"run.sh": "modified"}
+
+
+def test_the_inventory_sees_setgid_and_sticky_too(tmp_path):
+    """The discrimination check for the bit above. One bit fixed and two left blind is the
+    same defect with a smaller surface."""
+    root = tmp_path / "t"; root.mkdir()
+    p = root / "run.sh"; p.write_text("#!/bin/sh\n", encoding="utf-8")
+    for mode in (0o755, 0o4755, 0o2755, 0o1755):
+        p.chmod(mode)
+        inv, _ = snapshot.take(root)
+        assert inv["run.sh"].mode == mode, (oct(mode), oct(inv["run.sh"].mode))
+
+
+def test_a_special_entry_carries_its_special_bits_too(tmp_path):
+    """`_special_entry` masks the same way `take`'s regular branch did. Fixing one and not
+    the other is the same hole wearing the other branch — and this package has closed a hole
+    at the spelling it was found in more than once."""
+    root = tmp_path / "t"; root.mkdir()
+    p = root / "pipe"
+    os.mkfifo(p)
+    os.chmod(p, 0o644)
+    a, _ = snapshot.take(root)
+    os.chmod(p, 0o2644)
+    b, _ = snapshot.take(root)
+    assert a != b, "a setgid FIFO left a byte-identical inventory"
+
+
+def test_diff_compares_kind_even_when_every_other_field_matches():
+    """ONE PREDICATE, NOT TWO. `review._inventory_digest` includes `kind` and says so;
+    `snapshot.diff` did not. Today they agree on every tree that can be built, because
+    `_special_entry` folds the file type into the digest and `_symlink_entry` digests the
+    target text — so this is not a reproducible miss and no test here should pretend it is
+    (two drafts of this task asserted a FIFO miss that PASSED before any fix).
+
+    What it is, is two definitions of "did this path change" maintained separately, one field
+    apart. This states the predicate directly over hand-built entries, which is the only way
+    to assert it: a filesystem cannot produce two entries agreeing on digest, mode and size
+    and differing in kind, and that is precisely why the gap stays invisible until the day
+    `_special_entry`'s digest changes.
+    """
+    a = {"x": snapshot.Entry("x", "d", 0o644, 0, "file")}
+    b = {"x": snapshot.Entry("x", "d", 0o644, 0, "special")}
+    assert snapshot.diff(a, b) == {"x": "modified"}
+
+
+def test_the_two_inventory_predicates_read_the_same_fields():
+    """The structural claim, asserted where it can actually fail: `review._inventory_digest`
+    builds its row from five fields and `snapshot.diff` must compare the same five. A future
+    field added to `Entry` and wired into one of them is the next instance of this defect."""
+    import dataclasses  # noqa: PLC0415
+    fields = {f.name for f in dataclasses.fields(snapshot.Entry)}
+    assert fields == {"path", "digest", "mode", "size", "kind"}, (
+        "Entry gained or lost a field — check that BOTH snapshot.diff and "
+        "review._inventory_digest were updated, not just one")
