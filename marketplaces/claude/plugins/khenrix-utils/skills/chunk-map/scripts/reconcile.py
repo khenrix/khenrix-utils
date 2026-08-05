@@ -103,12 +103,30 @@ def run(cmd: list[str]):
 
 
 def backup(path) -> Path | None:
+    """A copy of `path` that no later call can destroy, or `None` when there is nothing there.
+
+    IT NEVER OVERWRITES AN EARLIER BACKUP, and that is the whole change. This wrote to a
+    FIXED name, so the second reconcile clobbered the first backup — reproduced: two calls
+    either side of an edit left one file holding only the SECOND state. The lost one is the
+    valuable one: it is the user's configuration from before khenrix ever touched the file,
+    and this package's stated invariant is that reconcile never removes machine-specific
+    config. A backup that destroys the previous backup breaks that promise with the very
+    mechanism that exists to keep it.
+
+    NUMBERED RATHER THAN TIMESTAMPED, so the same inputs give the same names: `.khenrix-backup`
+    first, then `.khenrix-backup.1`, `.2`, and so on, taking the first free one. Nothing is
+    ever removed and nothing is ever written over.
+    """
     p = Path(path)
-    if p.exists():
-        b = p.with_suffix(p.suffix + ".khenrix-backup")
-        shutil.copy2(p, b)
-        return b
-    return None
+    if not p.exists():
+        return None
+    b = p.with_suffix(p.suffix + ".khenrix-backup")
+    n = 1
+    while b.exists():
+        b = p.with_suffix(p.suffix + f".khenrix-backup.{n}")
+        n += 1
+    shutil.copy2(p, b)
+    return b
 
 
 class ReconcileReadError(RuntimeError):

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Hermetic tests for reconcile.py overlay/instruction logic (no CLI, no tokens)."""
 from __future__ import annotations
-import sys, tempfile
+import sys
+import tempfile, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reconcile  # noqa: E402
@@ -177,6 +178,22 @@ def run() -> int:
         ok.append(("no-marker injects markers",
                    bn.startswith(reconcile.MANAGED_BEGIN) and "RAW" in bn
                    and bn.rstrip().endswith(reconcile.MANAGED_END)))
+    # REPRODUCED BEFORE THE FIX: two calls either side of an edit left ONE file holding only
+    # the second state. The lost one is the valuable one — the user's configuration from
+    # before khenrix ever touched the file — and this package's stated invariant is that
+    # reconcile never removes machine-specific config.
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "settings.json"
+        made = []
+        for text in ('{"first": 1}', '{"second": 2}', '{"third": 3}'):
+            f.write_text(text)
+            made.append(reconcile.backup(f))
+        ok.append(("backup never overwrites an earlier backup",
+                   len({b.name for b in made}) == 3
+                   and made[0].read_text() == '{"first": 1}'))
+        ok.append(("backup of an absent file is None",
+                   reconcile.backup(Path(td) / "absent.json") is None))
+
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1
