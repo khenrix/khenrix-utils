@@ -26,12 +26,23 @@ TRIGGERS = (TRIGGERED, NOT_TRIGGERED, TRIGGER_UNDECIDABLE)
 # rather than derived from `verify.OUTCOMES`' declaration order, because that order is a
 # reading list and this is a preference — and a test asserts the two sets are equal, so an
 # outcome added to §6.2 later fails here loudly instead of sorting as unknown.
+# `GATE_CHANGED` SITS BELOW `FAIL`, DELIBERATELY, AND IT USED TO SIT SECOND. §6.2's
+# disposition is that a candidate which rewrote the gate cannot be compared on the gate's
+# evidence at all, and rank 2 — above FLAKY and above FAIL — said the opposite: rewrite the
+# gate and outrank the seat whose tests honestly failed. `runner.py` recorded the deferral
+# rather than renumbering as a side effect of an unrelated fix; this is that decision, taken
+# on its own.
+#
+# IT IS NOT LAST. `HARVEST_INCOMPLETE` stays worst: the engine could not read that
+# candidate's artifacts, so there is nothing to merge at all, where a gate-rewriting
+# candidate still has reviewable code behind a verdict nobody can trust. Ranking "unusable"
+# above "untrustworthy" is a SECOND decision and no finding has argued it.
 GATE_RANK = {
     verify.PASS: 0,
     verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE: 1,
-    verify.GATE_CHANGED: 2,
-    verify.FLAKY: 3,
-    verify.FAIL: 4,
+    verify.FLAKY: 2,
+    verify.FAIL: 3,
+    verify.GATE_CHANGED: 4,
     verify.HARVEST_INCOMPLETE: 5,
 }
 

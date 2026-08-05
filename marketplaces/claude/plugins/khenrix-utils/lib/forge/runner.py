@@ -770,9 +770,11 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
 # decided here, before §6 step 4 runs at all. Putting it there would also break three totality
 # tests that hold the vocabulary honest: `test_outcomes_holds_exactly_what_classify_can_return`
 # AST-walks `verify.py`'s own returns; `strategy.classify_failure` raises BY DESIGN for an
-# outcome it has no branch for, so §6.2 gaining a row is meant to fail loudly; and `GATE_RANK`
-# is contiguous 0-5 with no free integer, so ranking it would renumber around `GATE_CHANGED`
-# at rank 2 — re-blessing a known defect as a side effect of an unrelated fix.
+# outcome it has no branch for, so §6.2 gaining a row is meant to fail loudly. `GATE_RANK` is
+# contiguous 0-5 with no free integer, and the renumber this comment used to defer — it warned
+# that ranking here would re-bless `GATE_CHANGED` at rank 2 as a side effect — has since been
+# taken deliberately: `GATE_CHANGED` sits below `FAIL` now, and `rubric.GATE_RANK` carries the
+# argument.
 SETUP_REFUSED = "setup-refused"
 
 _VERIFY_DIM = {verify.PASS: "pass", verify.FAIL: "fail"}

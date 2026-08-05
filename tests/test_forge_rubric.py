@@ -483,3 +483,32 @@ def test_a_fully_mechanical_report_is_still_rankable():
     d = rubric.dimensions_from("agy", report=_report(_ok("a"), _ok("b"), _bad("c")), gate_outcome=verify.FAIL,
                                review_risk=0, size=strategy.Size(10, 1, ()))
     assert d.unsatisfied_criteria == 1 and d.covered_criteria == 2
+
+
+def test_a_candidate_that_rewrote_the_gate_ranks_below_one_that_honestly_failed():
+    """§6.2's disposition is that a candidate which changed the gate cannot be compared on
+    the gate's evidence at all. Ranking it 2nd of 6 — above FLAKY and above FAIL — said the
+    opposite: rewrite the gate and outrank the seat whose tests merely failed."""
+    assert rubric.GATE_RANK[verify.GATE_CHANGED] > rubric.GATE_RANK[verify.FAIL]
+    assert rubric.GATE_RANK[verify.GATE_CHANGED] > rubric.GATE_RANK[verify.FLAKY]
+    # ...and NOT last. A candidate whose artifacts could not be harvested has nothing to
+    # merge at all; a gate-rewriting one has reviewable code behind an untrustworthy verdict.
+    # That is a second decision and this change does not take it.
+    assert rubric.GATE_RANK[verify.GATE_CHANGED] < rubric.GATE_RANK[verify.HARVEST_INCOMPLETE]
+
+
+def test_the_rank_map_is_total_over_every_outcome_verify_can_produce():
+    """THE EXTERNAL QUESTION, and the one a renumber can silently break: not "are these six
+    keys present" but "is every outcome verify can produce rankable". An enumeration here
+    fails open on the seventh outcome nobody enumerated — so the set comes from `verify`."""
+    assert set(rubric.GATE_RANK) == set(verify.OUTCOMES), \
+        set(verify.OUTCOMES) ^ set(rubric.GATE_RANK)
+
+
+def test_the_ranks_are_a_total_order_with_no_ties():
+    """Two outcomes at one rank is two different verdicts comparing equal — this project's
+    recurring shape, and the one that would make a ranked comparison return an arbitrary
+    winner."""
+    ranks = list(rubric.GATE_RANK.values())
+    assert len(set(ranks)) == len(ranks), rubric.GATE_RANK
+    assert sorted(ranks) == list(range(len(ranks))), rubric.GATE_RANK
