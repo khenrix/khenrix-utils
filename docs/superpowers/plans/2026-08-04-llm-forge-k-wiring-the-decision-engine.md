@@ -131,6 +131,15 @@ The ordering is not the brief's severity order, because severity is not dependen
 This does not fit in ~6 tasks. **Plan K is these seven tasks. The rest of G1's spine and all of G6's resume go to Plan L**, which should be written after Task 4 merges. Plan L's scope, in the order it must be taken:
 
 - **L0, first and blocking: close Task 4's reviewer-root residual (H1).** Task 4 gives the panel its own `.git`; it does not move the panel out of `run_dir`. From `run_dir/review/round-N/checkout` a reviewer reaches `../../../ledger.json`, `../council/<name>.result.txt` (`review.py:833` puts the other reviewers' in-flight answers there) and `../../../seats/<seat>/attempt-N` by ordinary relative path. The likely shape is a sibling root outside `run_dir` — added to `other_clones` so `assert_ledger_is_out_of_reach` still ranges over it, and named in the run directory so `--gc` still reclaims it. **Nothing that convenes a real panel may ship before this.**
+
+  > **RETIRED 2026-08-05, and not by being done.** `review.assert_ledger_is_out_of_reach`'s
+  > docstring already argues that relocation buys nothing — "a sibling of the run directory is
+  > reachable by a computable name, so it only relocates the `..`" — and names the only two real
+  > closures (an OS boundary, or a ledger absent from disk for the round), neither available to a
+  > stdlib-only package running three CLIs as the operator. §13's blindness is BY CONSTRUCTION,
+  > `SKILL.md:276-280` says so to the operator, and nothing claims otherwise. This bullet gated
+  > the review band behind a fix that cannot exist; the gate is removed rather than satisfied.
+  > See Plan N Task 0.
 - **§13's review verb, gated on L0.** `review.loop` (`review.py:1612`) takes an injected `fix` callable with the contract `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool)` and has **no production implementation**. `run_round` needs none — it convenes the panel, records findings and returns — so `--review <run-id>` as a single round that stops is buildable today and is the handshake shape this design wants (the orchestrator fixes; `--review` again). What it is not is *honest* today, for L0's reason. The unattended `loop` on top of it is the part that still needs a brainstorm.
 - **§12.5's rank (`cli._strongest`).** Moved out of Plan K by the structural decision above. It ships with the review verb, in the same commit or later, never before: the rank reads a ledger the orchestrator authored, and the panel is the only thing that can contradict it.
 - **The priced synthesis verifier pass.** `gate.quote` sets `verifier_runs = seats + 1 + review_fixes` (`gate.py:278`) — the `+1` is synthesis's own, §6 requires it ("This applies identically to baseline calibration and to **synthesis verification**"), and a verifier pass costs **zero provider money**. It is deferred, not dismissed, and the argument is in Task 3's design note below.
