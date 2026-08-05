@@ -609,13 +609,12 @@ def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
     # over from the `--start` they ran an hour earlier are exactly the ones `--collect` refuses.
     ("--strategy", "fusion"),
     ("--strategy", "base-and-port"),
-    ("--synthesis-outcome", "PASSED"),
 ])
 def test_a_mistyped_collect_flag_is_refused_before_the_cloud_review_is_paid_for(
         flag, value, tmp_path, monkeypatch, capsys):
     """The sibling of the ordering two functions up, one validation over.
 
-    `--strategy` and `--synthesis-outcome` are checked by `handover.Provenance.__post_init__`,
+    `--strategy` is checked by `handover.Provenance.__post_init__`,
     and that record used to be built AFTER §13.1's pass — so an operator who mistyped either
     word paid $5-25 for a cloud review and was then told the word is not in the vocabulary. The
     assertion that matters is `not calls`: a test that only read the return code passes on the
@@ -759,13 +758,17 @@ def test_the_handover_reports_the_review_this_run_got_and_not_the_pre_spend_plac
 
 def test_the_handover_a_collect_prints_does_not_call_an_asserted_verdict_verified(
         tmp_path, monkeypatch, capsys):
-    """`--collect --synthesis-outcome PASS` renders a verdict THIS ENGINE DID NOT MEASURE. It
-    builds no verifier clone for the fusion and runs no confirmed command over it, so the
-    §16.1 "Verified here means" paragraph may not appear beside it."""
+    """A reported PASS is a verdict THIS ENGINE DID NOT MEASURE. It builds no verifier clone
+    for the fusion and runs no confirmed command over it, so the §16.1 "Verified here means"
+    paragraph may not appear beside it — and that is unchanged by the outcome now being
+    DERIVED from evidence rather than asserted by a word: evidence the engine can check is
+    still not a measurement the engine took."""
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     _fuse_something(run_dir)          # a commit in the synthesis worktree
+    head = _git(run_dir / handover.SYNTHESIS, "rev-parse", "HEAD").stdout.strip()
     rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir),
-                   "--accept", "--synthesis-outcome", "PASS", "--strategy", "from_scratch"])
+                   "--accept", "--verified-at", head, "--verify-exit", "0",
+                   "--strategy", "from_scratch"])
     assert rc == 0
     out = capsys.readouterr().out
     assert handover._VERIFIED_MEANS not in out
@@ -1158,3 +1161,120 @@ def test_persisting_a_ledger_does_not_make_a_strongest_seat_appear(tmp_path, mon
     who, why = cli._strongest(run_dir)
     assert who is None
     assert "no coverage report over it" in why and "recorded none" not in why
+
+
+def test_collect_takes_the_oid_the_verify_ran_at_and_refuses_a_stale_one(tmp_path,
+                                                                         monkeypatch):
+    """A verdict about a tree that is not the tree being handed over is a verdict about
+    another artifact. This is checkable and costs nothing."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    buf = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   "--verified-at", "b" * 40, "--verify-exit", "0"], out=buf)
+    assert rc == 1
+    assert "is not this run's synthesis HEAD" in buf.getvalue()
+
+
+def test_collect_refuses_an_oid_with_no_exit_status_beside_it(tmp_path, monkeypatch):
+    """A PARTIAL evidence set is a caller's mistake. Dropping it silently loses a verdict
+    while the header reads as though none was offered."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    head = cli._rev(run_dir / handover.SYNTHESIS, "HEAD")
+    buf = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   "--verified-at", head], out=buf)
+    assert rc == 1 and "--verify-exit" in buf.getvalue()
+
+
+def test_collect_with_no_evidence_reports_no_verdict_and_never_a_pass(tmp_path, monkeypatch):
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    body = _collect_text(tmp_path, run_dir)      # fuses first; asserts rc == 0 itself
+    assert "no verify verdict was reported" in body
+    assert "verify PASS" not in body
+
+
+def test_the_evidence_line_carries_the_exact_exit_code(tmp_path, monkeypatch):
+    """Two different failures must not compare equal: 127 (no such command) and 1 (a failing
+    test) are both FAIL in §6.2's vocabulary and are not the same event.
+
+    HEAD IS READ AFTER THE FUSE, because fusing is a commit and moves it — an OID taken before
+    would be refused by the very check this test is trying to get past."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = _fuse_something(run_dir)
+    head = cli._rev(synth, "HEAD")
+    buf = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   "--verified-at", head, "--verify-exit", "127"], out=buf)
+    assert rc == 0, buf.getvalue()
+    assert "exit 127" in buf.getvalue()
+    assert f"at {head}" in buf.getvalue()
+
+
+def test_synthesis_outcome_flag_is_gone(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--collect", "aaaaaa", "--synthesis-outcome", "PASS"])
+
+
+def test_collect_refuses_a_fusion_byte_identical_to_a_seats_candidate(tmp_path, monkeypatch):
+    """The deliverable is a fusion. A tree identical to one seat's is that seat's candidate
+    promoted, which is the one thing this skill exists not to do.
+
+    No fuse here on purpose: the refusal sits above `mergeability`, and the point is that a
+    tree matching a seat's is refused for BEING a candidate rather than for being unfused."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    run_id, repo = _run_id(run_dir), Path(_repo_of(run_dir))
+    synth = run_dir / handover.SYNTHESIS
+    seat = storage.seat_names(run_dir)[0]
+    # THE FIXTURE'S SEATS COMMIT NOTHING, so every transported seat ref points at B1's own
+    # tree — and an unfused synthesis is B1 too. Comparing those would exercise
+    # `mergeability`'s "nothing was fused" refusal rather than this one, so the seat is given
+    # a real tree first: the premise is a synthesis identical to a candidate that EXISTS.
+    write(synth, "fused.py", "the seat's own answer\n")
+    _git(synth, "add", "-A"); _git(synth, "commit", "-qm", "seat work")
+    _git(repo, "update-ref", f"refs/khenrix-forge/{run_id}/{seat}",
+         _git(synth, "rev-parse", "HEAD").stdout.strip())
+    buf = io.StringIO()
+    rc = cli.main(["--collect", run_id, "--repo", str(repo), "--accept"], out=buf)
+    assert rc == 1
+    assert f"this is seat {seat}'s candidate, not a fusion" in buf.getvalue()
+
+
+def test_a_verify_log_too_large_to_cite_is_refused_rather_than_read(tmp_path, monkeypatch):
+    """The log is a caller-named path and the citation is a digest over its bytes. Reading it
+    whole with no cap is the one place this verb would load an unbounded file into memory on a
+    caller's word — every other read in this package goes through a `storage.Quota`.
+
+    THE CAP IS LOWERED RATHER THAN THE FILE RAISED. `Quota.for_harvest().max_file_bytes` is
+    512 MB — measured — and a test that actually wrote 512 MB to prove a `stat` comparison
+    would cost more disk than the run it is testing."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = _fuse_something(run_dir)
+    head = cli._rev(synth, "HEAD")
+    monkeypatch.setattr(storage.Quota, "for_harvest",
+                        classmethod(lambda cls: cls(max_files=10, max_file_bytes=8,
+                                                    max_total_bytes=64)))
+    big = tmp_path / "verify.log"
+    big.write_bytes(b"x" * 9)
+    buf = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   "--verified-at", head, "--verify-exit", "0", "--verify-log", str(big)],
+                  out=buf)
+    assert rc == 1 and "too large to cite" in buf.getvalue()
+
+
+def test_a_verify_log_within_the_cap_is_cited_by_size_and_digest(tmp_path, monkeypatch):
+    """The refusal above must not be the only path the flag has — a citation that never
+    resolves and a citation that is always refused read the same to a caller."""
+    import hashlib
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    synth = _fuse_something(run_dir)
+    head = cli._rev(synth, "HEAD")
+    log = tmp_path / "verify.log"
+    log.write_bytes(b"3 passed\n")
+    buf = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
+                   "--verified-at", head, "--verify-exit", "0", "--verify-log", str(log)],
+                  out=buf)
+    assert rc == 0, buf.getvalue()
+    digest = hashlib.sha256(log.read_bytes()).hexdigest()[:12]
+    assert f"log 9 byte(s) sha256:{digest}" in buf.getvalue()

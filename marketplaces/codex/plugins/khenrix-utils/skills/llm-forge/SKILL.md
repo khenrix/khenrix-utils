@@ -202,7 +202,8 @@ empty delivery.
 ```bash
 python3 "$FORGE" --collect <run-id> --repo /path/to/repo \
   --handover-target refs/heads/main \   # or: --accept
-  --synthesis-outcome PASS \            # the verdict YOU measured, reported
+  --verified-at <synthesis HEAD> \      # the OID your verify ran at
+  --verify-exit 0 \                     # the status it returned
   --strategy from_scratch
 ```
 
@@ -216,14 +217,30 @@ a value the second one accepts.
 files, decides mergeability, runs the cloud ultrareview once (if it was confirmed), and
 prints the handover.
 
-**Get `--strategy` and `--synthesis-outcome` right the first time.** Every refusal
-`--collect` can make from disk — an unfused synthesis tree, an out-of-band set it cannot
-enumerate, a delivery naming neither a target nor an acceptance — comes *before* the cloud
-review, so a run with nothing to hand over does not pay for it. These two are validated when the
-provenance record is built, which `--collect` does **before** it invokes the cloud review —
-so a misspelled value refuses without spending anything.
-`--synthesis-outcome` must be one of `PASS`, `FAIL`, `FLAKY`, `GATE_CHANGED`,
-`HARVEST_INCOMPLETE`, `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE`.
+**Get `--strategy` right the first time.** Every refusal `--collect` can make from disk — an
+unfused synthesis tree, a tree identical to one seat's candidate, an out-of-band set it cannot
+enumerate, a delivery naming neither a target nor an acceptance, a partial evidence set — comes
+*before* the cloud review, so a run with nothing to hand over does not pay for it. `--strategy`
+is validated when the provenance record is built, which `--collect` does **before** it invokes
+the review — so a misspelled value refuses without spending anything.
+
+### Reporting your verify result
+
+The engine does not run verify over the fusion, and the handover says so in words. What it
+takes is **evidence**, not a word:
+
+`--verified-at` and `--verify-exit` go together — a lone one is refused, because a partial
+evidence set is a verdict lost under a header that would say none was offered. Pass neither
+and the header reports that no verdict was given, which is the honest reading and never a PASS.
+
+There is no `FLAKY` here: that is a claim about two runs and this is one exit status.
+
+### The fusion must be a fusion
+
+`--collect` refuses a synthesis tree byte-identical to any single seat's candidate, with the
+sentence *"this is seat X's candidate, not a fusion."* Promoting the strongest candidate as-is
+is the thing this skill exists not to do. If that genuinely is the answer, deliver it out of
+band rather than under a fusion's header.
 
 Pass **`--handover-target`** (where the work went) or **`--accept`** (you took delivery
 with no merge target). One of the two is required — without it "unmerged" is undefined and
@@ -235,7 +252,7 @@ Relay the header **as printed**. Six things in it will look like defects and are
 
 - **`Synthesis: the orchestrator reports PASS … this engine did not run it`.** That is the
   truth: the engine builds no verifier clone for the fusion and runs no confirmed command
-  over it, so `--synthesis-outcome` is a **report**, and the header says so instead of
+  over it, so the outcome it prints is a **report**, and the header says so instead of
   calling it verified. Never upgrade that sentence when you relay it. The
   `"Verified" here means` paragraph is deliberately absent beside it, and there is no flag
   that flips this.

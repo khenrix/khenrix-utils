@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import shutil
 import sys
@@ -615,6 +616,115 @@ _UNREQUESTED = ultra.Ultra(
     "defect in `--collect` and NOT a review the operator declined")
 
 
+def _reported_outcome(args, *, head: str) -> tuple:
+    """`(outcome | None, evidence line | None)` out of §16's evidence flags.
+
+    THE THREE FLAGS ARE ALL-OR-NOTHING BECAUSE A PARTIAL SET IS A CALLER'S MISTAKE AND NOT AN
+    ABSENCE. Dropping a lone `--verified-at` would lose a verdict the operator meant to report
+    while the header rendered "no verify verdict was reported for the fusion" — the missing
+    argument and the deliberate silence spelling the same. `--verify-log` is the one optional
+    member: it adds a citation and it decides nothing.
+
+    THE MAP FROM AN EXIT CODE IS TWO-VALUED ON PURPOSE. §6.2 names four outcomes and only two
+    of them can be read off one exit status; `FLAKY` is a claim about two runs and this engine
+    has one number, so a flag that could assert it would be a verdict cleaner than its
+    evidence. The EXACT code goes in the line, because `FAIL` at 127 (no such command) and
+    `FAIL` at 1 (a failing test) are one word for two events.
+
+    THE LOG IS READ UNDER A QUOTA AND THE CAP IS A REFUSAL. `--verify-log` is a caller-named
+    path and the citation is a digest over its whole contents, so an uncapped `read_bytes` is
+    this verb loading an arbitrary file into memory on the caller's word — the one such read in
+    the package, every other going through `storage.Quota`. `for_harvest` is the right bar: it
+    is what this module already applies to a tree that has had setup run in it. Over the cap is
+    REFUSED rather than truncated, because a digest over a prefix is a citation that does not
+    re-derive.
+    """
+    at, code, log = args.verified_at, args.verify_exit, args.verify_log
+    if at is None and code is None and log is None:
+        return None, None
+    if at is None or code is None:
+        raise CliError(
+            "§16's fusion evidence is `--verified-at <oid>` AND `--verify-exit <n>` together. "
+            f"Got verified_at={at!r}, verify_exit={code!r}. A partial set is a verdict lost "
+            "under a header that would then say none was offered, so it is refused rather "
+            "than dropped.")
+    if at != head:
+        raise CliError(
+            f"--verified-at {at} is not this run's synthesis HEAD ({head}). A verify that ran "
+            "at another OID measured another tree, and §16.1's header would attribute its "
+            "result to the one being handed over.")
+    outcome = verify.PASS if code == 0 else verify.FAIL
+    line = f"reported by the orchestrator at {head}, exit {code}"
+    if log is not None:
+        p = Path(log)
+        cap = storage.Quota.for_harvest().max_file_bytes
+        try:
+            size = p.stat().st_size
+            if size > cap:
+                raise CliError(
+                    f"--verify-log {log} is {size} bytes and too large to cite (the cap is "
+                    f"{cap}). A digest over part of it is a citation that does not re-derive, "
+                    "so this is refused rather than truncated.")
+            blob = p.read_bytes()
+        except OSError as e:
+            raise CliError(f"--verify-log {log} is not a file this engine can read ({e}); a "
+                           "citation that does not resolve is worse than no citation") from e
+        line += (f", log {len(blob)} byte(s) sha256:"
+                 f"{hashlib.sha256(blob).hexdigest()[:12]}")
+    return outcome, line
+
+
+def _refuse_a_seats_candidate(repo, run_dir, *, run_id: str, tree: str,
+                              base_tree: str) -> None:
+    """§16: the deliverable is a FUSION. A synthesis tree identical to one seat's candidate is
+    that seat promoted, which is the one thing this skill exists not to do.
+
+    TREE OIDS, NOT DIFF BYTES. Both trees are built over B1, so "byte-identical diff" and
+    "identical tree" are the same statement, and git already computed the second.
+
+    A SEAT WHOSE BRANCH CANNOT BE RESOLVED IS REFUSED WHEN IT PRODUCED A CANDIDATE AND SKIPPED
+    WHEN IT DID NOT — never skipped on both. `handover.transport_seat` is called only for a
+    seat that produced one, so an absent branch is legitimate for a seat that produced
+    nothing; for a seat whose record says `usable`, an absent branch is a candidate this check
+    cannot compare against, and passing the check by not making the comparison is how the
+    identical fusion ships.
+    """
+    for name in storage.seat_names(run_dir):
+        # `refs/khenrix-forge/<run>/<seat>`, WHICH IS WHERE `transport_seat` ACTUALLY PUTS IT.
+        # `handover.branch` spells `forge/<run>/<seat>`, which git resolves under `refs/heads/`
+        # — and that head exists only for the SYNTHESIS worktree. Measured after a real
+        # `--start`: the repository held `refs/heads/forge/<run>/synthesis` plus
+        # `refs/khenrix-forge/<run>/{base,claude,codex,agy}`, so asking for the head form made
+        # every seat unresolvable and turned this check into a refusal of every run.
+        b = f"refs/khenrix-forge/{run_id}/{name}"
+        try:
+            seat_tree = _rev(repo, f"{b}^{{tree}}")
+        except CliError:
+            rec = runstate.read_seat(run_dir, name) or {}
+            attempts = rec.get("attempts") or []
+            status = (attempts[-1].get("status") or {}) if attempts else {}
+            if status.get("artifacts") == "usable":
+                raise CliError(
+                    f"seat {name} recorded a usable artifact set and its branch {b} does not "
+                    "resolve, so this collect cannot check whether the fusion is that seat's "
+                    "candidate. §16's deliverable is a fusion and an unmade comparison is how "
+                    "a promoted candidate ships.") from None
+            continue
+        if seat_tree == base_tree:
+            # A SEAT THAT COMMITTED NOTHING HAS B1'S OWN TREE, and so does an unfused
+            # synthesis — so comparing the two would refuse "this is seat X's candidate" over a
+            # run in which nobody fused anything. That is `mergeability`'s refusal, it is more
+            # specific, and it tells the operator what to do next. Skipping here is not a hole:
+            # a synthesis identical to B1 never reaches the handover at all.
+            continue
+        if seat_tree == tree:
+            raise CliError(
+                f"the synthesis tree is byte-identical to seat {name}'s candidate: this is "
+                f"seat {name}'s candidate, not a fusion. §16's deliverable is a new answer "
+                "assembled from the best of all seats — if that IS the answer, say so out of "
+                "band; this engine will not hand it over under a fusion's header.")
+
+
 def collect(args, *, out) -> int:
     """§14's read-from-disk half: §13.1 once, §16's mergeability, and the handover text."""
     repo = Path(args.repo).resolve()
@@ -652,6 +762,13 @@ def collect(args, *, out) -> int:
     # argued where it is built.
     head = _rev(synth, "HEAD")
     tree = _rev(synth, "HEAD^{tree}")
+
+    # BOTH BEFORE THE SPEND, on this function's own standing rule: every refusal it can make
+    # from disk comes above §13.1's cloud review, so a run with nothing to hand over never
+    # pays $5-25 to be told so.
+    _refuse_a_seats_candidate(repo, run_dir, run_id=manifest.run_id, tree=tree,
+                              base_tree=manifest.tracked_tree_oid)
+    reported, evidence = _reported_outcome(args, head=head)
     sidecars = _sidecars_of(synth)
     merge = handover.mergeability(manifest, synthesis_tree_oid=tree, sidecars=sidecars)
     oob = handover.out_of_band(sidecars, synthesis_path=synth)
@@ -673,9 +790,9 @@ def collect(args, *, out) -> int:
     # check `Provenance.__post_init__` makes is over a value this function already holds by
     # now — the two argv words, the seat rows, the confirmed verify command, §11's label, §13's
     # terminal and its counts — and the ONLY one that needs §13.1's result is the type check on
-    # `ultra`. Built after the review, a mistyped `--strategy` or `--synthesis-outcome` bought
-    # $5-25 of cloud review and was then refused for a word, and `--strategy` is the likelier
-    # of the two to be mistyped because there are TWO strategy vocabularies: §5 step 2's answer
+    # `ultra`. Built after the review, a mistyped `--strategy` bought
+    # $5-25 of cloud review and was then refused for a word. `--strategy` is easy to mistype
+    # because there are TWO strategy vocabularies: §5 step 2's answer
     # sheet takes `gate.STRATEGY_RULES` (`size-gated`, `fusion`, `base-and-port`) while this
     # flag reports what the fusion FOLLOWED, which is `strategy.STRATEGIES` (`from_scratch`,
     # `partition`, `base_and_port`) — the same three ideas, and not one shared spelling.
@@ -683,7 +800,7 @@ def collect(args, *, out) -> int:
     # THE WHOLE RECORD RATHER THAN THOSE TWO CHECKS, because hoisting the two would leave the
     # other dozen behind the call and put the next reader back where this one started.
     p = handover.Provenance(
-        seats=seats, synthesis_outcome=args.synthesis_outcome,
+        seats=seats, synthesis_outcome=reported,
         # `False`, AND IT IS A CONSTANT HERE RATHER THAN A FLAG. Nothing in this function runs
         # the confirmed verify command over the fusion: §16 makes the orchestrator the
         # synthesis author, and building a verifier clone here would be a fourth §6 pass that
@@ -710,6 +827,11 @@ def collect(args, *, out) -> int:
     # `replace` RE-RUNS `__post_init__`, so the record that renders is validated carrying the
     # review this run actually got and not on the strength of the placeholder above.
     body = handover.text(h, dataclasses.replace(p, ultra=u))
+    if evidence:
+        # PRINTED BESIDE THE HEADER RATHER THAN INSIDE IT. `handover.text` renders §16.1, whose
+        # vocabulary is fixed; this is the citation for the sentence it already prints, and it
+        # names the OID and the exact exit status so a reader can re-derive both.
+        body = f"{body}\n\nSynthesis verify evidence: {evidence}."
 
     # AND THE RECORD IS PERSISTED LAST, BECAUSE §15 READS IT AS THE LICENCE TO DELETE THIS RUN.
     # `handover.json` is not a note about the collect: `gc.collect` refuses a run that has none
@@ -855,10 +977,17 @@ def build_parser() -> argparse.ArgumentParser:
                     help="--ledger: the JSON file holding §10's rows. Validated by "
                          "`ledger.write_ledger`'s own refusals and written only if it passes "
                          "every one of them")
-    ap.add_argument("--synthesis-outcome", dest="synthesis_outcome",
-                    help="--collect: the verify verdict the orchestrator REPORTS. This engine "
-                         "does not run it, and the handover says so rather than calling it "
-                         "verified")
+    ap.add_argument("--verified-at", dest="verified_at", metavar="OID",
+                    help="--collect: the OID the orchestrator's verify ran at. Refused unless "
+                         "it is this run's synthesis HEAD — a verdict about another tree is a "
+                         "verdict about another artifact")
+    ap.add_argument("--verify-exit", dest="verify_exit", type=int, metavar="N",
+                    help="--collect: the exit status that verify returned. This engine did "
+                         "not run it and the handover says so; the status is EVIDENCE, and "
+                         "the exact number is printed so a 127 is not read as a 1")
+    ap.add_argument("--verify-log", dest="verify_log", metavar="PATH",
+                    help="--collect: the captured stdout of that run, recorded by size and "
+                         "digest so the handover cites something a reader can re-derive")
     ap.add_argument("--strategy",
                     help="--collect: the §12 strategy the fusion FOLLOWED, as the orchestrator "
                          "reports it. Not checked against the rule §5 step 2 confirmed: that "
