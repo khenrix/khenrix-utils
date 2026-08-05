@@ -366,6 +366,18 @@ def decide(rule: str, size: Size) -> Decision:
                         f"measure: {'; '.join(size.unmeasured)}. An unmeasured size is not a "
                         "small one, and defaulting it to from-scratch fusion would spend the "
                         "run's whole synthesis budget on evidence nobody took.")
+    if size.changed_lines == 0 and size.changed_files == 0:
+        # NOTHING IS NOT SMALL. A fully-zero MEASURED size means the candidates' union diff is
+        # empty — there is nothing to fuse — and the branch below would call that "under
+        # §12.1's threshold" and recommend a from-scratch fusion OF NOTHING, with the reason
+        # reading like an ordinary small-diff decision. `unresolved` is the honest answer, and
+        # it is the same word an unmeasured size gets one branch up for the same reason: the
+        # rule cannot be applied to this evidence.
+        return Decision(None, "unresolved",
+                        "the measured size is 0 changed lines across 0 files, so there is "
+                        "nothing to fuse and §12.1's threshold has nothing to sort. This is "
+                        "not a small diff — it is an empty one, and a strategy chosen over it "
+                        "would describe work that does not exist.")
     if size.changed_lines < SIZE_LINE_THRESHOLD and size.changed_files < SIZE_FILE_THRESHOLD:
         return Decision(FROM_SCRATCH, "mechanically_checked",
                         f"{size.changed_lines} changed lines across {size.changed_files} "

@@ -479,3 +479,19 @@ def test_the_two_readers_never_disagree_over_any_shape_INCLUDING_the_traced_one(
                                        size=strategy.Size(10, 1, ())).unsatisfied_criteria is None
         gap_s = strategy.classify_failure(verify.FAIL, report=rep)[0] is None
         assert gap_r == gap_s, f"the two readers disagree about {rep}"
+
+
+def test_an_empty_measured_size_is_unresolved_and_not_small():
+    """REPRODUCED: `Size(0, 0, ())` is accepted — correctly, it is a real measurement — and
+    `decide` then read it as "under §12.1's threshold" and recommended a from-scratch fusion.
+    Of nothing: a fully-zero union diff means there is nothing to fuse, and the reason it
+    printed read like an ordinary small-diff decision.
+
+    `unresolved` is the same word an UNMEASURED size gets one branch up, for the same reason:
+    the rule cannot be applied to this evidence."""
+    d = strategy.decide("size-gated", strategy.Size(0, 0, ()))
+    assert d.strategy is None and d.method == "unresolved", d
+    assert "nothing to fuse" in d.detail, d.detail
+    # ...and a genuinely small non-empty diff still decides, or the threshold is dead.
+    small = strategy.decide("size-gated", strategy.Size(3, 1, ()))
+    assert small.strategy == strategy.FROM_SCRATCH, small

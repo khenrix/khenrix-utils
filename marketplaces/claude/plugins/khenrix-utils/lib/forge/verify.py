@@ -117,6 +117,17 @@ VERIFIER_NAME = "verify"
 # this package is an enum, and a bare `str` is what a manifest round-trips unchanged.
 PASS = "PASS"
 FAIL = "FAIL"
+# UNREACHABLE IN THIS BUILD, AND SAID SO RATHER THAN LEFT TO BE DISCOVERED. `_run_verdict`
+# returns this only when `again is not None`, and NOTHING in `shared/lib/forge/` ever passes
+# `again` — measured. `fixed_point` cannot supply it either: it returns on the FIRST non-zero
+# exit, so the fail-then-pass pair §6.2 describes never forms inside it, and its second pass
+# happens only after a green one.
+#
+# Wiring a real rerun means a second full gate run per candidate, which §5.2 did not price —
+# so it is a spend decision and not an oversight to fix in passing. Until that decision is
+# taken, this outcome is declared, ranked and never produced, and a reader must not infer
+# that flake detection is running. `test_the_flaky_outcome_has_no_producer_and_the_note_says_so`
+# fails the day one appears, which is the signal to delete this paragraph.
 FLAKY = "FLAKY"
 BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE = "BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE"
 HARVEST_INCOMPLETE = "HARVEST_INCOMPLETE"

@@ -2280,3 +2280,29 @@ def test_a_secret_that_reaches_b1_after_preflight_stops_the_run(tmp_path):
         baseline.materialize(repo, run, facts, ["src"], "r1")
     refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/khenrix-forge/").stdout
     assert refs.strip() == "", "a refused baseline left a ref in the user's own repository"
+
+
+def test_the_flaky_outcome_has_no_producer_and_the_note_says_so():
+    """THE EXTERNAL QUESTION: does anything produce §6.2's flake outcome?
+
+    `_run_verdict` returns FLAKY only when its `again` is not None, and `again` comes from
+    `classify(..., rerun=...)` — a keyword NOTHING outside verify.py passes. `fixed_point`
+    cannot supply one either: it returns on the FIRST non-zero exit, so the fail-then-pass
+    pair §6.2 describes never forms inside it, and its second pass runs only after a green
+    one.
+
+    Asserted on the CALL SITES rather than on the assignment inside verify.py — a first draft
+    matched `again =` and caught verify's own internal binding, which is not a producer. This
+    fails the day a caller appears, which is exactly when verify.py's unreachability note
+    becomes stale and has to go."""
+    import re
+    callers = []
+    for p in sorted((ROOT / "shared" / "lib" / "forge").glob("*.py")):
+        if p.name == "verify.py":
+            continue
+        for m in re.finditer(r"\brerun\s*=", p.read_text()):
+            callers.append(f"{p.name}:{p.read_text()[:m.start()].count(chr(10)) + 1}")
+    assert callers == [], (
+        f"{callers} now pass `rerun`, so FLAKY has a producer — delete verify.py's "
+        "unreachability note and price the second gate run §5.2 never quoted")
+    assert "UNREACHABLE IN THIS BUILD" in (ROOT / "shared/lib/forge/verify.py").read_text()
