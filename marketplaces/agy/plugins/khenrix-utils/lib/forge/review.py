@@ -1821,9 +1821,19 @@ def loop(run_dir, *, state, checkout, checkpoint: str, baseline_commit: str,
     paths are the caller's, and an argument nobody had to supply is §13's blindness enforced
     by memory.
 
+    THIS FUNCTION IS NOT THE PRODUCTION PATH, AND THAT IS A DESIGN DECISION RATHER THAN A
+    GAP. §13's rounds are driven by the ORCHESTRATOR — `--review` convenes one panel,
+    `--verify-fix` measures the fix they then commit — for the same reason the engine has no
+    `--synthesize`: applying a blocker's fix is authoring code, and an engine that authored it
+    would be verifying its own work. An unattended loop that fixed and re-reviewed on its own
+    would cross exactly that line. What this function is, is the loop's RULES in one place —
+    the round bracket, §12.3's cap, the oscillation stop, §13's two-round bound — usable by a
+    caller who drives it and readable by anyone asking what the bound actually is.
+
     `fix` IS INJECTED AND HAS NO PRODUCTION IMPLEMENTATION IN THIS PACKAGE. Its contract is
     `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool, candidate_run,
-    baseline_run)`: apply the round's blockers, re-verify in a FRESH clone the builder never
+    baseline_run)` — which `fix.apply` satisfies, and which it satisfies by MEASURING rather
+    than applying: apply the round's blockers, re-verify in a FRESH clone the builder never
     touched (§6), cut a checkpoint, say whether verify passed, and hand back the two `Run`s
     that verify produced. A `(None, False, …)` or a `(_, False, …)` answer is §13's "a fix
     that breaks verify is reverted and the finding reported unresolved" — this loop records

@@ -1521,3 +1521,17 @@ def test_verify_fix_says_when_progress_could_not_be_measured(tmp_path, monkeypat
     rc = cli.main(["--verify-fix", _run_id(run_dir), "--repo", str(repo)], out=out)
     assert rc == 0, out.getvalue()
     assert "NOT MEASURED" in out.getvalue(), out.getvalue()
+
+
+def test_the_rank_declines_permanently_and_says_so(tmp_path):
+    """`_strongest`'s why-line must not promise a stage that will never ship. An earlier
+    docstring said "until §13's review is wired"; §13 IS wired now and no seat gained a
+    review risk, because the panel reviews the SYNTHESIS after fusion and §12.5 ranks the
+    SEATS before it. The reason handed to §16.1's Fusion line has to be the structural one,
+    or every future reader re-derives this the hard way."""
+    run = tmp_path / "run"; run.mkdir()
+    seat, why = cli._strongest(run)
+    assert seat is None
+    assert "no strongest seat can be named" in why
+    # ...and never a promise of pending wiring.
+    assert "not yet" not in why and "until" not in why, why

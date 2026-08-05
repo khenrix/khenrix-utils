@@ -617,7 +617,15 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     # "picking a winner is the thing this skill exists not to do". That call is the
     # orchestrator's own turn, so it is honestly priced and correctly has no engine caller.
     # Pricing it is not the defect; pricing a stage NOTHING can spend is.
-    operator_spent = {"synthesis"}
+    #
+    # `review_fixes` IS THE SAME CASE, SETTLED BY P1. §13's post-review fix is a SYNTHESIS
+    # invocation, and the engine does not make those: `--verify-fix` measures a fix the
+    # orchestrator authored and committed, in a clone they never touched, and spends no
+    # provider call doing it. So the term prices the operator's own turn exactly as
+    # `synthesis` does — it is honestly priced and correctly has no engine caller, and moving
+    # it here rather than zeroing it leaves `--review-rounds` still moving `provider_calls`,
+    # which is what `confirm` cross-checks and what a family of gate tests enforces.
+    operator_spent = {"synthesis", "review_fixes"}
     # DECLARED UNBUILT, and this set is the finding rather than a suppression.
     #
     # `review` CAME OFF THIS LIST BY BEING BUILT, which is the whole reason the test asserts
@@ -626,20 +634,23 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     # merely tolerated the list would have said nothing on the day the gap closed, and the
     # list would still name a stage that now runs.
     #
-    # `review_fixes` STAYS. `review.loop` still has no production caller: it needs a `fix`
-    # implementation to buy a second round and this package has none, so `--review` drives ONE
-    # round and stops. Repricing that term at zero is the honest end state and is NOT done
-    # here, because it stops `--review-rounds` moving `provider_calls` at all and so changes
-    # the confirmation protocol — `confirm` cross-checks the answer sheet against what was
-    # priced, and a whole family of gate tests enforces that the quote responds to its inputs.
-    # That belongs in a task whose reviewer is looking at the gate.
-    known_unbuilt = {"review_fixes"}
+    # NOTHING IS LEFT ON THIS LIST, and that is the end state rather than an empty
+    # suppression: every term the quote prices is now either spent by a named engine function
+    # or spent by the operator in their own turn. The set stays here, and stays asserted by
+    # EQUALITY, so a term added later with no caller has to justify itself out loud.
+    known_unbuilt = set()
     # The remaining terms name the engine function that would spend them.
+    # ONLY THE TERMS AN ENGINE FUNCTION SPENDS. `operator_spent` works by ABSENCE from this
+    # dict — that is how `synthesis` has always been handled — so a term the operator spends
+    # is named there and left out here rather than being listed with a caller it does not
+    # have.
     terms = {
         "builders":     ("run_seat", "runner.py"),
         "review":       ("run_round", "review.py"),
-        "review_fixes": ("loop", "review.py"),
     }
+    assert set(terms) | operator_spent == set(q.terms), (
+        "every priced term is either spent by a named engine function or by the operator; "
+        f"{set(q.terms) - set(terms) - operator_spent} is neither")
     # READ OFF THE QUOTE, never recomputed here: a test that restates the arithmetic agrees
     # with a wrong formula, which is exactly how nine calls for an unbuilt review survived the
     # suite that compares the total to the prose.

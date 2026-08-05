@@ -491,9 +491,18 @@ def _strongest(run_dir) -> tuple:
     order and returns the FIRST dimension a seat cannot be ranked on — coverage, then gate
     outcome, then review risk, then diff complexity. So even a run whose coverage report were
     complete and whose gate outcome were `PASS` would still be unrankable at the third
-    dimension, for every seat, until §13's review is wired. A rank here would therefore not be
-    a rank taken over a quarter of the rubric; it would be one taken over a rubric this front
-    end cannot fill in at all.
+    dimension, for every seat.
+
+    AND THAT IS PERMANENT, NOT PENDING. An earlier version of this paragraph said "until
+    §13's review is wired"; §13 is wired now — `--review` convenes a real panel — and no seat
+    gained a review risk, because the panel reviews the SYNTHESIS, after fusion, and §12.5
+    ranks the SEATS, before it. Nothing in the spec reviews a candidate seat: the quote's
+    review term is `review_rounds * seats` where `seats` is the PANEL size over one tree, and
+    a per-candidate panel would be nine calls nobody priced. So a four-dimension rank is
+    unreachable BY CONSTRUCTION under this design, and this function naming nobody is the
+    rubric's honest output, not a stage that has not shipped yet. The spec would have to
+    change — a per-seat review, or a rubric whose third dimension something produces — before
+    a name could ever be printed here.
 
     NAMING THE BEST-DESCRIBED SEAT INSTEAD WOULD BE THE FAIL-OPEN `rubric.strongest` ITSELF
     REFUSES: "ranking the measurable ones and reporting their winner turns 'the strongest seat

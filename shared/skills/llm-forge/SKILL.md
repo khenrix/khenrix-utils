@@ -119,10 +119,13 @@ Do this **before** anything that reviews or ranks. A run with no ledger cannot b
 all — the blindness assertion refuses a check whose evidence is missing.
 
 Storing it is not trusting it. This engine validates the ledger's structure and **reads nothing
-back off it**: the handover still reports that no strongest seat can be named, because ranking
-seats needs the review risk and the measured size as well, and neither is wired. A rank taken
-off a ledger you wrote, before an independent panel has had the chance to contradict it, would
-be a verdict with nothing behind it.
+back off it**: the handover reports that no strongest seat can be named, and that is
+**permanent, not pending** — §12.5's rubric ranks seats on four dimensions including a
+per-seat review risk, and nothing in this design produces one: `--review`'s panel reads your
+*synthesis*, after fusion, never the candidate seats. A rank taken off a ledger you wrote,
+over a rubric missing its third dimension by construction, would be a verdict with nothing
+behind it. The "no strongest seat" line is the rubric's honest output, not a stage to wait
+for.
 
 
 ### The answer sheet
