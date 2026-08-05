@@ -201,7 +201,18 @@ def main() -> int:
         print("mutate: no test command given (put it after `--`)", file=sys.stderr)
         return 2
 
-    path = ROOT / args.file
+    # CONTAINED, BECAUSE THIS SCRIPT WRITES. `ROOT / args.file` happily resolves a `--file`
+    # full of `..` to anywhere on the filesystem — reproduced: `--file ../../../../tmp/x.py`
+    # was accepted, mutated and restored, with the whole cycle reported as a clean run. A
+    # tool whose job is editing source in place must not be able to edit source it was never
+    # pointed at, and `resolve()` before the containment test is the point: a check on the
+    # unresolved string is defeated by the same `..` it is looking for.
+    path = (ROOT / args.file).resolve()
+    if path != ROOT and ROOT not in path.parents:
+        print(f"mutate: {args.file} resolves to {path}, which is outside {ROOT} — this "
+              "script rewrites the file it is given and will not do that to a path outside "
+              "the repository it was invoked in", file=sys.stderr)
+        return 2
     try:
         original = path.read_bytes()
     except OSError as e:

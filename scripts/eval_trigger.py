@@ -93,7 +93,18 @@ def parse_verdict(raw: str):
         return None
     if not isinstance(payload, dict) or "activate" not in payload:
         return None
-    return bool(payload["activate"])
+    v = payload["activate"]
+    # A BOOLEAN, NOT SOMETHING TRUTHY. `bool(...)` read the string "false" as True and JSON
+    # `null` as False — measured, both — so a judge answering `{"activate": "false"}` was
+    # recorded as "activate" and one answering `{"activate": null}` was recorded as a real
+    # "do not activate" verdict. The second is the exact fail-open this function's own
+    # docstring says it exists to close, surviving one line further down: `null` is the judge
+    # DECLINING to answer, which is the third state, and every `near_miss` case expects
+    # False — so a declining judge scored on the near-miss axis for free.
+    #
+    # `isinstance(v, bool)` and not a truthiness test, because `0` and `1` are also not
+    # verdicts: a judge that answered with a number did not answer the question asked.
+    return v if isinstance(v, bool) else None
 
 
 def score(cases: list) -> dict:
@@ -441,6 +452,18 @@ def _self_test() -> int:
                == "non_substantive"))
     ok.append(("judge verdict scores ok once min_chars=0 (the fix)",
                fanout.score_seat(short_verdict, None, 0)["status"] == "ok"))
+    # THE THREE STATES, PINNED. `bool(...)` read "false" as True and `null` as False —
+    # measured before the fix — so a judge answering in a string was scored backwards, and a
+    # judge DECLINING to answer was scored as a real "do not activate", which every near_miss
+    # case expects and which therefore scored for free.
+    for raw, want in (('{"activate": true}', True),
+                      ('{"activate": false}', False),
+                      ('{"activate": "false"}', None),
+                      ('{"activate": "no"}', None),
+                      ('{"activate": null}', None),
+                      ('{"activate": 0}', None)):
+        ok.append((f"parse_verdict({raw}) is {want!r}", parse_verdict(raw) is want))
+
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1
