@@ -54,6 +54,15 @@ _KNOWN_REDIRECTORS = frozenset({
 })
 
 
+# A SUITE'S GREEN MAY NOT DEPEND ON THE TESTER'S FREE DISK. `gate.open_run` consults §4's disk
+# rejection against the real filesystem, and `/tmp` on a developer machine is routinely
+# smaller than a default run's ~63 GB peak — so without this a seam test raises a `GateError`
+# here and is green on the machine beside it. The refusal itself is measured in
+# `test_forge_gate.py`, against a `free_bytes` that suite controls.
+@pytest.fixture(autouse=True)
+def _enough_disk(monkeypatch):
+    monkeypatch.setattr(gate, "free_bytes", lambda _p: 10 ** 15)
+
 def _baseline(repo, run, selected=()):
     f = finspect.repo_facts(repo)
     return baseline.materialize(repo, run, f, list(selected), "r1")
@@ -763,7 +772,7 @@ def test_the_manifest_records_the_commands_the_gate_confirmed(tmp_path, monkeypa
     confirmation = gate.confirm(report, gate.quote(report),
                                 _answered(setup=list(setup), verify=list(steps)))
 
-    run = gate.open_run(report, confirmation, "r1")
+    run = gate.open_run(report, confirmation, "r1", quote_=gate.quote(report))
     back = runstate.read_manifest(run)
     # Both commands, and each asserted against its OWN steps: the two are the same type and a
     # manifest that recorded one of them twice round-trips perfectly.
@@ -795,7 +804,7 @@ def test_a_repository_preflight_refuses_never_reaches_a_run_directory(tmp_path, 
     confirmation = gate.confirm(refused, gate.quote(refused), _answered(verify=[["true"]]))
 
     with pytest.raises(gate.GateError):
-        gate.open_run(refused, confirmation, "r1")
+        gate.open_run(refused, confirmation, "r1", quote_=gate.quote(refused))
     assert not (state / "khenrix-forge").exists(), "a refused run left a run directory"
     assert "khenrix-forge" not in _git(repo, "show-ref").stdout, \
         "a refused run left a ref in the user's repository"
@@ -803,7 +812,7 @@ def test_a_repository_preflight_refuses_never_reaches_a_run_directory(tmp_path, 
     _git(repo, "update-index", "--no-skip-worktree", "seed.txt")
     admitted = preflight.inspect_repo(repo)
     assert preflight.refusals(admitted) == ()
-    assert runstate.read_manifest(gate.open_run(admitted, confirmation, "r1")).run_id == "r1", \
+    assert runstate.read_manifest(gate.open_run(admitted, confirmation, "r1", quote_=gate.quote(admitted))).run_id == "r1", \
         "the discrimination check: one bit is the whole difference"
 
 

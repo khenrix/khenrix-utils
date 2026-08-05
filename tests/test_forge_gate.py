@@ -29,6 +29,22 @@ from forge_fixtures import (GLOBAL_IDENTITY, commit_all, git as _git,  # noqa: E
 _SERIAL = itertools.count()
 
 
+# The REAL reader, bound at import — BEFORE the autouse fixture below displaces the module
+# attribute. Reading it back off `gate.free_bytes` inside a test would read the neutralisation.
+_REAL_FREE_BYTES = gate.free_bytes
+
+
+# A GATE'S GREEN MAY NOT DEPEND ON THE TESTER'S FREE DISK. `must_show` and `open_run` both
+# consult `free_bytes` against the real XDG_STATE_HOME, so a machine under ~63 GB free would
+# add a refusal line at `lines[0]` for every direct `must_show` call in this file — including
+# the set-equality assertions — and make `open_run` raise. This is the same neutralisation
+# `XDG_STATE_HOME` already gets, one function over. Every test that means to measure the real
+# behaviour reaches for `_REAL_FREE_BYTES` or patches over the fixture.
+@pytest.fixture(autouse=True)
+def _enough_disk(monkeypatch):
+    monkeypatch.setattr(gate, "free_bytes", lambda _p: 10 ** 15)
+
+
 def _report(tmp_path, selected=()):
     """A real `preflight.Report` over a throwaway repository.
 
@@ -1030,7 +1046,7 @@ def test_a_per_step_cwd_reaches_the_manifest_only_through_a_step(tmp_path, monke
     step = verify.Step(argv=("npm", "ci"), cwd="frontend", env={"CI": "1"}, timeout=90)
     c = gate.confirm(r, q, _answers(setup=[step], verify=[verify.Step(argv=("true",))]))
     assert c.setup == (step,)
-    back = runstate.read_manifest(gate.open_run(r, c, "r1")).setup[0]
+    back = runstate.read_manifest(gate.open_run(r, c, "r1", quote_=gate.quote(r))).setup[0]
     assert (back.argv, back.cwd, back.env, back.timeout) == \
         (("npm", "ci"), "frontend", {"CI": "1"}, 90)
 
@@ -1057,10 +1073,10 @@ def test_a_confirmed_run_writes_its_manifest_exactly_once(tmp_path, monkeypatch)
     _state(monkeypatch, tmp_path)
     r, q = _report_and_quote(tmp_path)
     c = gate.confirm(r, q, _answers())
-    run = gate.open_run(r, c, "r1")
+    run = gate.open_run(r, c, "r1", quote_=gate.quote(r))
     assert runstate.read_manifest(run).verify == c.verify
     with pytest.raises(gate.GateError, match="already has a directory"):
-        gate.open_run(r, c, "r1")
+        gate.open_run(r, c, "r1", quote_=gate.quote(r))
     with pytest.raises(runstate.ManifestError):
         runstate.write_manifest(run, runstate.read_manifest(run))
 
@@ -1078,7 +1094,7 @@ def test_the_manifest_records_the_repository_git_names(tmp_path, monkeypatch):
     r = preflight.inspect_repo(repo / "sub")
     assert str(r.repo) != str(r.facts.root), "the premise: the caller named a subdirectory"
 
-    run = gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1")
+    run = gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1", quote_=gate.quote(r))
     m = runstate.read_manifest(run)
     assert m.repo_path == str(r.facts.root)
     assert runstate.drift(m, repo) == (), "t0 is taken here, so nothing has moved yet"
@@ -1098,7 +1114,7 @@ def test_the_run_records_the_baseline_it_was_opened_over(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     write(repo, "seed.txt", "the user's uncommitted work\n")
     r = preflight.inspect_repo(repo)
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1"))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()), "r1", quote_=gate.quote(r)))
 
     assert m.baseline_commit != m.base_commit, "the premise: B1 is a commit of its own"
     assert m.forge_refs == {m.baseline_ref: m.baseline_commit}
@@ -1120,7 +1136,7 @@ def test_a_refused_repository_never_reaches_a_manifest(tmp_path, monkeypatch):
     assert preflight.refusals(r), "the premise: this repository is refused"
 
     with pytest.raises(gate.GateError):
-        gate.open_run(r, _confirmation(), "r1")
+        gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r))
     assert not state.exists(), "a refused run left a directory behind"
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
         "and no ref in the user's repository"
@@ -1153,7 +1169,7 @@ def test_the_gate_opens_a_run_on_a_repository_whose_identity_is_only_global(tmp_
     r = preflight.inspect_repo(repo)
     assert r.facts.unstaged, "the premise: dirty, so B1 is a commit that must be authored"
     m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
-                                             "r1"))
+                                             "r1", quote_=gate.quote(r)))
     assert m.baseline_commit != m.base_commit, "B1 is a commit of its own, and it was authored"
 
 
@@ -1175,7 +1191,7 @@ def test_b1_carries_the_identity_the_operator_confirmed_and_not_the_one_lying_ab
 
     r = preflight.inspect_repo(repo)
     m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, gate.quote(r), _answers()),
-                                             "r1"))
+                                             "r1", quote_=gate.quote(r)))
     ident = _git(repo, "log", "-1", "--format=%an|%ae", m.baseline_commit).stdout.strip()
     assert ident == f"{AUTHOR[0]}|{AUTHOR[1]}", ident
 
@@ -1260,7 +1276,7 @@ def test_the_seats_and_attempts_the_quote_priced_are_what_the_manifest_records(t
         c = gate.confirm(r, q, _answers())
         assert (c.seats, c.attempts) == (seats, attempts), \
             "the confirmation takes the shape off the quote that was shown"
-        m = runstate.read_manifest(gate.open_run(r, c, run_id))
+        m = runstate.read_manifest(gate.open_run(r, c, run_id, quote_=gate.quote(r)))
         assert (m.seats, m.attempts) == (seats, attempts)
         assert f"builders {seats}x{attempts}={seats * attempts}" in q.lines[0], \
             "and the price the operator read was computed from the same two numbers"
@@ -1331,12 +1347,12 @@ def test_a_run_shape_the_manifest_will_not_record_reaches_nothing_of_the_users(t
     for i, seats in enumerate((True, 2.0, "3")):
         with pytest.raises(gate.GateError):
             gate.open_run(r, gate.confirm(r, dataclasses.replace(q, seats=seats), _answers()),
-                          f"refused{i}")
+                          f"refused{i}", quote_=gate.quote(r))
     assert not state.exists(), "a run that will not happen left a directory behind"
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 0, \
         "and a ref in the user's own repository"
 
-    run = gate.open_run(r, gate.confirm(r, q, _answers()), "ok")
+    run = gate.open_run(r, gate.confirm(r, q, _answers()), "ok", quote_=gate.quote(r))
     assert runstate.read_manifest(run).seats == q.seats
     assert _git(repo, "show-ref").stdout.count("khenrix-forge") == 1, \
         "the discrimination check: an ordinary shape does make the ref the rows above must not"
@@ -1380,7 +1396,7 @@ def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, t
             # what this wave moved: the value refuses itself now, so `confirm` is never
             # reached — and a test pinned to `confirm` would have to be rewritten to say so.
             step = verify.Step(argv=("true",), **bad)
-            gate.open_run(r, gate.confirm(r, q, _answers(**{key: [step]})), f"refused{i}")
+            gate.open_run(r, gate.confirm(r, q, _answers(**{key: [step]})), f"refused{i}", quote_=gate.quote(r))
     assert not state.exists(), "a run that will not happen left a directory behind"
     assert not list(state.rglob("baseline.index")), "…and the index copy B1 is built through"
     assert not list(state.rglob("events.jsonl")), "…and a journal for a run that never opened"
@@ -1388,7 +1404,7 @@ def test_a_step_the_manifest_will_not_record_reaches_nothing_of_the_users(key, t
         "…and a ref in the USER's own repository, which is the leftover that escapes the run dir"
 
     ok = verify.Step(argv=("true",), cwd="", env={"CI": "1"}, timeout=45)
-    run = gate.open_run(r, gate.confirm(r, q, _answers(**{key: [ok]})), "ok")
+    run = gate.open_run(r, gate.confirm(r, q, _answers(**{key: [ok]})), "ok", quote_=gate.quote(r))
     # The discrimination check names the same four things: without it a fixture pointed at
     # the wrong state directory would pass every assertion above while measuring nothing, and
     # `baseline.index` in particular was reported ABSENT by the last wave.
@@ -1413,14 +1429,14 @@ def test_a_verify_command_that_spends_never_opens_a_run(tmp_path, monkeypatch):
     q = gate.quote(r)
     spending = gate.confirm(r, q, _answers(verify=[["make", "eval"]]))
     with pytest.raises(gate.GateError, match="provider CLI"):
-        gate.open_run(r, spending, "r1")
+        gate.open_run(r, spending, "r1", quote_=gate.quote(r))
     assert not state.exists(), "a refused run left a directory behind"
 
     priced = gate.confirm(r, q, _answers(verify=[["make", "precommit"]]))
     assert any(f.startswith(gate.REMEDY)
                for f in gate.provider_invoking_verify(repo, verify.Command(priced.verify))), \
         "the discrimination check: this command is priced rather than refused"
-    assert runstate.read_manifest(gate.open_run(r, priced, "r2")).verify == priced.verify
+    assert runstate.read_manifest(gate.open_run(r, priced, "r2", quote_=gate.quote(r))).verify == priced.verify
 
 
 def test_the_gate_records_what_the_operator_accepted(tmp_path, monkeypatch):
@@ -1463,7 +1479,7 @@ def test_the_confirmed_policies_survive_to_a_resume(tmp_path, monkeypatch):
                     author=("Grace Hopper", "grace@example.invalid"))),
     ]
     for run_id, sheet in sheets:
-        run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id)
+        run = gate.open_run(r, gate.confirm(r, q, _answers(**sheet)), run_id, quote_=gate.quote(r))
 
         events = journal.Journal(storage.journal_path(run)).read()
         done = [e for e in events if e.event == journal.done("confirm")]
@@ -1486,11 +1502,11 @@ def test_the_gate_refuses_an_agreement_it_did_not_validate(tmp_path, monkeypatch
     r, q = _report_and_quote(tmp_path)
     for bad in ({"setup": (), "verify": ()}, _answers()):
         with pytest.raises(gate.GateError):
-            gate.open_run(r, bad, "r1")
+            gate.open_run(r, bad, "r1", quote_=gate.quote(r))
     with pytest.raises(gate.GateError):
-        gate.open_run(r.facts, _confirmation(), "r1")
+        gate.open_run(r.facts, _confirmation(), "r1", quote_=gate.quote(r))
     with pytest.raises(gate.GateError):
-        gate.open_run(r, _confirmation(), "")
+        gate.open_run(r, _confirmation(), "", quote_=gate.quote(r))
 
 
 # Every field of a `Confirmation`, and one value the gate would have refused if the answer
@@ -1743,7 +1759,7 @@ def test_the_manifest_records_the_selection_the_run_was_opened_over(tmp_path, mo
     write(repo, "ignored.txt", "and not this one\n")
     r = preflight.inspect_repo(repo, ["wanted.txt"])
 
-    m = runstate.read_manifest(gate.open_run(r, _confirmation(), "r1"))
+    m = runstate.read_manifest(gate.open_run(r, _confirmation(), "r1", quote_=gate.quote(r)))
     assert m.selected_paths == ("wanted.txt",)
     tree = _git(repo, "ls-tree", "-r", "--name-only", m.tracked_tree_oid).stdout.split()
     assert "wanted.txt" in tree and "ignored.txt" not in tree, \
@@ -1768,10 +1784,10 @@ def test_the_manifest_records_the_contract_the_report_carried(tmp_path, monkeypa
     declared = dataclasses.replace(
         r, contract=r.contract.__class__(id="render-x", relations=(("src/*", "gen/*"),)))
 
-    m = runstate.read_manifest(gate.open_run(declared, gate.confirm(r, q, _answers()), "r1"))
+    m = runstate.read_manifest(gate.open_run(declared, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(declared)))
     assert m.generator_contract.id == "render-x"
     assert m.generator_contract.relations == (("src/*", "gen/*"),)
-    plain = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r2"))
+    plain = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r2", quote_=gate.quote(r)))
     assert plain.generator_contract.relations == (), \
         "a report that declared no relation gained one on the way to the manifest"
 
@@ -1784,7 +1800,7 @@ def test_the_manifest_says_when_the_run_was_opened(tmp_path, monkeypatch):
     _state(monkeypatch, tmp_path)
     r, q = _report_and_quote(tmp_path)
     before = datetime.now(timezone.utc)
-    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r1"))
+    m = runstate.read_manifest(gate.open_run(r, gate.confirm(r, q, _answers()), "r1", quote_=gate.quote(r)))
     after = datetime.now(timezone.utc)
 
     stamp = datetime.fromisoformat(m.created_at)
@@ -1833,7 +1849,7 @@ def test_nothing_in_this_module_runs_the_repositorys_own_program(tmp_path, monke
     assert not (repo / "HOOK-RAN").exists() and not list(fired.iterdir()), \
         "something before the operator's answer ran a program the repository supplied"
 
-    gate.open_run(r, c, "r1")
+    gate.open_run(r, c, "r1", quote_=gate.quote(r))
     assert not (repo / "HOOK-RAN").exists(), \
         "materialize dropped NO_DAEMON_CACHE from a call that loads the index"
     assert not list(fired.iterdir()), \
@@ -1866,7 +1882,7 @@ def test_the_priced_synthesis_fix_cap_is_the_recorded_one(tmp_path, monkeypatch)
 
     c = gate.confirm(report, q, _answers())
     assert (c.review_rounds, c.synthesis_fix_cap) == (2, 3)
-    run = gate.open_run(report, c, "r-cap")
+    run = gate.open_run(report, c, "r-cap", quote_=gate.quote(report))
     back = runstate.read_manifest(run)
     assert (back.review_rounds, back.synthesis_fix_cap) == (2, 3), \
         "the priced number and the recorded number are the same number"
@@ -1923,8 +1939,71 @@ def test_the_ultrareview_answer_is_journalled_where_collect_will_look_for_it(tmp
     for run_id, on in (("ultra-on", True), ("ultra-off", False)):
         r = _report(tmp_path)
         q = gate.quote(r, ultrareview=on)
-        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id)
+        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id, quote_=gate.quote(r))
         done = [e for e in journal.Journal(storage.journal_path(run)).read()
                 if e.event == journal.done("confirm")]
         assert len(done) == 1, done
         assert done[0].data["ultrareview"] is on, done[0].data
+
+
+def test_free_bytes_walks_to_the_nearest_existing_ancestor(tmp_path):
+    """The forge root under XDG_STATE_HOME does not exist before the first run, and a run
+    directory's filesystem is its ancestor's."""
+    assert _REAL_FREE_BYTES(tmp_path / "a" / "b" / "c") > 0
+
+
+def test_free_bytes_refuses_a_path_with_no_readable_ancestor(monkeypatch, tmp_path):
+    def _boom(_):
+        raise OSError(5, "I/O error")
+    monkeypatch.setattr(gate.shutil, "disk_usage", _boom)
+    with pytest.raises(gate.GateError, match="free space"):
+        _REAL_FREE_BYTES(tmp_path)
+
+
+def test_the_gate_is_not_green_because_this_machine_has_room(tmp_path):
+    """THE NEUTRALISATION ABOVE IS NOT A WEAKENING, and this is what keeps it honest: the
+    refusal still reaches `must_show`'s output when the disk is short. Without this, an
+    autouse fixture that silenced the check everywhere would be indistinguishable from never
+    having wired it."""
+    r = _report(tmp_path)
+    q = gate.quote(r, seats=3, attempts=3, review_rounds=2)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gate, "free_bytes", lambda _p: 1_000_000_000)
+        lines = gate.must_show(r, q, verify.Command.parse([["true"]]))
+    assert "§4 rejects this run" in lines[0]
+
+
+def test_a_run_that_does_not_fit_is_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(gate, "free_bytes", lambda _p: 1_000_000_000)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    why = gate.refuse_for_disk(q, root=tmp_path)
+    # The peak is READ off the quote rather than spelled here, so this assertion cannot drift
+    # away from what the operator was actually shown.
+    assert why and str(q.peak_disk_gb) in why and "1.0 GB" in why
+
+
+def test_a_run_that_fits_is_not_refused(monkeypatch, tmp_path):
+    monkeypatch.setattr(gate, "free_bytes", lambda _p: 500_000_000_000)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    assert gate.refuse_for_disk(q, root=tmp_path) is None
+
+
+def test_unreadable_free_space_is_not_read_as_enough_space(monkeypatch, tmp_path):
+    """"Nobody measured" must not compare equal to "there is room" — and it must not render
+    the same sentence as a genuine shortfall either."""
+    def _boom(_p):
+        raise gate.GateError("free space at /x could not be read: I/O error")
+    monkeypatch.setattr(gate, "free_bytes", _boom)
+    q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2)
+    why = gate.refuse_for_disk(q, root=tmp_path)
+    assert why and "could not be read" in why and "1.0 GB free" not in why
+
+
+def test_open_run_cannot_be_reached_around_the_disk_check(tmp_path):
+    """`quote_` is keyword-only with NO DEFAULT. The external question is not "does open_run
+    refuse a short disk" — the tests above ask that — but "can a caller open a run without
+    the check running at all", which a default would answer yes."""
+    r = _report(tmp_path)
+    c = gate.confirm(r, gate.quote(r), _answers())
+    with pytest.raises(TypeError, match="quote_"):
+        gate.open_run(r, c, "r1")

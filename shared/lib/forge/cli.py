@@ -232,7 +232,7 @@ def start(args, *, out, make_launcher=None) -> int:
     confirmation = gate.confirm(report, quote_, answers)
 
     run_id = storage.new_run_id()
-    run_dir = gate.open_run(report, confirmation, run_id)
+    run_dir = gate.open_run(report, confirmation, run_id, quote_=quote_)
 
     # §20: "Persist the fully resolved instruction plus resource hashes so `--collect` never
     # depends on vanished conversation context." The BYTES go beside the manifest, because a

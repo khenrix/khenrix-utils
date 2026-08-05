@@ -139,6 +139,7 @@ is imported and run, and is not read here, because searching past the first oper
 with it every `make verify`. See `test_a_file_handed_to_a_runner_as_data_is_not_read_as_the_program`.
 """
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -1177,6 +1178,60 @@ class Confirmation:
                 "§13.1's, so a cap under the round count cannot fund the review it agreed to")
 
 
+def free_bytes(path) -> int:
+    """Free bytes on the filesystem that will hold `path`, or a refusal.
+
+    IT WALKS TO THE NEAREST EXISTING ANCESTOR because the forge root under `XDG_STATE_HOME`
+    does not exist before the first run, and a directory's filesystem is its ancestor's. This
+    is not an error-swallow: the walk stops at the root, and a path with no readable ancestor
+    at all RAISES.
+
+    IT NEVER ANSWERS A NUMBER IT DID NOT READ. §4 rejects a run the disk cannot sustain, so
+    "free space could not be read" answered as a large number is the refusal disarmed by its
+    own failure mode — nobody measured and there is room have to be two different answers.
+    """
+    p = Path(path).resolve()
+    last = None
+    for cand in (p, *p.parents):
+        try:
+            return shutil.disk_usage(cand).free
+        except OSError as e:
+            last = e
+    raise GateError(f"free space at {p} could not be read: {last}. §4 rejects a run the disk "
+                    "cannot sustain, and a run whose disk this engine could not measure is "
+                    "not one it can say fits.")
+
+
+def refuse_for_disk(quote_, *, root=None) -> str | None:
+    """§4's rejection sentence, or `None` when the run fits.
+
+    `None` MEANS MEASURED AND SUFFICIENT AND NOTHING ELSE. Every other outcome — a shortfall,
+    or a read that failed — comes back as a sentence, and the two sentences differ: a caller
+    that printed one for the other would tell an operator with a broken `statvfs` that their
+    disk is full, or an operator with a full disk that the engine could not look.
+
+    THE PEAK IS THE QUOTE'S OWN AND NOT A SECOND ESTIMATE. `quote.peak_disk_gb` is what §5.2
+    showed the operator; comparing against a number computed here would refuse a run on a
+    figure nobody was shown.
+    """
+    if not isinstance(quote_, Quote):
+        raise GateError(f"a Quote is required, not {type(quote_).__name__}; §4's rejection is "
+                        "against the peak §5.2 showed, and there is no other peak to use")
+    target = Path(root) if root is not None else storage.forge_root()
+    need = int(quote_.peak_disk_gb * 1e9)
+    try:
+        have = free_bytes(target)
+    except GateError as e:
+        return (f"§4 rejects this run: {e} The quote's peak is ~{quote_.peak_disk_gb} GB and "
+                "this engine could not check it against anything.")
+    if have >= need:
+        return None
+    return (f"§4 rejects this run: it peaks at ~{quote_.peak_disk_gb} GB under {target} and "
+            f"that filesystem has {have / 1e9:.1f} GB free. §4 says not to trade source-object "
+            "safety for space, so the clones are not made shallow, hardlinked or shared — free "
+            "space, reduce --seats or --attempts, and re-price.")
+
+
 def must_show(report, quote_, command) -> tuple[str, ...]:
     """Everything a human must see before answering §5 step 2, in the order it matters.
 
@@ -1224,6 +1279,12 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
         # stands, and §2.3 does not let the operator answer past them.
         lines.append("the lines above are §2.3 refusals — they fail closed, this gate cannot "
                      "be answered past them, and `open_run` will not open a run over one")
+
+    disk = refuse_for_disk(quote_)
+    if disk:
+        # AT THE TOP, with §2.3's refusals, because it is one: `open_run` will not open a run
+        # over it and nothing below is reachable while it stands.
+        lines.insert(0, disk)
 
     surface = verify.gate_surface(report.facts.root, report.contract, command=command)
     if surface:
@@ -1493,7 +1554,7 @@ def confirm(report, quote_, answers) -> Confirmation:
                         synthesis_fix_cap=quote_.synthesis_fix_cap)
 
 
-def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
+def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path:
     """Open the run this confirmation agreed to, and record it where a resume will read it.
 
     THE REPOSITORY IS THE REPORT'S, not a second argument. `report.facts.root` is git's own
@@ -1586,6 +1647,12 @@ def open_run(report, confirmation: Confirmation, run_id: str) -> Path:
             "answered rather than what a caller assembled")
     if not isinstance(run_id, str) or not run_id:
         raise GateError(f"a run needs an id: {run_id!r}")
+    # §4's rejection, before anything is created. `quote_` is keyword-only with NO DEFAULT: a
+    # default is how a caller opens a run against no disk check at all, and this refusal is
+    # only worth having if it cannot be reached around.
+    disk = refuse_for_disk(quote_)
+    if disk:
+        raise GateError(disk)
 
     blocked = preflight.refusals(report)
     if blocked:

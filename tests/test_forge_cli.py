@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "shared" / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from council import engine  # noqa: E402
-from forge import (cli, fingerprint, handover, runstate, seat as seatmod,  # noqa: E402
+from forge import (cli, fingerprint, gate, handover, runstate, seat as seatmod,  # noqa: E402
                    storage, taskbundle, ultra)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
@@ -126,6 +126,18 @@ def _never(**kw):
 
 
 # --------------------------------------------------------------------------- fixtures
+
+# A SUITE'S GREEN MAY NOT DEPEND ON THE TESTER'S FREE DISK. `gate.open_run` and
+# `gate.must_show` consult §4's disk rejection against the real filesystem under
+# `XDG_STATE_HOME`, which these tests point at `tmp_path` — and `/tmp` on a developer machine
+# is routinely smaller than a default run's ~63 GB peak. Without this, `--start` raises a
+# `GateError` here and is green on the machine beside it. It is the same neutralisation
+# `XDG_STATE_HOME` already gets, one function over; the refusal itself is measured in
+# `test_forge_gate.py`, against a `free_bytes` that suite controls.
+@pytest.fixture(autouse=True)
+def _enough_disk(monkeypatch):
+    monkeypatch.setattr(gate, "free_bytes", lambda _p: 10 ** 15)
+
 
 def _a_clean_repo(tmp_path, name="repo"):
     return make_repo(tmp_path, name)
