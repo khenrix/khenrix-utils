@@ -1,0 +1,17 @@
+{
+ "should_trigger": [
+  "sync my claude setup with the khenrix source of truth",
+  "reconcile my codex config with khenrix-utils",
+  "add the missing MCP servers to my CLI",
+  "set up this machine to match my shared skills and settings",
+  "my agy config drifted from capabilities.toml \u2014 fix it",
+  "/khenrix-setup"
+ ],
+ "near_miss": [
+  "research the newest claude code features and tune my setup",
+  "audit my CLIs for overlapping skills and duplicate MCP servers",
+  "tune up the markitdown skill's wording",
+  "install claude code on a fresh machine",
+  "why is my MCP server failing to connect?"
+ ]
+}

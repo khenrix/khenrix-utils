@@ -1,0 +1,17 @@
+{
+ "should_trigger": [
+  "modernize my claude code setup",
+  "what new CLI features should I be using?",
+  "upgrade my setup to a newer model and better defaults",
+  "refresh my house style and skill wording against current best practice",
+  "research what changed in claude code and improve how I use it",
+  "/khenrix-upgrade"
+ ],
+ "near_miss": [
+  "sync my claude setup with the khenrix source of truth",
+  "add the missing MCP servers to my CLI",
+  "audit my whole setup for conflicts and overlaps",
+  "upgrade the npm packages in this project",
+  "update my system packages"
+ ]
+}
