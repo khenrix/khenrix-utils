@@ -773,7 +773,7 @@ git commit -m "fix(forge): the oscillation stop could not fire, because its inpu
 **The fix:** screen the **content-addressed B₁ path set after B₁ is built**, binding the scan to the per-path hashes seat verification already consumes. B₁ is immutable once built, so a screen taken over it has no race left to lose.
 
 **Files:**
-- Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/baseline.py` (`materialize`, after the ref is made and `filesystem_manifest` is recorded)
+- Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/baseline.py` (`materialize`, immediately after `_record_filesystem_manifest(run_dir, manifest)` at ~`:395` and **before** the `update-ref` below it)
 - Modify: `/home/khenrix/git/khenrix-utils/shared/lib/forge/gate.py` (`SCREEN_RACE`'s gap line and `ACCEPTABLE_GAPS`)
 - Test: `/home/khenrix/git/khenrix-utils/tests/test_forge_baseline.py`
 
@@ -839,16 +839,20 @@ Expected: FAIL — `DID NOT RAISE`.
 
 - [ ] **Step 3: Screen B₁ after it is built**
 
-In `baseline.materialize`, after the ref exists and the filesystem manifest is recorded, screen the path set B₁ actually holds:
+In `baseline.materialize`, immediately after `_record_filesystem_manifest(run_dir, manifest)` (~`:395`) and **before** the `update-ref` below it, screen the path set B₁ actually holds.
+
+**That placement is the point, and it is not "after B₁ exists".** `manifest` is complete at line 395 — it is `git ls-files -z` plus the selection, walked and digested — and the ref that puts B₁ in the **user's own repository** is written after it. Screening here means a refusal leaves nothing behind at all: no ref, no object, nothing in a repository the operator did not ask forge to write to. That is `open_run`'s rule — "every refusal comes before every write" — applied one module over, and its docstring records that the same rule has been broken three times for the same structural reason. The local is `manifest`; there is no `Baseline` object yet.
 
 ```python
     # THE SCREEN §3 ASKS FOR, TAKEN WHERE IT CANNOT LOSE A RACE. `preflight`'s screen runs
     # before the gate and the gate reuses its report, so anything written in between entered
     # B1 unscreened and three cloud CLIs read it — `gate.SCREEN_RACE` was that gap, declared
     # rather than closed. B1 is immutable once built, so a screen over ITS OWN path set has no
-    # window left. The set is read back off the baseline rather than taken from the operator's
-    # selection, because the whole finding is that those two sets differ.
-    findings, breaches = screen.screen_tree(facts.root, sorted(b.filesystem_manifest))
+    # window left. The set is `manifest` — `git ls-files -z` plus the selection, which is what
+    # B1 actually carries — and not the operator's `selected_untracked`, because the whole
+    # finding is that those two sets differ. Measured: `manifest` is complete here and the ref
+    # is written below, so a refusal leaves nothing in the user's repository.
+    findings, breaches = screen.screen_tree(facts.root, sorted(manifest))
     if breaches:
         # `screen_tree`'s contract, verbatim: "a non-empty `breaches` means the caller must
         # FAIL the run closed with that message — never silently scan less than it claimed to".
@@ -863,7 +867,7 @@ In `baseline.materialize`, after the ref exists and the filesystem manifest is r
             "between the two. B1 is what three cloud CLIs receive.")
 ```
 
-Import `screen` in `baseline.py` if it is not already imported, and confirm the manifest is populated at that point — if `filesystem_manifest` is written later, move the screen to after it rather than screening an empty set, which would be a check that passes because it looked at nothing.
+Import `screen` in `baseline.py` if it is not already imported. **Confirm `manifest` is non-empty before trusting the screen**: a check that passes because it looked at nothing is the failure this task is most exposed to, and `read_filesystem_manifest`'s own docstring (`baseline.py:113`) already argues the same point about an empty manifest. Assert it in the test, not only in review.
 
 - [ ] **Step 4: Retire the gap**
 
