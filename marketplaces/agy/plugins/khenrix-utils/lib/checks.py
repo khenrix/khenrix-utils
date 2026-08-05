@@ -266,11 +266,38 @@ def forge_packaging(root: Path) -> list[str]:
     return problems
 
 
+def _optional(root: Path, module: str, fn: str) -> list[str]:
+    """Run a sibling lint if it is on disk, and say so loudly if it is not importable.
+
+    IMPORTED HERE RATHER THAN AT MODULE SCOPE because `render.py` imports this file and
+    `render.py` is in every skill's source-hash closure — a top-level import of a module
+    that later grows a dependency would rewrite twelve receipts for a reason nobody chose.
+    The plan that specified both lints makes this its first constraint.
+
+    A MISSING FILE IS A PROBLEM, NOT A SKIP. `checks.run_all` is what `make verify` calls, and
+    a lint that silently does not run is indistinguishable from one that passed — the vacuous
+    green this module refuses everywhere else.
+    """
+    path = root / "scripts" / "lib" / f"{module}.py"
+    if not path.is_file():
+        return [f"{module}: {path} is missing, so its checks did not run — "
+                "a lint that does not run is not a lint that passed"]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(f"khenrix_{module}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return list(getattr(mod, fn)(root))
+
+
 def run_all(root: Path = ROOT) -> list[str]:
     caps = _load_caps(root)
     return (model_crosscheck(root) + pricing_coverage(root)
             + scan_secrets(root) + structure_checks(root, caps)
-            + forge_packaging(root))
+            + forge_packaging(root)
+            # THE TWO SIBLING LINTS, appended AFTER forge_packaging — the plans that
+            # specified them both name preserving its position as a constraint.
+            + _optional(root, "portability", "run")
+            + _optional(root, "charts", "check_charts"))
 
 
 # --------------------------------------------------------------------------- #
