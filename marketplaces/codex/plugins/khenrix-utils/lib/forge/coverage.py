@@ -150,12 +150,33 @@ class Report:
     contradictions: tuple
     unsatisfied: tuple
     unresolved: tuple
+    # ROWS THE COVERAGE AXIS DOES NOT COVER, as `(row_id, status)` pairs. `check` skips every
+    # non-`accepted` row — correctly, see its own comment — but it used to skip them with NO
+    # RECORD ANYWHERE, so forty rejected or deferred claims rendered a report naming none of
+    # them, which reads as a run with nothing outstanding.
+    #
+    # BESIDE `results`, NEVER IN IT. A `Result` carrying `method="unresolved"` would be
+    # counted by `_lines` and by `unmeasured`, so every rejected row would fire §12.4's
+    # fallback and degrade §12.5's top dimension — inverting the incentive §10 states
+    # outright ("if all three seats considered and rejected a cache layer, that is the most
+    # valuable signal in the run") and that the accepted-rows-only filter was added to
+    # protect. A rejected row is not a coverage gap; it is a claim the ledger settled.
+    unmeasured_rows: tuple = ()
 
     def __post_init__(self) -> None:
         wrong = sorted({type(r).__name__ for r in self.results
                         if not isinstance(r, Result)})
         if wrong:
             raise CoverageError(f"a report's results are Result records, not {wrong}")
+        bad = [x for x in self.unmeasured_rows
+               if not (isinstance(x, tuple) and len(x) == 2
+                       and all(isinstance(v, str) for v in x))]
+        if bad:
+            # A FIELD WITH A READER. Carrying it and checking nothing would make it a record
+            # nobody looks at, which is the defect this module is written against one layer
+            # out — so the shape is enforced where every other invariant of this dataclass is.
+            raise CoverageError(
+                f"a report's unmeasured rows are (row_id, status) pairs of str, not {bad!r}")
         for name in ("unsatisfied", "unresolved"):
             expected = tuple(_lines(self.results, name))
             if tuple(getattr(self, name)) != expected:
@@ -749,7 +770,13 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
     if not isinstance(l, ledger.Ledger):
         raise CoverageError(f"a Ledger is required, not {type(l).__name__}")
     try:
-        ledger._check_rows(l.rows)
+        # `_check`, NOT `_check_rows`. `_check_rows` validates the ROWS' shape; `_check` also
+        # runs the scalars, the version pin, the degradation-consistency rule and the
+        # duplicate-id pass at `ledger.py:555`. Every result below is KEYED BY ROW ID, so the
+        # narrower call had this function measuring carefully over identities nothing had
+        # verified were unique. The `CoverageError` wrapper stays: a caller of this module
+        # should never meet a `LedgerError` it has no reason to catch.
+        ledger._check(l)
     except ledger.LedgerError as e:
         raise CoverageError(str(e)) from e
     # A LEDGER WITH NO ROWS IS THE EMPTY-CRITERIA FAIL-OPEN ONE CONTAINER OUT. The paragraph
@@ -765,6 +792,7 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
             "would read as a fully covered run. A ledger with no claims is a run with no "
             "claims, which §10.1's own failure shape is made of.")
     results = []
+    skipped = []
     for r in l.rows:
         # ACCEPTED ROWS ONLY, and the reason is §10's, not tidiness. §12.4's trigger is a
         # MISSING ACCEPTED ROW, and both readers print "N accepted claim(s)" — but this loop
@@ -782,6 +810,12 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
         # The accepted-with-no-criteria refusal below stays where it is: it is about a row
         # that IS accepted and declares nothing, which is the opposite failure.
         if r.status != "accepted":
+            # RECORDED, NOT MEASURED. The `continue` stays — see above for why a rejected row
+            # must not reach the coverage axis — but dropping it with no record at all let
+            # unsettled claims render a report that named none of them. `unmeasured_rows` is
+            # beside `results`, so `unmeasured()` and §12.4's fallback are untouched and the
+            # report still cannot read as complete.
+            skipped.append((r.id, r.status))
             continue
         if r.status == "accepted" and not r.acceptance_criteria:
             results.append(Result(
@@ -792,4 +826,5 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
             results.append(evaluate(c, row_id=r.id, index=i, tree=tree,
                                     pytest_argv=pytest_argv, run=run))
     return Report(tuple(results), _contradictions(l),
-                  tuple(_lines(results, "unsatisfied")), tuple(_lines(results, "unresolved")))
+                  tuple(_lines(results, "unsatisfied")), tuple(_lines(results, "unresolved")),
+                  unmeasured_rows=tuple(skipped))

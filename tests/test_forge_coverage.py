@@ -487,8 +487,13 @@ def _led(rows):
 def test_two_conflicting_rows_both_accepted_is_a_contradiction(tmp_path):
     a = _row("R1", "alpha")
     b = _row("R2", "beta")
+    # SYMMETRIC, because §10's `conflicts` is and `ledger._check` enforces it. This fixture
+    # declared it on one side only, and `coverage.check` never noticed because it called
+    # `_check_rows`, which validates row SHAPE and not the ledger's relations — so the test
+    # ran over a ledger no writer would have produced.
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "conflicts"),)})
-    rep = coverage.check(_led([a2, b]), tree=tmp_path)
+    b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "conflicts"),)})
+    rep = coverage.check(_led([a2, b2]), tree=tmp_path)
     assert any("conflict" in c for c in rep.contradictions)
 
 
@@ -497,8 +502,15 @@ def test_a_conflict_resolved_by_rejecting_one_side_is_not_a_contradiction(tmp_pa
     made a decision, and reporting it would train a reader to skip the section."""
     a = _row("R1", "alpha")
     b = _row("R2", "beta", status="rejected")
+    # DECLARED ON BOTH SIDES. §10's `conflicts` is symmetric and `ledger._check` enforces it;
+    # this fixture used to declare it on one side only, which `_check_rows` accepted and
+    # `coverage.check` never noticed because it called the narrower of the two. Now that it
+    # calls `_check`, an asymmetric pair is refused before any contradiction is computed —
+    # so the fixture states the relation the way §10 requires, and the test measures what it
+    # set out to measure rather than passing over a malformed ledger.
     a2 = ledger.Row(**{**a.__dict__, "dependencies": (ledger.Dependency(b.id, "conflicts"),)})
-    rep = coverage.check(_led([a2, b]), tree=tmp_path)
+    b2 = ledger.Row(**{**b.__dict__, "dependencies": (ledger.Dependency(a.id, "conflicts"),)})
+    rep = coverage.check(_led([a2, b2]), tree=tmp_path)
     assert not rep.contradictions
 
 
@@ -847,3 +859,51 @@ def test_an_accepted_rows_criterion_is_still_counted(tmp_path):
     rep = coverage.check(_led([_row("R1", "the accepted thing", acceptance_criteria=(c,))]),
                          tree=tmp_path, pytest_argv=[])
     assert len(rep.results) == 1 and rep.results[0].satisfied is True
+
+
+def _a_ledger_with_duplicate_ids():
+    """A ledger `_check_rows` accepts and `_check` refuses. `_check_rows` validates the rows'
+    SHAPE; the duplicate-id pass lives in `_check` (`ledger.py:555`), which is the whole
+    point of s3 M3 — `coverage.check` called the narrower one."""
+    r = _row("R1", "alpha")
+    return _led([r, r])
+
+
+def test_check_refuses_a_ledger_with_duplicate_row_ids(tmp_path):
+    """THE EXTERNAL QUESTION: does `check` measure over identities anything verified? It
+    called `_check_rows`, which validates shape; every result below is KEYED BY ROW ID, and
+    nothing had checked those ids were unique."""
+    l = _a_ledger_with_duplicate_ids()
+    ledger._check_rows(l.rows)          # the narrower call accepts it — that is the finding
+    with pytest.raises(coverage.CoverageError, match="(?i)duplicate|twice|same id"):
+        coverage.check(l, tree=None)
+
+
+def test_a_rejected_row_is_named_rather_than_vanishing(tmp_path):
+    """`if r.status != "accepted": continue` dropped it with no record anywhere, so forty
+    rejected claims rendered a report naming none of them — which reads as a run with nothing
+    outstanding. `nothing` and `nobody` must not leave the same record."""
+    a, b = _row("R1", "alpha", status="rejected"), _row("R2", "beta")
+    report = coverage.check(_led([a, b]), tree=tmp_path)
+    assert (a.id, "rejected") in report.unmeasured_rows
+    assert not any(x[0] == b.id for x in report.unmeasured_rows)
+
+
+def test_a_rejected_row_is_not_charged_as_a_coverage_gap(tmp_path):
+    """THE FAIL-OPEN IN REVERSE, and the reason this row is not a `Result`. `unmeasured()`
+    counts `unresolved` AND `manual_trace_confirmed`; a rejected row given
+    `method="unresolved"` would fire §12.4's fallback and degrade §12.5's top dimension on
+    every ledger that rejected anything — inverting the incentive the accepted-rows-only
+    filter exists to protect. §10 calls a rejection the most valuable signal in the run."""
+    a, b = _row("R1", "alpha", status="rejected"), _row("R2", "beta")
+    report = coverage.check(_led([a, b]), tree=tmp_path)
+    assert not any(r.row_id == a.id for r in report.results)
+    assert not any(r.row_id == a.id for r in coverage.unmeasured(report.results))
+    assert not any(a.id in line for line in report.unresolved)
+
+
+def test_the_unmeasured_rows_field_has_a_reader():
+    """A field nobody reads is a record nobody looks at, which is the same defect one layer
+    out. `Report.__post_init__` already re-derives its roll-ups for exactly this reason."""
+    with pytest.raises(coverage.CoverageError):
+        coverage.Report((), (), (), (), unmeasured_rows=("R1",))   # not (id, status) pairs
