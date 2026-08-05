@@ -7,7 +7,12 @@ allowed-tools: Bash, Read
 # llm-forge — build it three ways, then fuse
 
 One task. Three agentic CLIs — `claude`, `codex`, `agy` — each building it in its own
-isolated clone of the repository, with no access to each other's work. Every candidate is
+clone of the repository: a separate checkout of the same baseline, with no git remote and no
+branch of another seat's work. **They are not isolated from each other by the operating
+system** — the clones are sibling directories under one run root, owned by your user, and the
+seats run one after another, so a seat that goes looking can read the others'. Treat the
+diversity as a property of three different models answering the same prompt, not as an
+enforced boundary. Every candidate is
 then verified in a **fresh verifier clone the builder never touched**, and you, the
 orchestrator, **fuse** them.
 
@@ -17,11 +22,28 @@ the strongest candidate promoted as-is. The engine deliberately has no `--synthe
 stops with the candidates verified on disk, hands you a synthesis worktree, and waits.
 Picking a winner is the thing this skill exists not to do.
 
+**And that is an instruction to you, not a property the collector checks.** `--collect`
+refuses a synthesis tree identical to B1 and nothing more: it never compares your tree
+against the candidates, never requires claims from more than one, and `--strategy` is
+recorded as you typed it — the CLI says outright that it cannot be verified. So a wholesale
+copy of one candidate plus a whitespace change passes, and `--strategy from_scratch` is
+accepted over winner promotion. The guarantee is yours to keep; the engine can only refuse
+the one case where you kept nothing at all.
+
 > **Cost.** A default run (3 seats × 3 attempts, 2 review rounds, cloud ultrareview on) is
 > **19 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~56.7 GB
 > under `XDG_STATE_HOME` across 17 coexisting clones** — 1 calibration + 9 builder + 7
 > verifier — none of which is reclaimed until you run `--gc`. The cloud ultrareview is
 > priced separately in **usage credits ($5–25, or one of three one-time free runs)**.
+>
+> **That quote is an UPPER BOUND, and about half of it cannot be spent today.** §13's review
+> rounds and their post-round fixes — 9 of the 19 calls — are priced for a stage that has no
+> production caller: `review.run_round` and `review.loop` are built and tested and nothing
+> convenes them, so `--review-rounds N` parses, is recorded as a budget, and buys nothing. A
+> real default run spends about **10** provider calls: 9 builders and the one synthesis turn
+> you make yourself. The quote is not corrected here because repricing changes what `--start`
+> asks you to agree to, and that is its own change; what the packaging suite guarantees is
+> that no NEW unspendable term can be added without a test failing.
 > `--start` prints that whole quote, plus every refusal and gap, **before a token is
 > spent**, and will not open a run until the answer sheet agrees with what was priced.
 >
@@ -95,7 +117,10 @@ A JSON object. Every command is a **list of argv lists** — nothing here runs a
 `--no-ultra` belongs on `--start`. It does not merely turn the cloud review off — it moves
 the quote's **provider calls, setup runs, verify runs and peak disk**, because the review's
 findings would have earned a post-round fix plus a fresh verifier setup and verify — measured
-on a default run, 19 calls / 18 setup / 9 verify / ~56.7 GB become 18 / 17 / 8 / ~53.3. The
+on a default run, 19 calls / 18 setup / 9 verify / ~56.7 GB become 18 / 17 / 8 / ~53.3. Note
+that those are movements in the UPPER BOUND: the post-review fix it subtracts is one of the
+calls the cost note above says cannot be spent today, so what `--no-ultra` actually saves
+right now is the **$5–25 in usage credits**, not a provider call. The
 gate then refuses if the quote and the answer
 disagree at all: the quote you were shown is the one the run may spend, and the fix is to
 re-price and show it again, never to answer past it.
@@ -161,9 +186,9 @@ prints the handover.
 **Get `--strategy` and `--synthesis-outcome` right the first time.** Every refusal
 `--collect` can make from disk — an unfused synthesis tree, an out-of-band set it cannot
 enumerate, a delivery naming neither a target nor an acceptance — comes *before* the cloud
-review, so a run with nothing to hand over does not pay for it. These two are the exception:
-they are validated when the provenance record is built, which is *after* the review has
-already run. A misspelled value therefore costs the ultrareview and then refuses.
+review, so a run with nothing to hand over does not pay for it. These two are validated when the
+provenance record is built, which `--collect` does **before** it invokes the cloud review —
+so a misspelled value refuses without spending anything.
 `--synthesis-outcome` must be one of `PASS`, `FAIL`, `FLAKY`, `GATE_CHANGED`,
 `HARVEST_INCOMPLETE`, `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE`.
 
@@ -173,7 +198,7 @@ with no merge target). One of the two is required — without it "unmerged" is u
 
 ### Reading the handover honestly
 
-Relay the header **as printed**. Four things in it will look like defects and are not:
+Relay the header **as printed**. Six things in it will look like defects and are not:
 
 - **`Synthesis: the orchestrator reports PASS … this engine did not run it`.** That is the
   truth: the engine builds no verifier clone for the fusion and runs no confirmed command
@@ -181,22 +206,37 @@ Relay the header **as printed**. Four things in it will look like defects and ar
   calling it verified. Never upgrade that sentence when you relay it. The
   `"Verified" here means` paragraph is deliberately absent beside it, and there is no flag
   that flips this.
-- **`Fusion: no strongest seat can be named …`.** The ordinary outcome, not an error.
-  Ranking seats needs a coverage report over a claim ledger, and untraced criteria are
-  `unresolved` by construction — so a real run usually names nobody, **with the reason
-  attached**. A named winner would be the winner of a comparison nobody ran.
+- **`Fusion: no strongest seat can be named …`.** The ordinary outcome, not an error — and
+  today it is the ONLY outcome. Ranking seats needs a coverage report over a claim ledger,
+  and no production path writes one, so the rubric never has inputs to rank; separately, a
+  criterion no predicate ran on makes a report unrankable by design. The header prints the
+  reason **attached**. A named winner would be the winner of a comparison nobody ran.
 - **`§11 agreement: differently-prompted`.** Also ordinary, and meaningful. The panel is
   heterogeneous on purpose — three different CLIs at three different versions — so their
   prompt fingerprints differ by construction. Agreement here is **provenance, never a
   correctness argument**; `identically-prompted` is what two attempts of one seat get.
+- **`Council: no review round was convened.`** §13's review loop is built, tested and has no
+  production caller, so every run prints this. It is not a round that failed or was skipped
+  for cause — it is a stage that does not run yet, which is also why most of the quote's
+  provider calls cannot be spent. When it does run, note what its blindness is and is not:
+  reviewers run as your user with a shell, in a clone beside the run directory, and §13's
+  blindness is asserted against the ledger's path rather than enforced by the operating
+  system. A reviewer that goes looking can read the run's ledger, journal and seat clones.
+  Treat the panel as **blind by construction, not by containment**.
+- **`Ultrareview: N finding(s) reported`.** Reported, and nothing more: §13.1's findings get
+  no post-round fix, no fresh verification and no terminal, because that wiring does not
+  exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — the number is
+  what the cloud review returned, not a verdict this engine acted on.
 - **`(patch)` rather than a merge-ready branch.** A dirty baseline, or any out-of-band
   artifact, makes the delivery patch-only. **Merging the branch does not install out-of-band
   artifacts** — they are ignored files, were never added to the object store, and the
   handover prints an explicit `cp` command per file with a sha256 and a byte count. Say so
   when you relay it; a user who merges and stops has an incomplete delivery.
 
-Files listed as **baseline-owned** are unchanged selected untracked/ignored files: they are
-the user's, not forge's, and only their B→S changes are forge-authored.
+Files listed as **baseline-owned** are the selected untracked/ignored files carried into the
+baseline: they are the user's, not forge's, and only their B→S changes are forge-authored.
+The label is about **provenance, not content** — the list is every selected path, whether or
+not the synthesis touched it, so do not read an entry as "this file is unchanged".
 
 When a verdict **was** measured by this engine, the handover prints exactly this and
 nothing stronger:
@@ -260,7 +300,9 @@ leaves a registered worktree and branch behind — that run has no handover reco
 
 The engine is `shared/lib/forge/` in the repo and `<plugin>/lib/forge/` once rendered;
 `scripts/forge.py` is a façade that resolves that directory and delegates, with no logic of
-its own. Its receipt is earned by the **hermetic forge suite**, not by the judge harness:
+its own. Its receipt is earned by the **whole hermetic forge suite** — all 31 modules, every
+test executed and none skipped, with the counts recorded in the receipt — not by the judge
+harness:
 a read-only with-skill/baseline eval cannot drive a clone fleet, three providers and a
 fresh verifier, so the judged delta on this skill is **advisory**. Note what that self-test
 buys and what it does not — **the self-test gates wiring, not judgment**: it proves the

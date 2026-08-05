@@ -27,9 +27,12 @@ suite passes fakes.
 """
 import ast
 import hashlib
+import json
 import os
+import shutil
 import stat
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +126,17 @@ class Report:
     `unsatisfied` and `unresolved` are SEPARATE and that separation is the file's reason for
     existing: "checked and false" is a fallback trigger, "nobody could check" is a report line
     that must not be read as either a pass or a failure.
+
+    THERE IS NO `traced` ROLL-UP, and the omission is a decision rather than an oversight. A
+    `manual_trace_confirmed` result is in neither list above, which was a real defect while
+    §12.4's two readers each carried their own gap predicate: a consumer reading only the
+    roll-ups saw a clean report over a claim no predicate had touched. `coverage.unmeasured`
+    closed that at the source — both readers now call it and neither infers completeness from
+    what the roll-ups happen to contain — so a third field would be a fifth positional element
+    on a public dataclass built at a dozen sites, added for a consumer that does not exist.
+    The day something renders roll-ups to a human rather than deciding on them, it needs this
+    field and `_lines` needs a third branch; until then `unmeasured(results)` is the answer
+    and it cannot drift from the results it reads.
 
     THE ROLL-UPS ARE RE-DERIVED IN `__post_init__`, for the reason `Result` enforces its own
     invariant there rather than in a private factory: a rule that holds only on the path its
@@ -332,20 +346,85 @@ def _test(c, *, row_id, index, tree, pytest_argv, run, **_) -> Result:
         return Result(row_id, index, "unresolved", None,
                       f"{c.node_id!r} selected {len(names)} tests {names}; a predicate must "
                       "observe the named test's own result, not a green run over several")
-    try:
-        r = run([*pytest_argv, *common, c.node_id], cwd=str(tree),
-                capture_output=True, text=True, timeout=_TEST_TIMEOUT)
-    except (OSError, subprocess.SubprocessError) as e:
-        return Result(row_id, index, "unresolved", None, f"pytest could not be run: {e}")
-    if r.returncode == 0:
+    # THE RECEIPT, BECAUSE A PROCESS EXIT CODE CANNOT ANSWER A PER-TEST QUESTION. This read
+    # `returncode == 0` as "the named test passed", and a zero exit is what pytest returns for
+    # a test that never evaluated the claim: `@pytest.mark.skip` exits 0, an expected `xfail`
+    # whose body genuinely failed exits 0, and a run that collects without executing exits 0.
+    # "Never executed" therefore reached the cleanest state §10.1's method axis has — checked,
+    # and true — in the one axis the whole design rests on.
+    with tempfile.TemporaryDirectory() as td:
+        receipt = os.path.join(td, "receipt.jsonl")
+        # THE PLUGIN IS COPIED, NOT REACHED IN PLACE, AND THAT IS NOT TIDINESS. Putting this
+        # package's own directory on PYTHONPATH puts `forge/inspect.py` ahead of the STDLIB
+        # `inspect` for the child — which pytest imports — so the runner died at collection
+        # and every criterion came back `unresolved`. Measured. A directory holding exactly
+        # one module shadows nothing.
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pytest_receipt.py")
+        plugin_dir = os.path.join(td, "plugin")
+        os.mkdir(plugin_dir)
+        shutil.copyfile(src, os.path.join(plugin_dir, "_pytest_receipt.py"))
+        env = dict(os.environ)
+        env["FORGE_PYTEST_RECEIPT"] = receipt
+        # The plugin is imported by the interpreter that HAS pytest, which is not necessarily
+        # this one — this repository's `python3` cannot import pytest at all, which is why the
+        # Makefile falls back to `uvx`. So it is reached by path rather than by package name.
+        env["PYTHONPATH"] = os.pathsep.join(
+            [plugin_dir] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        try:
+            r = run([*pytest_argv, *common, "-p", "_pytest_receipt", c.node_id],
+                    cwd=str(tree), capture_output=True, text=True, timeout=_TEST_TIMEOUT,
+                    env=env)
+        except (OSError, subprocess.SubprocessError) as e:
+            return Result(row_id, index, "unresolved", None, f"pytest could not be run: {e}")
+        except TypeError:
+            # A caller's injected `run` that takes no `env=`. Refused rather than retried
+            # without it: a run with no receipt path set writes no receipt, and the branch
+            # below would then read "the test never ran" from a harness detail.
+            return Result(row_id, index, "unresolved", None,
+                          "this run's pytest runner cannot carry the receipt environment, so "
+                          "the named test's own outcome could not be observed")
+        calls = _receipt_calls(receipt, c.node_id)
+
+    if not calls:
+        return Result(row_id, index, "unresolved", None,
+                      f"pytest exited {r.returncode} for {c.node_id!r} and recorded no `call` "
+                      "phase for it — the test did not run, which is not the same as the "
+                      "claim being false. A skip, a collection-only run and a setup error all "
+                      "look like this, and all of them exit 0.")
+    if len(calls) != 1:
+        return Result(row_id, index, "unresolved", None,
+                      f"{c.node_id!r} recorded {len(calls)} `call` phases; a predicate must "
+                      "observe one named test's own result")
+    call = calls[0]
+    if call.get("wasxfail"):
+        return Result(row_id, index, "unresolved", None,
+                      f"{c.node_id} is an expected failure (xfail/xpass), so its own result "
+                      "does not say whether the claim holds")
+    if call["outcome"] == "passed":
         return Result(row_id, index, "mechanically_checked", True,
                       f"{c.node_id} passed. THIS DOES NOT PROVE THE TEST TESTS THE CLAIM: "
                       "mechanically_checked is a claim about mechanism, not correctness.")
-    if r.returncode == 1:
+    if call["outcome"] == "failed":
         return Result(row_id, index, "mechanically_checked", False, f"{c.node_id} failed")
     return Result(row_id, index, "unresolved", None,
-                  f"pytest exited {r.returncode} for {c.node_id!r}, which is neither a pass "
+                  f"{c.node_id} recorded outcome {call['outcome']!r}, which is neither a pass "
                   "nor a failure of the named test")
+
+
+def _receipt_calls(path: str, node_id: str) -> list:
+    """The `call`-phase rows the plugin wrote for `node_id`, or `[]` if it wrote none.
+
+    `[]` FOR AN ABSENT OR UNREADABLE RECEIPT IS THE FAIL-CLOSED DIRECTION HERE, and it is the
+    one place in this module where absence and emptiness may agree: both mean this run cannot
+    show the named test's own outcome, and the caller turns that into `unresolved`. A missing
+    receipt must never read as a pass, which is exactly what the exit code did.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = [json.loads(ln) for ln in fh if ln.strip()]
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if r.get("when") == "call" and r.get("nodeid") == node_id]
 
 
 def _defines(tree_node, dotted: str) -> bool:
@@ -626,6 +705,30 @@ def _contradictions(l) -> tuple:
     return tuple(out)
 
 
+def unmeasured(results) -> tuple:
+    """Every result no predicate ran on — §10.1's `manual_trace_confirmed` AND `unresolved`.
+
+    ONE FUNCTION, BECAUSE TWO SPELLINGS OF ONE JUDGEMENT CANNOT BE KEPT IN STEP BY BOTH BEING
+    REMEMBERED. `rubric._read_report` and `strategy.classify_failure` each carried a copy that
+    knew `unresolved` and not `manual_trace_confirmed` — §10.1 names both in one sentence
+    ("Everything else is marked `manual_trace_confirmed` or `unresolved`") and each copy
+    caught one. The agreement test between the two modules passed throughout, because they
+    AGREED: an agreement test between two copies cannot find a defect they share.
+
+    WHAT IT COST, measured through `check` from a real ledger: a report of traced prose scored
+    `unsatisfied_criteria=0` — the best possible value on §12.5's top dimension — and came
+    back fully rankable, so a seat that failed its gate with no predicate run on any claim
+    outranked one that passed with a real miss. Since a criterion's `kind` is the author's
+    choice, that made the cheapest criterion to write also the highest-scoring one.
+
+    NOT A COMPLETE GAP PREDICATE ON ITS OWN, and callers must not treat it as one: an EMPTY
+    result list has no unmeasured member either, so `unmeasured(()) == ()`. "Nothing was
+    measured because there was nothing to measure" is a different sentence from "everything
+    was measured", and the empty case stays a separate branch in both callers.
+    """
+    return tuple(r for r in results if r.method != "mechanically_checked")
+
+
 def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
     """Every criterion on every row, plus the contradictions and the two roll-ups.
 
@@ -663,6 +766,23 @@ def check(l, *, tree, pytest_argv=None, run=subprocess.run) -> Report:
             "claims, which §10.1's own failure shape is made of.")
     results = []
     for r in l.rows:
+        # ACCEPTED ROWS ONLY, and the reason is §10's, not tidiness. §12.4's trigger is a
+        # MISSING ACCEPTED ROW, and both readers print "N accepted claim(s)" — but this loop
+        # evaluated every row whatever its status, so a REJECTED row's satisfied criterion
+        # raised `covered_criteria` and an unsatisfied one fired the trigger about a claim
+        # the ledger had refused.
+        #
+        # That inverts the incentive exactly. §10 makes `rejected` first-class — "if all
+        # three seats considered and rejected a cache layer, that is the most valuable signal
+        # in the run" — so a rejected row keeps its criteria as audit evidence, and satisfying
+        # one means the seat built the thing the ledger said not to build. Counted as
+        # coverage, the seat that OBEYS the rejection fails the criterion and is charged a
+        # fallback, while the one that implements it anyway ranks stronger.
+        #
+        # The accepted-with-no-criteria refusal below stays where it is: it is about a row
+        # that IS accepted and declares nothing, which is the opposite failure.
+        if r.status != "accepted":
+            continue
         if r.status == "accepted" and not r.acceptance_criteria:
             results.append(Result(
                 r.id, NO_CRITERION, "unresolved", None,

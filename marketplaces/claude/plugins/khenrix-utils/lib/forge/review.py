@@ -391,6 +391,19 @@ def assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None:
     A MISSING LEDGER IS A REFUSAL. You cannot assert that bytes are out of reach without
     reading them, and "there is no ledger, so nothing was leaked" is a clean verdict produced
     by the absence of the evidence rather than by the evidence.
+
+    WHAT THIS CANNOT DO, STATED SO THE NEXT READER DOES NOT INHERIT A PROMISE THE OS NEVER
+    MADE. Both checks are about PATHS, and there is no permission boundary anywhere in this
+    design: reviewers run as the operator's own UID with a shell, so a reviewer that goes
+    looking can read the run directory by absolute path, glob `$XDG_STATE_HOME/khenrix-forge/
+    */ledger.json`, or `find` for it — none of which any arrangement of roots prevents.
+    Moving the review clone somewhere else does not close this: a sibling of the run directory
+    is reachable by a computable name, so it only relocates the `..`. §13's blindness is therefore BY CONSTRUCTION — the
+    reviewer is not given the path, the bytes are not in its tree, and the prompt does not
+    name them — and is not enforced containment. Closing it for real needs an OS boundary
+    (a mount namespace, a separate UID, a container) or a ledger that is never written to
+    disk for the duration of the round. Until then this function buys "no reviewer trips over
+    it", which is worth having and is not the same claim.
     """
     lp = Path(storage.ledger_path(run_dir))
     try:
@@ -423,6 +436,19 @@ def assert_ledger_is_out_of_reach(run_dir, *, checkout, other_clones) -> None:
                 f"the ledger is at {lp}, which is under {root} — a tree §13's review can "
                 "read. §13 gives every reviewer a shell, so a ledger inside one of these "
                 "roots is passed to the review however carefully the prompt avoids naming it.")
+        # THE OTHER DIRECTION, WHICH THE CHECK ABOVE DOES NOT ASK. A root
+        # UNDER the ledger's own directory is the same reach with the hops reversed: from
+        # `<run>/review/round-1/checkout` the ledger is `../../../ledger.json`, one ordinary
+        # relative path from a cwd §13 hands the reviewer. And it is a READ — the
+        # `worktree_identity` bracket beside this measures WRITES, so no tightening of that
+        # bracket could ever have caught it. Containment is a two-way question and this asked
+        # it one way.
+        if root.is_relative_to(lp.resolve().parent):
+            raise ReviewError(
+                f"a reviewer root is at {root}, inside {lp.parent} — the directory holding "
+                f"the ledger. §13's blindness is asserted against the ledger's PATH, and a "
+                "reviewer with a shell reaches it from there by `..`, which is a read no "
+                "write-measuring bracket can see.")
     hits = _digests_under(roots, blob, storage.Quota.for_harvest().max_files)
     if hits:
         raise ReviewError(

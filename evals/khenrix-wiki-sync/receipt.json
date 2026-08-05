@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-wiki-sync",
-  "source_hash": "a13b141a6b5c393bb1936b3e4ad9ecb43703a406442414e11fb9d308788e4239",
+  "source_hash": "f7b437e3e1c3adb720ea2d8024472055f5beb1c4500748f431dc00bf61e0bae8",
   "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
   "providers": [
     "claude"
@@ -11,5 +11,18 @@
   "blind_winner": null,
   "provenance": "seeded: blessed current committed state",
   "deterministic_gate": "wikisync-unittests",
-  "self_test": true
+  "self_test": true,
+  "gate_command": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "/home/khenrix/git/khenrix-utils/shared/lib/wikisync/tests"
+  ],
+  "gate_counts": {
+    "tests_run": 83,
+    "skipped": 0,
+    "failed": 0
+  }
 }

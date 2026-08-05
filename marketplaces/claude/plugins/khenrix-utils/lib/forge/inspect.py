@@ -132,10 +132,17 @@ def _filtered_paths(repo, tracked: list) -> list:
     """
     hits = []
     for start in range(0, len(tracked), _ATTR_BATCH):
+        # BINARY, THEN `surrogateescape`. A tracked path is a byte string on POSIX and need not
+        # be valid UTF-8 — a latin-1 `caf\xe9.txt` is an ordinary filename — and strict text
+        # mode raised `UnicodeDecodeError` out of `subprocess` before this function saw a
+        # single field. That is the same class as `ls-files` handing back a QUOTED name: git
+        # answers in bytes, and a reader that assumes an encoding loses files it was asked
+        # about. `surrogateescape` round-trips them, so the name that goes back out matches
+        # the one that came in.
         out = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, "check-attr", "-z", "filter", "--",
                          *tracked[start:start + _ATTR_BATCH],
-                         env_extra=gitcmd.READONLY).stdout
-        fields = out.split("\0")
+                         env_extra=gitcmd.READONLY, binary=True).stdout
+        fields = out.decode("utf-8", "surrogateescape").split("\0")
         for i in range(0, len(fields) - 2, 3):
             path, _attr, value = fields[i], fields[i + 1], fields[i + 2]
             if value not in ("unspecified", "unset"):

@@ -3,11 +3,24 @@ is what let a silently-failed seat read as success.
 
 `process` and `artifacts` are the seat's own claims about itself: did the agent's process
 complete normally, and is what it left behind usable. `proven_read` records whether the
-sentinel round-trip proved the task prompt was actually read (section 8.1). `setup` and
-`verify` record what the confirmed setup/verify commands did, independently, in a fresh
-clone the seat never touched (section 6). `forge` is the one dimension this module computes
-rather than accepts as input, because a seat-writable verdict is the exact thing a candidate
-could rig to read cleaner than its evidence.
+sentinel round-trip proved the task prompt was actually read (section 8.1). `verify` records
+what the confirmed verify command did, independently, in a fresh clone the seat never touched
+(section 6). `forge` is the one dimension this module computes rather than accepts as input,
+because a seat-writable verdict is the exact thing a candidate could rig to read cleaner than
+its evidence.
+
+`setup` IS THE BUILDER'S CLONE, NOT THE VERIFIER'S, and this paragraph said otherwise until
+2026-08-04. `runner.run_seat` fills it from the setup run in the SEAT's clone, before the
+agent starts — which is a real and useful fact (a seat whose setup failed never had a working
+tree to build in) and is not the fresh-clone measurement the sentence above claims. The
+verifier's own setup is recorded separately, as `verifier_setup` on the attempt row, carrying
+the exit code and step index rather than a dimension word. What made the mislabelling matter
+was that a failing verifier setup then reached the gate anyway and could return `PASS`, so a
+record read `setup=pass verify=pass forge=completed` over a verifier whose setup exited 3;
+`runner.SETUP_REFUSED` closes that, and the two facts now have two names. RENAMING this field
+to `builder_setup` is the honest end state and is deferred: it is an on-disk schema change
+plus a required keyword across ~42 `classify_seat` call sites, and it belongs in a task whose
+reviewer is looking at a rename rather than as a rider on a verdict fix.
 
 THREE RULES ARE LOAD-BEARING (section 8, quoted) and each has its own test:
 

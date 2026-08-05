@@ -95,18 +95,34 @@ DETERMINISTIC_GATED = {
 
 
 _COUNT = re.compile(r"\b(\d+)\s+(passed|failed|skipped|error|errors|xfailed|xpassed)\b")
+# unittest's summary is a DIFFERENT SHAPE and two of the three gated skills use it. Reading
+# only pytest's meant `tests_run: 0` for a run of 83 real tests, so the counts check refused a
+# receipt it should have written — fail-closed, and wrong about which runner it was looking at.
+_UNITTEST_RAN = re.compile(r"^Ran (\d+) tests? in ", re.M)
+_UNITTEST_SKIP = re.compile(r"\bskipped=(\d+)")
+_UNITTEST_BAD = re.compile(r"\b(?:failures|errors)=(\d+)")
 
 
 def _pytest_counts(text: str) -> dict:
-    """pytest's own summary line, as numbers rather than as an exit code.
+    """The runner's own summary, as numbers rather than as an exit code.
 
     A receipt written on `returncode == 0` says a PROCESS finished. It does not say anything
     ran: an all-skipped run exits 0, a run that collects nothing exits 5 but a wrapper can
     swallow it, and `true` exits 0 having tested the empty set. The counts are what turn "the
     command succeeded" into "these many tests executed and none was skipped".
     """
+    text = text or ""
     out = {"tests_run": 0, "skipped": 0, "failed": 0}
-    for n, word in _COUNT.findall(text or ""):
+    if (m := _UNITTEST_RAN.search(text)):
+        # `Ran N tests` counts every test INCLUDING skips, where pytest's `N passed` excludes
+        # them — so the skips come back out to keep both runners' `tests_run` meaning the same
+        # thing: tests that actually executed.
+        skipped = sum(int(x) for x in _UNITTEST_SKIP.findall(text))
+        out["skipped"] = skipped
+        out["failed"] = sum(int(x) for x in _UNITTEST_BAD.findall(text))
+        out["tests_run"] = int(m.group(1)) - skipped
+        return out
+    for n, word in _COUNT.findall(text):
         n = int(n)
         if word in ("passed", "xfailed", "xpassed"):
             out["tests_run"] += n
@@ -135,7 +151,11 @@ def _counts_are_evidence(counts: dict) -> bool:
 DETERMINISTIC_GATE_NAMES = {
     "khenrix-wiki-add":  "wikisync-unittests",
     "khenrix-wiki-sync": "wikisync-unittests",
-    "llm-forge":         "forge-handover-cli-gc-suites",
+    # NOT "forge-handover-cli-gc-suites" ANY MORE. That named three modules, and the command
+    # above is now derived from disk and runs every one — so the string was a provenance claim
+    # about what earned the receipt that stopped being true the moment the gate widened. A
+    # receipt exists to say what ran; being wrong about that is worse than saying less.
+    "llm-forge":         "forge-suite-all",
 }
 
 

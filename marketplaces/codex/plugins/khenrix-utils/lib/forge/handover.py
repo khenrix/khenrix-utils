@@ -510,10 +510,10 @@ class Provenance:
     refuse the combination rather than for the renderer to remember not to print it.
 
     `strongest` IS §12.5's `(seat | None, why)` PAIR AND BOTH HALVES ARE REQUIRED. `None` is
-    the ordinary answer, not an error: `coverage._schema` is `unresolved` by construction and
-    `coverage._prose` is `unresolved` for any criterion with no recorded trace, so a real
-    ledger carrying either kind makes the report incomplete and `rubric.strongest` names
-    nobody. §16.1's header therefore renders the reason as a LINE. A header that dropped the
+    the ordinary answer, not an error: `coverage._schema` is `unresolved` by construction, and
+    `coverage._prose` is `unresolved` without a recorded trace and `manual_trace_confirmed`
+    with one — both of which `coverage.unmeasured` counts — so a real ledger carrying either
+    kind makes the report incomplete and `rubric.strongest` names nobody. §16.1's header therefore renders the reason as a LINE. A header that dropped the
     line when there was no winner would read as a header with nothing to say about strength,
     which is the fail-open this whole record exists to close one field over.
 

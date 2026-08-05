@@ -157,3 +157,37 @@ def test_an_absent_slot_is_not_a_repeated_slot():
     assert eval_harness.blind_winner([{"winner_condition": "with_skill", "winner_slot": "?"},
                                       {"winner_condition": "without_skill",
                                        "winner_slot": "?"}]) == "tie"
+
+
+def test_the_gate_name_is_not_narrower_than_the_gate():
+    """A receipt exists to say what ran, so a provenance string naming three suites while
+    thirty-one execute is the same defect the receipt is supposed to prevent, one field over.
+
+    Pinned loosely — the name is prose and may be reworded — but it may not name a SUBSET it
+    no longer describes.
+    """
+    name = eval_harness.DETERMINISTIC_GATE_NAMES["llm-forge"]
+    cmd = eval_harness.DETERMINISTIC_GATED["llm-forge"]
+    suites = [a for a in cmd if a.endswith(".py")]
+    for narrow in ("handover", "cli", "gc"):
+        assert narrow not in name or len(suites) <= 3, (
+            f"the gate name {name!r} names a subset while {len(suites)} suites run")
+
+
+def test_the_counts_parser_reads_unittest_as_well_as_pytest():
+    """Two of the three DETERMINISTIC_GATED skills run `unittest discover`, whose summary is a
+    different shape. Reading only pytest's reported `tests_run: 0` for a run of 83 real tests,
+    so the counts check refused a receipt it should have written — fail-closed, and wrong about
+    which runner it was looking at.
+
+    `Ran N tests` counts skips; pytest's `N passed` does not. The skips come back out so
+    `tests_run` means the same thing for both: tests that actually executed.
+    """
+    assert eval_harness._pytest_counts("Ran 83 tests in 0.139s\n\nOK") == \
+        {"tests_run": 83, "skipped": 0, "failed": 0}
+    assert eval_harness._pytest_counts("Ran 83 tests in 0.1s\n\nOK (skipped=2)") == \
+        {"tests_run": 81, "skipped": 2, "failed": 0}
+    assert not eval_harness._counts_are_evidence(
+        eval_harness._pytest_counts("Ran 83 tests in 0.1s\n\nFAILED (failures=1)"))
+    assert not eval_harness._counts_are_evidence(
+        eval_harness._pytest_counts("Ran 0 tests in 0.0s\n\nOK"))

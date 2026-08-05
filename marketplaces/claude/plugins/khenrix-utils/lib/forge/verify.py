@@ -95,7 +95,7 @@ import stat
 import subprocess
 import time
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 from . import bundle, fleet, gitcmd, snapshot
@@ -681,7 +681,7 @@ def _hooks_pin(path: Path) -> None:
     gitcmd.git(path, "config", "--local", "core.hooksPath", os.devnull)
 
 
-def _assert_hooks_pinned(path: Path) -> None:
+def _assert_hooks_pinned(path: Path, *, by: str = "candidate") -> None:
     # BOTH scopes, because either one alone is blind in one direction, and the scope that
     # makes them differ — `.git/config.worktree`, enabled by `extensions.worktreeConfig` —
     # sits INSIDE the clone, writable by exactly the party under suspicion. Measured, git
@@ -699,8 +699,20 @@ def _assert_hooks_pinned(path: Path) -> None:
         r = gitcmd.git(path, "config", *scope, "--get", "core.hooksPath",
                        env_extra=gitcmd.READONLY, check=False)
         if r.stdout.strip() != os.devnull:
+            # WHO IS NAMED IS NOT COSMETIC. This check cannot distinguish "the candidate
+            # rewrote ./setup.sh" from "the operator's confirmed setup command did what it
+            # always does" — and a CALIBRATION has no candidate at all, so the default
+            # sentence sent an operator hunting through a seat's diff for a line `npm ci`
+            # wrote. The caller knows which tree it is standing in; this takes its word.
+            actor = {
+                "candidate": (
+                    "the candidate rewrote the verifier's git config"),
+                "setup": (
+                    "the confirmed setup command moved the pin in the calibration clone "
+                    "(no seat has run yet, so this is that command's own effect)"),
+            }[by]
             raise VerifyError(
-                f"the candidate rewrote the verifier's git config: core.hooksPath in "
+                f"{actor}: core.hooksPath in "
                 f"{where} is now {r.stdout.strip()!r}, not {os.devnull!r}. A clone whose "
                 "config the builder chose can run builder-supplied hooks — and "
                 "core.fsmonitor and core.sshCommand name commands git executes — so it "
@@ -741,6 +753,12 @@ class Verifier:
     contract: GeneratorContract
     baseline_surface: tuple[str, ...]
     candidate_surface: tuple[str, ...]
+    # THE PRE-MATERIALIZE READING, RETAINED BECAUSE IT CANNOT BE RE-DERIVED. `build_verifier`
+    # takes it in the one moment the clone holds exactly B1, and after the candidate is laid
+    # down and setup has run there is no tree left to read it from. `remeasure_gate_surface`
+    # needs it: §6.1's question is whether THIS tree's gate differs from the one the baseline
+    # was measured with, and an intermediate reading is a different question.
+    baseline_state: dict
 
 
 def _sha256_fd(fd: int) -> str:
@@ -934,7 +952,44 @@ def build_verifier(repo, baseline, candidate, dest, *, identity, contract,
             delta=_gate_delta(before, _surface_state(seat.path, candidate_surface))),
         contract=contract,
         baseline_surface=baseline_surface,
-        candidate_surface=candidate_surface)
+        candidate_surface=candidate_surface,
+        baseline_state=before)
+
+
+def remeasure_gate_surface(v: "Verifier", *, command: "Command") -> "Verifier":
+    """§6.1's surface, ENUMERATED AND READ AGAIN after the confirmed setup command has run.
+
+    THE FIRST READ CANNOT SEE WHAT SETUP CREATES, AND SETUP IS CANDIDATE-OWNED. `build_verifier`
+    enumerates before the candidate's setup executes, so a verify command naming
+    `.venv/bin/pytest` is measured while that path does not exist — and a candidate that edits
+    the setup entrypoint to write a stub there moves nothing tracked, leaves `core.hooksPath`
+    alone, and earns a PASS over a gate it authored. `assert_hooks_pinned` was the only
+    post-setup fact anything checked.
+
+    THE ENUMERATION IS RE-RUN, NOT REUSED. `gate_surface` resolves the command's paths against
+    the tree, and the whole point is that the tree changed; reusing `v.candidate_surface` would
+    ask the pre-setup question a second time.
+
+    WHAT THIS DOES NOT CLOSE, because the re-read runs the SAME enumeration: a gate resolved
+    through PATH (`verify = [["pytest"]]` with setup prepending `.venv/bin`); a `make` recipe
+    invoking a stub, where `_command_paths` yields only the Makefile; interpreter-side rigging
+    — `sitecustomize.py`, a `.pth`, `PYTHONPATH`, a `-p` plugin — which is the
+    language-indirection gap this module already admits; a token `_command_paths` drops as
+    uncontained, absent from BOTH reads so the delta is empty twice; and a symlinked gate whose
+    referent is rewritten, since `_surface_state` hashes only target text. Those routes stay
+    open and are named rather than implied closed.
+    """
+    after_surface = gate_surface(v.path, v.contract, command=command)
+    return replace(
+        v,
+        candidate_surface=after_surface,
+        candidate=bundle.with_gate_measurement(
+            v.candidate,
+            surface=tuple(sorted(set(v.baseline_surface) | set(after_surface))),
+            delta=_gate_delta(v.baseline_state, _surface_state(v.path, after_surface)),
+            # NAMED, not silent: `build_verifier`'s reading is the write-ahead one the runner
+            # already handed to its sink, and this is a later reading of a tree setup changed.
+            supersedes=v.candidate))
 
 
 def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
@@ -988,7 +1043,7 @@ def _materialized_sidecar(root: Path, rel: str) -> bundle.SidecarEntry | None:
     return None
 
 
-def assert_hooks_pinned(verifier: Verifier) -> None:
+def assert_hooks_pinned(verifier: Verifier, *, by: str = "candidate") -> None:
     """§6 step 5, re-read after the confirmed setup ran and before the gate does.
 
     A READ, never a re-pin, and the distinction is the whole value: re-pinning here would
@@ -1011,7 +1066,7 @@ def assert_hooks_pinned(verifier: Verifier) -> None:
     Takes the `Verifier` rather than a path so a caller cannot aim it at the seat's own
     clone, where the answer would be about the tree §6 exists to stop trusting.
     """
-    _assert_hooks_pinned(verifier.path)
+    _assert_hooks_pinned(verifier.path, by=by)
 
 
 def validate_materialized(verifier: Verifier) -> None:
@@ -1430,6 +1485,19 @@ def calibrate(repo, baseline, dest, *, identity, contract, setup, command,
     v = build_verifier(repo, baseline, empty, dest, identity=identity, contract=contract,
                        command=command)
     setup_run = run_setup(v, setup, env=env).run if setup.steps else None
+    # THE READ EVERY CANDIDATE GETS, AND THE CONTROL DID NOT. `build_verifier` pins and
+    # asserts once, before materialization; `assert_hooks_pinned` exists because the confirmed
+    # setup command runs AFTER that, and `verify_candidate` took the second read while this
+    # function — holding the `Verifier` right here, between setup and the gate — did not.
+    #
+    # `Calibration`'s own docstring rests §6.2's BASELINE_RED_… on "the TREE this ran in", and
+    # a tree whose pin was never re-read after setup is not the tree every candidate is
+    # required to have run in. The ordinary trigger is husky: `npm ci` runs `prepare`, `husky
+    # install` writes core.hooksPath, the calibration comes back GREEN under the repository's
+    # own hooks, and then all three candidate verifiers refuse — after three providers are
+    # paid, blaming a candidate for the operator's command. `by="setup"` because this clone
+    # has no candidate to blame.
+    assert_hooks_pinned(v, by="setup")
     fp = fixed_point(v.path, command, v.contract, env=env)
     second = (_confirm_fixed_point(v.path, command, v.contract, env=env)
               if fp.run.exit_code == 0 else None)

@@ -42,7 +42,14 @@ from . import gitcmd, handover as handovermod, runstate, storage
 # characters, so this is wider than any id this engine issues and narrow enough that no id can
 # name a directory outside the one it is joined into. Dots are admitted INSIDE the name and
 # not at the front, which is what keeps `.` and `..` out without forbidding `r1.2`.
-_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+#
+# REFERENCED AND NEVER RESPELLED, on the same argument this file already makes for
+# `_FORGE_REF_PREFIXES` one paragraph down: the module that decides a value owns the strings
+# that spell it. `storage.run_root` interpolates the id and creates the directory, so the rule
+# is its to state — and while there were two copies, an id this file admitted and `storage`
+# did not passed validation here and then raised from there, with a refusal naming a rule
+# gc's own text contradicts.
+_RUN_ID = storage._RUN_ID
 
 # §9's two explicitly-allowed ref namespaces, REFERENCED AND NEVER RESPELLED, on `handover`'s
 # precedent for `seat._FORGE`: the module that decides a value owns the strings that spell it.

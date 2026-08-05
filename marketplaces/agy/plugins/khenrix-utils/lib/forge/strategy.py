@@ -495,11 +495,20 @@ def classify_failure(outcome: str, *, report) -> tuple:
         return None, ("this coverage report holds no results at all, so it says nothing about "
                       "any claim; an empty report reading as a clean one is §10.1's own "
                       "failure shape")
-    if report.unresolved:
+    # THE SAME PREDICATE `rubric._read_report` USES, IMPORTED RATHER THAN RESPELLED. This read
+    # `report.unresolved` and so knew one of §10.1's two ways a criterion escapes mechanical
+    # checking; `manual_trace_confirmed` is the other. A report made of traced prose therefore
+    # reached the terminal below and returned `synthesis_introduced` — the one class
+    # `fallback_disposition` PERMITS a fallback on — over a sentence claiming every criterion
+    # was mechanically checked when none was. Placed after the two REQUIREMENT_GAP branches so
+    # a measured miss still outranks the gap, and after the empty-results branch because
+    # `unmeasured(())` is `()`.
+    if (un := coverage.unmeasured(report.results)):
         return None, (
-            f"{len(report.unresolved)} criterion/criteria are unresolved — nobody could check "
-            f"them ({report.unresolved[0]}) — so 'every claim is satisfied' is not something "
-            "this run measured, and `synthesis_introduced` cannot be concluded from it")
+            f"{len(un)} criterion/criteria had no predicate run on them — "
+            f"{un[0].row_id}[{un[0].criterion_index}] is {un[0].method} — so 'every claim is "
+            "satisfied' is not something this run measured, and `synthesis_introduced` cannot "
+            "be concluded from it")
     return SYNTHESIS_INTRODUCED, (
         f"every one of this candidate's {len(report.results)} criteria was mechanically "
         "checked and satisfied, and the gate still failed, so the failure is in the "

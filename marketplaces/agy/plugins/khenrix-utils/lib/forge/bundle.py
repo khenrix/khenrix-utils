@@ -130,8 +130,11 @@ class CandidateBundle:
     omitted: tuple[str, ...] = ()
 
 
+_UNSET = object()   # "no supersession claimed", distinct from a caller passing None
+
+
 def with_gate_measurement(candidate: CandidateBundle, *, surface,
-                          delta) -> CandidateBundle:
+                          delta, supersedes=_UNSET) -> CandidateBundle:
     """The same candidate with §6.1's gate measurement recorded: what was examined, and
     what of it moved.
 
@@ -151,6 +154,14 @@ def with_gate_measurement(candidate: CandidateBundle, *, surface,
     make which answer survives depend on call order. `()` is a measurement — it is the whole
     difference between "the candidate changed nothing that defines the gate" and "nobody
     looked" — so it is exactly as unoverwritable as a non-empty one.
+
+    `supersedes` IS THE ONE WAY PAST THAT, AND IT IS NOT A WEAKENING. The rule above is about
+    two readings of ONE tree pair. §6.1 has two pairs: `build_verifier` reads B1 against the
+    materialized candidate, and `verify.remeasure_gate_surface` reads B1 against that tree
+    AFTER the confirmed setup command has run — which is a different tree, because setup is
+    candidate-owned and can write the gate's own interpreter. A caller replacing a reading
+    must NAME the one it is replacing, so the value that survives is still never decided by
+    call order; a mismatch means the caller is not holding the candidate it thinks it is.
     """
     # A str is iterable, so `tuple("Makefile")` is eight one-character paths and no caller
     # would see the mistake until a delta named `M`, `a`, `k`. Refused for the reason
@@ -162,10 +173,20 @@ def with_gate_measurement(candidate: CandidateBundle, *, surface,
                 f"({value!r},) for a single one.")
     for field_name, value in (("gate_delta", delta), ("gate_surface", surface)):
         recorded = getattr(candidate, field_name)
-        if recorded is not None:
+        if recorded is None:
+            continue
+        if supersedes is _UNSET:
             raise BundleError(
                 f"this candidate already records a {field_name} ({recorded!r}); a second "
-                f"measurement ({tuple(value)!r}) is a disagreement, not an update")
+                f"measurement ({tuple(value)!r}) is a disagreement, not an update. Pass "
+                "`supersedes=` naming the reading being replaced if this is a later "
+                "measurement of a CHANGED tree rather than a second opinion about one tree.")
+        expected = getattr(supersedes, field_name, None)
+        if recorded != expected:
+            raise BundleError(
+                f"this candidate records {field_name}={recorded!r}, and the reading offered "
+                f"as superseded holds {expected!r} — so this is not the candidate that "
+                "measurement was taken from.")
     return replace(candidate, gate_delta=tuple(delta), gate_surface=tuple(surface))
 
 

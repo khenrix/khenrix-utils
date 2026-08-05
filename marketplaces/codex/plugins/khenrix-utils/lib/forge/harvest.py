@@ -33,7 +33,7 @@ ledger says the agent changed. Three measured causes, only one of which is close
 """
 from dataclasses import dataclass, field
 
-from . import gitcmd, snapshot
+from . import gitcmd, inspect, snapshot
 from .storage import Quota
 
 
@@ -103,6 +103,62 @@ def _literal(path: str) -> str:
     Neither needs an adversarial seat; a generated fixture named `[case].json` is enough.
     """
     return f":(literal){path}"
+
+
+def _refuse_seat_configured_filters(seat_path, paths) -> None:
+    """Refuse a harvest whose diff would run a clean driver the SEAT defined.
+
+    The diff below has to put worktree content into git's form, so `filter.<name>.clean` runs
+    and git offers no flag that refuses it — and the cost is SUBSTITUTION: the agent's own
+    bytes leave the patch and the driver's stand in their place, at exit 0. Nothing downstream
+    can notice, because `ArtifactSet` carries no per-path Fwork hashes and `bundle.build`
+    treats a path present in the patch as covered, so the live file is never re-read.
+
+    THE ATTRIBUTE ALONE IS NOT THE OFFENCE, and this is the whole reason the check is two
+    questions rather than one. `check-attr` reports the EFFECTIVE attribute from the full
+    per-directory stack, and `filter=lfs` sits in the BASELINE's own `.gitattributes` in a
+    large fraction of real repositories — so refusing on the attribute would raise for every
+    seat, after every provider call is paid, on all of them. What a seat can rig is
+    `.git/config`, which `git clone` does not copy and which is where a named driver is
+    DEFINED; an attribute naming a driver nothing defines is inert.
+
+    WHAT IT COVERS, because the mechanism is easy to under-read: `filter=<name>` selects
+    `.clean`, `.smudge` AND `.process` together, so there is no separate smudge attribute to
+    miss; `check-attr` walks `.gitattributes` in every directory, plus
+    `$GIT_DIR/info/attributes` and `core.attributesFile`, which outrank in-tree files and
+    which no tree-only inspection would see.
+
+    WHAT IT DOES NOT COVER: the `text`, `eol` and `working-tree-encoding` attributes also
+    convert bytes on this call — a narrower substitution channel, and it stays open. Nor does
+    it close the detached-child route to the same outcome, where a `setsid` descendant of the
+    seat rewrites a file between Fwork and this diff; that needs Fwork's bytes bound to the
+    bundle, which is a different fix.
+    """
+    if not paths:
+        return
+    named = inspect._filtered_paths(seat_path, list(paths))
+    if not named:
+        return
+    rigged = []
+    for rel in named:
+        attr = gitcmd.git(seat_path, *gitcmd.NO_DAEMON_CACHE, "check-attr", "-z", "filter",
+                          "--", rel, env_extra=gitcmd.READONLY).stdout.split("\0")
+        driver = attr[2] if len(attr) > 2 else ""
+        # `--local`: the seat's OWN config, not a value inherited from the machine. A driver
+        # the operator has in ~/.gitconfig is not something this seat introduced.
+        defined = gitcmd.git(seat_path, "config", "--local", "--get", f"filter.{driver}.clean",
+                             env_extra=gitcmd.READONLY, check=False)
+        if defined.returncode == 0 and defined.stdout.strip():
+            rigged.append(f"{rel} (filter={driver})")
+    if rigged:
+        raise HarvestError(
+            f"this seat's own config defines a clean filter for harvested path(s) "
+            f"{sorted(rigged)}. §7's diff runs in the trusted parent and git has no flag that "
+            "refuses a clean driver, so the driver's output would REPLACE the builder's bytes "
+            "in the candidate — and the verifier would then materialize, run and pass content "
+            "the builder never wrote, under a verdict presented as being about the builder's "
+            "artifact. The attribute alone is inert; what is refused here is the seat having "
+            "defined the program it names.")
 
 
 def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet:
@@ -186,7 +242,9 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
         # name is the seat's to choose out of an unbounded namespace — and readback and diff
         # would be two invocations regardless. What fits is DETECTION, of the shape
         # `inspect._filtered_paths` already runs against the user's repository: `check-attr -z
-        # filter` over `paths` names a rigged seat instead of reading a value back. Not built.
+        # filter` over `paths` names a rigged seat instead of reading a value back. BUILT
+        # BELOW, reusing that function rather than respelling it.
+        _refuse_seat_configured_filters(seat_path, paths)
         diff_text = gitcmd.git(
             seat_path, *gitcmd.NO_DAEMON_CACHE, "diff", *gitcmd.NO_DIFF_DRIVERS,
             "--binary", baseline_commit, "--", *(_literal(p) for p in paths),

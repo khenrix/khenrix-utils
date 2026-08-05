@@ -45,24 +45,33 @@ supplies — no `Makefile`, no `setup.py`, no `conftest.py`, and no `core.fsmoni
 the one that is easy to miss because git runs it on the caller's behalf rather than the
 caller running it. See `inspect`'s third hard rule for that measurement.
 
-THE SCREEN IS SCOPED TO THE SELECTION, and the reason is measured rather than inherited.
-§2.3's scoping paragraph is about REJECTIONS, so it does not settle §3 — but the whole-tree
-alternative fails on its own terms: `screen_tree(<this repository>, ["."])` returned one
-breach and no findings, `files: <n> > 5000` — several hundred past `Quota.default()`'s cap,
-and stated as a bound rather than a count because the number moves with every commit (5750
-on 2026-08-02). So an unscoped screen would refuse forge's first run here on the cap alone.
-No quota is passed, so `screen_tree` applies `Quota.default()` — the pre-launch screen's own
-question, and deliberately not `Quota.for_harvest()`'s, which sizes a seat holding a
-dependency tree.
+THE SCREEN COVERS THE TRACKED SET PLUS THE SELECTION, which is what B1 carries. It screened
+the SELECTION alone until 2026-08-04, and `cli` passes `args.select or ()` — so on the default
+path `screen_tree` built an empty target list, never entered its scan loop, and returned
+`([], [])`, which is byte-for-byte what a fully screened clean repository returns. Measured:
+a tracked `config/settings.py` holding a live key produced no findings, no breaches and no
+refusals, and `must_show` then printed a clean sheet with a price on it. §3's opening is the
+whole argument — whatever the baseline contains is what N cloud-backed full-permission agents
+read, and scanning the OUTPUT is too late.
 
-WHAT THAT LEAVES UNSCREENED is named because the scoping above reads as though §3 were
-satisfied. §3 asks for "the entire selected baseline", and the baseline is tracked content
-PLUS the selection while this screens the selection alone — so a credential in a tracked
-file, including the uncommitted edit to one that §3's opening sentence calls out by name,
-reaches three providers unscreened. Closing it needs a path set bounded by the porcelain
-rather than by the tree, and a rule for the tracked paths the porcelain lists as deleted,
-which would otherwise arrive here as "selected path does not exist" breaches and refuse an
-ordinary repository.
+THE OLD SCOPING ARGUMENT WAS MEASURED AND IT WAS ABOUT A DIFFERENT SET. `screen_tree(<this
+repository>, ["."])` returned `files: <n> > 5000`, past `Quota.default()`'s cap — but `["."]`
+walks the whole WORKING TREE, including `.venv`, build output and every untracked artifact.
+The TRACKED set is bounded by the index: 580 files and 13.3 MB here on 2026-08-04, comfortably
+inside the same quota. Tracked is not whole-tree, and conflating them is what left the default
+path unscreened. The `ls-files -z` spelling and cache flags are `baseline.materialize`'s, so
+the two cannot drift about which files B1 holds. No quota is passed, so `screen_tree` applies
+`Quota.default()` — the pre-launch screen's own question, and deliberately not
+`Quota.for_harvest()`'s, which sizes a seat holding a dependency tree.
+
+WHAT THIS STILL LEAVES OPEN is a race, and it is named because the paragraph above now reads
+as though §3 were satisfied. `gate.open_run` REUSES this report, and `baseline.materialize`
+guards only the real index hash — which does not move for an unstaged edit, or for a new file
+created under a selected directory. So a `scratch/.env` written by an editor or a background
+process between this look and the confirmation gate is force-added into B1 with no scan.
+Closing it means screening the content-addressed B1 path set AFTER B1 is built, binding the
+result to the same per-path hashes seat verification consumes, and restarting confirmation on
+any mismatch.
 
 CONTAINMENT IS NEW HERE and belongs here rather than in `rejections`: it is a property of
 the SELECTION, which is the one input preflight takes from outside the repository.
@@ -97,7 +106,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bundle, inspect, screen, taskbundle
+from . import bundle, gitcmd, inspect, screen, taskbundle
 
 
 class PreflightError(RuntimeError):
@@ -122,6 +131,11 @@ class Report:
     finding carries a path, a line and the PATTERN's name — never the matched text, which
     would put the credential into the very report a user pastes into a chat.
 
+    `screened` is how many paths the §3 scan actually OPENED. Without it `secrets == ()` was
+    two claims under one value — "this baseline holds no credential" and "nobody looked" —
+    and on the default path (`cli` passes `args.select or ()`) it was always the second.
+    `refusals` reads it, so a run that screened nothing refuses rather than prices.
+
     `gate_surface` is None and that is an answer: §6.1's surface is the resolved gate's own
     scripts, runners and discovered test files, and preflight has no confirmed verify command
     to resolve — the user names it at §5 step 2, and `gate.must_show` resolves the surface
@@ -135,6 +149,7 @@ class Report:
     selected: tuple[str, ...]
     escaping: tuple[str, ...]
     secrets: tuple
+    screened: int
     breaches: tuple[str, ...]
     contract: inspect.GeneratorContract
     gate_surface: tuple[str, ...] | None
@@ -178,7 +193,33 @@ def inspect_repo(repo, selected_untracked=()) -> Report:
     # `facts.root`, not `repo`: a selection is worktree-ROOT-relative, which is what
     # `rejections` and `baseline.materialize` both resolve it against. See the module
     # docstring for the measured outcome of joining it onto a caller's subdirectory instead.
-    findings, breaches = screen.screen_tree(facts.root, contained)
+    #
+    # THE TRACKED SET AND THE SELECTION, BECAUSE THAT IS WHAT B1 CARRIES. This screened the
+    # selection alone, and `cli` passes `args.select or ()` — so on the default path
+    # `screen_tree` built an empty target list, never entered its scan loop, and returned
+    # `([], [])`: byte-for-byte what a fully screened clean repository returns, with no field
+    # on `Report` able to tell the two apart. Meanwhile `baseline.materialize` puts every
+    # TRACKED file into the filesystem manifest and B1. §3's own opening is the argument —
+    # whatever the baseline contains is what N cloud-backed full-permission agents read, and
+    # scanning the OUTPUT is too late.
+    #
+    # The same `ls-files -z` spelling and cache flags `baseline.materialize` uses, so the two
+    # cannot drift about which files B1 holds.
+    tracked = [r for r in gitcmd.git(facts.root, *gitcmd.NO_DAEMON_CACHE, "ls-files", "-z",
+                                     env_extra=gitcmd.READONLY).stdout.split("\0") if r]
+    # TRACKED SYMLINKS ARE LEFT OUT, AND THAT IS NOT THE SELECTION'S RULE RELAXED. `screen_tree`
+    # breaches on every link it is handed — correctly, because a SELECTED `.env -> creds` that
+    # came back clean would be a verdict over a file nobody opened, and the operator asked for
+    # that path by name. A tracked link is a different object: its own bytes are the target
+    # TEXT, which is not a credential, and where the link points is already adjudicated —
+    # `inspect.rejections` refuses a tracked symlink that ESCAPES the repository, and an
+    # in-tree one names a file that is itself in this list and screened on its own merits.
+    # Passing them through turned every ordinary repository holding a tracked link into a
+    # refusal, which `test_a_line_rejections_names_is_a_line_refusals_refuses` calls noise and
+    # is right to.
+    tracked = [r for r in tracked if not (facts.root / r).is_symlink()]
+    targets = list(dict.fromkeys([*tracked, *contained]))   # ordered, de-duplicated
+    findings, breaches = screen.screen_tree(facts.root, targets)
     # `runstate.snapshot_refs` is deliberately NOT called, though it is the other §5 read a
     # reader expects here: §14.2 puts t0 at the confirmation gate, so a snapshot taken now
     # would date the run before the user agreed to it and read every action taken DURING the
@@ -189,6 +230,7 @@ def inspect_repo(repo, selected_untracked=()) -> Report:
                   selected=selected,
                   escaping=tuple(escaping),
                   secrets=tuple(findings),
+                  screened=len(targets),
                   breaches=tuple(breaches),
                   contract=inspect.detect_generators(repo),
                   gate_surface=None)

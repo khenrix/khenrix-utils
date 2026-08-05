@@ -220,6 +220,11 @@ class Quote:
     # say which budget an `attempt` value was spending.
     review_rounds: int
     synthesis_fix_cap: int
+    # WHAT THE TOTAL IS MADE OF, so a reader — human or test — can ask which STAGE a call was
+    # priced for rather than re-deriving the arithmetic. A test that recomputes the formula
+    # agrees with a wrong formula, which is how calls for a review nothing can convene
+    # survived a suite that checked the total against the prose.
+    terms: dict
 
 
 def _confirmed_count(name, value, source, *, floor=1) -> int:
@@ -338,7 +343,9 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True) -> 
     return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
                  seats=seats, attempts=attempts,
-                 review_rounds=review_rounds, synthesis_fix_cap=review_fixes)
+                 review_rounds=review_rounds, synthesis_fix_cap=review_fixes,
+                 terms={"builders": builders, "synthesis": synthesis,
+                        "review": review, "review_fixes": review_fixes})
 
 
 # ---------------------------------------------------------------------------------------
@@ -940,7 +947,15 @@ REMOTES_AND_CONFIGURATION = "remotes-and-configuration-unrecorded"
 # something.
 GC_UNBUILT = "gc-unbuilt"
 GENERATOR_CONTRACT_EMPTY = "generator-contract-empty"
-ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GENERATOR_CONTRACT_EMPTY)
+# §3's screen covers the tracked set plus the selection, and `gate.open_run` REUSES the report
+# `preflight` took — so a file created or edited between the two is force-added into B1 with no
+# scan, because `materialize` guards only the real index hash and that does not move for an
+# unstaged edit. Same shape as GATE_SURFACE_EMPTY one field over: the verdict qualifies itself
+# rather than being displaced, on the condition that the operator is told once, before a token
+# is spent.
+SCREEN_RACE = "screen-predates-the-baseline"
+ACCEPTABLE_GAPS = (GATE_SURFACE_EMPTY, REMOTES_AND_CONFIGURATION, GENERATOR_CONTRACT_EMPTY,
+                   SCREEN_RACE)
 
 # §5 step 2's first policy, spelled as the two branches a later phase can act on. §5 writes
 # the second as "continue as degraded"; the value is the branch name, and `degraded` is also
@@ -1219,6 +1234,23 @@ def must_show(report, quote_, command) -> tuple[str, ...]:
             "displaced — displacing it would attribute to the candidate a fact about the "
             "engine — on the condition that you are told once, before a token is spent. "
             "This line is that condition.")
+
+    # §3'S SCOPE AND COUNT, ALWAYS, ON `GATE_SURFACE_EMPTY`'S PRECEDENT. `refusals()` returning
+    # `()` was two claims under one value — "this baseline holds no credential" and "nobody
+    # looked" — and on the default path it was always the second, because the screen was scoped
+    # to a selection `cli` defaults to empty. It now covers what B1 carries, and the count is
+    # shown because an operator pricing a run over three cloud CLIs is entitled to know the
+    # scan happened and how far it reached.
+    lines.append(
+        f"§3 screen: {report.screened} file(s) read — every tracked path plus your selection, "
+        f"which is what B1 carries to three cloud CLIs. {len(report.secrets)} finding(s), "
+        f"{len(report.breaches)} unreadable")
+    lines.append(
+        f"gap {SCREEN_RACE}: that screen ran at preflight and this gate reuses its report. "
+        "Baseline construction guards the index hash, which does not move for an unstaged "
+        "edit or for a new file under a selected directory — so anything written between the "
+        "two, by you or by an editor or a watcher, enters B1 unscreened. Nothing after this "
+        "point reads those bytes before three providers do.")
 
     lines += [
         f"gap {REMOTES_AND_CONFIGURATION}: §9 protects seven things and the t0 snapshot "
