@@ -1,13 +1,13 @@
 {
   "skill": "llm-forge",
-  "source_hash": "dff923ade5d57be59eea9d76c625f565c547172566b7c68fa43f51c4337ae3cb",
+  "source_hash": "21131b1e90be1cd0418834883dc1d0b9bb30d61dcc5f4270256c1301910485ae",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.4584,
+  "delta_pass_rate": 0.5,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "models": {
@@ -57,7 +57,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1664,
+    "tests_run": 1674,
     "skipped": 0,
     "failed": 0
   }
