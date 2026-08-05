@@ -274,8 +274,22 @@ constructors that accepted values nobody could have meant. P6a (`portability.py`
 
 **Retired, not done — each with its measurement.** The `gc` ref-prefix finding. §13's
 path-based blindness fix. The B1 plan (superseded). `Size`'s negative/bool cases (already
-refused). And the `kind`/FIFO half of M1, which was overstated twice before the real case
-turned up in the suite.
+refused). The `kind`/FIFO half of M1, overstated twice before the real case turned up in the
+suite. And **three more that K4's review clone had already closed**, measured 2026-08-05:
+
+- **P4a — the review bundle with no digest.** `clone_review_tree` calls
+  `taskbundle.verify_materialized`, which re-derives the manifest FROM THE TREE and refuses
+  any difference. The bundle is digested; the finding predates the clone.
+- **P4b — repo-local diff drivers and `git replace` refs.** Measured against a real clone:
+  `refs/replace/` does **not** travel to a `--no-local --no-hardlinks` clone, and neither
+  does repo-local config. The reviewers' own `git diff` cannot see either. `.gitattributes`
+  does travel, correctly — it is tracked content and part of what the panel is reviewing.
+- **P4j — `mutate.py`'s bytecode purge.** `_purge_bytecode` already exists and is the
+  script's stated reason for being; only the path containment was missing, and that landed.
+
+**Seven of the twenty-five items examined did not survive contact with the code.** That is
+the single most useful number in this log: a plan built from a review's findings is a plan
+built from claims, and better than a quarter of them were already false.
 
 **Genuinely open.** P5a's remaining s1 items (the symlink gate referent; the make memo key
 with `_scan_make`'s `--directory=`/`-C` gap; the calibration aggregate; the control-plane

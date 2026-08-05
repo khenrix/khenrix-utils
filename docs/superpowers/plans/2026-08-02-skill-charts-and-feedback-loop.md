@@ -788,6 +788,31 @@ claude with warn-and-ignore on garbage; ultra valid on codex with fail-closed 40
 garbage; agy enum unchanged). The cross-CLI feedback loop's per-provider record for
 this finding is exactly the three probe results above.
 
+- [ ] **Step 1b: Automatic Opus 5 fallback when Fable itself fails** — engine change in
+the retry path, with a deliberately NARROW trigger:
+
+  - `FALLBACK_MODELS = {"claude": "claude-opus-5"}` (same thinking tier — effort values
+    are model-independent at the CLI, probed: `ultracode` was accepted alongside a haiku
+    model). When the claude seat's attempt fails with a **model-attributable** reason —
+    `auth_or_quota` (the Fable weekly wall, the expected case) or a structured
+    unknown-model rejection — the NEXT retry rebuilds the seat's spec on the fallback
+    model instead of burning the retry on a model that cannot answer.
+  - **Never** on `timeout` (that is the window's job — Step 4 resizes it), never on
+    `parse_failure`, never on `tool_permission` (our invocation defect): in those the
+    model is not the plausible cause, and a fallback would mask the real bug behind a
+    silent panel swap.
+  - **Provenance is loud or the feature is a lie**: the provider record gains
+    `model_fallback: {from, to, reason}`, the resolved model in the manifest is the one
+    that ACTUALLY answered, and `summary.header` appends a clause when a fallback fired
+    (a reader must never mistake an opus-answered seat for a fable-answered one). The
+    eval harness's receipt `models` field must draw from the manifest's resolved model,
+    not the requested config — a one-line follow-through in `eval_harness.py` (no
+    closure, stales nothing).
+  - Self-test coverage via `tests/stub_provider.py`: fallback fires on a stubbed
+    quota wall and is recorded; fallback does NOT fire on a stubbed timeout; the
+    header clause appears exactly when a fallback fired.
+  - SKILL.md documents the behavior in one sentence next to the panel description.
+
 - [ ] **Step 2: Make the SKILL.md stop claiming "same models"** — the Models section
 currently says the two modes are "same models, differ only in how hard they think" and
 names the panel inline ("currently Claude Opus 5, …"). Both become false with per-mode
@@ -798,7 +823,7 @@ SKILL.md still points at "the MODES table at the top of scripts/fanout.py" — t
 moved to `shared/lib/council/engine.py` and fanout.py is a facade; if the pointer is
 stale, fix it (Stale-reference).
 
-- [ ] **Step 3: Deterministic gate** — `python3 shared/skills/llm-council/scripts/fanout.py --self-test` green; `make council-test` green.
+- [ ] **Step 3: Deterministic gate** — `python3 shared/skills/llm-council/scripts/fanout.py --self-test` green (including Step 1b's three new fallback cases); `make council-test` green.
 
 - [ ] **Step 4: Live smoke of the CHANGED seat in BOTH modes (blocking)** — a panel bump
 is the structurally-blind review case (the outgoing panel would be reviewing its own
@@ -848,9 +873,10 @@ budget** (measured 96% consumed on 2026-07-19 while the all-models cap sat at 82
 Fable on the claude seat in BOTH modes, **every council run** — not just deep — now draws
 from that narrowest pool, at max effort or above; and codex's own UI warns that Max and
 Ultra "consume usage limits faster" on its side too. This is a deliberate trade of
-budget for review quality, made 2026-08-05. If the Fable cap walls mid-run,
-`--model-claude claude-opus-5` is the documented per-run override; record the
-substitution (the receipt's `models` field already captures it).
+budget for review quality, made 2026-08-05. When the Fable cap walls mid-run, Step 1b's
+automatic fallback swaps the seat to Opus 5 and says so in the manifest header;
+`--model-claude claude-opus-5` remains the PRE-EMPTIVE override for runs you already
+know should not spend Fable.
 
 ---
 
