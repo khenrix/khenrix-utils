@@ -33,7 +33,7 @@ Plan K's Order-of-work section defines a follow-on it calls **Plan L**, whose L0
 
 **Why first:** `snapshot.py` is the inventory the whole package's before/after brackets are taken with — `review.loop`'s round bracket, `harvest`'s artifact set, `verify`'s worktree identity. Two of its fields are blind, and both blindnesses were found *inside* the path of a fix Plan L shipped:
 
-- **`snapshot.py:206`** records `st.st_mode & 0o777`, which drops setuid, setgid and sticky. `chmod u+s` on a tracked file leaves a **byte-identical inventory**, so the round bracket L1.4 rests on reports the tree undisturbed after a reviewer made a binary setuid.
+- **`snapshot.py:206`** records `st.st_mode & 0o777`, which drops setuid, setgid and sticky. **Measured end to end, not at the leaf:** `review.worktree_identity` — the round bracket three unattended bypass-permissions reviewers are measured by, and the one K4 built them a private clone for — returns the **identical digest** before and after `chmod u+s` on a tracked file. So a reviewer can make a binary setuid inside its own review tree and the round reports `after_digest == before_digest`: the tree undisturbed, findings admissible, and the fix budget spent on them. `_special_entry` (`snapshot.py:132`) masks the same way, so the FIFO and device branch is blind to it too.
 - **`snapshot.diff` (`snapshot.py:210`)** compares content, mode and size and **not `kind`**, while `review._inventory_digest` (`review.py:1337`) DOES include it and says so in a comment. That is **two definitions of "did this path change", maintained separately** — this project's recurring shape, and the one that produced "an agreement test between two copies of a predicate that passes because they agree and are both wrong".
 
   **MEASURED, AND THE FINDING IS NARROWER THAN PLAN L RECORDED IT.** The plan's first draft asserted that a file replaced by a FIFO is a silent drop in `harvest`. It is not: `_special_entry` folds the file type into the DIGEST (`sha256(f"special:{S_IFMT}")`) and `_symlink_entry` digests the target text, so every constructible type change already moves the digest. Both proposed FIFO tests **passed before any fix** — exactly the "test that confirms the code agrees with itself" failure this plan exists to prevent. The reproduction attempts are in the commit that corrected this task.
@@ -55,11 +55,31 @@ Plan K's Order-of-work section defines a follow-on it calls **Plan L**, whose L0
 Append to `/home/khenrix/git/khenrix-utils/tests/test_forge_snapshot.py`:
 
 ```python
+def test_the_review_round_bracket_sees_a_setuid_bit(tmp_path):
+    """THE EXTERNAL QUESTION, asked at the level the answer matters: not "does Entry hold a
+    mode" but "can the round bracket distinguish these two trees". Measured before the fix:
+    `worktree_identity` returned the SAME digest either side of `chmod u+s`, so a reviewer
+    could make a binary setuid in its own tree and the round read `after == before` — tree
+    undisturbed, findings admissible, fix budget spent on them.
+
+    This test lives in `test_forge_snapshot.py` beside the predicate it is about, and it
+    reaches through `review.worktree_identity` on purpose: a test at `snapshot.take` alone
+    would leave the composition unasserted, which is how `kind` came to be carried by review's
+    digest and not by `snapshot.diff`.
+    """
+    from forge import review, storage as st_mod
+    root = tmp_path / "t"; root.mkdir()
+    p = root / "run.sh"; p.write_text("#!/bin/sh\n", encoding="utf-8")
+    p.chmod(0o755)
+    quota = st_mod.Quota(max_files=1000, max_file_bytes=10 ** 7, max_total_bytes=10 ** 8)
+    before, _ = review.worktree_identity(root, quota)
+    p.chmod(0o4755)
+    after, _ = review.worktree_identity(root, quota)
+    assert before != after, "the round bracket read a setuid binary as no change at all"
+
+
 def test_the_inventory_sees_a_setuid_bit(tmp_path):
-    """THE EXTERNAL QUESTION: can this inventory distinguish these two trees? Not "does Entry
-    hold a mode" — it always did, and the tree with the setuid bit compared EQUAL to the tree
-    without it, so every bracket built on this predicate reported a setuid binary as no change
-    at all."""
+    """The same claim at the leaf, so a failure says WHICH layer lost the bit."""
     root = tmp_path / "t"; root.mkdir()
     p = root / "run.sh"; p.write_text("#!/bin/sh\n", encoding="utf-8")
     p.chmod(0o755)
@@ -117,7 +137,7 @@ def test_the_two_inventory_predicates_read_the_same_fields():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `uvx --with pytest pytest -q tests/test_forge_snapshot.py -k "setuid or setgid or fifo or kind"`
+Run: `uvx --with pytest pytest -q tests/test_forge_snapshot.py -k "setuid or setgid or kind or predicates"`
 Expected: FAIL — the first two on `before != after` / mode inequality, and
 `test_diff_compares_kind_even_when_every_other_field_matches` on `diff` returning `{}`.
 `test_the_two_inventory_predicates_read_the_same_fields` should PASS already: it is the
@@ -1015,6 +1035,7 @@ Plan L deferred nineteen entries; seven were marked ⚠ *load-bearing* and are t
 
 **2b. What measurement changed after the first draft**, recorded because a plan whose premises were never checked is a plan that schedules work nobody verified exists:
 - **Task 1's `kind` half was overstated.** Its two FIFO tests passed before any fix — `_special_entry` folds the file type into the digest — so the finding is structural duplication, not a reproducible miss, and the tests were replaced.
+- **Task 1's setuid half is worse than recorded, and is now measured at the bracket.** `review.worktree_identity` returns the identical digest either side of `chmod u+s` — so the claim is not "the inventory drops a bit" but "the round bracket three unattended reviewers are measured by reads a setuid binary as no change at all". The task asserts it there as well as at the leaf.
 - **Task 5's decision overshot.** Moving `GATE_CHANGED` to last also ranks it below `HARVEST_INCOMPLETE`, which is a second claim no finding argued. It moves to 4.
 - **Task 7's screen was placed after a ref write.** `manifest` is complete at `baseline.py:395` and the `update-ref` follows, so screening there means a refusal leaves nothing in the user's own repository.
 - **Task 4's premise held on inspection:** `ledger._check` runs `_check_rows` plus scalars, version, degradation consistency and a duplicate-id pass, so a ledger `_check_rows` accepts and `_check` refuses is constructible.
