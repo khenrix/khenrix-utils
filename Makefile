@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council eval eval-test status clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -37,7 +37,7 @@ FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
                tests/test_forge_seatrecord.py tests/test_forge_strategy.py \
                tests/test_forge_progress.py tests/test_forge_rubric.py \
                tests/test_forge_ultra.py tests/test_forge_handover.py \
-               tests/test_forge_brief.py
+               tests/test_forge_brief.py tests/test_forge_smoke.py
 
 FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \
                     tests/test_forge_harvest.py tests/test_forge_bundle.py \
@@ -181,6 +181,15 @@ bats-test: ## Behavioural .bats suites: repo-sweep, reconcile --apply, Tier 0/1 
 
 smoke-llm-council: ## Live smoke test of the council vs one real provider (costs tokens, needs auth)
 	$(PY) $(LLM_COUNCIL) --smoke --providers claude --timeout 60
+
+# §18's live three-provider WRITE smoke. THE DELIBERATE MONEY EXCEPTION, and it is opt-in for
+# that reason: it appears in no gate target, because `verify` and `precommit` run on every
+# commit and must stay free. `smoke-llm-council` above is one provider and read-only, which
+# proves nothing about three write-enabled seats — and `launch.py` and `runner.py` both say
+# in words that nothing in the forge suite invokes a real provider.
+# Three provider calls, roughly 15% of one default forge run.
+smoke-llm-forge: ## Live 3-provider WRITE smoke through the real forge adapter (costs tokens, needs auth)
+	$(PY) scripts/forge_smoke.py
 
 eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) $(EVAL) --self-test

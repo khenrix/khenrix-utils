@@ -368,3 +368,18 @@ Run `make forge-test-slow` for the clone- and process-heavy half of that suite; 
 verify` deliberately runs only the fast half, because `make verify` is this repository's own
 confirmed verify command and a forge run would otherwise spawn clone fleets inside its own
 verifier clones. `make precommit` runs both.
+
+## The provider path is proven by one opt-in smoke
+
+The engine's own suite invokes **no** provider — every seat launch is a fake, deliberately, so
+the suite costs nothing. That means the suite proves the engine and not the adapter. One
+target proves the adapter:
+
+```bash
+make smoke-llm-forge      # costs tokens, needs auth — three provider calls
+```
+
+It builds a disposable repository, gives each CLI its own clone, asks each to write a distinct
+marker and quote its proof token, harvests them, and shows the original checkout unchanged. On
+success it writes a receipt naming the adapter source hash and all three CLI versions, so the
+receipt goes stale when either moves. Run it whenever adapter or provider wiring changes.
