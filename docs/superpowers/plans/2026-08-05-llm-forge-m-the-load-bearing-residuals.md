@@ -636,7 +636,10 @@ The root cause is the injected `fix` contract: `fix(findings, checkpoint) -> (ne
 - Test: `/home/khenrix/git/khenrix-utils/tests/test_forge_progress.py`
 
 **Interfaces:**
-- Consumes: `progress.from_runs(candidate_run, baseline_run, *, parse=pytest_fingerprints) -> Progress`; `progress.oscillation(...)`; `progress.record_fix_done(log, *, operation_id, tree_oid, prog)`.
+- Consumes, all three measured rather than assumed:
+  - `progress.from_runs(candidate_run, baseline_run, *, parse=pytest_fingerprints) -> Progress` (`progress.py:120`). Both arguments need `.stdout`, `.stderr` and `.exit_code`; a baseline whose output cannot be read makes "new" unanswerable and the whole tuple unknown, which is why the baseline is required rather than optional.
+  - `progress.oscillation(events) -> tuple` (`progress.py:257`) — **it takes the journal events, not a pair of Progresses**, so `loop` calls it with `log.read()` and nothing has to be threaded to it. Its rule is that the second sighting of the same `(tree_oid, fingerprints)` pair is the stop signal, and a sighting with unmeasured fingerprints forms **no pair** — which is exactly why the hard-coded `Progress(None, None)` made it unable to fire.
+  - `progress.record_fix_done(log, *, operation_id, tree_oid, prog)`.
 - Produces: `fix`'s contract widens to `fix(findings, checkpoint) -> (new_checkpoint | None, verified: bool, candidate_run, baseline_run)`. **`candidate_run` and `baseline_run` may be `None`**, and `None` means "this fix implementation did not measure a run" — which produces `Progress(None, None)` *explicitly*, from a fix that said so, rather than by a hard-coded literal nobody can distinguish from a measurement.
 
 **The fail-open this task must not have:** a `fix` that returns the old 2-tuple must **refuse**, not be padded with `None`s. Padding makes "this fix does not measure runs" and "this fix predates the contract" the same record, which is the shape of every defect in this file. And `oscillation` firing must not be read as a *verdict* — it is a stop signal for §12.3's loop, and Plan M does not give it one.
@@ -745,7 +748,19 @@ In `review.loop`, replace the `fix` call and the `record_fix_done` that follows 
             prog=prog)
 ```
 
-Then consult `oscillation` per round, after the resolutions are written and before `current` advances. Read `progress.oscillation`'s signature first — it is the one function in this task whose parameters this plan does not restate, because it must be called with what it actually takes, not with what a plan guessed.
+Then consult `oscillation` per round, after the resolutions are written and before `current` advances:
+
+```python
+        stop, why_stop, _ = progress.oscillation(log.read())
+        if stop:
+            # §12.3's stop signal, not a verdict. The run has returned to a state it has
+            # already been in — fix A traded failure X for Y and fix B traded back — so
+            # another round buys nothing. `_stop` records the position; this plan gives
+            # `oscillation` no say in the terminal CLASSIFICATION, which is `settle`'s.
+            return _stop(run_dir, state, rounds_run=n, events=log.read(), note=why_stop)
+```
+
+`oscillation` returns three values; unpack all three and use the two this call needs, rather than indexing. If the third turns out to be load-bearing here, that is a finding — say so rather than dropping it silently.
 
 Update `loop`'s docstring paragraph describing the `fix` contract: it currently states the 2-tuple, and a docstring describing the old contract is exactly the stale-docstring finding this project has logged four times.
 
