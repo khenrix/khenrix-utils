@@ -156,6 +156,41 @@ def _steps(rows) -> tuple:
     return verify.Command.parse(rows).steps
 
 
+def _abandoned_runs(repo) -> list:
+    """Runs for `repo` that stopped somewhere short of a terminal phase.
+
+    READ FROM DISK, NEVER FROM MEMORY. §14.1's whole point is that a run's position survives
+    the process that wrote it, and `runstate.PHASES`/`TERMINAL` are the vocabulary — a phase
+    outside `TERMINAL` is a run that neither finished nor failed, which is exactly what an
+    interruption leaves.
+
+    IT REPORTS AND NEVER RAISES. A run directory this engine cannot read is itself worth
+    saying — but it must not stop a NEW run from starting, because the operator's next action
+    may be the only way to make progress at all.
+    """
+    out = []
+    try:
+        dirs = storage.run_dirs(repo)
+    except (OSError, storage.StorageError):
+        return []
+    for rd in dirs:
+        try:
+            state = runstate.read_state(rd)
+            manifest = runstate.read_manifest(rd)
+        except Exception:                                    # noqa: BLE001
+            out.append(f"note: {rd} holds a run this engine could not read; `--gc` reports "
+                       "what it is holding")
+            continue
+        if state is None or state.phase in runstate.TERMINAL:
+            continue
+        out.append(
+            f"note: run {manifest.run_id} stopped at `{state.phase}` and never reached a "
+            f"terminal phase. Its clones are still on disk. There is no `--resume` verb, so "
+            f"this run cannot be continued — but `--gc {manifest.run_id}` reclaims it, and "
+            "starting a new run below spends the full quote again.")
+    return out
+
+
 def start(args, *, out, make_launcher=None) -> int:
     """§5's gate, §7's fleet, §6's verification — and it stops at `comparing`.
 
@@ -216,6 +251,17 @@ def start(args, *, out, make_launcher=None) -> int:
 
     # BEFORE the quote and before anything is shown, because a run with no window to build in
     # is a run that cannot happen and §5 step 2 must not be asked about one.
+    # AN ABANDONED RUN IS NAMED BEFORE A SECOND ONE IS PAID FOR. §14.1 makes a run's position
+    # durable precisely so an interrupted one can be picked up, and there is no `--resume`
+    # verb yet — so the failure this closes is the expensive one: an operator whose run died
+    # at `building` re-runs `--start`, spends ~19 more provider calls and ~63 GB, and the
+    # first run's clones stay on disk with nothing naming them.
+    #
+    # A LINE, NOT A REFUSAL. The operator may genuinely want a fresh run, and refusing would
+    # make a dead run block the tool. What they must not do is spend twice without being told
+    # the first one is there — and `--gc` is what reclaims it.
+    for line in _abandoned_runs(Path(args.repo).resolve()):
+        print(f"  {line}", file=out)
     timeout = _resolve_seat_timeout()
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,

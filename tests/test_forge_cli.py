@@ -1679,3 +1679,37 @@ def test_collect_reports_the_drift_and_orphans_it_already_measured(tmp_path, mon
     assert "§9 DRIFT" in text and "refs/heads/main" in text, text
     assert "§14.1 ORPHANS" in text and "op-unfinished" in text, text
     assert "UNKNOWN — not failed" in text, text
+
+
+def test_start_names_an_abandoned_run_before_spending_again(tmp_path, monkeypatch):
+    """§14.1 makes a run's position durable so an interrupted one can be picked up, and
+    there is no `--resume` verb. So the expensive failure is the one this closes: an operator
+    whose run died at `building` re-runs `--start`, spends ~19 more provider calls and ~63 GB,
+    and the first run's clones sit on disk with nothing naming them.
+
+    A LINE AND NOT A REFUSAL — the operator may genuinely want a fresh run, and a dead run
+    must not block the tool. What they must not do is spend twice without being told."""
+    first = _drive_a_start(tmp_path, monkeypatch)
+    st = runstate.read_state(first)
+    runstate.write_state(first, dataclasses.replace(st, phase="building"))
+    out = io.StringIO()
+    rc = cli.main(["--start", "--repo", str(runstate.read_manifest(first).repo_path),
+                   "--task", str(_a_task(tmp_path)), "--answers", str(_answers(tmp_path)),
+                   "--attempts", "1"], out=out, make_launcher=_a_fake_make_launcher)
+    text = out.getvalue()
+    assert rc == 0, text
+    assert "stopped at `building`" in text and _run_id(first) in text, text
+    assert "--gc" in text, text
+
+
+def test_a_finished_run_is_not_reported_as_abandoned(tmp_path, monkeypatch):
+    """THE DISCRIMINATION CHECK. Every completed run would otherwise be announced on every
+    later `--start`, and a note that fires always is one an operator learns to skip."""
+    first = _drive_a_start(tmp_path, monkeypatch)
+    st = runstate.read_state(first)
+    runstate.write_state(first, dataclasses.replace(st, phase="ready"))
+    out = io.StringIO()
+    cli.main(["--start", "--repo", str(runstate.read_manifest(first).repo_path),
+              "--task", str(_a_task(tmp_path)), "--answers", str(_answers(tmp_path)),
+              "--attempts", "1"], out=out, make_launcher=_a_fake_make_launcher)
+    assert "never reached a terminal phase" not in out.getvalue(), out.getvalue()
