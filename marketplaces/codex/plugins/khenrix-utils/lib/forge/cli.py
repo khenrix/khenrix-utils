@@ -42,6 +42,8 @@ from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, 
 # ranks — a rank taken before §13's panel can be convened honestly would be a
 # verdict with no adversary.
 from . import ledger as ledgermod
+from . import fix as fixmod
+from . import progress
 from . import gc as gcmod
 from . import baseline as baselinemod
 from . import runner as runnermod
@@ -1061,6 +1063,66 @@ def _review(args, *, out) -> int:
     return 0
 
 
+def _verify_fix(args, *, out) -> int:
+    """§13's post-review fix, measured rather than asserted.
+
+    WHY THIS IS A VERB AND NOT PART OF `--review`. §16 makes the ORCHESTRATOR the synthesis
+    author and `SKILL.md` says the engine "deliberately has no `--synthesize`". Applying a
+    blocker's fix is authoring code; an engine that applied it would then be verifying its
+    own work, which is the founding premise inverted. So the loop is: `--review` reports the
+    blockers, YOU fix them and commit in the synthesis worktree, and this verifies that the
+    fix survived the gate — in a clone you never touched.
+
+    IT SPENDS NO PROVIDER CALL. One setup and one verify, which §5.2 priced as part of the
+    post-review pass; the money in §13 is the panel, and `--review` is where that goes.
+
+    THE CHECKPOINT IS THE LAST ROUND'S, read off the record rather than taken from argv — a
+    caller who passed the wrong one would have this engine verify a fix against a round that
+    did not raise the blockers it is answering.
+    """
+    repo = Path(args.repo).resolve()
+    run_dir = storage.run_root(repo, args.verify_fix, must_be_new=False)
+    if not storage.manifest_path(run_dir).exists():
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        return _fail(out, [f"{repo} has no run {args.verify_fix!r}."])
+    manifest = runstate.read_manifest(run_dir)
+    rounds = _rounds_run(run_dir)
+    if rounds < 1:
+        return _fail(out, [
+            f"run {manifest.run_id} has recorded no review round, so there are no blockers a "
+            f"fix could be answering. Run `--review {manifest.run_id}` first."])
+    last = reviewmod.read_round(run_dir, rounds)
+    log = journal.Journal(storage.journal_path(run_dir))
+    blockers = tuple(f for f in last.findings if f.severity == "blocker")
+    checkpoint, verified, cand, base = fixmod.apply(
+        run_dir, repo, findings=blockers, checkpoint=last.checkpoint, manifest=manifest,
+        identity=_confirmed_author(log.read(), manifest), events=log.read())
+    if checkpoint is None and not verified:
+        if cand is None and base is None:
+            print("no fix to verify: the synthesis worktree is still on the checkpoint round "
+                  f"{rounds} was convened at, so nothing was committed.", file=out)
+        else:
+            print(f"the fix did NOT pass verify, so round {rounds}'s {len(blockers)} "
+                  "blocker(s) stay unresolved (§13).", file=out)
+        return 1
+    print(f"the fix passed verify at checkpoint {checkpoint}.", file=out)
+    if cand is not None and base is not None:
+        prog = progress.from_runs(cand, base)
+        print(f"  §12.3 progress: new failures {prog.new_failure_count}", file=out)
+    else:
+        # SAID, NOT SILENT. `Progress(None, None)` is what an unmeasured pair produces, and
+        # an operator reading a clean line would take it for a measurement.
+        print("  §12.3 progress: NOT MEASURED — the calibration's output is not on this "
+              "run's journal, or was clipped, so which failures are new cannot be said",
+              file=out)
+    print(f"Next: `--review {manifest.run_id}` for another round, or "
+          f"`--collect {manifest.run_id}`.", file=out)
+    return 0
+
+
 def _ledger(args, *, out) -> int:
     """§10's claim ledger, authored by the ORCHESTRATOR and persisted by this engine.
 
@@ -1168,6 +1230,10 @@ def build_parser() -> argparse.ArgumentParser:
     verb.add_argument("--review", metavar="RUN_ID",
                       help="convene §13's review panel over a run's synthesis candidate — "
                            "SPENDS three provider calls per round")
+    verb.add_argument("--verify-fix", dest="verify_fix", metavar="RUN_ID",
+                      help="§13: verify, in a FRESH clone, the fix you committed in the "
+                           "synthesis worktree after a review round. Spends no provider "
+                           "call; runs the confirmed setup and verify commands once")
     verb.add_argument("--gc", metavar="RUN_ID",
                       help="§15's cleanup for one run, or `--gc all` for the disk report")
     ap.add_argument("--repo", default=".", help="the repository the run is about")
@@ -1225,6 +1291,8 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             return _ledger(args, out=out)
         if args.review:
             return _review(args, out=out)
+        if args.verify_fix:
+            return _verify_fix(args, out=out)
         return _gc(args, out=out)
     except (CliError, preflight.PreflightError, gate.GateError, taskbundle.TaskBundleError,
             # §15's refusals, which are the whole of what `--gc` says when it will not delete

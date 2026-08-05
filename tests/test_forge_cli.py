@@ -1492,3 +1492,32 @@ def test_collect_still_accepts_the_ordinary_worktree(tmp_path, monkeypatch):
                    str(runstate.read_manifest(run_dir).repo_path),
                    "--handover-target", "review"], out=out)
     assert rc == 0, out.getvalue()
+
+
+def test_verify_fix_refuses_before_a_round_has_run(tmp_path, monkeypatch):
+    """A fix answers a round's blockers. With no round recorded there are none, and
+    verifying against a checkpoint nobody convened on would be a measurement of nothing."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    out = io.StringIO()
+    rc = cli.main(["--verify-fix", _run_id(run_dir), "--repo",
+                   str(runstate.read_manifest(run_dir).repo_path)], out=out)
+    assert rc != 0 and "no review round" in out.getvalue(), out.getvalue()
+
+
+def test_verify_fix_says_when_progress_could_not_be_measured(tmp_path, monkeypatch):
+    """`Progress(None, None)` is what an unmeasured pair produces, and a clean-looking line
+    beside it would be read as a measurement. THE EXTERNAL QUESTION: does the operator learn
+    that §12.3 did not answer, or only that the fix passed?"""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = Path(runstate.read_manifest(run_dir).repo_path)
+    synth = _fuse_something(run_dir)
+    reviewmod.write_round(run_dir, reviewmod.Round(
+        1, _git(synth, "rev-parse", "HEAD^").stdout.strip(), (), (),
+        ("claude", "codex", "agy"), ()))
+    from forge import fix as fixmod
+    monkeypatch.setattr(fixmod, "apply",
+                        lambda *a, **k: ("d" * 40, True, None, None))
+    out = io.StringIO()
+    rc = cli.main(["--verify-fix", _run_id(run_dir), "--repo", str(repo)], out=out)
+    assert rc == 0, out.getvalue()
+    assert "NOT MEASURED" in out.getvalue(), out.getvalue()

@@ -1415,9 +1415,26 @@ def _calibrate(run_dir: Path, manifest, base, log, *, identity, env):
                            identity=identity, contract=manifest.generator_contract,
                            setup=verify.Command(steps=manifest.setup),
                            command=verify.Command(steps=manifest.verify), env=env)
+    # THE BASELINE'S OUTPUT, NOT ONLY ITS EXIT CODE. §12.3 asks which failures are NEW, and
+    # `progress.from_runs` answers it by parsing the candidate's gate output against the
+    # BASELINE's — so a record carrying only `exit_code` leaves the baseline half of every
+    # progress question unanswerable, and `oscillation` cannot form a pair without it. This
+    # is the only copy: the calibration runs once, hours before any review, in a clone `--gc`
+    # reclaims.
+    #
+    # CLIPPED, AND THE TRUE LENGTH BESIDE IT, on `_clip`'s own rule. A clipped tail is a
+    # LOWER BOUND on what failed — pytest prints its summary at the end, so the tail is the
+    # right half to keep, but a FAILED line that scrolled past the cap is one nobody can see.
+    # `fix.baseline_run` therefore refuses a clipped record rather than parsing it, because a
+    # subset of the failures reported as the whole set is the fail-open `progress` exists to
+    # close.
+    cal_out, cal_out_len = _clip(cal.run.stdout)
+    cal_err, cal_err_len = _clip(cal.run.stderr)
     log.record(journal.done(_CALIBRATION), operation_id=op,
                exit_code=cal.run.exit_code,
                setup_exit_code=None if cal.setup is None else cal.setup.exit_code,
+               stdout=cal_out, stdout_chars=cal_out_len,
+               stderr=cal_err, stderr_chars=cal_err_len,
                unexplained=list(cal.unexplained))
     return cal
 

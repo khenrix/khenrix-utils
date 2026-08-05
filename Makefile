@@ -43,7 +43,7 @@ FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \
                     tests/test_forge_harvest.py tests/test_forge_bundle.py \
                     tests/test_forge_verify.py tests/test_forge_runner.py \
                     tests/test_forge_review.py tests/test_forge_gc.py \
-                    tests/test_forge_cli.py
+                    tests/test_forge_cli.py tests/test_forge_fix.py
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
