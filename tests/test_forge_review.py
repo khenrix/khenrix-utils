@@ -2398,3 +2398,49 @@ def test_an_unmeasurable_pair_does_not_stop_a_run_that_has_rounds_left(tmp_path)
                             fix=lambda f, c: (c[:-1] + "f", True, None, None),
                             run=fake_round)
     assert rounds == [1, 2], "an unmeasured pair ended the loop before its rounds were spent"
+
+
+def _a_bracketed_round(run, log, n, responded, silent, checkpoint="a" * 40):
+    review.write_round(run, review.Round(n, checkpoint, (), (), responded, silent))
+    review.record_worktree_before(log, round_=n, digest="d", entries=1)
+    review.record_worktree_after(log, round_=n, digest="d", entries=1, changed={})
+
+
+def test_a_round_nobody_answered_is_blocked_rather_than_degraded(tmp_path):
+    """MEASURED BEFORE THE FIX: a round answered by 0 of 3 classified `degraded`, which SHIPS.
+    `degraded` tells its reader a panel looked and found the work merely imperfect; here no
+    panel looked at all. §13 exists to obtain an independent review, and "no review" is not a
+    weaker one — it is the absence of the thing the label claims."""
+    run = _run_dir(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    _a_bracketed_round(run, log, 1, (),
+                       (("claude", "timeout"), ("codex", "timeout"), ("agy", "timeout")))
+    verdict, why = review.terminal_from_record(run, rounds_run=1, events=log.read())
+    assert verdict == review.REVIEW_BLOCKED, (verdict, why)
+    assert "0 of 3" in why, why
+
+
+def test_a_partly_silent_panel_is_still_degraded_and_not_blocked(tmp_path):
+    """THE DISCRIMINATION CHECK, and the reason the fix is not "any silence blocks". One
+    reviewer answering IS a weaker review — which is what `degraded` means — and collapsing it
+    into `review_blocked` would be the same two-states-one-label defect with the states
+    swapped."""
+    run = _run_dir(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    _a_bracketed_round(run, log, 1, ("claude",),
+                       (("codex", "timeout"), ("agy", "timeout")))
+    verdict, _ = review.terminal_from_record(run, rounds_run=1, events=log.read())
+    assert verdict == review.DEGRADED, verdict
+
+
+def test_a_silent_round_after_a_whole_one_still_blocks(tmp_path):
+    """THE FAIL-OPEN THIS TASK MUST NOT HAVE. The branch has to fire on the ROUND's own
+    record rather than on a roll-up: a run whose round 1 was whole and whose round 2 nobody
+    answered is a run whose last word came from nobody. A single-round test passes over it."""
+    run = _run_dir(tmp_path)
+    log = journal.Journal(storage.journal_path(run))
+    _a_bracketed_round(run, log, 1, ("claude", "codex", "agy"), ())
+    _a_bracketed_round(run, log, 2, (),
+                       (("claude", "t"), ("codex", "t"), ("agy", "t")))
+    verdict, _ = review.terminal_from_record(run, rounds_run=2, events=log.read())
+    assert verdict == review.REVIEW_BLOCKED, verdict

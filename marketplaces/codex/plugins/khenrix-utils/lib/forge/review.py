@@ -1503,7 +1503,9 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
         cannot attribute to anyone.
       * `degraded` — every blocker resolved, but something about the review is weaker than a
         clean one: a blocker fixed in the LAST round (nothing re-reviewed the fix), any round
-        in which a reviewer was silent, or any round whose record names no reviewer at all.
+        in which SOME reviewer was silent, or any round whose record names no reviewer at all.
+        A round in which EVERY reviewer was silent is `review_blocked` above, not here: zero
+        responders is not a weaker review but the absence of one, and `degraded` ships.
         `VERIFIED_NOT_INDEPENDENTLY_REVIEWED` is the phrase. §13.1 and §14.2 assign different
         terminals to the same evidence — §14.2 makes a successful post-round-2 fix
         `review_blocked`, while §13.1's "no new loop, no new state" lands an otherwise-clean
@@ -1596,7 +1598,28 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
                     f"round {n}: {f.seat}'s blocker ({f.claim!r}) was fixed at checkpoint "
                     f"{fixed.checkpoint} and no later round reviewed it — "
                     f"{VERIFIED_NOT_INDEPENDENTLY_REVIEWED}")
-        if r.seats_silent:
+        if r.seats_silent and not r.seats_responded:
+            # ZERO RESPONDERS IS NOT A WEAKER REVIEW, IT IS NO REVIEW — and `degraded` SHIPS.
+            # That label tells its reader a panel looked and found the work merely imperfect;
+            # here every seat timed out and nothing independent read the candidate at all.
+            # §13 exists to obtain that review, so delivering the run under a label implying
+            # one is a verdict reading cleaner than its evidence, in the very field whose job
+            # is to carry the distinction. Measured before this branch: a round answered by
+            # 0 of 3, both brackets clean, classified `degraded`.
+            #
+            # ON THE ROUND'S OWN RECORD, not a roll-up across rounds: a run whose round 1 was
+            # whole and whose round 2 nobody answered is a run whose last word came from
+            # nobody, and a check that looked at the run as a whole would miss it.
+            blocked.append(
+                f"round {n} was answered by 0 of "
+                f"{len(r.seats_responded) + len(r.seats_silent)} reviewers ("
+                + ", ".join(f"{s}: {why}" for s, why in r.seats_silent)
+                + "), so nothing independent looked at this candidate. §13's review did not "
+                "happen, and a run shipped as `degraded` claims one that did")
+        elif r.seats_silent:
+            # A PARTIAL panel stays `degraded` DELIBERATELY. One reviewer answering really is
+            # a weaker review, which is what this label means; folding 1-of-3 in with 0-of-3
+            # would be the same two-states-one-label defect with the states swapped.
             degraded.append(
                 f"round {n} was answered by {len(r.seats_responded)} of "
                 f"{len(r.seats_responded) + len(r.seats_silent)} reviewers; silent: "
