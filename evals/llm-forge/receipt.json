@@ -1,13 +1,13 @@
 {
   "skill": "llm-forge",
-  "source_hash": "f3b19a675b7ab3bff6dc4e2e61280d60a81e7c1619d4e5dc6c7b97f3eec07d07",
+  "source_hash": "44558608ee9fe6a97f5ebbb546874b8089936398b0471712c43fe9810cd99f4e",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.5,
+  "delta_pass_rate": -0.0416,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "models": {
@@ -28,6 +28,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_cli.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_coverage.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_fingerprint.py",
+    "/home/khenrix/git/khenrix-utils/tests/test_forge_fix.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_fleet.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_gate.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_gc.py",
@@ -57,7 +58,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1711,
+    "tests_run": 1738,
     "skipped": 0,
     "failed": 0
   }
