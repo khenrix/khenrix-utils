@@ -2123,3 +2123,23 @@ def test_a_quote_cannot_carry_a_number_nobody_could_agree_to(tmp_path):
             dataclasses.replace(good, **{field: bad})
     # ...and the real quote still round-trips, or the guard is refusing its own producer.
     assert dataclasses.replace(good, seats=3) == good
+
+
+def test_every_spelling_of_make_C_moves_the_scan(tmp_path):
+    """REPRODUCED: `--directory=sub` and the attached `-Csub` fell through to the catch-all
+    that ignores flags, so the scan stayed in the wrong directory and reported `unresolved`
+    where the truth is `spends`.
+
+    WRONG IS WORSE THAN UNKNOWN HERE. An operator shown "could not resolve this target" may
+    accept the gap; one shown "this verify command spends a provider call" refuses. The
+    separated form worked, so the detector looked healthy on the spelling anyone would test."""
+    repo = make_repo(tmp_path)
+    (Path(repo) / "sub").mkdir()
+    write(repo, "sub/Makefile", "go:\n\t@claude -p 'spend'\n")
+    write(repo, "Makefile", "outer:\n\t@true\n")
+    commit_all(repo, "gates")
+    for argv in (["make", "-C", "sub", "go"],
+                 ["make", "--directory=sub", "go"],
+                 ["make", "-Csub", "go"]):
+        found = gate.provider_invoking_verify(repo, verify.Command.parse([argv]))
+        assert found and found[0].startswith("spends:"), (argv, found)

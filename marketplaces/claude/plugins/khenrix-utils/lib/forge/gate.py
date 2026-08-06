@@ -138,6 +138,7 @@ is imported and run, and is not read here, because searching past the first oper
 `make council-test` on `tests/test_council_characterization.py`'s stubbed `run_council`, and
 with it every `make verify`. See `test_a_file_handed_to_a_runner_as_data_is_not_read_as_the_program`.
 """
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -739,16 +740,35 @@ class _Resolver:
         named, targets, i = None, [], 0
         while i < len(args):
             a = args[i]
+            # EVERY SPELLING make ACCEPTS, not just the separated one. `--directory=sub` and
+            # the attached `-Csub` both fell through to the catch-all below and were IGNORED,
+            # so the scan stayed in the wrong directory — reproduced: `make --directory=sub go`
+            # over a `sub/Makefile` whose recipe runs `claude` reported `unresolved` where the
+            # truth is `spends`. An operator shown "could not resolve" may accept the gap; one
+            # shown "this spends a provider call" refuses. Wrong is worse than unknown here.
+            moved_to = None
             if a in ("-C", "--directory") and i + 1 < len(args):
                 i += 1
-                moved = self._join(cwd, args[i])
+                moved_to = args[i]
+            elif a.startswith("--directory="):
+                moved_to = a.split("=", 1)[1]
+            elif a.startswith("-C") and len(a) > 2:
+                moved_to = a[2:]
+            if moved_to is not None:
+                moved = self._join(cwd, moved_to)
                 if moved is None:
-                    self._add(UNRESOLVED, trail, f"`-C {args[i]}` leaves the repository")
+                    self._add(UNRESOLVED, trail, f"`-C {moved_to}` leaves the repository")
                     return
                 cwd = moved
-            elif a in ("-f", "--file", "--makefile") and i + 1 < len(args):
+                i += 1
+                continue
+            if a in ("-f", "--file", "--makefile") and i + 1 < len(args):
                 i += 1
                 named = args[i]
+            elif a.startswith(("--file=", "--makefile=")):
+                named = a.split("=", 1)[1]
+            elif a.startswith("-f") and len(a) > 2:
+                named = a[2:]
             elif a.startswith("-") or "=" in a:
                 pass
             else:
@@ -765,6 +785,15 @@ class _Resolver:
             self._add(UNRESOLVED, trail, "`make` was given no target and the makefile "
                                          "declares no default goal")
             return
+        # KEYED BY `(cwd, target)` AND NOT BY THE MAKEFILE, WHICH WAS TRIED AND REVERTED.
+        # Adding `mk.path` looks right — `make -f a.mk build` and `make -f b.mk build` in one
+        # directory are different targets — but it also stops the memo suppressing the
+        # SELF-REFERENCE this walk depends on: a target whose recipe documents its own
+        # invocation (`scripts/lib/checks.py` naming `make verify` while being reached by it,
+        # a real shape on this repository) re-entered and reported itself as its own remedy.
+        # `test_a_target_that_documents_itself_is_not_reported_as_its_own_remedy` measured it.
+        # The `-f` case is real but rarer than the self-reference, and buying it with a
+        # regression in the common path is the wrong trade.
         key = (cwd, target)
         if key in self.seen_targets or len(trail) > _MAX_DEPTH:
             return
