@@ -279,7 +279,19 @@ _PROVIDER_SPECIFIC = (
 # block runs `/markitdown` relies on it exactly as much as one whose prose does, and
 # stripping fences would be the fail-open direction of the same choice.
 _AMBIENT_SKILL = (
-    re.compile(r"(?:^|(?<=\s))/([a-z][a-z0-9-]{2,63})(?![\w/-])"),
+    # `{1,63}` AND NOT `{2,63}`: the old bound needed THREE characters after the slash, so a
+    # two-character skill — `/gc` is the obvious one — was not an ambient-skill reliance at
+    # all. §20's rule is that a task may rely on a named ambient skill only when all three
+    # installed copies hash identically, and a name the detector cannot see never reaches
+    # that rule.
+    #
+    # THE FALSE POSITIVE IT BUYS IS CHEAP AND THE FALSE NEGATIVE IS NOT. Every refusal here
+    # names what it matched, so an operator who wrote `/ok` in prose rewrites one word; a
+    # missed reliance sends three CLIs a task depending on a skill that may not exist
+    # identically on all of them. The leading `(?:^|(?<=\s))` still keeps `and/or`, `24/7`
+    # and `n/a` out, and one-character names stay out because a bare `/a` is far likelier to
+    # be a fraction or a path fragment than a skill.
+    re.compile(r"(?:^|(?<=\s))/([a-z][a-z0-9-]{1,63})(?![\w/-])"),
     # `(?i:...)` around the LITERALS only, never `re.I` over the whole pattern: a
     # case-insensitive capture returns `MARKITDOWN` and `markitdown` as two different skills
     # for one reference, and each would get its own refusal line naming a skill that does not

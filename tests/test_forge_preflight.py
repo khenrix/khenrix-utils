@@ -591,3 +591,19 @@ def test_a_genuinely_clean_repository_still_passes(tmp_path):
     rep = preflight.inspect_repo(repo, ())
     assert rep.secrets == ()
     assert rep.screened > 0
+
+
+def test_a_two_character_skill_name_is_an_ambient_reliance_too():
+    """REPRODUCED: `/([a-z][a-z0-9-]{2,63})` needed THREE characters after the slash, so a
+    two-character skill — `/gc` is the obvious one — was not an ambient-skill reliance at all.
+    §20 permits relying on a named ambient skill only when all three installed copies hash
+    identically, and a name the detector cannot see never reaches that rule.
+
+    THE DISCRIMINATION MATTERS AS MUCH AS THE WIDENING, so both are asserted: `and/or`,
+    `24/7` and `n/a` stay out on the leading-whitespace anchor, and a one-character `/x` stays
+    out because a bare single letter is far likelier to be a fraction or a path fragment."""
+    rx = preflight._AMBIENT_SKILL[0]
+    assert rx.findall("use /gc now") == ["gc"]
+    assert rx.findall("run /markitdown") == ["markitdown"]
+    for benign in ("and/or", "24/7 support", "n/a here", "a /x thing"):
+        assert rx.findall(benign) == [], benign
