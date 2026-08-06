@@ -1790,15 +1790,31 @@ def test_the_loop_reads_the_run_from_disk_and_takes_no_fact_the_directory_holds(
 
     Structural, and against the signature a caller would reach for first: `run` takes no
     manifest, no baseline, no commands and no seat count, because every one of those is in the
-    run directory and an argument would be a second answer to a settled question. The three
-    it does take are the three the directory does not hold.
+    run directory and an argument would be a second answer to a settled question. The four
+    it does take are the ones the directory does not hold.
+
+    `resume` IS THE FOURTH AND IT BELONGS, on the same test this rule states. A run directory
+    can say what was already spent — that is what `resume.plan` reads out of it — but not
+    whether the operator WANTS to continue this run or to be refused for touching it twice.
+    That is a decision, and it is the only kind of argument this signature admits. The proof
+    that it is not a duplicated fact: `run` reads nothing from it except which of two
+    behaviours to take, and both of them then read the same directory for everything else.
     """
     sig = pyinspect.signature(runner.run)
-    assert list(sig.parameters) == ["run_dir", "repo", "identity", "launch"]
+    assert list(sig.parameters) == ["run_dir", "repo", "identity", "launch", "resume"]
+    for name in ("identity", "launch", "resume"):
+        assert sig.parameters[name].kind is pyinspect.Parameter.KEYWORD_ONLY
+    # NO DEFAULT FOR THE TWO THAT HAVE NO SAFE ONE. An invented `identity` signs a commit as
+    # somebody, and an invented `launch` calls a provider — neither has a value this module
+    # may choose on a caller's behalf, so omitting one has to be an error.
     for name in ("identity", "launch"):
-        p = sig.parameters[name]
-        assert p.kind is pyinspect.Parameter.KEYWORD_ONLY
-        assert p.default is pyinspect.Parameter.empty
+        assert sig.parameters[name].default is pyinspect.Parameter.empty
+    # `resume` DOES HAVE ONE, AND IT IS THE REFUSAL. Defaulting to False means an unqualified
+    # call is refused by `_refuse_a_second_pass` rather than quietly continuing a run it was
+    # not asked to continue — the fail-closed direction, which is the whole test the rule
+    # above is enforcing. A default that lands on "spend nothing" is not the hazard a default
+    # that lands on "sign as someone" is.
+    assert sig.parameters["resume"].default is False
 
 
 def test_a_repository_that_is_not_the_one_the_run_recorded_is_refused(tmp_path):

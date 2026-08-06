@@ -52,13 +52,15 @@ through this link leave the tree" (a property of the target text), while the scr
 containment predicate there would certify unread content clean; see
 `tests/test_forge_screen.py::test_an_in_tree_link_to_an_unselected_path_is_still_a_breach`.
 """
+import base64
+import json
 import os
 import stat
 import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
-from . import gitcmd
+from . import gitcmd, snapshot
 
 # Bumped when the wire shape changes. `materialize` refuses anything else rather than
 # guessing: a bundle written by a newer engine and applied by an older one would silently
@@ -121,6 +123,16 @@ class CandidateBundle:
     # verify-origin output (spec §7.2). That is the fail-closed reading, so it is safe as a
     # default in a way `gate_delta=()` is not.
     generator_contract_id: str = ""
+    # THE FWORK BINDING THIS BUNDLE WAS BUILT AGAINST — `harvest.ArtifactSet.fwork`,
+    # carried through so a later reader can ask the question `build` asked: does a tree
+    # still hold the bytes the harvest measured? `materialize` writes this bundle into a
+    # fresh clone, and a verifier holding the binding can prove the clone it just built
+    # matches the SNAPSHOT the path set came from — not merely the bundle it was handed,
+    # which is the weaker claim it could make before.
+    #
+    # `None` IS "NOBODY BOUND THIS", exactly as `gate_delta` above. A bundle built from an
+    # unbound `ArtifactSet` is not one whose paths were checked and found stable.
+    fwork: tuple | None = None
     # A consumer classifying an outcome must treat a non-empty `omitted` as HARVEST_INCOMPLETE
     # before it reads the exit code: the gate can pass BECAUSE something is missing, and the
     # omission is invisible at the gate itself. Measured on the case that motivated the field
@@ -589,6 +601,124 @@ def _safe_rel(rel: str, what: str) -> str:
     return rel
 
 
+def dumps(candidate: CandidateBundle) -> bytes:
+    """A `CandidateBundle` as bytes, losslessly.
+
+    WHY THIS EXISTS, AND WHAT IT RETIRES. `runner._refuse_a_second_pass` argued that a run
+    cannot be continued because "nothing in this package serializes a `Calibration` or a
+    `CandidateBundle`", and `_record` says the same of the bundle in as many words. That was
+    a true statement about what had been WRITTEN and a false one about what is POSSIBLE: every
+    field here is plain data — patch bytes, per-path payloads, three string tuples and two
+    scalars. The refusal's premise was a missing function, not an unserializable value, which
+    is the "a rule that holds only on the path its author remembered" shape this package
+    refuses everywhere else.
+
+    BASE64 FOR EVERY BYTE FIELD, and not "utf-8 where it happens to decode". A patch carries
+    whatever `git diff --binary` produced and a sidecar payload is a file's literal bytes or a
+    link target with surrogates in it; a codec chosen per value would round-trip the easy
+    cases and mangle exactly the ones `_symlink_entry`'s docstring records taking
+    `baseline.materialize` down.
+
+    THE BINDING TRAVELS WITH IT. Without `fwork` a reloaded bundle is bytes with no claim
+    attached; with it, a reader can ask `verify_materialized` whether a tree reproduces the
+    snapshot the harvest measured — which is the whole reason the reload is trustworthy.
+    """
+    return json.dumps({
+        "version": candidate.version,
+        "baseline_ref": candidate.baseline_ref,
+        "baseline_commit": candidate.baseline_commit,
+        "tracked_patch": base64.b64encode(candidate.tracked_patch).decode("ascii"),
+        "sidecars": [{"path": e.path, "kind": e.kind, "mode": e.mode,
+                      "payload": base64.b64encode(e.payload).decode("ascii")}
+                     for e in candidate.sidecars],
+        "gate_delta": None if candidate.gate_delta is None else list(candidate.gate_delta),
+        "gate_surface": (None if candidate.gate_surface is None
+                         else list(candidate.gate_surface)),
+        "generator_contract_id": candidate.generator_contract_id,
+        "omitted": list(candidate.omitted),
+        # `None` AND `[]` MUST SURVIVE AS DIFFERENT VALUES, here as everywhere: json renders
+        # them differently and `loads` reads them back apart, so "nobody bound this" cannot
+        # come back as "bound, and empty".
+        "fwork": (None if candidate.fwork is None
+                  else [[e.path, e.digest, e.mode, e.size, e.kind] for e in candidate.fwork]),
+    }, sort_keys=True).encode("utf-8")
+
+
+def loads(data: bytes) -> CandidateBundle:
+    """The inverse of `dumps`, refusing anything it cannot reconstruct exactly.
+
+    FAILS CLOSED ON A VERSION IT DOES NOT KNOW. A bundle written by a future `VERSION` may
+    carry a field this build has never heard of — and a field it drops silently is a claim
+    the candidate made and the verifier never saw. `materialize` already refuses an unknown
+    version for the same reason; this is that rule at the other end of the wire.
+    """
+    try:
+        d = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise BundleError(f"this is not a serialized candidate bundle: {e}") from e
+    if not isinstance(d, dict):
+        raise BundleError(f"a serialized bundle is a JSON object, not {type(d).__name__}")
+    v = d.get("version")
+    if v != VERSION:
+        raise BundleError(
+            f"this bundle records version {v!r} and this build writes {VERSION}. A field "
+            "added since would be dropped silently here, and a dropped field is a claim the "
+            "candidate made that the verifier never sees.")
+    try:
+        sidecars = tuple(SidecarEntry(e["path"], e["kind"], e["mode"],
+                                      base64.b64decode(e["payload"]))
+                         for e in d["sidecars"])
+        fw = d["fwork"]
+        fwork = None if fw is None else tuple(
+            snapshot.Entry(p, dg, md, sz, k) for p, dg, md, sz, k in fw)
+        return CandidateBundle(
+            version=v,
+            baseline_ref=d["baseline_ref"],
+            baseline_commit=d["baseline_commit"],
+            tracked_patch=base64.b64decode(d["tracked_patch"]),
+            sidecars=sidecars,
+            gate_delta=None if d["gate_delta"] is None else tuple(d["gate_delta"]),
+            gate_surface=None if d["gate_surface"] is None else tuple(d["gate_surface"]),
+            generator_contract_id=d["generator_contract_id"],
+            omitted=tuple(d["omitted"]),
+            fwork=fwork,
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise BundleError(f"this serialized bundle is missing or malformed: {e!r}") from e
+
+
+def unbound(candidate: CandidateBundle) -> bool:
+    """Whether this bundle's paths were ever bound to the snapshot they came from.
+
+    THE READING THIS EXISTS TO PREVENT: `candidate.fwork == ()` and `candidate.fwork is
+    None` are not the same claim. The first is a bound bundle that carries no paths; the
+    second is a bundle nobody bound, whose contents were never compared to any snapshot.
+    A consumer testing `if not candidate.fwork` collapses them and reads "nobody looked" as
+    "looked and found nothing" — the fail-open direction, and the single most repeated
+    defect shape in this package.
+    """
+    return candidate.fwork is None
+
+
+def verify_materialized(candidate: CandidateBundle, root) -> tuple:
+    """The bound paths that `root` does not reproduce — the verifier's own check.
+
+    THE CLAIM THIS UPGRADES. Without it a verifier can prove it materialized the bundle it
+    was HANDED; with it, that the bundle represents the Fwork snapshot the harvest recorded.
+    Those are different claims and only the second is the one §6 needs, because the bundle
+    is the thing that travelled and is therefore the thing that could have been swapped.
+
+    A bundle nobody bound returns a REFUSAL LINE rather than `()`. Returning "no
+    discrepancies" for a comparison that could not be made is precisely the verdict-cleaner-
+    than-its-evidence rule this package is built on, and a caller that wants the third state
+    separately has `unbound` above.
+    """
+    if candidate.fwork is None:
+        return ("this bundle carries no Fwork binding, so what it should reproduce is not "
+                "recorded anywhere and no comparison was made",)
+    return snapshot.drift(root, candidate.fwork)
+
+
 def build(seat_path, artifacts, baseline, *, contract=None) -> CandidateBundle:
     """The candidate, as data, from a seat that has already been harvested.
 
@@ -618,6 +748,33 @@ def build(seat_path, artifacts, baseline, *, contract=None) -> CandidateBundle:
     a second, differently-calibrated limit would only fail runs the harvest accepted.
     """
     seat = Path(seat_path)
+    # THE SEAT MUST STILL HOLD THE BYTES THE HARVEST MEASURED, and this is the only place
+    # that can say so. Everything below re-reads the LIVE tree: `_patch_paths` and `_rediff`
+    # ask git, and the sidecar loop calls `p.read_bytes()`. The path set came from a
+    # snapshot taken earlier, so without this the bundle is "the paths Fwork found, filled
+    # with whatever is there now" — reproduced by rewriting a harvested file between the two
+    # calls, which produced a bundle carrying the new bytes under the old path set in
+    # silence.
+    #
+    # REFUSED RATHER THAN RECORDED. `omitted` is this module's honest place for a path it
+    # cannot carry, but drift is not a property of one path: it means the tree moved under
+    # the harvest, so the OTHER paths' bytes are no longer evidence of anything either.
+    # Naming the drifted ones and bundling the rest would be a verdict reading cleaner than
+    # its evidence.
+    #
+    # AN UNBOUND `ArtifactSet` IS NOT REFUSED, and that is a deliberate seam rather than an
+    # oversight: `fwork=None` is "nobody bound this", the bundle carries the same `None`
+    # onward, and `unbound` below is how a consumer asks. Refusing here would break every
+    # caller that builds an `ArtifactSet` by hand — the suite's fixtures among them — and
+    # buy nothing, because a `None` that propagates is already the fail-closed reading
+    # everywhere it is read.
+    if artifacts.fwork is not None:
+        moved = snapshot.drift(seat, artifacts.fwork)
+        if moved:
+            raise BundleError(
+                f"the seat at {seat} no longer holds the bytes its harvest measured, so a "
+                f"bundle built from it would carry the current tree under the harvested "
+                f"path set: " + "; ".join(moved))
     # The caller obligation `harvest` documents and nothing enforces: `tracked_diff` was
     # decoded with surrogateescape, so only this encoding reproduces git's exact bytes.
     # `.encode()` raises UnicodeEncodeError on the surrogates and errors="replace" would
@@ -716,6 +873,7 @@ def build(seat_path, artifacts, baseline, *, contract=None) -> CandidateBundle:
         sidecars=tuple(sidecars),
         generator_contract_id=contract.id if contract is not None else "",
         omitted=tuple(omitted),
+        fwork=artifacts.fwork,
     )
 
 

@@ -195,6 +195,26 @@ the detector. A task relying on a **named ambient skill** (`/markitdown`, "use t
 skill") is permitted only when all three installed copies hash identically — otherwise the
 same refusal, because three CLIs running "the same skill" is a claim the engine checks.
 
+### If a run dies partway: `--resume`, never a second `--start`
+
+A run that stopped — the machine went down, the terminal was closed, a seat wedged — is
+**resumable, and re-running `--start` is the one thing you must not do**: it opens a *new*
+run and buys the whole fleet again.
+
+```bash
+python3 "$FORGE" --resume <run-id> --repo .
+```
+
+It re-reads the run off disk, reloads every seat that already settled from its persisted
+candidate bundle, and drives **only** the seats that never did. A seat that settled costs
+nothing the second time.
+
+**It refuses rather than guessing.** Each reloaded bundle is checked against the Fwork
+snapshot its harvest measured, so a preserved clone that was edited after the run stopped is
+named and the resume stops — because the alternative is silently re-buying that seat's
+provider call, which is the one failure a resume must not have. If a run already transported
+its seats and cut its synthesis branch, its fleet is finished: fuse and `--collect`.
+
 ## 4. Fuse — your job, in the synthesis worktree
 
 `--start` leaves a worktree at `<run-dir>/synthesis` on a new branch

@@ -43,6 +43,7 @@ from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, 
 # verdict with no adversary.
 from . import journal as journalmod
 from . import runner as runnermod
+from . import resume as resumemod
 from . import ledger as ledgermod
 from . import fix as fixmod
 from . import progress
@@ -212,7 +213,7 @@ def start(args, *, out, make_launcher=None) -> int:
     verb — which refuses a run that was never handed over, so an orphan of exactly this shape
     needs `--gc <run-id> --force`.
     """
-    mk = make_launcher or launch.make_launcher
+    mk = _launcher_factory(make_launcher)
     repo = Path(args.repo).resolve()
     task_root = Path(args.task).resolve()
     entrypoint = args.entrypoint
@@ -307,6 +308,95 @@ def start(args, *, out, make_launcher=None) -> int:
                   bundle_sha256=taskbundle.bundle_hash(taskbundle.read_task_bundle(run_dir)))
     results = runnermod.run(run_dir, repo, identity=confirmation.author, launch=launcher)
 
+    return _finish_the_fleet(run_dir, repo, run_id, results, out=out)
+
+
+def _launcher_factory(make_launcher):
+    """THE ONE DOOR TO THE REAL LAUNCHER, and it is deliberately the only one.
+
+    Every test in this front end drives a verb without paying a provider, and that is a
+    property of this module only while there is a single reference to `launch.make_launcher`
+    to hold shut — `test_the_cli_reaches_the_launcher_only_through_the_injected_seam` counts
+    them in the AST for exactly that reason. `--start` and `--resume` both need one, so the
+    resolution lives here rather than being spelled twice.
+
+    RESOLVED AT CALL TIME. `None` means "ask the module", not "use a default": a `def`-time
+    default would bind the attribute before a test could monkeypatch `cli.launch.make_launcher`
+    to spy on the real one, and would silently ignore it.
+    """
+    return make_launcher or launch.make_launcher
+
+
+def _resume(args, *, out, make_launcher=None) -> int:
+    """§14.1's other half: re-enter a run that stopped, without re-buying what it paid for.
+
+    WHY THIS IS NOT `--start` AGAIN. `--start` opens a run — preflight, §20's task refusals,
+    §5's gate and the quote — and every one of those has already happened for a run that
+    exists. Re-taking them would ask the operator to re-confirm a bargain they already struck,
+    and `gate.open_run` would build a second run directory rather than continue this one.
+
+    THE PROVIDER CALLS ARE THE WHOLE POINT. `resume.plan` classifies each seat against the
+    journal and the preserved clones BEFORE anything is spent: a seat that settled is reloaded
+    from its persisted bundle, a seat that never settled is re-driven, and a seat that settled
+    but cannot be proven refuses the resume outright. That last branch is the one that matters
+    — re-driving an unprovable seat would silently spend its call twice, which is the single
+    failure a resume must not have.
+
+    THE PROMPT COMES OFF THE RECORD. §20 copied the task source beside the manifest precisely
+    so a resume does not depend on the operator's own directory still existing, and the
+    launcher is built from those bytes rather than from `--task`, which this verb does not take.
+    """
+    repo = Path(args.repo).resolve()
+    run_id = args.resume
+    # `must_be_new=False`, WHICH IS THE WHOLE POINT OF THE VERB. `run_root` CREATES, so the
+    # default would refuse the only kind of run this can act on; `--collect` and `--review`
+    # resolve an existing run the same way, and the empty-directory cleanup below is theirs.
+    run_dir = storage.run_root(repo, run_id, must_be_new=False)
+    if not storage.manifest_path(run_dir).exists():
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        raise CliError(f"{repo} has no run {run_id!r} to resume")
+    manifest = runstate.read_manifest(run_dir)
+    # THE IDENTITY IS READ OFF B1 ITSELF, which is the only place it survives. §5 step 2's
+    # answer sheet is the operator's input and is gone; the manifest does not carry it. B1 is
+    # the one commit forge wrote into the user's repository, and it was written WITH this
+    # identity — so the commit is the run's own record of it. Re-deriving it from the ambient
+    # git config instead would let a resume sign seat commits as a different author than the
+    # one the run's baseline says made it, on a machine whose config moved in between.
+    # `-s` ALREADY SUPPRESSES THE PATCH, and the driver flags go in anyway: the seam test
+    # classifies by SUBCOMMAND, and an exemption arguing "this particular `show` prints no
+    # diff" is a rule that holds only while nobody adds a format. They cost nothing here.
+    ident = gitcmd.git(repo, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                       "show", *gitcmd.NO_DIFF_DRIVERS, "-s",
+                       "--format=%an%x00%ae", manifest.baseline_commit,
+                       env_extra=gitcmd.READONLY).stdout.strip("\n")
+    name, _, email = ident.partition("\x00")
+    if not name or not email:
+        raise CliError(
+            f"the identity {manifest.baseline_commit[:12]} was recorded under cannot be read "
+            f"back from it, so this resume cannot sign seat commits as the run did.")
+    identity = (name, email)
+    b = taskbundle.read_task_bundle(run_dir)
+    instruction = _read(storage.task_source_path(run_dir) / b.entrypoint,
+                        "the task entrypoint this run recorded")
+    mk = _launcher_factory(make_launcher)
+    launcher = mk(prompt=instruction, timeout=_resolve_seat_timeout(),
+                  bundle_sha256=taskbundle.bundle_hash(b))
+    results = runnermod.run(run_dir, repo, identity=identity, launch=launcher, resume=True)
+    return _finish_the_fleet(run_dir, repo, run_id, results, out=out)
+
+
+def _finish_the_fleet(run_dir, repo, run_id, results, *, out) -> int:
+    """Everything after the fleet has been driven: transport, the synthesis worktree, the report.
+
+    SHARED BY `--start` AND `--resume` BECAUSE IT IS ONE PROCEDURE. A resumed run has to leave
+    the operator exactly what a straight-through run leaves — the seat branches transported out
+    of the remote-less clones, a synthesis worktree, a brief and §16.1's table. Two copies of
+    this would be two ideas of what finishing means, and the one on the resume path would be
+    the one nobody looked at.
+    """
     # §16: seat work is transported out of each remote-less clone by the ENGINE, from the
     # user's side, with an explicit refspec — before anything else can fail and leave it in a
     # directory `--gc` is allowed to delete.
@@ -1417,6 +1507,9 @@ def build_parser() -> argparse.ArgumentParser:
     verb = ap.add_mutually_exclusive_group(required=True)
     verb.add_argument("--start", action="store_true",
                       help="open a run: preflight, §5's gate, the fleet, §6's verification")
+    verb.add_argument("--resume", metavar="RUN_ID",
+                      help="continue a run that stopped, without re-spending its "
+                           "provider calls")
     verb.add_argument("--collect", metavar="RUN_ID",
                       help="read a run back off disk, run §13.1, and print §16's handover")
     verb.add_argument("--ledger", metavar="RUN_ID",
@@ -1481,6 +1574,8 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
                 if not getattr(args, required):
                     return _fail(out, [f"--start needs --{required}"])
             return start(args, out=out, make_launcher=make_launcher)
+        if args.resume:
+            return _resume(args, out=out, make_launcher=make_launcher)
         if args.collect:
             return collect(args, out=out)
         if args.ledger:
@@ -1497,6 +1592,9 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             gcmod.GcError,
             handover.HandoverError, verify.VerifyError, ultra.UltraError,
             reviewmod.ReviewError, fingerprint.FingerprintError, baselinemod.BaselineError,
+            # `--resume`'s refusals, and every one of them is this package declining to
+            # continue a run it cannot prove — the same shape as the GcError entry above.
+            resumemod.ResumeError,
             # MEASURED, and the first draft of this tuple was missing all four.
             # `runstate.reconstruct` — the only thing `--collect` does before it can say
             # anything — raises exactly these for a run directory it cannot read whole, and

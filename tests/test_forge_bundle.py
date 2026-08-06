@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
 import pytest  # noqa: E402
-from forge import baseline, bundle, fleet, harvest, inspect as finspect  # noqa: E402
+from forge import (baseline, bundle, fleet, harvest,  # noqa: E402
+                   inspect as finspect, snapshot)
 from forge_fixtures import make_repo, write, git  # noqa: E402
 
 IDENT = ("Forge Seat", "seat@forge.invalid")
@@ -932,3 +933,177 @@ def test_a_sidecar_still_replaces_what_the_patch_left_at_its_path(tmp_path):
     assert not tool.is_symlink() and tool.read_bytes() == b"#!/bin/sh\n"
     assert tool.stat().st_mode & 0o777 == 0o755
     assert os.readlink(Path(seat.path) / "sub" / "link") == "tool.sh"
+
+
+# ---- the Fwork byte-binding -----------------------------------------------------------
+def _bound_seat(tmp_path):
+    """A seat harvested for real, so the binding comes from `artifact_set` and not a fixture.
+
+    A REAL CLONE, because `artifact_set` runs `git check-attr` and `git diff` against it —
+    a bare directory makes every assertion below fail for a reason none of them is about.
+    """
+    repo, b, s = _seat(tmp_path)
+    seat = s.path
+    (seat / "a.txt").write_text("the bytes the builder wrote\n")
+    f0, _ = snapshot.take(seat)
+    fsetup = dict(f0)
+    (seat / "a.txt").write_text("the bytes the builder wrote, revised\n")
+    fwork, _ = snapshot.take(seat)
+    phases = harvest.Phases(f0=f0, fsetup=fsetup, fwork=fwork, fverify=dict(fwork))
+    return seat, phases, b
+
+
+def test_the_artifact_set_binds_the_bytes_its_path_set_was_computed_from(tmp_path):
+    """THE EXTERNAL QUESTION: can anything downstream tell whether the tree still holds what
+    the harvest measured? Before this field the answer was no for every consumer — the path
+    set was a list of NAMES and `bundle.build`, `git diff` and a resume all re-read the live
+    seat with nothing to compare against."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    assert arts.paths == ("a.txt",)
+    assert arts.fwork is not None, "the path set was returned unbound"
+    assert [e.path for e in arts.fwork] == ["a.txt"]
+    assert arts.fwork[0].digest == phases.fwork["a.txt"].digest
+
+
+def test_a_seat_that_moved_between_harvest_and_build_is_refused_not_bundled(tmp_path):
+    """REPRODUCED BEFORE THE FIX: rewrite a harvested file after `artifact_set` and the
+    bundle carried the NEW bytes under the OLD path set, silently and at exit 0. That is the
+    candidate content nobody authored — the whole point of harvesting a path set is that the
+    bytes behind it are the ones that were measured."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    (seat / "a.txt").write_text("SOMETHING ELSE ENTIRELY\n")
+    with pytest.raises(bundle.BundleError, match="no longer holds the bytes"):
+        bundle.build(seat, arts, base)
+
+
+def test_a_mode_change_alone_is_drift_even_when_the_bytes_are_identical(tmp_path):
+    """`take`'s own comment records that dropping the mode bits left `chmod u+s` invisible to
+    every bracket written on this predicate. A binding that compared only digests would
+    reintroduce exactly that hole one module over."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    (seat / "a.txt").chmod(0o755)
+    with pytest.raises(bundle.BundleError, match="no longer holds the bytes"):
+        bundle.build(seat, arts, base)
+
+
+def test_an_untouched_seat_still_builds(tmp_path):
+    """THE DISCRIMINATION CHECK. A guard that also fired on the ordinary path would be one
+    nobody could pass, and every real run takes this branch."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    b = bundle.build(seat, arts, base)
+    assert b.fwork is not None and [e.path for e in b.fwork] == ["a.txt"]
+    assert bundle.unbound(b) is False
+
+
+def test_an_unbound_bundle_reports_no_comparison_rather_than_no_discrepancies(tmp_path):
+    """THE FAIL-OPEN THIS MUST NOT HAVE. `fwork=()` is a bound bundle with no paths;
+    `fwork=None` is one nobody bound. Returning `()` for the second would let a verifier
+    report "materialized clean" for a comparison it never made."""
+    b = bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r", baseline_commit="c")
+    assert bundle.unbound(b) is True
+    out = bundle.verify_materialized(b, tmp_path)
+    assert out and "no comparison was made" in out[0]
+    assert out != ()
+
+
+def test_a_materialized_tree_is_checked_against_the_snapshot_not_against_the_bundle(tmp_path):
+    """THE CLAIM THIS UPGRADES: a verifier could already prove it materialized the bundle it
+    was HANDED. The bundle is the thing that travelled, so that is the claim a swap survives.
+    Checking the materialized tree against the Fwork binding is the stronger question."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    b = bundle.build(seat, arts, base)
+    assert bundle.verify_materialized(b, seat) == ()
+    (seat / "a.txt").write_text("swapped after the fact\n")
+    bad = bundle.verify_materialized(b, seat)
+    assert len(bad) == 1 and "a.txt" in bad[0]
+
+
+def test_a_deleted_bound_path_is_named_as_absent_not_silently_skipped(tmp_path):
+    """`entry_at` returns None for an absent path, and a `drift` that skipped those would
+    report a tree that LOST every bound file as clean — absence reading as agreement."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    (seat / "a.txt").unlink()
+    out = snapshot.drift(seat, arts.fwork)
+    assert len(out) == 1 and "absent now" in out[0]
+
+
+# ---- serialization: what `_refuse_a_second_pass` called impossible ----------------------
+def test_a_bundle_round_trips_through_bytes_unchanged(tmp_path):
+    """THE EXTERNAL QUESTION: is a `CandidateBundle` a value that can leave memory and come
+    back the same? `runner._refuse_a_second_pass` refused every resume on the claim that
+    nothing serializes one — a true statement about what existed and a false one about what
+    is possible, since every field is plain data."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    b = bundle.build(seat, arts, base)
+    assert bundle.loads(bundle.dumps(b)) == b
+
+
+def test_binary_payloads_and_non_utf8_link_targets_survive_the_round_trip(tmp_path):
+    """THE CASE A PER-VALUE CODEC WOULD MANGLE. `_symlink_entry`'s docstring records a
+    non-UTF-8 link target taking `baseline.materialize` down with UnicodeEncodeError; a patch
+    from `git diff --binary` is not text at all. Base64 for every byte field, or the round
+    trip works on the easy inputs and corrupts exactly these."""
+    b = bundle.CandidateBundle(
+        version=bundle.VERSION, baseline_ref="r", baseline_commit="c",
+        tracked_patch=b"\x00\x01\x02\xff\xfe binary \x80",
+        sidecars=(bundle.SidecarEntry("caf\udce9.txt", "symlink", 0,
+                                      "caf\udce9-target".encode("utf-8", "surrogateescape")),
+                  bundle.SidecarEntry("bin", "file", 0o644, bytes(range(256)))))
+    back = bundle.loads(bundle.dumps(b))
+    assert back == b
+    assert back.sidecars[1].payload == bytes(range(256))
+
+
+def test_an_unbound_bundle_does_not_come_back_bound_to_nothing(tmp_path):
+    """`None` AND `()` MUST SURVIVE APART. A serializer that rendered both as `[]` would turn
+    "nobody bound this" into "bound, and empty" on every reload — the fail-open reading, and
+    it would arrive wearing a successful round trip."""
+    unbound_b = bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r",
+                                       baseline_commit="c")
+    bound_empty = bundle.CandidateBundle(version=bundle.VERSION, baseline_ref="r",
+                                         baseline_commit="c", fwork=())
+    assert bundle.loads(bundle.dumps(unbound_b)).fwork is None
+    assert bundle.loads(bundle.dumps(bound_empty)).fwork == ()
+    assert bundle.unbound(bundle.loads(bundle.dumps(unbound_b))) is True
+    assert bundle.unbound(bundle.loads(bundle.dumps(bound_empty))) is False
+
+
+def test_a_reloaded_bundle_still_proves_a_tree_against_the_harvest(tmp_path):
+    """THE POINT OF PERSISTING IT AT ALL. A bundle that round-trips but loses its binding is
+    bytes with no claim attached — a resume reading one could materialize it and say only
+    "this is what I was given", never "this is what the harvest measured"."""
+    seat, phases, base = _bound_seat(tmp_path)
+    arts = harvest.artifact_set(phases, seat, base.commit)
+    b = bundle.loads(bundle.dumps(bundle.build(seat, arts, base)))
+    assert bundle.verify_materialized(b, seat) == ()
+    (seat / "a.txt").write_text("changed after the bundle was written\n")
+    assert bundle.verify_materialized(b, seat) != ()
+
+
+def test_a_bundle_from_an_unknown_version_is_refused_not_partially_read():
+    """FAILS CLOSED. A future build may add a field; one dropped silently here is a claim the
+    candidate made that the verifier never sees. `materialize` refuses an unknown version for
+    this reason — this is that rule at the other end of the wire."""
+    import json as _json
+    raw = _json.dumps({"version": bundle.VERSION + 99}).encode()
+    with pytest.raises(bundle.BundleError, match="records version"):
+        bundle.loads(raw)
+
+
+def test_garbage_is_refused_with_a_sentence_rather_than_a_stray_exception():
+    """A caller catches `BundleError`; a bare ValueError out of json is a class nothing in
+    this package's error surface knows to catch — the shape `snapshot.take`'s
+    FileNotFoundError comment records escaping a bracket measurement."""
+    with pytest.raises(bundle.BundleError):
+        bundle.loads(b"not json at all")
+    with pytest.raises(bundle.BundleError):
+        bundle.loads(b'["a", "list", "not", "an", "object"]')
+    with pytest.raises(bundle.BundleError, match="missing or malformed"):
+        bundle.loads(b'{"version": 1}')

@@ -136,6 +136,65 @@ def _special_entry(st: os.stat_result, rel: str) -> Entry:
                  "special")
 
 
+def entry_at(root, rel: str) -> "Entry | None":
+    """ONE path's entry, by the same rules `take` applies to the whole tree.
+
+    WHY IT EXISTS: `take` walks everything, and a caller holding a 12-path bundle does not
+    need the other 40,000 files digested to ask whether those twelve still hold the bytes
+    Fwork recorded. `bundle.build` is that caller.
+
+    THE DISPATCH ORDER IS `take`'s AND HAS TO BE. symlink before stat, because a dangling
+    link raises in `stat()`; special before regular, because `open()` on a FIFO blocks
+    forever. Getting that order wrong here would make this a SECOND spelling of the
+    predicate that disagrees with the first on exactly the inputs the comments above say
+    are dangerous — the defect shape this package keeps finding in itself. The three
+    builders are the same objects `take` calls, so no digest rule is duplicated, only the
+    dispatch — and `test_entry_at_agrees_with_take_on_every_kind` pins that the
+    dispatch agrees, per kind, on a tree holding all four.
+
+    `None` MEANS ABSENT AND IS NOT AN ERROR. A bound path the candidate deleted is a real
+    answer that the caller compares against its binding; raising here would make deletion
+    indistinguishable from an unreadable tree.
+    """
+    p = Path(root) / rel
+    if p.is_symlink():
+        return _symlink_entry(p, rel)
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return _special_entry(st, rel)
+    return Entry(rel, _digest(p), stat.S_IMODE(st.st_mode), st.st_size, "file")
+
+
+def drift(root, bound) -> tuple:
+    """The bound paths whose live bytes are no longer the ones `bound` recorded.
+
+    THE EXTERNAL QUESTION THIS ANSWERS: does the tree I am about to read still hold the
+    bytes somebody else measured? Every field of `Entry` participates — digest, mode and
+    kind — because a path that kept its bytes and gained the setuid bit is a path that
+    moved, and `take`'s own comment records that dropping the mode bits left `chmod u+s`
+    invisible to every bracket written on this predicate.
+
+    `size` IS DELIBERATELY NOT COMPARED and that is not a weakening: it is a FUNCTION of
+    the bytes the digest already covers, and it is fabricated as 0 for links and specials,
+    so comparing it would add no discrimination and would only invite a caller to think it
+    had.
+    """
+    out = []
+    for want in bound:
+        have = entry_at(root, want.path)
+        if have is None:
+            out.append(f"{want.path}: recorded as {want.kind} at harvest, absent now")
+        elif (have.digest, have.mode, have.kind) != (want.digest, want.mode, want.kind):
+            out.append(
+                f"{want.path}: harvest recorded {want.kind} mode {want.mode:o} "
+                f"{want.digest[:12]}, the tree now holds {have.kind} mode {have.mode:o} "
+                f"{have.digest[:12]}")
+    return tuple(out)
+
+
 def take(root, *, quota: Quota | None = None, skip_dirs=(".git",)):
     """Inventory `root`. Returns (entries, breaches); a breach means FAIL CLOSED — the
     entries dict is empty rather than a partial inventory reported as complete.

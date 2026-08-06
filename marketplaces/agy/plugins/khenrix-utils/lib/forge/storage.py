@@ -364,6 +364,17 @@ def seat_state_path(run_dir, name: str) -> Path:
     return Path(run_dir) / f"seat-{name}.json"
 
 
+def seat_bundle_path(run_dir, name: str) -> Path:
+    """Where a seat's serialized `CandidateBundle` lives, beside its record.
+
+    THE NAME GOES THROUGH `seat_state_path` rather than re-matching `_SEAT_NAME`, because a
+    second copy of that predicate is a second chance for one spelling to admit what the other
+    refuses — and this one builds a path from argv-derived text, which is exactly the
+    interpolation `run_root` was fixed for.
+    """
+    return seat_state_path(run_dir, name).with_suffix(".bundle")
+
+
 def seat_names(run_dir) -> tuple[str, ...]:
     """Every seat with a record in `run_dir`, sorted — the inverse of `seat_state_path`.
 

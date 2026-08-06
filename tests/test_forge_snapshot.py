@@ -389,3 +389,63 @@ def test_a_path_that_vanishes_mid_walk_is_a_breach_not_a_crash(tmp_path):
     assert entries == {}, "a partial inventory was returned as a complete one"
     assert len(breaches) == 1 and "a.txt" in breaches[0], breaches
     assert "not inventoried" in breaches[0], breaches
+
+
+# ---- entry_at, and the dispatch it must not fork ---------------------------------------
+def test_entry_at_agrees_with_take_on_every_kind(tmp_path):
+    """`entry_at` is a SECOND dispatch over the same four kinds, and this pins that it is not
+    a second SPELLING. The agreement is asserted per kind on a tree holding all four, because
+    an agreement test over one kind passes while the other three disagree — and the two
+    orderings that matter (symlink before stat, special before open) are exactly the ones
+    whose comments in `take` say what breaks when they are wrong.
+    """
+    root = tmp_path / "t"; root.mkdir()
+    (root / "f.txt").write_text("bytes\n")
+    (root / "exec.sh").write_text("#!/bin/sh\n"); (root / "exec.sh").chmod(0o755)
+    (root / "link").symlink_to("f.txt")
+    (root / "dangling").symlink_to("nowhere-at-all")
+    os.mkfifo(root / "pipe")
+
+    entries, breaches = snapshot.take(root)
+    assert breaches == []
+    kinds = {e.kind for e in entries.values()}
+    assert kinds == {"file", "symlink", "special"}, kinds
+    for rel, want in entries.items():
+        assert snapshot.entry_at(root, rel) == want, rel
+
+
+def test_entry_at_returns_none_for_an_absent_path_rather_than_raising(tmp_path):
+    """A bound path the candidate DELETED is a real answer `drift` has to render as absence.
+    Raising would make a deletion indistinguishable from a tree that cannot be read."""
+    assert snapshot.entry_at(tmp_path, "never-existed") is None
+
+
+def test_entry_at_does_not_open_a_fifo(tmp_path):
+    """`take`'s comment: a read-open on a FIFO blocks until a writer appears, unbounded, with
+    no timeout anywhere in the call path. A dispatch that stat'ed after opening would hang
+    this test rather than fail it — which is why the assertion is that it RETURNS."""
+    os.mkfifo(tmp_path / "pipe")
+    e = snapshot.entry_at(tmp_path, "pipe")
+    assert e is not None and e.kind == "special"
+
+
+def test_drift_is_empty_for_a_tree_that_did_not_move(tmp_path):
+    """THE DISCRIMINATION CHECK — a drift detector that always fired would refuse every run."""
+    root = tmp_path / "t"; root.mkdir()
+    (root / "a").write_text("x\n"); (root / "l").symlink_to("a")
+    entries, _ = snapshot.take(root)
+    assert snapshot.drift(root, tuple(entries.values())) == ()
+
+
+def test_drift_catches_a_symlink_repointed_without_touching_its_referent(tmp_path):
+    """THE HOLE THIS SHAPE KEEPS REAPPEARING IN. `test_forge_verify.py:1525` repointed a
+    symlink and never modified its referent; the gate referent fix earlier on this branch was
+    the same defect again. A binding that digested the link's TARGET TEXT catches it; one that
+    followed the link would read the unchanged referent and report the tree still."""
+    root = tmp_path / "t"; root.mkdir()
+    (root / "a").write_text("x\n"); (root / "b").write_text("y\n")
+    (root / "l").symlink_to("a")
+    entries, _ = snapshot.take(root)
+    (root / "l").unlink(); (root / "l").symlink_to("b")
+    out = snapshot.drift(root, tuple(entries.values()))
+    assert len(out) == 1 and "l:" in out[0], out

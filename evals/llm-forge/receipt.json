@@ -1,6 +1,6 @@
 {
   "skill": "llm-forge",
-  "source_hash": "f453d51770a2e18978e667bf23c89c6907d029aa417b3f586a146a23129be928",
+  "source_hash": "b5d600e49e3e592c39078948a1f8d60f496438b6288ee105e8b6b637a3a91ffa",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
@@ -37,6 +37,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_packaging.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_preflight.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_progress.py",
+    "/home/khenrix/git/khenrix-utils/tests/test_forge_resume.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_review.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_rubric.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_runner.py",
@@ -54,7 +55,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1751,
+    "tests_run": 1783,
     "skipped": 0,
     "failed": 0
   }

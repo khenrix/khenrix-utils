@@ -58,6 +58,18 @@ class ArtifactSet:
     setup_overlap: tuple[str, ...] = ()
     tracked_diff: str = ""
     verify_overlap: tuple[str, ...] = ()
+    # THE BYTES `paths` WAS COMPUTED FROM, per path: Fwork's `snapshot.Entry` for each one.
+    # Without it this set is a list of NAMES, and every later reader — `bundle.build`'s
+    # sidecar read, its `git diff`, a resume rebuilding from the preserved clone — re-reads
+    # the LIVE seat and has nothing to compare against. Measured before this field existed:
+    # rewrite a path between `artifact_set` and `build` and the bundle carries the new bytes
+    # under the old path set, silently.
+    #
+    # `None` IS "NOBODY BOUND THIS", NOT "NOTHING MOVED" — `gate_delta`'s three-state rule
+    # one module over, for its reason. `()` is a bound set with no paths in it; a consumer
+    # that treats `None` as a clean comparison is reading "could not look" as "looked and
+    # found nothing", which is this package's most-repeated defect.
+    fwork: tuple[snapshot.Entry, ...] | None = None
 
 
 def record(seat_path, *, quota=None) -> dict[str, snapshot.Entry]:
@@ -189,6 +201,11 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
         origin[p] = "builder"
 
     paths = tuple(sorted(work_changes))
+    # Bound HERE because this is the only place both the path set and the snapshot it was
+    # derived from exist. `phases.fwork` is a dict keyed by the same relative path, so a
+    # path in `work_changes` that is missing from it would be a `snapshot.diff` result with
+    # no `after` entry — a deletion — and those carry no bytes to bind.
+    bound = tuple(phases.fwork[q] for q in paths if q in phases.fwork)
     overlap = tuple(sorted(set(work_changes) & set(setup_changes)))
     verify_overlap = tuple(sorted(set(work_changes) & set(verify_changes)))
 
@@ -250,4 +267,5 @@ def artifact_set(phases: Phases, seat_path, baseline_commit: str) -> ArtifactSet
             "--binary", baseline_commit, "--", *(_literal(p) for p in paths),
             env_extra=gitcmd.READONLY, binary=True).stdout.decode("utf-8", "surrogateescape")
     return ArtifactSet(paths=paths, origin=origin, setup_overlap=overlap,
-                       tracked_diff=diff_text, verify_overlap=verify_overlap)
+                       tracked_diff=diff_text, verify_overlap=verify_overlap,
+                       fwork=bound)

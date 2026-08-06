@@ -66,6 +66,7 @@ from pathlib import Path
 from council import engine
 
 from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
+               resume as resumemod,
                runstate, seat as seatmod, seatrecord, storage, taskbundle, verify)
 
 
@@ -562,9 +563,38 @@ def _payload(name: str, attempts: list) -> dict:
 
 
 def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
-    """Publish the seat's record: everything it had already recorded, plus this attempt."""
+    """Publish the seat's record: everything it had already recorded, plus this attempt.
+
+    THE BUNDLE IS WRITTEN BESIDE IT, AND THAT IS WHAT MAKES A RESUME POSSIBLE. `_record`
+    stores the candidate by SHAPE — patch length, sidecar names — because when it was written
+    nothing serialized a `CandidateBundle`. `bundle.dumps` does, so the bytes no longer have
+    to be re-derived from a clone whose state nobody can vouch for: the file holds the
+    candidate AND the Fwork binding it was built against, so a later reader can prove what it
+    loaded is what this seat produced.
+
+    A FAILURE TO WRITE IT IS NOT A FAILURE OF THE SEAT. The record is §14.2's deliverable and
+    the run is complete without the bundle; refusing here would lose a paid-for seat over a
+    convenience for a resume that may never happen. It is recorded on the seat instead, so a
+    resume finds an explicit absence rather than an unexplained one.
+    """
     runstate.write_seat(run_dir, result.name,
                         _payload(result.name, [*priors, _record(result)]))
+    path = storage.seat_bundle_path(run_dir, result.name)
+    try:
+        path.write_bytes(bundle.dumps(result.candidate))
+    except (OSError, bundle.BundleError) as e:
+        # THE ABSENCE EXPLAINS ITSELF. Nothing in this package logs, and a missing bundle with
+        # no cause beside it is the "could not look" that reads as "nothing found" — a resume
+        # would report this seat unresumable without being able to say why. Written next to
+        # where the bundle would have been, so the two are found together or not at all.
+        try:
+            path.with_suffix(".bundle-error").write_text(
+                f"this seat's candidate bundle was not persisted, so resuming it would have "
+                f"to re-spend its provider call: {type(e).__name__}: {e}\n")
+        except OSError:
+            # The directory itself is unwritable, which the seat record above would already
+            # have failed on. Nothing further to record it WITH, and the seat is complete.
+            pass
 
 
 def _materialize_the_task(run_dir: Path, seat_path) -> None:
@@ -1372,35 +1402,45 @@ def _refuse_an_unknown_outcome(orphans) -> None:
         "they ran.")
 
 
+# The phases whose meaning is "the providers have been paid". §5.2 prices the fleet, so past
+# `building` a resume has nothing left to buy — and re-entering one of these must not walk the
+# state machine backwards to re-take work whose evidence is already on disk.
+_FLEET_IS_BOUGHT = ("harvested", "comparing")
+
+
 def _refuse_a_second_pass(events) -> None:
     """Refuse a run directory this loop has already driven, whatever the outcome was.
 
-    NOT A TIDINESS RULE, and the honest version of a resume rather than a substitute for one.
-    §14.1 concedes at the top that exactly-once is not deliverable and asks instead for a
-    record in which never-started, partly-ran and completed are DISTINGUISHABLE — which the
-    journal delivers. What it does not deliver is the ability to CONTINUE: the two values a
-    second pass would need are `verify.Calibration` and `bundle.CandidateBundle`, and nothing
-    in this package serializes either. `_record` says so of the bundle in as many words, and
-    `harvest`'s F0/Fsetup are not persisted, so it cannot be rebuilt from the surviving clone
-    either.
+    NOT A TIDINESS RULE. §14.1 concedes at the top that exactly-once is not deliverable and
+    asks instead for a record in which never-started, partly-ran and completed are
+    DISTINGUISHABLE — which the journal delivers. A blind second pass is none of those: it
+    would re-take another calibration clone into a directory that already holds one, and
+    another provider call per seat that §5.2 priced once, refused here before anything is
+    spent rather than three clones in.
 
-    So a second pass could only re-take the operations it cannot carry forward: another
-    calibration clone into a directory that already holds one, and another provider call per
-    seat that §5.2 priced once. `run_seat` refuses its own half of that (the attempt is
-    already recorded) and this is the whole of it, refused before anything is spent rather
-    than three clones in.
+    WHAT THIS DOCSTRING USED TO CLAIM, AND WHY IT WAS WRONG. It argued no resume could ever
+    exist, because "the two values a second pass would need are `verify.Calibration` and
+    `bundle.CandidateBundle`, and nothing in this package serializes either". The second half
+    was a true statement about what had been WRITTEN and a false one about what was POSSIBLE —
+    every field of a `CandidateBundle` is plain data, and `bundle.dumps` now serializes it.
+    The calibration was never the obstacle it was named as: re-taking it costs one clone and
+    NO provider call, and a resume that re-measures it is comparing against a baseline this
+    pass observed rather than one it inherited.
 
-    What a caller actually wants here is `runstate.reconstruct`, which reads the run whole.
+    So the refusal stands for a BLIND pass and no longer for every pass. `resume.plan`
+    classifies each seat before anything is spent, and `run(..., resume=True)` takes that
+    path — reconstructing what was paid for, re-driving only what was not, and refusing
+    outright when a settled seat cannot be proven rather than quietly buying it twice.
     """
     mine = [e for e in events
             if any(e.event in (journal.intent(k), journal.done(k)) for k in _OPERATIONS)]
     if mine:
         raise RunnerError(
             f"this run directory already records {len(mine)} operation(s) from a previous "
-            f"pass, the last being {mine[-1].event} {mine[-1].operation_id!r}. Nothing here "
-            "serializes a Calibration or a CandidateBundle, so a second pass cannot continue "
-            "the first — it could only re-spend the provider calls §5.2 quoted once. Read the "
-            "run with `runstate.reconstruct` instead.")
+            f"pass, the last being {mine[-1].event} {mine[-1].operation_id!r}. Driving it "
+            "again from the top would re-spend the provider calls §5.2 quoted once. Resume it "
+            "instead — `forge --resume <run-id>` reloads every seat that already settled and "
+            "re-drives only the ones that never did.")
 
 
 def _confirmed_policy(events, manifest) -> str:
@@ -1690,7 +1730,7 @@ def _verify_a_seat(run_dir: Path, manifest, base, log, result, *, identity, cali
     return out
 
 
-def run(run_dir, repo, *, identity, launch) -> tuple:
+def run(run_dir, repo, *, identity, launch, resume=False) -> tuple:
     """Drive one run: calibrate, build every seat, then verify every candidate.
 
     EVERY FACT ABOUT THE RUN COMES OFF THE DISK, which §14 makes a requirement rather than a
@@ -1778,7 +1818,8 @@ def run(run_dir, repo, *, identity, launch) -> tuple:
         _source_diverged(run_dir, state, recon.diverged)
     if recon.orphans:
         _refuse_an_unknown_outcome(recon.orphans)
-    _refuse_a_second_pass(events)
+    if not resume:
+        _refuse_a_second_pass(events)
 
     names = _fleet(manifest)
     for name in names:
@@ -1797,15 +1838,53 @@ def run(run_dir, repo, *, identity, launch) -> tuple:
     # differences the two, so a candidate measured in another one is differencing machines.
     child_env = fleet.forge_child_env(manifest.repo_path)
 
+    # RE-ENTRY AT A PHASE THE RUN ALREADY REACHED, which is the question a resume actually
+    # poses. §14 declares no edge from `comparing` back to `setting_up` — correctly, because a
+    # position on disk means what it says and a run that walked backwards would be claiming to
+    # re-do work whose evidence is already written. So a resume does not re-declare a phase it
+    # has passed: past `building` the fleet is bought and §6 has run, and the only honest thing
+    # left is to hand back what the run recorded.
+    #
+    # NOTHING IS SPENT ON THIS PATH — no calibration clone, no provider call, no verifier. The
+    # seats come from `resume.plan`, which has already proven each one against its preserved
+    # clone or refused the whole resume.
+    if resume and state.phase in _FLEET_IS_BOUGHT:
+        reclaimed, owed = resumemod.plan(run_dir, manifest.repo_path, names, seat_dir=seat_dir)
+        if owed:
+            raise RunnerError(
+                f"this run is at {state.phase!r}, which says its fleet finished, but "
+                f"{sorted(owed)} never settled. §14's position on disk and its seat records "
+                "disagree, and this loop will not pick which one to believe.")
+        return tuple(resumemod.seat_result(run_dir, n, reclaimed[n], make=SeatResult,
+                                           seat_dir=seat_dir)
+                     for n in names if n in reclaimed)
+
     state = _reach(run_dir, state, "setting_up")
     cal = _calibrate(run_dir, manifest, base, log, identity=identity, env=child_env)
     _obey_the_calibration_policy(run_dir, state, manifest, events, cal)
 
     state = _reach(run_dir, state, "building")
+    # WHAT A RESUME RECLAIMS AND WHAT IT STILL OWES, decided before a provider is reached.
+    # `resume.plan` refuses outright if a settled seat cannot be proven against its preserved
+    # clone, so by the time anything is spent every seat here is either reconstructed from
+    # evidence or genuinely unpaid-for.
+    reclaimed, owed = {}, names
+    if resume:
+        reclaimed, owed = resumemod.plan(run_dir, manifest.repo_path, names,
+                                         seat_dir=seat_dir)
     built = [r for r in (_drive_a_seat(run_dir, manifest, base, log, name=name,
                                        identity=identity, launch=launch)
-                         for name in names)
+                         for name in owed)
              if r is not None]
+    # ORDER FOLLOWS `names`, NOT "reclaimed first". §8's comparison reads the fleet as a
+    # sequence and a resumed run that reordered it would put a different candidate in front
+    # of the operator than the same run driven straight through.
+    if reclaimed:
+        by_name = {r.name: r for r in built}
+        by_name.update({n: resumemod.seat_result(run_dir, n, c, make=SeatResult,
+                                                 seat_dir=seat_dir)
+                        for n, c in reclaimed.items()})
+        built = [by_name[n] for n in names if n in by_name]
 
     if not built:
         # AN EMPTY FLEET DOES NOT REACH `comparing`, and the phase is the whole point. Every

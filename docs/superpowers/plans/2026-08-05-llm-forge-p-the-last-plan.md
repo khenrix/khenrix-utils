@@ -300,22 +300,35 @@ suite. And **three more that K4's review clone had already closed**, measured 20
 the single most useful number in this log: a plan built from a review's findings is a plan
 built from claims, and better than a quarter of them were already false.
 
-**Genuinely open — ONE item, and it is a design change rather than a defect.**
+**Nothing is open. The last item shipped, and its other half was DECLINED with a reason.**
 
-- **A real `--resume`, with parallel builders.** Re-entering a run at its recorded phase and
-  deciding which seats still owe attempts against §8.1's preserved clones. Both cheap halves
-  shipped: `--start` NAMES an abandoned run so nobody silently pays the quote twice, and
-  `run` no longer records `comparing` over an empty fleet. Re-entry itself changes what a
-  phase MEANS, and **parallel builders are welded to it** — K6's wall-clock bound is
-  `seats × attempts × window` *only because the seats run serially*, so the two land together
-  or the quoted ceiling stops being one. That is a spec decision, not a patch.
+- **A real `--resume` — SHIPPED.** `--resume <run-id>` re-reads the run off disk, reloads every
+  seat that already settled from its persisted candidate bundle, and drives only the seats that
+  never did. It re-enters at the phase the run actually reached: past `building` the fleet is
+  bought, so it hands back what the run recorded rather than walking §14's state machine
+  backwards to re-take work whose evidence is already written.
 
-**Everything else on this plan is closed.** The last sweep fixed the symlink gate referent,
-`screen.py`'s allow-list crossing into the user's tree, `_verify_dim`'s collapse,
-`_AMBIENT_SKILL`'s short-path bound, `RunnerError`-as-retry (a repeating refusal no longer
-buys the whole budget), the control-plane integrity tripwire (a swapped manifest is refused
-against a journal-anchored digest), and seat provenance's unanimity half (one seat filed
-twice is not two).
+  The refusal that blocked this since Plan K was `runner._refuse_a_second_pass`, which argued no
+  resume could exist because "nothing in this package serializes a `Calibration` or a
+  `CandidateBundle`". That was **a true statement about what had been written and a false one
+  about what was possible** — every field of a `CandidateBundle` is plain data. `bundle.dumps`
+  now serializes it. The calibration was never the obstacle it was named as: re-taking it costs
+  one clone and **no provider call**, which is the only thing §5.2 prices.
+
+- **The Fwork byte-binding — SHIPPED, and it is what makes the resume trustworthy.** These were
+  never two items. `ArtifactSet` and `CandidateBundle` now carry the per-path Fwork
+  type/mode/hash, so a verifier can prove the bundle represents the snapshot the harvest
+  measured rather than merely the bundle it was handed — and a resume can prove a preserved
+  clone still holds those bytes. Reproduced first: rewriting a harvested file between
+  `artifact_set` and `bundle.build` produced a bundle carrying the new bytes under the old path
+  set, silently, at exit 0.
+
+- **Parallel builders — DECLINED, and this is a decision rather than an omission.** K6 quotes a
+  wall-clock ceiling of `seats × attempts × window`, and that bound holds *only because the
+  seats run serially*. Parallelising them would invalidate a number the operator is shown before
+  they consent to the spend. The serial fleet is a priced guarantee; trading it for wall-clock is
+  the operator's call to make, not one to take on their behalf while they are reading a quote
+  that would no longer be true. Reversing this means re-deriving K6's ceiling first.
 
 **Retired during the sweep, measured:** the journal creation race (`append_line` already
 observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false

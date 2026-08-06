@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from council import engine  # noqa: E402
 from forge import (cli, fingerprint, gate, handover, journal,  # noqa: E402
-                   review as reviewmod,
+                   bundle, review as reviewmod, runner as runnermod,
                    runstate, seat as seatmod, storage, taskbundle, ultra,
                    verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
@@ -500,8 +500,13 @@ def test_the_cli_reaches_the_launcher_only_through_the_injected_seam():
                and isinstance(n.value, ast.Name) and n.value.id == "launch"]
     assert len(reached) == 1, \
         f"a second reference is a second door, and a test can only hold one shut: {reached}"
-    assert "mk = make_launcher or launch.make_launcher" in src, \
+    assert "return make_launcher or launch.make_launcher" in src, \
         "resolved at CALL time: a def-time default ignores a monkeypatched module attribute"
+    # THE DOOR MOVED INTO A HELPER WHEN `--resume` NEEDED ONE TOO, and that is what keeps the
+    # count above at one: two verbs spelling the resolution themselves would be two doors, and
+    # this test can only hold one shut.
+    assert src.count("mk = _launcher_factory(make_launcher)") == 2, \
+        "both --start and --resume must reach the launcher through the single helper"
 
 
 # --------------------------------------------------------------------------- --collect
@@ -1763,3 +1768,110 @@ def test_a_run_predating_the_anchor_is_not_stranded(tmp_path, monkeypatch):
     out = io.StringIO()
     assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
                      "--handover-target", "review"], out=out) == 0, out.getvalue()
+
+
+# ---- --resume --------------------------------------------------------------------------
+def _only_run_dir(tmp_path):
+    """The single run directory under the neutralised XDG_STATE_HOME this fixture creates."""
+    roots = sorted((tmp_path / "state").rglob("manifest.json"))
+    assert len(roots) == 1, roots
+    return roots[0].parent
+
+
+def test_a_resume_does_not_call_the_provider_for_a_seat_that_already_settled(tmp_path,
+                                                                            monkeypatch):
+    """THE EXTERNAL QUESTION, AND THE ONLY ONE THAT MATTERS HERE: was a provider call made a
+    second time for work that was already paid for? Not "did --resume exit 0".
+
+    A full `--start` runs the fleet; the resume then re-enters the same run directory with a
+    launcher that FAILS THE TEST IF IT IS EVER CALLED. Every seat settled, so a correct resume
+    reaches no provider at all — and the previous behaviour (`_refuse_a_second_pass` for every
+    pass) could not even be asked this question.
+    """
+    # THE REAL RESUME TARGET: a run whose fleet finished and which then DIED before the
+    # handover. `_finish_the_fleet` is where the seats are transported and the synthesis
+    # branch is cut, so a crash inside it leaves the paid-for fleet on disk with no refs — the
+    # exact state §14.1 asks to be resumable, and the state a killed run is actually in.
+    boom = {"n": 0}
+    real_finish = cli._finish_the_fleet
+
+    def _die(*a, **kw):
+        boom["n"] += 1
+        raise RuntimeError("the machine went down after the fleet was paid for")
+
+    monkeypatch.setattr(cli, "_finish_the_fleet", _die)
+    with pytest.raises(RuntimeError, match="machine went down"):
+        _drive_a_start(tmp_path, monkeypatch)
+    assert boom["n"] == 1
+    monkeypatch.setattr(cli, "_finish_the_fleet", real_finish)
+    run_dir = _only_run_dir(tmp_path)
+    repo = runstate.read_manifest(run_dir).repo_path
+    called = []
+
+    def _never(**kw):
+        def _launch(**inner):
+            called.append(inner.get("name"))
+            raise AssertionError("a resume paid for a seat that had already settled")
+        return _launch
+
+    out = io.StringIO()
+    rc = cli.main(["--resume", _run_id(run_dir), "--repo", str(repo)],
+                  out=out, make_launcher=_never)
+    assert called == [], called
+    assert rc == 0, out.getvalue()
+
+
+def test_a_resume_refuses_a_settled_seat_whose_clone_moved_rather_than_re_buying_it(
+        tmp_path, monkeypatch):
+    """FAIL CLOSED. The clone a seat was harvested from is edited after the fact, so its
+    persisted bundle can no longer be shown to describe it. The resume must REFUSE — silently
+    re-driving it would spend that seat's provider call a second time, which is the one
+    failure a resume must not have, and it would arrive looking like success.
+
+    THE PATH COMES OFF THE BUNDLE'S OWN BINDING, not from a guess at what a seat writes. A
+    fixture that hunted for `*.md` skipped itself on a run that happened to produce none —
+    and a test that skips is a test nobody runs.
+    """
+    real_finish = cli._finish_the_fleet
+    monkeypatch.setattr(cli, "_finish_the_fleet",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("died")))
+    with pytest.raises(RuntimeError, match="died"):
+        _drive_a_start(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_finish_the_fleet", real_finish)
+    run_dir = _only_run_dir(tmp_path)
+    repo = runstate.read_manifest(run_dir).repo_path
+
+    edited = None
+    for name in storage.seat_names(run_dir):
+        b = bundle.loads(storage.seat_bundle_path(run_dir, name).read_bytes())
+        if not b.fwork:
+            continue
+        target = runnermod.seat_dir(run_dir, name, 1) / b.fwork[0].path
+        target.write_text("edited long after the run stopped\n")
+        edited = name
+        break
+    assert edited is not None, "no seat carried a bound path, so the binding proves nothing"
+
+    out = io.StringIO()
+    rc = cli.main(["--resume", _run_id(run_dir), "--repo", str(repo)],
+                  out=out, make_launcher=_a_fake_make_launcher)
+    assert rc != 0
+    assert "no longer holds the bytes" in out.getvalue(), out.getvalue()
+
+
+def test_driving_a_started_run_again_without_resume_is_still_refused(tmp_path, monkeypatch):
+    """THE DISCRIMINATION CHECK, and it is what `--resume` must not have loosened. An
+    unqualified second `--start` on a run directory still refuses before anything is spent;
+    only the explicit verb continues one."""
+    real_finish = cli._finish_the_fleet
+    monkeypatch.setattr(cli, "_finish_the_fleet",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("died")))
+    with pytest.raises(RuntimeError, match="died"):
+        _drive_a_start(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_finish_the_fleet", real_finish)
+    run_dir = _only_run_dir(tmp_path)
+    repo = runstate.read_manifest(run_dir).repo_path
+    with pytest.raises(runnermod.RunnerError, match="already records"):
+        runnermod.run(run_dir, repo, identity=("F", "f@e.x"),
+                      launch=lambda **kw: (_ for _ in ()).throw(
+                          AssertionError("nothing should be launched")))
