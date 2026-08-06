@@ -1519,7 +1519,7 @@ def _drive_a_seat(run_dir: Path, manifest, base, log, *, name, identity, launch)
     is reserved for the seat that reached no verdict at ALL, which is the one case where the
     loop has nothing to say and says nothing rather than the last thing it heard.
     """
-    settled = None
+    settled, refused_with = None, None
     for attempt in range(1, manifest.attempts + 1):
         op = _op(manifest, name, f"attempt-{attempt}")
         log.record(journal.intent(_SEAT), operation_id=op, seat=name, attempt=attempt)
@@ -1529,6 +1529,20 @@ def _drive_a_seat(run_dir: Path, manifest, base, log, *, name, identity, launch)
         except RunnerError as e:
             log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,
                        refused=str(e))
+            # A REFUSAL THAT REPEATS ITSELF IS DETERMINISTIC, AND §8.1's RETRY IS NOT FOR IT.
+            # §8.1 buys a fresh clone because a SEAT can fail differently the second time; a
+            # refusal this engine makes for the same reason twice will make it a third time,
+            # and each further attempt spends another clone — and, for any refusal raised
+            # AFTER the launch, another provider call — to reach the identical outcome.
+            #
+            # THE MESSAGE IS THE DISCRIMINATOR BECAUSE THE TYPE IS NOT. `RunnerError` covers
+            # both "this engine refused" and "this seat failed" across 29 raise sites, and
+            # splitting it is a change to every one of them; two identical messages are
+            # evidence of determinism that needs no such classification. Two are required
+            # rather than one, so a genuinely transient failure still gets its retry.
+            if refused_with == str(e):
+                break
+            refused_with = str(e)
             continue
         settled = result
         log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,

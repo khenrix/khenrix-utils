@@ -2482,3 +2482,40 @@ def test_the_verify_dimension_table_is_total_over_every_outcome():
     # The refusal for a value that is not an outcome at all still fires.
     with pytest.raises(runner.RunnerError):
         runner._verify_dim("INVENTED")
+
+
+def test_a_refusal_that_repeats_itself_does_not_buy_another_clone(tmp_path):
+    """§8.1's retry buys a fresh clone because a SEAT can fail differently the second time.
+    A refusal this ENGINE makes for the same reason twice will make it a third time, and each
+    further attempt spends another clone — and, for any refusal raised after the launch,
+    another provider call — to reach the identical outcome.
+
+    THE MESSAGE IS THE DISCRIMINATOR BECAUSE THE TYPE IS NOT: `RunnerError` covers both
+    "this engine refused" and "this seat failed" across 29 raise sites, and splitting it is a
+    change to every one of them. Two identical messages are evidence of determinism that
+    needs no such classification — and TWO are required, so a genuinely transient failure
+    still gets its retry."""
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=5)
+    tries = []
+
+    def always_the_same(*, name, seat_path, token, env):
+        tries.append(name)
+        raise runner.RunnerError("the same deterministic refusal")
+
+    assert runner.run(run, repo, identity=IDENT, launch=always_the_same) == ()
+    assert len(tries) == 2, f"a deterministic refusal bought {len(tries)} attempts of 5"
+
+
+def test_two_different_refusals_still_get_their_retries(tmp_path):
+    """THE DISCRIMINATION CHECK. A failure that presents differently each time is exactly the
+    transient one §8.1's retry exists for, and stopping on it would spend the budget the
+    operator agreed to on nothing."""
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=3)
+    n = []
+
+    def different_each_time(*, name, seat_path, token, env):
+        n.append(name)
+        raise runner.RunnerError(f"transient failure {len(n)}")
+
+    assert runner.run(run, repo, identity=IDENT, launch=different_each_time) == ()
+    assert len(n) == 3, f"only {len(n)} of 3 attempts were spent on a changing failure"
