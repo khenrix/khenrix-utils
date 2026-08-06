@@ -1993,6 +1993,30 @@ def _command_paths(root: Path, command) -> set:
                     continue
                 if stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
                     named.add(rel)
+                if stat.S_ISLNK(st.st_mode):
+                    # A GATE THAT IS A LINK IS RUN THROUGH ITS REFERENT, so the referent is
+                    # gate-defining too. Naming only the link watched the wrong file:
+                    # reproduced — `./gate.sh -> real-gate.sh` put `gate.sh` in the surface
+                    # and nothing else, so a candidate rewriting `real-gate.sh` changed what
+                    # the gate DOES while the link's own target text stayed byte-identical
+                    # and `gate_changed` never fired. That is the founding premise inverted:
+                    # the party under judgement editing what judges it.
+                    #
+                    # CONTAINED, AND ONLY ONE HOP. `_leaf` is the same containment this
+                    # function already applies — a link out of the tree names nothing the
+                    # candidate could rewrite through this repository, and it is dropped as
+                    # an escaping step already is. One hop rather than a full `realpath`
+                    # walk, because each hop is itself a tracked path this loop will meet on
+                    # its own terms if the tree holds it.
+                    try:
+                        tgt = os.readlink(at.leaf, dir_fd=at.fd)
+                    except OSError:
+                        tgt = None
+                    if tgt is not None and not os.path.isabs(tgt):
+                        ref = os.path.normpath(os.path.join(os.path.dirname(rel), tgt))
+                        if not ref.startswith("..") and _leaf(root, ref,
+                                                              "a gate-surface path") is not None:
+                            named.add(ref)
     return named
 
 

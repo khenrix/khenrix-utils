@@ -2547,3 +2547,27 @@ def test_a_gate_path_this_engine_cannot_stat_stays_in_the_surface(tmp_path):
     # ...and a path the tree genuinely does not hold is still absent.
     assert "absent.sh" not in verify._command_paths(
         root, verify.Command.parse([["./absent.sh"]]))
+
+
+def test_a_gate_that_is_a_symlink_puts_its_referent_in_the_surface(tmp_path):
+    """REPRODUCED: `./gate.sh -> real-gate.sh` put `gate.sh` in §6.1's surface and NOTHING
+    else, so a candidate rewriting `real-gate.sh` changed what the gate DOES while the
+    link's own target text stayed byte-identical and `gate_changed` never fired.
+
+    That is the founding premise inverted — the party under judgement editing what judges it
+    — and it is the same shape as `test_forge_verify.py`'s existing symlink case, which
+    repointed a link and never modified its referent.
+
+    ONE HOP AND CONTAINED. A link out of the tree names nothing the candidate could rewrite
+    through this repository and is dropped, exactly as an escaping step already is; each
+    further hop is itself a tracked path this walk meets on its own terms."""
+    root = tmp_path / "r"; root.mkdir()
+    (root / "real-gate.sh").write_text("#!/bin/sh\nexit 0\n")
+    os.symlink("real-gate.sh", root / "gate.sh")
+    surface = verify._command_paths(root, verify.Command.parse([["./gate.sh"]]))
+    assert surface == {"gate.sh", "real-gate.sh"}, surface
+
+    # An escaping link names only itself — its referent is not a path this repository owns.
+    os.symlink("/etc/passwd", root / "out.sh")
+    assert verify._command_paths(
+        root, verify.Command.parse([["./out.sh"]])) == {"out.sh"}
