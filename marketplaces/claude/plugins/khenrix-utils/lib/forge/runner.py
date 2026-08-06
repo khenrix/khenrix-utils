@@ -1767,6 +1767,20 @@ def run(run_dir, repo, *, identity, launch) -> tuple:
                          for name in names)
              if r is not None]
 
+    if not built:
+        # AN EMPTY FLEET DOES NOT REACH `comparing`, and the phase is the whole point. Every
+        # seat refused every attempt, so there is no candidate on disk — while `comparing` is
+        # §6's phase, whose meaning is "the fleet's candidates are verified". Advancing into
+        # it with zero candidates records a run that got further than it did, and a resume
+        # reading that position would look for verifier clones nobody made.
+        #
+        # THE RETURN VALUE IS UNCHANGED — `()` , the same empty tuple this loop has always
+        # handed back for a fleet that produced nothing. What changes is only that the run
+        # directory keeps its LAST TRUE phase, `building`, because §14.1's rule is that a
+        # position on disk means what it says. Every refusal is already on the journal, one
+        # `done` record per attempt, so the caller loses nothing by being told less.
+        return ()
+
     state = _reach(run_dir, state, "harvested")
     state = _reach(run_dir, state, "comparing")
     return tuple(_verify_a_seat(run_dir, manifest, base, log, r, identity=identity,

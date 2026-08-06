@@ -2442,3 +2442,24 @@ def test_a_verifier_setup_that_SUCCEEDS_still_reaches_the_gate(tmp_path):
     outcome, _reason, _v, _s = runner.verify_candidate(
         m, run, b, r.candidate, name="claude", identity=IDENT, calibration=cal)
     assert outcome == verify.PASS
+
+
+def test_a_fleet_that_produced_nothing_does_not_reach_comparing(tmp_path):
+    """REPRODUCED: with every seat refused on every attempt, `built` is empty and the run
+    still advanced `harvested` -> `comparing`. `comparing` is §6's phase and its meaning is
+    "the fleet's candidates are verified" — recording it over zero candidates is a run that
+    got further than it did, and a resume reading that position would look for verifier
+    clones nobody made.
+
+    The RETURN VALUE is deliberately unchanged: `()` is what this loop has always handed back
+    for a fleet that produced nothing, and the sibling test above depends on it. What changes
+    is only that the run directory keeps its last TRUE phase."""
+    repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
+
+    def signs_off(*, name, seat_path, token, env):
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "result_text": "SENTINEL-" + token, "duration_sec": 0.1}
+
+    assert runner.run(run, repo, identity=IDENT, launch=signs_off) == ()
+    assert runstate.read_state(run).phase == "building", \
+        "an empty fleet recorded a phase claiming its candidates were verified"
