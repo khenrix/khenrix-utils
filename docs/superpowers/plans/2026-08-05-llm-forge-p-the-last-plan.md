@@ -300,35 +300,22 @@ suite. And **three more that K4's review clone had already closed**, measured 20
 the single most useful number in this log: a plan built from a review's findings is a plan
 built from claims, and better than a quarter of them were already false.
 
-**Genuinely open, and honestly scoped.** After the sweep, what is left is TWO things and a
-short tail — not the twenty-five the first draft of this list implied.
+**Genuinely open — ONE item, and it is a design change rather than a defect.**
 
 - **A real `--resume`, with parallel builders.** Re-entering a run at its recorded phase and
-  deciding which seats still owe attempts against §8.1's preserved clones. `--start` now
-  NAMES an abandoned run so nobody silently pays the quote twice, and `run` no longer records
-  `comparing` over an empty fleet — the two cheap halves. Re-entry itself is a design change,
-  and **parallel builders are coupled to it**: K6's wall-clock bound is `seats × attempts ×
-  window` *only because the seats run serially*, so the two land together or the quoted
-  ceiling stops being one.
-- **`RunnerError`-as-retry.** `_drive_a_seat` catches every `RunnerError` and spends another
-  attempt. Some of those are the SEAT failing (retry is right, §8.1 says so) and some are
-  this ENGINE refusing (retrying re-runs a deterministic refusal). Splitting them needs a
-  distinction the exception type does not currently carry — a design decision, not a patch.
-- **A short tail, now swept.** Reproduced and FIXED: the symlink gate referent (a gate that
-  is a link watched the link, not what runs); `screen.py` carrying this repo's allow-list
-  into the user's tree; `_verify_dim`'s collapse together with the executed-and-refuted
-  record (one defect, and the values correctly do not move — §8's vocabulary has no word for
-  "ran, and the verdict is neither").
+  deciding which seats still owe attempts against §8.1's preserved clones. Both cheap halves
+  shipped: `--start` NAMES an abandoned run so nobody silently pays the quote twice, and
+  `run` no longer records `comparing` over an empty fleet. Re-entry itself changes what a
+  phase MEANS, and **parallel builders are welded to it** — K6's wall-clock bound is
+  `seats × attempts × window` *only because the seats run serially*, so the two land together
+  or the quoted ceiling stops being one. That is a spec decision, not a patch.
 
-  RETIRED, measured: `Seat.verified` over `sidecars is None` (both sites already RAISE with
-  exactly that distinction); `verify_materialized`'s copied fields (it re-derives the
-  manifest from the tree); the criterion-to-claim binding (`evaluate` carries `row_id`); the
-  lost-journal collapse (orphan handling is present and argued); `_dir_digest` (no such
-  function exists in the modules named); two index definitions (`_tracked` is defined once).
-
-  STILL UNREPRODUCED: the calibration aggregate, the control-plane integrity tripwire, Fwork
-  byte-binding, durable-state reconstruction, `_AMBIENT_SKILL`'s short-path refusals, §8.1's
-  missing input half, seat provenance.
+**Everything else on this plan is closed.** The last sweep fixed the symlink gate referent,
+`screen.py`'s allow-list crossing into the user's tree, `_verify_dim`'s collapse,
+`_AMBIENT_SKILL`'s short-path bound, `RunnerError`-as-retry (a repeating refusal no longer
+buys the whole budget), the control-plane integrity tripwire (a swapped manifest is refused
+against a journal-anchored digest), and seat provenance's unanimity half (one seat filed
+twice is not two).
 
 **Retired during the sweep, measured:** the journal creation race (`append_line` already
 observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false
