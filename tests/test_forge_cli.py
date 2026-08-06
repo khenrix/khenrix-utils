@@ -1713,3 +1713,53 @@ def test_a_finished_run_is_not_reported_as_abandoned(tmp_path, monkeypatch):
               "--task", str(_a_task(tmp_path)), "--answers", str(_answers(tmp_path)),
               "--attempts", "1"], out=out, make_launcher=_a_fake_make_launcher)
     assert "never reached a terminal phase" not in out.getvalue(), out.getvalue()
+
+
+def test_a_swapped_manifest_is_refused_rather_than_reported_on(tmp_path, monkeypatch):
+    """THE CONTROL-PLANE TRIPWIRE. `write_manifest` is exclusive only at CREATION and
+    `read_manifest` validates types and schema, never identity — so a same-UID process, or a
+    confused cleanup script, replacing `manifest.json` with VALID JSON that changes the
+    confirmed verify command from `pytest` to `true` passed every check this package makes,
+    and `--collect` reported a decision nobody confirmed.
+
+    THE ANCHOR IS THE JOURNAL, not a sidecar: a digest stored beside the file it describes is
+    replaced along with it. `gate.open_run` writes the manifest's sha256 onto the `confirm`
+    row at the same moment it writes the manifest, and the journal is append-only."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = str(runstate.read_manifest(run_dir).repo_path)
+    _fuse_something(run_dir)
+    # A valid-JSON rewrite that changes what was confirmed.
+    mp = storage.manifest_path(run_dir)
+    row = json.loads(mp.read_text())
+    # The rewrite must be VALID — the point is that it passes every type and schema check
+    # and is caught only by the anchor. A malformed one would fail on the schema and prove
+    # nothing (a first draft did exactly that, with `env: None`).
+    row["verify"] = [{**row["verify"][0], "argv": ["true"]}]
+    mp.write_text(json.dumps(row))
+    out = io.StringIO()
+    rc = cli.main(["--collect", _run_id(run_dir), "--repo", repo,
+                   "--handover-target", "review"], out=out)
+    assert rc != 0, out.getvalue()
+    assert "does not match the one its `confirm` record describes" in out.getvalue(), \
+        out.getvalue()
+
+
+def test_a_run_predating_the_anchor_is_not_stranded(tmp_path, monkeypatch):
+    """THE DISCRIMINATION CHECK. Runs opened before `manifest_sha256` existed carry no anchor,
+    and refusing them would strand every in-flight run on an upgrade. An absent anchor is
+    "this run cannot be checked", which is honest; a PRESENT one that disagrees is what the
+    tripwire is for."""
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = str(runstate.read_manifest(run_dir).repo_path)
+    _fuse_something(run_dir)
+    # Strip the anchor, as a pre-upgrade journal would have it.
+    jp = storage.journal_path(run_dir)
+    kept = []
+    for line in jp.read_text().splitlines():
+        row = json.loads(line)
+        row.pop("manifest_sha256", None)
+        kept.append(json.dumps(row))
+    jp.write_text("\n".join(kept) + "\n")
+    out = io.StringIO()
+    assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
+                     "--handover-target", "review"], out=out) == 0, out.getvalue()

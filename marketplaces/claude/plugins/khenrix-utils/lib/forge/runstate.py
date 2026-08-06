@@ -1467,6 +1467,45 @@ class Reconstruction:
     diverged: tuple[str, ...]
 
 
+def _refuse_a_manifest_the_confirm_record_does_not_describe(run_dir, manifest) -> None:
+    """§14.2's manifest is what the operator confirmed, and this is the tripwire that says so.
+
+    `write_manifest` is exclusive only at CREATION and `read_manifest` validates types and
+    schema, never identity — so a same-UID process, or a confused cleanup script, replacing
+    `manifest.json` with VALID JSON that changes the confirmed verify command from `pytest`
+    to `true` passes every check this package makes, and a later `--collect` reports a
+    decision nobody confirmed. The design requires accidental and provider-induced content
+    changes to fail closed; this is the one control-plane file where nothing did.
+
+    THE ANCHOR IS THE JOURNAL AND NOT A SIDECAR. A digest stored beside the file it describes
+    is replaced along with it. `gate.open_run` writes the manifest's sha256 onto the `confirm`
+    operation's `done` row at the same moment it writes the manifest, and the journal is
+    append-only and fsynced per record — so it is the one copy a later rewrite cannot reach
+    without leaving the log visibly inconsistent.
+
+    A RUN WHOSE RECORD PREDATES THE ANCHOR IS NOT REFUSED. Runs opened before this field
+    existed carry no `manifest_sha256`, and refusing them would strand every in-flight run on
+    an upgrade. An absent anchor is "this run cannot be checked", which is honest; a PRESENT
+    one that disagrees is the thing this exists to catch, and it fails closed.
+    """
+    events = journal.Journal(storage.journal_path(run_dir)).read()
+    done = journal.done("confirm")
+    want = None
+    for e in reversed(list(events)):
+        if e.event == done and e.operation_id == manifest.run_id:
+            want = e.data.get("manifest_sha256")
+            break
+    if not isinstance(want, str) or not want:
+        return
+    have = hashlib.sha256(storage.manifest_path(run_dir).read_bytes()).hexdigest()
+    if have != want:
+        raise ManifestError(
+            f"this run's manifest does not match the one its `confirm` record describes "
+            f"({have[:12]} against {want[:12]}). §14.2's manifest is what the operator agreed "
+            "to at §5 step 2 and is never rewritten, so a file that has changed since is a "
+            "decision nobody confirmed — refusing rather than reporting on it.")
+
+
 def reconstruct(run_dir, repo) -> Reconstruction:
     """The manifest, the run's position, every seat record and the journal — read from
     `run_dir` and judged against the repository the manifest names, not the one the caller
@@ -1495,6 +1534,7 @@ def reconstruct(run_dir, repo) -> Reconstruction:
     which is not one of the four. See `_path_digest` for why that is left to raise.
     """
     manifest = read_manifest(run_dir)
+    _refuse_a_manifest_the_confirm_record_does_not_describe(run_dir, manifest)
     return Reconstruction(
         manifest=manifest,
         state=read_state(run_dir),

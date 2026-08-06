@@ -138,6 +138,7 @@ is imported and run, and is not read here, because searching past the first oper
 `make council-test` on `tests/test_council_characterization.py`'s stubbed `run_council`, and
 with it every `make verify`. See `test_a_file_handed_to_a_runner_as_data_is_not_read_as_the_program`.
 """
+import hashlib
 import os
 import re
 import shutil
@@ -1849,5 +1850,18 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
                # than in the manifest for the reason the other three are: §14.2 lists what the
                # manifest holds and a policy is not among them, and `read_manifest` refuses a
                # field it does not know.
-               ultrareview=confirmation.ultrareview)
+               ultrareview=confirmation.ultrareview,
+               # THE CONTROL-PLANE ANCHOR. `write_manifest` is exclusive only at CREATION and
+               # `read_manifest` checks types, never identity — so a same-UID process, or a
+               # confused cleanup script, replacing `manifest.json` with VALID JSON that
+               # changes the confirmed verify command from `pytest` to `true` passes every
+               # check, and a later `--collect` reports a decision nobody confirmed.
+               #
+               # ANCHORED HERE AND NOT BESIDE THE MANIFEST, which is the whole point: a
+               # digest stored next to the file it describes is replaced with it. The journal
+               # is append-only, fsynced per record, and this `done` row is written at the
+               # same moment the manifest is — so it is the one copy a later rewrite cannot
+               # reach without leaving the log inconsistent.
+               manifest_sha256=hashlib.sha256(
+                   storage.manifest_path(run_dir).read_bytes()).hexdigest())
     return run_dir
