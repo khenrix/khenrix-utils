@@ -314,13 +314,21 @@ short tail — not the twenty-five the first draft of this list implied.
   attempt. Some of those are the SEAT failing (retry is right, §8.1 says so) and some are
   this ENGINE refusing (retrying re-runs a deterministic refusal). Splitting them needs a
   distinction the exception type does not currently carry — a design decision, not a patch.
-- **A short tail, each unreproduced:** the symlink gate referent; the calibration aggregate;
-  the control-plane integrity tripwire; Fwork byte-binding; durable-state reconstruction;
-  `Seat.verified` over `sidecars is None`; two index definitions; `_AMBIENT_SKILL`'s
-  short-path refusals; `screen.py`'s allow-list in foreign repos; the executed-and-refuted
-  check recorded as `not-run`; §8.1's missing input half; `_verify_dim`'s collapse;
-  `verify_materialized`'s copied fields and the size/cap-blind `bundle_hash`; the
-  criterion-to-claim binding; seat provenance; `_dir_digest`; the lost-journal collapse.
+- **A short tail, now swept.** Reproduced and FIXED: the symlink gate referent (a gate that
+  is a link watched the link, not what runs); `screen.py` carrying this repo's allow-list
+  into the user's tree; `_verify_dim`'s collapse together with the executed-and-refuted
+  record (one defect, and the values correctly do not move — §8's vocabulary has no word for
+  "ran, and the verdict is neither").
+
+  RETIRED, measured: `Seat.verified` over `sidecars is None` (both sites already RAISE with
+  exactly that distinction); `verify_materialized`'s copied fields (it re-derives the
+  manifest from the tree); the criterion-to-claim binding (`evaluate` carries `row_id`); the
+  lost-journal collapse (orphan handling is present and argued); `_dir_digest` (no such
+  function exists in the modules named); two index definitions (`_tracked` is defined once).
+
+  STILL UNREPRODUCED: the calibration aggregate, the control-plane integrity tripwire, Fwork
+  byte-binding, durable-state reconstruction, `_AMBIENT_SKILL`'s short-path refusals, §8.1's
+  missing input half, seat provenance.
 
 **Retired during the sweep, measured:** the journal creation race (`append_line` already
 observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false
