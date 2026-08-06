@@ -695,8 +695,9 @@ def _contradictions(l) -> tuple:
     REPORT FINDING rather than a write refusal: §12.4 makes the coverage check "a fallback
     trigger AND a report line", and a write refusal can be neither.
 
-    (b) AN ACCEPTED ROW WHOSE EVERY SEAT REJECTED IT. "Unanimous" requires at least two seats
-    and NO `silent` one — a seat that said nothing did not reject. §10's example is the whole
+    (b) AN ACCEPTED ROW WHOSE EVERY SEAT REJECTED IT. "Unanimous" requires at least two
+    DISTINCT seats — entries were counted before, so one seat filed twice read as two — and
+    NO `silent` one — a seat that said nothing did not reject. §10's example is the whole
     reason: if all three seats considered and rejected a cache layer, that is the most valuable
     signal in the run, and from-scratch synthesis (which reads only the ledger) would otherwise
     add it straight back.
@@ -718,11 +719,25 @@ def _contradictions(l) -> tuple:
             out.append(f"{a} and {b} conflict and are both accepted: "
                        f"{claim.get(a, '')!r} vs {claim.get(b, '')!r}")
     for r in l.rows:
-        if r.status != "accepted" or len(r.seat_evidence) < 2:
+        if r.status != "accepted":
+            continue
+        # DISTINCT SEATS, NOT ENTRIES. `len(r.seat_evidence) >= 2` counted ROWS, so two
+        # entries naming the SAME seat read as a unanimous rejection — reproduced, and the
+        # message printed `['claude', 'claude']` as its own evidence. §10's example is three
+        # seats considering and rejecting a cache layer; one seat filed twice is not that,
+        # and `handover` already makes the identical argument one module over ("one seat
+        # filed twice reads as two seats").
+        #
+        # THE FAIL-OPEN DIRECTION IS THE OTHER ONE, which is why this narrows rather than
+        # widens: a spurious contradiction reported here is noise an operator dismisses,
+        # while §12.4 reads this list — so a duplicate that manufactures unanimity turns one
+        # seat's opinion into the run's most valuable signal.
+        seats = {e.seat for e in r.seat_evidence}
+        if len(seats) < 2:
             continue
         if all(e.stance == "contradicts" for e in r.seat_evidence):
             out.append(f"{r.id} is accepted over a unanimous rejection by "
-                       f"{[e.seat for e in r.seat_evidence]}: {r.semantic_claim!r}")
+                       f"{sorted(seats)}: {r.semantic_claim!r}")
     return tuple(out)
 
 

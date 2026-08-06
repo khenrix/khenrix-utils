@@ -907,3 +907,27 @@ def test_the_unmeasured_rows_field_has_a_reader():
     out. `Report.__post_init__` already re-derives its roll-ups for exactly this reason."""
     with pytest.raises(coverage.CoverageError):
         coverage.Report((), (), (), (), unmeasured_rows=("R1",))   # not (id, status) pairs
+
+
+def test_one_seat_filed_twice_is_not_a_unanimous_rejection(tmp_path):
+    """REPRODUCED: `len(r.seat_evidence) >= 2` counted ENTRIES, so two entries naming the
+    SAME seat read as unanimity — and the message printed `['claude', 'claude']` as its own
+    evidence.
+
+    §10's example is three seats considering and rejecting a cache layer; one seat filed
+    twice is not that. `handover` already makes the identical argument one module over ("one
+    seat filed twice reads as two seats").
+
+    THE FAIL-OPEN DIRECTION IS WHY THIS NARROWS: §12.4 reads this list, so a duplicate that
+    manufactures unanimity turns one seat's opinion into the run's most valuable signal."""
+    twice = (ledger.SeatEvidence("claude", "contradicts", "no", None),
+             ledger.SeatEvidence("claude", "contradicts", "no", None))
+    assert coverage.check(_led([_row("R1", "alpha", seat_evidence=twice)]),
+                          tree=tmp_path).contradictions == ()
+
+    # ...and two REAL seats still report, or the check would be dead.
+    both = (ledger.SeatEvidence("claude", "contradicts", "no", None),
+            ledger.SeatEvidence("codex", "contradicts", "no", None))
+    found = coverage.check(_led([_row("R1", "alpha", seat_evidence=both)]),
+                           tree=tmp_path).contradictions
+    assert found and "claude" in found[0] and "codex" in found[0], found
