@@ -2463,3 +2463,22 @@ def test_a_fleet_that_produced_nothing_does_not_reach_comparing(tmp_path):
     assert runner.run(run, repo, identity=IDENT, launch=signs_off) == ()
     assert runstate.read_state(run).phase == "building", \
         "an empty fleet recorded a phase claiming its candidates were verified"
+
+
+def test_the_verify_dimension_table_is_total_over_every_outcome():
+    """§8's dimension used two entries and a `.get` default, so four of §6.2's six outcomes
+    reached "not-run" by falling through — and three of those DID execute the gate.
+
+    THE EXTERNAL QUESTION is not "does GATE_CHANGED map to not-run" (it still does, and the
+    reasoning is at the table: §8's vocabulary has no word for "ran, and the verdict is
+    neither", and calling it "fail" would report a candidate failure the candidate did not
+    have). It is whether the seventh outcome §6.2 gains next is answered by a DECISION or by
+    a default. A default absorbs it silently; a total table raises."""
+    assert set(runner._VERIFY_DIM) == set(verify.OUTCOMES), (
+        set(verify.OUTCOMES) ^ set(runner._VERIFY_DIM))
+    assert set(runner._VERIFY_DIM.values()) <= {"pass", "fail", "not-run"}
+    for outcome in verify.OUTCOMES:
+        assert runner._verify_dim(outcome) in ("pass", "fail", "not-run")
+    # The refusal for a value that is not an outcome at all still fires.
+    with pytest.raises(runner.RunnerError):
+        runner._verify_dim("INVENTED")

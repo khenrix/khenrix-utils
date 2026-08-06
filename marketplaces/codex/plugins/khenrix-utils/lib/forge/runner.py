@@ -777,7 +777,30 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
 # argument.
 SETUP_REFUSED = "setup-refused"
 
-_VERIFY_DIM = {verify.PASS: "pass", verify.FAIL: "fail"}
+# TOTAL AND EXPLICIT OVER §6.2's SIX OUTCOMES, rather than two entries and a `.get` default.
+# Four of them reached "not-run" by falling through, and three of those DID execute the gate:
+# `GATE_CHANGED` ran and the candidate rewrote what judges it, `FLAKY` ran twice and
+# disagreed, `BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE` ran and found nothing the baseline did
+# not already have. "The gate did not run" is a different fact from all three.
+#
+# THE VALUES DO NOT MOVE, AND THAT IS A DECISION RATHER THAN INERTIA. §8's vocabulary is
+# ("pass", "fail", "not-run") and has no word for "ran, and the verdict is neither" — calling
+# them "fail" would report a CANDIDATE failure for a gate the candidate did not fail. Nothing
+# reads this value in a way that changes a verdict: §8 says outright that "passing verify is
+# recorded, not required", so `forge` is identical for all three, and §16.1's seat table
+# carries `verification.outcome` — the REAL §6.2 outcome — beside it.
+#
+# What being total buys is that the lossiness is now a written-down choice at each key. A
+# `.get` default silently absorbs the seventh outcome §6.2 gains next, and this dict would go
+# on answering "not-run" for something nobody had considered.
+_VERIFY_DIM = {
+    verify.PASS: "pass",
+    verify.FAIL: "fail",
+    verify.GATE_CHANGED: "not-run",
+    verify.FLAKY: "not-run",
+    verify.HARVEST_INCOMPLETE: "not-run",
+    verify.BASELINE_RED_NO_NEW_IDENTIFIED_FAILURE: "not-run",
+}
 
 
 def _verify_dim(outcome) -> str:
@@ -809,7 +832,10 @@ def _verify_dim(outcome) -> str:
         raise RunnerError(
             f"{outcome!r} is not one of §6.2's outcomes {verify.OUTCOMES}; §8's verify "
             "dimension is only ever set from a verdict this engine actually took")
-    return _VERIFY_DIM.get(outcome, "not-run")
+    # NO DEFAULT. The guard above already refused anything outside `verify.OUTCOMES`, and
+    # the dict is total over it — so a `KeyError` here means §6.2 gained a row and this table
+    # was not updated, which is exactly the loud failure `runner`'s own note asks for.
+    return _VERIFY_DIM[outcome]
 
 
 def _revise(run_dir: Path, out: SeatResult) -> SeatResult:
