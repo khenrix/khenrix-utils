@@ -1,6 +1,6 @@
 {
   "skill": "mikado-graph",
-  "source_hash": "c11f536291edae84ecf2bf7751ce333c34e0e52b14d77599c71a1417935aadbe",
+  "source_hash": "0f9004e2fa7ddef9561a84870005e2d6cf5dba2b943ddadc88e168de993aca06",
   "eval_set_hash": "b80e13c3f6578772d10d7c5ed3d67c7c0abc463fd0d91076b64580fae55405c2",
   "providers": [
     "claude"

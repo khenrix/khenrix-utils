@@ -1,6 +1,6 @@
 {
   "skill": "markitdown",
-  "source_hash": "0540e9284efa83d684e68c25bbdddcd29fbff6cb8b1d29eebab55dfff404e1ff",
+  "source_hash": "ffec7cfacfc73587bf607b0b04eec8e67bded2f6e73aed4c4d69cb62412788e6",
   "eval_set_hash": "74a41331526562e266f09e268ef77d3085ae39c7c3eb94a18eb022a153cda965",
   "providers": [
     "claude"

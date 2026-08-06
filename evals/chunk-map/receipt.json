@@ -1,6 +1,6 @@
 {
   "skill": "chunk-map",
-  "source_hash": "545f62bf1ae79314439fb4905b594fa00294498050082be5d2cf537e29bfc94e",
+  "source_hash": "f9d91d1cb6be43725925c7abf37e6d16a13305243320c52c450e6fa28e463f93",
   "eval_set_hash": "fefc0d74b2ac3dd3832cca91f1e336534657ec14e67bd3e5e8ede369b9837a03",
   "providers": [
     "claude"
