@@ -880,3 +880,45 @@ def test_a_dangling_link_where_the_bundle_goes_is_refused_in_this_modules_own_cl
     os.symlink(tmp_path / "nowhere", dest)
     with pytest.raises(taskbundle.TaskBundleError, match="already holds"):
         taskbundle.materialize(b, src, s.path)
+
+
+def test_the_installed_closure_sees_a_file_move_between_directories(tmp_path):
+    """REPRODUCED: concatenating every directory's rows and sorting the result lost which
+    directory a file came from, so `x.py` in dir A with `y.py` in dir B hashed the SAME as
+    `y.py` in A with `x.py` in B.
+
+    §20 licenses an ambient-skill dependency only when all three installed copies hash
+    identically, and a hash that cannot see a file moving between directories would grant
+    that licence to copies that differ. Latent today — each CLI resolves to one install dir —
+    but the claude and codex globs end in `*`, so a second cached plugin version makes it
+    reachable.
+
+    THE INDEX AND NOT THE NAME, asserted below: the directories are not named comparably
+    across CLIs (claude and codex install under a VERSION directory, agy under
+    `khenrix-utils`), so keying on the name would make agy differ forever for a reason that
+    has nothing to do with the closures."""
+    import hashlib
+    import json as _json
+
+    def _hash(dirs):
+        groups = [taskbundle._rows(taskbundle._walk(d, storage.Quota.for_harvest()))
+                  for d in dirs]
+        return hashlib.sha256(
+            _json.dumps([[i, g] for i, g in enumerate(groups)], sort_keys=True).encode()
+        ).hexdigest()
+
+    a, b = tmp_path / "A", tmp_path / "B"
+    a.mkdir(); b.mkdir()
+    (a / "x.py").write_text("1\n"); (b / "y.py").write_text("2\n")
+    first = _hash([a, b])
+    (a / "x.py").unlink(); (b / "y.py").unlink()
+    (a / "y.py").write_text("2\n"); (b / "x.py").write_text("1\n")
+    assert _hash([a, b]) != first, "a file moving between install dirs was invisible"
+
+    # ...and one directory per CLI — today's real layout — is unaffected, or the change
+    # would make every CLI differ from every other for a reason §20 does not mean.
+    solo = tmp_path / "C"; solo.mkdir()
+    (solo / "x.py").write_text("1\n")
+    other = tmp_path / "D"; other.mkdir()
+    (other / "x.py").write_text("1\n")
+    assert _hash([solo]) == _hash([other])

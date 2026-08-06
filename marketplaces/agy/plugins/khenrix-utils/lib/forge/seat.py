@@ -59,7 +59,8 @@ none above it already decided `forge`:
    artifacts and no proof token is failed, not partial" true rather than accidental --
    see test_a_setup_failure_does_not_proceed_on_the_strength_of_its_files and
    test_a_setup_failure_pre_empts_the_partial_rule_not_just_the_completed_one beside it.
-3. `changed is False` -> `no_change`, but only when BOTH stated requirements hold:
+3. `changed is False` -> `no_change`, but only when the seat PROVED IT READ THE TASK and
+   BOTH stated requirements hold:
    a substantive `rationale`, and independent verification -- `setup` in `_CONFIRMED_SETUP`
    AND `verify == "pass"`. Neither substitutes for the other. Rule 3's "verify is recorded,
    not required" is a statement about the `completed`/`partial`/`failed` branches below, where
@@ -210,7 +211,20 @@ def classify_seat(*, process: str, artifacts: str, proven_read: bool, changed: b
         forge = "failed"
     elif not changed:
         _require_rationale(rationale)
-        if verify == "not-run":
+        if not proven_read:
+            # A `no_change` CLAIM IS A CLAIM ABOUT THE TASK, so a seat that never proved it
+            # read the task cannot make it. `proven_read` gates `completed` further down for
+            # the stated reason — "collapsing this into `completed` is what let a
+            # silently-failed seat read as success" — and this branch sits ABOVE that gate,
+            # so a zero-diff seat reached `no_change` without passing it.
+            #
+            # That is the WORSE case, not a lesser one: `no_change` is the strongest verdict
+            # short of `completed`, and a silently-failed seat produces exactly this shape —
+            # no diff, and a rationale the model wrote without having read anything.
+            # `partial` withholds the promotion without throwing the argument away, which is
+            # what the `verify == "not-run"` branch below already does for its own reason.
+            forge = "partial"
+        elif verify == "not-run":
             # The claim is argued and not yet checked. See rule 3 in the module docstring:
             # §6 runs every verification somewhere this seat is not, so this is where a
             # seat's own classification always lands, and `partial` withholds the promotion

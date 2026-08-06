@@ -740,15 +740,29 @@ def installed_closure(cli: str) -> str | None:
     dirs = _install_dirs(cli)
     if not dirs:
         return None
-    rows = []
+    # KEYED BY THE DIRECTORY'S INDEX, NOT FLATTENED. Concatenating every directory's rows and
+    # sorting the result loses which directory a file came from, so two genuinely different
+    # layouts hash the SAME — reproduced: `x.py` in dir A with `y.py` in dir B collides with
+    # `y.py` in A and `x.py` in B. §20 licenses an ambient-skill dependency only when all
+    # three installed copies hash identically, and a hash that cannot see a file moving
+    # between directories would grant that licence to copies that differ.
+    #
+    # THE INDEX AND NOT THE NAME. The directories are not named comparably across CLIs —
+    # measured: claude and codex install under a VERSION directory (`0.1.0`) while agy
+    # installs under `khenrix-utils` — so keying on the name would make agy differ from the
+    # other two forever, for a reason that has nothing to do with the closures. That is the
+    # unsatisfiable rule this function's own docstring refuses when it declines to hash paths.
+    # `_install_dirs` already returns them sorted, so the index is stable.
+    groups = []
     try:
         for d in dirs:
-            rows += _rows(_walk(d, storage.Quota.for_harvest()))
+            groups.append(_rows(_walk(d, storage.Quota.for_harvest())))
     except (TaskBundleError, OSError):
         return None
-    if not rows:
+    if not any(groups):
         return None
-    return hashlib.sha256(json.dumps(sorted(rows), sort_keys=True).encode()).hexdigest()
+    payload = [[i, g] for i, g in enumerate(groups)]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def ambient_verdict(closures: dict) -> bool:

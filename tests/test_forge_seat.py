@@ -323,3 +323,24 @@ def test_the_other_two_seats_do_not_get_the_flag(tmp_path):
         argv = [str(a) for a in seat.forge_spec(name, "P", 600, cfg={},
                                                 workdir=str(tmp_path)).argv]
         assert "--add-dir" not in argv, (name, argv)
+
+
+def test_a_no_change_claim_needs_the_proof_token_too():
+    """REPRODUCED: a seat with `proven_read=False` reached `no_change` — the strongest
+    verdict short of `completed` — because rule 3's branch sits ABOVE the `proven_read` gate.
+
+    `no_change` is a claim ABOUT THE TASK ("I read it and nothing needs to change"), so a
+    seat that never proved it read the task cannot make it. And this is the WORSE case, not
+    a lesser one: a silently-failed seat produces exactly this shape — no diff, and a
+    rationale the model wrote without having read anything. `partial` withholds the
+    promotion without throwing the argument away, as the `verify == "not-run"` branch
+    already does for its own reason."""
+    r = "the retry already backs off; adding one would double-sleep"
+    unproven = seat.classify_seat(**{**_BASE, "artifacts": "unusable", "changed": False,
+                                     "proven_read": False, "builder_setup": "none",
+                                     "rationale": r})
+    assert unproven.forge == "partial", unproven
+    proven = seat.classify_seat(**{**_BASE, "artifacts": "unusable", "changed": False,
+                                   "proven_read": True, "builder_setup": "none",
+                                   "rationale": r})
+    assert proven.forge == "no_change", proven
