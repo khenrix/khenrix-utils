@@ -300,29 +300,33 @@ suite. And **three more that K4's review clone had already closed**, measured 20
 the single most useful number in this log: a plan built from a review's findings is a plan
 built from claims, and better than a quarter of them were already false.
 
-**Genuinely open, and honestly scoped.**
+**Genuinely open, and honestly scoped.** After the sweep, what is left is TWO things and a
+short tail — not the twenty-five the first draft of this list implied.
 
-- **A real `--resume`.** Re-entering a run at its recorded phase and deciding which seats
-  still owe attempts against §8.1's preserved clones. `--start` now NAMES an abandoned run
-  so nobody silently pays the quote twice, which is the expensive half; re-entry itself is a
-  larger change and is not claimed. **Parallel builders are coupled to it**: K6's wall-clock
-  bound is `seats × attempts × window` *only because the seats run serially*, so the two must
-  land together or the quoted ceiling stops being one.
-- **P5a's remaining s1 items** — the symlink gate referent; the make memo key together with
-  `_scan_make`'s `--directory=`/`-C` gap (two holes in one detector, fix as one); the
-  calibration aggregate; the control-plane integrity tripwire; Fwork byte-binding;
-  durable-state reconstruction; `Seat.verified` over `sidecars is None`; two index
-  definitions; `_gate_taints`' isinstance gate; `_AMBIENT_SKILL`'s short-path refusals;
-  `screen.py` carrying this repo's allow-list into foreign repos.
-- **P5b's remainder** — `no_change` with `proven_read=False`; the executed-and-refuted check
-  recorded as `not-run`; §8.1's missing input half; `RunnerError`-as-retry; the empty fleet
-  reaching `comparing`; `_clip`'s evidence truncation; `_verify_dim`'s collapse.
-- **P5c in full** — `installed_closure`'s permutation collision; `verify_materialized`'s
-  copied fields and the size/cap-blind `bundle_hash`; the criterion-to-claim binding; seat
-  provenance; the journal creation race; hash criteria not distinguishing a file from a
-  symlink.
-- **s4's tail** — `snapshot.take`'s undeclared `FileNotFoundError`; `_dir_digest`; the
-  lost-journal/no-fixes collapse.
+- **A real `--resume`, with parallel builders.** Re-entering a run at its recorded phase and
+  deciding which seats still owe attempts against §8.1's preserved clones. `--start` now
+  NAMES an abandoned run so nobody silently pays the quote twice, and `run` no longer records
+  `comparing` over an empty fleet — the two cheap halves. Re-entry itself is a design change,
+  and **parallel builders are coupled to it**: K6's wall-clock bound is `seats × attempts ×
+  window` *only because the seats run serially*, so the two land together or the quoted
+  ceiling stops being one.
+- **`RunnerError`-as-retry.** `_drive_a_seat` catches every `RunnerError` and spends another
+  attempt. Some of those are the SEAT failing (retry is right, §8.1 says so) and some are
+  this ENGINE refusing (retrying re-runs a deterministic refusal). Splitting them needs a
+  distinction the exception type does not currently carry — a design decision, not a patch.
+- **A short tail, each unreproduced:** the symlink gate referent; the calibration aggregate;
+  the control-plane integrity tripwire; Fwork byte-binding; durable-state reconstruction;
+  `Seat.verified` over `sidecars is None`; two index definitions; `_AMBIENT_SKILL`'s
+  short-path refusals; `screen.py`'s allow-list in foreign repos; the executed-and-refuted
+  check recorded as `not-run`; §8.1's missing input half; `_verify_dim`'s collapse;
+  `verify_materialized`'s copied fields and the size/cap-blind `bundle_hash`; the
+  criterion-to-claim binding; seat provenance; `_dir_digest`; the lost-journal collapse.
+
+**Retired during the sweep, measured:** the journal creation race (`append_line` already
+observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false
+positive), `_clip`'s evidence truncation (every call already records the true length beside
+the clipped text, at all five sites), and the make memo key (attempted, REVERTED — keying on
+`mk.path` breaks the self-reference suppression a test measures immediately).
 
 Every one of them still owes P0 its reproduction first — and on this plan's own record,
 better than a quarter of the findings examined turned out to be already closed or simply
