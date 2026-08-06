@@ -1,6 +1,6 @@
 {
   "skill": "llm-forge",
-  "source_hash": "f81b310d8f1482dd4c89299397acd8b2d200fbd81283d473db8e9347f7a9cc48",
+  "source_hash": "fc795d66c144498c9146f54eb46b1f67b38048cb80a9796ed99a7c6fc73d141c",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
@@ -54,7 +54,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1743,
+    "tests_run": 1744,
     "skipped": 0,
     "failed": 0
   }

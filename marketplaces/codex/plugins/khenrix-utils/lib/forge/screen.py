@@ -269,11 +269,22 @@ def screen_tree(root, rel_paths, quota: Quota = None):
             raw = head + fh.read()
         for i, line in enumerate(raw.decode("utf-8", "replace").splitlines(), 1):
             for rx in c.SECRET_FAIL:
-                # Every match on the line, not just the first: with `search`, an
-                # allowlisted decoy earlier on the line consumes the only look this
-                # pattern gets and a live token after it is never seen.
-                if any(hashlib.sha256(m.group(0).encode()).hexdigest() not in c.SECRET_ALLOW_SHA
-                       for m in rx.finditer(line)):
+                # EVERY MATCH IS A FINDING HERE — THIS REPOSITORY'S ALLOW-LIST IS NOT APPLIED.
+                # `checks.SECRET_ALLOW_SHA` is khenrix's own adjudication: three strings a
+                # human reviewed and declared harmless IN THIS REPOSITORY, two of them its own
+                # test fixtures. This function screens the USER's tree, which nobody
+                # adjudicated — reproduced: an allow-listed string planted in a foreign repo
+                # was silenced by an exemption granted for a different codebase entirely.
+                #
+                # AND THE ASYMMETRY DECIDES IT. A false positive here costs the operator one
+                # look at a refusal they can act on; a false negative puts the bytes in B1 and
+                # hands them to three cloud CLIs. §3 fails closed, so the exemption a user
+                # never granted must not be the thing that opens it.
+                #
+                # Every match on the line, not just the first: with `search`, a decoy earlier
+                # on the line consumes the only look this pattern gets and a live token after
+                # it is never seen.
+                if any(True for _ in rx.finditer(line)):
                     findings.append(Finding(rel, i, rx.pattern))
                     break
     return findings, breaches

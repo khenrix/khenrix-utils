@@ -377,3 +377,23 @@ def test_the_skipped_path_is_named_so_coverage_is_not_overstated(tmp_path):
     assert [f.path for f in findings] == ["cfg.py"], "the readable half was not screened"
     assert [b for b in breaches if b.startswith("link: not screened")] == breaches, \
         "the skipped path must be named individually"
+
+
+def test_this_repositorys_allow_list_does_not_silence_the_users_tree(tmp_path):
+    """REPRODUCED: a string in `checks.SECRET_ALLOW_SHA` planted in a foreign repo was
+    screened CLEAN. That list is khenrix's own adjudication — three strings a human reviewed
+    and declared harmless IN THIS REPOSITORY, two of them its own test fixtures — and this
+    function screens the USER's tree, which nobody adjudicated.
+
+    THE ASYMMETRY DECIDES IT. A false positive costs the operator one look at a refusal they
+    can act on; a false negative puts the bytes into B1 and hands them to three cloud CLIs.
+    §3 fails closed, so an exemption the user never granted must not be what opens it."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "scripts"))
+    from lib import checks as _checks
+    assert _checks.SECRET_ALLOW_SHA, "the premise: this repo has an allow-list at all"
+
+    (tmp_path / "creds.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
+    findings, breaches = screen.screen_tree(tmp_path, ["creds.txt"])
+    assert breaches == []
+    assert len(findings) == 1, findings
