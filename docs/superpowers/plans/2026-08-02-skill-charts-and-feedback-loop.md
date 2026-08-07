@@ -26,7 +26,37 @@
 
 ## Execution order
 
-Tasks 1→6 in order (lint before charts would fail `make verify` — so the lint is **not wired** until Task 4, after all charts exist). Then Task 9 (the llm-council panel bump — numbered out of sequence, added later), then Task 7 (the self-run, whose deep council reviews thereby exercise the new panel), then Task 10 (clean-room ultra study — research only, can also run any time earlier), then Task 11 (forge's council-for-cloud-review swap — risky, checkpointed), then Task 8 (repo hygiene) last of all. If plan `2026-07-30-per-provider-eval-gating` is unexecuted, run it first — Task 7's self-run then validates both plans' surfaces at once.
+~~Tasks 1→4~~ (DONE — see Execution reconciliation above), then Tasks 5→6, then Task 9 (the llm-council panel bump — numbered out of sequence, added later), then Task 7 (the self-run, whose deep council reviews thereby exercise the new panel), then Task 10 (clean-room ultra study — research only, can also run any time earlier), then Task 11 (forge's council-for-cloud-review swap — risky, checkpointed), then Task 8's remainder (repo hygiene) last of all. If plan `2026-07-30-per-provider-eval-gating` is unexecuted (it is, as of 2026-08-07), run it first — Task 7's self-run then validates both plans' surfaces at once.
+
+## Execution reconciliation — 2026-08-07 (other sessions executed parts of this plan)
+
+Verified against a clean tree at HEAD `169ead23` (`render.py --check` exit 0):
+
+- **Tasks 1–4 are DONE**, executed by parallel sessions during the forge Plan-P work:
+  `scripts/lib/charts.py` and `scripts/lib/portability.py` exist, all **12** charts are
+  authored under `docs/skill-charts/` (llm-forge included), and `checks.run_all()` ends
+  with both lints. **Deviation to keep, not revert:** the wiring uses an `_optional(root,
+  "portability"|"charts", …)` helper instead of this plan's literal location-resolved
+  import — a better answer to the bundled-copy problem (the plugin's checks.py degrades
+  gracefully when the sibling lints are absent). The receipts staled by those checks.py
+  edits were re-seeded (`890cf6c8`) and four skills re-certified full-panel (`169ead23`:
+  khenrix-audit, khenrix-setup, khenrix-upgrade, llm-forge).
+- **Task 8 is PARTIALLY done:** `forge-c*` branches are at **zero** (forge's gc ran —
+  which also satisfies Task 11's Step 2 precondition, pending a check for leftover run
+  dirs). The two leaked agy worktrees REMAIN (`git worktree list` still shows 3 entries),
+  and workspaces/`__pycache__`/plan-archiving are untouched.
+- **Still open:** the whole 2026-07-30 per-provider plan (`by_provider`: zero hits in
+  the harness), and Tasks 5, 6, 7, the rest of 8, 9 (MODES is stock — Opus 5 both
+  modes), 10, and 11 (`ultra.py` exists, 8 ultra mentions in the forge SKILL.md).
+  skill-tuneup's receipt is back to seeded/single-provider, so Task 5's full-panel earn
+  is still owed.
+- **The eval harness changed upstream** (`8d75583a` "the harness wrote receipts its own
+  gate refused") — the 2026-07-30 plan's Tasks 1–5 must re-read `eval_harness.py` at
+  execution rather than trusting that plan's quoted line numbers or assuming the receipt
+  paths are as they were.
+- **Forge grew again** (~4,300 insertions; parallel builders, resume-not-re-buy,
+  control-plane tripwire): the default-run quote is now **~19 provider calls / 19
+  coexisting clones / 63.3 GB peak**. Task 11's read-first step covers the rest.
 
 ## File Structure
 
@@ -713,7 +743,7 @@ Verified inventory (2026-08-04) of what "stale" concretely means right now:
   from another session and was committed mid-review) — re-run `git status --porcelain` at
   execution time; this inventory is a worked example, not the current state.
 
-- [ ] **Step 1: Forge state goes through forge's own gc — never by hand.** llm-forge's SKILL.md declares `--gc <run-id>` "mandatory, not tidy". A **successful** `--collect` writes the handover record `--gc` requires as its licence to delete; a refused collect leaves NO record and `--gc` refuses (commit `ee39627` deliberately inverted the old write-first order — an unwritten record costs a re-collect, a wrongly written one costs the run). Read that SKILL.md's gc section, enumerate run ids, `--collect` anything uncollected, then `--gc` every finished run. A default run peaks near 56.7 GB of clones — check for surviving clone dirs too. **Do NOT `git branch -D` any `forge-c*` branch**: the run manifest whitelists forge's refs by name AND OID (`shared/lib/forge/runstate.py`, `forge_refs`), and deleting one by hand corrupts state the tool still reads.
+- [ ] **Step 1: Forge state goes through forge's own gc — never by hand.** llm-forge's SKILL.md declares `--gc <run-id>` "mandatory, not tidy". A **successful** `--collect` writes the handover record `--gc` requires as its licence to delete; a refused collect leaves NO record and `--gc` refuses (commit `ee39627` deliberately inverted the old write-first order — an unwritten record costs a re-collect, a wrongly written one costs the run). Read that SKILL.md's gc section, enumerate run ids, `--collect` anything uncollected, then `--gc` every finished run. A default run peaks near 63.3 GB of clones (19 coexisting, as of 2026-08-07 — re-read the SKILL.md quote at execution) — check for surviving clone dirs too. **Do NOT `git branch -D` any `forge-c*` branch**: the run manifest whitelists forge's refs by name AND OID (`shared/lib/forge/runstate.py`, `forge_refs`), and deleting one by hand corrupts state the tool still reads.
 
 - [ ] **Step 2: Verify the branches are gone** — `git branch --list 'forge-c*'` empty. Anything left is a run `--gc` did not claim: stop and ask the user, never force-delete.
 
