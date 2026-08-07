@@ -28,6 +28,25 @@
 
 ~~Tasks 1→4~~ (DONE — see Execution reconciliation above), then Tasks 5→6, then Task 9 (the llm-council panel bump — numbered out of sequence, added later), then Task 7 (the self-run, whose deep council reviews thereby exercise the new panel), then Task 10 (clean-room ultra study — research only, can also run any time earlier), then Task 11 (forge's council-for-cloud-review swap — risky, checkpointed), then Task 8's remainder (repo hygiene) last of all. If plan `2026-07-30-per-provider-eval-gating` is unexecuted (it is, as of 2026-08-07), run it first — Task 7's self-run then validates both plans' surfaces at once.
 
+## EXECUTION LOG — 2026-08-07 (this plan is now substantially executed)
+
+| Task | State |
+|---|---|
+| 1–4 (lint, charts, wiring) | **done** by parallel sessions; see reconciliation below |
+| 5 (skill-tuneup feedback loop + chart upkeep + audit items 8/9) | **done** — `5bf93cd6` |
+| 6 (CLAUDE.md charts section) | **done** — `5bf93cd6` |
+| 9 (council panel + Opus fallback) | **done** — `5bf93cd6`, smoked live on all three seats |
+| 10 (clean-room ultra study) | **done** — `68b61306`, spec `2026-08-07-council-verified-findings-design.md` |
+| 11 (de-ultra llm-forge) | **GRADUATED** — `6f60c8c4` → `2026-08-07-forge-council-review.md`, per this task's own scope-honesty clause (measured 800–1500 lines across 5 modules + 5 suites) |
+| 8 (hygiene) | **done** — `09812b0f`; worktrees removed, 19 plans archived, pycache cleared |
+| 7 (self-run) | see below |
+
+Charts were re-authored to real depth on 2026-08-07: the versions produced by the
+parallel sessions passed the lint but were 1–4-gate sketches, which satisfied the
+*contract* without answering "how does this skill work" — the requirement that motivated
+the charts. `docs/skill-charts/skill-tuneup.md` is the reference implementation (9 gates,
+every evidence label grep-verified).
+
 ## Execution reconciliation — 2026-08-07 (other sessions executed parts of this plan)
 
 Verified against a clean tree at HEAD `169ead23` (`render.py --check` exit 0):
