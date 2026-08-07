@@ -515,11 +515,14 @@ def grade(answer: str, ev: dict, condition: str, judge: str, cfg: dict, workdir:
 
 
 def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
-            workdir: Path, *, timeout: int) -> dict:
+            workdir: Path, *, timeout: int, provider: str = "") -> dict:
     a, b, key = blind_pair(with_text, without_text, ev["id"])
     prompt = COMPARE_TMPL.format(prompt=ev["prompt"], assertions=_numbered(ev["assertions"]),
                                  a=a or "(empty)", b=b or "(empty)")
-    text, jrec = run_text(judge, prompt, cfg, workdir / "compare", timeout=timeout, retries=2,
+    # Sub-workdir is PER PROVIDER: all three providers compare the same eval, so a
+    # shared `compare/` dir had the last one overwrite the others' judge artifacts.
+    sub = f"compare-{provider}" if provider else "compare"
+    text, jrec = run_text(judge, prompt, cfg, workdir / sub, timeout=timeout, retries=2,
                           readonly=False)  # retries=2: transient judge failure → false tie
     c = parse_comparison(text, key)
     # THE JUDGE RECORD IS CARRIED OUT, on `grade`'s precedent. `compare` discarded it, so
@@ -529,6 +532,11 @@ def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
     c["judge_ok"] = bool((jrec or {}).get("valid")) and c["winner_condition"] is not None
     c["judge_reason"] = (None if c["judge_ok"]
                          else ((jrec or {}).get("reason") or "no readable winner in the reply"))
+    # Identity, so a per-provider tally is reconstructible from the artifact alone.
+    c["executor"] = provider
+    c["eval_id"] = ev["id"]
+    c["judge"] = judge
+    c["judge_model"] = (cfg.get(judge) or {}).get("model")
     return c
 
 
@@ -603,8 +611,11 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
             "expectations": g["expectations"],
         })
     cmp = compare(outputs["with_skill"], outputs["without_skill"], ev, judge, cfg, base,
-                  timeout=timeout)
-    (base / "comparison.json").write_text(json.dumps(cmp, indent=2))
+                  timeout=timeout, provider=provider)
+    # PER-PROVIDER FILENAME: this dir is shared by all three providers, so a single
+    # comparison.json had each provider silently overwrite the previous one's verdict —
+    # a per-provider blind tally was not reconstructible from the artifacts at all.
+    (base / f"comparison.{provider}.json").write_text(json.dumps(cmp, indent=2))
     return runs, cmp
 
 
@@ -719,7 +730,12 @@ def run(args) -> int:
     _print_summary(benchmark, itdir)
     d = benchmark["run_summary"]["delta"].get("pass_rate")
     bw = blind_winner(comparisons)
+    bw_by_provider = blind_winner_by_provider(comparisons)
+    benchmark["blind_winner"] = {"pooled": bw, "by_provider": bw_by_provider}
+    (itdir / "benchmark.json").write_text(json.dumps(benchmark, indent=2))
     print(f"  blind A/B winner: {bw}   ({_blind_tally(comparisons)})  [advisory]")
+    for p, v in sorted(bw_by_provider.items()):
+        print(f"    {p:8} {v}")
     # Gate: a non-negative assertion delta — the skill must not make answers worse.
     # The blind A/B winner is RECORDED but ADVISORY: on a strong executor it rewards the
     # tighter baseline over a correct-but-more-thorough skill answer (a concision bias,
@@ -763,6 +779,18 @@ def run(args) -> int:
         _write_receipt(args.skill, providers=providers, mode=args.mode,
                        judge=args.judge, delta=d, blind_winner=bw, seeded=False, models=models)
     return 0 if gate_ok else 1
+
+
+def blind_winner_by_provider(comparisons: list) -> dict:
+    """Per-executor blind A/B tally. Still ADVISORY — the blind comparison rewards
+    concision on a strong executor, which is why it never gates (see run()). Entries
+    with no `executor` predate per-provider artifacts and are skipped rather than
+    lumped into an arbitrary bucket."""
+    out = {}
+    for p in sorted({c.get("executor") for c in comparisons
+                     if c and c.get("executor")}):
+        out[p] = blind_winner([c for c in comparisons if c.get("executor") == p])
+    return out
 
 
 def _blind_tally(comparisons: list) -> dict:
@@ -929,6 +957,17 @@ def self_test() -> int:
     jt[2] = {**jt[2], "result": {**jt[2]["result"], "judge_error": 1, "errors": 1}}
     check("judge_error does NOT mark the provider invalid",
           aggregate(jt)["by_provider"]["codex"]["status"] == "ok")
+
+    # per-provider blind tally
+    cmps = [{"winner_condition": "with_skill", "winner_slot": "A", "executor": "claude"},
+            {"winner_condition": "with_skill", "winner_slot": "B", "executor": "claude"},
+            {"winner_condition": "without_skill", "winner_slot": "A", "executor": "codex"},
+            {"winner_condition": "tie", "winner_slot": "B", "executor": "codex"}]
+    bp = blind_winner_by_provider(cmps)
+    check("blind tally splits per provider",
+          bp == {"claude": "with_skill", "codex": "without_skill"})
+    check("blind_winner_by_provider ignores entries with no executor",
+          blind_winner_by_provider([{"winner_condition": "with_skill"}]) == {})
 
     # quantum = the largest mean shift ONE assertion flip can cause, floored at 0.05
     check("quantum for 2 evals x 4 assertions", quantum([
