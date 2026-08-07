@@ -40,6 +40,30 @@ class LaunchError(RuntimeError):
     """This provider could not be launched, or answered something that cannot be recorded."""
 
 
+def _with_prior(prompt: str, prior_attempt) -> str:
+    """`prompt`, plus §8.1's partial input when there is any.
+
+    THE WORDING IS DELIBERATE ON TWO POINTS. It says the patch is UNVERIFIED — a previous
+    attempt that was not accepted is not a result, and a builder told "here is the work so
+    far" would reasonably treat it as a starting point that had passed something. And it says
+    the patch is NOT APPLIED: the clone is a fresh one off B, so a builder that assumed
+    otherwise would write its changes on top of a tree that does not have them.
+
+    RETURNS `prompt` UNCHANGED WHEN THERE IS NOTHING, rather than appending a section saying
+    so. "No previous attempt" is the ordinary case for every first attempt in every run, and a
+    paragraph about an absence is prompt weight every seat would pay for one seat's retry.
+    """
+    if not prior_attempt:
+        return prompt
+    return (f"{prompt}\n\n---\n\n"
+            f"A PREVIOUS ATTEMPT AT THIS TASK LEFT WORK BEHIND. Its diff is at "
+            f"`{prior_attempt}`, as a git patch against this same baseline.\n\n"
+            f"That attempt was NOT accepted — it is partial, unverified work, not a result "
+            f"you can build on trustingly. It is NOT applied to your clone: you are starting "
+            f"from the clean baseline. Read it if it helps, take what is useful, and ignore "
+            f"it entirely if it is wrong. You are responsible for the change you deliver.")
+
+
 def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
                   retries: int = 0, backoff: float = 0.0,
                   run_provider=engine.run_provider,
@@ -98,8 +122,15 @@ def make_launcher(*, prompt: str, timeout: int, cfg=None, bundle_sha256=None,
         raise LaunchError("a seat is launched with a task, and this prompt is empty")
     cfg = cfg or {}
 
-    def launch(*, name, seat_path, token, env):
-        seat_prompt = engine.apply_sentinel(prompt, token)
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
+        # §8.1's INPUT half, and the ONLY thing that varies per attempt. The prompt itself is
+        # attempt-invariant by design — §7 gives every seat the same task — so this is
+        # appended rather than substituted into it: a retry must receive the SAME instruction
+        # plus what its own last try left, never a differently-worded one.
+        #
+        # DEFAULTED TO `None` SO EVERY EXISTING CALLER IS UNCHANGED, including the smoke,
+        # which builds a launcher through this same door and has no attempts to carry.
+        seat_prompt = engine.apply_sentinel(_with_prior(prompt, prior_attempt), token)
         spec = seatmod.forge_spec(name, seat_prompt, timeout, cfg=cfg,
                                   workdir=Path(seat_path))
         # `spec.sentinel = token` USED TO BE HERE, described as provenance. It was not

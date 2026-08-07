@@ -25,6 +25,7 @@ unread version is not an unchanged one.
 from __future__ import annotations
 
 import argparse
+from concurrent import futures
 import hashlib
 import json
 import shutil
@@ -188,7 +189,18 @@ def main(argv=None) -> int:
                             env_extra=gitcmd.READONLY).stdout
         head = gitcmd.git(repo, "rev-parse", "HEAD", env_extra=gitcmd.READONLY).stdout.strip()
 
-        results = [_run_one(n, repo, root, window) for n in names]
+        # CONCURRENTLY, AND IT COSTS NOTHING EXTRA. These are the same three provider calls
+        # either way; running them at once also exercises the path `--concurrency` takes in a
+        # real fleet — three seats writing their own clones while sharing one machine — which
+        # a serial loop cannot show. `runner._drive_the_fleet` uses a thread pool for the same
+        # reason: every expensive thing here is a subprocess this thread only waits on.
+        #
+        # ORDER IS `names`, NOT COMPLETION, matching what the fleet reports and what the
+        # receipt below records — a smoke whose provider list reordered run to run would make
+        # two identical runs produce two different receipts.
+        with futures.ThreadPoolExecutor(max_workers=len(names) or 1) as pool:
+            submitted = [pool.submit(_run_one, n, repo, root, window) for n in names]
+            results = [f.result() for f in submitted]
 
         after = gitcmd.git(repo, "status", "--porcelain",
                            env_extra=gitcmd.READONLY).stdout

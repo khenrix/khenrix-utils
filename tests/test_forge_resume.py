@@ -8,7 +8,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import pytest  # noqa: E402
 from forge import (baseline, bundle, fleet, harvest,  # noqa: E402
-                   inspect as finspect, journal, resume, runstate, snapshot, storage)
+                   inspect as finspect, journal, resume, runner as runnermod,
+                   runstate, snapshot, storage)
 from forge_fixtures import make_repo  # noqa: E402
 from test_forge_runner import _open  # noqa: E402
 
@@ -184,3 +185,36 @@ def test_every_refusal_is_reported_at_once_rather_than_one_clone_in(tmp_path):
         resume.plan(run, repo, ("claude", "codex"), seat_dir=_seat_dir)
     text = str(ei.value)
     assert "claude" in text and "codex" in text, text
+
+
+def test_a_resumed_run_drives_its_owed_seats_at_the_width_it_was_quoted(tmp_path,
+                                                                        monkeypatch):
+    """THE EXTERNAL QUESTION: does a resume honour the fleet width the operator PAID for?
+
+    `--resume` re-reads the run off disk, and `concurrency` is on the manifest for the same
+    reason `seats` is — §5.2 priced the wall clock BY it. A resume that silently fell back to
+    serial would take up to `concurrency`x the quoted ceiling; one that widened past the
+    recorded value would take a contention risk nobody agreed to.
+    """
+    import threading
+    from test_forge_runner import _open, _per_seat, IDENT
+    repo, run, b, m = _open(tmp_path, seats=3, attempts=1, concurrency=3)
+    assert runstate.read_manifest(run).concurrency == 3, "the fixture did not record a width"
+
+    barrier = threading.Barrier(3, timeout=60)
+    inner = _per_seat(lambda name, n, path: True)
+    peak, live, lock = [0], [0], threading.Lock()
+
+    def _launch(**kw):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        barrier.wait()
+        with lock:
+            live[0] -= 1
+        return inner(**kw)
+
+    # No seat has settled, so a resume owes all three — and must drive them at width 3.
+    out = runnermod.run(run, repo, identity=IDENT, launch=_launch, resume=True)
+    assert peak[0] == 3, f"the resume drove {peak[0]} builder(s) at once, not 3"
+    assert len(out) == 3

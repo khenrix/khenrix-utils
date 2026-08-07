@@ -850,7 +850,7 @@ def _launch(fn):
     `seat._MIN_RATIONALE_CHARS` once the sentinel is stripped, which is what keeps these
     cases about the seam rather than about §8's rationale rule.
     """
-    def launch(*, name, seat_path, token, env):
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
         fn(Path(seat_path))
         return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
                 "duration_sec": 1.0, "structured": False, "attempts": 1,

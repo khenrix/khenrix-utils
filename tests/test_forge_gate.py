@@ -2204,3 +2204,32 @@ def test_a_width_that_is_not_a_count_never_prices_a_run(tmp_path):
     for bad in (0, -1, True, "3", None, 1.5):
         with pytest.raises(gate.GateError):
             _quote(tmp_path, seats=3, attempts=1, concurrency=bad)
+
+
+def test_a_confirmed_setup_that_spends_is_refused_like_a_verify_that_does(tmp_path):
+    """THE ASYMMETRY THIS CLOSES. `open_run` refused a VERIFY command reaching a provider CLI
+    and accepted the identical spend in SETUP — while setup carries the larger multiplier:
+    `2 + (seats x attempts) + verifiers` against verify's one per verifier. The refusal's own
+    reason ("re-run fresh per candidate") applies harder to the command it did not screen."""
+    repo = make_repo(tmp_path)
+    report = preflight.inspect_repo(repo)
+    q = gate.quote(report, seats=1, attempts=1, seat_timeout_sec=3600)
+    c = _confirmation(setup=(verify.Step(argv=("claude", "-p", "do it")),),
+                      seats=q.seats, attempts=q.attempts,
+                      review_rounds=q.review_rounds,
+                      synthesis_fix_cap=q.synthesis_fix_cap)
+    with pytest.raises(gate.GateError, match="setup command reaches a provider CLI"):
+        gate.open_run(report, c, "r1", quote_=q)
+
+
+def test_an_ordinary_setup_still_opens_a_run(tmp_path):
+    """THE DISCRIMINATION CHECK — a refusal that also fired on `pip install` would be a gate
+    nobody could pass, and every real run takes this branch."""
+    repo = make_repo(tmp_path)
+    report = preflight.inspect_repo(repo)
+    q = gate.quote(report, seats=1, attempts=1, seat_timeout_sec=3600)
+    c = _confirmation(setup=(verify.Step(argv=("true",)),),
+                      seats=q.seats, attempts=q.attempts,
+                      review_rounds=q.review_rounds,
+                      synthesis_fix_cap=q.synthesis_fix_cap)
+    assert gate.open_run(report, c, "r2", quote_=q).is_dir()

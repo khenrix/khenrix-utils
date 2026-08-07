@@ -1866,6 +1866,24 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
             f"the confirmed verify command reaches a provider CLI: {spends}. §5.2 refuses one "
             "— it would be re-run fresh per candidate, two orders of magnitude above the "
             "quote. Point the gate at the advisory target instead.")
+    # SETUP GETS THE SAME DOOR, AND THE MULTIPLIER IS THE ARGUMENT. The refusal above says a
+    # verify command that reaches a provider is refused because it is "re-run fresh per
+    # candidate" — and setup is re-run fresh per candidate AND per builder attempt AND in
+    # calibration: `2 + (seats x attempts) + verifiers`, a LARGER multiplier than verify's.
+    # `must_show` already discloses it with that count; only this door was verify-only, so the
+    # identical spend was refused in one command and confirmed in the other.
+    #
+    # `SPENDS` ONLY, exactly as above: §5.2's three classes are dispositioned differently, and
+    # a documented remedy is priced as its own line by `must_show` rather than refused here.
+    setup_spends = [f for f in provider_invoking_verify(report.facts.root,
+                                                       verify.Command(confirmation.setup))
+                    if f.startswith(SPENDS)]
+    if setup_spends:
+        raise GateError(
+            f"the confirmed setup command reaches a provider CLI: {setup_spends}. §5.2 "
+            "refuses one that does, and setup carries a LARGER multiplier than verify — it "
+            "is re-run fresh per candidate, per builder attempt, and in calibration. Move "
+            "that step out of setup, or point it at the advisory target.")
 
     try:
         run_dir = storage.run_root(report.facts.root, run_id, must_be_new=True)

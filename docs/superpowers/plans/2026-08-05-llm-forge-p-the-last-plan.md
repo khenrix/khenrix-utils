@@ -342,6 +342,33 @@ built from claims, and better than a quarter of them were already false.
   machine can push a seat past its cap and spend it for no candidate. The quote states that
   trade whenever concurrency exceeds 1; the operator opts in.
 
+**The three I once called "unreproduced" — RE-EXAMINED, and I was wrong about two.**
+
+- **§8.1's missing input half — REPRODUCED, and now closed.** `launch(*, name, seat_path,
+  token, env)` had no channel for a prior attempt and `cli.start` builds ONE launcher with ONE
+  prompt, so **attempt 2 received verbatim what attempt 1 received**. The budget §5.2 prices as
+  `seats × attempts` bought three cold starts instead of one progressive retry. Closed: the
+  prior attempt's `CandidateBundle` is laid down under the retry clone's **git directory**
+  (invisible to `harvest.record`'s `.git` skip, so it is never harvested as the builder's own
+  work) and named in the prompt as partial, unverified, unapplied work. A first draft re-derived
+  it with `git diff HEAD` and returned nothing for the ordinary case — a **created** file is
+  untracked and `git diff` does not show it; the harvest's own bundle already had it.
+
+- **The calibration aggregate — REPRODUCED as a half, and now closed.** `must_show` already
+  disclosed a setup command reaching a provider CLI, with its multiplier. `open_run` refused
+  only **verify**. So the identical spend was refused in one command and confirmed in the other
+  — and setup carries the *larger* multiplier: `2 + (seats × attempts) + verifiers` against
+  verify's one per verifier. The refusal's own stated reason, "re-run fresh per candidate,"
+  applies harder to the command it did not screen.
+
+- **Durable-state reconstruction — two of three parts closed by this plan's own work.** "Which
+  bytes passed" and "distinguish the verified candidate from a later mutation of the still-
+  writable clone" are both answerable now: the candidate is serialized beside its seat record
+  and carries the Fwork binding, so a clone edited after the run is named rather than believed.
+  The third part — no writer sets `verified_checkpoint` — is a **documented design position**,
+  not a gap: `runstate` argues git is §14.2's ordering of record and this file is a cache that
+  must lose where the two disagree.
+
 **Retired during the sweep, measured:** the journal creation race (`append_line` already
 observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false
 positive), `_clip`'s evidence truncation (every call already records the true length beside

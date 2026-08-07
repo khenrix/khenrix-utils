@@ -1,15 +1,21 @@
 {
   "skill": "llm-forge",
-  "source_hash": "b5d600e49e3e592c39078948a1f8d60f496438b6288ee105e8b6b637a3a91ffa",
+  "source_hash": "3f29fedd437b107e3500527e2351bb6ed720bd44776a69b23c053546d8f466db",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
-    "claude"
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state",
+  "delta_pass_rate": 0.3334,
+  "blind_winner": "n/a-deterministic",
+  "provenance": "eval",
+  "models": {
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
+    "judge": "claude-opus-5"
+  },
   "deterministic_gate": "forge-suite-all",
   "self_test": true,
   "gate_command": [
@@ -55,7 +61,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1783,
+    "tests_run": 1797,
     "skipped": 0,
     "failed": 0
   }

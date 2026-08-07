@@ -48,7 +48,7 @@ def _fake(fn=None, *, answer=ANSWER, valid=True, quote_token=True, quote=None):
     """
     calls = []
 
-    def launch(*, name, seat_path, token, env):
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
         calls.append({"name": name, "seat_path": Path(seat_path), "token": token, "env": env})
         if fn is not None:
             fn(Path(seat_path))
@@ -1203,7 +1203,7 @@ def _per_seat(fn):
     """
     calls = []
 
-    def launch(*, name, seat_path, token, env):
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
         n = 1 + sum(1 for c in calls if c["name"] == name)
         calls.append({"name": name, "attempt": n, "seat_path": Path(seat_path)})
         valid = fn(name, n, Path(seat_path))
@@ -1871,7 +1871,7 @@ def test_a_seat_refused_at_classification_is_recorded_and_does_not_orphan_its_op
     """
     repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
 
-    def signs_off(*, name, seat_path, token, env):
+    def signs_off(*, name, seat_path, token, env, prior_attempt=None):
         return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
                 "duration_sec": 1.0, "structured": False, "attempts": 1,
                 "result_text": f"ok\n{token}"}
@@ -2038,7 +2038,7 @@ def test_a_refused_retry_does_not_erase_the_verdict_the_attempt_before_it_reache
 
     seen = []
 
-    def fails_then_signs_off(*, name, seat_path, token, env):
+    def fails_then_signs_off(*, name, seat_path, token, env, prior_attempt=None):
         seen.append(name)
         first = len(seen) == 1
         if first:
@@ -2078,7 +2078,7 @@ def test_a_launch_that_returned_a_fingerprint_has_it_recorded(tmp_path):
     row = fingerprint.as_row(fingerprint.PromptIdentity(
         "a" * 64, "b" * 64, None, "/usr/bin/claude", "2.1.220", "opus-5", None, None))
 
-    def launch(*, name, seat_path, token, env):
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
         _edit(Path(seat_path))
         return {"name": name, "status": "ok", "valid": True, "reason": "ok",
                 "exit_code": 0, "duration_sec": 1.0, "structured": False, "attempts": 1,
@@ -2092,7 +2092,7 @@ def test_a_launch_that_returned_a_fingerprint_has_it_recorded(tmp_path):
 def test_a_malformed_prompt_identity_is_refused_at_the_writer(tmp_path):
     """'Nobody measured' and 'somebody wrote nonsense' are different records, and only one
     of them is safe to act on."""
-    def launch(*, name, seat_path, token, env):
+    def launch(*, name, seat_path, token, env, prior_attempt=None):
         _edit(Path(seat_path))
         return {"name": name, "status": "ok", "valid": True, "reason": "ok",
                 "exit_code": 0, "duration_sec": 1.0, "structured": False, "attempts": 1,
@@ -2473,7 +2473,7 @@ def test_a_fleet_that_produced_nothing_does_not_reach_comparing(tmp_path):
     is only that the run directory keeps its last TRUE phase."""
     repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=2)
 
-    def signs_off(*, name, seat_path, token, env):
+    def signs_off(*, name, seat_path, token, env, prior_attempt=None):
         return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
                 "result_text": "SENTINEL-" + token, "duration_sec": 0.1}
 
@@ -2515,7 +2515,7 @@ def test_a_refusal_that_repeats_itself_does_not_buy_another_clone(tmp_path):
     repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=5)
     tries = []
 
-    def always_the_same(*, name, seat_path, token, env):
+    def always_the_same(*, name, seat_path, token, env, prior_attempt=None):
         tries.append(name)
         raise runner.RunnerError("the same deterministic refusal")
 
@@ -2530,7 +2530,7 @@ def test_two_different_refusals_still_get_their_retries(tmp_path):
     repo, run, b, m = _open(tmp_path, gate=GATE, seed=_gate("exit 0"), seats=1, attempts=3)
     n = []
 
-    def different_each_time(*, name, seat_path, token, env):
+    def different_each_time(*, name, seat_path, token, env, prior_attempt=None):
         n.append(name)
         raise runner.RunnerError(f"transient failure {len(n)}")
 
@@ -2625,3 +2625,91 @@ def test_a_serial_fleet_takes_the_path_it_took_before_the_pool_existed(tmp_path)
 
     runner.run(run, repo, identity=IDENT, launch=_launch)
     assert peak[0] == 1, f"a serial run overlapped {peak[0]} builders"
+
+
+# ---- §8.1's input half -----------------------------------------------------------------
+def test_a_retry_receives_the_work_its_previous_attempt_left(tmp_path):
+    """THE EXTERNAL QUESTION: does attempt 2 know attempt 1 happened? Before this it did not —
+    §8.1 says a failed attempt is "preserved as partial input", and this package preserved it
+    faultlessly and never fed it back. `cli.start` builds ONE launcher with ONE prompt, so
+    attempt 2 received VERBATIM what attempt 1 received: three cold starts for a budget §5.2
+    priced as one progressive retry.
+    """
+    repo, run, b, m = _open(tmp_path, seats=1, attempts=2)
+    seen = []
+
+    def _launch(*, name, seat_path, token, env, prior_attempt=None):
+        seen.append(prior_attempt)
+        if len(seen) == 1:
+            # Leave real work behind, then fail: the clone is preserved as partial input.
+            (Path(seat_path) / "half-done.py").write_text("def half():\n    pass\n")
+            return {"name": name, "status": "failed", "valid": False, "reason": "truncated",
+                    "exit_code": 1, "duration_sec": 1.0, "structured": False, "attempts": 1,
+                    "result_text": ""}
+        (Path(seat_path) / "done.py").write_text("def done():\n    return 1\n")
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"{ANSWER}\n{token}"}
+
+    runner.run(run, repo, identity=IDENT, launch=_launch)
+    assert len(seen) == 2, seen
+    assert seen[0] is None, "a FIRST attempt was handed a previous attempt"
+    assert seen[1] is not None, "the retry was not handed the work attempt 1 left"
+    carried = Path(seen[1])
+    assert carried.is_dir(), carried
+    # THE WORK ITSELF, not a reference to it: `half-done.py` was UNTRACKED, so it rides in the
+    # bundle's sidecars rather than in the tracked patch — which is exactly the case a fresh
+    # `git diff HEAD` misses and the reason the handover reads the harvest's own bundle.
+    left = carried / "half-done.py"
+    assert left.is_file(), sorted(p.name for p in carried.rglob("*"))
+    assert "def half()" in left.read_text()
+
+
+def test_the_carried_patch_is_never_harvested_as_the_builders_own_work(tmp_path):
+    """THE HAZARD THIS PLACEMENT EXISTS FOR. Written into the working tree, the previous
+    attempt's patch would enter F0→Fwork and be harvested as a file the BUILDER authored —
+    the engine's own artefact carried into the candidate. Under the git directory it is
+    invisible to `snapshot.take`'s `.git` skip, which is the same trick §20's task bundle
+    uses and for the same reason."""
+    repo, run, b, m = _open(tmp_path, seats=1, attempts=2)
+
+    def _launch(*, name, seat_path, token, env, prior_attempt=None):
+        if prior_attempt is None:
+            (Path(seat_path) / "half-done.py").write_text("x = 1\n")
+            return {"name": name, "status": "failed", "valid": False, "reason": "t",
+                    "exit_code": 1, "duration_sec": 1.0, "structured": False,
+                    "attempts": 1, "result_text": ""}
+        assert Path(prior_attempt).is_dir()
+        (Path(seat_path) / "done.py").write_text("y = 2\n")
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"{ANSWER}\n{token}"}
+
+    out = runner.run(run, repo, identity=IDENT, launch=_launch)
+    assert out, "the retry produced no seat"
+    paths = out[0].artifacts.paths
+    assert "done.py" in paths, paths
+    assert not any("prior" in p or ".patch" in p for p in paths), \
+        f"the carried patch was harvested as the builder's work: {paths}"
+
+
+def test_an_attempt_that_wrote_nothing_hands_over_no_partial_input(tmp_path):
+    """"Preserved as partial input" is about WORK. An attempt that left an untouched clone has
+    none, and handing over an empty patch would tell the next builder a previous attempt left
+    something when it left nothing — a claim about work that does not exist."""
+    repo, run, b, m = _open(tmp_path, seats=1, attempts=2)
+    seen = []
+
+    def _launch(*, name, seat_path, token, env, prior_attempt=None):
+        seen.append(prior_attempt)
+        if len(seen) == 1:
+            return {"name": name, "status": "failed", "valid": False, "reason": "t",
+                    "exit_code": 1, "duration_sec": 1.0, "structured": False,
+                    "attempts": 1, "result_text": ""}
+        (Path(seat_path) / "done.py").write_text("y = 2\n")
+        return {"name": name, "status": "ok", "valid": True, "reason": "ok", "exit_code": 0,
+                "duration_sec": 1.0, "structured": False, "attempts": 1,
+                "result_text": f"{ANSWER}\n{token}"}
+
+    runner.run(run, repo, identity=IDENT, launch=_launch)
+    assert seen == [None, None], seen

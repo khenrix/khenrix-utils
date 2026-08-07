@@ -433,6 +433,18 @@ def read_task_bundle_if_recorded(run_dir) -> TaskBundle | None:
     return read_task_bundle(run_dir)
 
 
+def prior_attempt_dir(seat_path) -> Path:
+    """Where a seat's PREVIOUS attempt is handed to it: `<git-dir>/khenrix-forge/prior`.
+
+    UNDER THE GIT DIRECTORY FOR `task_dir`'s REASON, and it is load-bearing rather than tidy:
+    `harvest.record` walks with `snapshot.take`'s `.git` skip, so anything placed here is
+    invisible to F0/Fsetup/Fwork. Written into the working tree instead, the previous
+    attempt's patch would enter the new attempt's ARTIFACT SET — the engine's own file
+    harvested as if the builder had authored it, and then carried into the candidate.
+    """
+    return task_dir(seat_path).parent / "prior"
+
+
 def task_dir(seat_path) -> Path:
     """Where a seat's bundle lives: `<git-dir>/khenrix-forge/task`, with git asked for the git dir.
 

@@ -60,13 +60,15 @@ kind — an attempt directory that already exists is a refusal, not something to
 so reclaiming one would make the number the operator agreed to a lie in the other direction.
 """
 import math
+import os
 from concurrent import futures
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from council import engine
 
-from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, harvest, journal,
+from . import (baseline as baselinemod, bundle, fingerprint, fleet, gate, gitcmd, harvest,
+               journal,
                resume as resumemod,
                runstate, seat as seatmod, seatrecord, storage, taskbundle, verify)
 
@@ -598,6 +600,79 @@ def _write(run_dir: Path, priors: list, result: SeatResult) -> None:
             pass
 
 
+def _hand_over_the_previous_attempt(run_dir: Path, seat_path, prior) -> str | None:
+    """§8.1's INPUT half: the failed attempt's work, placed where this attempt can read it.
+
+    THE CLAUSE HAS TWO HALVES AND ONLY ONE WAS BUILT. §8.1 says a failed attempt is
+    "preserved as partial input"; this package preserved it faultlessly — `attempt` is a path
+    component and nothing here deletes — and then never fed it back. `launch` had no channel
+    for a prior attempt and `cli.start` builds ONE launcher with ONE prompt, so ATTEMPT 2
+    RECEIVED VERBATIM WHAT ATTEMPT 1 RECEIVED. A seat that got most of the way and returned a
+    truncated envelope restarted from a bare baseline, and the budget §5.2 priced as
+    `seats x attempts` bought three cold starts instead of one progressive attempt.
+
+    THE PRIOR ATTEMPT'S `CandidateBundle` IS THE SOURCE, NOT A FRESH `git diff`. A first draft
+    re-ran `git diff HEAD` against the preserved clone and handed back `None` for the ordinary
+    case: a builder that CREATES a file leaves it untracked, and `git diff HEAD` does not show
+    untracked files. The bundle is the harvest's own measured answer — `tracked_patch` for
+    what git can carry and `sidecars` for everything it cannot — so it already holds exactly
+    the work `git diff` was missing.
+
+    UNDER THE GIT DIR, so `harvest.record`'s `.git` skip keeps it out of F0/Fsetup/Fwork.
+    Written into the working tree it would be harvested as the BUILDER's work and carried into
+    the candidate — the engine's own artefact arriving in the deliverable.
+
+    `None` WHEN THERE IS NOTHING TO HAND OVER — a first attempt, an attempt that left the tree
+    untouched, or a bundle this engine cannot write down. Never an empty file: that would tell
+    the next builder a previous attempt left work when it left none.
+
+    A FAILURE HERE DOES NOT FAIL THE RETRY. §8.1 asks that the work be OFFERED; a seat that
+    would have succeeded cold must not lose its turn because a patch could not be written.
+    """
+    if prior is None:
+        return None
+    cand = prior.get("candidate")
+    if cand is None:
+        return None
+    if not cand.tracked_patch.strip() and not cand.sidecars:
+        return None
+    try:
+        dest = taskbundle.prior_attempt_dir(seat_path) / f"attempt-{prior['attempt']}"
+        dest.mkdir(parents=True, exist_ok=True)
+        if cand.tracked_patch.strip():
+            (dest / "tracked.patch").write_bytes(cand.tracked_patch)
+        links = []
+        for e in cand.sidecars:
+            if e.kind != "file":
+                # A SYMLINK IS LISTED, NOT RECREATED. Its target is builder-controlled text,
+                # and `materialize` re-checks every target for escape precisely because a link
+                # plus a file underneath it writes outside the tree. Handing the NAME to a
+                # reader carries the same information with none of that surface — and a link
+                # is the least useful thing a builder can be shown anyway.
+                links.append(f"{e.path} -> {e.payload.decode('utf-8', 'replace')}")
+                continue
+            # THE FD-BASED WRITE `materialize` USES, NOT A PATH JOIN. `bundle`'s own docstring
+            # records three waves of string-validating guards that each declared the escape
+            # class closed and each came back, because the filesystem the name is finally
+            # resolved against is not the one that was validated. A sidecar path is
+            # builder-controlled, so it gets the same door.
+            at = bundle.contained(dest, e.path, "a previous attempt's file", create_dirs=True)
+            fd = bundle.open_leaf(at, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                  "a previous attempt's file")
+            try:
+                n = 0
+                while n < len(e.payload):
+                    n += os.write(fd, e.payload[n:])
+            finally:
+                os.close(fd)
+        if links:
+            (dest / "SYMLINKS.txt").write_text("\n".join(links) + "\n", encoding="utf-8")
+        return str(dest)
+    except (OSError, ValueError, bundle.BundleError, taskbundle.TaskBundleError,
+            gitcmd.GitError):
+        return None
+
+
 def _materialize_the_task(run_dir: Path, seat_path) -> None:
     """§20's bundle into this seat, before anything else runs in it.
 
@@ -628,7 +703,8 @@ def _materialize_the_task(run_dir: Path, seat_path) -> None:
     taskbundle.verify_materialized(b, seat_path)
 
 
-def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) -> SeatResult:
+def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch,
+             prior=None) -> SeatResult:
     """Drive one attempt at one seat and record what it produced.
 
     The order is §7's, and every step of it is load-bearing:
@@ -726,7 +802,12 @@ def run_seat(manifest, run_dir, baseline, *, name, attempt, identity, launch) ->
     token = engine.make_sentinel()
     result = None
     if setup_dim != "fail":
-        result = launch(name=name, seat_path=st.path, token=token, env=child_env)
+        # §8.1's partial input, offered before the call rather than preserved after it. `None`
+        # for a first attempt and for a prior clone with nothing in it, so the launcher is
+        # told about work that exists and never about work that does not.
+        carried = _hand_over_the_previous_attempt(run_dir, st.path, prior)
+        result = launch(name=name, seat_path=st.path, token=token, env=child_env,
+                        prior_attempt=carried)
     # A seat whose setup failed is `failed` under §8 rule 2 whatever it produces next, so the
     # provider call could only spend money and move the tree — §5.2 quotes those calls and
     # this is the one place a seat can decline to make one without changing its verdict.
@@ -1613,13 +1694,13 @@ def _drive_a_seat(run_dir: Path, manifest, base, log, *, name, identity, launch)
     is reserved for the seat that reached no verdict at ALL, which is the one case where the
     loop has nothing to say and says nothing rather than the last thing it heard.
     """
-    settled, refused_with = None, None
+    settled, refused_with, prior = None, None, None
     for attempt in range(1, manifest.attempts + 1):
         op = _op(manifest, name, f"attempt-{attempt}")
         log.record(journal.intent(_SEAT), operation_id=op, seat=name, attempt=attempt)
         try:
             result = run_seat(manifest, run_dir, base, name=name, attempt=attempt,
-                              identity=identity, launch=launch)
+                              identity=identity, launch=launch, prior=prior)
         except RunnerError as e:
             log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,
                        refused=str(e))
@@ -1639,6 +1720,11 @@ def _drive_a_seat(run_dir: Path, manifest, base, log, *, name, identity, launch)
             refused_with = str(e)
             continue
         settled = result
+        # THIS ATTEMPT BECOMES THE NEXT ONE'S PARTIAL INPUT — §8.1's clause, and it is set on
+        # the SETTLED path only. An attempt that raised has a clone this loop cannot vouch
+        # for, and `_hand_over_the_previous_attempt` reads a diff out of it; offering an
+        # unexplained tree as "the work so far" is a claim about it that nobody measured.
+        prior = {"attempt": attempt, "candidate": result.candidate}
         log.record(journal.done(_SEAT), operation_id=op, seat=name, attempt=attempt,
                    forge=settled.status.forge)
         if settled.status.forge != "failed":
