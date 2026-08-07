@@ -1,17 +1,19 @@
 {
+ "skill_name": "khenrix-setup",
+ "notes": "Near-misses are deliberately khenrix-upgrade's and khenrix-audit's territory: all three act on this machine's CLI config, and the descriptions are adjacent enough that a sloppy edit to any of them would cross-fire. This file and evals/khenrix-upgrade/triggers.json are mirrors — each one's should_trigger cases are the other's near_misses — so a description edit that blurs the boundary fails on BOTH sides rather than silently passing one.",
  "should_trigger": [
-  "sync my claude setup with the khenrix source of truth",
-  "reconcile my codex config with khenrix-utils",
-  "add the missing MCP servers to my CLI",
-  "set up this machine to match my shared skills and settings",
-  "my agy config drifted from capabilities.toml \u2014 fix it",
-  "/khenrix-setup"
+  "sync my Claude Code config with the shared khenrix source of truth",
+  "install the shared MCP servers on this machine",
+  "add what's missing from my settings without removing anything machine-specific",
+  "reconcile this CLI with capabilities.toml",
+  "set up this machine's agentic CLIs to match the house style"
  ],
  "near_miss": [
-  "research the newest claude code features and tune my setup",
-  "audit my CLIs for overlapping skills and duplicate MCP servers",
-  "tune up the markitdown skill's wording",
-  "install claude code on a fresh machine",
-  "why is my MCP server failing to connect?"
+  "research the latest Claude Code features and tune how I use them",
+  "pick a newer model for my CLI setup",
+  "which of my installed skills overlap or fire for the same prompt?",
+  "tune up the markitdown skill",
+  "is chunk-map stale?",
+  "convert this PDF to markdown"
  ]
 }

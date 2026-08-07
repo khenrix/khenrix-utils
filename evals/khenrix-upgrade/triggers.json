@@ -1,17 +1,19 @@
 {
+ "skill_name": "khenrix-upgrade",
+ "notes": "Mirror of evals/khenrix-setup/triggers.json: its should_trigger cases are this file's near_misses and vice versa, so a description edit that blurs the setup/upgrade boundary fails on both sides. khenrix-upgrade changes HOW the CLI and models are used; it never changes what a skill does (that is skill-tuneup) and never applies config drift (that is khenrix-setup).",
  "should_trigger": [
-  "modernize my claude code setup",
-  "what new CLI features should I be using?",
-  "upgrade my setup to a newer model and better defaults",
-  "refresh my house style and skill wording against current best practice",
-  "research what changed in claude code and improve how I use it",
-  "/khenrix-upgrade"
+  "research the latest Claude Code CLI changes and improve how this machine uses it",
+  "modernize my agentic CLI setup and pick a better model",
+  "are there experimental Claude Code features I should turn on?",
+  "review and refresh how I'm using Claude Code",
+  "which model should this machine default to now?"
  ],
  "near_miss": [
-  "sync my claude setup with the khenrix source of truth",
-  "add the missing MCP servers to my CLI",
-  "audit my whole setup for conflicts and overlaps",
-  "upgrade the npm packages in this project",
-  "update my system packages"
+  "reconcile my config with the khenrix source of truth",
+  "install the shared MCP servers",
+  "add what's missing from my settings without removing anything",
+  "tune up the chunk-map skill",
+  "which of my installed plugins duplicate each other?",
+  "break this repo into reviewable chunks"
  ]
 }

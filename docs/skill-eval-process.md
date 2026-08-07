@@ -129,6 +129,42 @@ whole run instead — the judge is a shared instrument (always `DEFAULT_JUDGE`),
 one executor for it would be wrong. `runs[].result` carries `executor_error` and
 `judge_error` separately for exactly this reason; `errors` remains the OR of the two.
 
+## Trigger and routing evals (the other axis)
+
+`eval_harness.py` injects a skill body and grades the output — it assumes the skill
+already triggered. `scripts/eval_trigger.py` covers the complementary axis: given only a
+skill's name and description, would the agent pick it?
+
+```bash
+make eval-trigger SKILL=khenrix-setup          # fires / abstains, needs >= 0.8
+make eval-arena   SKILLS=khenrix-audit,khenrix-setup,skill-tuneup   # cross-skill routing
+```
+
+`eval-trigger` reads `evals/<skill>/triggers.json`
+(`{"should_trigger": [...], "near_miss": [...]}`) and scores correct fires plus correct
+abstains. Near-misses should be prompts belonging to an *adjacent* skill:
+`khenrix-setup` and `khenrix-upgrade` are deliberately **mirrors** — each one's
+`should_trigger` cases are the other's `near_miss` set — so a description edit that blurs
+the boundary fails on both sides rather than silently passing one.
+
+`eval-arena` reads `evals/<first-skill>/arena.json` and asks which skill on a roster wins
+each prompt. Neither is a receipt gate; run them when editing a skill's `description`,
+which the behaviour harness cannot evaluate at all.
+
+**Two live findings recorded 2026-08-07, both for a future tuneup rather than a quick fix:**
+
+- `khenrix-upgrade` scores 0.909 (passes) but misses `"which model should this machine
+  default to now?"` — a *question-shaped* prompt inside its stated "pick a newer/better
+  model" territory. Its description may under-cover interrogative phrasing.
+- The arena scores 0.667 on the committed roster because the judge answers
+  `off-roster:khenrix-upgrade` and `off-roster:claude-obsidian:wiki-lint` where
+  `arena.json` expects `none`. That is `parse_arena_verdict` behaving exactly as its
+  docstring specifies (an off-roster name is a readable answer *and* a routing failure),
+  and the judge is arguably being *more* informative than the contract permits — but it
+  makes the committed arena set unpassable as authored. Either widen the roster or
+  re-express those cases; do not "fix" it by rounding off-roster back to `none`, which is
+  the exact collapse that docstring exists to prevent.
+
 ## Per-provider tooling (accelerators, not the gate)
 
 - **Claude** — `skill-creator` (installed via `claude-plugins-official`) has the richest

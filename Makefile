@@ -215,6 +215,14 @@ eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=…] [MODE=norma
 # not contention, and the harness now fails closed on it instead of scoring it 0.
 	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),) $(if $(TIMEOUT),--timeout $(TIMEOUT),) $(if $(RETRIES),--retries $(RETRIES),) $(if $(MODELCLAUDE),--model-claude "$(MODELCLAUDE)",) $(if $(MODELCODEX),--model-codex "$(MODELCODEX)",) $(if $(MODELAGY),--model-agy "$(MODELAGY)",)
 
+eval-trigger: ## Trigger/near-miss DESCRIPTION eval — SKILL=<name> [MODE=…] (costs tokens)
+# The behaviour harness (`eval`) injects a skill body and assumes it already triggered.
+# This covers the other axis: given ONLY name+description, would the agent pick it?
+	$(PY) scripts/eval_trigger.py --skill $(SKILL) $(if $(MODE),--mode $(MODE),) $(if $(JUDGE),--judge $(JUDGE),)
+
+eval-arena: ## Cross-skill ROUTING eval — SKILLS=a,b[,c] reads evals/<a>/arena.json (costs tokens)
+	$(PY) scripts/eval_trigger.py --arena $(SKILLS) $(if $(MODE),--mode $(MODE),) $(if $(JUDGE),--judge $(JUDGE),)
+
 status: ## Show what each CLI currently has vs the source of truth (read-only)
 	$(PY) scripts/lib/reconcile.py --status --all
 
