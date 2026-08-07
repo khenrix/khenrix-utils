@@ -792,18 +792,39 @@ def _mode_args(args):
 
 def _print_summary(benchmark: dict, itdir: Path) -> None:
     s = benchmark["run_summary"]
+    print()
+    # Per-provider FIRST: the pooled number is the gate, but a pooled pass can hide a
+    # provider-sized regression, and nobody can triage what is never printed.
+    for p, blk in sorted(s.get("by_provider", {}).items()):
+        d = blk["delta"].get("pass_rate")
+        q = blk.get("quantum")
+        pw = blk["with_skill"].get("pass_rate", {}).get("mean")
+        pb = blk["without_skill"].get("pass_rate", {}).get("mean")
+        note = ""
+        if d is not None and q is not None:
+            # Naming the band now means an operator can already tell a one-assertion
+            # wobble from a real regression, ahead of it becoming the gate.
+            if d < -q:
+                note = f"   ⚠ below the noise floor (-{q}) — a real regression"
+            elif d < 0:
+                note = f"   · negative but inside the noise floor (±{q})"
+        if blk.get("status") != "ok":
+            note = f"   ⚠ {str(blk['status']).upper()} — executor failed; score is an artifact"
+        print(f"  {p:8} with {pw}  base {pb}  delta {d}{note}")
     w = s["with_skill"].get("pass_rate", {}).get("mean")
     b = s["without_skill"].get("pass_rate", {}).get("mean")
-    print(f"\n  with_skill pass_rate mean: {w}   baseline: {b}   "
-          f"delta: {s['delta'].get('pass_rate')}")
+    print(f"\n  POOLED  with {w}  base {b}  delta {s['delta'].get('pass_rate')}   [THE GATE]")
+    if s.get("valid") is False:
+        print(f"  ⚠ pooled delta is an ARTIFACT — {s.get('invalid_runs')} invalid run(s)")
     # An errored condition is graded 0/4 ("No answer was produced") and averaged in like
     # any other score, so it moves the delta in whichever direction it lands on — down if
     # with_skill errored, UP if the baseline did. Print it: without this line a contended
     # run and a real regression are indistinguishable at the console.
     for r in benchmark.get("runs", []):
         if r["result"].get("errors"):
-            print(f"  ⚠ INVALID RUN  {r['eval_name']} / {r['configuration']}  "
-                  f"reason={r['result'].get('reason')} — scored 0 and folded into the delta")
+            print(f"  ⚠ INVALID RUN  {r['eval_name']} / {r.get('executor')} / "
+                  f"{r['configuration']}  reason={r['result'].get('reason')} — "
+                  f"scored 0 and folded into the delta")
     print(f"  artifacts: {itdir}")
 
 
