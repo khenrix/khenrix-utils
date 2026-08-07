@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-upgrade",
-  "source_hash": "59fc85b3bd9838982941738acd5cbcd79781db29fdd5dc93afb361d35ca1d511",
+  "source_hash": "f83e12965369e523bb94ee862191c1d3d19cf9bc35a254302bba44d304292f26",
   "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
   "providers": [
     "claude",
@@ -9,7 +9,7 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0278,
+  "delta_pass_rate": 0.0417,
   "blind_winner": "tie",
   "provenance": "eval",
   "models": {
@@ -17,5 +17,6 @@
     "codex": "gpt-5.6-sol",
     "agy": "Gemini 3.6 Flash (High)",
     "judge": "claude-haiku-4-5-20251001"
-  }
+  },
+  "certified_by": "delta-gate"
 }

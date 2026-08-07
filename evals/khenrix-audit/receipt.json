@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-audit",
-  "source_hash": "908a53608d97df92927a95cae259916ec8abf9c0d0c0da86aadf947745d65bcb",
+  "source_hash": "37184b94fd902a07df40bc2caf63006262d756f45511c94722788086f721f348",
   "eval_set_hash": "1771c304a53918a3dd1625abbe3e08cf01ea81d0862df028d972df0652e2c850",
   "providers": [
     "claude",
@@ -9,7 +9,7 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1667,
+  "delta_pass_rate": 0.0834,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "models": {
@@ -17,5 +17,6 @@
     "codex": "gpt-5.6-sol",
     "agy": "Gemini 3.6 Flash (High)",
     "judge": "claude-haiku-4-5-20251001"
-  }
+  },
+  "certified_by": "delta-gate"
 }

@@ -1,6 +1,6 @@
 {
   "skill": "llm-council",
-  "source_hash": "1eb905fdcb90acd1a952088aef7b0956ccf93a99552098f757774ee5a2b17203",
+  "source_hash": "55c66139a0c03c7c1ca7a0d53c2fe08baf735877bcdf9c8201b239122e421bcb",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
     "claude"
@@ -11,5 +11,6 @@
   "blind_winner": null,
   "provenance": "seeded: blessed current committed state",
   "self_test": true,
+  "certified_by": "fanout --self-test",
   "synthesis_review": "manual-attested"
 }

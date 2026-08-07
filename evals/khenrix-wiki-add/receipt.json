@@ -1,6 +1,6 @@
 {
   "skill": "khenrix-wiki-add",
-  "source_hash": "bb06ebda706a7c04de3694d2d6b23c3419c891e52193431a3593d7fcbe214815",
+  "source_hash": "b300c958219bd60fd697c47e976dbdc0b2d799337d23059e22e569da003ebcb9",
   "eval_set_hash": "aed9f752fefb80217ee70a83ac3018f6773829b8035782402a6e1fd18a265ef5",
   "providers": [
     "claude"
@@ -12,6 +12,7 @@
   "provenance": "seeded: blessed current committed state",
   "deterministic_gate": "wikisync-unittests",
   "self_test": true,
+  "certified_by": "wikisync-unittests",
   "gate_command": [
     "python3",
     "-m",
