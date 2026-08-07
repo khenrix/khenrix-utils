@@ -325,10 +325,11 @@ def _stats(values: list) -> dict:
             "min": min(nums), "max": max(nums)}
 
 
-def aggregate(runs: list) -> dict:
-    """runs → run_summary {with_skill, without_skill, delta} over pass_rate/time/tokens,
-    matching skill-creator's benchmark.json schema (skips metrics with no data)."""
-    summary = {}
+def _summarize(runs: list) -> dict:
+    """Per-condition stats + delta for ONE set of runs (the whole pool, or one
+    provider's slice). Extracted so the pooled and per-provider blocks are computed by
+    identical code and cannot drift."""
+    out = {}
     for cond in ("with_skill", "without_skill"):
         rs = [r["result"] for r in runs if r["configuration"] == cond]
         block = {}
@@ -336,14 +337,67 @@ def aggregate(runs: list) -> dict:
             st = _stats([r.get(metric) for r in rs])
             if st:
                 block[metric] = st
-        summary[cond] = block
+        out[cond] = block
     delta = {}
     for metric in ("pass_rate", "time_seconds", "tokens"):
-        w = summary["with_skill"].get(metric, {}).get("mean")
-        b = summary["without_skill"].get(metric, {}).get("mean")
+        w = out["with_skill"].get(metric, {}).get("mean")
+        b = out["without_skill"].get(metric, {}).get("mean")
         if w is not None and b is not None:
             delta[metric] = round(w - b, 4)
-    summary["delta"] = delta
+    out["delta"] = delta
+    return out
+
+
+def quantum(runs: list) -> float:
+    """The harness's noise floor: the largest shift in a provider's mean pass_rate that
+    ONE assertion flip can produce — 1 / (n_evals * smallest assertion count).
+
+    A per-provider mean is over n_evals cases, so one flip moves it by 1/(n_evals*total),
+    three times more than it moves a pooled mean over three providers. Measured
+    run-to-run drift on UNCHANGED skill bodies is 0.06-0.08 (chunk-map +0.1042→+0.0417,
+    khenrix-upgrade +0.1805→+0.0972, same panel/models/mode/judge, 2026-07-30), so a
+    delta smaller than one quantum is a judge verdict, not a measurement. Floored at
+    0.05. REPORTED here; it becomes the gate band in the follow-up plan.
+    """
+    totals = [r["result"]["total"] for r in runs if r["result"].get("total")]
+    n_evals = len({r["eval_id"] for r in runs})
+    if not totals or not n_evals:
+        return 0.05
+    return max(0.05, round(1.0 / (n_evals * min(totals)), 4))
+
+
+def aggregate(runs: list) -> dict:
+    """runs → run_summary {with_skill, without_skill, delta, by_provider}.
+
+    The pooled with_skill/without_skill/delta blocks are BYTE-COMPATIBLE with the
+    pre-split schema — skill-creator interop and historical receipt comparison both
+    depend on them. `by_provider` is purely additive.
+
+    Pooling across executors is what let a per-provider regression hide: khenrix-upgrade
+    pooled to +0.0972 while claude sat at -0.1250. Splitting is the MEASUREMENT; the
+    gate stays pooled (docs/superpowers/specs/2026-07-30-per-provider-eval-gating-design.md).
+    """
+    summary = _summarize(runs)
+    by_provider = {}
+    for p in sorted({r["executor"] for r in runs if r.get("executor")}):
+        slice_ = [r for r in runs if r.get("executor") == p]
+        block = _summarize(slice_)
+        block["n_evals"] = len({r["eval_id"] for r in slice_})
+        block["quantum"] = quantum(slice_)
+        # Only an EXECUTOR failure invalidates a provider. A judge failure is a failure
+        # of the shared instrument (build_run_result) and invalidates the run, not the
+        # executor — blaming agy for a claude-judge failure would be simply wrong.
+        block["status"] = ("invalid" if any(r["result"].get("executor_error")
+                                            for r in slice_) else "ok")
+        by_provider[p] = block
+    summary["by_provider"] = by_provider
+    invalid = [r for r in runs if r["result"].get("errors")]
+    if invalid:
+        # An invalid run is graded 0/N and folded into its own side's mean, so the
+        # pooled delta is an artifact rather than a measurement. Mark it so the number
+        # cannot be silently reused.
+        summary["valid"] = False
+        summary["invalid_runs"] = len(invalid)
     return summary
 
 
@@ -806,17 +860,63 @@ def self_test() -> int:
                            {"A": "without_skill", "B": "with_skill"})
     check("comparison de-anonymizes winner", cmp["winner_condition"] == "without_skill")
 
-    # aggregation math + delta
+    # aggregation math + delta (pooled block must stay byte-compatible)
     runs = [
-        {"configuration": "with_skill", "result": {"pass_rate": 1.0, "time_seconds": 10, "tokens": None}},
-        {"configuration": "with_skill", "result": {"pass_rate": 0.5, "time_seconds": 20, "tokens": None}},
-        {"configuration": "without_skill", "result": {"pass_rate": 0.0, "time_seconds": 5, "tokens": None}},
+        {"eval_id": 0, "executor": "claude", "configuration": "with_skill",
+         "result": {"pass_rate": 1.0, "time_seconds": 10, "tokens": None, "total": 4}},
+        {"eval_id": 1, "executor": "claude", "configuration": "with_skill",
+         "result": {"pass_rate": 0.5, "time_seconds": 20, "tokens": None, "total": 4}},
+        {"eval_id": 0, "executor": "claude", "configuration": "without_skill",
+         "result": {"pass_rate": 0.0, "time_seconds": 5, "tokens": None, "total": 4}},
     ]
     agg = aggregate(runs)
     check("aggregate with_skill mean", agg["with_skill"]["pass_rate"]["mean"] == 0.75)
     check("aggregate stddev present", "stddev" in agg["with_skill"]["pass_rate"])
     check("aggregate delta", agg["delta"]["pass_rate"] == 0.75)
     check("aggregate skips all-null tokens", "tokens" not in agg["with_skill"])
+
+    # per-provider split — opposing deltas must NOT cancel
+    split = [
+        {"eval_id": 0, "executor": "claude", "configuration": "with_skill",
+         "result": {"pass_rate": 1.0, "time_seconds": 1, "tokens": None, "total": 4}},
+        {"eval_id": 0, "executor": "claude", "configuration": "without_skill",
+         "result": {"pass_rate": 0.5, "time_seconds": 1, "tokens": None, "total": 4}},
+        {"eval_id": 0, "executor": "codex", "configuration": "with_skill",
+         "result": {"pass_rate": 0.25, "time_seconds": 1, "tokens": None, "total": 4}},
+        {"eval_id": 0, "executor": "codex", "configuration": "without_skill",
+         "result": {"pass_rate": 0.75, "time_seconds": 1, "tokens": None, "total": 4}},
+    ]
+    a = aggregate(split)
+    check("pooled delta cancels the opposing providers", a["delta"]["pass_rate"] == 0.0)
+    check("claude delta is positive", a["by_provider"]["claude"]["delta"]["pass_rate"] == 0.5)
+    check("codex delta is negative", a["by_provider"]["codex"]["delta"]["pass_rate"] == -0.5)
+    check("by_provider records n_evals", a["by_provider"]["claude"]["n_evals"] == 1)
+    check("by_provider defaults to status ok", a["by_provider"]["codex"]["status"] == "ok")
+
+    # executor_error marks ONLY its own provider invalid; judge_error does not
+    ex_err = [dict(r) for r in split]
+    ex_err[2] = {**ex_err[2], "result": {**ex_err[2]["result"], "executor_error": 1,
+                                         "errors": 1}}
+    a = aggregate(ex_err)
+    check("executor_error marks that provider invalid",
+          a["by_provider"]["codex"]["status"] == "invalid")
+    check("executor_error leaves the other provider ok",
+          a["by_provider"]["claude"]["status"] == "ok")
+    check("any invalid run marks the pooled block invalid", a["valid"] is False)
+    check("invalid_runs is counted", a["invalid_runs"] == 1)
+    jt = [dict(r) for r in split]
+    jt[2] = {**jt[2], "result": {**jt[2]["result"], "judge_error": 1, "errors": 1}}
+    check("judge_error does NOT mark the provider invalid",
+          aggregate(jt)["by_provider"]["codex"]["status"] == "ok")
+
+    # quantum = the largest mean shift ONE assertion flip can cause, floored at 0.05
+    check("quantum for 2 evals x 4 assertions", quantum([
+        {"eval_id": 0, "result": {"total": 4}}, {"eval_id": 1, "result": {"total": 4}}]) == 0.125)
+    check("quantum uses the SMALLEST assertion count", quantum([
+        {"eval_id": 0, "result": {"total": 8}}, {"eval_id": 1, "result": {"total": 4}}]) == 0.125)
+    check("quantum floors at 0.05", quantum(
+        [{"eval_id": i, "result": {"total": 10}} for i in range(20)]) == 0.05)
+    check("quantum on empty runs is the floor", quantum([]) == 0.05)
 
     # error attribution: the judge is a SHARED instrument
     rec_ok = {"valid": True, "reason": "ok", "duration_sec": 12}
