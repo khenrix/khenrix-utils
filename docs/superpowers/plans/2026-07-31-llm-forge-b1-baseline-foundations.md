@@ -1,5 +1,13 @@
 # llm-forge Plan B1: Baseline Foundations Implementation Plan
 
+> **SUPERSEDED — do not execute.** This draft proposed a `B1 / B2 / C` decomposition that was
+> replaced by the A–P plan series. Its work all shipped, under different module names:
+> `gitio.py`→`gitcmd.py`, `secrets.py`→`screen.py`, `state.py`→`runstate.py`, and
+> `python3 -m forge`→`scripts/forge.py` (the entry point the skill actually locates). Its two
+> §19 leftovers are both live: `council.engine.MODE_TIMEOUT["forge"]` is 3600 and
+> `AGY_STRUCTURED_TIMEOUT` maps agy's own timeout. Kept for the reasoning, not for the tasks —
+> a plan-coverage audit that reads it as outstanding work is reading a draft as a backlog.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The forge engine's trust-primitive layer as a stdlib Python package

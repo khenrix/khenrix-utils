@@ -344,6 +344,11 @@ class Manifest:
     attempts: int
     review_rounds: int
     synthesis_fix_cap: int
+    # HOW MANY BUILDERS RUN AT ONCE, and it is the run's SHAPE for the same reason `seats` is:
+    # §5.2 prices the wall-clock ceiling BY it (`ceil(seats/concurrency) x attempts x window`),
+    # so a fleet driven at a different width than the one quoted is a fleet nobody costed.
+    # 1 is serial — every run before this field existed, and still the default.
+    concurrency: int
 
 
 def write_manifest(run_dir, manifest: Manifest) -> None:
@@ -979,6 +984,7 @@ _DECODERS = {
     "attempts": count,
     "review_rounds": _budget,
     "synthesis_fix_cap": _budget,
+    "concurrency": count,
 }
 
 

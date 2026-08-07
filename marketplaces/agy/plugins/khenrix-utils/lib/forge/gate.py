@@ -228,6 +228,28 @@ class Quote:
     # agrees with a wrong formula, which is how calls for a review nothing can convene
     # survived a suite that checked the total against the prose.
     terms: dict
+    # HOW MANY BUILDERS RUN AT ONCE. It is priced rather than merely configured: the
+    # wall-clock line is `ceil(seats/concurrency) x attempts x window`, so this number is one
+    # the operator agrees to at §5 step 2 like every other on this record.
+    #
+    # DEFAULTED TO 1, WHICH IS SERIAL AND IS WHAT EVERY RUN DID BEFORE IT EXISTED. The default
+    # is not a shrug: §19's window is a TIMEOUT rather than a budget, and builders competing
+    # for one machine's CPU and disk can push a seat that would have finished into its cap —
+    # spending it and returning no candidate. Opting in is the operator accepting that trade;
+    # defaulting to it would be this engine taking it on their behalf.
+    #
+    # LAST, AND THE DEFAULT IS WHY — `ArtifactSet.verify_overlap` is placed the same way, so
+    # every field above keeps its position for a caller that constructs one positionally.
+    concurrency: int = 1
+    # `ceil(seats/concurrency)`, PUBLISHED RATHER THAN LEFT TO BE RE-DERIVED — a test that
+    # recomputes the formula agrees with a wrong formula, which is how nine calls for a review
+    # nothing could convene survived a suite that checked the total against the prose.
+    #
+    # NOT IN `terms`, AND THE DISTINCTION IS LOAD-BEARING: `terms` is what the PROVIDER-CALL
+    # total is made of and its values must sum to `provider_calls`. A wave is a unit of wall
+    # clock, not a call, and putting it there made the sum disagree with the number the
+    # operator is shown — caught by the packaging test that adds them up.
+    waves: int = 1
 
     def __post_init__(self) -> None:
         """A quote is what an operator AGREES TO, so it may not carry a nonsense number.
@@ -244,6 +266,14 @@ class Quote:
         and every test builds a `Quote` directly, exactly as `Report` and `Confirmation` are
         built directly — and both of those validate for the same reason.
         """
+        if not isinstance(self.concurrency, int) or isinstance(self.concurrency, bool) \
+                or self.concurrency < 1:
+            # FLOOR OF ONE, not zero, and it is the one count on this record that cannot be
+            # 0: a review budget of 0 is "convene none", a legible answer, while a fleet
+            # width of 0 is a fleet that never runs — priced as though it would.
+            raise GateError(
+                f"a quote's concurrency is how many builders run at once, at least 1, "
+                f"not {self.concurrency!r}")
         for name in ("provider_calls", "setup_runs", "verify_runs", "seats", "attempts",
                      "review_rounds", "synthesis_fix_cap"):
             v = getattr(self, name)
@@ -252,6 +282,17 @@ class Quote:
             if not isinstance(v, int) or isinstance(v, bool) or v < 0:
                 raise GateError(
                     f"a quote's {name} is a count an operator can agree to, not {v!r}")
+        # AFTER THE LOOP, BECAUSE IT COMPARES TWO FIELDS. A cross-field test run before both
+        # sides are known to be counts raises `TypeError` on `seats="3"` — an error class no
+        # caller of this module catches — instead of the `GateError` this gate exists to give.
+        # Measured: the suite's own non-count fixtures crashed here rather than being refused.
+        if self.concurrency > self.seats:
+            # NOT MERELY WASTEFUL: `ceil(seats/concurrency)` saturates at 1, so every width
+            # above `seats` quotes the SAME ceiling while suggesting the operator bought
+            # something more — a quote reading cleaner than its evidence.
+            raise GateError(
+                f"a quote's concurrency is {self.concurrency} for {self.seats} seat(s); "
+                "above the seat count it buys nothing and prices as though it did")
         if not isinstance(self.peak_disk_gb, (int, float)) or \
                 isinstance(self.peak_disk_gb, bool) or self.peak_disk_gb < 0:
             raise GateError(
@@ -287,6 +328,7 @@ def _confirmed_count(name, value, source, *, floor=1) -> int:
 
 
 def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
+          concurrency=1,
           seat_timeout_sec) -> Quote:
     """Price the worst case of a run over `report`'s repository.
 
@@ -341,11 +383,21 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
     clones = _CALIBRATION_CLONES + builders + verifier_runs + review_rounds
     peak_disk_gb = round(clones * _SPEC_PEAK_DISK_GB / _SPEC_PEAK_DISK_SEATS, 1)
 
-    # SERIAL, WHICH IS WHY THE PRODUCT IS A BOUND. `runner.run` drives the seats in a
-    # generator over the fleet's names, one after another, and each attempt gets the whole
-    # window — so `seats x attempts x window` is the longest the builders can take and is
-    # reached only if every attempt runs to its cap.
-    builder_hours = builders * seat_timeout_sec / 3600.0
+    concurrency = _confirmed_count("concurrency", concurrency, "§5 step 2")
+    if concurrency > seats:
+        raise GateError(
+            f"concurrency={concurrency} exceeds seats={seats}; above the seat count it buys "
+            "nothing and would price as though it did")
+    # THE CEILING, AND WHY IT IS A PRODUCT OF THREE THINGS RATHER THAN TWO. `runner.run` drives
+    # the fleet `concurrency` seats at a time; each seat then takes its OWN attempts one after
+    # another, and every attempt gets the whole §19 window. So the longest the builders can take
+    # is `ceil(seats/concurrency) waves x attempts x window`, reached only if every attempt in
+    # the slowest wave runs to its cap.
+    #
+    # AT concurrency=1 THIS IS THE OLD FORMULA EXACTLY — `seats x attempts x window` — which is
+    # the check that it generalises rather than replaces: the serial run's quote does not move.
+    waves = -(-seats // concurrency)          # ceil, without importing math for one call
+    builder_hours = waves * attempts * seat_timeout_sec / 3600.0
 
     ultra_line = ("$5-25 in usage credits, or one of the 3 one-time free runs (§13.1, default "
                   "on); --no-ultra opts out. Its fix is one of the post-review synthesis "
@@ -410,8 +462,15 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
         "until `--gc`. Not counted: the synthesis worktree, which §4 keeps a worktree so it "
         "shares the parent's objects",
         f"wall clock: builders alone have an UPPER BOUND of {builder_hours:.1f} h = "
-        f"{builders} builder run(s) x {seat_timeout_sec}s, because §7's seats run one after "
-        "another and each attempt gets the whole §19 window. It is a bound and not an "
+        f"{waves} wave(s) of {concurrency} seat(s) x {attempts} attempt(s) x "
+        f"{seat_timeout_sec}s, because each attempt gets the whole §19 window."
+        + ("" if concurrency == 1 else
+           f" YOU HAVE ASKED FOR {concurrency} BUILDERS AT ONCE, and the window is a TIMEOUT "
+           "rather than a budget: builders sharing this machine's CPU, disk and network can "
+           "push a seat that would have finished serially past its cap, which spends the seat "
+           "and returns no candidate. The ceiling below is lower; the risk of a timed-out seat "
+           "is higher, and that trade is the one you are agreeing to here.")
+        + " It is a bound and not an "
         "estimate: a run whose seats all finish early takes a fraction of it. NOT INCLUDED — "
         f"the {setup_runs} setup runs, the {verify_runs} verify runs, §13's review rounds, "
         "§13.1's cloud review, and every clone. Those are shell and network time this engine "
@@ -425,8 +484,9 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
     ]
     return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
-                 seats=seats, attempts=attempts,
+                 seats=seats, attempts=attempts, concurrency=concurrency,
                  review_rounds=review_rounds, synthesis_fix_cap=review_fixes,
+                 waves=waves,
                  terms={"builders": builders, "synthesis": synthesis,
                         "review": review, "review_fixes": review_fixes})
 
@@ -1228,6 +1288,11 @@ class Confirmation:
     review_rounds: int
     synthesis_fix_cap: int
     ultrareview: bool
+    # OFF THE QUOTE, never from a caller: the wall-clock ceiling §5.2 showed was computed FROM
+    # this width, so a fleet driven at another one is a fleet the operator did not agree to.
+    # Defaulted to serial so every `Confirmation` assembled beside `confirm` — §12.4's
+    # consumer and the suite's fixtures — keeps meaning what it meant before the field existed.
+    concurrency: int = 1
 
     def __post_init__(self):
         # NORMALIZING as well as refusing, through the same helpers `confirm` used to call:
@@ -1270,6 +1335,19 @@ class Confirmation:
         _confirmed_count("attempts", self.attempts, "§5 step 2")
         _confirmed_count("review_rounds", self.review_rounds, "§5 step 2", floor=0)
         _confirmed_count("synthesis_fix_cap", self.synthesis_fix_cap, "§5 step 2", floor=0)
+        # VALIDATED HERE TOO, not only on the `Quote`. `confirm` builds this off a quote whose
+        # `__post_init__` already checked it, but §12.4's consumer and every test build a
+        # `Confirmation` directly — and this is the record `open_run` writes into the manifest,
+        # so an unchecked width here reaches disk without ever passing the quote's door.
+        # BOTH SIDES ARE PROVEN COUNTS FIRST, then compared — `Quote.__post_init__` records
+        # why: a cross-field test on an unvalidated field raises TypeError out of a gate whose
+        # whole job is to answer in GateError.
+        _confirmed_count("concurrency", self.concurrency, "§5 step 2")
+        _confirmed_count("seats", self.seats, "§5 step 2")
+        if self.concurrency > self.seats:
+            raise GateError(
+                f"concurrency={self.concurrency} exceeds seats={self.seats}: above the seat "
+                "count it buys nothing and was priced as though it did")
         if self.synthesis_fix_cap < self.review_rounds:
             # Each round can produce at most one fix, and §13.1 adds one more. A cap under
             # the rounds it must cover is a budget the loop is guaranteed to exhaust before
@@ -1665,7 +1743,8 @@ def confirm(report, quote_, answers) -> Confirmation:
                         ultrareview=answers["ultrareview"],
                         seats=quote_.seats, attempts=quote_.attempts,
                         review_rounds=quote_.review_rounds,
-                        synthesis_fix_cap=quote_.synthesis_fix_cap)
+                        synthesis_fix_cap=quote_.synthesis_fix_cap,
+                        concurrency=quote_.concurrency)
 
 
 def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path:
@@ -1828,7 +1907,8 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
         seats=confirmation.seats,
         attempts=confirmation.attempts,
         review_rounds=confirmation.review_rounds,
-        synthesis_fix_cap=confirmation.synthesis_fix_cap))
+        synthesis_fix_cap=confirmation.synthesis_fix_cap,
+        concurrency=confirmation.concurrency))
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,

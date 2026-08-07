@@ -1705,7 +1705,7 @@ def _manifest(**kw):
                   verify=(verify.Step(argv=("true",)),), protected_refs={},
                   forge_refs={"refs/khenrix-forge/r1/base": "b" * 40}, status_digest="d",
                   index_digest="e", created_at="2026-08-02T00:00:00+00:00", seats=3,
-                  attempts=3, review_rounds=2, synthesis_fix_cap=3)
+                  attempts=3, review_rounds=2, synthesis_fix_cap=3, concurrency=1)
     return runstate.Manifest(**{**fields, **kw})
 
 
@@ -1742,7 +1742,7 @@ def test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse(tmp_p
     """
     shared = [f.name for f in dataclasses.fields(gate.Confirmation)
               if f.name in {g.name for g in dataclasses.fields(runstate.Manifest)}]
-    assert sorted(shared) == ["attempts", "review_rounds", "seats", "setup",
+    assert sorted(shared) == ["attempts", "concurrency", "review_rounds", "seats", "setup",
                               "synthesis_fix_cap", "verify"], \
         "the two records' shared fields moved; the rows below decide what this test measures"
     c = _confirmation()
@@ -2143,3 +2143,64 @@ def test_every_spelling_of_make_C_moves_the_scan(tmp_path):
                  ["make", "-Csub", "go"]):
         found = gate.provider_invoking_verify(repo, verify.Command.parse([argv]))
         assert found and found[0].startswith("spends:"), (argv, found)
+
+
+# ---- concurrency: the quoted ceiling ----------------------------------------------------
+def _quote(tmp_path, **kw):
+    return gate.quote(_report(tmp_path), seat_timeout_sec=3600, **kw)
+
+
+def test_the_serial_quote_did_not_move_when_concurrency_was_added(tmp_path):
+    """THE REGRESSION GUARD FOR EVERY EXISTING RUN. `ceil(seats/1) x attempts x window` must
+    equal the old `seats x attempts x window` exactly — a generalisation that shifts the
+    default is a repricing nobody asked for."""
+    q = _quote(tmp_path, seats=3, attempts=3)
+    assert q.concurrency == 1
+    assert q.waves == 3
+    line = [l for l in q.lines if l.startswith("wall clock:")][0]
+    assert "9.0 h" in line, line
+
+
+def test_running_three_builders_at_once_thirds_the_quoted_ceiling(tmp_path):
+    """The point of the feature, stated as the number the operator is shown: three seats in
+    one wave instead of three waves."""
+    q = _quote(tmp_path, seats=3, attempts=3, concurrency=3)
+    assert q.waves == 1
+    line = [l for l in q.lines if l.startswith("wall clock:")][0]
+    assert "3.0 h" in line, line
+
+
+def test_an_uneven_fleet_rounds_its_waves_up_rather_than_down(tmp_path):
+    """FAIL CLOSED ON THE CEILING. 3 seats at width 2 is two waves, not one and a half — a
+    bound that rounded down would quote a time the run can exceed, which is the one direction
+    an upper bound may not be wrong in."""
+    q = _quote(tmp_path, seats=3, attempts=1, concurrency=2)
+    assert q.waves == 2
+    line = [l for l in q.lines if l.startswith("wall clock:")][0]
+    assert "2.0 h" in line, line
+
+
+def test_a_parallel_quote_states_the_contention_trade_it_is_selling(tmp_path):
+    """A VERDICT MUST NOT READ CLEANER THAN ITS EVIDENCE. The lower ceiling is the visible
+    half; the hazard — §19's window is a TIMEOUT, so contention can spend a seat and return no
+    candidate — is what the operator is actually agreeing to, and it must be on the quote."""
+    serial = [l for l in _quote(tmp_path, seats=3, attempts=1).lines if l.startswith("wall clock:")][0]
+    parallel = [l for l in _quote(tmp_path, seats=3, attempts=1, concurrency=3).lines
+                if l.startswith("wall clock:")][0]
+    assert "TIMEOUT" in parallel and "timing" not in serial
+    assert "TIMEOUT" not in serial, "the serial quote grew a warning about a risk it has not"
+
+
+def test_a_width_above_the_seat_count_is_refused_rather_than_quoted(tmp_path):
+    """It saturates: `ceil(seats/concurrency)` is 1 for every width at or above `seats`, so
+    accepting 9 for 3 seats quotes the SAME ceiling while implying more was bought."""
+    with pytest.raises(gate.GateError, match="buys nothing"):
+        _quote(tmp_path, seats=3, attempts=1, concurrency=9)
+
+
+def test_a_width_that_is_not_a_count_never_prices_a_run(tmp_path):
+    """`seats=True` once priced a run, opened a directory and authored B1 — the failure
+    `_confirmed_count` exists for. A new count must go through the same door."""
+    for bad in (0, -1, True, "3", None, 1.5):
+        with pytest.raises(gate.GateError):
+            _quote(tmp_path, seats=3, attempts=1, concurrency=bad)

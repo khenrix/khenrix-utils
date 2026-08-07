@@ -60,6 +60,7 @@ kind — an attempt directory that already exists is a refusal, not something to
 so reclaiming one would make the number the operator agreed to a lie in the other direction.
 """
 import math
+from concurrent import futures
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -1408,6 +1409,59 @@ def _refuse_an_unknown_outcome(orphans) -> None:
 _FLEET_IS_BOUGHT = ("harvested", "comparing")
 
 
+def _drive_the_fleet(run_dir, manifest, base, log, *, names, identity, launch) -> list:
+    """Every owed seat, `manifest.concurrency` of them at a time, in `names` order.
+
+    THREADS AND NOT PROCESSES, because every expensive thing a seat does releases the GIL:
+    `fleet.clone_seat` and the gate shell out through `subprocess`, and the provider call is a
+    subprocess that this thread does nothing but wait on. A process pool would buy no
+    parallelism the GIL was taking and would cost the shared `Journal` and `Baseline` a
+    pickling boundary neither is built to cross.
+
+    WHAT MAKES THIS SAFE, AND IT IS NOT THAT NOTHING IS SHARED. Three things are:
+      - the JOURNAL, whose `record` now derives `seq` and appends inside one advisory lock;
+        before that a parallel fleet corrupted the run's whole record, which is why this
+        function could not exist.
+      - the SEAT FILES, which never collide: `storage.seat_state_path` is keyed by seat name
+        and `seat_dir` by name and attempt, so two builders share no path.
+      - the BASELINE and the source repo, which are read-only here — clones read, and B1's
+        ref was written before the fleet started.
+
+    ORDER IS `names`, NOT COMPLETION. §8's comparison reads the fleet as a sequence, so a
+    fast seat finishing first must not reorder the record: results are collected into a dict
+    and re-emitted in the order the caller asked for.
+
+    ONE REFUSAL ENDS THE FLEET, exactly as it did serially. `as_completed` would let this
+    swallow an exception into a result slot; `map`-style re-raising keeps a `RunnerError` out
+    of `_drive_a_seat` doing what it always did — leaving the loop — rather than silently
+    becoming a seat that returned nothing.
+
+    SERIAL AT concurrency=1 AND MEASURABLY SO: the pool is skipped entirely, so a run that did
+    not ask for parallelism takes the identical path it took before this function existed and
+    cannot inherit a scheduling bug from a feature it declined.
+    """
+    # `manifest.concurrency` DIRECTLY, never `getattr(..., 1)`. The manifest decoder refuses a
+    # record missing the field, so a default here could only mask a manifest this engine failed
+    # to read — and it would mask it as "the operator chose serial", which they did not.
+    width = manifest.concurrency
+    if width <= 1:
+        return [_drive_a_seat(run_dir, manifest, base, log, name=name,
+                              identity=identity, launch=launch)
+                for name in names]
+    out = {}
+    with futures.ThreadPoolExecutor(max_workers=width,
+                                    thread_name_prefix="forge-builder") as pool:
+        pending = {pool.submit(_drive_a_seat, run_dir, manifest, base, log, name=name,
+                               identity=identity, launch=launch): name
+                   for name in names}
+        # `.result()` IN SUBMISSION ORDER re-raises the first refusal, and the `with` block
+        # then waits for the seats already running rather than abandoning them mid-clone —
+        # which is what leaves a run directory §15 cannot describe.
+        for fut, name in pending.items():
+            out[name] = fut.result()
+    return [out[n] for n in names if n in out]
+
+
 def _refuse_a_second_pass(events) -> None:
     """Refuse a run directory this loop has already driven, whatever the outcome was.
 
@@ -1872,9 +1926,8 @@ def run(run_dir, repo, *, identity, launch, resume=False) -> tuple:
     if resume:
         reclaimed, owed = resumemod.plan(run_dir, manifest.repo_path, names,
                                          seat_dir=seat_dir)
-    built = [r for r in (_drive_a_seat(run_dir, manifest, base, log, name=name,
-                                       identity=identity, launch=launch)
-                         for name in owed)
+    built = [r for r in _drive_the_fleet(run_dir, manifest, base, log, names=owed,
+                                        identity=identity, launch=launch)
              if r is not None]
     # ORDER FOLLOWS `names`, NOT "reclaimed first". §8's comparison reads the fleet as a
     # sequence and a resumed run that reordered it would put a different candidate in front

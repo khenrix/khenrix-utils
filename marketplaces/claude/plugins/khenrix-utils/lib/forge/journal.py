@@ -24,8 +24,10 @@ the tear, and the tear is then in the middle. `record` reconciles them by droppi
 before it appends, so the crash this file exists to survive is not also what makes the file
 unreadable.
 """
+import fcntl
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,13 +115,35 @@ def orphans(events) -> tuple[Event, ...]:
 
 
 class Journal:
-    """One append-only log file, with one writer at a time.
+    """One append-only log file, serialized across every writer by an advisory lock.
 
-    Concurrent writers are neither supported nor silently tolerated: a writer derives `seq`
-    from the file and then counts on from it, so two whose appends interleave put one number on
-    the file twice and every later `read()` refuses the whole file. The failure is loud and
-    total rather than a partial read, which is the right trade for a file whose entire value is
-    that a reader can trust every line of it.
+    WHAT THE LOCK IS FOR, AND IT IS NOT THE BYTES. `storage.append_line` opens `O_APPEND` and
+    writes the record and its terminator in ONE call, so two writers' bytes can never
+    interleave — that half was always safe. What races is the NUMBER: `seq` is derived from
+    the file and counted on from there, and `_parse` requires a dense sequence in which record
+    N carries seq N. Two writers that each derive 5 both write 5, the second lands at line 6,
+    and every later `read()` refuses the WHOLE file. That failure is total by design, so the
+    fix belongs at the allocation rather than at the reader.
+
+    SO THE SEQ IS DERIVED AND APPENDED INSIDE ONE CRITICAL SECTION. Holding the lock across
+    both is the whole point: a lock around the append alone would still let two writers derive
+    the same number first, and a lock around the derivation alone would let a second writer
+    append between the first's derivation and its own write.
+
+    RE-DERIVED EVERY TIME, NOT CACHED ACROSS THE LOCK. A cached counter is exactly what goes
+    stale when another writer appends, and re-reading is what `_resolve_last_seq` already calls
+    the point rather than a side effect — it validates the whole file on the way. A run's
+    journal holds a few hundred records, so this is microseconds against clones and provider
+    calls.
+
+    A FRESH DESCRIPTOR PER ACQUISITION, WHICH IS WHAT MAKES IT WORK BETWEEN THREADS. `flock`
+    is held by the open file DESCRIPTION, so two threads sharing one cached fd would both
+    "hold" the same lock and serialize nothing. Opening per acquisition gives each waiter its
+    own description, so threads in one process block each other exactly as separate processes
+    do — and the fleet's builders are threads.
+
+    ADVISORY, AND ONLY THIS CLASS TAKES IT. A writer that bypasses `record` is unaffected;
+    nothing in this package has one, and the alternative — a mandatory lock — is not portable.
     """
 
     def __init__(self, path):
@@ -150,8 +174,20 @@ class Journal:
             # reader believes it.
             raise JournalError(f"{event} payload keys {reserved} are the record's own fields")
         at = datetime.now(timezone.utc).isoformat()
-        seq = self._resolve_last_seq() + 1
         payload = {**identity, **data}
+        with self._exclusive():
+            return self._append_locked(event, operation_id, at, payload)
+
+    def _append_locked(self, event, operation_id, at, payload) -> Event:
+        """The seq allocation and the append, which have to happen together — see the class.
+
+        THE CALLER HOLDS THE LOCK. Split out rather than nested so the critical section is one
+        function and cannot grow a return path that leaves it early.
+        """
+        # RE-DERIVED UNDER THE LOCK, never taken from the cache: another writer may have
+        # appended since this one last did, and its `seq` is the one on the file now.
+        self._last_seq = None
+        seq = self._resolve_last_seq() + 1
         row = {"seq": seq, "event": event, "operation_id": operation_id, "at": at, **payload}
         try:
             # sort_keys so one fact has one spelling on disk: without it the same event
@@ -172,6 +208,30 @@ class Journal:
             raise
         self._last_seq = seq
         return Event(seq=seq, event=event, operation_id=operation_id, at=at, data=payload)
+
+    @contextmanager
+    def _exclusive(self):
+        """Hold this journal's advisory write lock for the body.
+
+        A SIDECAR FILE, NOT THE JOURNAL ITSELF. The journal is truncated by
+        `_drop_a_torn_tail` and created by `append_line`'s own `O_EXCL` dance; locking a
+        separate path keeps the lock's lifetime independent of both, so a writer waiting on
+        the lock is never waiting on a descriptor another writer is about to replace.
+
+        `O_CLOEXEC` so a lock this process holds is not inherited by a builder's subprocess —
+        `run_seat` spawns provider CLIs, and a child holding the journal lock past its
+        parent's release would block the fleet on a process that has no idea it is a writer.
+        """
+        fd = os.open(str(self.path) + ".lock",
+                     os.O_CREAT | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def _identity_now(self) -> dict:
         """The identity of the process appending now, which is not always the one that opened

@@ -33,7 +33,7 @@ def _manifest(repo, **kw):
                 protected_refs=refs, forge_refs={}, status_digest=digest,
                 index_digest=runstate.snapshot_index(repo),
                 created_at="2026-08-01T00:00:00Z", seats=3, attempts=3,
-                review_rounds=2, synthesis_fix_cap=3)
+                review_rounds=2, synthesis_fix_cap=3, concurrency=1)
     return runstate.Manifest(**{**base, **kw})
 
 

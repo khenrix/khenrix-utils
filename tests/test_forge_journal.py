@@ -397,3 +397,78 @@ def test_the_append_goes_through_the_durable_writer(tmp_path, monkeypatch):
 def test_intent_and_done_are_the_only_spelling_of_the_pair():
     assert journal.intent("council_round") == "council_round_start"
     assert journal.done("council_round") == "council_round_done"
+
+
+# ---- concurrent writers ----------------------------------------------------------------
+def test_threads_appending_at_once_leave_a_journal_that_still_reads(tmp_path):
+    """THE EXTERNAL QUESTION: after N writers race, can the file still be read as a sequence
+    of facts? Not "was a lock taken".
+
+    REPRODUCED BEFORE THE LOCK, and it is why the fleet could not be parallelised: each writer
+    derived `seq` from the file and counted on, so two that derived 5 both wrote 5 and the
+    second landed at line 6. `_parse` then refused the WHOLE file — every fact in the run,
+    including the ones written correctly before the race.
+
+    THREADS AND NOT ONLY PROCESSES, because `flock` is held by the open file DESCRIPTION: a
+    cached descriptor shared between threads would have both "holding" one lock and serializing
+    nothing, and the fleet's builders are threads.
+    """
+    import threading
+    log = journal.Journal(storage.journal_path(tmp_path))
+    writers, per = 8, 12
+    errors = []
+
+    def _spam(n):
+        try:
+            w = journal.Journal(storage.journal_path(tmp_path))
+            for i in range(per):
+                w.record(journal.intent("seat"), operation_id=f"w{n}-{i}", seat="claude")
+        except Exception as e:            # noqa: BLE001 — reported, not swallowed
+            errors.append(e)
+
+    threads = [threading.Thread(target=_spam, args=(n,)) for n in range(writers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [], errors
+    events = log.read()
+    assert len(events) == writers * per
+    assert [e.seq for e in events] == list(range(1, writers * per + 1))
+
+
+def test_processes_appending_at_once_leave_a_journal_that_still_reads(tmp_path):
+    """The other half, and it is a DIFFERENT mechanism rather than the same test twice: a
+    thread shares the process's memory (so a cached counter is shared) while a fork does not,
+    and only an OS-level lock covers both. §14.1's record has to survive either."""
+    import subprocess
+    import textwrap
+    prog = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(ROOT / "shared" / "lib")!r})
+        from forge import journal, storage
+        w = journal.Journal(storage.journal_path({str(tmp_path)!r}))
+        for i in range(12):
+            w.record(journal.intent("seat"), operation_id=sys.argv[1] + str(i), seat="codex")
+    """)
+    procs = [subprocess.Popen([sys.executable, "-c", prog, f"p{n}-"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+             for n in range(6)]
+    for p in procs:
+        out, err = p.communicate(timeout=120)
+        assert p.returncode == 0, err.decode()
+    events = journal.Journal(storage.journal_path(tmp_path)).read()
+    assert len(events) == 6 * 12
+    assert [e.seq for e in events] == list(range(1, 6 * 12 + 1))
+
+
+def test_a_writer_sees_another_writers_records_rather_than_its_cached_counter(tmp_path):
+    """THE STALENESS THIS MUST NOT HAVE. Two `Journal` objects on one path: the first appends,
+    caches seq=1, the second appends, then the first appends again. A counter carried across
+    the lock would hand back 2 for a file whose last record is already 2."""
+    a = journal.Journal(storage.journal_path(tmp_path))
+    b = journal.Journal(storage.journal_path(tmp_path))
+    assert a.record(journal.intent("seat"), operation_id="a1").seq == 1
+    assert b.record(journal.intent("seat"), operation_id="b1").seq == 2
+    assert a.record(journal.intent("seat"), operation_id="a2").seq == 3
+    assert [e.seq for e in a.read()] == [1, 2, 3]

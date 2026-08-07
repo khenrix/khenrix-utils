@@ -240,7 +240,7 @@ def _manifest(repo, base_oid, tree_oid):
         setup=(), verify=(verify.Step(argv=("true",), cwd="", env={}, timeout=600),),
         protected_refs={}, forge_refs={}, status_digest="d", index_digest="i",
         created_at="2026-08-03T00:00:00Z", seats=3, attempts=3, review_rounds=2,
-        synthesis_fix_cap=3)
+        synthesis_fix_cap=3, concurrency=1)
 
 
 # A synthesis tree DISTINCT from B1's own. `mergeability` reads the two against each other —

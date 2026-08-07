@@ -267,7 +267,7 @@ def start(args, *, out, make_launcher=None) -> int:
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
                         review_rounds=args.review_rounds, ultrareview=not args.no_ultra,
-                        seat_timeout_sec=timeout)
+                        concurrency=args.concurrency, seat_timeout_sec=timeout)
     if "verify" not in answers:
         # `must_show` resolves §6.1's surface from the confirmed command, so the sheet has to
         # carry one before the operator can be shown anything. `gate.confirm` gives the same
@@ -1534,6 +1534,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="--start: an untracked path to carry into the baseline (repeatable)")
     ap.add_argument("--seats", type=int, default=3)
     ap.add_argument("--attempts", type=int, default=3)
+    # DEFAULT 1 = SERIAL, which is what every run did before this flag existed. §19's window
+    # is a timeout rather than a budget, so builders sharing one machine can push a seat past
+    # its cap; the quote states that trade and the operator opts in, rather than this front
+    # end taking it for them.
+    ap.add_argument("--concurrency", type=int, default=1,
+                    help="--start: how many builders run at once (default 1 = serial). "
+                         "Lowers the quoted wall-clock ceiling; raises the risk of a seat "
+                         "timing out under contention")
     ap.add_argument("--review-rounds", type=int, default=2, dest="review_rounds")
     ap.add_argument("--no-ultra", action="store_true",
                     help="§13.1 is default on; this opts out and re-prices the run")

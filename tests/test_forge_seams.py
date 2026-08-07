@@ -672,7 +672,7 @@ def _manifest_for(repo, base=None):
         setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./check.sh",)),),
         protected_refs=refs, forge_refs=forge, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-01T00:00:00Z",
-        seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3)
+        seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3, concurrency=1)
 
 
 def test_a_crash_between_intent_and_result_is_not_a_completed_operation(tmp_path):
@@ -838,7 +838,7 @@ def _a_run_to_drive(tmp_path, *, gate_body="exit 0"):
         setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("./gate.sh",)),),
         protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
-        seats=1, attempts=1, review_rounds=2, synthesis_fix_cap=3))
+        seats=1, attempts=1, review_rounds=2, synthesis_fix_cap=3, concurrency=1))
     return repo, run
 
 

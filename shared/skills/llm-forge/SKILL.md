@@ -195,6 +195,27 @@ the detector. A task relying on a **named ambient skill** (`/markitdown`, "use t
 skill") is permitted only when all three installed copies hash identically — otherwise the
 same refusal, because three CLIs running "the same skill" is a claim the engine checks.
 
+### `--concurrency` — builders in parallel, and the trade it makes
+
+By default the three seats run **one after another**, and the quote's wall-clock ceiling says
+so: `waves x attempts x window`, which for a default run is `3 x 3 x 1h` = **9 hours**.
+
+```bash
+python3 "$FORGE" --start --task ./task --answers ./answers.json --concurrency 3
+```
+
+Three builders at once makes that **one wave — a 3-hour ceiling**. The quote shows the new
+number before you consent to it.
+
+**What you are trading.** §19's window is a **timeout, not a budget**. Builders sharing one
+machine's CPU, disk and network can push a seat that would have finished serially past its
+cap — and a seat that times out is *spent* and returns no candidate. The quote says this in
+the wall-clock line whenever concurrency is above 1. Serial is the default because that trade
+is yours to accept, not the engine's to take for you.
+
+**Above the seat count is refused.** `ceil(seats/concurrency)` saturates at one wave, so a
+width of 9 on 3 seats would quote the same ceiling while implying you bought more.
+
 ### If a run dies partway: `--resume`, never a second `--start`
 
 A run that stopped — the machine went down, the terminal was closed, a seat wedged — is

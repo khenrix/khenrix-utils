@@ -64,7 +64,7 @@ def _fake(fn=None, *, answer=ANSWER, valid=True, quote_token=True, quote=None):
     return launch
 
 
-def _manifest(repo, b, setup, gate, seats, attempts):
+def _manifest(repo, b, setup, gate, seats, attempts, concurrency=1):
     refs, digest = runstate.snapshot_refs(repo, (), forge_refs={b.ref: b.commit})
     return runstate.Manifest(
         run_id="r1", repo_path=str(repo), base_commit=b.base_commit,
@@ -73,12 +73,13 @@ def _manifest(repo, b, setup, gate, seats, attempts):
         setup=setup, verify=gate,
         protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
-        seats=seats, attempts=attempts, review_rounds=2, synthesis_fix_cap=3)
+        seats=seats, attempts=attempts, review_rounds=2, synthesis_fix_cap=3,
+        concurrency=concurrency)
 
 
 def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),
           gate=(verify.Step(argv=("true",)),), name="repo", seed=None,
-          seats=3, attempts=3):
+          seats=3, attempts=3, concurrency=1):
     """A repository, a run directory, B, and the manifest that agreed to them.
 
     `seed` runs against the repository before B is taken, so a fixture that needs a gate
@@ -96,7 +97,7 @@ def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),
     run = tmp_path / f"run-{name}"
     run.mkdir(exist_ok=True)
     b = baseline.materialize(repo, run, finspect.repo_facts(repo), [], "r1")
-    m = _manifest(repo, b, setup, gate, seats, attempts)
+    m = _manifest(repo, b, setup, gate, seats, attempts, concurrency)
     runstate.write_manifest(run, m)
     return repo, run, b, m
 
@@ -2535,3 +2536,92 @@ def test_two_different_refusals_still_get_their_retries(tmp_path):
 
     assert runner.run(run, repo, identity=IDENT, launch=different_each_time) == ()
     assert len(n) == 3, f"only {len(n)} of 3 attempts were spent on a changing failure"
+
+
+# ---- parallel builders -----------------------------------------------------------------
+def test_a_parallel_fleet_actually_overlaps_its_builders(tmp_path):
+    """THE EXTERNAL QUESTION: were two builders in flight AT THE SAME TIME? Not "was a pool
+    constructed" — a ThreadPoolExecutor with the work still serialised behind a lock would
+    satisfy any structural check and buy nothing.
+
+    Each launch records its entry, waits on a barrier that only releases when `concurrency`
+    seats have arrived, and records its exit. If the fleet were serial the barrier would never
+    fill and this test would TIME OUT rather than fail — which is why the barrier carries its
+    own timeout and the assertion is on the observed overlap.
+    """
+    import threading
+    repo, run, b, m = _open(tmp_path, seats=3, attempts=1, concurrency=3)
+    barrier = threading.Barrier(3, timeout=60)
+    live, peak, lock = [0], [0], threading.Lock()
+
+    inner = _per_seat(lambda name, n, path: True)
+
+    def _launch(**kw):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        barrier.wait()          # cannot pass unless all three builders are here at once
+        with lock:
+            live[0] -= 1
+        # THE REAL RESULT SHAPE, so this measures overlap on a run that actually succeeded
+        # rather than on three seats failing in parallel — which would satisfy the barrier
+        # just as well and prove nothing about the fleet doing its work.
+        return inner(**kw)
+
+    out = runner.run(run, repo, identity=IDENT, launch=_launch)
+    assert peak[0] == 3, f"builders never overlapped; peak in flight was {peak[0]}"
+    assert len(out) == 3, f"the overlap was real but the fleet produced {len(out)} seats"
+
+
+def test_a_parallel_fleet_leaves_a_journal_that_still_reads(tmp_path):
+    """THE FAILURE THAT BLOCKED THIS FEATURE. Every builder appends to ONE journal, and before
+    the advisory lock two writers deriving the same `seq` made `_parse` refuse the entire file
+    — losing every fact in the run, including the correctly-written ones. §14.1's whole
+    deliverable is a record that survives; a fleet that corrupts it is not a faster fleet."""
+    repo, run, b, m = _open(tmp_path, seats=3, attempts=1, concurrency=3)
+    runner.run(run, repo, identity=IDENT, launch=_per_seat(lambda name, n, p: True))
+    events = journal.Journal(storage.journal_path(run)).read()
+    assert [e.seq for e in events] == list(range(1, len(events) + 1))
+    seats = {e.data.get("seat") for e in events if e.data.get("seat")}
+    assert seats == {"claude", "codex", "agy"}, seats
+
+
+def test_a_parallel_fleet_reports_its_seats_in_fleet_order_not_finishing_order(tmp_path):
+    """§8 reads the fleet as a SEQUENCE, so a seat that finished first must not reorder the
+    record. Reproduced by making the LAST seat in fleet order return first."""
+    import time
+    repo, run, b, m = _open(tmp_path, seats=3, attempts=1, concurrency=3)
+    # THE LAST SEAT IN FLEET ORDER FINISHES FIRST. `_per_seat` is wrapped rather than
+    # re-spelled: a hand-rolled launcher result missing the sentinel makes every seat fail
+    # `proven_read`, and the test then passes an empty list against an empty list.
+    order = {"claude": 0.45, "codex": 0.25, "agy": 0.0}
+
+    def _sleep_then_answer(name, n, path):
+        time.sleep(order[name])
+        return True
+
+    out = runner.run(run, repo, identity=IDENT, launch=_per_seat(_sleep_then_answer))
+    assert out, "no seat produced a candidate, so this proves nothing about order"
+    assert [r.name for r in out] == list(runner._fleet(m))
+
+
+def test_a_serial_fleet_takes_the_path_it_took_before_the_pool_existed(tmp_path):
+    """THE DISCRIMINATION CHECK, and it is why `concurrency=1` skips the executor entirely: a
+    run that declined parallelism must not inherit a scheduling bug from a feature it did not
+    ask for. Measured by the peak overlap being exactly one."""
+    import threading
+    repo, run, b, m = _open(tmp_path, seats=3, attempts=1, concurrency=1)
+    live, peak, lock = [0], [0], threading.Lock()
+
+    def _launch(**kw):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        try:
+            return {"status": "ok", "valid": True, "result_text": "d", "exit_code": 0}
+        finally:
+            with lock:
+                live[0] -= 1
+
+    runner.run(run, repo, identity=IDENT, launch=_launch)
+    assert peak[0] == 1, f"a serial run overlapped {peak[0]} builders"

@@ -323,12 +323,24 @@ built from claims, and better than a quarter of them were already false.
   `artifact_set` and `bundle.build` produced a bundle carrying the new bytes under the old path
   set, silently, at exit 0.
 
-- **Parallel builders — DECLINED, and this is a decision rather than an omission.** K6 quotes a
-  wall-clock ceiling of `seats × attempts × window`, and that bound holds *only because the
-  seats run serially*. Parallelising them would invalidate a number the operator is shown before
-  they consent to the spend. The serial fleet is a priced guarantee; trading it for wall-clock is
-  the operator's call to make, not one to take on their behalf while they are reading a quote
-  that would no longer be true. Reversing this means re-deriving K6's ceiling first.
+- **Parallel builders — SHIPPED, behind `--concurrency N`, after the real blocker was found.**
+  The first pass declined this on the wrong reason: that parallelising invalidates K6's quoted
+  ceiling. It does not — a parallel fleet finishes *under* the serial bound, so the quote would
+  merely have been conservative, and the arithmetic is one line.
+
+  The real blocker was the **journal**, whose own docstring said *"concurrent writers are
+  neither supported nor silently tolerated"*: every writer derived `seq` from the file and
+  counted on, so two builders writing at once put one number on the file twice and `_parse`
+  refused **the entire run's record**. Reproduced with both threads and processes before the
+  fix. `record` now derives the seq and appends inside one advisory `flock`, taken on a fresh
+  descriptor per acquisition so threads block each other exactly as processes do.
+
+  With that closed the fleet runs `manifest.concurrency` builders at once and the ceiling
+  generalises to `ceil(seats/concurrency) × attempts × window` — identical to the old formula
+  at width 1, so no existing quote moved. **Default stays serial**, because the second hazard is
+  real and unmeasurable statically: §19's window is a *timeout*, so builders contending for one
+  machine can push a seat past its cap and spend it for no candidate. The quote states that
+  trade whenever concurrency exceeds 1; the operator opts in.
 
 **Retired during the sweep, measured:** the journal creation race (`append_line` already
 observes creation with `O_EXCL`), hash criteria on symlinks (evaluates `False` — no false
