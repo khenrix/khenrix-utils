@@ -1,6 +1,7 @@
 {
+  "schema_version": 2,
   "skill": "hookify",
-  "source_hash": "c4589b2802899a1de3c21dc179147a2505cd0ac4ce473fdfea161c95298e9d20",
+  "source_hash": "de8381ce0b88f6200e4dfddde36619c7215f4b950a20f7fd4c6ee0a3c85d04b6",
   "eval_set_hash": "25a319aff709f2cf09f67d31ae46b092cefe0196fc4fa1b5989358dc6f999422",
   "providers": [
     "claude"

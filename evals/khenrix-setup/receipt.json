@@ -1,22 +1,14 @@
 {
+  "schema_version": 2,
   "skill": "khenrix-setup",
-  "source_hash": "06b1584bcbb79d526e7fd80ff5efeb606df93d67955e6bc444b562dccc9ce050",
+  "source_hash": "a33c3600b601a515b9fe6cdd667b14c79b8e4f257780646bdbdd7ca9c66646ef",
   "eval_set_hash": "44c575ebf43510a62c0a34239393504671aafc1c5474648f67aaf6b330880070",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1667,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "models": {
-    "claude": "claude-haiku-4-5-20251001",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.6 Flash (High)",
-    "judge": "claude-haiku-4-5-20251001"
-  },
-  "certified_by": "delta-gate"
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }
