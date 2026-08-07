@@ -34,7 +34,6 @@ A/B and delta stay meaningful; just read them with this in mind.
 
 Usage:
   eval_harness.py --skill khenrix-setup [--providers claude,codex,agy] [--mode deep]
-  eval_harness.py --skill khenrix-setup --grade-only --iteration 2
   eval_harness.py --self-test          # hermetic unit tests of the harness logic (no tokens)
 """
 from __future__ import annotations
@@ -626,7 +625,7 @@ def _checks():
 
 
 def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None,
-                   models=None):
+                   models=None, summary=None):
     """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
     For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark.
     `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded).
@@ -635,6 +634,7 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
     provable from the receipt, not silently attributed to the MODES default."""
     c = _checks()
     rec = {
+        "schema_version": c.CURRENT_RECEIPT_SCHEMA,
         "skill": skill,
         "source_hash": c.source_hash(ROOT, skill),
         "eval_set_hash": c.eval_set_hash(ROOT, skill),
@@ -643,6 +643,16 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         "blind_winner": blind_winner,
         "provenance": "seeded: blessed current committed state" if seeded else "eval",
     }
+    if summary:
+        # WHICH EXECUTOR CARRIED THE DELTA, readable from the receipt alone. The pooled
+        # delta_pass_rate above is the gate; this is the diagnosis, and without it a
+        # reader of a green receipt cannot tell a uniform win from one provider's gain
+        # masking another's regression.
+        rec["per_provider"] = {
+            p: {"delta": b["delta"].get("pass_rate"), "quantum": b.get("quantum"),
+                "n_evals": b.get("n_evals"), "status": b.get("status")}
+            for p, b in (summary.get("by_provider") or {}).items()
+        }
     if models:
         rec["models"] = models
     if not seeded:
@@ -777,7 +787,8 @@ def run(args) -> int:
         models = {p: cfg.get(p, {}).get("model") for p in providers}
         models["judge"] = cfg.get(args.judge, {}).get("model")
         _write_receipt(args.skill, providers=providers, mode=args.mode,
-                       judge=args.judge, delta=d, blind_winner=bw, seeded=False, models=models)
+                       judge=args.judge, delta=d, blind_winner=bw, seeded=False,
+                       models=models, summary=benchmark["run_summary"])
     return 0 if gate_ok else 1
 
 

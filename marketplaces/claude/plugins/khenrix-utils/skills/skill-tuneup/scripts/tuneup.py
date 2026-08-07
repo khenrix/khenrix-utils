@@ -1292,57 +1292,45 @@ def _self_test() -> int:
     return 0 if all(p for _, p in ok) else 1
 
 
+def _load_checks():
+    """Import the receipt validator from wherever THIS engine lives, not from the target.
+
+    The engine always comes from the khenrix checkout (or, once rendered, the plugin
+    bundle) while `repo` is whichever repo the TARGET lives in — they are the same only
+    for a full-gate target. Importing from `repo/scripts` therefore failed outright in a
+    foreign repo, and a failed import that returns early silently skips the provenance
+    and panel checks: the command would print "proven" having verified nothing.
+    """
+    import importlib.util
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[4] / "scripts" / "lib" / "checks.py",   # khenrix checkout
+        here.parents[3] / "lib" / "checks.py",               # rendered plugin bundle
+    ]
+    for c in candidates:
+        if c.is_file():
+            spec = importlib.util.spec_from_file_location("_khenrix_checks", c)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    raise RuntimeError(f"receipt validator not found; looked in {[str(c) for c in candidates]}")
+
+
 def verify_final_receipt(repo: Path, skill: str, panel: list) -> list:
     """Prove Step 10's full-panel requirement instead of asserting it in prose.
 
     `make precommit` only compares hashes, so a receipt earned on a single provider
-    satisfies it — which is correct for mid-run iteration but NOT for the convergence
-    gate, which requires a green full-panel eval on the exact candidate. Nothing checked
-    that, and in practice every receipt stayed single-provider. Returns problems; empty
-    means proven. llm-council and the deterministic-gated skills are exempt from the
-    provider requirement: their receipts are earned by a self-test / unit suite, so a
-    full panel proves nothing extra about them.
+    satisfies it — correct for mid-run iteration but NOT for the convergence gate, which
+    requires a green full-panel eval on the exact candidate. Nothing checked that, and in
+    practice every receipt stayed single-provider. Returns problems; empty means proven.
+
+    THE RULES THEMSELVES LIVE IN `checks.validate_receipt(final=True)` — one rulebook
+    shared with `receipt_gate`, so this command and `make precommit` can no longer
+    disagree about the same receipt. llm-council and the deterministic-gated skills stay
+    exempt from the panel requirement there: their receipts are earned by a self-test /
+    unit suite, so a full panel proves nothing extra about them.
     """
-    rp = repo / "evals" / skill / "receipt.json"
-    if not rp.is_file():
-        return [f"no receipt at {rp.relative_to(repo)} — run `make eval SKILL={skill}`"]
-    try:
-        rec = json.loads(rp.read_text())
-    except Exception as e:  # noqa: BLE001
-        return [f"receipt is unreadable: {e}"]
-    problems = []
-    sys.path.insert(0, str(repo / "scripts"))
-    try:
-        from lib import checks as _checks
-        if rec.get("source_hash") != _checks.source_hash(repo, skill):
-            problems.append("receipt source_hash != current source — it predates the "
-                            "candidate; re-run the eval on exactly this tree")
-        # receipt_gate checks this too; without it `verify-final-receipt` can say "proven"
-        # while `make precommit` fails on a rewritten eval set (a `risky` finding).
-        if rec.get("eval_set_hash") != _checks.eval_set_hash(repo, skill):
-            problems.append("receipt eval_set_hash != current eval set — the cases changed "
-                            "since it was earned; re-run the eval")
-    except Exception as e:  # noqa: BLE001
-        problems.append(f"cannot recompute hashes: {e}")
-    self_test_gated = rec.get("self_test") is True or str(
-        rec.get("blind_winner", "")).startswith("n/a-")
-    # Whitelist the earned value rather than blacklisting a seeded one: the producer writes
-    # "seeded: blessed current committed state", so an equality test against "seed" was dead
-    # code — and that made `--seed-receipt --providers claude,codex,agy` a one-flag way to
-    # make this very command print "proven", blessing the exact action SKILL.md forbids in
-    # caps. Whitelisting fails closed if the producer string ever changes again. Self-test-
-    # gated skills are exempt: _write_receipt runs their suite even when seeding, so a
-    # seeded receipt there really was earned by the gate that governs it.
-    if not self_test_gated and rec.get("provenance") != "eval":
-        problems.append(f"receipt provenance is {rec.get('provenance')!r}, not 'eval' — "
-                        "it was seeded, not earned; no eval actually ran")
-    if not self_test_gated:
-        got = set(rec.get("providers") or [])
-        missing = [p for p in panel if p not in got]
-        if missing:
-            problems.append(f"receipt providers {sorted(got) or '[]'} missing {missing} — "
-                            f"Step 10 requires a green FULL-PANEL eval on the candidate")
-    return problems
+    return _load_checks().validate_receipt(repo, skill, final=True, panel=panel)
 
 
 REVIEW_BYTE_CAP = 65536

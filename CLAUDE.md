@@ -58,6 +58,13 @@ make eval SKILL=<changed-skill>   # with-skill vs baseline + LLM-judge + blind A
 Commit only when `run_summary.delta.pass_rate >= 0`. The blind A/B winner is recorded but
 advisory (not a gate) — on a strong executor it rewards the tighter baseline over a
 correct-but-thorough skill answer, so a non-negative-delta run isn't failed on a blind tie/loss.
+
+The harness also records `run_summary.by_provider` — each executor's own delta plus the
+noise `quantum` — and writes it into the receipt as `per_provider`. **That is a diagnostic,
+not a gate:** the pooled delta remains the commit gate, because measured run-to-run drift on
+unchanged bodies (0.06–0.08) exceeds a threshold of 0 and splitting triples the sensitivity.
+Read the per-provider numbers when a delta is weak or surprising — a pooled pass can hide a
+provider-sized regression.
 `skill-creator` (Claude) and Codex's native creator are optional accelerators on top; the
 harness is the baseline that also covers agy. `llm-council` is one exception — its
 model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness.

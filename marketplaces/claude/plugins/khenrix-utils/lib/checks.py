@@ -443,26 +443,100 @@ def _receipt_is_certified(rec: dict) -> bool:
     return str(rec.get("provenance", "")).startswith("seeded")
 
 
+CURRENT_RECEIPT_SCHEMA = 2
+
+
+def validate_receipt(root: Path, skill: str, *, final: bool = False,
+                     panel: list | None = None) -> list[str]:
+    """The single source of receipt truth. Freshness + certification always; provenance,
+    full panel and per-provider data only when `final`.
+
+    TWO CALLERS, ONE RULEBOOK: `receipt_gate` (make precommit) calls it with final=False,
+    and skill-tuneup's `verify-final-receipt` with final=True. They used to reimplement
+    overlapping rules in two files, which is how `verify-final-receipt` could say "proven"
+    on a receipt `make precommit` would reject.
+
+    GRANDFATHERING: a receipt with NO `schema_version` key predates the per-provider
+    schema and is judged on freshness alone, so existing receipts do not have to be
+    re-earned until their skills next change. An explicit `"schema_version": null` is NOT
+    the same thing — that is a malformed receipt and is rejected.
+    """
+    rp = root / "evals" / skill / "receipt.json"
+    if not rp.is_file():
+        return [f"receipt: {skill} has no receipt — run `make eval SKILL={skill}` "
+                f"(or `--seed-receipt`)"]
+    try:
+        rec = json.loads(rp.read_text())
+    except Exception as e:  # noqa: BLE001
+        return [f"receipt: {skill} is unreadable: {e}"]
+
+    problems = []
+    if not _receipt_is_certified(rec):
+        problems.append(f"receipt: {skill} records a certification that did not pass "
+                        f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")
+    # FAIL CLOSED, NEVER RAISE. A gate that crashes on an unreadable closure is worse
+    # than one that reports it: the caller (make precommit, verify-final-receipt) gets a
+    # traceback instead of a verdict, and a traceback is not a refusal anyone can act on.
+    try:
+        if rec.get("source_hash") != source_hash(root, skill):
+            problems.append(f"receipt: {skill} changed since last eval — "
+                            f"run `make eval SKILL={skill}`")
+        elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
+            problems.append(f"receipt: {skill} eval set changed — "
+                            f"run `make eval SKILL={skill}`")
+    except Exception as e:  # noqa: BLE001
+        problems.append(f"receipt: {skill} — cannot recompute hashes: {e}")
+
+    # GRANDFATHERING IS NARROW ON PURPOSE: a receipt with no `schema_version` predates
+    # the per-provider schema, so it is exempt from the `per_provider` requirement ONLY.
+    # It is NOT exempt from the final gate's provenance and full-panel checks — those read
+    # `providers` and `provenance`, which every receipt has carried since v1. Exempting
+    # them too would let a v1 receipt print "proven" at the convergence gate having been
+    # neither earned nor full-panel, which is the exact assurance that gate exists to give.
+    v1 = "schema_version" not in rec
+    if not v1:
+        ver = rec["schema_version"]
+        if not isinstance(ver, int):
+            return problems + [f"receipt: {skill} has a malformed schema_version {ver!r}"]
+        if ver > CURRENT_RECEIPT_SCHEMA:
+            return problems + [f"receipt: {skill} has an unknown schema_version {ver} — "
+                               f"this checkout understands up to {CURRENT_RECEIPT_SCHEMA}"]
+    if not final:
+        return problems
+
+    # Self-test-gated skills earn their receipt from a deterministic suite, so a full
+    # panel and per-provider deltas prove nothing extra about them.
+    self_test_gated = (rec.get("self_test") is True
+                       or str(rec.get("blind_winner", "")).startswith("n/a-"))
+    # Whitelist the earned value rather than blacklisting a seeded one: the producer
+    # writes "seeded: blessed current committed state", so an equality test against
+    # "seed" was dead code — and that made `--seed-receipt` a one-flag way to make this
+    # print "proven". Whitelisting fails closed if the producer string changes again.
+    if not self_test_gated and rec.get("provenance") != "eval":
+        problems.append(f"receipt: {skill} provenance is {rec.get('provenance')!r}, not "
+                        f"'eval' — it was seeded, not earned; no eval actually ran")
+    if not self_test_gated:
+        got, want = set(rec.get("providers") or []), set(panel or [])
+        if not want <= got:
+            problems.append(f"receipt: {skill} is not FULL-PANEL — earned on "
+                            f"{sorted(got)}, needs {sorted(want)}")
+        if not v1 and not rec.get("per_provider"):
+            problems.append(f"receipt: {skill} is schema v2 but carries no per_provider "
+                            f"block — re-run `make eval SKILL={skill}`")
+    return problems
+
+
 def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
+    """Freshness gate for `make verify` (advisory) and `make precommit` (fatal).
+
+    The gate itself is a non-negative assertion delta, enforced at eval time in
+    eval_harness.run() before the receipt is written. The blind A/B winner is RECORDED in
+    the receipt but ADVISORY — it rewards concision on a strong executor and would
+    false-fail a correct, positive-delta skill — so precommit does NOT gate on it.
+    """
     out = []
     for skill in _evald_skills(root):
-        rp = root / "evals" / skill / "receipt.json"
-        if not rp.exists():
-            out.append(f"receipt: {skill} has no receipt — run `make eval SKILL={skill}` (or `--seed-receipt`)")
-            continue
-        rec = json.loads(rp.read_text())
-        if not _receipt_is_certified(rec):
-            out.append(f"receipt: {skill} records a certification that did not pass "
-                       f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")
-        if rec.get("source_hash") != source_hash(root, skill):
-            out.append(f"receipt: {skill} changed since last eval — run `make eval SKILL={skill}`")
-        elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
-            out.append(f"receipt: {skill} eval set changed — run `make eval SKILL={skill}`")
-        # The receipt gate is a non-negative assertion delta (enforced at eval time in
-        # eval_harness.run() before the receipt is written). The blind A/B winner is
-        # RECORDED in the receipt but ADVISORY — it rewards concision on a strong executor
-        # and would false-fail a correct, positive-delta skill (see eval_harness.run()'s
-        # gate note), so precommit does NOT gate on it.
+        out.extend(validate_receipt(root, skill, final=False))
     return ["(advisory) " + m for m in out] if advisory else out
 
 
@@ -628,6 +702,72 @@ def _self_test() -> int:
             ok.append(("...and it names the errno cause, not just the path",
                        any("PermissionError" in x for x in _p)))
         (_r / "locked.txt").chmod(0o644)
+    # ---- receipt schema v2 + grandfathering + the single validator -------------
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        _ev = _r / "evals" / "alpha"
+        _ev.mkdir(parents=True)
+        _ev.joinpath("evals.json").write_text("{}")
+        (_r / "shared" / "skills" / "alpha").mkdir(parents=True)
+        (_r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# a\n")
+        # source_hash reaches capabilities.toml for the overlay closure.
+        (_r / "capabilities.toml").write_text("[instructions]\n")
+
+        def _v(rec, **kw):
+            _ev.joinpath("receipt.json").write_text(json.dumps(rec))
+            return " ".join(validate_receipt(_r, "alpha", **kw))
+
+        _fresh = {"source_hash": source_hash(_r, "alpha"),
+                  "eval_set_hash": eval_set_hash(_r, "alpha"),
+                  "provenance": "eval", "certified_by": "assertion_delta"}
+        ok.append(("v1 receipt with no schema_version is grandfathered", _v(_fresh) == ""))
+        ok.append(("explicit null schema_version is malformed, not grandfathered",
+                   "malformed" in _v({**_fresh, "schema_version": None})))
+        ok.append(("unknown future schema_version is rejected",
+                   "unknown schema_version" in _v({**_fresh, "schema_version": 99})))
+        ok.append(("v2 without per_provider passes the NON-final gate",
+                   _v({**_fresh, "schema_version": 2}) == ""))
+        ok.append(("v2 without per_provider FAILS the final gate",
+                   "per_provider" in _v({**_fresh, "schema_version": 2},
+                                        final=True, panel=["claude"])))
+        ok.append(("v2 with per_provider passes the final gate",
+                   _v({**_fresh, "schema_version": 2, "providers": ["claude"],
+                       "per_provider": {"claude": {"delta": 0.1}}},
+                      final=True, panel=["claude"]) == ""))
+        _seeded = {**_fresh, "schema_version": 2,
+                   "provenance": "seeded: blessed current committed state"}
+        _seeded.pop("certified_by")
+        ok.append(("seeded v2 is legal for the non-final gate", _v(_seeded) == ""))
+        ok.append(("seeded v2 is rejected by the final gate",
+                   "seeded" in _v(_seeded, final=True, panel=["claude"])))
+        ok.append(("a single-provider receipt fails the FULL-PANEL final gate",
+                   "FULL-PANEL" in _v({**_fresh, "schema_version": 2,
+                                       "providers": ["claude"],
+                                       "per_provider": {"claude": {"delta": 0.1}}},
+                                      final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("a self-test-gated receipt skips the panel requirement",
+                   "FULL-PANEL" not in _v({**_fresh, "schema_version": 2,
+                                           "self_test": True, "providers": ["claude"]},
+                                          final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("stale source_hash fails even a grandfathered v1",
+                   "changed since last eval" in _v({**_fresh, "source_hash": "deadbeef"})))
+        ok.append(("a missing receipt is reported, not skipped",
+                   "no receipt" in " ".join(validate_receipt(_r, "zeta"))))
+        # Grandfathering is exemption from per_provider ONLY. A v1 receipt must still
+        # face the final gate's provenance and panel checks — both read fields v1 has
+        # always carried, and exempting them would let a v1 receipt print "proven" at the
+        # convergence gate having been neither earned nor full-panel.
+        _v1seed = {**_fresh, "provenance": "seeded: blessed current committed state"}
+        _v1seed.pop("certified_by")
+        ok.append(("a v1 receipt is NOT exempt from the final provenance check",
+                   "seeded, not earned" in _v(_v1seed, final=True, panel=["claude"])))
+        ok.append(("a v1 receipt is NOT exempt from the final panel check",
+                   "FULL-PANEL" in _v({**_fresh, "providers": ["claude"]},
+                                      final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("a v1 receipt IS exempt from the per_provider requirement",
+                   "per_provider" not in _v({**_fresh, "providers": ["claude"]},
+                                            final=True, panel=["claude"])))
+
     for label, passed in ok:
         print(f"  {'PASS' if passed else 'FAIL'}  {label}")
     return 0 if all(p for _, p in ok) else 1

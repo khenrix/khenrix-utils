@@ -53,9 +53,14 @@ evals/<skill>/workspace/          # gitignored (evals/*/workspace/)
     eval-<id>-<name>/
       <provider>__with_skill/     {prompt.txt, answer.md, grading.json, <fanout artifacts>}
       <provider>__without_skill/  {prompt.txt, answer.md, grading.json, …}
-      comparison.json             # blind A/B verdict, de-anonymized
-    benchmark.json                # metadata + runs[] + run_summary{with_skill,without_skill,delta}
+      compare-<provider>/         # judge artifacts for that provider's blind A/B
+      comparison.<provider>.json  # blind A/B verdict, de-anonymized, PER EXECUTOR
+    benchmark.json                # metadata + runs[] + run_summary{…,by_provider} + blind_winner
 ```
+
+The comparison file is per-provider because this directory is shared by all three: a
+single `comparison.json` had each provider silently overwrite the previous one's verdict,
+so a per-provider blind tally was not reconstructible from the artifacts at all.
 
 The artifact schema matches `skill-creator`'s (`grading.json` / `benchmark.json` /
 `comparison.json`), so the two interoperate — you can grade with one and aggregate with
@@ -96,6 +101,33 @@ are exempt because their receipts are earned by a self-test / unit suite instead
 run summary prints a `⚠ INVALID RUN` line per occurrence. If one recurs with nothing else in
 flight, the eval is under-timed — raise the per-attempt cap with `make eval … TIMEOUT=<secs>`
 rather than `MODE=deep`, which would also change reasoning depth.
+
+## Per-provider measurement
+
+`run_summary.by_provider` reports each executor's own `with_skill` / `without_skill` /
+`delta`, plus `n_evals`, `quantum` and `status`; the receipt carries the same as
+`per_provider`. Pooling across executors hid real regressions — `khenrix-upgrade` pooled
+to `+0.0972` while claude sat at `-0.1250`.
+
+**The pooled `delta.pass_rate` is still the gate.** The per-provider numbers are a
+measurement, not yet a gate. Why: measured run-to-run drift on *unchanged* skill bodies is
+0.06–0.08, and splitting by provider triples single-flip sensitivity, so a gate at
+threshold 0 would fire on noise. Demonstrated live — the same unchanged `khenrix-upgrade`
+gave `claude -0.125 / codex +0.125 / agy +0.292` one week and
+`claude +0.25 / codex -0.042 / agy -0.083` the next. **When pooled and per-provider
+disagree, the pooled number is authoritative for the gate and the per-provider numbers are
+authoritative for diagnosis.**
+
+`quantum` is the noise floor: `1 / (n_evals × smallest assertion count)`, floored at 0.05 —
+the largest mean shift one assertion flip can produce. A per-provider delta smaller than
+one quantum is a judge verdict, not a signal, and the summary annotates it as such. Eval
+sets with 2 cases have a quantum near 0.15, nearly their whole measurable range; grow them
+before reading their per-provider numbers as anything.
+
+`status` is `invalid` when that **executor** failed. A **judge** failure invalidates the
+whole run instead — the judge is a shared instrument (always `DEFAULT_JUDGE`), so blaming
+one executor for it would be wrong. `runs[].result` carries `executor_error` and
+`judge_error` separately for exactly this reason; `errors` remains the OR of the two.
 
 ## Per-provider tooling (accelerators, not the gate)
 
