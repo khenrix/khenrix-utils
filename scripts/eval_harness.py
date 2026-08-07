@@ -496,6 +496,31 @@ def load_skill_body(skill: str, provider: str) -> str:
     return strip_frontmatter(path.read_text())
 
 
+def build_run_result(rec: dict, g: dict) -> dict:
+    """The `runs[].result` record for one (provider, condition) run.
+
+    executor_error and judge_error are SEPARATE fields because the judge is a shared
+    instrument: it is always DEFAULT_JUDGE, so a judge failure while grading agy's
+    answer says nothing about agy. Attributing it per-provider would blame the wrong
+    executor once the summary is split by executor (aggregate's by_provider block).
+    `errors` is retained as the OR of the two — the pooled gate in run() and every
+    existing consumer still read it.
+    """
+    executor_error = 0 if rec.get("valid") else 1
+    judge_error = 0 if g.get("judge_ok") else 1
+    return {
+        "pass_rate": round(g["passed"] / g["total"], 4) if g["total"] else 0.0,
+        "passed": g["passed"], "failed": g["total"] - g["passed"], "total": g["total"],
+        "time_seconds": rec.get("duration_sec"), "tokens": None,
+        "tool_calls": 0,
+        "executor_error": executor_error,
+        "judge_error": judge_error,
+        "errors": 1 if (executor_error or judge_error) else 0,
+        # Keep the transport cause when the transport failed; otherwise the judge's.
+        "reason": (rec.get("reason") if executor_error else g.get("judge_reason")),
+    }
+
+
 def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: dict,
                           itdir: Path, *, timeout: int, retries: int,
                           readonly: bool) -> list:
@@ -520,17 +545,7 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
         runs.append({
             "eval_id": ev["id"], "eval_name": f"eval-{ev['id']}-{ev['name']}",
             "executor": provider, "configuration": condition, "run_number": 1,
-            "result": {
-                "pass_rate": round(g["passed"] / g["total"], 4) if g["total"] else 0.0,
-                "passed": g["passed"], "failed": g["total"] - g["passed"], "total": g["total"],
-                "time_seconds": rec.get("duration_sec"), "tokens": None,
-                "tool_calls": 0,
-                # Invalid = the executor OR the judge failed. Either way this condition's
-                # score is an artifact, not a measurement.
-                "errors": 0 if (rec.get("valid") and g.get("judge_ok")) else 1,
-                "reason": (rec.get("reason") if not rec.get("valid")
-                           else g.get("judge_reason")),
-            },
+            "result": build_run_result(rec, g),
             "expectations": g["expectations"],
         })
     cmp = compare(outputs["with_skill"], outputs["without_skill"], ev, judge, cfg, base,
@@ -802,6 +817,25 @@ def self_test() -> int:
     check("aggregate stddev present", "stddev" in agg["with_skill"]["pass_rate"])
     check("aggregate delta", agg["delta"]["pass_rate"] == 0.75)
     check("aggregate skips all-null tokens", "tokens" not in agg["with_skill"])
+
+    # error attribution: the judge is a SHARED instrument
+    rec_ok = {"valid": True, "reason": "ok", "duration_sec": 12}
+    rec_dead = {"valid": False, "reason": "timeout", "duration_sec": 300}
+    g_ok = {"passed": 2, "total": 4, "judge_ok": True, "judge_reason": None}
+    g_bad = {"passed": 0, "total": 4, "judge_ok": False,
+             "judge_reason": "judge returned no verdict"}
+    r = build_run_result(rec_dead, g_ok)
+    check("dead executor sets executor_error only",
+          r["executor_error"] == 1 and r["judge_error"] == 0)
+    check("dead executor keeps the transport reason", r["reason"] == "timeout")
+    r = build_run_result(rec_ok, g_bad)
+    check("dead judge sets judge_error only",
+          r["judge_error"] == 1 and r["executor_error"] == 0)
+    check("dead judge keeps the judge reason", r["reason"] == "judge returned no verdict")
+    check("errors stays the OR for back-compat", r["errors"] == 1)
+    check("clean run has no errors", build_run_result(rec_ok, g_ok)["errors"] == 0)
+    check("pass_rate computed from the grading",
+          build_run_result(rec_ok, g_ok)["pass_rate"] == 0.5)
 
     # fixture materialization + {fixture_dir} substitution (Task 1)
     with tempfile.TemporaryDirectory() as td:
