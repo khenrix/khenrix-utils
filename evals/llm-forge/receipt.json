@@ -1,26 +1,19 @@
 {
+  "schema_version": 2,
   "skill": "llm-forge",
-  "source_hash": "3ed4681b7f962bffa2e6d6510166a989660bddb5ed0a9b7063f4439def8549fe",
+  "source_hash": "349ca15b9c8f8d8cd9be070589b98300e6c528efeb591aa896b6dc2a214dad13",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.3611,
-  "blind_winner": "n/a-deterministic",
-  "provenance": "eval",
-  "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.6 Flash (High)",
-    "judge": "claude-opus-5"
-  },
-  "certified_by": "forge-suite-all",
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state",
   "deterministic_gate": "forge-suite-all",
   "self_test": true,
+  "certified_by": "forge-suite-all",
   "gate_command": [
     "uvx",
     "--with",
