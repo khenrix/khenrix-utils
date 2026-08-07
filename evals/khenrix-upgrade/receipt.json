@@ -3,11 +3,19 @@
   "source_hash": "59fc85b3bd9838982941738acd5cbcd79781db29fdd5dc93afb361d35ca1d511",
   "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.0278,
+  "blind_winner": "tie",
+  "provenance": "eval",
+  "models": {
+    "claude": "claude-haiku-4-5-20251001",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
+    "judge": "claude-haiku-4-5-20251001"
+  }
 }

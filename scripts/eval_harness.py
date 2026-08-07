@@ -565,11 +565,26 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
     }
     if models:
         rec["models"] = models
+    if not seeded:
+        # WHAT CERTIFIED THIS RUN, SAID BY THE RECEIPT RATHER THAN INFERRED AT THE GATE.
+        # MEASURED: an ordinary skill's real eval wrote `provenance: "eval"` and no
+        # `self_test` — a field only the llm-council and deterministic-gated branches below
+        # set — and `checks._receipt_is_certified` then refused it, because "absent" was
+        # treated as the SEEDED shape. So `make eval SKILL=khenrix-setup` produced a receipt
+        # that `make precommit` rejected, and the only way past was to seed over the real
+        # result with a weaker one. Reproduced on khenrix-setup and khenrix-upgrade.
+        #
+        # `delta-gate` IS THE HONEST NAME. `_write_receipt` is reached only when `gate_ok`,
+        # which for an ordinary skill is `delta is not None and delta >= 0 and not invalid` —
+        # so writing this field is recording the gate that already passed, not asserting a
+        # second one. The two branches below overwrite it with the stronger thing they ran.
+        rec["certified_by"] = "delta-gate"
     if skill == "llm-council":
         rc = subprocess.run([sys.executable, str(FANOUT_DIR / "fanout.py"), "--self-test"])
         if rc.returncode != 0:  # never bless a failing engine with a green receipt
             raise SystemExit("llm-council self-test failed; not writing receipt")
-        rec.update(self_test=True, synthesis_review="manual-attested")
+        rec.update(self_test=True, certified_by="fanout --self-test",
+                   synthesis_review="manual-attested")
     elif skill in DETERMINISTIC_GATED:
         cmd = DETERMINISTIC_GATED[skill]
         rc = subprocess.run(cmd, capture_output=True, text=True)
@@ -584,6 +599,7 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
                 f"{skill} deterministic gate exited 0 but its counts are not evidence "
                 f"({counts}); not writing receipt")
         rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True,
+                   certified_by=DETERMINISTIC_GATE_NAMES[skill],
                    gate_command=cmd, gate_counts=counts)
     (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
 

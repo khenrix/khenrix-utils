@@ -429,8 +429,17 @@ def _receipt_is_certified(rec: dict) -> bool:
         # so reaching it means a receipt was edited or assembled by hand, which is exactly
         # when the gate should refuse rather than read the field's neighbours for reassurance.
         return rec["self_test"] is True
-    # ABSENT is the seeded shape: `--seed-receipt` blesses a committed state without running a
-    # gate, and says so in `provenance`. A receipt with neither is a receipt claiming nothing.
+    if "certified_by" in rec:
+        # AN ORDINARY SKILL HAS NO SELF-TEST, AND ITS EVAL IS THE CERTIFICATION. `self_test`
+        # is written only by the llm-council and deterministic-gated branches, so this
+        # predicate used to refuse every REAL eval of every other skill — the receipt said
+        # `provenance: "eval"`, carried no `self_test`, and "absent" was read as the seeded
+        # shape it is not. Measured on khenrix-setup and khenrix-upgrade: a genuine run,
+        # delta +0.07 and +0.03, refused at the gate, with seeding over the real result the
+        # only way past. `certified_by` names the gate that ran, so the receipt says which.
+        return bool(rec["certified_by"])
+    # NEITHER is the seeded shape: `--seed-receipt` blesses a committed state without running
+    # a gate, and says so in `provenance`. A receipt with none of the three claims nothing.
     return str(rec.get("provenance", "")).startswith("seeded")
 
 

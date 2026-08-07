@@ -191,3 +191,40 @@ def test_the_counts_parser_reads_unittest_as_well_as_pytest():
         eval_harness._pytest_counts("Ran 83 tests in 0.1s\n\nFAILED (failures=1)"))
     assert not eval_harness._counts_are_evidence(
         eval_harness._pytest_counts("Ran 0 tests in 0.0s\n\nOK"))
+
+
+# ---- what certifies an ORDINARY skill's receipt -----------------------------------------
+def test_an_ordinary_skills_real_eval_writes_a_receipt_its_own_gate_accepts():
+    """THE EXTERNAL QUESTION: can `make eval SKILL=<ordinary>` produce a receipt that
+    `make precommit` then REFUSES? It could, and did.
+
+    `self_test` is written only by the llm-council branch and the deterministic-gated branch.
+    Every other skill's genuine run wrote `provenance: "eval"` and no `self_test`, and
+    `_receipt_is_certified` read "absent" as the SEEDED shape — so the gate rejected the real
+    result and the only way past was to seed over it with weaker evidence. Reproduced on
+    khenrix-setup (delta +0.0695) and khenrix-upgrade (delta +0.0278), both refused.
+    """
+    assert checks._receipt_is_certified({"provenance": "eval",
+                                         "certified_by": "delta-gate"}) is True
+
+
+def test_an_eval_receipt_that_names_no_certifier_is_still_refused():
+    """THE DISCRIMINATION CHECK — the fix must not make `provenance: "eval"` self-certifying.
+    A receipt claiming a run happened while naming nothing that gated it claims nothing."""
+    assert checks._receipt_is_certified({"provenance": "eval"}) is False
+    assert checks._receipt_is_certified({"provenance": "eval", "certified_by": ""}) is False
+
+
+def test_a_failed_self_test_is_not_rescued_by_a_certifier_name():
+    """`self_test: False` is a FAILED certification and stays decisive. Reading a neighbouring
+    field for reassurance is precisely what the original predicate's docstring refuses."""
+    assert checks._receipt_is_certified(
+        {"self_test": False, "certified_by": "delta-gate"}) is False
+
+
+def test_the_seeded_shape_still_needs_no_certifier():
+    """Seeding is an explicit human act blessing a committed state, not a claim a suite ran —
+    unchanged by this fix, and asserted so the two shapes cannot collapse into one."""
+    assert checks._receipt_is_certified(
+        {"provenance": "seeded: blessed current committed state"}) is True
+    assert checks._receipt_is_certified({}) is False

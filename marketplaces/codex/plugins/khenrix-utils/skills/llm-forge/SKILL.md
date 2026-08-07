@@ -195,6 +195,17 @@ the detector. A task relying on a **named ambient skill** (`/markitdown`, "use t
 skill") is permitted only when all three installed copies hash identically — otherwise the
 same refusal, because three CLIs running "the same skill" is a claim the engine checks.
 
+### A retry is handed what its previous attempt left (§8.1)
+
+When a seat's attempt fails and §8.1 buys it another, the retry is **not** a cold start. The
+previous attempt's work — its measured artifact set, tracked patch and all — is laid down
+inside the retry's own clone, under the git directory where the harvest cannot see it, and
+the builder is told where it is and that it is **partial, unverified, and not applied**.
+
+You do not configure this and it costs no extra call. It matters for how you read a run: a
+seat that took two attempts may have built on its own first pass, so `attempts` in the record
+is not three independent tries.
+
 ### `--concurrency` — builders in parallel, and the trade it makes
 
 By default the three seats run **one after another**, and the quote's wall-clock ceiling says
