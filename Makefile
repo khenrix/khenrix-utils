@@ -36,7 +36,7 @@ FORGE_TESTS := tests/test_forge_storage.py tests/test_forge_inspect.py \
                tests/test_forge_fingerprint.py tests/test_forge_launch.py \
                tests/test_forge_seatrecord.py tests/test_forge_strategy.py \
                tests/test_forge_progress.py tests/test_forge_rubric.py \
-               tests/test_forge_ultra.py tests/test_forge_handover.py \
+               tests/test_forge_deepreview.py tests/test_forge_handover.py \
                tests/test_forge_brief.py tests/test_forge_smoke.py
 
 FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \

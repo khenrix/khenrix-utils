@@ -439,7 +439,7 @@ def test_a_record_that_would_not_survive_its_own_round_trip_is_not_written(tmp_p
     assert not storage.handover_path(run_dir).exists()
 
 
-from forge import fingerprint, seat as seatmod, strategy, ultra  # noqa: E402
+from forge import fingerprint, seat as seatmod, strategy, deepreview  # noqa: E402
 
 
 def _prov(**kw):
@@ -453,7 +453,7 @@ def _prov(**kw):
                          "requirement_coverage"),
         agreement="differently-prompted",
         review_terminal="review_blocked", review_rounds=2, unresolved_findings=1,
-        ultra=ultra.Ultra(ultra.RAN, None, (), None, True, "0 finding(s)"))
+        deep_review=deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)"))
     base.update(kw)
     return handover.Provenance(**base)
 
@@ -517,7 +517,7 @@ def test_a_run_in_which_nothing_completed_cannot_render_a_success_header():
                  synthesis_outcome=None, synthesis_measured=False, verify_seconds=None,
                  strategy=None,
                  review_terminal=None, review_rounds=0, unresolved_findings=0,
-                 ultra=ultra.Ultra(ultra.SKIPPED, None, None, None, False, "no synthesis"))
+                 deep_review=deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False, "no synthesis"))
     text = handover.header(dead)
     assert "0 of 3 seats completed" in text
     assert "no seat produced a candidate" in text
@@ -602,42 +602,42 @@ def test_the_header_names_no_strategy_no_module_upstream_chose():
         _prov(verify_command="   ")
 
 
-def test_every_ultrareview_status_renders_differently():
+def test_every_deep_review_status_renders_differently():
     seen = set()
-    for u in (ultra.Ultra(ultra.RAN, None, (), None, True, "0 finding(s)"),
-              ultra.Ultra(ultra.UNAVAILABLE, "no_auth", None, None, True, "d"),
-              ultra.Ultra(ultra.TIMED_OUT, None, None, "https://claude.ai/x", True, "d"),
-              ultra.Ultra(ultra.SKIPPED, None, None, None, False, "--no-ultra")):
-        line = [l for l in handover.header(_prov(ultra=u)).splitlines()
-                if l.lstrip().startswith("Ultrareview:")]
+    for u in (deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)"),
+              deepreview.DeepReview(deepreview.UNAVAILABLE, "no_valid_seats", None, (), True, "d"),
+              deepreview.DeepReview(deepreview.TIMED_OUT, None, None, ("claude",), True, "d"),
+              deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False, "--skip-deep-review")):
+        line = [l for l in handover.header(_prov(deep_review=u)).splitlines()
+                if l.lstrip().startswith("Deep review:")]
         assert len(line) == 1, u.status
         seen.add(line[0])
     assert len(seen) == 4, seen
     unavailable = handover.header(_prov(
-        ultra=ultra.Ultra(ultra.UNAVAILABLE, "zdr_org", None, None, True, "d")))
-    assert "unavailable (zdr_org)" in unavailable
+        deep_review=deepreview.DeepReview(deepreview.UNAVAILABLE, "unreadable_output", None, (), True, "d")))
+    assert "unavailable (unreadable_output)" in unavailable
 
 
-def test_a_skipped_ultrareview_reports_its_own_reason_and_never_a_flag_it_invents():
-    """`run_ultra` skips for `--no-ultra` and nothing else, but `skipped` is the status any
+def test_a_skipped_deep_review_reports_its_own_reason_and_never_a_flag_it_invents():
+    """`run_deep_review` skips for `--skip-deep-review` and nothing else, but `skipped` is the status any
     caller writes for a review it declined to request. A line spelling the flag over a record
     that says `no synthesis` tells the operator they opted out of something they did not."""
     skipped = handover.header(_prov(
-        ultra=ultra.Ultra(ultra.SKIPPED, None, None, None, False,
+        deep_review=deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False,
                           "no candidate was fused, so there was nothing to review")))
     assert "no candidate was fused" in skipped
-    assert "--no-ultra" not in skipped
+    assert "--skip-deep-review" not in skipped
 
 
 def test_a_status_the_header_has_no_rendering_for_is_refused_not_read_as_the_cheapest_of_four():
-    """`ultra.STATUSES` is the vocabulary and `Ultra` refuses anything outside it, so this
+    """`deepreview.STATUSES` is the vocabulary and `Ultra` refuses anything outside it, so this
     reaches the renderer only through a stand-in — which is the point: a fifth status added
     upstream falls through to whichever branch has no test on it, and the cheapest of these
     four to read is 'the review nobody asked for'."""
     fifth = SimpleNamespace(status="degraded", reason=None, bugs=None, session_url=None,
                             diff_measured=True, detail="d")
     with pytest.raises(handover.HandoverError, match="four statuses"):
-        handover._ultra_line(fifth)
+        handover._deep_review_line(fifth)
 
 
 def test_the_verified_sentence_says_what_a_pass_is_and_no_more():

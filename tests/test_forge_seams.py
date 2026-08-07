@@ -736,7 +736,7 @@ def test_the_manifest_and_the_baseline_agree_on_what_the_run_started_from(tmp_pa
 def _answered(**kw):
     return {"setup": [["true"]], "verify": [["make", "verify"]],
             "on_calibration_failure": "abort", "strategy": "size-gated",
-            "author": ("Ada Lovelace", "ada@example.invalid"), "ultrareview": True, **kw}
+            "author": ("Ada Lovelace", "ada@example.invalid"), "deep_review": True, **kw}
 
 
 def test_the_manifest_records_the_commands_the_gate_confirmed(tmp_path, monkeypatch):

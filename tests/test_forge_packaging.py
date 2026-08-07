@@ -514,13 +514,13 @@ def test_the_skill_quotes_the_numbers_gate_quote_actually_produces():
     with tempfile.TemporaryDirectory() as td:
         report = preflight.inspect_repo(make_repo(Path(td)), ())
         body = _skill_prose()
-        for ultra, expect in ((True, (19, 18, 9, 63.3)), (False, (18, 17, 8, 60.0))):
-            q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=ultra, seat_timeout_sec=3600)
+        for deepreview, expect in ((True, (22, 18, 9, 63.3)), (False, (18, 17, 8, 60.0))):
+            q = gate.quote(report, seats=3, attempts=3, review_rounds=2, deep_review=deepreview, seat_timeout_sec=3600)
             calls, setup, verify_, disk = expect
             assert (q.provider_calls, q.setup_runs, q.verify_runs, q.peak_disk_gb) == expect, \
-                f"ultrareview={ultra}: quote moved, so SKILL.md's cost paragraph is now wrong"
+                f"deep_review={deepreview}: quote moved, so SKILL.md's cost paragraph is now wrong"
             for shown in (str(calls), str(setup), str(verify_), str(disk)):
-                assert shown in body, (ultra, shown)
+                assert shown in body, (deepreview, shown)
 
 
 def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
@@ -534,7 +534,7 @@ def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
         r = subprocess.run([sys.executable, str(script), "--help"],
                            capture_output=True, text=True)
         assert r.returncode == 0, (cli_name, r.stderr)
-        for flag in ("--start", "--collect", "--gc", "--no-ultra"):
+        for flag in ("--start", "--collect", "--gc", "--skip-deep-review"):
             assert flag in r.stdout, (cli_name, flag)
 
 
@@ -609,7 +609,7 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
 
     with tempfile.TemporaryDirectory() as td:
         report = preflight.inspect_repo(make_repo(Path(td)), ())
-        q = gate.quote(report, seats=3, attempts=3, review_rounds=2, ultrareview=True, seat_timeout_sec=3600)
+        q = gate.quote(report, seats=3, attempts=3, review_rounds=2, deep_review=True, seat_timeout_sec=3600)
 
     # WHO SPENDS THE TERM IS PART OF THE TERM. `synthesis` is one provider call and the ENGINE
     # deliberately does not make it: SKILL.md is explicit that there is no `--synthesize` —
@@ -647,6 +647,11 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     terms = {
         "builders":     ("run_seat", "runner.py"),
         "review":       ("run_round", "review.py"),
+        # THE DEEP REVIEW EARNED ITS ROW HERE BY BECOMING A PROVIDER SPEND. The cloud
+        # review it replaced was billed in credits and spent no call, so it was correctly
+        # absent from a breakdown of provider calls; a council fan-out is `seats` of them
+        # and `cli.collect` is the caller that spends them.
+        "deep_review":  ("run_deep_review", "deepreview.py"),
     }
     assert set(terms) | operator_spent == set(q.terms), (
         "every priced term is either spent by a named engine function or by the operator; "

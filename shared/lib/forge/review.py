@@ -1538,7 +1538,7 @@ def terminal_from_record(run_dir, *, rounds_run: int, events) -> tuple:
         run in `ready` — and this branch is where the two are reconciled: THE TERMINAL FOLLOWS
         THE FINDING'S RESOLUTION, NOT WHICH REVIEWER RAISED IT. An unresolved blocker is
         `review_blocked`; one fixed and verified but not re-reviewed is `degraded`. So §13.1's
-        ultrareview fix and §14.2's post-round-2 fix land in the same place on the same
+        deep-review fix and §14.2's post-round-2 fix land in the same place on the same
         evidence, and `review_blocked` keeps meaning what §13's last paragraph needs it to
         mean: a blocker is still open.
       * `ready` — every blocker resolved and re-reviewed, and every round's panel whole.

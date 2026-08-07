@@ -36,7 +36,7 @@ from council import engine
 
 from . import (brief as briefmod, fingerprint, gate, gitcmd, handover, journal, launch,
                preflight, review as reviewmod, runstate, snapshot, storage, taskbundle,
-               ultra, verify)
+               deepreview, verify)
 # `ledger` and NOTHING ELSE: this verb PERSISTS §10's rows and reads nothing off
 # them, so `coverage` and `rubric` stay out of this import block until something
 # ranks — a rank taken before §13's panel can be convened honestly would be a
@@ -124,7 +124,7 @@ def _answer_sheet(path) -> dict:
     answer usable. It is here so the record holds the tuple every other route to a
     `Confirmation` holds, rather than a shape that depends on how the answer arrived.
 
-    `ultrareview` IS REFUSED IN THE SHEET. It is decided by `--no-ultra`, which also re-prices
+    `deep_review` IS REFUSED IN THE SHEET. It is decided by `--skip-deep-review`, which also re-prices
     the quote; a sheet carrying its own copy is the second spelling of one decision that
     `gate.confirm`'s agreement check exists to stop, arriving one layer earlier and silently,
     because this function would then have to choose which of the two to keep.
@@ -137,9 +137,9 @@ def _answer_sheet(path) -> dict:
     if not isinstance(answers, dict):
         raise CliError(f"the answer sheet {path} holds §5 step 2's answers as an object, not "
                        f"a {type(answers).__name__}")
-    if "ultrareview" in answers:
+    if "deep_review" in answers:
         raise CliError(
-            "the answer sheet names `ultrareview`, which is decided by `--no-ultra` because "
+            "the answer sheet names `deep_review`, which is decided by `--skip-deep-review` because "
             "that flag also re-prices the run. Two spellings of one decision are free to "
             "disagree, and the disagreement is money — drop the key and pass the flag.")
     if isinstance(answers.get("author"), list):
@@ -266,7 +266,7 @@ def start(args, *, out, make_launcher=None) -> int:
     timeout = _resolve_seat_timeout()
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
-                        review_rounds=args.review_rounds, ultrareview=not args.no_ultra,
+                        review_rounds=args.review_rounds, deep_review=not args.skip_deep_review,
                         concurrency=args.concurrency, seat_timeout_sec=timeout)
     if "verify" not in answers:
         # `must_show` resolves §6.1's surface from the confirmed command, so the sheet has to
@@ -286,10 +286,10 @@ def start(args, *, out, make_launcher=None) -> int:
                                setup=verify.Command(steps=_steps(answers["setup"]))):
         print(f"  {line}", file=out)
 
-    # ONE DECISION, WRITTEN ONCE. `--no-ultra` priced the quote above and answers §5 step 2
+    # ONE DECISION, WRITTEN ONCE. `--skip-deep-review` priced the quote above and answers §5 step 2
     # here; `gate.confirm` refuses the two if they ever disagree, and `--collect` reads the
     # recorded answer rather than re-deriving it from a flag it is not given.
-    answers["ultrareview"] = not args.no_ultra
+    answers["deep_review"] = not args.skip_deep_review
     confirmation = gate.confirm(report, quote_, answers)
 
     run_id = storage.new_run_id()
@@ -731,7 +731,7 @@ def _unresolved(run_dir, rounds_run: int) -> int:
     return total
 
 
-def _confirmed_ultrareview(run_dir) -> bool:
+def _confirmed_deep_review(run_dir) -> bool:
     """The operator's §13.1 answer, read back off the record `gate.open_run` wrote.
 
     `runner._confirmed_policy`'s shape and its argument, one answer over: it is journalled on
@@ -745,11 +745,11 @@ def _confirmed_ultrareview(run_dir) -> bool:
     events = journal.Journal(storage.journal_path(run_dir)).read()
     for e in reversed(events):
         if e.event == done and e.operation_id == manifest.run_id:
-            value = e.data.get("ultrareview")
+            value = e.data.get("deep_review")
             if isinstance(value, bool):
                 return value
             raise CliError(
-                f"this run's {done} record carries ultrareview={value!r}, which is not the "
+                f"this run's {done} record carries deep_review={value!r}, which is not the "
                 "bool §5 step 2 records. §13.1's review is priced in money and this engine "
                 "will not read a shape it cannot tell on from off.")
     raise CliError(
@@ -787,8 +787,8 @@ def _agreement(run_dir) -> str:
 # reaches a header — `dataclasses.replace` puts the review's own result in its place — so the
 # detail is written for the one reader who would ever see it: somebody looking at a handover
 # where that replacement did not happen.
-_UNREQUESTED = ultra.Ultra(
-    ultra.SKIPPED, None, None, None, False,
+_UNREQUESTED = deepreview.DeepReview(
+    deepreview.SKIPPED, None, None, (), False,
     "this run's record was validated before §13.1 was asked for and the placeholder it was "
     "checked with was never replaced by the review's own result — so this line describes a "
     "defect in `--collect` and NOT a review the operator declined")
@@ -971,13 +971,13 @@ def _finding_of(row) -> reviewmod.Finding:
     return reviewmod.Finding(**{k: row[k] for k in _FINDING_FIELDS})
 
 
-_ULTRA_KIND = "ultrareview"
+_DEEP_KIND = "deep_review"
 
 
-def _ultra_already_spent(events):
+def _deep_review_already_spent(events):
     """§13.1's recorded result, or `None` because this run has not paid for one yet.
 
-    THE DURABLE RECEIPT §13.1 NEVER HAD. `ultra.run_ultra` spends $5-25 and this package
+    THE DURABLE RECEIPT §13.1 NEVER HAD. `deepreview.run_deep_review` spends three provider calls and this package
     journalled nothing about it, so a crash between the invocation and the report lost the
     fact that money had been spent — and the refusal an operator then sees tells them to
     re-run `--collect`, which spent it again. That made the double charge the documented
@@ -989,21 +989,22 @@ def _ultra_already_spent(events):
     everywhere else — an unknown outcome is retried and a KNOWN one is never repeated — and
     it is the one that cannot silently drop a finding.
     """
-    done = journalmod.done(_ULTRA_KIND)
+    done = journalmod.done(_DEEP_KIND)
     for e in reversed(list(events)):
         if e.event != done:
             continue
         d = e.data
         status = d.get("status")
-        if status not in ultra.STATUSES:
+        if status not in deepreview.STATUSES:
             # A record this engine cannot read is not a receipt. Requesting again costs money
             # and is the safe direction: reporting a status nobody can interpret would put an
             # unreadable value into §16.1's header.
             return None
-        rows = d.get("bugs")
-        bugs = None if rows is None else tuple(_finding_of(r) for r in rows)
-        return ultra.Ultra(status, d.get("reason"), bugs, d.get("session_url"),
-                           bool(d.get("diff_measured")), d.get("detail"))
+        rows = d.get("findings")
+        findings = None if rows is None else tuple(_finding_of(r) for r in rows)
+        return deepreview.DeepReview(status, d.get("reason"), findings,
+                                     tuple(d.get("seats") or ()),
+                                     bool(d.get("diff_measured")), d.get("detail"))
     return None
 
 
@@ -1073,7 +1074,7 @@ def collect(args, *, out) -> int:
     # check `Provenance.__post_init__` makes is over a value this function already holds by
     # now — the two argv words, the seat rows, the confirmed verify command, §11's label, §13's
     # terminal and its counts — and the ONLY one that needs §13.1's result is the type check on
-    # `ultra`. Built after the review, a mistyped `--strategy` bought
+    # `deep_review`. Built after the review, a mistyped `--strategy` bought
     # $5-25 of cloud review and was then refused for a word. `--strategy` is easy to mistype
     # because there are TWO strategy vocabularies: §5 step 2's answer
     # sheet takes `gate.STRATEGY_RULES` (`size-gated`, `fusion`, `base-and-port`) while this
@@ -1111,37 +1112,37 @@ def collect(args, *, out) -> int:
         verify_seconds=None, strategy=args.strategy,
         strongest=strongest, agreement=agreement,
         review_terminal=terminal, review_rounds=rounds,
-        unresolved_findings=unresolved, ultra=_UNREQUESTED)
+        unresolved_findings=unresolved, deep_review=_UNREQUESTED)
 
     # THE SPEND, once, after everything above has agreed there is a handover to attach it to.
     #
     # WRITE-AHEAD, AND IDEMPOTENT, because this is the only thing `--collect` does that costs
-    # money and it had NEITHER. §13.1 is $5-25 and `ultra.py` carried no journal reference at
+    # money and it had NEITHER. §13.1 spends three provider calls and the old module carried no journal reference at
     # all (measured: zero), so a crash between the invocation and the report left nothing
     # saying money had been spent — and the next `--collect` spent it again. The engine's own
     # refusal text tells an operator to re-run this verb, which made the second charge the
     # documented path.
     #
     # The intent/done pair is `journal`'s, exactly as every other spending operation in this
-    # package uses it, and the DONE record is the durable receipt: a completed ultra is
+    # package uses it, and the DONE record is the durable receipt: a completed deep review is
     # replayed from it rather than re-requested.
-    enabled = _confirmed_ultrareview(run_dir)
+    enabled = _confirmed_deep_review(run_dir)
     log = journal.Journal(storage.journal_path(run_dir))
-    u = _ultra_already_spent(log.read())
+    u = _deep_review_already_spent(log.read())
     if u is None:
-        op = f"ultra-{manifest.run_id}"
-        log.record(journal.intent(_ULTRA_KIND), operation_id=op, round=max(1, rounds))
-        u = ultra.run_ultra(run_dir, checkout=synth, base=manifest.baseline_commit, head=head,
-                            round_=max(1, rounds), enabled=enabled)
-        # `bugs` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
+        op = f"deep-review-{manifest.run_id}"
+        log.record(journal.intent(_DEEP_KIND), operation_id=op, round=max(1, rounds))
+        u = deepreview.run_deep_review(run_dir, checkout=synth, base=manifest.baseline_commit,
+                                       head=head, round_=max(1, rounds), enabled=enabled)
+        # `findings` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
         # and `handover` then called `len()` on it. `None` and `()` are DIFFERENT here and the
-        # round-trip must keep them apart: `ultra.Ultra` refuses `bugs=None` on a `ran` status
+        # round-trip must keep them apart: `deepreview.DeepReview` refuses `findings=None` on a `ran` status
         # precisely because "the review ran and found nothing" and "no review ran" are the
         # false green this module exists to prevent.
-        log.record(journal.done(_ULTRA_KIND), operation_id=op,
+        log.record(journal.done(_DEEP_KIND), operation_id=op,
                    status=u.status, reason=u.reason,
-                   bugs=None if u.bugs is None else [_finding_row(b) for b in u.bugs],
-                   session_url=u.session_url, diff_measured=bool(u.diff_measured),
+                   findings=None if u.findings is None else [_finding_row(b) for b in u.findings],
+                   seats=list(u.seats), diff_measured=bool(u.diff_measured),
                    detail=u.detail)
     else:
         print(f"§13.1 was already run for this run ({u.status}); replaying its recorded "
@@ -1149,7 +1150,7 @@ def collect(args, *, out) -> int:
 
     # `replace` RE-RUNS `__post_init__`, so the record that renders is validated carrying the
     # review this run actually got and not on the strength of the placeholder above.
-    body = handover.text(h, dataclasses.replace(p, ultra=u))
+    body = handover.text(h, dataclasses.replace(p, deep_review=u))
     if evidence:
         # PRINTED BESIDE THE HEADER RATHER THAN INSIDE IT. `handover.text` renders §16.1, whose
         # vocabulary is fixed; this is the citation for the sentence it already prints, and it
@@ -1186,7 +1187,7 @@ def collect(args, *, out) -> int:
     # `read_handover` then answered non-None, `gc.usage` reported the run handed over, and
     # `gc.collect` removed SEVEN paths unforced. Every refusal this function can make is now
     # above this line, the rendering included — `handover.text` is the last of them, since its
-    # `_ultra_line` refuses a status added to `ultra.STATUSES` that grew no rendering here. An
+    # `_deep_review_line` refuses a status added to `deepreview.STATUSES` that grew no rendering here. An
     # unwritten record costs the operator a re-collect; a wrongly written one costs them the
     # run.
     handover.write_handover(run_dir, h)
@@ -1543,7 +1544,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "Lowers the quoted wall-clock ceiling; raises the risk of a seat "
                          "timing out under contention")
     ap.add_argument("--review-rounds", type=int, default=2, dest="review_rounds")
-    ap.add_argument("--no-ultra", action="store_true",
+    ap.add_argument("--skip-deep-review", action="store_true",
                     help="§13.1 is default on; this opts out and re-prices the run")
     ap.add_argument("--handover-target", dest="handover_target",
                     help="--collect: where the work went, so §15 can define 'unmerged'")
@@ -1598,7 +1599,7 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
             # something. Every one of them is this package declining to remove a path it
             # cannot describe, so printing the sentence is the right end.
             gcmod.GcError,
-            handover.HandoverError, verify.VerifyError, ultra.UltraError,
+            handover.HandoverError, verify.VerifyError, deepreview.DeepReviewError,
             reviewmod.ReviewError, fingerprint.FingerprintError, baselinemod.BaselineError,
             # `--resume`'s refusals, and every one of them is this package declining to
             # continue a run it cannot prove — the same shape as the GcError entry above.

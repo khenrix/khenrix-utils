@@ -21,11 +21,11 @@ The same paragraph then requires that "the quote includes post-review synthesis 
 and 9 + 1 + 6 has exactly ONE synthesis in it. §13's loop has two more: a round-1 blocker is
 fixed before round 2 runs at all, and "a blocker fixed after round 2 is reported *verified but
 not independently reviewed*" — so a fix happens there too, and §12.3 caps the count rather than
-forbidding it. §13.1's ultrareview is DEFAULT ON and its findings "follow the exact
+forbidding it. §13.1's deep review is DEFAULT ON and its findings "follow the exact
 post-round-2 rule above: fix → fresh-verifier verify → checkpoint", which is a third one: §5.2
-prices the ultrareview RUN in money and says nothing about the FIX it triggers.
+prices the deep-review RUN and says nothing about the FIX it triggers.
 `provider_calls` therefore adds one synthesis invocation per review round and one for
-ultrareview, and is 19 rather than 16 at the wired settings. `--no-ultra` is a PARAMETER here
+the deep review, and is 22 rather than 16 at the wired settings. `--skip-deep-review` is a PARAMETER here
 rather than a reason to leave the term out of the default quote. §5.2's own sum is kept visible
 as its own line, so nothing is hidden in either direction, and §21's "worst case 16 → 10 runs"
 for cutting the retry path reads 13 here for the same reason.
@@ -38,7 +38,7 @@ calibration runs setup+verify TWICE (§5 step 3, so the second pass can show zer
 delta); every builder clone runs setup once, and §8.1 gives a retry a FRESH clone, so the
 builder term is seats × attempts and not seats; and a fresh verifier clone runs setup+verify
 per candidate (§6) plus once after each post-review fix (§13, "re-run verify and cut a new
-checkpoint after every fix", and §13.1 for ultrareview's).
+checkpoint after every fix", and §13.1 for the deep review's).
 
 A builder's own clone is NOT counted as a verify. §7 lists `Fverify` among a seat's four
 inventories, but §6 overrides it in as many words — "`Fverify` cannot be 'the fourth inventory
@@ -190,9 +190,12 @@ _COUNCIL_DEFAULT_ATTEMPTS = 3
 class Quote:
     """What §5 step 2 shows before anyone agrees to anything.
 
-    `ultrareview` is a STRING and the type is the point: §13.1 prices it in usage credits
-    ($5-25) or against three one-time free runs, and an integer field would render as one more
-    call in a column of call counts — free, next to numbers that are free.
+    `deep_review` is a STRING because it carries the operator's own words for §13.1's
+    price. It used to be a string for a stronger reason — money is not a call count — but the
+    council backend spends PROVIDER CALLS, so those calls are now counted in
+    `provider_calls` like every other seat, and this line explains rather than replaces them.
+    A price that lived only in prose while the scalar under-reported it is exactly the
+    "scalar that reads low is not rescued by a line naming what it left out" defect below.
 
     `lines` is the quote a human reads; the scalars are the same quote for something that has
     to compare — so a scalar that reads low is not rescued by a line naming what it left out.
@@ -207,7 +210,7 @@ class Quote:
     wrong literal twice.
     """
     provider_calls: int
-    ultrareview: str
+    deep_review: str
     setup_runs: int
     verify_runs: int
     peak_disk_gb: float
@@ -218,7 +221,7 @@ class Quote:
     # `seats`/`attempts`' reason one section on: everything downstream reads the run's shape
     # off the quote, so the number the operator was shown and the number the loop spends are
     # one number. `Manifest.attempts` cannot hold this — it is the BUILDER budget, and
-    # `quote` prices post-review synthesis separately as `review_rounds + ultra_fixes`, so
+    # `quote` prices post-review synthesis separately as `review_rounds + deep_fixes`, so
     # reusing it turns a 3-attempt run into a 9-attempt one and leaves `--collect` unable to
     # say which budget an `attempt` value was spending.
     review_rounds: int
@@ -298,10 +301,10 @@ class Quote:
             raise GateError(
                 f"a quote's peak_disk_gb is what §4 refuses a run against, not "
                 f"{self.peak_disk_gb!r}")
-        if not isinstance(self.ultrareview, str) or not self.ultrareview.strip():
+        if not isinstance(self.deep_review, str) or not self.deep_review.strip():
             raise GateError(
-                "a quote's ultrareview line is §13.1's price in the operator's own words, "
-                f"not {self.ultrareview!r}")
+                "a quote's deep_review line is §13.1's price in the operator's own words, "
+                f"not {self.deep_review!r}")
         if not isinstance(self.terms, dict):
             raise GateError(f"a quote's terms are a mapping of stage to count, not "
                             f"{type(self.terms).__name__}")
@@ -327,7 +330,7 @@ def _confirmed_count(name, value, source, *, floor=1) -> int:
         raise GateError(str(e)) from e
 
 
-def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
+def quote(report, *, seats=3, attempts=3, review_rounds=2, deep_review=True,
           concurrency=1,
           seat_timeout_sec) -> Quote:
     """Price the worst case of a run over `report`'s repository.
@@ -341,9 +344,9 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
     here would be this function inventing the number the bound below is computed from, which
     is the same defect one layer out.
 
-    `ultrareview` defaults True because §13.1 is titled "default on"; `--no-ultra` sets it
-    False. It moves three scalars and not just the money line, because §13.1's findings get
-    the post-round-2 treatment — a fix, and a fresh verifier setup+verify to check the fix.
+    `deep_review` defaults True because §13.1 is titled "default on"; `--skip-deep-review`
+    sets it False. It moves FOUR scalars now: the council fan-out is `seats` provider calls
+    on top of the fix it triggers, plus that fix's fresh verifier setup+verify.
     """
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
@@ -367,9 +370,13 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
     builders = seats * attempts
     synthesis = 1
     review = review_rounds * seats
-    ultra_fixes = 1 if ultrareview else 0
-    review_fixes = review_rounds + ultra_fixes
-    calls = builders + synthesis + review + review_fixes
+    deep_fixes = 1 if deep_review else 0
+    review_fixes = review_rounds + deep_fixes
+    # THE FAN-OUT ITSELF IS NOW A COST. The cloud review was billed in credits and spent no
+    # provider call, so it was priced only in prose; a local panel is `seats` calls and
+    # under-reporting them would put the headline number below what the run actually spends.
+    deep_calls = seats if deep_review else 0
+    calls = builders + synthesis + review + review_fixes + deep_calls
 
     # One candidate per seat, plus synthesis's own; §6 gives each a fresh verifier clone, and
     # §13/§13.1 add one more verification after each post-review fix.
@@ -399,12 +406,12 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
     waves = -(-seats // concurrency)          # ceil, without importing math for one call
     builder_hours = waves * attempts * seat_timeout_sec / 3600.0
 
-    ultra_line = ("$5-25 in usage credits, or one of the 3 one-time free runs (§13.1, default "
-                  "on); --no-ultra opts out. Its fix is one of the post-review synthesis "
-                  "invocations counted above"
-                  if ultrareview else
-                  "not run — --no-ultra (§13.1 is default on, so this is the opted-out quote); "
-                  "no money, and no post-review fix for it above")
+    deep_line = (f"one llm-council fan-out over the fused diff = {seats} provider call(s), "
+                 "counted in the total above (§13.1, default on); --skip-deep-review opts "
+                 "out. Its fix is one of the post-review synthesis invocations, also above"
+                 if deep_review else
+                 "not run — --skip-deep-review (§13.1 is default on, so this is the "
+                 "opted-out quote); no fan-out, and no post-review fix for it above")
 
     blocked = preflight.refusals(report)
     lines = []
@@ -434,12 +441,12 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
         f"  of which §5.2 states the first three as {builders} + {synthesis} + {review} = "
         f"{builders + synthesis + review}; the post-review synthesis invocations are the ones "
         "the same paragraph requires the quote to include (§13's round-1 fix, a blocker fixed "
-        f"after round 2, and §13.1's ultrareview fix = {review_fixes})",
+        f"after round 2, and §13.1's deep-review fix = {review_fixes})",
         f"  review retries: §13 has forge invoke the council with --retries 0, so each reviewer "
         f"is asked once per round; §5.2 asks for whichever is wired. At the council CLI's own "
         f"--retries 2 the review term alone would be "
         f"{review_rounds * seats * _COUNCIL_DEFAULT_ATTEMPTS}",
-        f"ultrareview: {ultra_line}",
+        f"deep review: {deep_line}",
         f"setup runs: {setup_runs} = calibration {_CALIBRATION_PASSES} (§5 step 3 runs "
         f"setup+verify twice on the untouched baseline) + one per builder clone {builders} + "
         f"one per verifier clone {verifier_runs} (§6: a fresh verifier per candidate, plus one "
@@ -475,20 +482,25 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, ultrareview=True,
         f"the {setup_runs} setup runs, the {verify_runs} verify runs, §13's review rounds, "
         "§13.1's cloud review, and every clone. Those are shell and network time this engine "
         "cannot bound statically, so the real ceiling is above this number rather than near it",
-        "provider cost: quoted as a call count, not as currency; ultrareview above is the one "
+        "provider cost: quoted as a call count, not as currency; the deep review above is now "
         "line §13.1 prices in money. Shell-command time is the wall-clock line above",
         "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
         "one that reaches a provider CLI, or prices it as its own explicit line, and steers "
         "the operator to `make verify` (receipts advisory) rather than the gate whose "
         "documented remedy is what spends",
     ]
-    return Quote(provider_calls=calls, ultrareview=ultra_line, setup_runs=setup_runs,
+    return Quote(provider_calls=calls, deep_review=deep_line, setup_runs=setup_runs,
                  verify_runs=verify_runs, peak_disk_gb=peak_disk_gb, lines=tuple(lines),
                  seats=seats, attempts=attempts, concurrency=concurrency,
                  review_rounds=review_rounds, synthesis_fix_cap=review_fixes,
                  waves=waves,
+                 # THE BREAKDOWN MUST ADD UP TO THE TOTAL IT EXPLAINS. The deep review used
+                 # to spend no provider call, so it was legitimately absent here; with the
+                 # council backend it is `seats` calls, and leaving it out left an operator
+                 # reading terms that summed three short of the headline number.
                  terms={"builders": builders, "synthesis": synthesis,
-                        "review": review, "review_fixes": review_fixes})
+                        "review": review, "review_fixes": review_fixes,
+                        "deep_review": deep_calls})
 
 
 # ---------------------------------------------------------------------------------------
@@ -1151,8 +1163,8 @@ STRATEGY_RULES = ("size-gated", "fusion", "base-and-port")
 # no safe reading, while silence about a gap means the operator accepted none — which is the
 # reading that cannot later be cited as agreement.
 _ANSWERS = ("setup", "verify", "on_calibration_failure", "strategy", "author",
-            "accepted_gaps", "ultrareview")
-_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy", "author", "ultrareview")
+            "accepted_gaps", "deep_review")
+_REQUIRED = ("setup", "verify", "on_calibration_failure", "strategy", "author", "deep_review")
 
 # What git's ident line cannot hold: `<` and `>` delimit the email and a newline ends the
 # header. Refused HERE because git does not refuse it — measured on git 2.53.0, `commit-tree`
@@ -1235,11 +1247,11 @@ class Confirmation:
     run's shape and §5.2 priced the run BY them, so the alternative — a launcher passing its
     own — is a fleet nobody costed.
 
-    `ultrareview` goes the OTHER way and is an ANSWER, though `quote` also prices it. The two
+    `deep_review` goes the OTHER way and is an ANSWER, though `quote` also prices it. The two
     are not the same reading: the four numbers above are computed BY `quote` and have no
     second source, while §13.1's opt-out is the operator's own decision, made once, spent an
-    hour later in another process by `ultra.run_ultra(enabled=…)`. Recorded here rather than
-    read back off `Quote.ultrareview`, which is a SENTENCE for a human (§13.1 prices the
+    hour later in another process by `deepreview.run_deep_review(enabled=…)`. Recorded here rather than
+    read back off `Quote.deep_review`, which is a SENTENCE for a human (§13.1 prices the
     review in usage credits, not in calls) and not a value another process may branch on.
     `confirm` is where the answer and the price are checked against each other.
 
@@ -1287,7 +1299,7 @@ class Confirmation:
     attempts: int
     review_rounds: int
     synthesis_fix_cap: int
-    ultrareview: bool
+    deep_review: bool
     # OFF THE QUOTE, never from a caller: the wall-clock ceiling §5.2 showed was computed FROM
     # this width, so a fleet driven at another one is a fleet the operator did not agree to.
     # Defaulted to serial so every `Confirmation` assembled beside `confirm` — §12.4's
@@ -1322,9 +1334,9 @@ class Confirmation:
                 "`partition` is deliberately absent: §12.1 admits one only where stable seams "
                 "exist, which is §10.1's non-mechanical criterion and cannot be "
                 "pre-committed to.")
-        if not isinstance(self.ultrareview, bool):
+        if not isinstance(self.deep_review, bool):
             raise GateError(
-                f"ultrareview is §13.1's opt-in/out and is a bool, not {self.ultrareview!r}. "
+                f"deep_review is §13.1's opt-in/out and is a bool, not {self.deep_review!r}. "
                 "A truthy string here would price one run and collect another.")
         object.__setattr__(self, "author", _confirmed_author(self.author))
         object.__setattr__(self, "accepted_gaps", _confirmed_gaps(self.accepted_gaps))
@@ -1716,21 +1728,21 @@ def confirm(report, quote_, answers) -> Confirmation:
         raise GateError(f"§5 step 2 does not ask {unknown}; it asks {list(_ANSWERS)}")
 
     # THE INVARIANT LIVES IN THE VALUE, not in a second check downstream. `quote` prices
-    # §13.1 on or off and moves three scalars doing it; `ultra.run_ultra` obeys the decision
+    # §13.1 on or off and moves four scalars doing it; `deepreview.run_deep_review` obeys the decision
     # an hour later in another process. If those were two readings of one intent they would
     # eventually disagree, and the disagreement is money: a run priced without the cloud
     # review that then requests one, or the reverse — a user shown $5-25 they were never
     # charged and a review they were told they would get.
     #
-    # `Quote.ultrareview` is a STRING by design (§13.1 prices it in usage credits, not calls),
+    # `Quote.deep_review` is a STRING by design (it is the operator's own words for the price),
     # so the comparison is against what `quote` recorded rather than a second boolean field.
-    priced_on = not quote_.ultrareview.startswith("not run")
-    if bool(answers["ultrareview"]) is not priced_on:
+    priced_on = not quote_.deep_review.startswith("not run")
+    if bool(answers["deep_review"]) is not priced_on:
         raise GateError(
-            f"this run was priced with ultrareview {'ON' if priced_on else 'OFF'} and the "
-            f"answer says {'ON' if answers['ultrareview'] else 'OFF'}. §5 step 5 forbids "
+            f"this run was priced with the deep review {'ON' if priced_on else 'OFF'} and the "
+            f"answer says {'ON' if answers['deep_review'] else 'OFF'}. §5 step 5 forbids "
             "re-asking, so the quote the operator saw is the one this run may spend — "
-            "re-price with `quote(..., ultrareview=...)` and show it again.")
+            "re-price with `quote(..., deep_review=...)` and show it again.")
 
     # Every value below goes to `Confirmation` as it was answered. `accepted_gaps` is the one
     # key whose ABSENCE is legal, and reading that silence as "accepted none" is a fact about
@@ -1740,7 +1752,7 @@ def confirm(report, quote_, answers) -> Confirmation:
                         strategy=answers["strategy"],
                         accepted_gaps=answers.get("accepted_gaps", ()),
                         author=answers["author"],
-                        ultrareview=answers["ultrareview"],
+                        deep_review=answers["deep_review"],
                         seats=quote_.seats, attempts=quote_.attempts,
                         review_rounds=quote_.review_rounds,
                         synthesis_fix_cap=quote_.synthesis_fix_cap,
@@ -1804,7 +1816,7 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
     `materialize` and no record, so a clean-tree run — where B1 is the user's own base commit
     and forge writes no commit of its own — left nothing on disk saying whose name the
     operator agreed forge could work under. `runner.run` still takes it as an argument and
-    does not yet read it back. `ultrareview` is here for the same reason one process over:
+    does not yet read it back. `deep_review` is here for the same reason one process over:
     §13.1's cloud review is requested by `--collect`, an hour later and in another process,
     and this record is the only copy of what the operator agreed to spend on it.
     The run's four shape numbers go the OTHER way and are in the manifest, because a launcher
@@ -1814,7 +1826,7 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
     is the per-seat retry budget; `review_rounds` and `synthesis_fix_cap` bound §12.3's
     post-review loop, which `progress.cap_remaining` reads back off the manifest. `on_calibration_failure` is read back from HERE, off this
     record, which is the only copy of it — see `runner._confirmed_policy`, and
-    `cli._confirmed_ultrareview` beside it for §13.1's.
+    `cli._confirmed_deep_review` beside it for §13.1's.
 
     The record is WRITE-AHEAD around everything that touches the user's repository, so a
     crash between the two halves leaves the orphan §14.1 requires rather than a run directory
@@ -1942,13 +1954,13 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
                # back from json as one, and one spelling on disk beats two.
                author=list(confirmation.author),
                # §13.1's opt-out, keyed by the FIELD NAME exactly as the three above are, so
-               # `cli._confirmed_ultrareview` reads it back under the name this writes —
+               # `cli._confirmed_deep_review` reads it back under the name this writes —
                # `runner._confirmed_policy`'s rule, and a policy read back by a name the
                # writer does not use is the same silence one field over. It is here rather
                # than in the manifest for the reason the other three are: §14.2 lists what the
                # manifest holds and a policy is not among them, and `read_manifest` refuses a
                # field it does not know.
-               ultrareview=confirmation.ultrareview,
+               deep_review=confirmation.deep_review,
                # THE CONTROL-PLANE ANCHOR. `write_manifest` is exclusive only at CREATION and
                # `read_manifest` checks types, never identity — so a same-UID process, or a
                # confused cleanup script, replacing `manifest.json` with VALID JSON that

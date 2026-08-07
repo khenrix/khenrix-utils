@@ -21,7 +21,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 from . import (fingerprint, gitcmd, review as reviewmod, seat as seatmod, storage,
-               strategy as strategymod, taskbundle, ultra as ultramod, verify as verifymod)
+               strategy as strategymod, taskbundle, deepreview as deepmod, verify as verifymod)
 
 SYNTHESIS = "synthesis"
 
@@ -550,7 +550,7 @@ class Provenance:
     review_terminal: str | None
     review_rounds: int
     unresolved_findings: int
-    ultra: object
+    deep_review: object
 
     def __post_init__(self) -> None:
         if not self.seats:
@@ -617,8 +617,9 @@ class Provenance:
                 "this record reports a synthesis verdict over a fleet in which no seat "
                 "completed. §18 asks that a failure cannot render a success header, and this "
                 "is the combination that does it.")
-        if not isinstance(self.ultra, ultramod.Ultra):
-            raise HandoverError(f"ultra is an ultra.Ultra, not {type(self.ultra).__name__}")
+        if not isinstance(self.deep_review, deepmod.DeepReview):
+            raise HandoverError("deep_review is a deepreview.DeepReview, not "
+                                f"{type(self.deep_review).__name__}")
         for label in ("review_rounds", "unresolved_findings"):
             v = getattr(self, label)
             # `bool` explicitly: `True` is an `int` and renders as a count of one, so a record
@@ -665,36 +666,41 @@ def _seconds(v) -> None:
             f"here timed it, not {v!r}")
 
 
-def _ultra_line(u) -> str:
+def _deep_review_line(u) -> str:
     """§13.1's four statuses, four renderings. §16.1's example shows only the first, and the
-    other three are not decoration: an operator reading `Ultrareview:` needs to know whether
+    other three are not decoration: an operator reading `Deep review:` needs to know whether
     the cloud review found nothing, was never asked, could not be asked, or is still running
     somewhere with a URL they can open.
 
-    THE SKIPPED LINE READS THE RECORD'S OWN REASON RATHER THAN NAMING THE FLAG. `run_ultra`
-    skips for `--no-ultra` and for nothing else, but `skipped` is the status ANY caller writes
+    THE SKIPPED LINE READS THE RECORD'S OWN REASON RATHER THAN NAMING THE FLAG. `run_deep_review`
+    skips for `--skip-deep-review` and for nothing else, but `skipped` is the status ANY caller writes
     for a review it declined to request — a run with no candidate to review, for one — and a
-    line spelling `--no-ultra` over such a record tells the operator they opted out of
+    line spelling `--skip-deep-review` over such a record tells the operator they opted out of
     something they did not.
 
     A STATUS THIS FUNCTION DOES NOT KNOW RAISES rather than falling through to the cheapest of
-    the four. `ultra.STATUSES` is the vocabulary; a fifth member added there would otherwise
+    the four. `deepreview.STATUSES` is the vocabulary; a fifth member added there would otherwise
     render here as a review nobody requested, which is the collapse the branches exist for.
     """
-    if u.status == ultramod.RAN:
-        n = len(u.bugs)
-        return (f"Ultrareview: {n} finding(s) reported"
+    if u.status == deepmod.RAN:
+        n = len(u.findings)
+        # WHICH SEATS ANSWERED IS PART OF THE CLAIM. A 1-of-3 panel and a full one produce
+        # the same finding count, and the cloud review this replaced had no such
+        # distinction to report — so a header that omitted it would let a degraded review
+        # read as a complete one.
+        who = ", ".join(u.seats) if u.seats else "no named"
+        return (f"Deep review: {n} finding(s) reported by {who} seat(s)"
                 + ("" if u.diff_measured else " (over a diff whose size could not be measured)"))
-    if u.status == ultramod.UNAVAILABLE:
-        return f"Ultrareview: unavailable ({u.reason}) — the run proceeded to handover"
-    if u.status == ultramod.TIMED_OUT:
-        where = f" and can be collected at {u.session_url}" if u.session_url else \
-                " and no session URL was read from its output, so there is nothing to collect"
-        return f"Ultrareview: the local wait elapsed; the remote review is still running{where}"
-    if u.status == ultramod.SKIPPED:
+    if u.status == deepmod.UNAVAILABLE:
+        return f"Deep review: unavailable ({u.reason}) — the run proceeded to handover"
+    if u.status == deepmod.TIMED_OUT:
+        who = ", ".join(u.seats) if u.seats else "no"
+        return (f"Deep review: the wait elapsed with {who} seat(s) having answered; "
+                "nothing was recorded from it")
+    if u.status == deepmod.SKIPPED:
         why = u.detail.strip() if isinstance(u.detail, str) else ""
-        return (f"Ultrareview: not requested ({why})" if why else
-                "Ultrareview: not requested, and this record does not say why")
+        return (f"Deep review: not requested ({why})" if why else
+                "Deep review: not requested, and this record does not say why")
     raise HandoverError(
         f"{u.status!r} is not one of §13.1's four statuses, so this header has no rendering "
         "for it. Falling through to one of the four would report an unknown state as the "
@@ -764,7 +770,7 @@ def header(p: Provenance) -> str:
         third = (f"Council: {p.review_rounds} round(s), {p.unresolved_findings} finding(s) "
                  f"unresolved ({p.review_terminal}).")
 
-    return "\n".join([first, second, fusion, third, _ultra_line(p.ultra) + "**"])
+    return "\n".join([first, second, fusion, third, _deep_review_line(p.deep_review) + "**"])
 
 
 _VERIFIED_MEANS = (

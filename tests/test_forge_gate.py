@@ -106,18 +106,23 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
     """§5.2's terms, each derived on its own rather than compared against one total.
 
     The sum §5.2 itself writes is `9 + 1 + 6 = 16`, and the fourth term below is why the
-    quote is 19 instead: the same paragraph requires that "the quote includes post-review
+    quote is 22 instead: the same paragraph requires that "the quote includes post-review
     synthesis invocations", and `9 + 1 + 6` contains exactly one synthesis. Three more exist —
     a round-1 blocker is fixed before round 2 runs, a blocker fixed after round 2 is reported
-    "verified but not independently reviewed" (§13), and §13.1's ultrareview findings "follow
+    "verified but not independently reviewed" (§13), and §13.1's deep_review findings "follow
     the exact post-round-2 rule above: fix -> fresh-verifier verify -> checkpoint". A quote
-    stopping at 16 is wrong by three, in the operator's favour, which is the direction that
+    stopping at 16 is wrong by six, in the operator's favour, which is the direction that
     matters.
+
+    THE FAN-OUT ITSELF IS THE FIFTH TERM, and it is new: the cloud review this replaced was
+    billed in credits and spent no provider call, so it was priced only in prose. A local
+    panel is `seats` calls, and leaving them out of the headline number would under-report
+    what the run actually spends — the exact defect the money line's own comment warns of.
     """
     q = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
-    builders, synthesis, review, fixes = 3 * 3, 1, 2 * 3, 2 + 1
-    assert (builders, synthesis, review, fixes) == (9, 1, 6, 3)
-    assert q.provider_calls == builders + synthesis + review + fixes == 19, q.lines
+    builders, synthesis, review, fixes, deep = 3 * 3, 1, 2 * 3, 2 + 1, 3
+    assert (builders, synthesis, review, fixes, deep) == (9, 1, 6, 3, 3)
+    assert q.provider_calls == builders + synthesis + review + fixes + deep == 22, q.lines
     assert any("9 + 1 + 6 = 16" in line for line in q.lines), \
         "§5.2's own sum stays visible, or the difference is a silent correction"
 
@@ -125,29 +130,32 @@ def test_the_worst_case_is_quoted_not_the_happy_path(tmp_path):
 def test_a_review_round_costs_a_reviewer_each_and_one_synthesis_fix(tmp_path):
     """The discrimination check for the term above: only the review terms may move with it."""
     rounds = [gate.quote(_report(tmp_path), review_rounds=n, seat_timeout_sec=3600).provider_calls for n in (0, 1, 2)]
-    assert rounds == [11, 15, 19], rounds
-    assert rounds[0] == 3 * 3 + 1 + 1, \
-        "with no review, only builders, synthesis and ultrareview's own fix are left"
+    assert rounds == [14, 18, 22], rounds
+    assert rounds[0] == 3 * 3 + 1 + 1 + 3, \
+        "with no review, only builders, synthesis, the deep fan-out and its own fix are left"
     assert [b - a for a, b in zip(rounds, rounds[1:])] == [4, 4], \
         "a round is 3 reviewers plus the one synthesis invocation that answers it"
 
 
-def test_ultrareviews_own_fix_is_an_invocation_the_quote_cannot_leave_out(tmp_path):
+def test_deep_reviews_own_fix_is_an_invocation_the_quote_cannot_leave_out(tmp_path):
     """§13.1 is titled "default on" and its findings take the post-round-2 treatment: "fix ->
-    fresh-verifier verify -> checkpoint". §5.2 prices the ultrareview RUN in money and says
+    fresh-verifier verify -> checkpoint". §5.2 prices the deep_review RUN in money and says
     nothing about the fix it triggers, so a quote that priced only the run is low by one
     invocation, one setup and one verify — with no exclusion line, which is the shape §5.2's
-    own `9 + 1 + 6` has.
+    own `9 + 1 + 6` has. With the council backend it is ALSO low by the fan-out's own
+    `seats` calls, so turning it off now moves four scalars.
 
-    `--no-ultra` is the discrimination check and the answer to "then make it optional": it is
+    `--skip-deep-review` is the discrimination check and the answer to "then make it optional": it is
     a parameter, and turning it off must move exactly those three scalars and nothing else.
     """
     on = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
-    off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, ultrareview=False, seat_timeout_sec=3600)
-    assert (on.provider_calls, on.setup_runs, on.verify_runs) == (19, 18, 9), on.lines
+    off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, deep_review=False, seat_timeout_sec=3600)
+    assert (on.provider_calls, on.setup_runs, on.verify_runs) == (22, 18, 9), on.lines
     assert (off.provider_calls, off.setup_runs, off.verify_runs) == (18, 17, 8), off.lines
-    assert "$" in on.ultrareview and "$" not in off.ultrareview
-    assert "--no-ultra" in on.ultrareview, "the opt-out is named in the quote that includes it"
+    assert on.provider_calls - off.provider_calls == 3 + 1, \
+        "the fan-out (3 seats) AND the fix it triggers (1) both leave with it"
+    assert "provider call(s)" in on.deep_review and "not run" in off.deep_review
+    assert "--skip-deep-review" in on.deep_review, "the opt-out is named in the quote that includes it"
 
 
 def test_the_council_default_retry_setting_is_shown_but_never_summed(tmp_path):
@@ -163,14 +171,20 @@ def test_the_council_default_retry_setting_is_shown_but_never_summed(tmp_path):
         "two rounds cost 6 reviewer calls and 2 fixes — the wired --retries 0 term, not 18"
 
 
-def test_ultrareview_is_quoted_as_money_not_as_a_count(tmp_path):
-    """§13.1: $5-25 in usage credits, or one of three one-time free runs. An integer field
-    would render as one more row in a column of call counts — free, beside numbers that
-    are."""
+def test_the_deep_review_line_explains_the_calls_it_is_counted_in(tmp_path):
+    """The line EXPLAINS the calls rather than replacing them.
+
+    It used to be a string because money is not a call count. With the council backend the
+    review IS provider calls, so those calls are now inside `provider_calls` and this line
+    says so — a price that lived only in prose while the scalar under-reported it is the
+    "scalar that reads low is not rescued by a line naming what it left out" defect the
+    Quote docstring names."""
     q = gate.quote(_report(tmp_path), seat_timeout_sec=3600)
-    assert "$" in q.ultrareview and "5-25" in q.ultrareview, q.ultrareview
-    assert isinstance(q.ultrareview, str)
-    assert str(q.provider_calls) not in q.ultrareview
+    assert "provider call(s)" in q.deep_review, q.deep_review
+    assert "$" not in q.deep_review, "the cloud's currency is gone with the cloud"
+    assert isinstance(q.provider_calls, int) and q.provider_calls == 22
+    assert isinstance(q.deep_review, str)
+    assert str(q.provider_calls) not in q.deep_review
 
 
 def test_the_quote_names_the_per_candidate_setup_it_cannot_avoid(tmp_path):
@@ -843,12 +857,12 @@ AUTHOR = ("Ada Lovelace", "ada@example.invalid")
 
 def _answers(**kw):
     """A complete answer sheet for §5 step 2 — both commands, both policies, the author, and
-    §13.1's opt-in. `ultrareview=True` matches the quote every helper here builds, because
+    §13.1's opt-in. `deep_review=True` matches the quote every helper here builds, because
     `gate.quote` defaults §13.1 on and `confirm` refuses an answer that contradicts the price
     the operator was shown."""
     return {"setup": [["true"]], "verify": [["true"]],
             "on_calibration_failure": "abort", "strategy": "size-gated",
-            "author": AUTHOR, "ultrareview": True, **kw}
+            "author": AUTHOR, "deep_review": True, **kw}
 
 
 def _confirmation(**kw):
@@ -856,7 +870,7 @@ def _confirmation(**kw):
     fields = dict(setup=(verify.Step(argv=("true",)),), verify=(verify.Step(argv=("true",)),),
                   on_calibration_failure="abort", strategy="size-gated", accepted_gaps=(),
                   author=AUTHOR, seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=3,
-                  ultrareview=True)
+                  deep_review=True)
     return gate.Confirmation(**{**fields, **kw})
 
 
@@ -1006,17 +1020,17 @@ def test_the_gate_shows_the_refusals_the_operator_may_not_answer_past(tmp_path):
 
 def test_the_quote_shown_is_the_quote_that_was_priced(tmp_path):
     """`must_show` carries the quote whole rather than re-deriving it, so a run priced with
-    `--no-ultra` is not shown the default's numbers. Differenced against the same report,
+    `--skip-deep-review` is not shown the default's numbers. Differenced against the same report,
     which is the only way to show which quote the lines came from."""
     r = _report(tmp_path)
-    on, off = gate.quote(r, seat_timeout_sec=3600), gate.quote(r, ultrareview=False, seat_timeout_sec=3600)
+    on, off = gate.quote(r, seat_timeout_sec=3600), gate.quote(r, deep_review=False, seat_timeout_sec=3600)
     cmd = verify.Command.parse([["true"]])
     assert set(on.lines) <= set(gate.must_show(r, on, cmd, setup=verify.Command.parse([['true']])))
     assert set(off.lines) <= set(gate.must_show(r, off, cmd, setup=verify.Command.parse([['true']])))
-    assert on.lines != off.lines, "the premise: --no-ultra moves the lines it is shown by"
-    assert "$5-25" in " ".join(gate.must_show(r, on, cmd, setup=verify.Command.parse([['true']])))
-    assert "$5-25" not in " ".join(gate.must_show(r, off, cmd, setup=verify.Command.parse([['true']]))), \
-        "a run priced without ultrareview must not be shown its money line"
+    assert on.lines != off.lines, "the premise: --skip-deep-review moves the lines it is shown by"
+    assert "provider call(s)" in " ".join(gate.must_show(r, on, cmd, setup=verify.Command.parse([['true']])))
+    assert "not run" in " ".join(gate.must_show(r, off, cmd, setup=verify.Command.parse([['true']]))), \
+        "a run priced without the deep review is shown that it was excluded"
 
 
 def test_the_gate_shows_a_verify_command_that_spends_rather_than_only_pricing_it(tmp_path):
@@ -1938,10 +1952,10 @@ def test_the_priced_synthesis_fix_cap_is_the_recorded_one(tmp_path, monkeypatch)
     _state(monkeypatch, tmp_path)
     repo = make_repo(tmp_path)
     report = preflight.inspect_repo(repo)
-    q = gate.quote(report, review_rounds=2, ultrareview=True, seat_timeout_sec=3600)
+    q = gate.quote(report, review_rounds=2, deep_review=True, seat_timeout_sec=3600)
     assert (q.review_rounds, q.synthesis_fix_cap) == (2, 3)
-    assert gate.quote(report, review_rounds=2, ultrareview=False, seat_timeout_sec=3600).synthesis_fix_cap == 2
-    assert gate.quote(report, review_rounds=0, ultrareview=False, seat_timeout_sec=3600).synthesis_fix_cap == 0
+    assert gate.quote(report, review_rounds=2, deep_review=False, seat_timeout_sec=3600).synthesis_fix_cap == 2
+    assert gate.quote(report, review_rounds=0, deep_review=False, seat_timeout_sec=3600).synthesis_fix_cap == 0
 
     c = gate.confirm(report, q, _answers())
     assert (c.review_rounds, c.synthesis_fix_cap) == (2, 3)
@@ -1955,58 +1969,58 @@ def test_a_cap_below_the_rounds_it_must_cover_is_refused():
     with pytest.raises(gate.GateError):
         gate.Confirmation(setup=(), verify=(verify.Step(argv=("true",)),),
                           on_calibration_failure="abort", strategy="size-gated",
-                          accepted_gaps=(), author=("A", "a@b.invalid"), ultrareview=True,
+                          accepted_gaps=(), author=("A", "a@b.invalid"), deep_review=True,
                           seats=3, attempts=3, review_rounds=2, synthesis_fix_cap=1)
 
 
-def test_the_ultrareview_decision_is_answered_once_and_must_match_what_was_priced(tmp_path,
+def test_the_deep_review_decision_is_answered_once_and_must_match_what_was_priced(tmp_path,
                                                                                   monkeypatch):
-    """§13.1's --no-ultra moves three scalars on the quote AND decides whether a cloud review
+    """§13.1's --skip-deep-review moves three scalars on the quote AND decides whether a cloud review
     runs an hour later, in another process. Two spellings of one decision will disagree, so it
     is a §5 step 2 ANSWER recorded once — and `confirm` refuses an answer that contradicts the
     Quote the operator was shown, which is the invariant living in the value."""
     _state(monkeypatch, tmp_path)
     report = _report(tmp_path)
     priced_on = gate.quote(report, seat_timeout_sec=3600)
-    priced_off = gate.quote(report, ultrareview=False, seat_timeout_sec=3600)
+    priced_off = gate.quote(report, deep_review=False, seat_timeout_sec=3600)
     assert priced_on.provider_calls > priced_off.provider_calls
 
-    answers = _answers(ultrareview=True)
-    assert gate.confirm(report, priced_on, answers).ultrareview is True
+    answers = _answers(deep_review=True)
+    assert gate.confirm(report, priced_on, answers).deep_review is True
     assert gate.confirm(report, priced_off,
-                        dict(answers, ultrareview=False)).ultrareview is False
+                        dict(answers, deep_review=False)).deep_review is False
 
     with pytest.raises(gate.GateError) as e:
         gate.confirm(report, priced_off, answers)           # priced off, answered on
     assert "priced" in str(e.value)
     with pytest.raises(gate.GateError):
-        gate.confirm(report, priced_on, dict(answers, ultrareview=False))
+        gate.confirm(report, priced_on, dict(answers, deep_review=False))
     with pytest.raises(gate.GateError):
         gate.confirm(report, priced_on, {k: v for k, v in answers.items()
-                                         if k != "ultrareview"})
+                                         if k != "deep_review"})
     with pytest.raises(gate.GateError):
-        gate.confirm(report, priced_on, dict(answers, ultrareview="yes"))
+        gate.confirm(report, priced_on, dict(answers, deep_review="yes"))
 
 
-def test_the_ultrareview_answer_is_journalled_where_collect_will_look_for_it(tmp_path,
+def test_the_deep_review_answer_is_journalled_where_collect_will_look_for_it(tmp_path,
                                                                             monkeypatch):
     """The other half of the decision, and the half `--collect` spends money on. The answer is
     recorded on the `confirm` done record — the manifest holds no policy — under the FIELD
     NAME, which is the name `runner._confirmed_policy` reads `on_calibration_failure` back by
-    and the one `cli._confirmed_ultrareview` reads this by. A policy written under one name
+    and the one `cli._confirmed_deep_review` reads this by. A policy written under one name
     and read under another is silence one field over.
 
     Both values, because a key that is always `True` is a key whose reader cannot be wrong.
     """
     _state(monkeypatch, tmp_path)
-    for run_id, on in (("ultra-on", True), ("ultra-off", False)):
+    for run_id, on in (("deep-on", True), ("deep-off", False)):
         r = _report(tmp_path)
-        q = gate.quote(r, ultrareview=on, seat_timeout_sec=3600)
-        run = gate.open_run(r, gate.confirm(r, q, _answers(ultrareview=on)), run_id, quote_=gate.quote(r, seat_timeout_sec=3600))
+        q = gate.quote(r, deep_review=on, seat_timeout_sec=3600)
+        run = gate.open_run(r, gate.confirm(r, q, _answers(deep_review=on)), run_id, quote_=gate.quote(r, seat_timeout_sec=3600))
         done = [e for e in journal.Journal(storage.journal_path(run)).read()
                 if e.event == journal.done("confirm")]
         assert len(done) == 1, done
-        assert done[0].data["ultrareview"] is on, done[0].data
+        assert done[0].data["deep_review"] is on, done[0].data
 
 
 def test_free_bytes_walks_to_the_nearest_existing_ancestor(tmp_path):
@@ -2118,7 +2132,7 @@ def test_a_quote_cannot_carry_a_number_nobody_could_agree_to(tmp_path):
     good = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2,
                       seat_timeout_sec=3600)
     for field, bad in (("provider_calls", -5), ("seats", -1), ("attempts", True),
-                       ("peak_disk_gb", -1.0), ("ultrareview", ""), ("terms", ())):
+                       ("peak_disk_gb", -1.0), ("deep_review", ""), ("terms", ())):
         with pytest.raises(gate.GateError):
             dataclasses.replace(good, **{field: bad})
     # ...and the real quote still round-trips, or the guard is refusing its own producer.

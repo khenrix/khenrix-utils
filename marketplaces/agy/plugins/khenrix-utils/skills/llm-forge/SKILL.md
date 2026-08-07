@@ -31,11 +31,13 @@ Beyond those two, nothing: it never requires claims from more than one candidate
 verify. `--strategy from_scratch` over a lightly-edited winner is accepted. The guarantee is
 yours to keep; the engine refuses only the two cases where the tree itself gives you away.
 
-> **Cost.** A default run (3 seats × 3 attempts, 2 review rounds, cloud ultrareview on) is
-> **19 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~63.3 GB
+> **Cost.** A default run (3 seats × 3 attempts, 2 review rounds, deep review on) is
+> **22 provider calls worst case**, 18 setup runs, 9 verify runs, and a peak of **~63.3 GB
 > under `XDG_STATE_HOME` across 19 coexisting clones** — 1 calibration + 9 builder + 7
-> verifier + 2 review — none of which is reclaimed until you run `--gc`. The cloud ultrareview is
-> priced separately in **usage credits ($5–25, or one of three one-time free runs)**.
+> verifier + 2 review — none of which is reclaimed until you run `--gc`. The deep review is
+> an **llm-council fan-out over the fused diff = 3 of those 22 calls**, counted in the total
+> rather than billed separately: it runs locally on the three CLIs, so there are no usage
+> credits and no cloud account involved.
 >
 > The gate also prints a **wall-clock upper bound** for the builders — `seats × attempts ×`
 > the §19 window, ~9 h on a default run, because the seats run one after another and each
@@ -150,26 +152,25 @@ A JSON object. Every command is a **list of argv lists** — nothing here runs a
   you would be your decision recorded as the operator's.
 - `accepted_gaps` may be omitted, and its silence reads as **accepted none**. Legal ids are
   `gate-surface-empty`, `remotes-and-configuration-unrecorded`, `generator-contract-empty`.
-- **Do not put `ultrareview` in the sheet.** It is decided by `--no-ultra`, which also
+- **Do not put `deep_review` in the sheet.** It is decided by `--skip-deep-review`, which also
   **re-prices the run**; two spellings of one decision are free to disagree, and the
   disagreement is money. The sheet is refused outright if it carries the key.
 
-### `--no-ultra` is a repricing, not a skip
+### `--skip-deep-review` is a repricing, not a skip
 
-`--no-ultra` belongs on `--start`. It does not merely turn the cloud review off — it moves
-the quote's **provider calls, setup runs, verify runs and peak disk**, because the review's
-findings would have earned a post-round fix plus a fresh verifier setup and verify — measured
-on a default run, 19 calls / 18 setup / 9 verify / ~63.3 GB become 18 / 17 / 8 / ~60.0. Note
-that those are movements in the UPPER BOUND: the post-review fix it subtracts is one of the
-calls the cost note above says cannot be spent today, so what `--no-ultra` actually saves
-right now is the **$5–25 in usage credits**, not a provider call. The
+`--skip-deep-review` belongs on `--start`. It does not merely turn the review off — it moves
+the quote's **provider calls, setup runs, verify runs and peak disk**, because the fan-out
+itself is 3 calls and its findings would have earned a post-round fix plus a fresh verifier
+setup and verify — measured on a default run, 22 calls / 18 setup / 9 verify / ~63.3 GB
+become 18 / 17 / 8 / ~60.0. Unlike the cloud review this replaced, the saving is now a REAL
+provider spend rather than a separate currency: three seats that do not run. The
 gate then refuses if the quote and the answer
 disagree at all: the quote you were shown is the one the run may spend, and the fix is to
 re-price and show it again, never to answer past it.
 
 The decision is journalled on the run. `--collect` reads it **back off disk** and fails
 closed if it is missing or is not a boolean — it never re-derives it from a flag, so passing
-`--no-ultra` at `--collect` changes nothing.
+`--skip-deep-review` at `--collect` changes nothing.
 
 ### What the preflight refuses, and what it does not screen
 
@@ -302,7 +303,7 @@ python3 "$FORGE" --collect <run-id> --repo /path/to/repo \
 a value the second one accepts.
 
 `--collect` reads the run back **off disk**, enumerates the synthesis tree's out-of-band
-files, decides mergeability, runs the cloud ultrareview once (if it was confirmed), and
+files, decides mergeability, runs the deep council review once (if it was confirmed), and
 prints the handover.
 
 **Get `--strategy` right the first time.** Every refusal `--collect` can make from disk — an
@@ -358,10 +359,14 @@ Relay the header **as printed**. Six things in it will look like defects and are
   Run `--review <run-id>` (below) to convene one; the post-round FIX loop is still unbuilt,
   so a second round cannot be bought and `--review-rounds` above 1 prices calls that cannot
   be spent.
-- **`Ultrareview: N finding(s) reported`.** Reported, and nothing more: §13.1's findings get
-  no post-round fix, no fresh verification and no terminal, because that wiring does not
-  exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — the number is
-  what the cloud review returned, not a verdict this engine acted on.
+- **`Deep review: N finding(s) reported by <seats>`.** Reported, and nothing more: §13.1's
+  findings get no post-round fix, no fresh verification and no terminal, because that wiring
+  does not exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — it is
+  what the panel returned, not a verdict this engine acted on. **Read the seat list**: a
+  1-of-3 panel and a full one print the same finding count, and a finding two seats
+  independently raised is marked `[corroborated by …]`, which is the panel's real signal.
+  A review whose seats answered but produced no readable payload is `unavailable
+  (unreadable_output)`, never `0 finding(s)` — those are different facts.
 - **`(patch)` rather than a merge-ready branch.** A dirty baseline, or any out-of-band
   artifact, makes the delivery patch-only. **Merging the branch does not install out-of-band
   artifacts** — they are ignored files, were never added to the object store, and the

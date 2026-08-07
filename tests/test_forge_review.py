@@ -1153,7 +1153,7 @@ def test_a_blocker_fixed_and_then_re_reviewed_clean_is_ready(tmp_path):
 
 def test_a_blocker_fixed_in_the_last_round_is_degraded_not_ready(tmp_path):
     """CONTRADICTION 6's resolution: fixed-but-not-re-reviewed is `degraded`, whether the
-    finding came from review round 2 or from ultrareview."""
+    finding came from review round 2 or from deep_review."""
     run = _run_dir(tmp_path)
     b = _blocker(round_=2)
     _clean_round(run, 1)

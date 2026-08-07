@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from council import engine  # noqa: E402
 from forge import (cli, fingerprint, gate, handover, journal,  # noqa: E402
                    bundle, review as reviewmod, runner as runnermod,
-                   runstate, seat as seatmod, storage, taskbundle, ultra,
+                   runstate, seat as seatmod, storage, taskbundle, deepreview,
                    verify)
 from forge_fixtures import commit_all, git as _git, make_repo, write  # noqa: E402
 
@@ -54,8 +54,8 @@ _TOKEN = re.compile(r"SENTINEL-[0-9a-f]{12}")
 
 # §13.1's real pass, bound at import — BEFORE the autouse fixture below replaces the module
 # attribute. The non-vacuity test needs the function the guard displaces, and reading it back
-# off `ultra.run_ultra` inside a test reads the guard instead.
-_REAL_RUN_ULTRA = ultra.run_ultra
+# off `deepreview.run_deep_review` inside a test reads the guard instead.
+_REAL_RUN_DEEP_REVIEW = deepreview.run_deep_review
 
 
 def _sentinel_of(spec) -> str:
@@ -163,7 +163,7 @@ def _a_task(tmp_path, body="Rename the helper and keep its tests green.\n", name
 
 
 def _answers(tmp_path, name="answers.json", **kw):
-    """§5 step 2's sheet. No `ultrareview` key: that decision is `--no-ultra`'s, and the CLI
+    """§5 step 2's sheet. No `deep_review` key: that decision is `--skip-deep-review`'s, and the CLI
     refuses a sheet that carries a second spelling of it."""
     path = tmp_path / name
     path.write_text(json.dumps({
@@ -173,9 +173,9 @@ def _answers(tmp_path, name="answers.json", **kw):
     return path
 
 
-def _skipped_ultra():
-    return ultra.Ultra(ultra.SKIPPED, None, None, None, False,
-                       "a test stood in for §13.1 and requested nothing")
+def _skipped_deep():
+    return deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False,
+                                 "a test stood in for §13.1 and requested nothing")
 
 
 @pytest.fixture(autouse=True)
@@ -183,7 +183,7 @@ def _no_cloud_review(monkeypatch):
     """§13.1's ONE PAID CALL, neutralised for every test in this file whether it remembers or
     not.
 
-    MEASURED, AND IT WAS SPENDING. `ultra.run_ultra` shells out to `claude ultrareview` through
+    MEASURED, AND IT WAS SPENDING. `deepreview.run_deep_review` shells out to `claude deep_review` through
     its `run=subprocess.run` default, and `claude` resolves on this machine; two `--collect`
     tests here reached that call with a one-file diff — comfortably inside §13.1's limits —
     because the run they collected was confirmed with §13.1 ON, which is the default. A cloud
@@ -195,22 +195,29 @@ def _no_cloud_review(monkeypatch):
     start helper. A test that wants to OBSERVE the call patches this same attribute again and
     wins, since its `setattr` runs after the fixture's.
     """
-    monkeypatch.setattr(cli.ultra, "run_ultra", lambda *a, **kw: _skipped_ultra())
+    monkeypatch.setattr(cli.deepreview, "run_deep_review", lambda *a, **kw: _skipped_deep())
 
 
-def test_the_cloud_review_this_file_neutralises_is_a_real_subprocess():
+def test_the_deep_review_this_file_neutralises_really_convenes_a_panel():
     """NON-VACUITY for the fixture above: it is only a guard if the thing it replaces spends.
-    Read off the signature, because the alternative is running the review to find out."""
+
+    Read off the signature and the module, because the alternative is convening the panel to
+    find out. The mechanism changed with the cloud-to-council swap — there is no `run=`
+    subprocess seam any more — so this asserts the NEW way it spends: an injectable
+    `council` whose default is the real fan-out over the real seat list.
+    """
     import inspect as pyinspect  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    default = pyinspect.signature(_REAL_RUN_ULTRA).parameters["run"].default
-    assert default is subprocess.run, \
-        "§13.1's pass no longer shells out, so this file's autouse guard guards nothing"
-    assert ultra.argv(timeout_minutes=30, target=None)[0] == "claude", \
-        "and the program it shells out to is a provider CLI"
+    params = pyinspect.signature(_REAL_RUN_DEEP_REVIEW).parameters
+    assert params["council"].default is None, \
+        "§13.1's pass no longer takes an injectable council, so this file's autouse guard " \
+        "may be guarding nothing"
+    assert deepreview.SEATS and set(deepreview.SEATS) <= {"claude", "codex", "agy"}, \
+        "and the panel it would convene is the real three-CLI seat list"
+    assert deepreview._council.__module__ == deepreview.__name__, \
+        "and the default path runs the engine fan-out rather than a stub"
 
 
-def _drive_a_start(tmp_path, monkeypatch, *, no_ultra=False, refuse_seat=None,
+def _drive_a_start(tmp_path, monkeypatch, *, skip_deep_review=False, refuse_seat=None,
                    make_launcher=_a_fake_make_launcher):
     """§5's gate and §7's fleet, with nothing paid and nothing written outside tmp_path.
 
@@ -238,8 +245,8 @@ def _drive_a_start(tmp_path, monkeypatch, *, no_ultra=False, refuse_seat=None,
     repo = _a_clean_repo(tmp_path)
     argv = ["--start", "--repo", str(repo), "--task", str(_a_task(tmp_path)),
             "--answers", str(_answers(tmp_path)), "--attempts", "1"]
-    if no_ultra:
-        argv.append("--no-ultra")
+    if skip_deep_review:
+        argv.append("--skip-deep-review")
     buf = io.StringIO()
     rc = cli.main(argv, out=buf, make_launcher=make_launcher)
     assert rc == 0, buf.getvalue()
@@ -279,12 +286,12 @@ def _collect_text(tmp_path, run_dir, *argv) -> str:
 # --------------------------------------------------------------------------- the parser
 
 def test_the_parser_offers_the_four_verbs_the_spec_names(capsys):
-    """--start / --collect / --gc / --no-ultra. An absence here would be found by an operator
+    """--start / --collect / --gc / --skip-deep-review. An absence here would be found by an operator
     rather than by this suite."""
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     out = capsys.readouterr().out
-    for flag in ("--start", "--collect", "--gc", "--no-ultra"):
+    for flag in ("--start", "--collect", "--gc", "--skip-deep-review"):
         assert flag in out, flag
 
 
@@ -413,7 +420,7 @@ def test_no_seat_window_is_invented_when_the_engine_names_none(tmp_path, capsys,
     assert not (tmp_path / "state").exists(), "a run that cannot start left something behind"
 
 
-def test_the_answer_sheet_may_not_carry_a_second_spelling_of_no_ultra(tmp_path, capsys,
+def test_the_answer_sheet_may_not_carry_a_second_spelling_of_skip_deep_review(tmp_path, capsys,
                                                                       monkeypatch):
     """The decision moves three scalars on the quote AND is spent an hour later in another
     process. A sheet carrying its own copy beside the flag is the two readings §5 step 5
@@ -423,10 +430,10 @@ def test_the_answer_sheet_may_not_carry_a_second_spelling_of_no_ultra(tmp_path, 
     monkeypatch.setitem(engine.MODE_TIMEOUT, "forge", _FORGE_TIMEOUT)
     rc = cli.main(["--start", "--repo", str(_a_clean_repo(tmp_path)),
                    "--task", str(_a_task(tmp_path)),
-                   "--answers", str(_answers(tmp_path, ultrareview=True))],
+                   "--answers", str(_answers(tmp_path, deep_review=True))],
                   make_launcher=_never)
     assert rc != 0
-    assert "ultrareview" in capsys.readouterr().out
+    assert "deep_review" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------- the seam
@@ -563,8 +570,8 @@ def test_collect_refuses_a_synthesis_worktree_nobody_fused_in(tmp_path, monkeypa
     call that cannot be taken back, and this is the assertion that holds that order.
     """
     calls = []
-    monkeypatch.setattr(cli.ultra, "run_ultra",
-                        lambda *a, **kw: calls.append(kw) or _skipped_ultra())
+    monkeypatch.setattr(cli.deepreview, "run_deep_review",
+                        lambda *a, **kw: calls.append(kw) or _skipped_deep())
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept"])
     assert rc != 0
@@ -572,33 +579,33 @@ def test_collect_refuses_a_synthesis_worktree_nobody_fused_in(tmp_path, monkeypa
     assert not calls, "§13.1's review was requested for a run with nothing to hand over"
 
 
-def test_no_ultra_reaches_run_ultra_as_well_as_the_quote(tmp_path, monkeypatch):
+def test_skip_deep_review_reaches_run_deep_review_as_well_as_the_quote(tmp_path, monkeypatch):
     """Two spellings of one flag, in two processes. The answer is recorded at the gate and
     read back here; this asserts the READ, not the write."""
     calls = []
-    monkeypatch.setattr(cli.ultra, "run_ultra",
-                        lambda *a, **kw: calls.append(kw) or _skipped_ultra())
-    run_dir = _drive_a_start(tmp_path, monkeypatch, no_ultra=True)
+    monkeypatch.setattr(cli.deepreview, "run_deep_review",
+                        lambda *a, **kw: calls.append(kw) or _skipped_deep())
+    run_dir = _drive_a_start(tmp_path, monkeypatch, skip_deep_review=True)
     _collect_text(tmp_path, run_dir)
     assert calls and calls[-1]["enabled"] is False
 
 
-def test_the_ultrareview_answer_is_read_off_the_record_and_not_off_this_processs_default(
+def test_the_deep_review_answer_is_read_off_the_record_and_not_off_this_processs_default(
         tmp_path, monkeypatch):
     """The discrimination check for the test above: a `--collect` that hardcoded `enabled` —
     in either direction — would pass one of the two runs. `--collect` is never given
-    `--no-ultra`, so the only source is the journalled answer."""
+    `--skip-deep-review`, so the only source is the journalled answer."""
     calls = []
-    monkeypatch.setattr(cli.ultra, "run_ultra",
-                        lambda *a, **kw: calls.append(kw) or _skipped_ultra())
-    run_dir = _drive_a_start(tmp_path, monkeypatch, no_ultra=False)
+    monkeypatch.setattr(cli.deepreview, "run_deep_review",
+                        lambda *a, **kw: calls.append(kw) or _skipped_deep())
+    run_dir = _drive_a_start(tmp_path, monkeypatch, skip_deep_review=False)
     _collect_text(tmp_path, run_dir)
     assert calls and calls[-1]["enabled"] is True
 
 
 def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
         tmp_path, monkeypatch, capsys):
-    """`_confirmed_ultrareview` fails closed. §13.1 is priced in usage credits, so a run whose
+    """`_confirmed_deep_review` fails closed. §13.1 is priced in usage credits, so a run whose
     record cannot say ON from OFF may not be collected on this process's default.
 
     THE VALUE IS REWRITTEN RATHER THAN THE RECORD REMOVED, and the difference is what this
@@ -608,17 +615,17 @@ def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
     true in Python, so it is the value that would silently buy the review.
     """
     called = []
-    monkeypatch.setattr(cli.ultra, "run_ultra",
-                        lambda *a, **kw: called.append(kw) or _skipped_ultra())
+    monkeypatch.setattr(cli.deepreview, "run_deep_review",
+                        lambda *a, **kw: called.append(kw) or _skipped_deep())
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     _fuse_something(run_dir)
     log = storage.journal_path(run_dir)
     raw = log.read_bytes()
-    assert b'"ultrareview": true' in raw, raw
-    log.write_bytes(raw.replace(b'"ultrareview": true', b'"ultrareview": "yes"'))
+    assert b'"deep_review": true' in raw, raw
+    log.write_bytes(raw.replace(b'"deep_review": true', b'"deep_review": "yes"'))
     rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept"])
     assert rc != 0
-    assert "ultrareview='yes'" in capsys.readouterr().out
+    assert "deep_review='yes'" in capsys.readouterr().out
     assert not called, "a review was requested for a run that cannot say it agreed to one"
 
 
@@ -642,8 +649,8 @@ def test_a_mistyped_collect_flag_is_refused_before_the_cloud_review_is_paid_for(
     ordering this one exists to refuse.
     """
     calls = []
-    monkeypatch.setattr(cli.ultra, "run_ultra",
-                        lambda *a, **kw: calls.append(kw) or _skipped_ultra())
+    monkeypatch.setattr(cli.deepreview, "run_deep_review",
+                        lambda *a, **kw: calls.append(kw) or _skipped_deep())
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     _fuse_something(run_dir)
     rc = cli.main(["--collect", _run_id(run_dir), "--repo", _repo_of(run_dir), "--accept",
@@ -660,7 +667,7 @@ def test_collect_validates_its_whole_provenance_record_before_the_call_that_spen
     Every rule `Provenance.__post_init__` states is over a value `collect` already holds when
     it has finished reading the disk — the two argv words, the seat rows, the confirmed verify
     command, §11's agreement label, §13's terminal and its counts — and the ONLY one that needs
-    §13.1's result is the type check on `ultra`. Hoisting the two flag checks alone would leave
+    §13.1's result is the type check on `deep_review`. Hoisting the two flag checks alone would leave
     the other dozen behind the one call that cannot be taken back, which is the same defect
     this test's parametrized sibling names, found again a week later.
 
@@ -672,7 +679,7 @@ def test_collect_validates_its_whole_provenance_record_before_the_call_that_spen
     fn = next(n for n in ast.walk(ast.parse(src))
               if isinstance(n, ast.FunctionDef) and n.name == "collect")
     spends = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
-              and isinstance(n.func, ast.Attribute) and n.func.attr == "run_ultra"]
+              and isinstance(n.func, ast.Attribute) and n.func.attr == "run_deep_review"]
     records = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
                and isinstance(n.func, ast.Attribute) and n.func.attr == "Provenance"]
     assert len(spends) == 1, f"§13.1 is asked for once, not {len(spends)} time(s): {spends}"
@@ -720,7 +727,7 @@ def test_collect_persists_the_handover_only_below_every_refusal_it_can_make():
     A fixture can drive one refusal at a time, and what is at issue is where the WRITE sits:
     every statement above it can refuse, and the record is §15's licence to delete the run. The
     rendering is inside the ordering rather than beside it — `handover.text` refuses an
-    `ultra.STATUSES` member that grew no line in the header — so a write hoisted one statement
+    `deepreview.STATUSES` member that grew no line in the header — so a write hoisted one statement
     up would be back to persisting a claim this function has not finished making.
     """
     src = (ROOT / "shared" / "lib" / "forge" / "cli.py").read_text(encoding="utf-8")
@@ -733,7 +740,7 @@ def test_collect_persists_the_handover_only_below_every_refusal_it_can_make():
 
     writes = called_at("write_handover")
     assert len(writes) == 1, f"the handover is persisted once, not {len(writes)} time(s)"
-    for attr in ("Provenance", "run_ultra", "text"):
+    for attr in ("Provenance", "run_deep_review", "text"):
         lines = called_at(attr)
         assert lines, f"collect no longer calls {attr}, so this ordering is about nothing"
         assert writes[0] > max(lines), (
@@ -763,15 +770,16 @@ def test_the_handover_reports_the_review_this_run_got_and_not_the_pre_spend_plac
     place. Without that call the handover says the cloud review was never requested over a run
     that paid for one — this package's usual overclaim printed backwards, and just as wrong.
 
-    MEASURED with `scripts/mutate.py`: replacing `dataclasses.replace(p, ultra=u)` with `p`
+    MEASURED with `scripts/mutate.py`: replacing `dataclasses.replace(p, deep_review=u)` with `p`
     left `test_forge_cli.py` and `test_forge_handover.py` both green (79 passed, SURVIVED), so
     nothing else in the suite holds the placeholder in.
     """
-    ran = ultra.Ultra(ultra.RAN, None, (), None, True, "a test stood in for §13.1 and ran")
-    monkeypatch.setattr(cli.ultra, "run_ultra", lambda *a, **kw: ran)
+    ran = deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True,
+                                "a test stood in for §13.1 and ran")
+    monkeypatch.setattr(cli.deepreview, "run_deep_review", lambda *a, **kw: ran)
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     text = _collect_text(tmp_path, run_dir)
-    assert "Ultrareview: 0 finding(s) reported" in text
+    assert "Deep review: 0 finding(s) reported by claude seat(s)" in text
     assert cli._UNREQUESTED.detail not in text
     assert "not requested" not in text, \
         "the header describes a review nobody asked for over a run that got one"
@@ -1573,7 +1581,7 @@ def test_the_handover_names_every_step_of_the_verify_command(tmp_path, monkeypat
 
 
 def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monkeypatch):
-    """§13.1 spends $5-25 and `ultra.py` carried NO journal reference at all (measured: 0).
+    """§13.1 spends three provider calls and the old module carried NO journal reference (measured: 0).
     A crash between the invocation and the report lost the fact that money had been spent,
     and the refusal an operator then sees tells them to re-run `--collect` — which made the
     double charge the documented path.
@@ -1586,9 +1594,9 @@ def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monke
 
     def _spend(rd, **kw):
         calls.append(kw)
-        return ultra.Ultra("ran", None, (), "https://x/y", True, None)
+        return deepreview.DeepReview("ran", None, (), ("claude", "codex"), True, "d")
 
-    monkeypatch.setattr(ultra, "run_ultra", _spend)
+    monkeypatch.setattr(deepreview, "run_deep_review", _spend)
     for _ in range(2):
         out = io.StringIO()
         assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
@@ -1597,18 +1605,18 @@ def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monke
     assert "already run" in out.getvalue(), out.getvalue()
 
 
-def test_an_orphaned_ultra_request_is_retried_rather_than_replayed(tmp_path, monkeypatch):
+def test_an_orphaned_deep_review_request_is_retried_rather_than_replayed(tmp_path, monkeypatch):
     """An `intent` with no `done` is a request whose outcome NOBODY knows — it may have
     reached the remote and it may not. §14.1 retries an unknown outcome and never repeats a
     known one, and that is the direction that cannot silently drop a finding."""
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     _fuse_something(run_dir)
     log = journal.Journal(storage.journal_path(run_dir))
-    log.record(journal.intent("ultrareview"), operation_id="ultra-x", round=1)
+    log.record(journal.intent("deep_review"), operation_id="deep-review-x", round=1)
     calls = []
-    monkeypatch.setattr(ultra, "run_ultra",
+    monkeypatch.setattr(deepreview, "run_deep_review",
                         lambda rd, **kw: (calls.append(1),
-                                          ultra.Ultra("ran", None, (), None, True, None))[1])
+                                          deepreview.DeepReview("ran", None, (), ("claude",), True, "d"))[1])
     out = io.StringIO()
     cli.main(["--collect", _run_id(run_dir), "--repo",
               str(runstate.read_manifest(run_dir).repo_path),
@@ -1616,18 +1624,18 @@ def test_an_orphaned_ultra_request_is_retried_rather_than_replayed(tmp_path, mon
     assert len(calls) == 1, "an orphaned request was replayed as though its outcome was known"
 
 
-def test_a_replayed_ultra_keeps_no_bugs_and_no_review_apart(tmp_path, monkeypatch):
-    """`bugs=None` and `bugs=()` are DIFFERENT and `ultra.Ultra` refuses `None` on a `ran`
+def test_a_replayed_deep_review_keeps_no_findings_and_no_review_apart(tmp_path, monkeypatch):
+    """`bugs=None` and `bugs=()` are DIFFERENT and `deepreview.DeepReview` refuses `None` on a `ran`
     status for exactly that reason: "the review ran and found nothing" and "no review ran"
     are the false green this module exists to prevent. A round-trip through the journal that
     collapsed them would reintroduce it one storage layer down."""
-    f = reviewmod.Finding(id="a" * 12, round=1, seat="ultra", severity="blocker",
+    f = reviewmod.Finding(id="a" * 12, round=1, seat="deep_review", severity="blocker",
                           claim="c", evidence="e", resolution="open")
-    for bugs in ((), (f,)):
+    for findings in ((), (f,)):
         row = cli._finding_row(f)
         assert cli._finding_of(row) == f
-        u = ultra.Ultra("ran", None, bugs, None, True, None)
-        assert u.bugs is not None
+        u = deepreview.DeepReview("ran", None, findings, ("claude",), True, "d")
+        assert u.findings is not None
     with pytest.raises(cli.CliError):
         cli._finding_of({"id": "x"})
 
