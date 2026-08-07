@@ -32,7 +32,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -65,13 +65,18 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # --------------------------------------------------------------------------- #
 MODES = {
     "normal": {
-        "claude": {"model": "claude-opus-5",           "thinking": "high"},
+        "claude": {"model": "claude-fable-5",          "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
         "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        "claude": {"model": "claude-opus-5",           "thinking": "max"},
-        "codex":  {"model": "gpt-5.6-sol",            "thinking": "max"},
+        # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with
+        # a garbage control on each: claude's help enumerates only low..max and
+        # warn-and-IGNORES an unknown value (so a dropped tier would silently downgrade
+        # this seat — the smoke asserts the warning's absence); codex accepts `ultra` and
+        # fails CLOSED on garbage with an API 400. agy refuses any tier above high.
+        "claude": {"model": "claude-fable-5",          "thinking": "ultracode"},
+        "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug,
         # and `--effort` caps at high — re-probed on 1.1.8), and 1.1.5's
         # `--effort` caps at high too (both re-probed 2026-07-25 on agy 1.1.7) — two
@@ -103,14 +108,37 @@ DEFAULT_MODE = "normal"
 # the one whose --print-timeout tracks this value directly.
 # `--mode` offers only the keys of MODES, so this entry is not reachable from this CLI: the
 # forge front end reads it by name, and that is the only reader.
-MODE_TIMEOUT = {"normal": 300, "deep": 1200, "forge": 3600}  # per-attempt seconds
+# NORMAL RAISED 300 -> 900 (2026-08-05) BECAUSE THE PANEL MOVED, NOT BECAUSE RUNS GOT
+# SLOWER. Normal mode now carries Fable 5 at `max`, whose only substantive measurement is
+# 649s — more than double the old window. Leaving 300 would have manufactured timeouts on
+# routine councils and failed the gate CLOSED, which is the agy print-timeout lesson
+# exactly: a fixed sub-engine cap turns slow success into reported failure.
+MODE_TIMEOUT = {"normal": 900, "deep": 1200, "forge": 3600}  # per-attempt seconds
 
 # Map the abstract thinking tier to each provider's own flag value.
+# Unknown tiers pass through VERBATIM (`.get(t, t)`), which is how `ultracode`/`ultra`
+# reach the CLIs at all — both are real but absent from `--help`. Probed 2026-08-05:
+# claude accepts `ultracode` silently and warn-and-IGNORES garbage (a dropped tier would
+# downgrade a seat with only a stderr line); codex accepts `ultra` and fails closed with
+# an API 400 on garbage; agy refuses anything above `high`.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
 # gpt-5.6-sol accepts low/medium/high/xhigh/max/ultra (probed 2026-07-11); "ultra" is
 # deliberately unused — it spawns internal sub-agents (a council inside a council member)
 # and is Pro-plan-gated, so deep mode maps to "max".
 CODEX_EFFORT = {"high": "high", "max": "max"}
+
+# A seat whose MODEL is the plausible cause of its failure retries on this model instead
+# of burning the attempt on one that cannot answer. Fable sits behind the narrowest weekly
+# sub-cap on this machine, and it now holds the claude seat in BOTH modes, so the wall is
+# an expected event rather than a surprise.
+FALLBACK_MODELS = {"claude": "claude-opus-5"}
+# DELIBERATELY NARROW. `auth_or_quota` is the wall (and the codex version-gate wording);
+# a structured unknown-model rejection lands in the *_error family. Everything else —
+# timeout, parse_failure, tool_permission, non_substantive, did_not_read_input — has a
+# cause the model is not, and swapping there would MASK the real defect behind a silent
+# panel change: a window that needs resizing, a parser that needs fixing, an invocation
+# flag that is ours to correct.
+FALLBACK_REASONS = {"auth_or_quota", "claude_error"}
 
 # Substrings that mark a provider's output as a failure rather than an answer.
 # Scanned in stderr and the provider's log file always, and in the result text ONLY
@@ -415,8 +443,16 @@ def council_header(manifest: dict) -> str:
     s = manifest["summary"]
     ok, total = s["valid"], s["requested"]
     head = f"**Council: {ok} of {total} seats responded"
+    # A SUBSTITUTED SEAT IS NOT THE PANEL THE READER THINKS THEY GOT. A fallback keeps the
+    # seat count whole, so without this clause a 3-of-3 header would describe a panel that
+    # silently ran a different model — the same class of concealment the seat count exists
+    # to prevent, one level down.
+    swapped = [f"{p['name']} {p['model_fallback']['from']}→{p['model_fallback']['to']} "
+               f"({p['model_fallback']['reason']})"
+               for p in manifest["providers"] if p.get("model_fallback")]
+    tail = ("  Model fallback: " + "; ".join(swapped) + ".") if swapped else ""
     if ok == total:
-        return head + ".**"
+        return head + ".**" + tail
     lost = []
     for p in manifest["providers"]:
         if p.get("valid"):
@@ -425,7 +461,7 @@ def council_header(manifest: dict) -> str:
         if p.get("hint"):
             detail += f" — {p['hint']}"
         lost.append(detail + ")")
-    return head + " — DEGRADED.**  Failed: " + "; ".join(lost)
+    return head + " — DEGRADED.**  Failed: " + "; ".join(lost) + tail
 
 
 # --------------------------------------------------------------------------- #
@@ -715,6 +751,28 @@ def agy_configured_model() -> Optional[str]:
         return json.loads(p.read_text()).get("model")
     except Exception:  # noqa: BLE001 — best-effort; never fail a run over this
         return None
+
+
+def swap_model(argv: list, name: str, old: str, new: str):
+    """Return a copy of argv with the model flag repointed at `new`, or None if the flag
+    is not there to swap.
+
+    Returning None rather than appending a flag is the point: a seat whose argv carries no
+    model flag is running the CLI's own default, and ADDING one would change what the run
+    is — a silent widening of the fallback's blast radius past the one thing it is for.
+    The flag name differs per provider (`--model` for claude/agy, `-m` for codex), so the
+    value is located by its FLAG, never by scanning argv for a string that equals `old`.
+    """
+    flags = {"claude": "--model", "codex": "-m", "agy": "--model"}
+    flag = flags.get(name)
+    if not flag or flag not in argv:
+        return None
+    out = list(argv)
+    i = out.index(flag)
+    if i + 1 >= len(out):
+        return None
+    out[i + 1] = new
+    return out
 
 
 def build_real_spec(name: str, prompt: str, timeout: int,
@@ -1287,6 +1345,18 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                 # attaches to — not as a claim that it fires today.
                 break
             if attempt < retries:
+                # MODEL FALLBACK, once per seat: retrying the SAME model against a wall
+                # spends an attempt to learn what the last one already proved. Only for a
+                # model-attributable reason (FALLBACK_REASONS) — see that constant for
+                # why masking any other cause here would be worse than the wall.
+                fb = FALLBACK_MODELS.get(spec.name)
+                if fb and reason in FALLBACK_REASONS and not final.get("model_fallback") \
+                        and spec.model != fb:
+                    swapped = swap_model(spec.argv, spec.name, spec.model, fb)
+                    if swapped is not None:
+                        final["model_fallback"] = {"from": spec.model, "to": fb,
+                                                   "reason": reason, "attempt": n}
+                        spec = replace(spec, argv=swapped, model=fb)
                 time.sleep(backoff * (2 ** attempt))
 
     # Persist final raw + extracted text and reference the files in the record.
@@ -1331,7 +1401,12 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "result_sha256": hashlib.sha256(result_blob).hexdigest(),
         "raw_stdout_file": str(stdout_file),
         "raw_stderr_file": str(stderr_file),
+        # `spec` is rebound on a model fallback, so this is the model that ACTUALLY
+        # answered — never the one originally requested. `model_fallback` is what makes
+        # the difference visible; without it a substituted seat is indistinguishable from
+        # one that ran the configured panel.
         "model": spec.model,
+        "model_fallback": final.get("model_fallback"),
         "thinking": spec.thinking,
         "isolated_cwd": spec.cwd,
         "attempt_log": attempt_log,
@@ -1566,11 +1641,18 @@ def _stub_spec(name: str, mode: str, *, as_: str = "raw", sleep: float = 0.0,
                extract: Optional[Callable] = None,
                answer: Optional[str] = None,
                sentinel: Optional[str] = None,
+               model: Optional[str] = None,
                min_chars: int = 0) -> ProviderSpec:
     """min_chars defaults to 0 because most self-test checks exercise TRANSPORT
     (retries, timeouts, parallelism, extraction) with a deliberately tiny canned
-    answer. The seat-substance checks (S18) opt into the real floor explicitly."""
+    answer. The seat-substance checks (S18) opt into the real floor explicitly.
+
+    `model` appends a real `--model` flag (the stub ignores it via parse_known_args)
+    AND sets spec.model, because the fallback path swaps the value behind that flag and
+    refuses to act when it is absent."""
     argv = [sys.executable, str(STUB), "--mode", mode, "--as", as_]
+    if model is not None:
+        argv += ["--model", model]
     if sleep:
         argv += ["--sleep", str(sleep)]
     if counter is not None:
@@ -1579,7 +1661,8 @@ def _stub_spec(name: str, mode: str, *, as_: str = "raw", sleep: float = 0.0,
         argv += ["--answer", answer]
     if extract is None:
         extract = extract_claude_json if as_ == "claude" else extract_raw
-    return ProviderSpec(name, argv, None, extract, sentinel=sentinel, min_chars=min_chars)
+    return ProviderSpec(name, argv, None, extract, model=model, sentinel=sentinel,
+                        min_chars=min_chars)
 
 
 def self_test() -> int:
@@ -1651,6 +1734,43 @@ def self_test() -> int:
                     retries=2, timeout=5, backoff=0.05, workdir=wd("flaky"),
                     prompt="hi")
     ag = m["providers"][0]
+    # S6b — MODEL FALLBACK: a quota wall swaps the model for the retry, and says so.
+    fbc = wd("fallback") / "counter.txt"
+    m = run_council([_stub_spec("claude", "quota:1", counter=fbc, model="claude-fable-5")],
+                    retries=2, timeout=5, backoff=0.05, workdir=wd("fallback"), prompt="hi")
+    fb = m["providers"][0]
+    check("fallback: the seat recovers instead of burning retries on the wall", fb["valid"])
+    check("fallback: recorded from/to/reason",
+          (fb["model_fallback"] or {}).get("to") == "claude-opus-5"
+          and fb["model_fallback"]["from"] == "claude-fable-5"
+          and fb["model_fallback"]["reason"] == "auth_or_quota")
+    check("fallback: the reported model is the one that ANSWERED",
+          fb["model"] == "claude-opus-5")
+    check("fallback: the header discloses the swap",
+          "Model fallback" in m["summary"]["header"]
+          and "claude-fable-5→claude-opus-5" in m["summary"]["header"])
+    # NEGATIVE: a timeout is not model-attributable, so swapping there would mask a
+    # window that needs resizing behind a silent panel change.
+    m = run_council([_stub_spec("claude", "timeout", model="claude-fable-5")],
+                    retries=1, timeout=1, backoff=0.05, workdir=wd("nofallback"),
+                    prompt="hi")
+    nf = m["providers"][0]
+    check("no fallback on a timeout", nf.get("model_fallback") is None)
+    check("no fallback leaves the header clean",
+          "Model fallback" not in m["summary"]["header"])
+    # swap_model is surgical: it repoints the value behind the provider's OWN flag, and
+    # refuses (None) when there is no flag to swap rather than appending one.
+    check("swap_model repoints claude --model",
+          swap_model(["claude", "--model", "a", "-p", "q"], "claude", "a", "b")
+          == ["claude", "--model", "b", "-p", "q"])
+    check("swap_model uses codex's -m, not --model",
+          swap_model(["codex", "exec", "-m", "a"], "codex", "a", "b")
+          == ["codex", "exec", "-m", "b"])
+    check("swap_model refuses when no model flag is present",
+          swap_model(["claude", "-p", "q"], "claude", None, "b") is None)
+    check("swap_model refuses a dangling flag at argv end",
+          swap_model(["claude", "--model"], "claude", "a", "b") is None)
+
     check("flaky: recovers to valid", ag["valid"])
     check("flaky: took 3 attempts", ag["attempts"] == 3)
 

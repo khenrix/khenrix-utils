@@ -95,25 +95,43 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 The engine prints a JSON **manifest** to stdout (also saved to
 `<workdir>/manifest.json`). Useful flags: `--mode normal|deep` (see below),
 `--allow-writes` (drop the default read-only posture so members can edit/execute),
-`--timeout SECONDS` (per-attempt; default is per-mode — 300 normal / 1200 deep — raise
+`--timeout SECONDS` (per-attempt; default is per-mode — 900 normal / 1200 deep — raise
 it for big tasks), `--retries N` (default 2), `--providers claude,codex` (narrow the
 panel), `--model-claude/-codex/-agy ID` (override a model for one run). Defaults are
 fine for most runs.
 
 ### Models & thinking modes
 
-The council is a fixed panel of three models, each at a configurable thinking tier.
-Two modes, **same models**, differ only in how hard they think:
+The council is a fixed panel of three models. The two modes differ in **both** the claude
+seat's reasoning tier and how hard the others think:
 
-- **`normal`** (default) — all members at **high** thinking. Use for most council runs.
-- **`deep`** — same members at **maximum** reasoning + a longer timeout. Use for
-  genuinely high-stakes / maximum-confidence asks (architecture, risky changes), or
-  when the user says "deep", "think hard", or "maximum confidence".
+- **`normal`** (default) — Fable 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.6 Flash
+  (High). Use for most council runs.
+- **`deep`** — Fable 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
+  above High exists) + a longer timeout. Use for genuinely high-stakes /
+  maximum-confidence asks (architecture, risky changes), or when the user says "deep",
+  "think hard", or "maximum confidence".
+
+`ultracode` and `ultra` are real but **undocumented** tiers (probed 2026-08-05, each with
+a garbage-value control): claude's `--help` lists only `low…max` yet accepts `ultracode`
+silently — and *warn-and-ignores* an unknown value, so if a future CLI drops the tier the
+seat downgrades to default effort with only a stderr line; codex accepts `ultra` and fails
+**closed** with an API 400 on garbage; agy refuses anything above `high`.
+
+**Automatic model fallback.** Fable sits behind the narrowest weekly sub-cap on this
+machine and now holds the claude seat in both modes, so a wall is expected rather than
+surprising: when that seat fails for a **model-attributable** reason (`auth_or_quota`, a
+structured claude error) the retry runs on `claude-opus-5` instead of spending the attempt
+on a model that cannot answer. It never fires on a timeout, parse failure or tool-permission
+denial — the model is not the cause there, and swapping would mask the real defect. Every
+swap is disclosed: `model_fallback {from,to,reason}` on the provider record, the manifest's
+`model` field is the model that *actually answered*, and `summary.header` gains a
+`Model fallback:` clause you must not drop from the synthesis.
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
 `engine.py` (repo: `shared/lib/council/engine.py`; rendered plugin:
-`<plugin>/lib/council/engine.py` — `scripts/fanout.py` is now a thin façade over it)
-(currently Claude Opus 5, GPT-5.6 Sol, Gemini 3.6 Flash). To change
+`<plugin>/lib/council/engine.py` — `scripts/fanout.py` is now a thin façade over it).
+To change
 a tier, edit one cell there. A *new* model id must also be registered in
 `capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model

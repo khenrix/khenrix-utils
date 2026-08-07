@@ -89,6 +89,22 @@ would otherwise spawn clone fleets inside its own verifier clones. `precommit` i
 nine suites land instead; nothing runs `precommit` inside a verifier. Adding a `tests/test_forge_*.py`
 to neither variable is a suite nothing runs, and `test_forge_packaging.py` fails on it.
 
+## Skill flowcharts
+
+Every skill has a mermaid flowchart at `docs/skill-charts/<skill>.md` — maintainer docs,
+deliberately OUTSIDE the plugins and every receipt closure (a chart under
+`shared/skills/` would stale that skill's receipt on every edit). Each decision diamond
+(`G_*`) carries a Gate-evidence row: `code` gates cite a `path::label` reference that
+`make verify` resolves by grep; `agent` gates are LLM-enforced process rules (a
+checkpoint, a scope rule) that cite the eval assertion or audit item covering them — no
+test can prove a model will stop, and claiming one would be the defect class this repo
+keeps finding.
+
+If a change alters a skill's flow, update its chart in the same commit. A NEW skill owes
+a chart in the same commit that adds it, exactly as it owes an eval set — the lint
+(`scripts/lib/charts.py`, wired through `checks.run_all`) fails `make verify` on a
+missing chart or a dangling evidence reference.
+
 ## Constraints
 
 - Python is stdlib-only (no pip dependencies; `tomllib`, `json`, `subprocess`, …). Don't

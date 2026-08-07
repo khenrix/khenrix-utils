@@ -79,6 +79,17 @@ def main(argv=None) -> int:
             return 1
         mode = "ok"
 
+    if mode.startswith("quota:"):
+        # A QUOTA WALL FOR THE FIRST K ATTEMPTS, then success — the shape a model
+        # fallback must survive. Distinct from `flaky:K` because the reason must
+        # classify as `auth_or_quota` (the only retryable member of FALLBACK_REASONS),
+        # not as a generic nonzero exit.
+        k = int(mode.split(":", 1)[1])
+        if bump_counter(args.counter_file) <= k:
+            sys.stderr.write("Individual quota reached for this model\n")
+            return 1
+        mode = "ok"
+
     if args.sleep:
         time.sleep(args.sleep)
 

@@ -65,6 +65,26 @@ instead on whatever gate the target repo itself provides, if any.
 If a proposed fix would ADD any of the above, downgrade or drop it. Proportionality
 beats completeness.
 
+## 8. Chart drift — `docs/skill-charts/<target>.md`
+
+- Does a chart exist for the target, and does its drawn flow match the CURRENT body —
+  steps, gates, failure exits? Chart-vs-body drift is a **Stale-reference** finding like
+  any other doc drift, and it is the one this repo's own defect history predicts: prose
+  asserting behaviour the code does not have, in a form that reads more authoritative
+  than prose.
+- Is every drawn gate's evidence row still honest — `code` gates still backed by the named
+  test, `agent` gates still covered by a live eval assertion or audit item? `make verify`
+  resolves the references mechanically, so a *dangling* one is already caught; what the
+  audit adds is whether a *resolvable* reference still describes the gate it is attached to.
+
+## 9. Cross-CLI feedback loop
+
+- Was every provider-specific finding this run probed on the other two CLIs, and does its
+  run-log entry carry the one-sentence per-provider record?
+  (`references/research-procedure.md` §Cross-CLI loop.)
+- A fix applied to one provider's code path must say why the others need none — "not
+  applicable" is a finding, silence is not.
+
 ## What makes a finding `risky` (requires explicit sign-off)
 
 Behavior change to what the skill delivers · any model-ID change · a new dependency ·
