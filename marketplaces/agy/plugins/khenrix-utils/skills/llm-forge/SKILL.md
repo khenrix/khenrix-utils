@@ -1,6 +1,6 @@
 ---
 name: llm-forge
-description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~19 provider calls across 19 coexisting clones and peaks near 63.3 GB of disk, so it is for changes that justify the spend; `--start` prints the full quote before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
+description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~22 provider calls across 19 coexisting clones and peaks near 63.3 GB of disk, so it is for changes that justify the spend; `--start` prints the full quote before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
 allowed-tools: Bash, Read
 ---
 
@@ -42,14 +42,14 @@ yours to keep; the engine refuses only the two cases where the tree itself gives
 > The gate also prints a **wall-clock upper bound** for the builders — `seats × attempts ×`
 > the §19 window, ~9 h on a default run, because the seats run one after another and each
 > attempt gets the whole window. It is a bound, not an estimate, and it excludes setup, verify,
-> review and the cloud review, so the real ceiling is above it.
+> review and the deep review, so the real ceiling is above it.
 >
-> **That quote is an UPPER BOUND, and about half of it cannot be spent today.** §13's review
-> rounds and their post-round fixes — 9 of the 19 calls — are priced for a stage that has no
+> **That quote is an UPPER BOUND, and part of it cannot be spent today.** §13's review
+> rounds and their post-round fixes — 9 of the 22 calls — are priced for a stage that has no
 > production caller: `review.run_round` and `review.loop` are built and tested and nothing
 > convenes them, so `--review-rounds N` parses, is recorded as a budget, and buys nothing. A
-> real default run spends about **10** provider calls: 9 builders and the one synthesis turn
-> you make yourself. The quote is not corrected here because repricing changes what `--start`
+> real default run spends about **13** provider calls: 9 builders, the one synthesis turn you
+> make yourself, and the 3-seat deep review, which `--collect` really does convene. The quote is not corrected here because repricing changes what `--start`
 > asks you to agree to, and that is its own change; what the packaging suite guarantees is
 > that no NEW unspendable term can be added without a test failing.
 > `--start` prints that whole quote, plus every refusal and gap, **before a token is
@@ -309,7 +309,7 @@ prints the handover.
 **Get `--strategy` right the first time.** Every refusal `--collect` can make from disk — an
 unfused synthesis tree, a tree identical to one seat's candidate, an out-of-band set it cannot
 enumerate, a delivery naming neither a target nor an acceptance, a partial evidence set — comes
-*before* the cloud review, so a run with nothing to hand over does not pay for it. `--strategy`
+*before* the deep review, so a run with nothing to hand over does not pay for it. `--strategy`
 is validated when the provenance record is built, which `--collect` does **before** it invokes
 the review — so a misspelled value refuses without spending anything.
 

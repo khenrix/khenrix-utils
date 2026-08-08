@@ -682,7 +682,7 @@ class Round:
     this module's `unreadable_findings` / `unreadable_result_file` / `no_record`.
 
     IT VALIDATES ITSELF BECAUSE EVERY SIBLING RECORD IN THIS PACKAGE DOES — `Size`,
-    `Decision`, `Progress`, `Dimensions`, `Finding`, `Resolution`, `DiffSize`, `Ultra` — and
+    `Decision`, `Progress`, `Dimensions`, `Finding`, `Resolution`, `DiffSize`, `DeepReview` — and
     because this is the one the TERMINAL reads. A hand-built `Round` is exactly what `read_round` produces off disk,
     so the checks below run on the record a crashed run is reconstructed from, not only on
     the one this process just built.

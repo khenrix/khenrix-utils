@@ -603,16 +603,20 @@ def test_the_header_names_no_strategy_no_module_upstream_chose():
 
 
 def test_every_deep_review_status_renders_differently():
+    """THREE statuses now, not four: `timeout` was removed because nothing could produce it
+    — a seat that times out is an invalid seat to the council engine, so an all-timeout
+    panel arrives as `no_valid_seats`. Forcing a rendering for it entrenched a status the
+    code could not reach.
+    """
     seen = set()
     for u in (deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)"),
               deepreview.DeepReview(deepreview.UNAVAILABLE, "no_valid_seats", None, (), True, "d"),
-              deepreview.DeepReview(deepreview.TIMED_OUT, None, None, ("claude",), True, "d"),
               deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False, "--skip-deep-review")):
         line = [l for l in handover.header(_prov(deep_review=u)).splitlines()
                 if l.lstrip().startswith("Deep review:")]
         assert len(line) == 1, u.status
         seen.add(line[0])
-    assert len(seen) == 4, seen
+    assert len(seen) == 3, seen
     unavailable = handover.header(_prov(
         deep_review=deepreview.DeepReview(deepreview.UNAVAILABLE, "unreadable_output", None, (), True, "d")))
     assert "unavailable (unreadable_output)" in unavailable
@@ -629,15 +633,15 @@ def test_a_skipped_deep_review_reports_its_own_reason_and_never_a_flag_it_invent
     assert "--skip-deep-review" not in skipped
 
 
-def test_a_status_the_header_has_no_rendering_for_is_refused_not_read_as_the_cheapest_of_four():
-    """`deepreview.STATUSES` is the vocabulary and `Ultra` refuses anything outside it, so this
-    reaches the renderer only through a stand-in — which is the point: a fifth status added
-    upstream falls through to whichever branch has no test on it, and the cheapest of these
-    four to read is 'the review nobody asked for'."""
-    fifth = SimpleNamespace(status="degraded", reason=None, bugs=None, session_url=None,
+def test_a_status_the_header_has_no_rendering_for_is_refused_not_read_as_the_cheapest():
+    """`deepreview.STATUSES` is the vocabulary and `DeepReview` refuses anything outside it,
+    so this reaches the renderer only through a stand-in — which is the point: a status
+    added upstream falls through to whichever branch has no test on it, and the cheapest of
+    these to read is 'the review nobody asked for'."""
+    extra = SimpleNamespace(status="degraded", reason=None, findings=None, seats=(),
                             diff_measured=True, detail="d")
-    with pytest.raises(handover.HandoverError, match="four statuses"):
-        handover._deep_review_line(fifth)
+    with pytest.raises(handover.HandoverError, match="statuses"):
+        handover._deep_review_line(extra)
 
 
 def test_the_verified_sentence_says_what_a_pass_is_and_no_more():

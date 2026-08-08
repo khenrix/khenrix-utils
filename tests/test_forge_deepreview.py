@@ -184,9 +184,10 @@ def test_seats_is_a_tuple_so_a_degraded_panel_is_visible():
 # The findings contract.
 # --------------------------------------------------------------------------- #
 def test_a_clean_payload_parses_into_findings():
-    got = deepreview._parse_findings(
+    got, seen = deepreview._parse_findings(
         _payload({"severity": "blocker", "location": "a.py:1", "description": "off by one"}),
         "claude", 2)
+    assert seen is True
     assert len(got) == 1 and got[0].severity == "blocker" and got[0].seat == "claude"
     assert got[0].round == 2 and got[0].evidence == "a.py:1"
 
@@ -195,7 +196,7 @@ def test_a_finding_with_no_location_records_that_it_had_none():
     """`review.Finding` refuses an empty evidence string, so a row that named no location
     says so in words rather than being dropped — a finding out of a review that cost three
     provider calls is not discarded over a missing field."""
-    got = deepreview._parse_findings(
+    got, _ = deepreview._parse_findings(
         _payload({"severity": "minor", "description": "vague worry"}), "agy", 1)
     assert len(got) == 1 and "named no location" in got[0].evidence
 
@@ -204,21 +205,42 @@ def test_a_repeated_finding_is_one_finding_not_two():
     """Content-derived ids collide when a seat restates one finding — ordinary model
     output, not malformed input — and `Round` refuses duplicate ids."""
     row = {"severity": "blocker", "location": "x.py", "description": "same"}
-    got = deepreview._parse_findings(_payload(row, row), "codex", 1)
+    got, _ = deepreview._parse_findings(_payload(row, row), "codex", 1)
     assert len(got) == 1
 
 
 def test_an_unmapped_severity_is_dropped_rather_than_guessed():
-    got = deepreview._parse_findings(
+    got, _ = deepreview._parse_findings(
         _payload({"severity": "spicy", "description": "d"},
                  {"severity": "low", "description": "e"}), "claude", 1)
     assert len(got) == 1 and got[0].severity == "minor"
 
 
-def test_prose_with_no_payload_parses_to_nothing():
-    assert deepreview._parse_findings("I looked and found nothing.", "claude", 1) == ()
-    assert deepreview._parse_findings("```json\nnot json\n```", "claude", 1) == ()
-    assert deepreview._parse_findings("", "claude", 1) == ()
+def test_only_a_well_formed_payload_counts_as_an_answer():
+    """ONE CLASSIFIER. `payload_seen` is False for every shape that is not an answer —
+    prose, a fence of invalid JSON, and a fence whose key is misspelled all look identical
+    to a reader and must not be scored as "this seat found nothing"."""
+    for text in ("I looked and found nothing.", "```json\nnot json\n```", "",
+                 '```json\n{"finding": [{"severity": "blocker", "description": "d"}]}\n```',
+                 '```json\n{"findings": {"severity": "blocker"}}\n```'):
+        got, seen = deepreview._parse_findings(text, "claude", 1)
+        assert (got, seen) == ((), False), text
+    # A BARE object with an empty list IS an answer, fence or no fence.
+    for text in ('{"findings": []}', _payload()):
+        got, seen = deepreview._parse_findings(text, "claude", 1)
+        assert (got, seen) == ((), True), text
+
+
+def test_the_seats_own_answer_wins_over_a_quoted_template():
+    """A seat that echoes the prompt's example contract before answering would otherwise
+    have the TEMPLATE parsed — its `blocker|minor` placeholder maps to no severity — and
+    its real findings discarded."""
+    text = ('Here is the shape you asked for:\n```json\n'
+            '{"findings": [{"severity": "blocker|minor", "location": "path", '
+            '"description": "what is wrong"}]}\n```\nAnd my actual answer:\n'
+            + _payload({"severity": "blocker", "location": "z.py:9", "description": "real"}))
+    got, seen = deepreview._parse_findings(text, "claude", 1)
+    assert seen is True and len(got) == 1 and got[0].claim == "real"
 
 
 def test_every_severity_this_module_maps_to_is_one_review_declares():
@@ -353,3 +375,108 @@ def test_every_status_and_reason_this_module_can_produce_is_a_declared_one(tmp_p
         assert status in deepreview.STATUSES
         assert reason is None or reason in deepreview.REASONS
     assert len(seen) >= 3, "the fixtures reached more than one outcome"
+
+
+def test_a_fence_full_of_invalid_json_is_not_a_review_that_found_nothing(tmp_path):
+    """THE FALSE GREEN, AT THE RUNNER LEVEL. An earlier draft re-derived readability from
+    the mere PRESENCE of a ```json fence, so a seat whose fence held invalid JSON — or
+    whose key was misspelled — parsed to nothing yet counted as an answer. Three of those
+    produced `ran` with zero findings, which is the sentence this module's docstring
+    stakes its existence against."""
+    r, base, head = _repo(tmp_path)
+    broken = "```json\n{\"findings\": [},]}\n```"
+    miskeyed = '```json\n{"finding": [{"severity": "blocker", "description": "d"}]}\n```'
+    council = _panel(tmp_path, ("claude", True, broken), ("codex", True, miskeyed))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert u.status == deepreview.UNAVAILABLE and u.reason == "unreadable_output"
+    assert u.findings is None
+
+
+def test_a_bare_empty_payload_with_no_fence_is_still_an_answer(tmp_path):
+    """The mirror false RED: keying readability on the fence made a parseable bare object
+    unreadable, so three seats that each said "nothing found" reported as a review that
+    never happened."""
+    r, base, head = _repo(tmp_path)
+    council = _panel(tmp_path, ("claude", True, '{"findings": []}'))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert u.status == deepreview.RAN and u.findings == ()
+
+
+def test_one_seat_at_two_locations_does_not_corroborate_itself(tmp_path):
+    """`saw` was appended per matching row, so ONE seat reporting the same claim at two
+    different places rendered "corroborated by claude, claude" — manufacturing the exact
+    agreement signal the merge exists to report. The older negative test used two
+    verbatim-identical rows, which `_parse_findings` de-duplicates by id BEFORE the merge
+    runs, so it covered a layer where the bug could not appear."""
+    r, base, head = _repo(tmp_path)
+    council = _panel(tmp_path, ("claude", True, _payload(
+        {"severity": "blocker", "location": "a.py:1", "description": "same claim"},
+        {"severity": "blocker", "location": "b.py:9", "description": "same claim"})))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert all("corroborated" not in f.evidence for f in u.findings), \
+        [f.evidence for f in u.findings]
+
+
+def test_two_bugs_sharing_a_generic_claim_keep_their_own_locations(tmp_path):
+    """Keying on the claim alone merged two DIFFERENT defects that happened to share a
+    generic sentence, and kept only the first one's location. A fix pass reads `evidence`
+    to find the thing, so it would have fixed one site and believed the other addressed."""
+    r, base, head = _repo(tmp_path)
+    council = _panel(tmp_path, ("claude", True, _payload(
+        {"severity": "blocker", "location": "a.py:1", "description": "off-by-one in loop bounds"})),
+        ("codex", True, _payload(
+        {"severity": "blocker", "location": "z.py:80", "description": "off-by-one in loop bounds"})))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    where = sorted(f.evidence.split(" [")[0] for f in u.findings)
+    assert where == ["a.py:1", "z.py:80"], where
+
+
+def test_the_same_bug_at_the_same_place_still_merges_as_corroboration(tmp_path):
+    """The discrimination check for the test above: tightening the key must not destroy
+    the agreement signal it exists to report."""
+    r, base, head = _repo(tmp_path)
+    row = {"severity": "blocker", "location": "a.py:1", "description": "same bug"}
+    council = _panel(tmp_path, ("claude", True, _payload(row)), ("codex", True, _payload(row)))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert len(u.findings) == 1
+    assert "corroborated by claude, codex" in u.findings[0].evidence
+
+
+def test_a_diff_git_could_not_produce_is_not_an_unreadable_panel(tmp_path):
+    """Two failures wore one name: git failing before any seat exists (nothing spent) and
+    seats answering unreadably (three provider calls spent and wasted). They want opposite
+    remedies, so an operator reading the handover must be able to tell them apart."""
+    r, base, _ = _repo(tmp_path)
+    council = _panel(tmp_path, ("claude", True, _payload()))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base,
+                                   head="0" * len(base), round_=1, council=council)
+    if u.status == deepreview.UNAVAILABLE:
+        assert u.reason == "diff_unreadable", u.reason
+        assert council.calls == [], "nothing was spent on a diff git never produced"
+
+
+def test_the_cap_is_one_the_transport_can_actually_carry():
+    """MEASURED on this machine: a 200_000-byte argv element raises OSError E2BIG; 120_000
+    does not. The engine hands the prompt to claude and agy as ONE argv element, so a cap
+    above MAX_ARG_STRLEN promises capacity two of three seats cannot carry — and the spawn
+    failure lands AFTER the run journals its intent."""
+    assert deepreview.DIFF_BYTE_CAP < 131_072, \
+        "the cap must sit under Linux's MAX_ARG_STRLEN, with room for the prompt template"
+
+
+def test_the_vocabulary_has_no_members_nothing_can_produce():
+    """DECLARED SUBSET PRODUCIBLE, which the closure test above cannot see. `timeout` was a
+    status with a rendering, a test and no producer — a seat that times out is an invalid
+    seat to the engine, so an all-timeout panel arrives as `no_valid_seats`. `not_requested`
+    was a reason the record itself forbids, since opting out yields SKIPPED and SKIPPED
+    refuses a reason."""
+    assert "timeout" not in deepreview.STATUSES
+    assert "not_requested" not in deepreview.REASONS
+    src = (Path(deepreview.__file__)).read_text()
+    for reason in deepreview.REASONS:
+        assert f'"{reason}"' in src, f"{reason} is declared but constructed nowhere"

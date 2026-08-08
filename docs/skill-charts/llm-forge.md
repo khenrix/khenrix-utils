@@ -11,7 +11,7 @@ flowchart TD
     accTitle: llm-forge build-fuse-collect flow
     accDescr: One task built three ways in isolated clones, verified in a fresh clone each builder never touched. A cost gate and a preflight refusal come before any spend; the operator agrees to a priced quote; the fleet builds and verifies; the operator writes the ledger and fuses by hand; collect and gc each refuse rather than guess.
 
-    START([user wants a hard change<br/>built several ways]) --> G_WORTH{worth ~19 provider calls<br/>and ~63 GB peak disk?}
+    START([user wants a hard change<br/>built several ways]) --> G_WORTH{worth ~22 provider calls<br/>and ~63 GB peak disk?}
     G_WORTH -- "no" --> COUNCIL([use llm-council instead<br/>read-only, ~3x one turn])
     G_WORTH -- "yes" --> LOCATE[Step 1: locate forge.py<br/>across CLI plugin roots]
     LOCATE --> PREFLIGHT[static preflight: scan the task bundle<br/>for provider-specific machinery,<br/>screen --select paths for secrets]
@@ -33,7 +33,7 @@ flowchart TD
     G_REVIEW -- "no" --> COLLECT[Step 6: --collect resolves<br/>strategy + mergeability]
     COLLECT --> G_COLLECT_OK{synthesis differs from B1<br/>and from every seat's candidate?}
     G_COLLECT_OK -- "no" --> REFUSE_COLLECT([refused: not a fusion])
-    G_COLLECT_OK -- "yes" --> HANDOVER[prints the handover:<br/>patch or branch, Verified /<br/>Fusion / Council / Ultrareview lines]
+    G_COLLECT_OK -- "yes" --> HANDOVER[prints the handover:<br/>patch or branch, Verified /<br/>Fusion / Council / Deep review lines]
     HANDOVER --> G_GC{--gc: handed over,<br/>worktree clean, refs free?}
     G_GC -- "no" --> REFUSE_GC([refused: nothing deleted])
     G_GC -- "yes" --> DONE([reclaimed: peak disk<br/>returned to the OS])
@@ -43,7 +43,7 @@ flowchart TD
 
 | Gate | Kind | Evidence |
 |---|---|---|
-| G_WORTH | agent | no eval covers this; SKILL.md's cost box — ~19 provider calls and ~63.3 GB peak disk, use llm-council instead for anything read-only |
+| G_WORTH | agent | no eval covers this; SKILL.md's cost box — ~22 provider calls (3 of them the deep review's own council fan-out) and ~63.3 GB peak disk, use llm-council instead for anything read-only |
 | G_REFUSED | code | `tests/test_forge_preflight.py::def test_a_task_naming_provider_specific_machinery_is_refused` and `tests/test_forge_preflight.py::def test_a_secret_in_a_selected_path_is_a_refusal_not_a_note` |
 | G_AGREE | code | `tests/test_forge_gate.py::def test_a_quote_cannot_carry_a_number_nobody_could_agree_to` |
 | G_LEDGER_OK | code | `tests/test_forge_ledger.py::def test_a_row_whose_id_does_not_hash_its_own_claim_is_refused` |

@@ -36,21 +36,36 @@ except ImportError:                     # pragma: no cover - exercised by the pa
 
 RAN = "ran"
 UNAVAILABLE = "unavailable"
-TIMED_OUT = "timeout"
 SKIPPED = "skipped"
-STATUSES = (RAN, UNAVAILABLE, TIMED_OUT, SKIPPED)
+# `timeout` IS GONE BECAUSE NOTHING COULD PRODUCE IT. A seat that times out is an invalid
+# seat to the council engine, so an all-timeout panel already arrives here as
+# `no_valid_seats`; the status survived the cloud port as a member with a rendering, a test
+# and no producer — a lie in the vocabulary, and exactly the "documented behaviour the code
+# does not have" class this package is written against.
+STATUSES = (RAN, UNAVAILABLE, SKIPPED)
 
 # Every reason names something THIS mechanism can actually be, which the cloud vocabulary
 # it replaced could not: `engine_unavailable` (the council engine is not importable),
 # `no_valid_seats` (the panel ran and every seat failed), `unreadable_output` (seats
 # answered and none produced a findings payload), `diff_too_large` (our own prompt cap,
 # not a remote's), `not_requested` (the operator opted out).
+# `not_requested` is gone for the same reason: opting out produces SKIPPED, and the record
+# FORBIDS a reason on SKIPPED, so the member was unconstructible under its own rules.
+# `diff_unreadable` is new and separates two failures `unreadable_output` was covering at
+# once — git could not produce the diff (nothing spent) versus seats answered and none
+# produced a payload (three provider calls spent and wasted). An operator reading the
+# handover could not tell those apart, and they want opposite remedies.
 REASONS = ("engine_unavailable", "no_valid_seats", "unreadable_output",
-           "diff_too_large", "not_requested")
+           "diff_unreadable", "diff_too_large")
 
-# The fused diff goes into a prompt, so the cap is OURS and it is in bytes — not the
-# remote's file/line limits, which described a service this module no longer calls.
-DIFF_BYTE_CAP = 400_000
+# THE CAP IS SET BY THE TRANSPORT, NOT BY TASTE. The engine hands the prompt to claude and
+# agy as a single argv element (`["claude", "-p", prompt, …]`), and Linux caps one argv
+# string at MAX_ARG_STRLEN = 131_072 bytes — measured on this machine: a 200_000-byte
+# element raises OSError [Errno 7] Argument list too long, 120_000 succeeds. A cap above
+# that promises capacity two of three seats cannot carry, and the spawn failure is not a
+# degraded seat but an uncaught crash AFTER the run journals its intent. 96 KB leaves room
+# for the prompt template and the per-seat sentinel the engine prepends.
+DIFF_BYTE_CAP = 96_000
 
 SEATS = ("claude", "codex", "agy")
 _SEVERITY_MAP = {"blocker": "blocker", "critical": "blocker", "high": "blocker",
@@ -322,26 +337,38 @@ DIFF UNDER REVIEW:
 
 
 def _parse_findings(answer: str, seat: str, checkpoint_round: int) -> tuple:
-    """One seat's answer -> `review.Finding`s, or `()` when it carried no readable payload.
+    """One seat's answer -> `(findings, payload_seen)`.
 
-    RETURNS EMPTY RATHER THAN RAISING, because one seat answering in prose must not discard
-    two seats that answered correctly. `run_deep_review` distinguishes "no seat was
-    readable" (unavailable/unreadable_output) from "the readable seats found nothing"
-    (ran, empty) — a distinction this function deliberately cannot make on its own.
+    ONE CLASSIFIER, NOT TWO. `payload_seen` is True only when a well-formed object with a
+    `findings` LIST was actually read — which is the fact the caller needs and the only
+    place that can know it. An earlier draft returned bare findings and had the caller
+    re-derive readability from the mere PRESENCE of a ```json fence; the two disagreed in
+    both directions. A fence holding invalid JSON, or holding `{"finding": …}` with the
+    key misspelled, parsed to nothing yet counted as readable — so three such seats
+    produced `ran` with zero findings, the exact false green this module's docstring
+    stakes its existence against. And a seat answering a BARE object with an empty list
+    parsed fine yet was counted unreadable.
+
+    SCANS EVERY FENCE, LAST FIRST. A seat that quotes the prompt's own example contract
+    before answering would otherwise have the template parsed (its `blocker|minor`
+    placeholder maps to no severity, so it yields nothing) and its real answer discarded.
     """
-    m = re.search(r"```json\s*(\{.*?\})\s*```", answer or "", re.DOTALL)
-    blob = m.group(1) if m else None
-    if blob is None and "{" in (answer or ""):
-        blob = answer[answer.find("{"):answer.rfind("}") + 1]
-    if not blob:
-        return ()
-    try:
-        payload = json.loads(blob)
-    except json.JSONDecodeError:
-        return ()
-    rows = payload.get("findings") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return ()
+    text = answer or ""
+    blobs = re.findall(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if not blobs and "{" in text:
+        blobs = [text[text.find("{"):text.rfind("}") + 1]]
+    payload = None
+    for blob in reversed(blobs):          # the last fence is the seat's own answer
+        try:
+            cand = json.loads(blob)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(cand, dict) and isinstance(cand.get("findings"), list):
+            payload = cand
+            break
+    if payload is None:
+        return (), False
+    rows = payload["findings"]
     out = []
     for row in rows:
         if not isinstance(row, dict):
@@ -365,7 +392,7 @@ def _parse_findings(answer: str, seat: str, checkpoint_round: int) -> tuple:
         # model output, not malformed input — and `Round` refuses duplicate ids.
         if not any(f.id == prior.id for prior in out):
             out.append(f)
-    return tuple(out)
+    return tuple(out), True
 
 
 def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS):
@@ -420,7 +447,7 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
                    f"{base}..{head}", "--", env_extra=gitcmd.READONLY, check=False,
                    binary=True)
     if r.returncode != 0:
-        return DeepReview(UNAVAILABLE, "unreadable_output", None, (), measured,
+        return DeepReview(UNAVAILABLE, "diff_unreadable", None, (), measured,
                           f"git could not produce the diff to review "
                           f"(rc {r.returncode}): {r.stderr.decode('utf-8', 'replace').strip()}")
     body = r.stdout.decode("utf-8", "surrogateescape")
@@ -455,23 +482,33 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
             answer = Path(p["result_file"]).read_text()
         except OSError:
             continue
-        got = _parse_findings(answer, p["name"], round_)
-        # A seat that produced a PAYLOAD is readable even when the payload is empty —
-        # "this seat found nothing" is an answer. `_parse_findings` cannot tell those
-        # apart, so the emptiness of the fence is re-checked here.
-        if got or re.search(r"```json\s*\{.*?\}\s*```", answer, re.DOTALL):
+        got, payload_seen = _parse_findings(answer, p["name"], round_)
+        # ONE CLASSIFIER. `payload_seen` is the parser's own verdict on whether this seat
+        # answered the question at all — an empty findings LIST is an answer, a fence full
+        # of invalid JSON is not.
+        if payload_seen:
             readable += 1
         for f in got:
-            key = (f.severity, " ".join(f.claim.lower().split()))
+            # THE KEY CARRIES THE LOCATION. Keying on the claim alone merged two DIFFERENT
+            # bugs that happened to share a generic sentence ("off-by-one in loop bounds")
+            # at different places, and silently kept only the first one's location — a fix
+            # pass reads `evidence` to find the defect, so it would have fixed one site and
+            # believed the other addressed.
+            key = (f.severity, " ".join(f.claim.lower().split()),
+                   " ".join(f.evidence.lower().split()))
             if key in merged:
                 merged[key][1].append(p["name"])
             else:
                 merged[key] = (f, [p["name"]])
     findings = []
     for f, saw in merged.values():
-        if len(saw) > 1:
+        # DISTINCT SEATS, NOT REPEATED ONES. `saw` is appended per matching row, so one
+        # seat restating a claim landed twice and rendered "corroborated by claude, claude"
+        # — manufacturing the very agreement signal this exists to report.
+        who = sorted(set(saw))
+        if len(who) > 1:
             f = dataclasses.replace(
-                f, evidence=f"{f.evidence} [corroborated by {', '.join(saw)}]")
+                f, evidence=f"{f.evidence} [corroborated by {', '.join(who)}]")
         findings.append(f)
     if not readable:
         return DeepReview(UNAVAILABLE, "unreadable_output", None, seats, measured,

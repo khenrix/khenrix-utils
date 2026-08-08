@@ -480,10 +480,11 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, deep_review=True,
         + " It is a bound and not an "
         "estimate: a run whose seats all finish early takes a fraction of it. NOT INCLUDED — "
         f"the {setup_runs} setup runs, the {verify_runs} verify runs, §13's review rounds, "
-        "§13.1's cloud review, and every clone. Those are shell and network time this engine "
+        "§13.1's deep review, and every clone. Those are provider and shell time this engine "
         "cannot bound statically, so the real ceiling is above this number rather than near it",
-        "provider cost: quoted as a call count, not as currency; the deep review above is now "
-        "line §13.1 prices in money. Shell-command time is the wall-clock line above",
+        "provider cost: quoted as a call count, and every call is counted — §13.1's deep "
+        "review is a local council fan-out inside the total above, not a separate currency. "
+        "Shell-command time is the wall-clock line above",
         "verify command: run `provider_invoking_verify` on it once it is named — §5.2 refuses "
         "one that reaches a provider CLI, or prices it as its own explicit line, and steers "
         "the operator to `make verify` (receipts advisory) rather than the gate whose "
@@ -1252,7 +1253,7 @@ class Confirmation:
     second source, while §13.1's opt-out is the operator's own decision, made once, spent an
     hour later in another process by `deepreview.run_deep_review(enabled=…)`. Recorded here rather than
     read back off `Quote.deep_review`, which is a SENTENCE for a human (§13.1 prices the
-    review in usage credits, not in calls) and not a value another process may branch on.
+    review in the operator's own words, not as a number) and not a value another process may branch on.
     `confirm` is where the answer and the price are checked against each other.
 
     NO DEFAULTS, including on `accepted_gaps`, on `runstate.State`'s rule: a field the
@@ -1817,7 +1818,7 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
     and forge writes no commit of its own — left nothing on disk saying whose name the
     operator agreed forge could work under. `runner.run` still takes it as an argument and
     does not yet read it back. `deep_review` is here for the same reason one process over:
-    §13.1's cloud review is requested by `--collect`, an hour later and in another process,
+    §13.1's deep review is requested by `--collect`, an hour later and in another process,
     and this record is the only copy of what the operator agreed to spend on it.
     The run's four shape numbers go the OTHER way and are in the manifest, because a launcher
     reads them to decide how many providers to spend — see `runstate.Manifest` for why those

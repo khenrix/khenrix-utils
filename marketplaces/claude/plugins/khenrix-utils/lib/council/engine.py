@@ -1286,6 +1286,24 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                          valid=False, duration_sec=dur, status="not_installed")
             _write_attempt(workdir, spec.name, n, "", final["stderr"])
             break  # missing binary won't appear on a retry — fail fast
+        except OSError as e:
+            # A SPAWN THAT NEVER HAPPENED IS A DEAD SEAT, NOT AN ENGINE CRASH. The prompt is
+            # one argv element for claude and agy, and Linux caps a single argv string at
+            # MAX_ARG_STRLEN (131_072 bytes) — a longer one raises E2BIG here. Before this
+            # branch that OSError propagated out of the worker future, out of run_council and
+            # out of every caller: forge's --collect journalled its intent, crashed with a
+            # raw traceback, and the orphaned intent made the next --collect re-spend the
+            # seats that HAD started. Degrading to an invalid seat keeps the panel's own
+            # contract — a seat that could not answer is reported, never raised.
+            dur = round(time.monotonic() - t0, 2)
+            detail = f"{type(e).__name__}: {e}"
+            attempt_log.append({"attempt": n, "reason": "spawn_failed",
+                                "exit_code": None, "duration_sec": dur})
+            final.update(stdout="", stderr=detail, exit_code=None,
+                         reason="spawn_failed", result_text="", valid=False,
+                         duration_sec=dur, status="failed")
+            _write_attempt(workdir, spec.name, n, "", detail)
+            break  # an argv this kernel refuses is refused identically on a retry
         except subprocess.TimeoutExpired as e:
             dur = round(time.monotonic() - t0, 2)
             stdout, stderr = _coerce_text(e.stdout), _coerce_text(e.stderr)
@@ -1734,6 +1752,21 @@ def self_test() -> int:
                     retries=2, timeout=5, backoff=0.05, workdir=wd("flaky"),
                     prompt="hi")
     ag = m["providers"][0]
+    # S6a — A SPAWN THE KERNEL REFUSES IS A DEAD SEAT, NOT A TRACEBACK. Measured on this
+    # machine: a 200_000-byte argv element raises OSError E2BIG, 120_000 does not. Before
+    # this was caught, the error left run_council entirely and crashed the caller.
+    big = _stub_spec("claude", "ok")
+    big = replace(big, argv=[*big.argv, "--pad", "x" * 200_000])
+    m = run_council([big], retries=1, timeout=5, backoff=0.05, workdir=wd("e2big"),
+                    prompt="hi")
+    sp = m["providers"][0]
+    check("an oversized argv is a failed seat, not an exception",
+          sp["valid"] is False and sp["reason"] == "spawn_failed")
+    check("the spawn failure names its cause",
+          "Argument list too long" in Path(sp["raw_stderr_file"]).read_text())
+    check("and it is not retried, because the kernel refuses it identically",
+          sp["attempts"] == 1)
+
     # S6b — MODEL FALLBACK: a quota wall swaps the model for the retry, and says so.
     fbc = wd("fallback") / "counter.txt"
     m = run_council([_stub_spec("claude", "quota:1", counter=fbc, model="claude-fable-5")],

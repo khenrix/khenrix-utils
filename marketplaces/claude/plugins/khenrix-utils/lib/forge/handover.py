@@ -667,9 +667,9 @@ def _seconds(v) -> None:
 
 
 def _deep_review_line(u) -> str:
-    """§13.1's four statuses, four renderings. §16.1's example shows only the first, and the
+    """§13.1's three statuses, three renderings. §16.1's example shows only the first, and the
     other three are not decoration: an operator reading `Deep review:` needs to know whether
-    the cloud review found nothing, was never asked, could not be asked, or is still running
+    the deep review found nothing, was never asked, or could not be asked
     somewhere with a URL they can open.
 
     THE SKIPPED LINE READS THE RECORD'S OWN REASON RATHER THAN NAMING THE FLAG. `run_deep_review`
@@ -693,16 +693,12 @@ def _deep_review_line(u) -> str:
                 + ("" if u.diff_measured else " (over a diff whose size could not be measured)"))
     if u.status == deepmod.UNAVAILABLE:
         return f"Deep review: unavailable ({u.reason}) — the run proceeded to handover"
-    if u.status == deepmod.TIMED_OUT:
-        who = ", ".join(u.seats) if u.seats else "no"
-        return (f"Deep review: the wait elapsed with {who} seat(s) having answered; "
-                "nothing was recorded from it")
     if u.status == deepmod.SKIPPED:
         why = u.detail.strip() if isinstance(u.detail, str) else ""
         return (f"Deep review: not requested ({why})" if why else
                 "Deep review: not requested, and this record does not say why")
     raise HandoverError(
-        f"{u.status!r} is not one of §13.1's four statuses, so this header has no rendering "
+        f"{u.status!r} is not one of §13.1's statuses, so this header has no rendering "
         "for it. Falling through to one of the four would report an unknown state as the "
         "review nobody asked for, which is the cheapest of them to read.")
 

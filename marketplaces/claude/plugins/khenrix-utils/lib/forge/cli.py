@@ -7,7 +7,7 @@ synthesis author is the trusted invoking orchestrator under its normal approval 
 a fourth unattended bypass-permissions seat." That orchestrator is the agent running SKILL.md,
 not this module, which is why there is no `--synthesize`.
 
-`--collect` is the other half: it reads a run back off the disk, runs §13.1's cloud review
+`--collect` is the other half: it reads a run back off the disk, runs §13.1's deep review
 once, decides §16's mergeability and prints the handover. §14 makes "always from disk and
 never from conversation state" a requirement rather than a style, so `--collect` takes a run id
 and a repository and nothing else.
@@ -737,7 +737,7 @@ def _confirmed_deep_review(run_dir) -> bool:
     `runner._confirmed_policy`'s shape and its argument, one answer over: it is journalled on
     the `confirm` operation's own done record and nowhere else, so this reads it there and
     FAILS CLOSED when it is missing or is not a bool. A default here would be this process
-    deciding whether to spend $5-25 of the operator's usage credits on a run that cannot say
+    deciding whether to spend three of the operator's provider calls on a run that cannot say
     what it agreed to.
     """
     manifest = runstate.read_manifest(run_dir)
@@ -754,8 +754,8 @@ def _confirmed_deep_review(run_dir) -> bool:
                 "will not read a shape it cannot tell on from off.")
     raise CliError(
         f"this run's journal has no {done} record for {manifest.run_id!r}, so what the "
-        "operator answered about §13.1's cloud review is not recorded anywhere. It is priced "
-        "in usage credits and has no safe default, so this collect will not choose one.")
+        "operator answered about §13.1's deep review is not recorded anywhere. It is priced "
+        "in provider calls and has no safe default, so this collect will not choose one.")
 
 
 def _agreement(run_dir) -> str:
@@ -782,7 +782,7 @@ def _agreement(run_dir) -> str:
 
 
 # §13.1's result before there is one. `Provenance` types this field, and the record `collect`
-# validates BEFORE the spend therefore needs an `Ultra` to be a record at all; the only honest
+# validates BEFORE the spend therefore needs a `DeepReview` to be a record at all; the only honest
 # one for a review nobody has asked for yet is a `skipped` whose detail says so. It never
 # reaches a header — `dataclasses.replace` puts the review's own result in its place — so the
 # detail is written for the one reader who would ever see it: somebody looking at a handover
@@ -1038,7 +1038,7 @@ def collect(args, *, out) -> int:
     # the only thing here that costs money. `mergeability` refuses a synthesis worktree nobody
     # fused into, `_sidecars_of` refuses a tree whose out-of-band set it cannot enumerate, and
     # `Handover` refuses a delivery that names neither a target nor an acceptance — all three
-    # from disk, and all three used to run AFTER the cloud review, so a run with nothing to
+    # from disk, and all three used to run AFTER the deep review, so a run with nothing to
     # hand over paid $5-25 to be told so. The reads below are what the header is built from as
     # well, so the same ordering makes the whole handover provably constructible before the
     # one call that cannot be taken back — including `Provenance`, whose own refusals are
@@ -1048,7 +1048,7 @@ def collect(args, *, out) -> int:
     tree = _rev(synth, "HEAD^{tree}")
 
     # BOTH BEFORE THE SPEND, on this function's own standing rule: every refusal it can make
-    # from disk comes above §13.1's cloud review, so a run with nothing to hand over never
+    # from disk comes above §13.1's deep review, so a run with nothing to hand over never
     # pays $5-25 to be told so.
     _refuse_a_seats_candidate(repo, run_dir, run_id=manifest.run_id, tree=tree,
                               base_tree=manifest.tracked_tree_oid)
@@ -1075,7 +1075,7 @@ def collect(args, *, out) -> int:
     # now — the two argv words, the seat rows, the confirmed verify command, §11's label, §13's
     # terminal and its counts — and the ONLY one that needs §13.1's result is the type check on
     # `deep_review`. Built after the review, a mistyped `--strategy` bought
-    # $5-25 of cloud review and was then refused for a word. `--strategy` is easy to mistype
+    # three provider calls of deep review and was then refused for a word. `--strategy` is easy to mistype
     # because there are TWO strategy vocabularies: §5 step 2's answer
     # sheet takes `gate.STRATEGY_RULES` (`size-gated`, `fusion`, `base-and-port`) while this
     # flag reports what the fusion FOLLOWED, which is `strategy.STRATEGIES` (`from_scratch`,
