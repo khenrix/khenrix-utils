@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "khenrix-setup",
-  "source_hash": "a33c3600b601a515b9fe6cdd667b14c79b8e4f257780646bdbdd7ca9c66646ef",
+  "source_hash": "4d2b910184b47a2293b628308059a0de045a6122f05271d71dc6bb886420e657",
   "eval_set_hash": "44c575ebf43510a62c0a34239393504671aafc1c5474648f67aaf6b330880070",
   "providers": [
     "claude"

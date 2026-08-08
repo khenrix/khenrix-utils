@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "khenrix-wiki-sync",
-  "source_hash": "6b9ec5a3856c8de99ed64d0bae8d677ac5e0649b816c8e943aea360000399ecb",
+  "source_hash": "98e175ada710db093165ac9cf57028fd0f2e790d4a79dd98789fa5a9bf9ca9c9",
   "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
   "providers": [
     "claude"

@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "chunk-map",
-  "source_hash": "acf96313a5ba368dd67e97d40d5d52bd58cebad05c75eaa18d94f04c4d232997",
+  "source_hash": "bb1ac4fa0594b65ff6aba44d80c7090fe79043c07c1d804d3d3e047f25786bf4",
   "eval_set_hash": "fefc0d74b2ac3dd3832cca91f1e336534657ec14e67bd3e5e8ede369b9837a03",
   "providers": [
     "claude"

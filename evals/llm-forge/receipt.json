@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "llm-forge",
-  "source_hash": "349ca15b9c8f8d8cd9be070589b98300e6c528efeb591aa896b6dc2a214dad13",
+  "source_hash": "89e7afbb2793ba563fa9bb4f3559a1511362e60bc827ab7e7c28d186692aec0d",
   "eval_set_hash": "fa1e91f8eb4a70c8013f5b56b801e8770b520ee15a3ee86cf87bd3ae2ac1df5a",
   "providers": [
     "claude"
@@ -25,6 +25,7 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_bundle.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_cli.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_coverage.py",
+    "/home/khenrix/git/khenrix-utils/tests/test_forge_deepreview.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_fingerprint.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_fix.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_fleet.py",
@@ -53,11 +54,10 @@
     "/home/khenrix/git/khenrix-utils/tests/test_forge_storage.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_strategy.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_taskbundle.py",
-    "/home/khenrix/git/khenrix-utils/tests/test_forge_ultra.py",
     "/home/khenrix/git/khenrix-utils/tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1802,
+    "tests_run": 1800,
     "skipped": 0,
     "failed": 0
   }

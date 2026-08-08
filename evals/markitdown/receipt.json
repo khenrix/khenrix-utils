@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "markitdown",
-  "source_hash": "3b144449d810d05bcb59a2df02c8ed1419e4afb1bc0fe9481e1154a8524daaa7",
+  "source_hash": "879717c85f03dc39dc372dcf1054cf6b3524d04c5d668ee01391901e466606db",
   "eval_set_hash": "74a41331526562e266f09e268ef77d3085ae39c7c3eb94a18eb022a153cda965",
   "providers": [
     "claude"
