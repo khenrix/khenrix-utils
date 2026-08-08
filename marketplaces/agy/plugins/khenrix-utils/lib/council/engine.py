@@ -58,7 +58,10 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
 # applied at run time. `agy models` prints SLUGS (gemini-3.6-flash-high) since 1.1.5;
 # the display label we pin is equally valid — agy's own model-resolution error lists
-# the labels, and both forms were verified live on 1.1.8. agy 1.1.5 also added a
+# the labels, and both forms were verified live on 1.1.8 and RE-PROBED 2026-08-08 on
+# 1.1.11 — `agy models` lists slug and label side by side, and pinning the LABEL
+# resolved at invocation.
+# agy 1.1.5 also added a
 # separate `--effort` flag; the engine deliberately does NOT pass it, because
 # build_real_spec derives the recorded tier by regexing the label — a second knob
 # could disagree with the provenance it reports.
@@ -78,10 +81,12 @@ MODES = {
         "claude": {"model": "claude-fable-5",          "thinking": "ultracode"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug,
-        # and `--effort` caps at high — re-probed on 1.1.8), and 1.1.5's
-        # `--effort` caps at high too (both re-probed 2026-07-25 on agy 1.1.7) — two
-        # independent confirmations. agy's deep seat therefore runs identically to
-        # normal; "high" keeps provenance truthful.
+        # and `--effort` caps at high). RE-PROBED 2026-08-08 ON agy 1.1.11 — both
+        # `--effort ultra` and `--effort max` are refused with
+        # `invalid --effort ... (valid: low, medium, high)`, and `--mode plan` (the
+        # mechanical read-only barrier make_readonly uses) is still present. Earlier
+        # confirmations on 1.1.7 and 1.1.8 agreed. agy's deep seat therefore runs
+        # identically to normal; "high" keeps provenance truthful.
         "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
     },
 }
@@ -120,7 +125,11 @@ MODE_TIMEOUT = {"normal": 900, "deep": 1200, "forge": 3600}  # per-attempt secon
 # reach the CLIs at all — both are real but absent from `--help`. Probed 2026-08-05:
 # claude accepts `ultracode` silently and warn-and-IGNORES garbage (a dropped tier would
 # downgrade a seat with only a stderr line); codex accepts `ultra` and fails closed with
-# an API 400 on garbage; agy refuses anything above `high`.
+# an API 400 on garbage; agy refuses anything above `high`. RE-PROBED 2026-08-08 on
+# claude 2.1.220 / codex 0.147.0 / agy 1.1.11: unchanged on all three — codex's exec
+# header still prints `reasoning effort: ultra`, and claude's --help still omits
+# `ultracode` while accepting it. The versions are stamped because a claim carrying a
+# version it was NOT checked against is the provenance defect this repo keeps finding.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
 # gpt-5.6-sol accepts low/medium/high/xhigh/max/ultra (probed 2026-07-11); "ultra" is
 # deliberately unused — it spawns internal sub-agents (a council inside a council member)

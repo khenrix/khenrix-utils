@@ -453,7 +453,8 @@ def _prov(**kw):
                          "requirement_coverage"),
         agreement="differently-prompted",
         review_terminal="review_blocked", review_rounds=2, unresolved_findings=1,
-        deep_review=deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)"))
+        deep_review=deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True,
+                                          "0 finding(s)", reporting=("claude",)))
     base.update(kw)
     return handover.Provenance(**base)
 
@@ -609,7 +610,8 @@ def test_every_deep_review_status_renders_differently():
     code could not reach.
     """
     seen = set()
-    for u in (deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)"),
+    for u in (deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "0 finding(s)",
+                                    reporting=("claude",)),
               deepreview.DeepReview(deepreview.UNAVAILABLE, "no_valid_seats", None, (), True, "d"),
               deepreview.DeepReview(deepreview.SKIPPED, None, None, (), False, "--skip-deep-review")):
         line = [l for l in handover.header(_prov(deep_review=u)).splitlines()

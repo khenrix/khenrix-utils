@@ -26,16 +26,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import handover, ultra  # noqa: E402
+from forge import deepreview, handover  # noqa: E402
 
 RUN_ID = "a3f9c1"
 SYNTH = "/home/you/.local/state/khenrix-forge/9d41f0a2-a3f9c1/synthesis"
 
 
 def _git(cwd, *argv):
+    # PINNED DATES, NOT JUST IDENTITY. Commit OIDs hash the timestamps too, so identity alone
+    # left the seed commit's hash tracking wall-clock time — and `eval_set_hash` covers this
+    # fixtures tree, so an innocent regeneration staled the receipt with nothing semantic
+    # changed. Fixed dates make the header byte-reproducible.
+    stamp = "2026-01-01T00:00:00 +0000"
     env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
-           "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
+           "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+           "GIT_AUTHOR_DATE": stamp, "GIT_COMMITTER_DATE": stamp}
     return subprocess.run(["git", *argv], cwd=str(cwd), env=env, check=True,
                           capture_output=True, text=True).stdout.strip()
 
@@ -125,7 +131,13 @@ def build() -> str:
                          "fleet on a quarter of the rubric"),
         agreement="differently-prompted",
         review_terminal=None, review_rounds=0, unresolved_findings=0,
-        ultra=ultra.Ultra(ultra.RAN, None, (), None, True, "0 finding(s)"))
+        # A review that RAN and found nothing, from a full panel — the seats tuple is
+        # what makes a degraded (1-of-3) review distinguishable from a complete one,
+        # so a fixture that omitted it would pin a header shape the engine never emits.
+        deep_review=deepreview.DeepReview(
+            deepreview.RAN, None, (), ("claude", "codex", "agy"), True,
+            "3 of 3 answering seat(s) produced a payload; 0 finding(s) over 1 file(s)",
+            reporting=("claude", "codex", "agy")))
     return handover.text(h, p)
 
 

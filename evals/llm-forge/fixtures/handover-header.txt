@@ -2,11 +2,11 @@
 Synthesis: the orchestrator reports PASS for `make verify` — from_scratch; this engine did not run it: no verifier clone was made for the fusion, so this line is a report and not a verification.
 Fusion: no strongest seat can be named: this run recorded a claim ledger and no coverage report over it, and the order is taken over the coverage, the gate outcome, the review risk and the measured size together — a rank over the one input that exists would order the fleet on a quarter of the rubric. §11 agreement: differently-prompted.
 Council: no review round was convened.
-Ultrareview: 0 finding(s) reported**
+Deep review: 0 finding(s) reported by claude, codex, agy seat(s)**
 
 This run's synthesis verdict was reported by the orchestrator that fused the candidates; this engine did not run it: no verifier clone was made for the fusion and the confirmed verify command was not executed here, so nothing above is a verification. To get one, run the confirmed command yourself in a fresh clone of the synthesis branch.
 
-Branch: `forge/a3f9c1/synthesis` (patch) — the baseline was dirty: B1's tracked tree 2c57ea18f1c74d22e99af888fcfa8c66e79bc6f3 is not 400fe38f7a6df4cf028da5e108477503e19b0f18^{tree} (22beeec3c7e3f8afb5112055b6f68ed343f3225e), so a merge would carry the user's uncommitted work as though forge had authored it; 1 out-of-band artifact(s) are not in the tracked tree at all (dist/bundle.js); merging the branch would not install them
+Branch: `forge/a3f9c1/synthesis` (patch) — the baseline was dirty: B1's tracked tree 2c57ea18f1c74d22e99af888fcfa8c66e79bc6f3 is not 0e7f9bc161736491ca8f7a609d44574962f2a3cd^{tree} (22beeec3c7e3f8afb5112055b6f68ed343f3225e), so a merge would carry the user's uncommitted work as though forge had authored it; 1 out-of-band artifact(s) are not in the tracked tree at all (dist/bundle.js); merging the branch would not install them
 Handed over: accepted by the user without a merge target — a patch-based handover may intentionally never merge this branch.
 
 B1 — the baseline this run started from:

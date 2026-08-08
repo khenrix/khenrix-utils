@@ -179,16 +179,17 @@ def _skipped_deep():
 
 
 @pytest.fixture(autouse=True)
-def _no_cloud_review(monkeypatch):
-    """§13.1's ONE PAID CALL, neutralised for every test in this file whether it remembers or
-    not.
+def _no_deep_review(monkeypatch):
+    """§13.1's PAID CALL, neutralised for every test in this file whether it remembers or not.
 
-    MEASURED, AND IT WAS SPENDING. `deepreview.run_deep_review` shells out to `claude deep_review` through
-    its `run=subprocess.run` default, and `claude` resolves on this machine; two `--collect`
-    tests here reached that call with a one-file diff — comfortably inside §13.1's limits —
-    because the run they collected was confirmed with §13.1 ON, which is the default. A cloud
-    review of a fixture repository was requested against the user's own credits by a suite whose
-    first line says nothing here spends money.
+    MEASURED, AND IT WAS SPENDING. Two `--collect` tests here reached §13.1 with a one-file
+    diff — comfortably inside its limits — because the run they collected was confirmed with
+    §13.1 ON, which is the default. A review of a fixture repository was requested against the
+    user's own account by a suite whose first line says nothing here spends money. That
+    measurement was taken against the cloud review this replaced, which reached a provider
+    through a `run=subprocess.run` default; the council backend spends differently — three
+    local seats through the injectable `council` — and the test below pins the CURRENT seam,
+    so this guard cannot quietly start guarding nothing.
 
     AUTOUSE RATHER THAN A LINE IN `_drive_a_start`, because the spend is on the `--collect`
     side: a test that drives no start at all can still reach it, so the guard cannot live in the
@@ -564,9 +565,9 @@ def test_collect_refuses_a_synthesis_worktree_nobody_fused_in(tmp_path, monkeypa
     fused into, and describing it would report a merge-ready branch over an empty delivery —
     a run in which NOTHING happened leaving the same record as one in which NOBODY did.
 
-    AND IT REFUSES BEFORE §13.1 IS ASKED FOR. Measured: with the cloud review taken first — as
-    this function was ordered when it was written — a run with nothing to hand over paid $5-25
-    to be told so. Every refusal `--collect` can reach off the disk now comes before the one
+    AND IT REFUSES BEFORE §13.1 IS ASKED FOR. Measured: with §13.1 taken first — as this
+    function was ordered when it was written, against the cloud review this replaced — a run
+    with nothing to hand over paid for a full review to be told so. Every refusal `--collect` can reach off the disk now comes before the one
     call that cannot be taken back, and this is the assertion that holds that order.
     """
     calls = []
@@ -603,9 +604,9 @@ def test_the_deep_review_answer_is_read_off_the_record_and_not_off_this_processs
     assert calls and calls[-1]["enabled"] is True
 
 
-def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
+def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_deep_review(
         tmp_path, monkeypatch, capsys):
-    """`_confirmed_deep_review` fails closed. §13.1 is priced in usage credits, so a run whose
+    """`_confirmed_deep_review` fails closed. §13.1 spends three provider calls, so a run whose
     record cannot say ON from OFF may not be collected on this process's default.
 
     THE VALUE IS REWRITTEN RATHER THAN THE RECORD REMOVED, and the difference is what this
@@ -638,13 +639,13 @@ def test_a_run_that_cannot_say_what_it_priced_is_not_charged_for_a_cloud_review(
     ("--strategy", "fusion"),
     ("--strategy", "base-and-port"),
 ])
-def test_a_mistyped_collect_flag_is_refused_before_the_cloud_review_is_paid_for(
+def test_a_mistyped_collect_flag_is_refused_before_the_deep_review_is_convened(
         flag, value, tmp_path, monkeypatch, capsys):
     """The sibling of the ordering two functions up, one validation over.
 
     `--strategy` is checked by `handover.Provenance.__post_init__`,
     and that record used to be built AFTER §13.1's pass — so an operator who mistyped either
-    word paid $5-25 for a cloud review and was then told the word is not in the vocabulary. The
+    word paid for a whole review pass and was then told the word is not in the vocabulary. The
     assertion that matters is `not calls`: a test that only read the return code passes on the
     ordering this one exists to refuse.
     """
@@ -658,7 +659,7 @@ def test_a_mistyped_collect_flag_is_refused_before_the_cloud_review_is_paid_for(
     assert rc != 0
     out = capsys.readouterr().out
     assert value in out, f"the refusal did not quote the word it refused: {out!r}"
-    assert not calls, "a mistyped flag bought a cloud review before it was refused"
+    assert not calls, "a mistyped flag convened the deep review before it was refused"
 
 
 def test_collect_validates_its_whole_provenance_record_before_the_call_that_spends(tmp_path):
@@ -765,17 +766,18 @@ def test_the_collect_that_succeeds_writes_the_record_gc_reads_as_its_licence(tmp
 
 def test_the_handover_reports_the_review_this_run_got_and_not_the_pre_spend_placeholder(
         tmp_path, monkeypatch):
-    """The cost of validating the record before the spend: it is built carrying a placeholder
-    `Ultra`, and `dataclasses.replace` is the only thing that puts §13.1's real result in its
-    place. Without that call the handover says the cloud review was never requested over a run
-    that paid for one — this package's usual overclaim printed backwards, and just as wrong.
+    """The cost of validating the record before the spend: it is built carrying the
+    `_UNREQUESTED` placeholder (cli.py:790), and `dataclasses.replace` is the only thing that
+    puts §13.1's real result in its place. Without that call the handover says the deep review
+    was never requested over a run that convened one — this package's usual overclaim printed
+    backwards, and just as wrong.
 
     MEASURED with `scripts/mutate.py`: replacing `dataclasses.replace(p, deep_review=u)` with `p`
     left `test_forge_cli.py` and `test_forge_handover.py` both green (79 passed, SURVIVED), so
     nothing else in the suite holds the placeholder in.
     """
     ran = deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True,
-                                "a test stood in for §13.1 and ran")
+                                "a test stood in for §13.1 and ran", reporting=("claude",))
     monkeypatch.setattr(cli.deepreview, "run_deep_review", lambda *a, **kw: ran)
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     text = _collect_text(tmp_path, run_dir)
@@ -1580,13 +1582,13 @@ def test_the_handover_names_every_step_of_the_verify_command(tmp_path, monkeypat
     assert "make verify && make lint" in out.getvalue(), out.getvalue()
 
 
-def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monkeypatch):
+def test_the_deep_review_is_journalled_and_never_convened_twice(tmp_path, monkeypatch):
     """§13.1 spends three provider calls and the old module carried NO journal reference (measured: 0).
     A crash between the invocation and the report lost the fact that money had been spent,
     and the refusal an operator then sees tells them to re-run `--collect` — which made the
     double charge the documented path.
 
-    THE EXTERNAL QUESTION: does a second `--collect` reach the remote again?"""
+    THE EXTERNAL QUESTION: does a second `--collect` convene the panel again?"""
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     _fuse_something(run_dir)
     repo = str(runstate.read_manifest(run_dir).repo_path)
@@ -1601,7 +1603,7 @@ def test_the_cloud_review_is_journalled_and_never_paid_for_twice(tmp_path, monke
         out = io.StringIO()
         assert cli.main(["--collect", _run_id(run_dir), "--repo", repo,
                          "--handover-target", "review"], out=out) == 0, out.getvalue()
-    assert len(calls) == 1, f"the cloud review was requested {len(calls)} times"
+    assert len(calls) == 1, f"the deep review was requested {len(calls)} times"
     assert "already run" in out.getvalue(), out.getvalue()
 
 

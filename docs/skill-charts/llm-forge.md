@@ -14,7 +14,7 @@ flowchart TD
     START([user wants a hard change<br/>built several ways]) --> G_WORTH{worth ~22 provider calls<br/>and ~63 GB peak disk?}
     G_WORTH -- "no" --> COUNCIL([use llm-council instead<br/>read-only, ~3x one turn])
     G_WORTH -- "yes" --> LOCATE[Step 1: locate forge.py<br/>across CLI plugin roots]
-    LOCATE --> PREFLIGHT[static preflight: scan the task bundle<br/>for provider-specific machinery,<br/>screen --select paths for secrets]
+    LOCATE --> PREFLIGHT[static preflight: scan the task bundle<br/>for provider-specific machinery,<br/>screen the tracked set + --select paths for secrets]
     PREFLIGHT --> G_REFUSED{preflight refuses?}
     G_REFUSED -- "yes" --> HALT_PRE([stop: nothing spent])
     G_REFUSED -- "no" --> QUOTE[--start prints the full quote<br/>+ a wall-clock upper bound]

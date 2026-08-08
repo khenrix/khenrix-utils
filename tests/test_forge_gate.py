@@ -143,10 +143,14 @@ def test_deep_reviews_own_fix_is_an_invocation_the_quote_cannot_leave_out(tmp_pa
     nothing about the fix it triggers, so a quote that priced only the run is low by one
     invocation, one setup and one verify — with no exclusion line, which is the shape §5.2's
     own `9 + 1 + 6` has. With the council backend it is ALSO low by the fan-out's own
-    `seats` calls, so turning it off now moves four scalars.
+    `seats` calls.
 
-    `--skip-deep-review` is the discrimination check and the answer to "then make it optional": it is
-    a parameter, and turning it off must move exactly those three scalars and nothing else.
+    `--skip-deep-review` is the discrimination check and the answer to "then make it optional":
+    it is a parameter. MEASURED by diffing the two quotes field by field, it moves five numeric
+    fields — provider_calls 22->18, setup_runs 18->17, verify_runs 9->8, peak_disk_gb 63.3->60.0
+    and synthesis_fix_cap 3->2 — plus the derived `deep_review`, `lines` and `terms` text. The
+    assertions below pin the three the quote leads with; the disk and cap figures are computed
+    from the clone and fix counts those three already hold.
     """
     on = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, seat_timeout_sec=3600)
     off = gate.quote(_report(tmp_path), seats=3, attempts=3, review_rounds=2, deep_review=False, seat_timeout_sec=3600)
@@ -1975,7 +1979,7 @@ def test_a_cap_below_the_rounds_it_must_cover_is_refused():
 
 def test_the_deep_review_decision_is_answered_once_and_must_match_what_was_priced(tmp_path,
                                                                                   monkeypatch):
-    """§13.1's --skip-deep-review moves three scalars on the quote AND decides whether a cloud review
+    """§13.1's --skip-deep-review re-prices the quote AND decides whether a council fan-out
     runs an hour later, in another process. Two spellings of one decision will disagree, so it
     is a §5 step 2 ANSWER recorded once — and `confirm` refuses an answer that contradicts the
     Quote the operator was shown, which is the invariant living in the value."""

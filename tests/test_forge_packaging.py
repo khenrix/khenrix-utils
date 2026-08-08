@@ -1,5 +1,6 @@
 """forge must ship in the rendered plugins and be inside the receipt closure."""
 import ast
+import importlib.util
 import io
 import re
 import shutil
@@ -678,6 +679,33 @@ def test_every_term_the_quote_prices_has_a_reachable_production_caller():
     assert still_unbuilt == known_unbuilt, (
         f"{sorted(known_unbuilt - still_unbuilt)} now has a production caller — drop it from "
         "known_unbuilt, and reprice it")
+
+
+def test_the_eval_fixtures_generator_still_produces_the_checked_in_header():
+    """THE GUARD THE DE-ULTRA SWAP DID NOT HAVE. `make_handover_header.py` imported a module
+    the swap deleted and passed a kwarg the record no longer takes, so it was dead code — and
+    the header beside it still pinned a `Ultrareview:` line the engine could not emit. Nothing
+    noticed, because nothing ran the generator: `eval_set_hash` covers the fixtures tree, so
+    re-seeding happily re-blessed the stale pair. The judge harness cannot catch it either —
+    the eval grades the checked-in TEXT, so a rotted generator and a stale header agree with
+    each other forever.
+
+    Calls `build()` rather than running the script, so the test never writes into the repo.
+    The equality is byte-exact, which is only a meaningful gate because the generator pins
+    GIT_AUTHOR_DATE/GIT_COMMITTER_DATE — without that the seed commit's OID tracks wall-clock
+    time and this assertion would fail on the second run of an unchanged tree.
+    """
+    fixtures = ROOT / "evals" / "llm-forge" / "fixtures"
+    spec = importlib.util.spec_from_file_location(
+        "_make_handover_header", fixtures / "make_handover_header.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    produced = mod.build()
+    checked_in = (fixtures / "handover-header.txt").read_text()
+    assert produced == checked_in, (
+        "the checked-in eval fixture is not what the engine now renders — regenerate it with "
+        "`python3 evals/llm-forge/fixtures/make_handover_header.py` and re-seed the receipt")
+    assert produced == mod.build(), "the generator is not deterministic across two calls"
 
 
 def test_the_skill_does_not_understate_what_the_collector_refuses():

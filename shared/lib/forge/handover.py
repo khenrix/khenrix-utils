@@ -668,9 +668,9 @@ def _seconds(v) -> None:
 
 def _deep_review_line(u) -> str:
     """§13.1's three statuses, three renderings. §16.1's example shows only the first, and the
-    other three are not decoration: an operator reading `Deep review:` needs to know whether
-    the deep review found nothing, was never asked, or could not be asked
-    somewhere with a URL they can open.
+    other two are not decoration: an operator reading `Deep review:` needs to know whether the
+    deep review found nothing, was never asked, or could not be asked — and for the last,
+    which of `deepreview.REASONS` stopped it.
 
     THE SKIPPED LINE READS THE RECORD'S OWN REASON RATHER THAN NAMING THE FLAG. `run_deep_review`
     skips for `--skip-deep-review` and for nothing else, but `skipped` is the status ANY caller writes
@@ -679,18 +679,32 @@ def _deep_review_line(u) -> str:
     something they did not.
 
     A STATUS THIS FUNCTION DOES NOT KNOW RAISES rather than falling through to the cheapest of
-    the four. `deepreview.STATUSES` is the vocabulary; a fifth member added there would otherwise
+    the three. `deepreview.STATUSES` is the vocabulary; a fourth member added there would otherwise
     render here as a review nobody requested, which is the collapse the branches exist for.
     """
     if u.status == deepmod.RAN:
         n = len(u.findings)
-        # WHICH SEATS ANSWERED IS PART OF THE CLAIM. A 1-of-3 panel and a full one produce
-        # the same finding count, and the cloud review this replaced had no such
-        # distinction to report — so a header that omitted it would let a degraded review
-        # read as a complete one.
-        who = ", ".join(u.seats) if u.seats else "no named"
+        unmeasured = ("" if u.diff_measured
+                      else " (over a diff whose size could not be measured)")
+        # WHICH SEATS REPORTED IS PART OF THE CLAIM. A 1-of-3 panel and a full one produce
+        # the same finding count, and the cloud review this replaced had no such distinction
+        # to report — so a header that omitted it would let a degraded review read as a
+        # complete one. It reads `reporting` and NOT `seats`: a seat that answered in prose
+        # produced no findings payload, so it answered without reporting.
+        if u.reporting is None:
+            # A RECORD FROM BEFORE `reporting` EXISTED, replayed by `--collect` on a run
+            # already paid for. Its `seats` is who ANSWERED, and printing those names after
+            # "reported by" is exactly the overclaim this field was added to stop — so the
+            # header states the limit instead of guessing past it.
+            return (f"Deep review: {n} finding(s) from {len(u.seats)} answering seat(s); this "
+                    "record predates seat-level reporting and cannot say which of them "
+                    "produced a findings payload" + unmeasured)
+        who = ", ".join(u.reporting) if u.reporting else "no named"
+        silent = [s for s in u.seats if s not in u.reporting]
         return (f"Deep review: {n} finding(s) reported by {who} seat(s)"
-                + ("" if u.diff_measured else " (over a diff whose size could not be measured)"))
+                + (f" ({', '.join(silent)} answered without a readable payload)"
+                   if silent else "")
+                + unmeasured)
     if u.status == deepmod.UNAVAILABLE:
         return f"Deep review: unavailable ({u.reason}) — the run proceeded to handover"
     if u.status == deepmod.SKIPPED:
@@ -699,7 +713,7 @@ def _deep_review_line(u) -> str:
                 "Deep review: not requested, and this record does not say why")
     raise HandoverError(
         f"{u.status!r} is not one of §13.1's statuses, so this header has no rendering "
-        "for it. Falling through to one of the four would report an unknown state as the "
+        "for it. Falling through to one of the three would report an unknown state as the "
         "review nobody asked for, which is the cheapest of them to read.")
 
 

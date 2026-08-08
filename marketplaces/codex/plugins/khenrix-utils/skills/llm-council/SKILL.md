@@ -136,7 +136,7 @@ a tier, edit one cell there. A *new* model id must also be registered in
 `capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
 string — `agy models` prints them as slugs, e.g. `gemini-3.6-flash-high`; the display
-label we pin resolves too, verified on 1.1.8), so the agy cell's MODEL is enforced like the
+label we pin resolves too, re-probed on 1.1.11), so the agy cell's MODEL is enforced like the
 others; its tier tops out at "(High)" (no Flash Max tier exists), so deep mode deepens
 the claude and codex seats only.
 Deep-mode members need up to ~800s each at max reasoning (measured on the current

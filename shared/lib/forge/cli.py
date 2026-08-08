@@ -787,6 +787,12 @@ def _agreement(run_dir) -> str:
 # reaches a header — `dataclasses.replace` puts the review's own result in its place — so the
 # detail is written for the one reader who would ever see it: somebody looking at a handover
 # where that replacement did not happen.
+# A KEY THAT IS ABSENT AND A KEY THAT IS `null` MEAN DIFFERENT THINGS in the deep-review
+# record, and `dict.get` collapses them. Absent = written before `reporting` existed, so
+# nothing can be said about which seats reported; `null` = written since, by a status that
+# records no reporters. `get(k, _MISSING)` is what keeps the two apart.
+_MISSING = object()
+
 _UNREQUESTED = deepreview.DeepReview(
     deepreview.SKIPPED, None, None, (), False,
     "this run's record was validated before §13.1 was asked for and the placeholder it was "
@@ -1002,9 +1008,12 @@ def _deep_review_already_spent(events):
             return None
         rows = d.get("findings")
         findings = None if rows is None else tuple(_finding_of(r) for r in rows)
+        rep = d.get("reporting", _MISSING)
         return deepreview.DeepReview(status, d.get("reason"), findings,
                                      tuple(d.get("seats") or ()),
-                                     bool(d.get("diff_measured")), d.get("detail"))
+                                     bool(d.get("diff_measured")), d.get("detail"),
+                                     reporting=None if rep is _MISSING or rep is None
+                                     else tuple(rep))
     return None
 
 
@@ -1049,7 +1058,7 @@ def collect(args, *, out) -> int:
 
     # BOTH BEFORE THE SPEND, on this function's own standing rule: every refusal it can make
     # from disk comes above §13.1's deep review, so a run with nothing to hand over never
-    # pays $5-25 to be told so.
+    # spends the fan-out's three provider calls to be told so.
     _refuse_a_seats_candidate(repo, run_dir, run_id=manifest.run_id, tree=tree,
                               base_tree=manifest.tracked_tree_oid)
     reported, evidence = _reported_outcome(args, head=head)
@@ -1143,7 +1152,11 @@ def collect(args, *, out) -> int:
                    status=u.status, reason=u.reason,
                    findings=None if u.findings is None else [_finding_row(b) for b in u.findings],
                    seats=list(u.seats), diff_measured=bool(u.diff_measured),
-                   detail=u.detail)
+                   detail=u.detail,
+                   # WRITTEN EVEN WHEN None, so a replayed record can tell "no seat reported"
+                   # from "this run predates the field". `_deep_review_of` reads the ABSENCE
+                   # of the key as the second, and the header then declines to name reporters.
+                   reporting=None if u.reporting is None else list(u.reporting))
     else:
         print(f"§13.1 was already run for this run ({u.status}); replaying its recorded "
               "result rather than paying for it twice.", file=out)

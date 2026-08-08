@@ -16,7 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
 
-from forge import deepreview, review  # noqa: E402
+from forge import deepreview, handover, review  # noqa: E402
 
 from forge_fixtures import commit_all, git as fixture_git, make_repo, write  # noqa: E402
 
@@ -445,6 +445,86 @@ def test_the_same_bug_at_the_same_place_still_merges_as_corroboration(tmp_path):
                                    round_=1, council=council)
     assert len(u.findings) == 1
     assert "corroborated by claude, codex" in u.findings[0].evidence
+
+
+def test_a_seat_that_answered_unreadably_is_not_a_seat_that_reported(tmp_path):
+    """THE FALSE FULL PANEL. `seats` was every council-VALID provider, assigned before any
+    payload was parsed, and §16.1 renders that tuple as "reported by ... seat(s)". So a run
+    where claude alone produced a payload and codex and agy answered in prose rendered
+    `0 finding(s) reported by claude, codex, agy seat(s)` — a 1-of-3 review reading as a
+    clean full-panel one, which is the exact collapse `DeepReview`'s own docstring says
+    `seats` exists to prevent. The unreadable seats are named in `detail` rather than
+    dropped, because "asked and unreadable" and "never asked" are different runs.
+
+    The companion `..._is_not_a_review_that_found_nothing` covers ALL seats unreadable; this
+    covers the mixed panel, which nothing reached — the whole suite stayed green while the
+    header overclaimed.
+    """
+    r, base, head = _repo(tmp_path)
+    council = _panel(tmp_path,
+                     ("claude", True, _payload()),
+                     ("codex", True, "I read the diff and found nothing. Prose, no fence."),
+                     ("agy", True, "A long discursive answer with no payload whatsoever."))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert u.status == deepreview.RAN and u.findings == ()
+    assert u.seats == ("claude", "codex", "agy"), "all three ANSWERED"
+    assert u.reporting == ("claude",), \
+        f"the header would report a degraded panel as a full one: {u.reporting}"
+    assert "codex, agy did not" in u.detail, u.detail
+    assert "1 of 3" in u.detail, u.detail
+
+
+def test_a_record_from_before_reporting_existed_does_not_claim_its_answerers_reported():
+    """THE SAME OVERCLAIM, THROUGH THE DURABLE RECORD. `--collect` replays an already-paid
+    review off the journal rather than convening it twice, so a run journalled BEFORE
+    `reporting` existed comes back with `seats` = everyone who answered and no way to say
+    which of them produced a payload. Reading those names as reporters would reprint the
+    exact header this field was added to stop — for a degraded panel, on a supported
+    operation, against a run the operator already paid for.
+
+    `None` is therefore not "no reporters" but "not recorded", and the header states the
+    limit rather than guessing past it. The companion below pins the `()` case, which IS a
+    claim: nobody reported.
+    """
+    legacy = deepreview.DeepReview(deepreview.RAN, None, (), ("claude", "codex", "agy"),
+                                   True, "1 of 3 answering seat(s) produced a payload")
+    assert legacy.reporting is None, "an unset reporting must not default to a claim"
+    line = handover._deep_review_line(legacy)
+    assert "reported by claude, codex, agy" not in line, line
+    assert "predates seat-level reporting" in line, line
+    assert "3 answering seat(s)" in line, line
+
+
+def test_a_ran_review_with_no_reporting_seat_is_refused():
+    """`()` says nobody produced a payload, which on `ran` is the false green the whole
+    module exists against — `unreadable_output` is the status for it. Guarded here because
+    the dataclass is what the journal reader reconstructs through, so a corrupted record
+    must not be constructible into a review that ran and had nothing behind it."""
+    with pytest.raises(deepreview.DeepReviewError):
+        deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "d", reporting=())
+
+
+def test_a_reporter_that_never_answered_is_refused():
+    """`reporting` is a subset of `seats`. A name in one and not the other is a record
+    describing a panel member that was never convened."""
+    with pytest.raises(deepreview.DeepReviewError):
+        deepreview.DeepReview(deepreview.RAN, None, (), ("claude",), True, "d",
+                              reporting=("codex",))
+
+
+def test_a_full_panel_still_names_every_seat(tmp_path):
+    """The discrimination check for the test above: narrowing `seats` to the seats that
+    produced a payload must not narrow the UNdegraded case, which is what the eval-set
+    fixture pins and what §16.1's example shows."""
+    r, base, head = _repo(tmp_path)
+    council = _panel(tmp_path, ("claude", True, _payload()), ("codex", True, _payload()),
+                     ("agy", True, _payload()))
+    u = deepreview.run_deep_review(tmp_path / "run", checkout=r, base=base, head=head,
+                                   round_=1, council=council)
+    assert u.seats == ("claude", "codex", "agy")
+    assert u.reporting == ("claude", "codex", "agy")
+    assert "did not" not in u.detail, u.detail
 
 
 def test_a_diff_git_could_not_produce_is_not_an_unreadable_panel(tmp_path):

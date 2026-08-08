@@ -55,7 +55,9 @@ those specifically, as partial input, so the specific rule wins and none is remo
 run is alive. The
 spec's own upper bound is therefore divided by the fleet it was stated for — 10 GB / 3 clones —
 and multiplied by every clone the worst case builds: calibration (§5 step 3), builders
-(seats × attempts), and verifiers. That is 17 clones at the wired settings, not 3. Left out and
+(seats × attempts), verifiers, and §13's review clone per round — one per ROUND, not per
+reviewer, since the panel reads one tree together. That is 19 clones at the wired settings
+(1 + 9 + 7 + 2, the formula below), not 3. Left out and
 said so in the line: the synthesis WORKTREE, which §4 makes a worktree precisely so it shares
 the parent's objects, and where setup never runs.
 
@@ -345,8 +347,10 @@ def quote(report, *, seats=3, attempts=3, review_rounds=2, deep_review=True,
     is the same defect one layer out.
 
     `deep_review` defaults True because §13.1 is titled "default on"; `--skip-deep-review`
-    sets it False. It moves FOUR scalars now: the council fan-out is `seats` provider calls
-    on top of the fix it triggers, plus that fix's fresh verifier setup+verify.
+    sets it False. MEASURED by diffing the two quotes field by field, it moves five numeric
+    fields — provider_calls, setup_runs, verify_runs, peak_disk_gb and synthesis_fix_cap —
+    because the council fan-out is `seats` provider calls on top of the fix it triggers, plus
+    that fix's fresh verifier setup+verify and the clone that verify runs in.
     """
     if not isinstance(report, preflight.Report):
         raise GateError(f"a preflight.Report is required, not {type(report).__name__}; "
@@ -1729,10 +1733,10 @@ def confirm(report, quote_, answers) -> Confirmation:
         raise GateError(f"§5 step 2 does not ask {unknown}; it asks {list(_ANSWERS)}")
 
     # THE INVARIANT LIVES IN THE VALUE, not in a second check downstream. `quote` prices
-    # §13.1 on or off and moves four scalars doing it; `deepreview.run_deep_review` obeys the decision
-    # an hour later in another process. If those were two readings of one intent they would
-    # eventually disagree, and the disagreement is money: a run priced without the cloud
-    # review that then requests one, or the reverse — a user shown $5-25 they were never
+    # §13.1 on or off and re-prices the quote doing it; `deepreview.run_deep_review` obeys the
+    # decision an hour later in another process. If those were two readings of one intent they
+    # would eventually disagree, and the disagreement is spend: a run priced without the deep
+    # review that then convenes one, or the reverse — a user shown a call count they were never
     # charged and a review they were told they would get.
     #
     # `Quote.deep_review` is a STRING by design (it is the operator's own words for the price),

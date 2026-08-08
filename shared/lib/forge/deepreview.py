@@ -280,8 +280,16 @@ class DeepReview:
     on which field a consumer reads, which is the same defect one field over.
 
     `seats` replaces the cloud record's `session_url`: for a local panel the useful
-    provenance is WHICH seats answered, and it is also what makes a degraded review
-    (1 of 3) visible instead of reading like a full one.
+    provenance is WHICH seats are behind the verdict. It means ONE thing on every status —
+    the seats that answered, i.e. every seat the council scored valid.
+
+    `reporting` is the subset of those whose findings payload was READABLE, and it is a
+    SEPARATE field rather than a narrowing of `seats` because this record is durable. §16.1
+    renders "reported by ... seat(s)", and a seat that answered in prose reported nothing —
+    but a record written before this field existed cannot say which seats did, and silently
+    reading its `seats` as reporters is the overclaim the field exists to prevent. So `None`
+    means NOT RECORDED and the header says what it does not know; `()` is what a review with
+    no readable seat carries, and is never valid on `ran`.
     """
     status: str
     reason: str | None
@@ -289,6 +297,7 @@ class DeepReview:
     seats: tuple
     diff_measured: bool
     detail: str
+    reporting: tuple | None = None
 
     def __post_init__(self) -> None:
         if self.status not in STATUSES:
@@ -312,6 +321,21 @@ class DeepReview:
                 "review whose status says it did")
         if not isinstance(self.seats, tuple):
             raise DeepReviewError(f"seats is a tuple, not {type(self.seats).__name__}")
+        if self.reporting is not None:
+            if not isinstance(self.reporting, tuple):
+                raise DeepReviewError(
+                    f"reporting is a tuple or None, not {type(self.reporting).__name__}")
+            unknown = [x for x in self.reporting if x not in self.seats]
+            if unknown:
+                raise DeepReviewError(
+                    f"{unknown} reported without answering; `reporting` is a subset of "
+                    "`seats`, and a reporter no seat list contains is a record naming a "
+                    "panel member that was never convened")
+            if self.status == RAN and not self.reporting:
+                raise DeepReviewError(
+                    "a review that ran was reported by at least one seat; an empty "
+                    "`reporting` is what `unreadable_output` carries, and here it would say "
+                    "a review both ran and had nothing behind it")
 
 
 PROMPT = """Review this diff for BUGS — do not modify anything; answer in your final message.
@@ -476,7 +500,7 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
     # Convergence across INDEPENDENT reviewers is evidence the finding is real, so it is
     # recorded on the finding rather than thrown away.
     merged: dict = {}
-    readable = 0
+    reporting: list = []
     for p in valid:
         try:
             answer = Path(p["result_file"]).read_text()
@@ -487,7 +511,7 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
         # answered the question at all — an empty findings LIST is an answer, a fence full
         # of invalid JSON is not.
         if payload_seen:
-            readable += 1
+            reporting.append(p["name"])
         for f in got:
             # THE KEY CARRIES THE LOCATION. Keying on the claim alone merged two DIFFERENT
             # bugs that happened to share a generic sentence ("off-by-one in loop bounds")
@@ -510,11 +534,21 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
             f = dataclasses.replace(
                 f, evidence=f"{f.evidence} [corroborated by {', '.join(who)}]")
         findings.append(f)
-    if not readable:
+    if not reporting:
         return DeepReview(UNAVAILABLE, "unreadable_output", None, seats, measured,
                           f"{len(valid)} seat(s) answered but none produced a readable "
-                          "findings payload, which is not the same as finding nothing")
+                          "findings payload, which is not the same as finding nothing",
+                          reporting=())
+    # A SEAT THAT ANSWERED IS NOT A SEAT THAT REPORTED, and §16.1's header turns `reporting`
+    # into "reported by ... seat(s)". This used to render from `seats`, so a panel where
+    # claude alone produced a payload and codex and agy answered in prose printed
+    # "0 finding(s) reported by claude, codex, agy seat(s)" — a 1-of-3 review reading as a
+    # clean full-panel one. Both tuples are recorded because the difference between them is
+    # the operator's signal: "asked and unreadable" and "never asked" are different runs.
+    silent = [n for n in seats if n not in reporting]
     return DeepReview(RAN, None, tuple(findings), seats, measured,
-                      f"{readable} of {len(valid)} answering seat(s) produced a payload; "
-                      f"{len(findings)} finding(s) over "
-                      f"{size.files if measured else 'an unmeasured number of'} file(s)")
+                      f"{len(reporting)} of {len(valid)} answering seat(s) produced a payload"
+                      + (f" ({', '.join(silent)} did not)" if silent else "")
+                      + f"; {len(findings)} finding(s) over "
+                      f"{size.files if measured else 'an unmeasured number of'} file(s)",
+                      reporting=tuple(reporting))

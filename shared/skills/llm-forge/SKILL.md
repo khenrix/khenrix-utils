@@ -1,6 +1,6 @@
 ---
 name: llm-forge
-description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~22 provider calls across 19 coexisting clones and peaks near 63.3 GB of disk, so it is for changes that justify the spend; `--start` prints the full quote before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
+description: Run ONE build task across all three agentic CLIs on this machine (Claude Code, Codex, agy) in isolated clones, verify each candidate in a fresh verifier clone it never had access to, then FUSE the results into a new best-of-all answer — not pick a winner. Use when the user wants a hard change built several ways and merged into the best version, maximum confidence on risky implementation work, "forge this", "llm-forge", "build this three ways", "have all three CLIs implement it and combine them", "fuse the results", or asks to collect/clean up a previous forge run. Also trigger on "--start", "--collect" or "--gc" against a forge run id. Expensive and slow — a default run is ~22 provider calls across 19 clones peaking near 63.3 GB, so it is for changes that justify the spend; `--start` quotes the full cost before anything is spent, and `--gc <run-id>` afterwards is mandatory, not tidy. NOT for a question or a second opinion — that is llm-council, which is read-only and ~3x one turn.
 allowed-tools: Bash, Read
 ---
 
@@ -44,14 +44,21 @@ yours to keep; the engine refuses only the two cases where the tree itself gives
 > attempt gets the whole window. It is a bound, not an estimate, and it excludes setup, verify,
 > review and the deep review, so the real ceiling is above it.
 >
-> **That quote is an UPPER BOUND, and part of it cannot be spent today.** §13's review
-> rounds and their post-round fixes — 9 of the 22 calls — are priced for a stage that has no
-> production caller: `review.run_round` and `review.loop` are built and tested and nothing
-> convenes them, so `--review-rounds N` parses, is recorded as a budget, and buys nothing. A
-> real default run spends about **13** provider calls: 9 builders, the one synthesis turn you
-> make yourself, and the 3-seat deep review, which `--collect` really does convene. The quote is not corrected here because repricing changes what `--start`
-> asks you to agree to, and that is its own change; what the packaging suite guarantees is
-> that no NEW unspendable term can be added without a test failing.
+> **EVERY TERM IN THAT QUOTE IS A WORST CASE, including the builders.** The 9 assumes all
+> three seats exhaust all three attempts; three seats that each succeed first time spend 3.
+> MEASURED against `gate.quote` at `--attempts 1 --review-rounds 0`: **8** provider calls —
+> 3 builders, the one synthesis turn you make yourself, the 3-seat deep-review fan-out, and
+> one synthesis turn to fix what it reports. Each review round you convene with `--review`
+> adds 3 more plus the fix turn it earns, up to the `--review-rounds N` you confirmed
+> (default 2), which is what takes a run to the 22 ceiling.
+>
+> `test_every_term_the_quote_prices_has_a_reachable_production_caller` fails on any PROVIDER
+> term whose stage has no caller, so no unspendable call can be added silently. It does not
+> audit the setup/verify/clone side, and there the quote is currently generous by one pair:
+> it books a fresh setup+verify for the deep review's fix, and `--verify-fix` verifies a fix
+> against a REVIEW ROUND — so on a run that convened none, that priced verification has no
+> verb to spend it.
+>
 > `--start` prints that whole quote, plus every refusal and gap, **before a token is
 > spent**, and will not open a run until the answer sheet agrees with what was priced.
 >
@@ -159,11 +166,11 @@ A JSON object. Every command is a **list of argv lists** — nothing here runs a
 ### `--skip-deep-review` is a repricing, not a skip
 
 `--skip-deep-review` belongs on `--start`. It does not merely turn the review off — it moves
-the quote's **provider calls, setup runs, verify runs and peak disk**, because the fan-out
-itself is 3 calls and its findings would have earned a post-round fix plus a fresh verifier
-setup and verify — measured on a default run, 22 calls / 18 setup / 9 verify / ~63.3 GB
-become 18 / 17 / 8 / ~60.0. Unlike the cloud review this replaced, the saving is now a REAL
-provider spend rather than a separate currency: three seats that do not run. The
+**five** of the quote's numbers: provider calls, setup runs, verify runs, peak disk and the
+post-review synthesis fix cap, because the fan-out itself is 3 calls and its findings would
+have earned a post-round fix plus a fresh verifier setup and verify — measured on a default
+run, 22 calls / 18 setup / 9 verify / ~63.3 GB / 3 fixes become 18 / 17 / 8 / ~60.0 / 2. The saving is provider spend in the same currency as every other
+line of the quote — three seats that do not run — not a separate budget. The
 gate then refuses if the quote and the answer
 disagree at all: the quote you were shown is the one the run may spend, and the fix is to
 re-price and show it again, never to answer past it.
@@ -174,9 +181,13 @@ closed if it is missing or is not a boolean — it never re-derives it from a fl
 
 ### What the preflight refuses, and what it does not screen
 
-The credential screen covers **the paths you `--select` and nothing else**. It is not
-"forge scans your repository for secrets": tracked content — including an uncommitted edit
-to a tracked file — is not screened. A selected path that escapes the repository is refused
+The credential screen covers **the tracked set plus the paths you `--select`** — which is
+exactly what B1 carries to the seats, uncommitted edits to tracked files included. It is
+still not "forge scans your repository for secrets": an untracked file you did not select is
+never read, because it never reaches the baseline either. Tracked SYMLINKS are the one
+exclusion — their own bytes are the target text rather than a credential, and where they
+point is adjudicated separately — whereas a SELECTED symlink is a breach, since you asked
+for that path by name. A selected path that escapes the repository is refused
 before anything is spent, and so is one the screen could not read (a breach is a refusal,
 because a screen that certifies what it did not open is worth no more than one that found
 nothing).
@@ -356,9 +367,11 @@ Relay the header **as printed**. Six things in it will look like defects and are
   correctness argument**; `identically-prompted` is what two attempts of one seat get.
 - **`Council: no review round was convened.`** Printed when you did not run `--review`.
   It is not a round that failed or was skipped for cause — it is a stage nobody asked for.
-  Run `--review <run-id>` (below) to convene one; the post-round FIX loop is still unbuilt,
-  so a second round cannot be bought and `--review-rounds` above 1 prices calls that cannot
-  be spent.
+  Run `--review <run-id>` (below) to convene one, once per round up to the
+  `--review-rounds` you confirmed — the verb counts the rounds already recorded and refuses
+  the one past your budget, so both default rounds are buyable. `--verify-fix` is the other
+  half: you fix the blockers in the synthesis worktree and it verifies the fix survived the
+  gate in a clone you never touched, spending no provider call.
 - **`Deep review: N finding(s) reported by <seats>`.** Reported, and nothing more: §13.1's
   findings get no post-round fix, no fresh verification and no terminal, because that wiring
   does not exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — it is
