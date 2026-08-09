@@ -1,4 +1,6 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -52,3 +54,75 @@ class TestReadBookmarks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEmptyReadCannotAuthoriseRemoval(unittest.TestCase):
+    """Only a `complete` snapshot may mark ledger items removable (ledger.plan_diff), and
+    `read_bookmarks` used to return `complete` for ANY file that parsed — including one that
+    yielded zero items. A wrong profile, a reset, or a half-written file that still parses
+    would then present as "the user deleted all 376 bookmarks", and the whole channel landed
+    in removable[]."""
+
+    def _snap(self, doc):
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "Bookmarks"
+            f.write_text(json.dumps(doc), encoding="utf-8")
+            return read_bookmarks(f)
+
+    def test_a_clean_parse_with_no_urls_is_partial(self):
+        snap = self._snap({"roots": {"bookmark_bar": {"type": "folder", "children": []}}})
+        self.assertEqual(snap.status, "partial")
+        self.assertEqual(snap.items, [])
+        self.assertTrue(any("partial" in e for e in snap.errors), snap.errors)
+
+    def test_a_populated_ledger_survives_an_empty_read(self):
+        """THE DISCRIMINATION CHECK, driven through the real `plan_diff`: the status is only
+        worth changing if it changes the OUTCOME. Populate the ledger from the real fixture,
+        then hand it an empty read — every known item is now absent from the snapshot, which
+        is precisely the shape that fills `removable`."""
+        led = Ledger(":memory:")
+        for it in read_bookmarks(FIXTURE).items:
+            led.upsert_item(chan="chrome-bookmarks", native_id=it.native_id,
+                            url=it.canonical_url, title=it.title, now="2026-01-01")
+        empty = self._snap({"roots": {}})
+        diff = led.plan_diff(empty)
+        self.assertEqual(empty.status, "partial")
+        self.assertEqual(list(diff.removable), [],
+                         "an empty read emptied the whole channel — the guard did not hold")
+
+    def test_a_complete_read_that_lost_items_STILL_removes(self):
+        """The other half: the guard must not disarm real removals. A COMPLETE snapshot that
+        genuinely dropped one item still reports it removable, or the guard would have traded
+        a false delete for a permanent leak."""
+        led = Ledger(":memory:")
+        items = read_bookmarks(FIXTURE).items
+        for it in items:
+            led.upsert_item(chan="chrome-bookmarks", native_id=it.native_id,
+                            url=it.canonical_url, title=it.title, now="2026-01-01")
+        snap = read_bookmarks(FIXTURE)
+        snap.items.pop()                      # one bookmark genuinely deleted by the user
+        self.assertEqual(snap.status, "complete")
+        self.assertEqual(len(list(led.plan_diff(snap).removable)), 1)
+
+    def test_a_populated_parse_is_still_complete(self):
+        self.assertEqual(read_bookmarks(FIXTURE).status, "complete")
+
+
+class TestChromeProfileIsDiscovered(unittest.TestCase):
+    """The default was one machine's literal path, so `probe` reported bookmarks:false
+    everywhere else — including this machine, whose Windows user and profile both differ."""
+
+    def test_default_is_not_a_hardcoded_username(self):
+        from wikisync.config import _default_chrome_profile
+        got = _default_chrome_profile()
+        self.assertNotIn("/chris/", got, "the one-machine literal is back")
+        self.assertTrue(got.endswith("Bookmarks"), got)
+
+    def test_it_finds_a_real_profile_when_one_exists(self):
+        from wikisync.config import _default_chrome_profile
+        roots = list(Path("/mnt/c/Users").glob(
+            "*/AppData/Local/Google/Chrome/User Data/*/Bookmarks")) \
+            if Path("/mnt/c/Users").is_dir() else []
+        if not roots:
+            self.skipTest("no Windows Chrome profile on this machine")
+        self.assertTrue(Path(_default_chrome_profile()).is_file())

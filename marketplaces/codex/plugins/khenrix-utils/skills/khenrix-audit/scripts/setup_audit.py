@@ -1137,6 +1137,19 @@ def cmd_ledger_add(args) -> int:
             "desired_state": args.desired_state, "reason": args.reason,
             "created": now_utc(args)}
     else:
+        # A WAIVER THAT NAMES NO FINDING IS NOT A WAIVER. Both of these are optional at the
+        # argparse layer because the policy branch above uses neither, so an empty `--id`
+        # walked straight through and wrote an entry keyed by "" into a TRACKED ledger —
+        # unmatchable against any finding, invisible in review as anything but noise, and
+        # silently overwritten by the next one. The fingerprint is required with it because
+        # that is what ties the waiver to the finding's CONTENT: an id alone waives whatever
+        # later happens to carry that id.
+        missing = [f for f, v in (("--id", args.id), ("--fingerprint", args.fingerprint))
+                   if not (v or "").strip()]
+        if missing:
+            sys.exit(f"ledger-add needs {' and '.join(missing)} to record a waiver — an "
+                     "entry naming no finding can never match one. Take both from the "
+                     "finding you mean to waive in the `findings` output.")
         doc.setdefault("entries", {})[args.id] = {
             "disposition": args.state, "fingerprint": args.fingerprint,
             "reason": args.reason, "until": args.until,

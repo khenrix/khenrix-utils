@@ -91,3 +91,29 @@ class TestJobStates(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeepQueuedState(unittest.TestCase):
+    """The skill tells the operator that deep-pass overflow past `deep_cap` is "queued in
+    the ledger" for a later run. Before this state there was nowhere to queue it, so the
+    promise lived only in one run's summary text."""
+
+    def test_deep_queued_is_a_valid_job_state(self):
+        from wikisync.ledger import JOB_STATES
+        self.assertIn("deep_queued", JOB_STATES)
+
+    def test_an_item_can_be_parked_and_read_back(self):
+        led = Ledger(":memory:")
+        iid = led.upsert_item(chan="chrome-bookmarks", native_id="g1",
+                              url="https://ex.com/reel", title="a reel", now="2026-01-01")
+        led.job_transition(iid, "deep_queued")
+        self.assertEqual(led.job_state(iid), "deep_queued")
+        self.assertEqual(led.job_state_counts().get("deep_queued"), 1)
+
+    def test_an_unknown_state_is_still_refused(self):
+        """The discrimination check: widening the vocabulary must not open it."""
+        led = Ledger(":memory:")
+        iid = led.upsert_item(chan="chrome-bookmarks", native_id="g2",
+                              url="https://ex.com/x", now="2026-01-01")
+        with self.assertRaises(ValueError):
+            led.job_transition(iid, "deep-queued")   # hyphen, not the real state

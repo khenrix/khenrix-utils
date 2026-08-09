@@ -29,26 +29,29 @@ uvx --from 'markitdown[all]' markitdown "<INPUT>" -o "<OUTPUT.md>"
 
 Bare `uvx markitdown` resolves the **base** package only — it has no PDF/DOCX/XLSX/PPTX extras and **fails on
 real office files** (or silently emits empty/garbled output). The `[all]` extra is what pulls in `pdfminer`,
-`python-docx`, `openpyxl`, `python-pptx`, etc. This is the single most common mistake; get it right every
+`mammoth` (DOCX), `openpyxl`, `python-pptx`, etc. This is the single most common mistake; get it right every
 time. Quote `'markitdown[all]'` so the shell doesn't glob the brackets.
 
-### Resolution gotcha (as of markitdown 0.1.6): `[all]` silently lands on 0.1.5
+### Resolution gotcha (still live at markitdown 0.1.7): `[all]` silently lands on 0.1.5
 
-markitdown 0.1.6's `[all]` extra includes Azure Content Understanding, whose dependency
-(`azure-ai-contentunderstanding>=1.2.0b1`) is a *pre-release* — and `uv` refuses
-pre-releases by default, so `uvx --from 'markitdown[all]'` **silently backtracks to
-0.1.5** (no warning, no error). That's fine for everyday conversions. If 0.1.6 is
-specifically needed (it fixes PDF-conversion memory growth and a deeply-nested-HTML
-RecursionError), prefer pinning it with the standard extras — no pre-release override:
+Every `[all]` extra since 0.1.6 includes Azure Content Understanding, whose dependency
+(`azure-ai-contentunderstanding>=1.2.0b1`) is satisfiable only by a *pre-release* — that
+package has no 1.2.0 at all, stable or otherwise (latest stable 1.1.0, probed 2026-08-08) —
+and `uv` refuses pre-releases by default. So `uvx --from 'markitdown[all]'` **silently
+backtracks to 0.1.5**, the last release without that dep (no warning, no error). MEASURED:
+`markitdown[all]` → 0.1.5, `--prerelease=allow --from 'markitdown[all]'` → 0.1.7. That's
+fine for everyday conversions. If a newer release is specifically needed (0.1.6 fixes
+PDF-conversion memory growth and a deeply-nested-HTML RecursionError), prefer pinning it
+with the standard extras — no pre-release override:
 
 ```bash
-uvx --from 'markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription,youtube-transcription]==0.1.6' markitdown "<INPUT>" -o "<OUTPUT.md>"
+uvx --from 'markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription,youtube-transcription]==0.1.7' markitdown "<INPUT>" -o "<OUTPUT.md>"
 ```
 
 Only when the Azure Content Understanding converter itself is wanted does the pre-release
 need allowing — scoped to that one pinned invocation, never as a default (it broadens
 pre-release acceptance to every transitive dependency):
-`uvx --prerelease=allow --from 'markitdown[all]==0.1.6' markitdown …`
+`uvx --prerelease=allow --from 'markitdown[all]==0.1.7' markitdown …`
 
 ## Preflight (run once, before converting)
 
@@ -108,7 +111,7 @@ Non-zero/empty `printenv` → the var isn't set; stay on `[all]` and, if the PDF
 (output comes back empty), tell the user that scanned PDFs need the `az-doc-intel` path with
 `AZURE_DOC_INTEL_ENDPOINT` configured.
 
-Two more OCR options exist as of 0.1.6, both niche: **Azure Content Understanding** — a second paid, gated
+Two more OCR options exist as of 0.1.7, both niche: **Azure Content Understanding** — a second paid, gated
 Azure service under the same opt-in rule as doc-intel; needs the pre-release-allowed pinned invocation from
 the resolution-gotcha section, and the endpoint must be passed explicitly (`--use-cu --cu-endpoint
 "$AZURE_CONTENT_UNDERSTANDING_ENDPOINT"` — unlike doc-intel there is no env-var wiring by default) — and a

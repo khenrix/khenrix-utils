@@ -2,13 +2,42 @@
   "schema_version": 2,
   "skill": "hookify",
   "source_hash": "695212de0324cf5b83a7e7966b358a41799637e79070cce4b2afe382dbf5d423",
-  "eval_set_hash": "25a319aff709f2cf09f67d31ae46b092cefe0196fc4fa1b5989358dc6f999422",
+  "eval_set_hash": "b7f229fcdf97bf5242ba63e19a966df7bcb2cbdcaca0dfcb6bde0dc330d0df2f",
   "providers": [
-    "claude"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.2083,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.2917,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.1667,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.1667,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-fable-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.6 Flash (High)",
+    "judge": "claude-fable-5"
+  },
+  "certified_by": "delta-gate"
 }

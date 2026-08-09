@@ -53,11 +53,10 @@ yours to keep; the engine refuses only the two cases where the tree itself gives
 > (default 2), which is what takes a run to the 22 ceiling.
 >
 > `test_every_term_the_quote_prices_has_a_reachable_production_caller` fails on any PROVIDER
-> term whose stage has no caller, so no unspendable call can be added silently. It does not
-> audit the setup/verify/clone side, and there the quote is currently generous by one pair:
-> it books a fresh setup+verify for the deep review's fix, and `--verify-fix` verifies a fix
-> against a REVIEW ROUND — so on a run that convened none, that priced verification has no
-> verb to spend it.
+> term whose stage has no caller, so no unspendable call can be added silently. The
+> setup/verify pair the quote books for §13.1's own fix is spendable too: `--verify-fix`
+> answers the deep review's blockers when no §13 round was convened, verifying against the
+> checkpoint the panel actually read.
 >
 > `--start` prints that whole quote, plus every refusal and gap, **before a token is
 > spent**, and will not open a run until the answer sheet agrees with what was priced.
@@ -372,10 +371,13 @@ Relay the header **as printed**. Six things in it will look like defects and are
   the one past your budget, so both default rounds are buyable. `--verify-fix` is the other
   half: you fix the blockers in the synthesis worktree and it verifies the fix survived the
   gate in a clone you never touched, spending no provider call.
-- **`Deep review: N finding(s) reported by <seats>`.** Reported, and nothing more: §13.1's
-  findings get no post-round fix, no fresh verification and no terminal, because that wiring
-  does not exist. **Do not relay `0 finding(s)` as "the review found nothing wrong"** — it is
-  what the panel returned, not a verdict this engine acted on. **Read the seat list**: a
+- **`Deep review: N finding(s) reported by <seats>`.** Its blockers ARE answerable:
+  `--verify-fix` takes them when no §13 round was convened, and verifies your fix against
+  the checkpoint the panel actually read. What §13.1 still does not get is a review
+  TERMINAL — nothing marks the run resolved or blocked on the strength of it, so the
+  handover reports the findings and not a verdict. **Do not relay `0 finding(s)` as "the
+  review found nothing wrong"** — it is what the panel returned, not a verdict this engine
+  acted on. **Read the seat list**: a
   1-of-3 panel and a full one print the same finding count, and a finding two seats
   independently raised is marked `[corroborated by …]`, which is the panel's real signal.
   A review whose seats answered but produced no readable payload is `unavailable

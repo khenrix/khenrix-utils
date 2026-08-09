@@ -19,9 +19,27 @@ def _default_state_dir() -> Path:
 
 
 def _default_chrome_profile() -> str:
-    # WSL path to the live Chrome Bookmarks JSON (read directly — no manual export).
-    return ("/mnt/c/Users/chris/AppData/Local/Google/Chrome/User Data/"
-            "Profile 3/Bookmarks")
+    """WSL path to the live Chrome Bookmarks JSON (read directly — no manual export).
+
+    DISCOVERED, NOT HARDCODED. This returned one machine's literal
+    `/mnt/c/Users/<name>/.../Profile 3/Bookmarks`, so on every other machine — including
+    this one, whose Windows user and profile are both different — `probe` reported
+    `bookmarks: false` and the whole channel silently went unavailable. A default that is
+    right on exactly one machine is a default that is wrong.
+
+    Prefers `Default` because that is the profile Chrome creates first, then falls back to
+    the largest `Profile N` Bookmarks file: size is the best available proxy for "the one
+    actually in use" without opening any of them. Returns the conventional path unchanged
+    when nothing is found, so the caller's `is_file()` probe still reports honestly rather
+    than this raising at import time.
+    """
+    candidates = sorted(Path("/mnt/c/Users").glob(
+        "*/AppData/Local/Google/Chrome/User Data/*/Bookmarks"))
+    if not candidates:
+        return "/mnt/c/Users/Default/AppData/Local/Google/Chrome/User Data/Default/Bookmarks"
+    default_profiles = [c for c in candidates if c.parent.name == "Default"]
+    pick = max(default_profiles or candidates, key=lambda c: c.stat().st_size)
+    return str(pick)
 
 
 @dataclass

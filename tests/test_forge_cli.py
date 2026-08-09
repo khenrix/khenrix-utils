@@ -1513,13 +1513,51 @@ def test_collect_still_accepts_the_ordinary_worktree(tmp_path, monkeypatch):
 
 
 def test_verify_fix_refuses_before_a_round_has_run(tmp_path, monkeypatch):
-    """A fix answers a round's blockers. With no round recorded there are none, and
-    verifying against a checkpoint nobody convened on would be a measurement of nothing."""
+    """A fix answers a round's blockers. With no round recorded AND no deep-review blocker
+    there are none, and verifying against a checkpoint nobody convened on would be a
+    measurement of nothing."""
     run_dir = _drive_a_start(tmp_path, monkeypatch)
     out = io.StringIO()
     rc = cli.main(["--verify-fix", _run_id(run_dir), "--repo",
                    str(runstate.read_manifest(run_dir).repo_path)], out=out)
     assert rc != 0 and "no review round" in out.getvalue(), out.getvalue()
+
+
+def test_verify_fix_answers_the_deep_reviews_blockers_when_no_round_ran(tmp_path, monkeypatch):
+    """§13.1's findings take §13's treatment — "fix -> fresh-verifier verify -> checkpoint" —
+    and had no verb. `gate.quote` books a post-review fix plus its setup and verify for the
+    deep review (`deep_fixes`), so a run that convened no §13 round was quoted a price for a
+    verification this engine could not perform: a priced term with no way to spend it.
+
+    Drives the REAL path: a deep review that RAN with a blocker, journalled with the
+    checkpoint it read, then `--verify-fix` with no round recorded.
+    """
+    calls = {}
+
+    def _apply(run_dir, repo, *, findings, checkpoint, manifest, identity, events):
+        calls["findings"] = findings
+        calls["checkpoint"] = checkpoint
+        return checkpoint, True, None, None
+
+    run_dir = _drive_a_start(tmp_path, monkeypatch)
+    repo = str(runstate.read_manifest(run_dir).repo_path)
+    _fuse_something(run_dir)
+    blocker = reviewmod.Finding(id="b" * 12, round=1, seat="claude", severity="blocker",
+                                claim="a real defect", evidence="src/app.py:1",
+                                resolution="open")
+    ran = deepreview.DeepReview(deepreview.RAN, None, (blocker,), ("claude",), True,
+                                "1 of 1 answering seat(s) produced a payload; 1 finding(s)",
+                                reporting=("claude",))
+    monkeypatch.setattr(cli.deepreview, "run_deep_review", lambda *a, **kw: ran)
+    assert cli.main(["--collect", _run_id(run_dir), "--repo", repo, "--accept"],
+                    out=io.StringIO()) == 0
+    monkeypatch.setattr(cli.fixmod, "apply", _apply)
+    out = io.StringIO()
+    rc = cli.main(["--verify-fix", _run_id(run_dir), "--repo", repo], out=out)
+    assert rc == 0, out.getvalue()
+    assert calls["findings"] == (blocker,), calls
+    assert calls["checkpoint"], "the fix was verified against no checkpoint at all"
+    assert "the deep review" in out.getvalue(), out.getvalue()
 
 
 def test_verify_fix_says_when_progress_could_not_be_measured(tmp_path, monkeypatch):

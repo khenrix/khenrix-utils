@@ -24,7 +24,13 @@ from dataclasses import dataclass, field
 
 from .sources import SourceItem
 
-JOB_STATES = ("prepared", "fetched", "committed", "failed", "deferred")
+# `deep_queued` is the overflow past `deep_cap`: an item whose recipe was not in the caption
+# and which this run had no budget left to fetch deeply. The SKILL tells the operator the
+# rest are "queued in the ledger" for a later run, and before this state there was nowhere to
+# queue them — the overflow existed only in that run's summary text, so the next run
+# re-derived it from scratch or lost it. A state the skill's own promise depends on is not
+# optional bookkeeping.
+JOB_STATES = ("prepared", "fetched", "committed", "failed", "deferred", "deep_queued")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sync_run(

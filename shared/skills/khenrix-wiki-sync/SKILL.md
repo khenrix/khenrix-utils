@@ -145,8 +145,10 @@ neither ingredients nor method and no `original-source` link to follow; and the 
 case: ingredients listed but the method only spoken or shown on screen. Skip a candidate whose
 caption already carried the complete recipe (ingredients *and* method), and skip a video that
 isn't a recipe at all. Run the deep capture (`/watch` → frames + transcript) on at most
-`deep_cap` per run (default 10); commit those, and leave the rest queued in the ledger for a
-later run. Deep is costly — don't run it on everything.
+`deep_cap` per run (default 10); commit those, and park the rest with
+`job_transition(item_id, "deep_queued")` — that state exists so the overflow survives the
+run instead of living only in this summary, and `wk report` counts it so a later run can pick
+them up. Deep is costly — don't run it on everything.
 
 ## 6. Removals + report
 

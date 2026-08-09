@@ -1,17 +1,29 @@
 {
   "schema_version": 2,
   "skill": "llm-council",
-  "source_hash": "5e2df964510b624be8423301cd25a9a815324c51f75ed051e3a857ccd5fa5c1a",
+  "source_hash": "26336819bf8d2ef37a061fda1194412f8a5caa7537e1506f5e6146b5f5a4a8fc",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state",
-  "self_test": true,
+  "delta_pass_rate": 0.0,
+  "blind_winner": "n/a-orchestrator",
+  "provenance": "eval",
+  "per_provider": {
+    "claude": {
+      "delta": 0.0,
+      "quantum": 0.05,
+      "n_evals": 5,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-fable-5",
+    "judge": "claude-fable-5"
+  },
   "certified_by": "fanout --self-test",
+  "self_test": true,
   "synthesis_review": "manual-attested"
 }

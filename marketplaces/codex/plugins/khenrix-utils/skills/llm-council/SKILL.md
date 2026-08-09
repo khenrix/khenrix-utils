@@ -270,9 +270,10 @@ To change which models sit on the council or how hard they think, edit the `MODE
 table at the top of `engine.py` (one cell per model/tier); the per-provider
 flag mapping (`--effort`, `model_reasoning_effort`, agy's settings file) lives in
 `build_real_spec`. When a real headless run surfaces a new failure string or an
-output-parsing quirk, the fix also lives in `engine.py`: `TOOL_PERMISSION_SENTINELS`
-(our invocation defect — a seat denied its own tool call; carries a `REASON_HINTS` fix)
-vs `PERSISTENT_SENTINELS` (auth/quota) vs `TRANSIENT_SENTINELS` (rate-limit, overloaded),
+output-parsing quirk, the fix also lives in `engine.py`. Three SCANNED sentinel lists
+classify it: `TOOL_PERMISSION_SENTINELS` (our invocation defect — a seat denied its own
+tool call; carries a `REASON_HINTS` fix) vs `PERSISTENT_SENTINELS` (auth/quota) vs
+`TRANSIENT_SENTINELS` (rate-limit, overloaded). Beside those three sit
 `AGY_STRUCTURED_TOOL_PERMISSION` (agy's own soft-deny wording — STRUCTURED-ONLY, matched
 against agy's `error` field and NEVER added to the scanned lists, since `permissions.allow`
 is a config key and `--dangerously-skip-permissions` is a flag we pass ourselves),

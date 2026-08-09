@@ -980,6 +980,25 @@ def _finding_of(row) -> reviewmod.Finding:
 _DEEP_KIND = "deep_review"
 
 
+def _deep_review_checkpoint(events):
+    """The commit §13.1's panel actually read, off the same `done` record.
+
+    JOURNAL METADATA, NOT PART OF THE RESULT — which is why it is read here instead of being
+    added to `deepreview.DeepReview`. The record answers "what did the panel review"; the
+    dataclass answers "what did it find", and a field that only one consumer needs does not
+    earn a place in a frozen result other modules construct in thirty places.
+
+    `None` for a record written before this was journalled: `--verify-fix` refuses rather
+    than guessing, because a fix verified against a tree the panel never read is a
+    measurement of the wrong thing wearing the right label.
+    """
+    done = journalmod.done(_DEEP_KIND)
+    for e in reversed(list(events)):
+        if e.event == done:
+            return e.data.get("checkpoint") or None
+    return None
+
+
 def _deep_review_already_spent(events):
     """§13.1's recorded result, or `None` because this run has not paid for one yet.
 
@@ -1152,7 +1171,11 @@ def collect(args, *, out) -> int:
                    status=u.status, reason=u.reason,
                    findings=None if u.findings is None else [_finding_row(b) for b in u.findings],
                    seats=list(u.seats), diff_measured=bool(u.diff_measured),
-                   detail=u.detail,
+                   detail=u.detail, checkpoint=head,
+                   # THE CHECKPOINT THE PANEL ACTUALLY READ, so `--verify-fix` can answer
+                   # §13.1's findings the way §13's: a fix is verified against the commit the
+                   # findings were raised at, never against argv or "current HEAD", which
+                   # would measure a fix against a tree the reviewer never saw.
                    # WRITTEN EVEN WHEN None, so a replayed record can tell "no seat reported"
                    # from "this run predates the field". `_deep_review_of` reads the ABSENCE
                    # of the key as the second, and the header then declines to name reporters.
@@ -1390,25 +1413,54 @@ def _verify_fix(args, *, out) -> int:
         return _fail(out, [f"{repo} has no run {args.verify_fix!r}."])
     manifest = runstate.read_manifest(run_dir)
     rounds = _rounds_run(run_dir)
-    if rounds < 1:
-        return _fail(out, [
-            f"run {manifest.run_id} has recorded no review round, so there are no blockers a "
-            f"fix could be answering. Run `--review {manifest.run_id}` first."])
-    last = reviewmod.read_round(run_dir, rounds)
     log = journal.Journal(storage.journal_path(run_dir))
-    blockers = tuple(f for f in last.findings if f.severity == "blocker")
+    if rounds >= 1:
+        last = reviewmod.read_round(run_dir, rounds)
+        blockers = tuple(f for f in last.findings if f.severity == "blocker")
+        answering, checkpoint_at = f"round {rounds}", last.checkpoint
+    else:
+        # §13.1's FINDINGS TAKE THE SAME TREATMENT AS §13's — "fix -> fresh-verifier verify
+        # -> checkpoint" — and until this branch existed they had no verb. The quote books a
+        # post-review fix plus its setup and verify for the deep review (gate.deep_fixes), so
+        # a run that convened no §13 round was shown a price for a verification the engine
+        # could not perform. That is a quoted term with no way to spend it, which is the
+        # defect class this package refuses everywhere else.
+        events = log.read()
+        deep = _deep_review_already_spent(events)
+        blockers = tuple(f for f in (deep.findings or ()) if f.severity == "blocker") \
+            if deep is not None and deep.status == deepreview.RAN else ()
+        checkpoint_at = _deep_review_checkpoint(events)
+        answering = "the deep review"
+        if not blockers:
+            return _fail(out, [
+                f"run {manifest.run_id} has recorded no review round, and its deep review "
+                f"{'raised no blocker' if deep is not None else 'has not run'} — so there "
+                "are no blockers a fix could be answering. Run "
+                f"`--review {manifest.run_id}` for a panel, or `--collect "
+                f"{manifest.run_id}` if there is nothing left to answer."])
+        if checkpoint_at is None:
+            return _fail(out, [
+                f"run {manifest.run_id}'s deep review predates checkpoint recording, so the "
+                "commit its findings were raised at cannot be named. Verifying a fix against "
+                "any other tree would measure it against something the panel never read; run "
+                f"`--review {manifest.run_id}` and answer that round instead."])
+    last_checkpoint = checkpoint_at
     checkpoint, verified, cand, base = fixmod.apply(
-        run_dir, repo, findings=blockers, checkpoint=last.checkpoint, manifest=manifest,
+        run_dir, repo, findings=blockers, checkpoint=last_checkpoint, manifest=manifest,
         identity=_confirmed_author(log.read(), manifest), events=log.read())
     if checkpoint is None and not verified:
         if cand is None and base is None:
-            print("no fix to verify: the synthesis worktree is still on the checkpoint round "
-                  f"{rounds} was convened at, so nothing was committed.", file=out)
+            print("no fix to verify: the synthesis worktree is still on the checkpoint "
+                  f"{answering} was convened at, so nothing was committed.", file=out)
         else:
-            print(f"the fix did NOT pass verify, so round {rounds}'s {len(blockers)} "
+            print(f"the fix did NOT pass verify, so {answering}'s {len(blockers)} "
                   "blocker(s) stay unresolved (§13).", file=out)
         return 1
-    print(f"the fix passed verify at checkpoint {checkpoint}.", file=out)
+    # NAMES WHAT IT ANSWERED. The failure paths said which findings stayed unresolved and the
+    # success path said only "the fix passed", so an operator who ran both `--review` and
+    # §13.1 could not tell from this line which set of blockers they had just cleared.
+    print(f"the fix passed verify at checkpoint {checkpoint}, answering {answering}'s "
+          f"{len(blockers)} blocker(s).", file=out)
     if cand is not None and base is not None:
         prog = progress.from_runs(cand, base)
         print(f"  §12.3 progress: new failures {prog.new_failure_count}", file=out)

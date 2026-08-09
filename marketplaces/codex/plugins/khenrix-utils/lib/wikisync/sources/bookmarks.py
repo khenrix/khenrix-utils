@@ -93,4 +93,15 @@ def read_bookmarks(path) -> Snapshot:
                 collection=folder,
                 added_at=_webkit_to_iso(node.get("date_added", "")),
             ))
+    if not items:
+        # AN EMPTY READ MAY NOT AUTHORISE A MASS REMOVAL. Only a `complete` snapshot can
+        # mark ledger items removable (ledger.plan_diff), and "this profile genuinely has
+        # no bookmarks" is indistinguishable from here from "the file parsed but the corpus
+        # is gone" — a wrong profile, a reset, a half-written file that still parses. One of
+        # those two readings deletes the user's whole channel, so the tie goes to `partial`.
+        # When the corpus really is empty the downgrade costs nothing: there is nothing to
+        # remove either way.
+        return Snapshot(channel=CHANNEL, scope="all", status="partial", items=[],
+                        errors=["parsed cleanly but contained no bookmarks; reporting "
+                                "partial so this run cannot mark the channel removable"])
     return Snapshot(channel=CHANNEL, scope="all", status="complete", items=items)

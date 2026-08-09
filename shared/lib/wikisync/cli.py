@@ -57,8 +57,13 @@ def cmd_probe(ctx: Context) -> dict:
     return {
         "bookmarks": Path(cfg.chrome_profile).is_file(),
         "instagram_export": export_ok,
-        # the Python process can't see Claude's MCP; the SKILL sets this env when the
-        # chrome-devtools tool is present, else it stays off (never assumed).
+        # The Python process cannot see Claude's MCP, so tool PRESENCE has to be told to it
+        # rather than detected. NOTHING SETS THIS ENV TODAY — no skill and no caller — so in
+        # practice this probe is the config opt-in alone; the env is a manual override for a
+        # human who knows the chrome-devtools tool is up. It is documented here rather than
+        # deleted because the reason it exists is real, and rediscovering it costs more than
+        # the branch does. Either channel only reports the source AVAILABLE; §"live pass"
+        # still requires the account owner's express authorization at use time.
         "instagram_live": os.environ.get("WIKISYNC_CHROME_DEVTOOLS") == "1"
                           or bool(cfg.instagram_live_optin),
         "watch": shutil.which("yt-dlp") is not None,
