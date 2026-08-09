@@ -33,3 +33,7 @@ docs/environment/observed-state.json
 # khenrix-audit per-run artifacts (machine state; ledger.json IS committed)
 docs/setup-audit/runs/
 .chunkmap/
+
+# khenrix-audit's engine writes here when `findings --out` is omitted. An eval executor
+# running the engine dumped one into the repo root and `git add -A` committed it.
+findings.json

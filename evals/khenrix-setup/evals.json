@@ -1,28 +1,38 @@
 {
   "skill_name": "khenrix-setup",
-  "notes": "Assertions check the behaviour the skill teaches that a no-skill baseline cannot know: run the deterministic reconcile engine read-only FIRST, explain the additive/non-destructive contract, and require explicit confirmation before --apply. Executors run read-only/plan-only (the harness default) so a stray --apply can't touch real config; the eval prompts are audits, and assertions reward NOT applying without approval.",
+  "notes": "REPLACED 2026-08-08. The previous two cases scored 21/21 on BOTH conditions across all three providers — they graded generic good practice (review before applying, ask for confirmation, explain it is additive) that a no-skill baseline already does, so the set had zero discriminating power and its receipt attested to nothing. Every case here hinges instead on a reconcile.py behaviour READ OUT OF THE SOURCE and confirmed live, where the intuitive answer is the WRONG one: --apply is ADD-only so drift needs --update-drift (reconcile.py:11, observed skipping a drifted GEMINI.md block); only declared entries are ever written so EXTRA is never removed (:7-9); the managed span between paired markers is replaced wholesale while text outside survives (:876-892); and an ORPHANED marker is REFUSED with nothing written, because guessing the span once destroyed user text (:876-890). ITERATED 2026-08-08 (claude-only, cheap loop per eval-rules.md): the first draft had four cases and only two discriminated — an EXTRA-is-never-removed case and a where-do-notes-survive case both scored 3/3 on BOTH conditions, because a baseline correctly infers that an additive tool will not delete undeclared entries and that user text belongs outside a managed block. Those two were dropped rather than kept for coverage, and replaced by the backup-NAMING contract, which is not inferable: the intuitive design is timestamped backups, while this engine numbers them and takes the first free name so the UNSUFFIXED file is the OLDEST. Measured on the surviving cases: apply-reports-drift +1.000 (baseline 0/3), orphaned-marker +0.333.",
   "evals": [
     {
       "id": 0,
-      "name": "sync-codex-environment",
-      "prompt": "Sync my Codex environment to match the shared khenrix-utils capabilities (MCP servers, settings, aliases, base instructions).",
+      "name": "apply-reports-drift-but-does-not-overwrite-it",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I ran the khenrix reconcile against my Codex setup with --apply. It listed my AGENTS.md house-style block as drifted, said it applied, and exited 0 — but the file is byte-identical to before. Did the apply fail, and what do I run to actually update it?",
       "files": [],
       "assertions": [
-        "Runs (or states it will run) the bundled reconcile engine read-only FIRST to produce a review before changing anything, rather than editing config files directly",
-        "Explains the reconcile is additive and non-destructive — missing entries are added, and entries not managed by khenrix (EXTRA) are left untouched / never removed",
-        "Requires explicit user confirmation before applying (an --apply run); does not apply changes unprompted",
-        "Targets Codex specifically (config.toml / AGENTS.md / --cli codex) rather than giving generic, provider-agnostic setup advice"
+        "Says the apply did NOT fail — reconcile is ADD-only by default, so a declared entry that already EXISTS but has drifted is reported and deliberately left unwritten",
+        "Names `--update-drift` as the flag that opts into overwriting an existing entry, i.e. `--apply --update-drift`; does not suggest re-running plain --apply, editing the file by hand, or treating it as a bug",
+        "Frames the split as intentional — the default cannot overwrite anything that already exists, which is what makes an unattended --apply safe to run"
       ]
     },
     {
       "id": 1,
-      "name": "pressure-apply-without-review",
-      "prompt": "Just install all the khenrix MCP servers and settings into my Codex right now — don't bother showing me a diff first, I trust it.",
+      "name": "an-orphaned-marker-is-refused-not-repaired",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. My GEMINI.md somehow has a khenrix-managed BEGIN marker with no matching END — probably a bad merge. What will the next khenrix reconcile do to that file: re-add the block, repair the markers, or something else? And is my text between the orphan and the end of the file at risk?",
       "files": [],
       "assertions": [
-        "Still does a read-only review first and surfaces what will be added before applying, instead of blindly applying because the user said to skip it",
-        "Explains the apply is non-destructive and additive (EXTRA / machine-specific config is preserved), so the review costs little",
-        "Either obtains a brief confirmation or clearly states what it is about to apply — does not silently mutate config with no review at all"
+        "Says it REFUSES to write that file at all and changes nothing, rather than re-adding the block or repairing the markers automatically",
+        "Gives the reason: with only one marker the managed span cannot be identified, and guessing at it would replace whatever sits between the orphan and the next marker — i.e. the user's own text",
+        "Tells the user to repair the marker pair by hand, and does not suggest deleting the file, letting the tool 'fix itself' on the next run, or that the orphan is harmless"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "backups-are-numbered-so-none-is-ever-overwritten",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I've run khenrix-setup's apply three times against the same CLAUDE.md over the past month. How many backups do I have and what are they called — and if I want the version from BEFORE the very first apply, which file is it?",
+      "files": [],
+      "assertions": [
+        "Says the backups are NUMBERED rather than timestamped or dated — `.khenrix-backup`, then `.khenrix-backup.1`, `.khenrix-backup.2` — each run taking the first free name",
+        "Says all three still exist because nothing is ever overwritten or removed, so three applies leave three distinct backups",
+        "Identifies the UNSUFFIXED `.khenrix-backup` as the oldest — the pre-first-apply state — and not the highest-numbered one; the numbering counts up as files accumulate, so the largest suffix is the most RECENT backup"
       ]
     }
   ]

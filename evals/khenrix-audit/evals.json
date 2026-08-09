@@ -1,44 +1,43 @@
 {
- "skill_name": "khenrix-audit",
- "notes": "Grades the audit's DISCRIMINATING mechanics a no-skill baseline would structurally miss: (1) applying the deterministic engine's `findings` semantics (B1 name-collision, B4 managed-absent-but-live) to a scaffolded fixture home+repo, correctly distinguishing the ledger-policy-backed MCP server from an ordinary 'unmanaged extra'; (2) recording a waiver through the engine's `ledger-add` subcommand with a fingerprint bound to current evidence and a computed expiry, never by hand-editing the ledger JSON; (3) enumerating a plugin's FULL bundled component list (skills, MCP server, hook) and requiring a restore bundle + explicit user confirmation before a destructive disable, per the remediation ladder's rung ordering. Case 0's fixture is materialized via {fixture_dir} and its own scaffold script (evals/khenrix-audit/fixtures/scaffold_home.py) so absolute paths inside installed_plugins.json resolve correctly regardless of where the harness copies it per run; verified locally that scaffold_home.py + the real engine produce exactly the two graded findings (plus the always-informational B7, which needs --tokens-file and is not graded). Case 0 iteration history (2026-07-31), for the record: v1 required the with_skill executor to actually write the fixture under the harness's injected read-only/plan-mode posture; it correctly refused (0/4) while baseline ignored the posture and executed anyway (4/4) — fixed by making prediction-from-reading the primary, sufficient path. v2 fixed that false negative (delta back to 0.0) but over-corrected: it handed BOTH arms the engine's exact path, CLI flags, and 'applying the engine's real check semantics' wording — contamination the blind judge's own comparison.json called 'near-identical engine-level reasoning', and blind A/B swept 3/3 to without_skill on that run (a clean sweep, not a near-tie — stated plainly here rather than softened). v3 (current) drops the in-prompt engine path/flags/semantics sentence and reframes as a plain user request ('tell me what a setup audit would find, with the specific checks named'), so locating and using the engine is attributable to SKILL.md rather than given away; the four assertions are unchanged. Current run: pass-rate delta 0.0 (with_skill 1.0, baseline 1.0); blind A/B is a genuine 1/2/0 split (with_skill wins case 0 itself — the judge notes it independently caught the installPath-absolute fragility and Phase C/D/E/G consequences baseline missed — without_skill wins cases 1 and 2 on tighter prose), advisory only per policy, never the gate.",
- "evals": [
-  {
-   "id": 0,
-   "name": "fixture-audit-b1-b4",
-   "prompt": "Audit this fixture $HOME + canonical repo checkout with khenrix-audit and tell me what a setup audit would find, with the specific checks it fires named. The fixture isn't built yet — its scaffold script lives at {fixture_dir}/scaffold_home.py; read it (a read-only action) to see exactly what `home/` and `repo/` state it constructs. You do not need to actually build the fixture or run anything yourself — a correct prediction from reading the scaffold script is what's being graded (you're welcome to actually run it read-only first if you judge that safe and know how).",
-   "files": [
-    "scaffold_home.py"
-   ],
-   "assertions": [
-    "Determines the findings by reading the scaffold script and applying the engine's real check semantics (or by actually running the scaffold + `findings` commands) rather than declining to answer, or free-form eyeballing without engine semantics",
-    "Names the B1 name-collision finding: the bare skill name `save` is reachable from two different plugin owners on Claude (plugin-a and plugin-b)",
-    "Names the B4 finding on the live `gdrive` MCP server as a confirmed HIGH-confidence 'managed-absent-but-live' drift, explicitly because the repo ledger already carries a desired_state=managed-absent policy for it",
-    "Distinguishes this from an ordinary low-confidence 'unmanaged extra' — does NOT give generic advice to 'just declare gdrive in capabilities.toml or leave it'; the ledger policy is what makes it a confirmed removal candidate instead of an advisory one"
-   ]
-  },
-  {
-   "id": 1,
-   "name": "waive-via-ledger-add",
-   "prompt": "Answer inline in prose — you do not need to run any tools; just state the answer. A khenrix-audit run reported this finding: id `a1b2c3d4e5f6`, rule B4 (managed-absent-but-live drift), fingerprint `9f1c2a3b`, on the live `gdrive` MCP server on Claude. You've decided to accept the current live state for the next 60 days rather than remove it now — today is 2026-07-30. Using khenrix-audit, state exactly what you do to record that decision, including the command you run, and why you would not simply hand-edit a ledger file yourself.",
-   "files": [],
-   "assertions": [
-    "Records the waiver via the engine's `ledger-add` subcommand (e.g. `setup_audit.py ledger-add --id a1b2c3d4e5f6 --state waived --fingerprint 9f1c2a3b --reason ... --until ...`), NOT by hand-editing docs/setup-audit/ledger.json or any JSON file directly",
-    "The command includes `--fingerprint 9f1c2a3b` bound to the finding's current evidence, and explains that if the underlying evidence changes the fingerprint no longer matches, so the waiver is treated as stale rather than silently suppressing the new situation",
-    "Computes `--until` as roughly 60 days out from 2026-07-30 (on the order of late September 2026), not an open-ended, missing, or vastly wrong expiry",
-    "Supplies a `--reason` explaining the deferral — never records a bare waiver with no reason"
-   ]
-  },
-  {
-   "id": 2,
-   "name": "disable-plugin-full-cost",
-   "prompt": "Answer inline in prose — you do not need to run any tools; just state the answer. One of your installed Claude Code plugins is `shell-tools`. Per its manifest it bundles: two skills (`shell-tools:format`, `shell-tools:lint`), one MCP server (`shell-tools:sandbox`), and a `PreToolUse` hook on `Bash`. A khenrix-audit run flagged `shell-tools:lint`'s bare name colliding with another plugin's skill, and rung 1 (narrowing that skill's own description) is not available because `shell-tools` does not live in the khenrix-utils repo. Using khenrix-audit, state exactly what you tell the user before recommending disabling `shell-tools`, and what you require before actually doing it.",
-   "files": [],
-   "assertions": [
-    "Before recommending anything, enumerates the plugin's FULL component list — both skills (`shell-tools:format` AND `shell-tools:lint`), the `shell-tools:sandbox` MCP server, AND the `PreToolUse` hook — not just the one colliding skill",
-    "Frames disabling the plugin as the next available rung of the remediation ladder (used because rung 1 is unavailable here), not as the automatic first-choice fix",
-    "Requires the user to explicitly confirm the FULL loss — naming the lost MCP server and hook, not just the collided skill — before disabling; never disables unilaterally",
-    "Treats disabling as a destructive operation: writes or mentions a restore/backup bundle BEFORE disabling, and records the decision in the ledger AFTER"
-   ]
-  }
- ]
+  "skill_name": "khenrix-audit",
+  "notes": "REPLACED 2026-08-08. The previous ledger cases scored 36/36 vs 35/36 — near-saturated, because their prompts handed the executor the rule, the finding id AND the fingerprint, leaving a baseline able to reason straight to the command. The two replacements withhold that and hinge on engine behaviour where the intuitive answer is BACKWARDS: recording a removal decision is a desired-state POLICY keyed by subject (setup_audit.py:1135, :617-623) which makes the finding fire HIGH-confidence and never expires — the opposite of the waiver a reader reaches for to stop being nagged; and a plugin-bundled MCP server is deliberately EXEMPT because capabilities.toml cannot name it, so 'declare it' — the obvious advice — would chase a permanent false positive. The fixture case is kept: it exercises real check semantics rather than prose.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "fixture-audit-b1-b4",
+      "prompt": "Audit this fixture $HOME + canonical repo checkout with khenrix-audit and tell me what a setup audit would find, with the specific checks it fires named. The fixture isn't built yet — its scaffold script lives at {fixture_dir}/scaffold_home.py; read it (a read-only action) to see exactly what `home/` and `repo/` state it constructs. You do not need to actually build the fixture or run anything yourself — a correct prediction from reading the scaffold script is what's being graded (you're welcome to actually run it read-only first if you judge that safe and know how).",
+      "files": [
+        "scaffold_home.py"
+      ],
+      "assertions": [
+        "Determines the findings by reading the scaffold script and applying the engine's real check semantics (or by actually running the scaffold + `findings` commands) rather than declining to answer, or free-form eyeballing without engine semantics",
+        "Names the B1 name-collision finding: the bare skill name `save` is reachable from two different plugin owners on Claude (plugin-a and plugin-b)",
+        "Names the B4 finding on the live `gdrive` MCP server as a confirmed HIGH-confidence 'managed-absent-but-live' drift, explicitly because the repo ledger already carries a desired_state=managed-absent policy for it",
+        "Distinguishes this from an ordinary low-confidence 'unmanaged extra' — does NOT give generic advice to 'just declare gdrive in capabilities.toml or leave it'; the ledger policy is what makes it a confirmed removal candidate instead of an advisory one"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "recording-a-removal-decision-is-a-policy-not-a-waiver",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I removed `google-drive` from capabilities.toml last month because the native connector replaced it, but it's still live in my Codex config and khenrix-audit keeps reporting it. I don't want to be nagged. What exactly should I record in the ledger, and what will the audit report about it afterwards?",
+      "files": [],
+      "assertions": [
+        "Records a desired-state POLICY, not a waiver — `ledger-add --subject mcp:google-drive --desired-state managed-absent --reason ...`, keyed by subject rather than by finding id",
+        "Says this makes the report LOUDER, not quieter: the server is re-classified from a LOW-confidence unmanaged extra to HIGH-confidence `managed-absent-but-live` drift",
+        "Explains that is correct rather than a misfire — the policy asserts the server SHOULD be gone, so it keeps firing until the live config actually loses it, and khenrix-setup will never remove it because it is additive",
+        "Does NOT propose a waiver with --until, and does not suggest re-declaring it in capabilities.toml to silence the finding"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "a-plugin-bundled-mcp-server-is-exempt-not-unmanaged",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. khenrix-audit lists `plugin:playwright:playwright` among my Codex MCP servers and it is not in capabilities.toml. Should I declare it there so the audit stops treating it as unmanaged, or remove it?",
+      "files": [],
+      "assertions": [
+        "Answers NEITHER — a `plugin:<plugin>:<server>` entry is exempt by design: capabilities.toml names only TOP-LEVEL servers, so a plugin-bundled one is structurally undeclarable there",
+        "Says flagging it as unmanaged drift would be a PERMANENT FALSE POSITIVE rather than something to fix, which is why the engine skips it",
+        "Does not advise declaring it, removing it, or waiving it"
+      ]
+    }
+  ]
 }

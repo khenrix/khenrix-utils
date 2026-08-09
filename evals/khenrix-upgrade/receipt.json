@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "skill": "khenrix-upgrade",
-  "source_hash": "a30cfd4ca255ad37586b58cfdfb2a3010193fa6a017a713d45b8d4cd2f36edf1",
-  "eval_set_hash": "9fdfb6adf35932e1394b72abbe0182fbb7950dadd9d55cc8f9a607f5a5c29841",
+  "source_hash": "a8744c47a655114fe45c4c5c791f5b478cc6af7d6a20a5eea66b68f0009430b2",
+  "eval_set_hash": "54b5107aa0f79150e0b094f3957f23e8e767562537fb38d3b3eb02be5539908a",
   "providers": [
     "claude",
     "codex",
@@ -10,26 +10,26 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.2361,
-  "blind_winner": "slot_degenerate",
+  "delta_pass_rate": 0.3889,
+  "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.5834,
-      "quantum": 0.1667,
-      "n_evals": 2,
+      "delta": 0.4444,
+      "quantum": 0.1111,
+      "n_evals": 3,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.0,
-      "quantum": 0.1667,
-      "n_evals": 2,
+      "delta": 0.3611,
+      "quantum": 0.1111,
+      "n_evals": 3,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.125,
-      "quantum": 0.1667,
-      "n_evals": 2,
+      "delta": 0.3611,
+      "quantum": 0.1111,
+      "n_evals": 3,
       "status": "ok"
     }
   },

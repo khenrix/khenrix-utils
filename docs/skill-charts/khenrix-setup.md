@@ -59,10 +59,10 @@ flowchart TD
 
 | Gate | Kind | Evidence |
 |---|---|---|
-| G_WAIVE | agent | `evals/khenrix-setup/evals.json::Still does a read-only review first and surfaces what will be added before applying, instead of blindly applying because the user said to skip it` |
+| G_WAIVE | agent | no eval covers this; SKILL.md.tmpl Non-negotiables — "The read-only review always happens — even when the user waives it". The eval that graded it was REMOVED 2026-08-08: a no-skill baseline complied with it unprompted (21/21 both conditions), so it measured nothing |
 | G_READABLE | code | `scripts/lib/reconcile.py::def read_json_object` |
 | G_DECLARED | code | `scripts/lib/reconcile.py::def classify_mcp` |
 | G_DRIFT | code | `scripts/lib/reconcile.py::def mcp_drift` |
 | G_MARKERS | code | `scripts/lib/reconcile.py::def instructions_report` |
-| G_CONFIRM | agent | `evals/khenrix-setup/evals.json::Requires explicit user confirmation before applying (an --apply run); does not apply changes unprompted` |
-| G_UPDATE_DRIFT | agent | no eval covers this; SKILL.md.tmpl's Notes section — default behavior leaves drifted managed entries as-is, only an explicit `--update-drift` re-applies them |
+| G_CONFIRM | agent | no eval covers this; SKILL.md.tmpl Non-negotiables — "Nothing is written until the user approves an `--apply` run". Removed as an eval for the same reason as G_WAIVE: the baseline already asks |
+| G_UPDATE_DRIFT | agent | `evals/khenrix-setup/evals.json::Names `--update-drift` as the flag that opts into overwriting an existing entry, i.e. `--apply --update-drift`; does not suggest re-running plain --apply, editing the file by hand, or treating it as a bug` |

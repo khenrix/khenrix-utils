@@ -86,3 +86,28 @@ python3 "${HOME}/.gemini/config/plugins/khenrix-utils/skills/khenrix-audit/scrip
 
 - After any live mutation, re-run the engine and mark superseded queue items
   stale — do not keep applying from the old snapshot.
+
+**A waiver and a POLICY are opposites — do not reach for a waiver to record a
+decision.** A waiver (`--id` + `--fingerprint` + `--until`) SILENCES one finding
+and EXPIRES. A desired-state policy is keyed by subject instead and does the
+reverse: it makes the finding LOUDER and it never expires.
+
+```bash
+python3 "${HOME}/.gemini/config/plugins/khenrix-utils/skills/khenrix-audit/scripts/setup_audit.py" ledger-add --repo-root "$HOME/git/khenrix-utils" --subject mcp:<name> --desired-state managed-absent --reason "<why it must go>"
+```
+
+With `managed-absent` recorded, a server still live is no longer a LOW-confidence
+"unmanaged extra" — it is re-classified as HIGH-confidence `managed-absent-but-live`
+drift and keeps firing until the config actually loses it. That is the point: the
+policy says "this SHOULD be gone", so an alarm is correct until it is. Use it when
+something was dropped from `capabilities.toml` but is still live, because
+khenrix-setup is additive and will never remove it for you.
+
+**A waiver needs BOTH `--id` and `--fingerprint`, and the engine refuses without
+them.** The fingerprint binds the waiver to the finding's CONTENT: an id alone
+would waive whatever later happens to carry that id.
+
+**`plugin:<plugin>:<server>` MCP entries are exempt by design, not overlooked.**
+A plugin-bundled server is structurally undeclarable in `capabilities.toml`, which
+names only top-level servers — so flagging it "unmanaged" would be a permanent
+false positive, not drift to fix. Never advise declaring one.

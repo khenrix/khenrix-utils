@@ -58,5 +58,5 @@ flowchart TD
 | G_ISB6 | agent | no eval covers this; SKILL.md Phase C: "Do not act on a nomination without adjudication" |
 | G_AMBIGUOUS | agent | no eval covers this; SKILL.md Phase C — classify DISTINCT / AMBIGUOUS / DUPLICATE with one sentence of reasoning before any evidence-gathering begins |
 | G_PROBE | agent | no eval covers this; references/probe-protocol.md's tier rule — live probes are Tier 2, gated on capabilities.can_probe, while the arena is Tier 1 and always available |
-| G_DESTRUCTIVE | agent | `evals/khenrix-audit/evals.json::restore/backup bundle BEFORE disabling` |
-| G_WAIVE | agent | `evals/khenrix-audit/evals.json::NOT by hand-editing docs/setup-audit/ledger.json` |
+| G_DESTRUCTIVE | agent | no eval covers this; SKILL.md.tmpl §7 — "Destructive ops (any removal/disable): confirm individually, write a restore bundle (`*.khenrix-backup` convention) BEFORE, record in the ledger AFTER". The eval that graded it was removed 2026-08-08: the old set scored 36/36 vs 35/36, i.e. a baseline already volunteered the backup-first discipline |
+| G_WAIVE | agent | `evals/khenrix-audit/evals.json::Records a desired-state POLICY, not a waiver — `ledger-add --subject mcp:google-drive --desired-state managed-absent --reason ...`, keyed by subject rather than by finding id` |

@@ -1,6 +1,6 @@
 {
   "skill_name": "khenrix-upgrade",
-  "notes": "Assertions check the discipline the skill teaches that a no-skill baseline cannot know: edit the khenrix-utils REPO (not the installed plugin copy), split changes into repo-edits (applied with confirmation) vs live-config (recommend-only, never auto-applied), preserve each skill's purpose, and write a dated report under docs/upgrades/. Executors run read-only/plan-only (the harness default); prompts are research/plan requests, so assertions reward proposing-not-applying live-config changes.",
+  "notes": "Assertions check the discipline the skill teaches that a no-skill baseline cannot know: edit the khenrix-utils REPO (not the installed plugin copy), split changes into repo-edits (applied with confirmation) vs live-config (recommend-only, never auto-applied), preserve each skill's purpose, and write a dated report under docs/upgrades/. Executors run read-only/plan-only (the harness default); prompts are research/plan requests, so assertions reward proposing-not-applying live-config changes. EXTENDED 2026-08-08: the set had only TWO cases (quantum 0.1667) and its pooled +0.2361 came almost entirely from agy — claude scored +0.0000 and codex sat inside the quantum, because both existing cases grade PROCESS discipline (edit the repo not the plugin, recommend rather than apply) that a strong baseline already follows. The added case grades a two-manifest contract instead, and its point is the ASYMMETRY of the two failures: forgetting capabilities.toml [models] fails LOUDLY at make verify (checks.py:58-71), while forgetting pricing.toml fails SILENTLY at $0 (checks.py:98, pricing.toml:7) because matching is longest-prefix and claude-opus-4-8 does not prefix claude-opus-5. A baseline names neither file.",
   "evals": [
     {
       "id": 0,
@@ -23,6 +23,18 @@
         "Treats the live model change as a recommendation with the exact command, rather than silently switching the live config itself",
         "Researches the current recommended model before answering rather than guessing",
         "Distinguishes a repo change (e.g. model guidance in the skills / house-style, applied with confirmation) from the live-config switch (report-only)"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "introducing-a-model-id-touches-two-manifests-or-it-breaks",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I want the llm-council panel to start using a newly released Claude model. I've already edited the MODES table in the council engine to name it. What else in khenrix-utils has to change before this is safe to commit, and what breaks if I skip each one?",
+      "files": [],
+      "assertions": [
+        "Says the model id must be REGISTERED in `capabilities.toml` under `[models]`, which is an allow-list — and that skipping it FAILS `make verify` via the model-crosscheck, so the omission is caught loudly rather than shipping",
+        "Says it must ALSO be given a rate in `scripts/pricing.toml`, and that skipping THIS one fails silently rather than loudly: the cost tooling reports $0 for that model instead of erroring",
+        "Explains the silent failure's mechanism — pricing is matched by the longest key that PREFIXES the model id, and a near-neighbour like `claude-opus-4-8` does not prefix `claude-opus-5`, so there is no approximate fallback",
+        "Does not treat editing the engine's MODES table alone as sufficient"
       ]
     }
   ]

@@ -19,7 +19,21 @@ only after the user confirms.
 - **Review before write.** The default run is read-only. Nothing is written
   until the user approves an `--apply` run.
 - **Backups.** Every file the engine modifies is copied to `*.khenrix-backup`
-  first.
+  first — numbered, not timestamped (`.khenrix-backup`, then `.1`, `.2`), each run
+  taking the first FREE name, so nothing is ever overwritten or removed. That makes
+  the unsuffixed `.khenrix-backup` the OLDEST state and the highest number the most
+  recent — the reverse of what a dated scheme would suggest, and the thing to get
+  right when restoring.
+- **The instruction block is a marked SPAN, not a merge.** House-style lives
+  between a paired `<!-- khenrix-managed:begin house-style -->` / `:end` marker,
+  and an update REPLACES everything between them. Anything the user writes
+  *outside* that pair survives untouched; anything they write *inside* it does
+  not — so hand-written notes belong outside the markers.
+- **An unpaired marker is REFUSED, never guessed at.** A begin with no end (a bad
+  merge, a truncated write) means the managed span cannot be identified, and
+  assuming one would replace every line between the orphan and the next marker.
+  The engine reports `REFUSED`, writes nothing, and asks for the pair to be
+  repaired by hand. It destroyed user text before that check existed.
 
 ## Non-negotiables
 

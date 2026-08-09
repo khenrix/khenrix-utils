@@ -1,19 +1,7 @@
 {
   "skill_name": "hookify",
-  "notes": "Each prompt is an INLINE Q&A that forbids plan-mode/tools so the harness can grade the classification the skill teaches: a recurring correction → the RIGHT Claude Code hook EVENT + matcher + warn-vs-block action + a correct settings.json hook JSON shape, with the Claude-only caveat and a confirm-before-write step. The discriminating signal vs a naive (no-skill) answer: naive answers tend to put a 'don't run X command' rule on the wrong event or in memory/CLAUDE.md instead of a PreToolUse Bash matcher; choose 'block' where a cheap 'warn' (PostToolUse) is correct, or vice-versa; conflate a 'don't finish before Y' rule (Stop hook) with a PreToolUse tool gate; mis-place systemMessage/additionalContext against the hookSpecificOutput contract; silently write settings.json without confirmation; and forget that hooks are Claude-Code-only and won't fire for Codex/agy. id 3 explicitly probes the multi-CLI caveat. 2026-07-17 rework (eval-gap-nondiscriminating closure): swapped the two near-duplicate PreToolUse-classification cases for two sharp-edge probes a strong no-skill answer plausibly misses — the fail-open `&& {…} || exit 0` jq lapse (must produce a genuinely fail-closed rewrite) and headless defer-for-external-approval (must answer defer + tool_deferred/-p --resume, not 'ask').",
+  "notes": "Each prompt is an INLINE Q&A that forbids plan-mode/tools so the harness can grade the classification the skill teaches: a recurring correction → the RIGHT Claude Code hook EVENT + matcher + warn-vs-block action + a correct settings.json hook JSON shape, with the Claude-only caveat and a confirm-before-write step. The discriminating signal vs a naive (no-skill) answer: naive answers tend to put a 'don't run X command' rule on the wrong event or in memory/CLAUDE.md instead of a PreToolUse Bash matcher; choose 'block' where a cheap 'warn' (PostToolUse) is correct, or vice-versa; conflate a 'don't finish before Y' rule (Stop hook) with a PreToolUse tool gate; mis-place systemMessage/additionalContext against the hookSpecificOutput contract; silently write settings.json without confirmation; and forget that hooks are Claude-Code-only and won't fire for Codex/agy. id 3 explicitly probes the multi-CLI caveat. 2026-07-17 rework (eval-gap-nondiscriminating closure): swapped the two near-duplicate PreToolUse-classification cases for two sharp-edge probes a strong no-skill answer plausibly misses — the fail-open `&& {…} || exit 0` jq lapse (must produce a genuinely fail-closed rewrite) and headless defer-for-external-approval (must answer defer + tool_deferred/-p --resume, not 'ask'). REBALANCED 2026-08-08: a full-panel run showed three of six cases measuring nothing — codex-multi-cli-caveat 10/12 both ways, fail-closed-jq-guard 12/12 both ways, and the protected-path matcher/file_path case ADDED EARLIER THE SAME DAY 11/12 both ways. That last one closed a real coverage gap and still graded nothing: coverage is not discrimination. All three dropped and replaced by two contracts where the intuitive answer is WRONG and the failure is silent — exit 1 does NOT block (only 2 does; anything else is a non-blocking error, so the guard's message appears while the action proceeds), and a resumed `defer` RE-RUNS the hook, so a hook that always defers loops forever instead of replaying the stored approval. The three surviving originals carried the old delta (headless-defer +0.750, changelog-stop-hook +0.333, warn-not-block +0.167).",
   "evals": [
-    {
-      "id": "fail-closed-jq-guard-lapse",
-      "name": "fail-closed guard: the jq && … || exit 0 lapse",
-      "files": [],
-      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have this PreToolUse Bash hook command guarding against full test-suite runs:\n\njq -e '.tool_input.command | test(\"(pytest|npm test|make test)\\\\b\")' >/dev/null && { echo 'single test file only' >&2; exit 2; } || exit 0\n\nThis guard protects something genuinely costly, and I need it to NEVER silently stop enforcing — including on machines where jq isn't installed. Is there a problem with it, and if so give me the corrected command and explain the failure mode precisely.",
-      "assertions": [
-        "Identifies the fail-open lapse precisely: if jq is missing or errors (e.g. exit 127), the `&& {block} || exit 0` chain short-circuits to the `|| exit 0` branch, so the action is ALLOWED and the guard silently stops enforcing",
-        "Provides a genuinely fail-closed correction — gating on `command -v jq` and blocking when it is absent, or inverting the logic so the unknown/error path blocks — any equivalent where a predicate ERROR results in a block, not an allow",
-        "Does not merely restyle the regex or say 'install jq' without changing the failure semantics of the command itself",
-        "Keeps the guardrail a PreToolUse hook on the Bash matcher (does not reclassify it)"
-      ]
-    },
     {
       "id": 1,
       "name": "changelog-before-finish-stop-hook",
@@ -39,18 +27,6 @@
       ]
     },
     {
-      "id": 3,
-      "name": "codex-multi-cli-caveat",
-      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I keep telling you to use rg instead of grep and you forget — turn it into a hook. By the way I'm running this in Codex, not Claude Code. State exactly what you do.",
-      "files": [],
-      "assertions": [
-        "States that Claude Code hooks (settings.json hooks.<EventName>) are Claude-Code-specific and will NOT fire for Codex, so it does not just hand over a Claude hook as the answer",
-        "Points the user to Codex's own configuration mechanism (config.toml / AGENTS.md) to encode the rule instead, or describes the rule in plain terms for them to encode there",
-        "Still identifies the underlying classification (a 'don't run command X' correction = a PreToolUse-on-Bash style guardrail) so the equivalent can be expressed in the right place",
-        "Does not silently write a Claude settings.json hook for a Codex user"
-      ]
-    },
-    {
       "id": 4,
       "name": "warn-not-block-additionalcontext-vs-systemmessage",
       "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. When I edit files under generated/, I don't want you HARD-BLOCKED — I sometimes legitimately need to — I just want a nudge, aimed at YOU, reminding you the source of truth is elsewhere so you course-correct on your own. Make a hook for that. State the event, whether it can even block, and the exact mechanism you'd use to warn without blocking.",
@@ -63,15 +39,26 @@
       ]
     },
     {
-      "id": "protected-path-matcher-and-file-path",
-      "name": "protected paths: tool-name matcher is not the guard, file_path inspection is",
-      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. You keep editing files under marketplaces/ even though they're generated by render.py and my edits get overwritten. Make a hook so you stop. State the exact hook you'd write and why each part is shaped that way.",
+      "id": "exit-1-does-not-block",
+      "name": "a guard that exits 1 does not guard",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I wrote a PreToolUse hook to stop myself running the full test suite. The script detects the bad command correctly and does `echo 'run only the changed file' >&2; exit 1`. I can see my message in the transcript, but the command still runs every time. Why, and what is the fix?",
       "files": [],
       "assertions": [
-        "Chooses PreToolUse — the edit must be stopped BEFORE it happens, since a PostToolUse hook would fire after the generated file was already overwritten",
-        "Sets the matcher to the file-WRITING tools (Edit|Write|MultiEdit, or equivalent), not to Bash and not to a bare catch-all: the matcher is a tool-NAME regex, so it selects which tools are inspected and cannot by itself express which paths are protected",
-        "Inspects `tool_input.file_path` from the hook's stdin JSON to decide, and says that this — not the matcher — is what identifies a marketplaces/ path; a hook that matched the tool alone would block every edit in the repo",
-        "BLOCKS rather than warns, because the stated harm is that the work is silently overwritten, and names the mechanism that blocks (a non-zero exit / deny decision) rather than only printing a message"
+        "Identifies exit code 1 as the cause: only exit 2 is the BLOCKING exit code, and any other non-zero is a NON-blocking error — logged, message surfaced, action allowed to proceed",
+        "Gives the fix as `exit 2` (or the equivalent JSON deny decision), not as changing the detection, the matcher, or the message",
+        "Explains that seeing the stderr message is consistent with the failure rather than evidence the hook worked — the message being visible is exactly what a non-blocking error does",
+        "Does not claim any non-zero exit blocks, and does not suggest exit 1 works on some events"
+      ]
+    },
+    {
+      "id": "defer-reruns-the-hook-on-resume",
+      "name": "a resumed defer re-runs the hook and must not defer again",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I'm building an external approval gate around `claude -p` using a PreToolUse hook that returns permissionDecision `defer`. My wrapper catches the deferred tool call, gets a human approval, and resumes with `--resume <session-id>` — but the run just exits deferred again. What am I missing about what happens on resume?",
+      "files": [],
+      "assertions": [
+        "Says the resume RE-RUNS the hook rather than replaying the stored decision, so a hook that unconditionally returns defer will defer forever — the loop is the expected consequence, not a bug",
+        "Says the hook must consult the wrapper's PERSISTED approval on that second run and return `allow` or `deny` instead of `defer`",
+        "Notes at least one real constraint on defer: it is non-interactive `-p` mode only (ignored with a warning in an interactive session), or that it requires a recent enough Claude Code version, or that reason/updatedInput/additionalContext have no effect on a defer"
       ]
     }
   ]
