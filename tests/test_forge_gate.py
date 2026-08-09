@@ -45,6 +45,23 @@ def _enough_disk(monkeypatch):
     monkeypatch.setattr(gate, "free_bytes", lambda _p: 10 ** 15)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_state(tmp_path, monkeypatch):
+    """THE SUITE MUST NOT WRITE INTO THE DEVELOPER'S REAL STATE DIRECTORY.
+
+    `gate.open_run` resolves its run root from `XDG_STATE_HOME`, and 54 tests in this file
+    open a run while only five set it — so every `make verify` deposited run directories in
+    `~/.local/state/khenrix-forge`. FORTY-FOUR had accumulated there, all pointing at
+    pytest tmpdirs that no longer exist, which is also noise for `--gc` and for any audit
+    that walks that directory.
+
+    Autouse rather than per-test: the leak is the DEFAULT, so opting in one test at a time
+    is how it got here. A test that wants the real resolution can still override the env
+    itself, and the five that already set it are unaffected — they just set it twice.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+
 def _report(tmp_path, selected=()):
     """A real `preflight.Report` over a throwaway repository.
 
