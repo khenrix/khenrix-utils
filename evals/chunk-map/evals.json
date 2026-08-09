@@ -1,6 +1,6 @@
 {
   "skill_name": "chunk-map",
-  "notes": "Grade the chunk-map method DECISIONS: size by reasoning-capacity (not a fixed line count), git co-change as the PRIMARY boundary signal (imports second — they miss hidden coupling), lazy staleness derived via git diff against a recorded sha (never a stored flag), and seam-leak detection by grepping cross-chunk refs to non-exposed symbols. The naive answer (no skill) tends to: split strictly at a line-count threshold; use only the import graph; store an is_stale flag; silently widen a seam. Inline Q&A; read-only harness.",
+  "notes": "Grade the chunk-map method DECISIONS: size by reasoning-capacity (not a fixed line count), git co-change as the PRIMARY boundary signal (imports second — they miss hidden coupling), lazy staleness derived via git diff against a recorded sha (never a stored flag), and seam-leak detection by grepping cross-chunk refs to non-exposed symbols. The naive answer (no skill) tends to: split strictly at a line-count threshold; use only the import graph; store an is_stale flag; silently widen a seam. Inline Q&A; read-only harness. REBALANCED 2026-08-09: the first genuinely earned full-panel run (+0.125) showed cochange-primary-boundary-signal scoring 0.00 on ALL THREE seats — ironically the skill's headline feature, but 'files that change together are coupled' is something a baseline reasons to unaided. Replaced with the engine's FAILURE contract, which is not inferable because the intuitive design is the opposite: codebase_stats.py deliberately exits NONZERO on a git error (:157-164) instead of degrading to an empty result, since silently empty co-change reads as 'no coupling' — the exact conclusion the map is built on. Verified live: a repo with a corrupted refs/heads and an intact index exits with 'fatal: bad object HEAD', while a genuinely commit-less repo returns LOC with an empty cochange list and exit 0.",
   "evals": [
     {
       "id": 0,
@@ -12,18 +12,6 @@
         "Would keep the dense 240-line state machine as one chunk (or even cap smaller) and may keep the 760-line flat structs as one chunk",
         "Rejects a strict 'split every 400 lines' rule; never splits mid-responsibility to hit a number",
         "Split criterion = you can no longer state what it does / exposes / depends on without re-reading"
-      ]
-    },
-    {
-      "id": 1,
-      "name": "cochange-primary-boundary-signal",
-      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. Two files in different directories have NO import between them but they change together in almost every commit (a serializer and a schema). The import graph says they're unrelated. Using chunk-map, state which boundary signal wins and how you'd record this.",
-      "files": [],
-      "assertions": [
-        "Treats git temporal CO-CHANGE as the primary boundary signal, ahead of the import graph",
-        "Says the import graph misses exactly this kind of hidden coupling",
-        "Groups the two together (or records them as a coupling/seam) despite no import — e.g. a couples_with edge in the map",
-        "Mentions deriving co-change from git history (e.g. git log --name-only) rather than imports alone"
       ]
     },
     {
@@ -48,6 +36,18 @@
         "Verifies via grep for cross-chunk references to symbols not in the chunk's 'exposes' list",
         "SURFACES it (either fix the coupling, or add the symbol to exposes deliberately) rather than silently widening the seam",
         "Treats the declared seam as a contract that the leak contradicts"
+      ]
+    },
+    {
+      "id": "empty-cochange-means-no-commits-not-no-coupling",
+      "name": "an empty co-change result is not a finding",
+      "prompt": "Answer inline in prose — do NOT plan or run tools, just answer. I ran chunk-map's stats script on a large repo with years of history and it printed the LOC rollup but the co-changed-pairs list came back empty. Should I read that as 'these directories are genuinely independent' and chunk on the LOC signal alone?",
+      "files": [],
+      "assertions": [
+        "Answers NO — on a repo WITH history an empty co-change list is not a result to act on; something failed and the output should not be chunked on",
+        "Says the engine does not degrade gracefully on a broken repository by design: a `git log` failure (corrupt refs, unreadable objects, permissions) EXITS NONZERO with git's own message rather than returning an empty list — so a genuinely empty list should not have been reachable here, and the run needs re-reading for an error",
+        "Names the ONE repository state that produces an empty co-change list honestly — a commit-less repo / unborn HEAD, which skips the log and still reports LOC",
+        "Explains the reason the failure must be loud: silently empty co-change is indistinguishable from 'these files share no coupling', which is the conclusion the entire map rests on"
       ]
     }
   ]

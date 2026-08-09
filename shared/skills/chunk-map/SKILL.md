@@ -51,6 +51,15 @@ This prints LOC rolled up per top-2-level dir + the most-coupled dir pairs (co-c
 co-change clusters as candidate chunks; use imports/dir structure to refine. A dir pair that
 co-changes constantly but lives apart is a seam to make explicit (or a refactor target).
 
+**An empty co-change list means one thing only: the repo has no commits yet.** The engine does
+NOT degrade gracefully on a broken repository, and that is deliberate — a `git log` failure
+(corrupt refs, unreadable objects, permissions) EXITS NONZERO with git's own message rather
+than returning an empty result. Silently empty co-change is indistinguishable from "these files
+share no coupling", which is the conclusion the whole map is built on, so the one repository
+state that can produce it honestly is a commit-less one: an unborn HEAD skips the log and still
+reports LOC. If you see no co-change on a repo with history, something failed — read the error,
+do not chunk on the empty signal.
+
 ## The map — `.chunkmap/map.md` (gitignored, resumable)
 Write a single file: YAML frontmatter holds the chunk graph; the body holds per-chunk notes.
 
