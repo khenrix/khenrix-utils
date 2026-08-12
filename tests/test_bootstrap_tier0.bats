@@ -46,6 +46,27 @@ setup() {
   export PATH="$STUB:$ORIG_PATH"
 }
 
+# The mirror image of setup()'s STUB: a PATH carrying what Tier 0 needs to RUN
+# and deliberately NONE of the four apt base binaries, so the "missing" branch is
+# decided by the fixture too.
+#
+# Do NOT strip PATH down to /usr/bin:/bin to make a base package absent. Where a
+# binary lives is machine-specific: `jq` sat in ~/.local/bin on 24.04 but is
+# /usr/bin/jq on 26.04, so that trick silently stopped making anything absent on
+# the distro migration and flipped three tests red while testing nothing about
+# Tier 0. Absence has to be constructed, not borrowed from the host.
+bare_path() {
+  local d="$BATS_TEST_TMPDIR/barebin" c src
+  mkdir -p "$d"
+  # bash+env for the `#!/usr/bin/env bash` shebang; the rest is every external
+  # command bootstrap-tier0.sh actually invokes.
+  for c in bash env id mkdir tr rm head cat grep; do
+    src=$(PATH="$ORIG_PATH" command -v "$c") || continue
+    ln -sf "$src" "$d/$c"
+  done
+  printf '%s' "$d"
+}
+
 # A powershell.exe stand-in for the LOGIC-BRANCH tests. It is fast and total,
 # and it is NOT sufficient on its own -- see the REAL-interop test at the bottom
 # of this file, which drives the actual powershell.exe. A fake that inspects
@@ -479,8 +500,7 @@ setup_fallback_env() {
 @test "apt install is planned when a base package is missing" {
   plant_fake_ps
   export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
-  # jq lives in ~/.local/bin on this machine; a PATH without it makes jq absent.
-  run env PATH=/usr/bin:/bin "$TIER0" --dry-run
+  run env PATH="$(bare_path)" "$TIER0" --dry-run
   [[ "$output" == *"apt-get install"* ]]
   [[ "$output" == *"DRY:"* ]]
 }
@@ -488,7 +508,7 @@ setup_fallback_env() {
 @test "as a NON-root user apt goes through sudo" {
   plant_fake_ps
   export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
-  run env PATH=/usr/bin:/bin "$TIER0" --dry-run
+  run env PATH="$(bare_path)" "$TIER0" --dry-run
   [[ "$output" == *"sudo apt-get install"* ]]
 }
 
@@ -499,7 +519,7 @@ setup_fallback_env() {
   mkdir -p "$idstub"
   printf '#!/bin/sh\necho 0\n' > "$idstub/id"
   chmod +x "$idstub/id"
-  run env PATH="$idstub:/usr/bin:/bin" "$TIER0" --dry-run
+  run env PATH="$idstub:$(bare_path)" "$TIER0" --dry-run
   [[ "$output" == *"DRY:  apt-get install"* ]]
   [[ "$output" != *"sudo apt-get"* ]]
 }

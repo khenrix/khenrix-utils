@@ -215,7 +215,12 @@ PY
 }
 
 @test "reconcile --all without --apply writes nothing (read-only guarantee)" {
-  py=$(command -v python3)
+  # Resolve the CONCRETE interpreter, not whatever `command -v` finds first: on a
+  # mise-managed machine that is a shim, and a shim re-resolves its interpreter
+  # through mise's trust store -- which is keyed on $HOME. This test overrides
+  # HOME and strips PATH, so the shim cannot resolve and exits 1 before
+  # reconcile.py runs at all. sys.executable is the real binary either way.
+  py=$(python3 -c 'import sys; print(sys.executable)')
   home="$BATS_TEST_TMPDIR/ro-home"
   mkdir -p "$home/.codex" "$home/.gemini/config" "$home/.claude"
 

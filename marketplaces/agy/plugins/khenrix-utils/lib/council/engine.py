@@ -66,9 +66,13 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # build_real_spec derives the recorded tier by regexing the label — a second knob
 # could disagree with the provenance it reports.
 # --------------------------------------------------------------------------- #
+# FALLBACK (2026-08-12, owner's call): the claude seat is pinned to claude-opus-5 because
+# Fable 5 is CREDIT-WALLED on this account — a fable-5 seat fails with "You're out of usage
+# credits" before it reasons at all, which reads as a dead seat rather than a quota wall.
+# Restore "claude-fable-5" here (both modes) when credits return.
 MODES = {
     "normal": {
-        "claude": {"model": "claude-fable-5",          "thinking": "max"},
+        "claude": {"model": "claude-opus-5",           "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
         "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
     },
@@ -78,7 +82,7 @@ MODES = {
         # warn-and-IGNORES an unknown value (so a dropped tier would silently downgrade
         # this seat — the smoke asserts the warning's absence); codex accepts `ultra` and
         # fails CLOSED on garbage with an API 400. agy refuses any tier above high.
-        "claude": {"model": "claude-fable-5",          "thinking": "ultracode"},
+        "claude": {"model": "claude-opus-5",           "thinking": "ultracode"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug,
         # and `--effort` caps at high). RE-PROBED 2026-08-08 ON agy 1.1.11 — both
