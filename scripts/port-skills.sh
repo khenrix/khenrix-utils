@@ -101,7 +101,11 @@ JSON
 stage_skills "$CODEX_ROOT/plugins/khenrix-ported/skills" "${SHARED_SKILLS[@]}"
 if command -v codex >/dev/null 2>&1; then
   codex plugin marketplace list 2>/dev/null | grep -q khenrix-ported-marketplace || codex plugin marketplace add "$CODEX_ROOT"
-  codex plugin list 2>/dev/null | grep -q "khenrix-ported@.*installed" || codex plugin add "khenrix-ported@khenrix-ported-marketplace"
+  # Match "installed," (codex prints "installed, enabled") — NOT a bare "installed",
+  # because codex prints "not installed" for an absent plugin and `.*installed` matches
+  # that too. That bug silently skipped the install and reported 0 skills (2026-08-12).
+  codex plugin list 2>/dev/null | grep -qE "khenrix-ported@[^[:space:]]+[[:space:]]+installed," \
+    || codex plugin add "khenrix-ported@khenrix-ported-marketplace"
   echo "  codex skills installed: $(ls "$HOME/.codex/plugins/cache/khenrix-ported-marketplace/khenrix-ported/0.1.0/skills/" 2>/dev/null | wc -l)"
 else
   echo "  codex not on PATH — skipped"
