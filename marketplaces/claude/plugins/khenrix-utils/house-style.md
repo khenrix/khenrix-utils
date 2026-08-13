@@ -90,15 +90,24 @@ that CLI's own config, not here.
   grep found them by accident. Store them in 1Password and reference at use time:
   ```bash
   # .bashrc — a reference, not a value
-  export EXPENSES_DB_PASSWORD="op://Private/expenses/db-password"
+  export EXPENSES_DB_PASSWORD="op://Automation/expenses/db-password"
   # then run the consumer under `op run`, which resolves op:// refs into the
   # child's environment without the value touching disk or the agent:
   op run -- ./your-app
   ```
-  For a one-off read: `op read "op://Private/expenses/db-password"`.
+  For a one-off read: `op read "op://Automation/expenses/db-password"`.
+  **NOT `op://Private/...`** — measured 2026-08-13 from `op service-account create --help`:
+  "You can't grant a service account access to your Personal or Private vault." An agent
+  authenticating with `OP_SERVICE_ACCOUNT_TOKEN` therefore cannot resolve a Private ref at
+  all, so a rule recommending Private *and* `op run` in the same breath contradicts itself.
+  Keep automation secrets in a dedicated vault; `scripts/op-bootstrap-expenses.sh` moves
+  them there over stdin without the values reaching argv, a transcript, or an agent.
   `op run`/`op read` are **CLI** features — the 1Password MCP does not provide them,
   and on WSL the desktop app's CLI integration is Windows-only, so WSL's `op` needs its
   own `op account add` or `OP_SERVICE_ACCOUNT_TOKEN` (see `docs/machine-setup.md`).
+  The service-account token is itself a credential: keep it in a `0600` file outside any
+  repo and `export` it from there. That does not remove a secret at rest — it replaces N
+  long-lived plaintext credentials with ONE scoped, read-only, centrally revocable token.
   Config files that take literal values (e.g. an MCP `env` block) should hold
   `${VAR}` and let the shell supply it — Claude Code expands `${VAR}` and
   `${VAR:-default}` in `command`, `args`, `env`, `url` and `headers`.

@@ -27,33 +27,14 @@ version = 1
 transport = "http"
 url = "https://mcp.context7.com/mcp"
 
-# WITHHELD FROM agy (2026-08-04): while this server is in agy's mcpServers, a headless agy
-# run never reaches a model. A/B on this host, backing up ~/.gemini/config/mcp_config.json
-# and restoring between arms:
-#   vercel present -> `agy -p "Reply with exactly: OK"` hit a 160 s timeout, rc 124, no
-#                     output (an earlier eval: 12/12 runs failed at ~299 s, total_tokens 0)
-#   vercel removed -> the same prompt answered "OK" in 7 s, rc 0
-# RE-TEST by putting the entry back in that file and re-running that one-liner — two
-# minutes — and undo this gate if a newer agy passes.
-# NOT the server, the auth, npx, or a stale lock; each was tested and cleared. `npx -y
-# mcp-remote https://mcp.vercel.com` under agy's own BROWSER env reaches "Proxy established
-# successfully" in ~2 s; the cached token carries a live refresh_token; the stale
-# mcp-auth lock named a REUSED pid and deleting it left agy hanging; pointing `command`
-# straight at the installed mcp-remote binary hung too. agy holds 31 cached vercel tool
-# definitions (~/.gemini/antigravity-cli/mcp/vercel/), so it enumerated the server once —
-# it is the RECONNECT that hangs — and it runs the other two stdio servers here fine.
-# Withheld, not broken: claude and codex run it and keep it. Removing the declaration
-# instead would have been a no-op (see google-drive below).
-[mcp_servers.vercel]
-clis = ["claude", "codex"]
-transport = "stdio"
-command = "npx"
-args = ["-y", "mcp-remote", "https://mcp.vercel.com"]
-[mcp_servers.vercel.env]
-# Opens URLs in the WSLg Chrome-for-Testing profile (was a missing windows-chrome
-# shim — there is no Windows Chrome on this host).
-BROWSER = "${HOME}/.local/bin/wsl-chrome"
-
+# vercel was REMOVED 2026-08-13: replaced by the Vercel CLI (`vercel`), which holds a
+# durable token instead of an hour-long OAuth access token with NO refresh_token — the MCP
+# had to redo a browser login every hour, and did it through a BROWSER shim that did not
+# exist, so it sat "Failed to connect — CONNECTION_CLOSED" through a whole autonomous run.
+# It was already withheld from agy for hanging its client (160 s timeout with the entry
+# live, 7 s without). Removing the declaration is a NO-OP for live configs — reconcile.py
+# is additive-only — so the entries were deleted from ~/.claude.json, ~/.codex/config.toml
+# and ~/.gemini/config/mcp_config.json by hand, and the stale mcp-auth token cache dropped.
 
 # google-drive was REMOVED 2026-07-20: redundant with the native claude.ai Drive
 # MCP, and its command hardcoded an asdf node path that the mise migration deletes.
@@ -68,24 +49,19 @@ BROWSER = "${HOME}/.local/bin/wsl-chrome"
 # server died at spawn with no diagnosable message. `bootstrap-tier0.sh` provisions the
 # shim and `doctor.py` checks the prerequisite.
 [mcp_servers.chrome-devtools]
-platform = "linux"   # WSL/Linux-native: mise Node + Chrome for Testing, shown via WSLg
+platform = "windows"   # Windows Chrome + existing user profile, reached from WSL via interop
 transport = "stdio"
-# Runs under mise's Node (absolute mise path so it resolves even with a minimal
-# PATH), launching a user-dir "Chrome for Testing" — no system Chrome, no admin.
-# Provision per machine (no sudo):
-#   npx -y @puppeteer/browsers install chrome@stable --path ${HOME}/.local/share/chrome-for-testing
-#   ln -sfn <installed>/chrome ${HOME}/.local/share/chrome-for-testing/current
-# `current` is a stable symlink so Chrome updates don't touch this file.
-# LD_LIBRARY_PATH supplies libasound.so.2 — the one lib WSLg doesn't ship (extract
-# from the libasound2t64 .deb into extra-libs/, no sudo). DISPLAY=:0 is WSLg's X11.
-# --userDataDir is an explicit PERSISTENT profile (not --isolated), so logins,
-# cookies and history survive across runs — that's the "normal session". Seed it
-# by opening the same profile yourself with the `wsl-chrome` launcher.
-command = "${HOME}/.local/bin/mise"
-args = ["exec", "node@26", "--", "npx", "-y", "chrome-devtools-mcp@latest", "--executablePath", "${HOME}/.local/share/chrome-for-testing/current", "--userDataDir", "${HOME}/.local/share/chrome-for-testing/profile"]
+# Chrome 144+ can expose its running normal profile to local automation without
+# launching a second browser. Enable it once in the real Windows Chrome at
+# chrome://inspect/#remote-debugging; --autoConnect then reuses its tabs, cookies
+# and logins. Windows-side Node is required because discovery is local to Chrome.
+command = "${HOME}/.local/bin/powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", '''
+$n = (Get-Command npx.cmd -EA SilentlyContinue).Source
+if (-not $n) { $n = "$env:ProgramFiles\nodejs\npx.cmd" }
+if (-not (Test-Path $n)) { Write-Error "Windows-side Node/npx not found; winget install OpenJS.NodeJS.LTS"; exit 1 }
+& $n -y chrome-devtools-mcp@latest --autoConnect''']
 [mcp_servers.chrome-devtools.env]
-LD_LIBRARY_PATH = "${HOME}/.local/share/chrome-for-testing/extra-libs"
-DISPLAY = ":0"
 CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS = "1"
 
 # 1Password's local MCP is shipped by the Windows desktop app. On WSL, launch it through

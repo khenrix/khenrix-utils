@@ -329,12 +329,50 @@ REASON_HINTS = {
 }
 
 
+# Lines that CONTAIN a sentinel phrase while asserting the OPPOSITE of a denial.
+#
+# This is NOT the unsolvable "did the CLI say it or merely quote it" problem — that one is
+# irrecoverable from a merged stream and is why tool_permission was made retryable. These
+# lines state that permission was GRANTED, so they cannot be evidence of a denial whoever
+# printed them, and dropping them cannot silence a real one.
+#
+# The case that forced this, measured 2026-08-13: agy prints
+#   `Print mode: --dangerously-skip-permissions set, auto-approving all tool permissions`
+# on EVERY run, which contains the sentinel "tool permission". Retrying does not help,
+# because the existing mitigation assumes "a genuine denial recurs, a phantom does not" —
+# and a phantom in a startup banner recurs perfectly. It cost the agy seat all three
+# attempts and dropped a council to 2 of 3 for a denial that never happened.
+#
+# Keep these EXACT and grant-shaped. A phrase that could ever appear in a real refusal
+# belongs nowhere near this list.
+SENTINEL_GRANT_LINES = [
+    "auto-approving all tool permissions",
+    "--dangerously-skip-permissions set",
+]
+
+
+def _without_grant_lines(text: str) -> str:
+    """Drop whole LINES that announce a permission grant, keeping every other line intact.
+
+    Line-wise rather than phrase-wise on purpose: a real denial printed on its own line
+    survives even when a grant banner appears elsewhere in the same stream.
+    """
+    if not text:
+        return text
+    kept = [ln for ln in text.splitlines()
+            if not any(g in ln.lower() for g in SENTINEL_GRANT_LINES)]
+    return "\n".join(kept)
+
+
 def classify_sentinel(text: str) -> Optional[str]:
     """Map error text to a reason: tool-permission denial, persistent auth/quota,
     transient, or None. Tool-permission is checked FIRST — it is the most specific
     and the only one of the three we can actually fix on our side."""
     low = (text or "").lower()
-    if any(s in low for s in TOOL_PERMISSION_SENTINELS):
+    # Grant banners are stripped only for the TOOL_PERMISSION check: an auth/quota or
+    # transient phrase on such a line would still be real, and this must narrow exactly one
+    # classification rather than quietly shrinking the input every rule sees.
+    if any(s in _without_grant_lines(low) for s in TOOL_PERMISSION_SENTINELS):
         return "tool_permission"
     if any(s in low for s in PERSISTENT_SENTINELS):
         return "auth_or_quota"
@@ -2390,6 +2428,21 @@ def self_test() -> int:
                   for p in AGY_STRUCTURED_TOOL_PERMISSION))
     check("agy: a seat that merely PRINTS the phrase on stderr is not classified by it",
           classify_sentinel("I read a config containing permissions.allow") is None)
+
+    # agy's startup banner contains the sentinel "tool permission" while announcing a GRANT.
+    # It printed on every run, so the retryable mitigation ("a phantom does not recur") could
+    # not help: it recurred perfectly and cost the seat all three attempts.
+    _agy_banner = ("ERROR: logging before google.Init: I0812 printmode.go:208] Print mode: "
+                   "--dangerously-skip-permissions set, auto-approving all tool permissions")
+    check("agy: its own grant banner is not a permission denial",
+          classify_sentinel(_agy_banner) is None)
+    # The property that makes the exclusion safe rather than another silencing heuristic.
+    check("grants: a REAL denial still classifies when a grant banner shares the stream",
+          classify_sentinel(_agy_banner + "\nTool ReadFile: permission denied") == "tool_permission")
+    check("grants: the exclusion narrows ONLY tool_permission, not auth/quota",
+          classify_sentinel(_agy_banner + "\nquota exceeded") == "auth_or_quota")
+    check("grants: an ordinary denial is untouched",
+          classify_sentinel("this action requires approval") == "tool_permission")
 
     # `status` decides independently of the exit code. (An earlier comment here claimed agy
     # exits 0 on a hard error "verified"; that was measured off a PIPELINE and is retracted
