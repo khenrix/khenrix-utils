@@ -21,9 +21,11 @@ the per-provider argv builders.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
+import random
 import re
 import signal
 import subprocess
@@ -98,9 +100,13 @@ DEFAULT_MODE = "normal"
 # Deep raised 600->1200 (2026-07-11): fable-5@max measured 649s and sol@max 796s on a
 # substantive review — 600 killed both. Re-measured on the current panel (2026-07-25,
 # one real diff review each): opus-5@max 565s, opus-4-8@max 529-623s, sol@max 374s — so
-# 1200 still clears the slowest seat by a wide margin. For big deep prompts prefer
-# --retries 0/1: a member that rode the window once will ride it again, and retries
-# multiply the wait.
+# 1200 cleared the slowest seat by a wide margin ON THOSE PROMPTS. SUPERSEDED 2026-08-13:
+# on six long review prompts (a full repo audit) codex/sol measured 753/928/983/1133/1138/1238s
+# SUCCESSFUL, i.e. 1200 sat inside its own distribution and killed four attempts out of ten.
+# The lesson is that the window tracks the PROMPT, not just the model — a review of one diff and
+# an audit of a whole repo are different workloads, and the earlier figures were the former. For
+# big deep prompts also prefer --retries 0/1: a member that rode the window once will ride it
+# again, and retries multiply the wait.
 # `forge` is a BUILD window, not a review window: a forge seat does the whole task in an
 # isolated clone — read, edit, test, commit — where `deep`'s 1200s sizes a single review turn.
 # The inputs that exist are all review-shaped and already sit ~3x apart (claude 533s and codex
@@ -122,7 +128,12 @@ DEFAULT_MODE = "normal"
 # 649s — more than double the old window. Leaving 300 would have manufactured timeouts on
 # routine councils and failed the gate CLOSED, which is the agy print-timeout lesson
 # exactly: a fixed sub-engine cap turns slow success into reported failure.
-MODE_TIMEOUT = {"normal": 900, "deep": 1200, "forge": 3600}  # per-attempt seconds
+# Per-attempt seconds. RECALIBRATED 2026-08-13 from six real deep councils: the codex seat's
+# SUCCESSFUL runs measured 753/928/983/1133/1138/1238s, so a 1200s window sat in the middle of
+# its own distribution and timed out on four attempts out of ten. A timeout is the most
+# expensive outcome there is — it discards a nearly-complete answer and buys a FULL retry — so
+# the window must clear the observed maximum with headroom, not track the median.
+MODE_TIMEOUT = {"normal": 900, "deep": 1800, "forge": 3600}
 
 # Map the abstract thinking tier to each provider's own flag value.
 # Unknown tiers pass through VERBATIM (`.get(t, t)`), which is how `ultracode`/`ultra`
@@ -962,6 +973,146 @@ def _kill_group(proc: "subprocess.Popen", pgid) -> None:
         pass
 
 
+# --------------------------------------------------------------------------- #
+# Machine-wide admission control.
+#
+# run_council bounds concurrency with a ThreadPoolExecutor sized to ITS OWN seats, which says
+# nothing about the other councils on the box. Two sessions each fanning out six councils put
+# 18 agent CLIs on one laptop; measured 2026-08-13, that produced no provider throttling at all
+# (42 stderr streams, zero 429/quota/RESOURCE_EXHAUSTED) but four codex TIMEOUTS and 134 minutes
+# burned on attempts that were discarded. The scarce resource is the machine, not the quota.
+#
+# So: a counting semaphore over N lock files, shared by every council process for this user.
+# A member waits for a slot BEFORE it spawns, so queueing costs nothing against its own
+# --timeout. Deadlock is structurally impossible: a member holds at most one slot and never
+# acquires a second, so there is no hold-and-wait cycle. flock is released by the KERNEL when
+# the holder dies, so a killed council cannot strand a slot.
+#
+# Set LLM_COUNCIL_MAX_CONCURRENT=0 to disable (single-session runs where queueing is pure
+# latency). The default of 6 is two full panels: two sessions proceed together, a third queues.
+_SLOT_DEFAULT = 6
+_SLOT_ANNOUNCE_AFTER = 5.0   # seconds of queueing before it is worth telling the operator
+
+
+def _slot_count() -> int:
+    raw = os.environ.get("LLM_COUNCIL_MAX_CONCURRENT")
+    if raw is None or raw.strip() == "":
+        return _SLOT_DEFAULT
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return _SLOT_DEFAULT
+
+
+def _slot_wait_max() -> float:
+    """Seconds to queue before giving up on admission control and running anyway."""
+    raw = os.environ.get("LLM_COUNCIL_SLOT_WAIT_MAX")
+    try:
+        return max(0.0, float(raw)) if raw else 900.0
+    except ValueError:
+        return 900.0
+
+
+def _slot_dir() -> Path:
+    return Path(os.environ.get("LLM_COUNCIL_SLOT_DIR")
+                or Path(tempfile.gettempdir()) / f"llm-council-slots-{os.getuid()}")
+
+
+@contextlib.contextmanager
+def member_slot(poll: float = 0.5, waited_out: Optional[list] = None):
+    """Hold one machine-wide slot for the lifetime of a member subprocess.
+
+    A no-op when the limiter is disabled or the platform has no flock — the council must still
+    run on a box where advisory locking is unavailable, just without admission control.
+
+    `waited_out`, when given, receives the seconds spent QUEUING. Callers must keep that apart
+    from model latency: run_provider times from before this context, so folding the wait into
+    `duration_sec` silently turns the manifest's only latency measurement into "latency plus
+    however busy the machine was" — and that number is what the deep timeout is calibrated on,
+    so polluting it corrupts the next calibration too.
+    """
+    count = _slot_count()
+    try:
+        import fcntl
+    except ImportError:
+        count = 0
+    if count <= 0:
+        if waited_out is not None:
+            waited_out.append(0.0)
+        yield
+        return
+
+    directory = _slot_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = None
+    # Start at a random offset so N simultaneous starters do not all contend for slot 0.
+    offset = random.randrange(count)
+    waited = 0.0
+    announced = False
+    while handle is None:
+        for index in range(count):
+            path = directory / f"slot-{(offset + index) % count}"
+            candidate = open(path, "a+")          # noqa: SIM115 — released in the finally below
+            try:
+                fcntl.flock(candidate.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                candidate.close()
+                continue
+            handle = candidate
+            break
+        if handle is not None:
+            break
+        # A SILENT unbounded wait is indistinguishable from a hang — measured the hard way, when
+        # a `make eval` queued behind two councils holding all six slots and looked frozen for
+        # 20 minutes. Say so, once, then keep saying so at intervals.
+        # Only speak once the wait is worth a line. Momentary contention is normal and a
+        # notice per member would be pure noise on every healthy run.
+        if not announced and waited >= _SLOT_ANNOUNCE_AFTER:
+            print(f"[llm-council] waiting for 1 of {count} run slots "
+                  f"(LLM_COUNCIL_MAX_CONCURRENT to change, 0 disables)", file=sys.stderr, flush=True)
+            announced = True
+        elif waited and waited % 60 < poll:
+            print(f"[llm-council] still waiting for a run slot ({waited:.0f}s)",
+                  file=sys.stderr, flush=True)
+        if waited >= _slot_wait_max():
+            # FAIL OPEN. Admission control is a courtesy to the machine, not a correctness
+            # boundary; a limiter that can stall a pipeline forever is worse than the
+            # contention it prevents. Proceed unslotted and be loud about it.
+            print(f"[llm-council] no slot after {waited:.0f}s — proceeding without one",
+                  file=sys.stderr, flush=True)
+            if waited_out is not None:
+                waited_out.append(waited)
+            yield
+            return
+        step = poll * (1.0 + random.random())   # jitter: avoid a thundering herd
+        time.sleep(step)
+        waited += step
+    if announced:
+        print(f"[llm-council] got a run slot after {waited:.0f}s", file=sys.stderr, flush=True)
+    if waited_out is not None:
+        waited_out.append(waited)
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _slot_probe(slot_dir, cap, live, peak, lock):
+    """Self-test worker for §20. Module level because multiprocessing must pickle the target."""
+    os.environ["LLM_COUNCIL_SLOT_DIR"] = str(slot_dir)
+    os.environ["LLM_COUNCIL_MAX_CONCURRENT"] = str(cap)
+    with member_slot(poll=0.02):
+        with lock:
+            live.value += 1
+            peak.value = max(peak.value, live.value)
+        time.sleep(0.2)
+        with lock:
+            live.value -= 1
+
+
 def run_member(argv, *, stdin, timeout, env, cwd):
     """`subprocess.run`, except the child leads its own PROCESS GROUP.
 
@@ -974,6 +1125,20 @@ def run_member(argv, *, stdin, timeout, env, cwd):
     Contract is deliberately identical to subprocess.run: FileNotFoundError from the
     constructor, TimeoutExpired carrying partial output, CompletedProcess otherwise.
     """
+    waited: list = []
+    with member_slot(waited_out=waited):
+        cp = _run_member_locked(argv, stdin=stdin, timeout=timeout, env=env, cwd=cwd)
+    # Attach rather than return a tuple: run_member's contract is "subprocess.run, but the child
+    # leads its own process group", and every caller (including three self-test sections) unpacks
+    # a CompletedProcess. A second return value would break them for a diagnostic.
+    try:
+        cp.slot_wait_sec = round(waited[0] if waited else 0.0, 2)
+    except AttributeError:      # a caller stubbed the return; the diagnostic is optional
+        pass
+    return cp
+
+
+def _run_member_locked(argv, *, stdin, timeout, env, cwd):
     new_session = hasattr(os, "killpg") and hasattr(os, "setsid")
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, env=env, cwd=cwd,
@@ -1287,11 +1452,17 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
     for attempt in range(retries + 1):
         n = attempt + 1
         t0 = time.monotonic()
+        _queued = 0.0            # seconds spent waiting for a run slot, never charged as latency
         try:
             cp = run_member(spec.argv, stdin=spec.stdin, timeout=timeout,
                             env=child_env(env), cwd=spec.cwd)
+            # `timeout` bounds the SUBPROCESS, not the queue ahead of it, so a member that
+            # waited must not have that wait charged to its latency — otherwise duration_sec
+            # exceeds the timeout it supposedly obeyed (measured: a codex seat reported 2455s
+            # under --timeout 1800) and the number the window is calibrated on is meaningless.
+            _queued = float(getattr(cp, "slot_wait_sec", 0.0) or 0.0)
         except FileNotFoundError:
-            dur = round(time.monotonic() - t0, 2)
+            dur = round(time.monotonic() - t0 - _queued, 2)
             attempt_log.append({"attempt": n, "reason": "not_installed",
                                 "exit_code": None, "duration_sec": dur})
             final.update(stdout="", stderr=f"binary not found: {spec.argv[0]}",
@@ -1308,7 +1479,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
             # raw traceback, and the orphaned intent made the next --collect re-spend the
             # seats that HAD started. Degrading to an invalid seat keeps the panel's own
             # contract — a seat that could not answer is reported, never raised.
-            dur = round(time.monotonic() - t0, 2)
+            dur = round(time.monotonic() - t0 - _queued, 2)
             detail = f"{type(e).__name__}: {e}"
             attempt_log.append({"attempt": n, "reason": "spawn_failed",
                                 "exit_code": None, "duration_sec": dur})
@@ -1318,12 +1489,12 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
             _write_attempt(workdir, spec.name, n, "", detail)
             break  # an argv this kernel refuses is refused identically on a retry
         except subprocess.TimeoutExpired as e:
-            dur = round(time.monotonic() - t0, 2)
+            dur = round(time.monotonic() - t0 - _queued, 2)
             stdout, stderr = _coerce_text(e.stdout), _coerce_text(e.stderr)
             valid, reason, result_text, structured = False, "timeout", stdout.strip(), False
             exit_code = None
         else:
-            dur = round(time.monotonic() - t0, 2)
+            dur = round(time.monotonic() - t0 - _queued, 2)
             stdout, stderr, exit_code = cp.stdout or "", cp.stderr or "", cp.returncode
             valid, reason, result_text, structured = (spec.validator or evaluate)(exit_code, stdout, stderr, spec)
 
@@ -1698,6 +1869,12 @@ def _stub_spec(name: str, mode: str, *, as_: str = "raw", sleep: float = 0.0,
 
 def self_test() -> int:
     root = Path(tempfile.mkdtemp(prefix="llm-council-selftest-"))
+    # Admission control exists to bound AGENT CLI load on the machine. Every member here is a
+    # stub that returns instantly, so queueing them behind real councils buys nothing and costs
+    # everything: measured 2026-08-13, a self-test run sat 516s waiting for a slot held by two
+    # live councils and looked hung. Point the limiter at a private directory for the duration —
+    # the sections that test slot behaviour set their own directory anyway.
+    os.environ["LLM_COUNCIL_SLOT_DIR"] = str(root / "slots")
     results: list[tuple[str, bool, str]] = []
 
     def check(label: str, cond: bool, detail: str = "") -> None:
@@ -2264,10 +2441,104 @@ def self_test() -> int:
         check("agy-json: an unrecognised structured reason still retries",
               _p0["attempts"] > 1)
 
+    # §20 — machine-wide admission control. The property that matters is CROSS-PROCESS: a
+    # ThreadPoolExecutor already bounds one council's own seats, and the defect this exists for
+    # is two councils in two processes. So the test forks; a threads-only test would pass
+    # against a limiter that does nothing for the real case.
+    _cap, _n = 3, 9
+    with tempfile.TemporaryDirectory() as _sd:
+        import multiprocessing as _mp
+        _live, _peak = _mp.Value("i", 0), _mp.Value("i", 0)
+        _mlock = _mp.Lock()
+        _procs = [_mp.Process(target=_slot_probe, args=(_sd, _cap, _live, _peak, _mlock))
+                  for _ in range(_n)]
+        _t0 = time.time()
+        for _pr in _procs:
+            _pr.start()
+        for _pr in _procs:
+            _pr.join(timeout=60)
+        _elapsed = time.time() - _t0
+    check(f"slots: peak concurrency {_peak.value} never exceeds the cap {_cap}",
+          0 < _peak.value <= _cap)
+    # Without this the test passes against a limiter that serializes everything to 1.
+    check("slots: below the cap members still run in parallel", _peak.value > 1)
+    # 9 probes x 0.2s at cap 3 cannot finish faster than ~0.6s unless queueing never happened.
+    check("slots: work above the cap actually queued", _elapsed >= 0.2 * (_n / _cap) * 0.7)
+    # duration_sec must be MODEL latency, never latency+queue. Without this a busy machine
+    # inflates the very number MODE_TIMEOUT is calibrated on, and a seat can report a duration
+    # LONGER than the timeout it obeyed — which is exactly what was observed (2455s under 1800).
+    with tempfile.TemporaryDirectory() as _sd3:
+        _prev3 = {k: os.environ.get(k) for k in
+                  ("LLM_COUNCIL_SLOT_DIR", "LLM_COUNCIL_MAX_CONCURRENT", "LLM_COUNCIL_SLOT_WAIT_MAX")}
+        os.environ.update({"LLM_COUNCIL_SLOT_DIR": _sd3,
+                           "LLM_COUNCIL_MAX_CONCURRENT": "1",
+                           "LLM_COUNCIL_SLOT_WAIT_MAX": "3"})
+        try:
+            # Hold the only slot from a THREAD so the measured member genuinely queues.
+            import threading
+            _release = threading.Event()
+
+            def _hog():
+                with member_slot(poll=0.01):
+                    _release.wait(3.0)
+
+            _t = threading.Thread(target=_hog, daemon=True)
+            _t.start()
+            time.sleep(0.2)
+            _m3 = run_council([_stub_spec("claude", "ok")], retries=0, timeout=30,
+                              backoff=0.01, workdir=Path(_sd3) / "wd",
+                              prompt="hi", install_signal_handler=False)
+            _release.set()
+            _t.join(timeout=5)
+            _d = _m3["providers"][0]["duration_sec"]
+            # The stub returns instantly; anything near the ~1s queue means the wait leaked in.
+            check(f"slots: queue time is not charged as latency (duration {_d}s)", _d < 0.8)
+        finally:
+            for _k, _v in _prev3.items():
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
+
+    # A limiter that can block forever is worse than the contention it prevents: prove it
+    # gives up and runs. Cap 1, slot already held by this process, wait ceiling 0 -> immediate.
+    with tempfile.TemporaryDirectory() as _sd2:
+        _prev = {k: os.environ.get(k) for k in
+                 ("LLM_COUNCIL_SLOT_DIR", "LLM_COUNCIL_MAX_CONCURRENT", "LLM_COUNCIL_SLOT_WAIT_MAX")}
+        os.environ.update({"LLM_COUNCIL_SLOT_DIR": _sd2,
+                           "LLM_COUNCIL_MAX_CONCURRENT": "1",
+                           "LLM_COUNCIL_SLOT_WAIT_MAX": "0"})
+        try:
+            _t1 = time.time()
+            with member_slot(poll=0.01):          # holds the only slot
+                with member_slot(poll=0.01):      # must fail open rather than deadlock
+                    check("slots: a saturated limiter fails OPEN instead of hanging",
+                          time.time() - _t1 < 5)
+        finally:
+            for _k, _v in _prev.items():
+                if _v is None:
+                    os.environ.pop(_k, None)
+                else:
+                    os.environ[_k] = _v
+
+    _prev_cap = os.environ.get("LLM_COUNCIL_MAX_CONCURRENT")
+    os.environ["LLM_COUNCIL_MAX_CONCURRENT"] = "0"
+    try:
+        with member_slot():
+            check("slots: 0 disables the limiter without blocking", True)
+    finally:
+        if _prev_cap is None:
+            os.environ.pop("LLM_COUNCIL_MAX_CONCURRENT", None)
+        else:
+            os.environ["LLM_COUNCIL_MAX_CONCURRENT"] = _prev_cap
+
     # §19 — the forge window, and agy's own word for a wall.
     _fw = MODE_TIMEOUT.get("forge", 0)
     check("MODE_TIMEOUT has a forge entry of at least 3600", _fw >= 3600)
-    check("deep is unchanged", MODE_TIMEOUT["deep"] == 1200)
+    # Recalibrated 2026-08-13 (see MODE_TIMEOUT). The guard's intent is unchanged: deep must
+    # not drift as a side effect of another edit, and it must clear the slowest MEASURED seat
+    # (codex at 1238s) with real headroom rather than sitting inside its distribution.
+    check("deep clears the slowest measured seat with headroom", MODE_TIMEOUT["deep"] >= 1500)
     # A re-added cap bites hardest at the LONGEST window, so pin agy's print-timeout at the
     # forge one: it must still be the engine timeout less the margin, and nothing tighter.
     # The lookup is floored rather than indexed — a check that RAISES hides every check
