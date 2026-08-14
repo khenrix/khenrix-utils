@@ -58,6 +58,18 @@ Still manual, because WSL cannot install them:
   so a WSL-only Node leaves it dead at spawn. Tier 0 reports it as MISSING and
   `python3 scripts/doctor.py --only windows-node` verifies it by making
   `node.exe` evaluate an expression.
+
+  **Install the `OpenJS.NodeJS.LTS` id specifically — the version-pinned ids are
+  a trap.** This machine carried `OpenJS.NodeJS.18` (18.16.0), whose `winget
+  upgrade` tops out at 18.20.8; the MCP refuses every one of them at runtime with
+  `ERROR: chrome-devtools-mcp does not support Node v18.16.0`, its own guard
+  rather than an npm warning. Installing the LTS id performs an in-place major
+  upgrade of the same `C:\Program Files\nodejs` install and the pinned entry
+  disappears from `winget list` — so there is nothing left to uninstall
+  afterwards, and running one would target the directory LTS just populated.
+  Tier 0 now checks the VERSION against `chrome-devtools-mcp`'s declared
+  `engines.node` (`^20.19.0 || ^22.12.0 || >=23`), not merely that node exists;
+  it previously passed 18.16.0 as `ok` while the bridge was dead.
 - **Google Chrome on Windows** — any install location works; `windows-chrome`
   resolves it (PATH → Program Files → Program Files (x86) → LOCALAPPDATA).
   Override with `WINDOWS_CHROME_PATH` if it lives somewhere exotic.

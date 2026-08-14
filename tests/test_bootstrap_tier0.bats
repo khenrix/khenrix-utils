@@ -77,6 +77,10 @@ bare_path() {
 # Fixture knobs:
 #   FAKE_PS_BROKEN      executable, exits 0, echoes nothing (a DEAD shim)
 #   FAKE_NODE_PATH      what `Get-Command node.exe` resolves to
+#   FAKE_NODE_VERSION   what `node.exe --version` prints. Defaults to a
+#                       SATISFYING LTS so tests about other branches need not
+#                       care about it.
+#   FAKE_NODE_V_EMPTY   node resolves but `--version` prints nothing
 #   FAKE_CHROME_PATH    what `Get-Command chrome.exe` resolves to (PATH hit)
 #   FAKE_PROGRAMFILES / FAKE_PROGRAMFILESX86 / FAKE_LOCALAPPDATA
 #                       Windows env values used to expand the FALLBACK candidates
@@ -107,6 +111,10 @@ case "$cmd" in
   *"Get-Command node.exe"*)
     [ -n "${FAKE_NODE_PATH:-}" ] || exit 4
     printf '%s\r\n' "$FAKE_NODE_PATH"
+    ;;
+  *"node.exe --version"*)
+    [ -z "${FAKE_NODE_V_EMPTY:-}" ] || exit 0
+    printf '%s\r\n' "${FAKE_NODE_VERSION:-v24.19.0}"
     ;;
   *"Get-Command chrome.exe"*)
     if [ -n "${FAKE_CHROME_PATH:-}" ]; then
@@ -248,12 +256,74 @@ PSEOF
   [[ "$output" == *"winget install OpenJS.NodeJS.LTS"* ]]
 }
 
-@test "present Windows-side Node reports its path and exits 0" {
+@test "present Windows-side Node reports its version AND path and exits 0" {
   plant_fake_ps
   export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  export FAKE_NODE_VERSION='v24.19.0'
   run "$TIER0"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ok: Windows node at C:\\Program Files\\nodejs\\node.exe"* ]]
+  [[ "$output" == *"ok: Windows node v24.19.0 at C:\\Program Files\\nodejs\\node.exe"* ]]
+}
+
+# The defect these guard: Tier 0 probed node's PRESENCE only, so this machine's
+# Windows node 18.16.0 was reported `ok` while the chrome-devtools MCP refused
+# to start on it. A green Tier 0 on a host with a dead bridge is the failure.
+
+@test "an installed but too-old Windows Node FAILS instead of passing" {
+  plant_fake_ps
+  export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  export FAKE_NODE_VERSION='v18.16.0'
+  run "$TIER0"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"v18.16.0"* ]]
+  [[ "$output" == *"^20.19.0 || ^22.12.0 || >=23"* ]]
+  # Node IS installed, so "install Node" would be the same misdiagnosis the
+  # broken-interop test guards against, one layer down.
+  [[ "$output" == *"UPGRADE, not an install"* ]]
+  [[ "$output" != *"ok: Windows node"* ]]
+}
+
+@test "the too-old report names the LTS package id, not a pinned major" {
+  plant_fake_ps
+  export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  export FAKE_NODE_VERSION='v18.16.0'
+  run "$TIER0"
+  # winget upgrade on OpenJS.NodeJS.18 tops out at 18.20.8 -- still refused.
+  [[ "$output" == *"winget install OpenJS.NodeJS.LTS"* ]]
+  [[ "$output" == *"only"*"upgrades within its own major"* ]]
+}
+
+@test "versions inside the range's GAPS are refused, not waved through" {
+  # A bare "major >= 20" would pass all three of these. The MCP would not.
+  for v in v21.7.3 v22.11.0 v20.18.0; do
+    plant_fake_ps
+    export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+    export FAKE_NODE_VERSION="$v"
+    run "$TIER0"
+    [ "$status" -eq 1 ] || { echo "$v was accepted but is outside engines"; false; }
+    [[ "$output" != *"ok: Windows node"* ]]
+  done
+}
+
+@test "each supported branch's floor is accepted" {
+  for v in v20.19.0 v22.12.0 v23.0.0 v24.19.0; do
+    plant_fake_ps
+    export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+    export FAKE_NODE_VERSION="$v"
+    run "$TIER0"
+    [ "$status" -eq 0 ] || { echo "$v was refused but satisfies engines"; false; }
+    [[ "$output" == *"ok: Windows node $v"* ]] || { echo "$v: no ok line"; false; }
+  done
+}
+
+@test "a Node that resolves but reports no version is unsatisfied, not assumed ok" {
+  plant_fake_ps
+  export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
+  export FAKE_NODE_V_EMPTY=1
+  run "$TIER0"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"did not report a version"* ]]
+  [[ "$output" != *"ok: Windows node"* ]]
 }
 
 @test "the Windows-node report says WSL node does not satisfy it" {

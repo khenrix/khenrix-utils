@@ -353,7 +353,40 @@ EOF
       echo "             winget install OpenJS.NodeJS.LTS"
       FAIL=1
     else
-      echo "  ok: Windows node at $WNODE"
+      # PRESENCE IS NOT THE REQUIREMENT. This machine carried Windows node
+      # 18.16.0 and Tier 0 passed it, while the MCP refused to start at all:
+      # "ERROR: `chrome-devtools-mcp` does not support Node v18.16.0" -- its own
+      # runtime guard, not an npm EBADENGINE warning that could be ignored. A
+      # check that clears a host whose bridge is dead is worse than no check.
+      #
+      # The range is chrome-devtools-mcp@1.7.0's `engines.node`, read from the
+      # npm registry 2026-08-14: ^20.19.0 || ^22.12.0 || >=23. Note 21 and
+      # 22.0-22.11 are NOT satisfied, so a bare "major >= 20" would wave through
+      # versions the MCP rejects.
+      WNODE_V=$(ps_probe '& node.exe --version' | head -n1)
+      WNODE_V=${WNODE_V#v}
+      W_MAJ=${WNODE_V%%.*}
+      W_REST=${WNODE_V#*.}
+      W_MIN=${W_REST%%.*}
+      if [ -z "$WNODE_V" ] || ! [ "$W_MAJ" -eq "$W_MAJ" ] 2>/dev/null; then
+        echo "  MISSING: Windows-side Node at $WNODE did not report a version."
+        echo "           Cannot confirm it satisfies chrome-devtools-mcp; treating"
+        echo "           as unsatisfied rather than assuming it is fine."
+        FAIL=1
+      elif [ "$W_MAJ" -ge 23 ] \
+        || { [ "$W_MAJ" -eq 22 ] && [ "$W_MIN" -ge 12 ]; } \
+        || { [ "$W_MAJ" -eq 20 ] && [ "$W_MIN" -ge 19 ]; }; then
+        echo "  ok: Windows node v$WNODE_V at $WNODE"
+      else
+        echo "  MISSING: Windows-side Node is v$WNODE_V at $WNODE, which the"
+        echo "           chrome-devtools MCP REFUSES to run on (it needs"
+        echo "           ^20.19.0 || ^22.12.0 || >=23). Node is installed, so"
+        echo "           this is an UPGRADE, not an install. On Windows run:"
+        echo "             winget install OpenJS.NodeJS.LTS"
+        echo "           A version-pinned package (e.g. OpenJS.NodeJS.18) only"
+        echo "           upgrades within its own major -- install the LTS id."
+        FAIL=1
+      fi
     fi
   fi
 else
