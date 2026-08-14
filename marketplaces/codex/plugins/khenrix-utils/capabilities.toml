@@ -41,12 +41,14 @@ url = "https://mcp.context7.com/mcp"
 # Removing the declaration alone is a NO-OP -- reconcile.py is additive-only and
 # prints `EXTRA ... left untouched`. The live config needed explicit removal too.
 
-# NOT the Windows-side bridge (origin/main a4bc554, 2026-07-20): this host drives Chrome
-# inside WSL, so it needs no Windows Node at all and keeps a persistent profile the agent
-# shares. Kept deliberately on 2026-07-27 over the newer bridge. If a host ever has no
-# WSLg, that variant resolves npx via `Get-Command npx.cmd` rather than hardcoding
-# `C:\Program Files\nodejs` — a per-user or winget Node does not land there and the
-# server died at spawn with no diagnosable message. `bootstrap-tier0.sh` provisions the
+# The Windows-side bridge, restored 2026-08-13 over the WSL-native variant (8f7d289,
+# 2026-07-17) it replaced: a WSL-side "Chrome for Testing" keeps its OWN profile, so every
+# site the agent touches wants a fresh login and the user cannot hand it a session it is
+# already signed into. Driving the real Windows Chrome gives the agent the tabs, cookies
+# and logins that are already there. The cost is a Windows-side Node dependency, which the
+# WSL-native variant did not have. npx is resolved via `Get-Command npx.cmd` rather than a
+# hardcoded `C:\Program Files\nodejs` — a per-user or winget Node does not land there and
+# the server died at spawn with no diagnosable message. `bootstrap-tier0.sh` provisions the
 # shim and `doctor.py` checks the prerequisite.
 [mcp_servers.chrome-devtools]
 platform = "windows"   # Windows Chrome + existing user profile, reached from WSL via interop

@@ -815,7 +815,7 @@ def _mcp_chrome():
         return "FAIL", (f"{err}, so the MCP cannot be launched "
                         f"(Windows node is at {src})")
     cmd = [str(ps), "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-           f'& "{npx}" -y chrome-devtools-mcp@latest']
+           f'& "{npx}" -y chrome-devtools-mcp@latest --autoConnect']
 
     # 180s per attempt covers a COLD `npx -y` that has to fetch the package;
     # 240s total therefore buys one full cold start plus, when a probe fails

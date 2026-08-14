@@ -78,12 +78,23 @@ Then, per machine (Tier 0 already covers `git curl jq unzip ca-certificates`):
   resolve through it (replaced asdf in the 2026-07-08 migration). Python comes from `uv`.
 - **uv / uvx** — for `uvx`-launched MCPs + Python
 - the **`claude`** CLI (`~/.local/bin`)
-- **WSL/Linux** — the `chrome-devtools` MCP runs on mise Node driving a user-dir
-  "Chrome for Testing" (`~/.local/share/chrome-for-testing/`), shown via WSLg — no
-  system Chrome or admin needed. The `wsl-chrome` launcher opens the same persistent
-  profile so you can log into sites once and share that session with the agent; vercel's
-  `BROWSER` points at it too. Provision per machine (no sudo) — see the `chrome-devtools`
-  entry in `capabilities.toml` for the exact steps.
+- **WSL/Linux with Windows Chrome** — the `chrome-devtools` MCP runs through the
+  PowerShell interop bridge and Windows-side Node with `--autoConnect`. It connects to
+  the already-running normal Windows Chrome profile, so the agent sees the same tabs,
+  cookies and logins instead of launching Chrome for Testing. In Chrome 144+, open
+  `chrome://inspect/#remote-debugging` once and enable remote debugging for the profile.
+  Tier 0 provisions the PowerShell bridge and verifies Windows-side Node; no Linux Chrome
+  installation is required.
+
+  **Migrating a machine that still has the old WSL-native entry: delete it by hand first.**
+  Reconcile is additive-only, so it reports the existing server as
+  `✏️ UPDATE chrome-devtools — command/args differ` and changes nothing — and
+  `--update-drift` does not rescue it either, printing `drift update for MCP not
+  auto-applied; edit manually`. A refresh therefore leaves the machine on Chrome for
+  Testing while claiming success. Remove the `chrome-devtools` entry from `~/.claude.json`,
+  `~/.codex/config.toml` and `~/.gemini/config/mcp_config.json`, then re-run
+  `/khenrix-setup` — it re-ADDs the current definition. Same hazard as the vercel and
+  google-drive removals noted in `capabilities.toml`.
 - On native Linux/macOS: Tier 0 skips the Windows bridges; on a host with no display,
   drop `chrome-devtools` and point `vercel`'s `BROWSER` at your real browser.
 
