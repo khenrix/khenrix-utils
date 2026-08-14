@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "llm-council",
-  "source_hash": "2937198bfa1c57f69d9bb6ff416390636d44d2178efe6a4c9c40959307e324d0",
+  "source_hash": "fac0840cdf7b70e238fff71e5d12461d2c43f3c4f5a1f52df1c9ce2d9199622b",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
     "claude"

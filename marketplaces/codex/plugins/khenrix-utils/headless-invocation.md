@@ -58,16 +58,25 @@ agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag ris
   prompts complete headless now; earlier versions reliably rode the timeout.)
 - `--print-timeout <dur>` bounds the wait (default `5m`).
 - `--model "<name>"` pins the model per-run (since 1.1.1; `agy models` prints slugs like
-  `gemini-3.6-flash-high`, and the display label `"Gemini 3.6 Flash (High)"` resolves too —
-  the thinking tier is encoded in the name, e.g. "Gemini 3.6 Flash (High)"). Since 1.1.2
+  `gemini-3.7-flash-high`, and the display label `"Gemini 3.7 Flash (High)"` resolves too —
+  the thinking tier is encoded in the name, e.g. "Gemini 3.7 Flash (High)"). Since 1.1.2
   an unresolvable name hard-fails non-zero and lists the valid ones, rather than silently
   falling back to the default model.
-- `--effort <low|medium|high>` sets reasoning effort separately (since 1.1.5). Note it
-  caps at `high` — there is no Max tier for Flash by either route. The council leaves
-  this unset and carries the tier in the model label instead, keeping one source of truth.
-- `--mode plan` is a mechanical read-only mode that works headless (unlike `--sandbox`,
-  which hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since); use it for
-  review-only invocations.
+- `--effort <low|medium|high>` sets reasoning effort separately on earlier Flash models
+  (since 1.1.5), capped at `high`. **On Gemini 3.7 Flash it is refused outright, for all
+  five values** (re-probed 2026-08-14 on agy 1.1.13): `low`/`medium`/`high` fail with
+  `--effort is not supported for model "Gemini 3.7 Flash (High)"`; `ultra`/`max` fail with
+  `invalid --effort ... (valid: low, medium, high)` — all non-zero. The council never
+  passes this flag, carrying the tier in the model label instead (one source of truth),
+  which is also now the only route that works.
+- `--mode plan` is a mechanical read-only mode. VERIFIED on agy 1.1.13 (probed
+  2026-08-14): it works headless, blocks a requested write, and the run logs
+  `printmode.go: Print mode: applying agent mode plan` / `manager.go: SetCycleMode
+  called: plan`. On 1.1.11 and earlier this is UNPROVEN — agy 1.1.12's changelog says
+  `--mode` was ignored in headless `-p` runs, so treat older builds as resting on
+  posture-line + worktree isolation alone. (`--sandbox`, the earlier read-only
+  candidate, hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since.) Use
+  `--mode plan` for review-only invocations.
 - **Pair `--mode plan` with `--dangerously-skip-permissions`, don't substitute it.** Per
   `agy --help` the flags are orthogonal: `--dangerously-skip-permissions` is
   "auto-approve all tool permission requests without prompting" (a *prompting* policy),

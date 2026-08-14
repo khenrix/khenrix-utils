@@ -78,8 +78,8 @@ def _resolve_seat_timeout() -> int:
 
     A NUMBER CHOSEN HERE WOULD BE THE SECOND TIMEOUT MECHANISM §19 FORBIDS, and §19 exists
     because the first one silently degraded a three-seat panel to two. So a missing entry is a
-    refusal rather than a fallback: `deep`'s 1200s is a review window, not a build window, and
-    reaching for it here would put a forty-minute seat under a twenty-minute cap.
+    refusal rather than a fallback: `deep`'s 1800s is a review window, not a build window, and
+    reaching for it here would put a sixty-minute seat under a thirty-minute cap.
 
     The entry now exists — `council.engine` carries it, with the measurements and the one
     unmeasured dependency it rests on written beside it there. This refusal is therefore the

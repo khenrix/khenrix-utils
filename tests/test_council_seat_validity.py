@@ -23,8 +23,11 @@ sys.path.insert(0, str(ROOT / "shared" / "skills" / "llm-council" / "scripts"))
 
 from fanout import (  # noqa: E402
     MIN_SUBSTANTIVE_CHARS,
+    MODES,
     apply_sentinel,
+    build_real_spec,
     council_header,
+    make_readonly,
     make_sentinel,
     score_seat,
 )
@@ -205,3 +208,26 @@ def test_header_distinguishes_two_seats_failing_for_different_reasons():
     assert "1 of 3" in h
     assert "codex" in h and "auth_or_quota" in h
     assert "agy" in h and "did_not_read_input" in h
+
+
+def test_agy_argv_never_carries_effort():
+    """agy encodes its thinking tier in the MODEL LABEL. On Gemini 3.7 Flash EVERY
+    --effort value is refused (probed 2026-08-14, agy 1.1.13):
+        low|medium|high -> --effort is not supported for model "Gemini 3.7 Flash (High)"
+        ultra|max       -> invalid --effort ... (valid: low, medium, high)
+    All exit non-zero, logging `Print mode: invalid model selection` to --log-file (STDERR
+    instead shows `Error: invalid model selection (...)`), so passing --effort would not
+    downgrade the seat, it would KILL it.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wd = pathlib.Path(td)
+        for mode, cfg in MODES.items():
+            for label, spec in (("plain", build_real_spec("agy", "q", 60, cfg, wd)),):
+                for argv in (spec.argv, make_readonly(spec).argv):
+                    joined = " ".join(argv)
+                    assert not any(
+                        a == "--effort" or a.startswith("--effort=") or a == "-effort"
+                        or a.startswith("-effort=") for a in argv), (
+                        f"mode {mode} ({label}): agy argv must never carry --effort; "
+                        f"got {joined}")

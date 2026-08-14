@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
   "skill": "llm-forge",
-  "source_hash": "211744e72c9239e22aaee442e59f3557ec07db9aa491d5c807e2e5f2ce20ab7e",
+  "source_hash": "39c7247db49056f06b6f8b26b0efde655524b373fc122833e456172f992c174b",
   "eval_set_hash": "73875dfae42320a71ba49ec4eb436cb463badc4ae412a2917e64e2873b32a551",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.5416,
+  "delta_pass_rate": 0.4583,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "per_provider": {
     "claude": {
-      "delta": 0.5416,
+      "delta": 0.4583,
       "quantum": 0.05,
       "n_evals": 6,
       "status": "ok"

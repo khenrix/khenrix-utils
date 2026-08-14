@@ -54,14 +54,23 @@ word.
     zero tokens. So this measures agy's transport on this machine (see `headless-invocation.md`
     on the mid-2026 consumer-OAuth wind-down), not its willingness to read under `.git`. The
     question stays open for agy and must be re-probed before anything relies on it.
+  * agy, RE-PROBED 2026-08-14 on v1.1.13: **READS IT.** Same design as the two yeses above
+    — `git init`, a sentinel at `.git/khenrix-forge/task/SKILL.md`, the CLI asked headlessly
+    to read it and quote the word. `status: SUCCESS`, 56475 total tokens, sentinel quoted
+    verbatim. The open question above is CLOSED for 1.1.13: the v1.1.10 result measured
+    this machine's agy transport (zero tokens, never reached a model), not agy's
+    willingness to read under `.git`. WHAT THIS STILL DOES NOT LICENSE is unchanged — no
+    caller puts this path into a prompt today.
 
-WHAT THE TWO YESES DO NOT LICENSE. No caller puts this path into a prompt today — `cli.start`
+WHAT THE THREE YESES DO NOT LICENSE. No caller puts this path into a prompt today — `cli.start`
 composes the seat's prompt from the entrypoint text and `ambient_notes` alone, never from
 `task_dir` — so no step here rests on the probe either way. Wiring a seat to the pointer at
-all is still undone, and doing that for agy specifically would rest on two measurements out
-of three. A seat that cannot read its entrypoint cannot quote the sentinel and scores
-`failed`, which is the fail-closed direction — the run stays honest, but the reason string is
-unmapped.
+all is still undone. Before the 2026-08-14 re-probe above, doing that for agy specifically
+would have rested on two measurements out of three — agy's own read of `.git` was
+unmeasured; now all three CLIs have a positive read, so that specific gap is closed even
+though the wiring itself remains undone. A seat that cannot read its entrypoint cannot quote
+the sentinel and scores `failed`, which is the fail-closed direction — the run stays honest,
+but the reason string is unmapped.
 
 EMPTY DIRECTORIES ARE NOT CARRIED, and that is the same ceiling `snapshot.Entry` declares:
 directories are not inventoried, so a bundle that means to hand a seat an empty `output/`

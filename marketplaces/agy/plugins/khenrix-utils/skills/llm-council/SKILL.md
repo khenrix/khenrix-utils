@@ -25,8 +25,10 @@ fan-out in bash; run the engine and synthesize from its manifest.
 >
 > **Read-only by default.** All three members are now **mechanically constrained**:
 > Claude (plan mode, plan-file writes suppressed), Codex (read-only sandbox), and agy
-> (`--mode plan`, available since agy 1.1.1 — probed 2026-07-11: it mechanically blocked
-> a write the model claimed to have made). agy keeps `--dangerously-skip-permissions`
+> (`--mode plan`, accepted since agy 1.1.1, but the mechanical block is VERIFIED only on
+> 1.1.13+ — probed 2026-08-14: a requested write was blocked and the run's own log
+> confirms plan mode engaged. Older builds are unproven; treat them as resting on the
+> posture line and worktree isolation alone). agy keeps `--dangerously-skip-permissions`
 > *alongside* `--mode plan`: the two are orthogonal per `agy --help` (auto-approve is a
 > prompting policy, plan mode is the write barrier), and dropping it left agy unable to
 > approve its own reads headlessly. Two soft layers remain on top: a read-only
@@ -95,7 +97,7 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 The engine prints a JSON **manifest** to stdout (also saved to
 `<workdir>/manifest.json`). Useful flags: `--mode normal|deep` (see below),
 `--allow-writes` (drop the default read-only posture so members can edit/execute),
-`--timeout SECONDS` (per-attempt; default is per-mode — 900 normal / 1200 deep — raise
+`--timeout SECONDS` (per-attempt; default is per-mode — 900 normal / 1800 deep — raise
 it for big tasks), `--retries N` (default 2), `--providers claude,codex` (narrow the
 panel), `--model-claude/-codex/-agy ID` (override a model for one run). Defaults are
 fine for most runs.
@@ -105,9 +107,9 @@ fine for most runs.
 The council is a fixed panel of three models. The two modes differ in **both** the claude
 seat's reasoning tier and how hard the others think:
 
-- **`normal`** (default) — Fable 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.6 Flash
+- **`normal`** (default) — Opus 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.7 Flash
   (High). Use for most council runs.
-- **`deep`** — Fable 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
+- **`deep`** — Opus 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
   above High exists) + a longer timeout. Use for genuinely high-stakes /
   maximum-confidence asks (architecture, risky changes), or when the user says "deep",
   "think hard", or "maximum confidence".
@@ -116,32 +118,39 @@ seat's reasoning tier and how hard the others think:
 a garbage-value control): claude's `--help` lists only `low…max` yet accepts `ultracode`
 silently — and *warn-and-ignores* an unknown value, so if a future CLI drops the tier the
 seat downgrades to default effort with only a stderr line; codex accepts `ultra` and fails
-**closed** with an API 400 on garbage; agy refuses anything above `high`.
+**closed** with an API 400 on garbage; agy refuses `--effort` outright on Gemini 3.7 Flash
+— all five values, not merely those above `high` (re-probed 2026-08-14 on agy 1.1.13).
 
-**Automatic model fallback.** Fable sits behind the narrowest weekly sub-cap on this
-machine and now holds the claude seat in both modes, so a wall is expected rather than
-surprising: when that seat fails for a **model-attributable** reason (`auth_or_quota`, a
-structured claude error) the retry runs on `claude-opus-5` instead of spending the attempt
-on a model that cannot answer. It never fires on a timeout, parse failure or tool-permission
-denial — the model is not the cause there, and swapping would mask the real defect. Every
-swap is disclosed: `model_fallback {from,to,reason}` on the provider record, the manifest's
-`model` field is the model that *actually answered*, and `summary.header` gains a
-`Model fallback:` clause you must not drop from the synthesis.
+**Automatic model fallback — currently INERT.** The claude seat is pinned to
+`claude-opus-5` because Fable 5 is credit-walled on this account (2026-08-12: a fable-5
+seat fails "You're out of usage credits" before it reasons at all — see the FALLBACK
+comment above `MODES` in `engine.py`), so Opus 5 now holds the claude seat in both
+`normal` and `deep`. `FALLBACK_MODELS["claude"]` is also `claude-opus-5`
+(`engine.py:169`), so there is nothing left to fall back FROM: the `spec.model != fb`
+guard (`engine.py:1617`) correctly refuses to swap a seat that is already on the
+fallback model, because doing so would record a phantom `opus-5 → opus-5` entry. The
+mechanism — retry on a **model-attributable** failure (`auth_or_quota`, a structured
+claude error; never a timeout, parse failure, or tool-permission denial), disclosure via
+`model_fallback {from,to,reason}` on the provider record, and the `summary.header`
+`Model fallback:` clause — stays wired for when Fable's credits return and the seat is
+repinned; until then, expect it never to fire.
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
 `engine.py` (repo: `shared/lib/council/engine.py`; rendered plugin:
-`<plugin>/lib/council/engine.py` — `scripts/fanout.py` is now a thin façade over it).
-To change
-a tier, edit one cell there. A *new* model id must also be registered in
+`<plugin>/lib/council/engine.py` — `scripts/fanout.py` is now a thin façade over it). To
+change a tier, edit one cell there. A *new* model id must also be registered in
 `capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
-string — `agy models` prints them as slugs, e.g. `gemini-3.6-flash-high`; the display
-label we pin resolves too, re-probed on 1.1.11), so the agy cell's MODEL is enforced like the
-others; its tier tops out at "(High)" (no Flash Max tier exists), so deep mode deepens
-the claude and codex seats only.
-Deep-mode members need up to ~800s each at max reasoning (measured on the current
-panel 2026-07-25: opus-5 565s, sol 374s; up to 796s on 2026-07-11): launch deep
-fan-outs in the background, or make sure any outer command cap exceeds
+string — `agy models` prints them as slugs, e.g. `gemini-3.7-flash-high`; the display
+label we pin resolves too, re-probed on 1.1.13 (2026-08-14)), so the agy cell's MODEL is
+enforced like the others; its tier tops out at "(High)" (no Flash Max tier exists), so
+deep mode deepens the claude and codex seats only.
+
+Deep-mode members can need well over ten minutes at max reasoning: RECALIBRATED
+2026-08-13 from six real deep councils, the codex seat's SUCCESSFUL runs measured
+753/928/983/1133/1138/1238s — which is why `MODE_TIMEOUT["deep"]` is 1800s, not the
+1200s an earlier, smaller sample supported. Launch deep fan-outs in the background, or
+make sure any outer command cap exceeds
 `--timeout × (retries+1)` — a killed fan-out loses its results, and a SIGKILL
 (unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
 

@@ -58,11 +58,15 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
-# applied at run time. `agy models` prints SLUGS (gemini-3.6-flash-high) since 1.1.5;
+# applied at run time. `agy models` prints SLUGS (gemini-3.7-flash-high) since 1.1.5;
 # the display label we pin is equally valid — agy's own model-resolution error lists
 # the labels, and both forms were verified live on 1.1.8 and RE-PROBED 2026-08-08 on
 # 1.1.11 — `agy models` lists slug and label side by side, and pinning the LABEL
 # resolved at invocation.
+# RE-PROBED 2026-08-14 on 1.1.13 with Gemini 3.7 Flash (High). NOTE the manifest's `model`
+# field is COPIED from MODES (see build_real_spec), so it cannot witness resolution; the
+# 2026-08-14 check read agy.cli.log for `Resolving model` and the ABSENCE of `not in local
+# config, defaulting to`.
 # agy 1.1.5 also added a
 # separate `--effort` flag; the engine deliberately does NOT pass it, because
 # build_real_spec derives the recorded tier by regexing the label — a second knob
@@ -76,24 +80,34 @@ MODES = {
     "normal": {
         "claude": {"model": "claude-opus-5",           "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
-        "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
+        "agy":    {"model": "Gemini 3.7 Flash (High)", "thinking": "high"},
     },
     "deep": {
         # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with
         # a garbage control on each: claude's help enumerates only low..max and
         # warn-and-IGNORES an unknown value (so a dropped tier would silently downgrade
         # this seat — the smoke asserts the warning's absence); codex accepts `ultra` and
-        # fails CLOSED on garbage with an API 400. agy refuses any tier above high.
+        # fails CLOSED on garbage with an API 400. agy refuses `--effort` outright on
+        # Gemini 3.7 Flash — all five values, not just those above high (see the agy
+        # cell below).
         "claude": {"model": "claude-opus-5",           "thinking": "ultracode"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
-        # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug,
-        # and `--effort` caps at high). RE-PROBED 2026-08-08 ON agy 1.1.11 — both
-        # `--effort ultra` and `--effort max` are refused with
-        # `invalid --effort ... (valid: low, medium, high)`, and `--mode plan` (the
-        # mechanical read-only barrier make_readonly uses) is still present. Earlier
-        # confirmations on 1.1.7 and 1.1.8 agreed. agy's deep seat therefore runs
-        # identically to normal; "high" keeps provenance truthful.
-        "agy":    {"model": "Gemini 3.6 Flash (High)", "thinking": "high"},
+        # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug), and
+        # on 3.7 `--effort` is not accepted AT ALL. RE-PROBED 2026-08-14 on agy 1.1.13 with
+        # Gemini 3.7 Flash (High), all five values: low|medium|high are refused with
+        # `--effort is not supported for model "Gemini 3.7 Flash (High)"`, ultra|max with
+        # `invalid --effort ... (valid: low, medium, high)`. All five land in the --log-file
+        # log as `Print mode: invalid model selection` (STDERR instead shows `Error: invalid
+        # model selection (...)`) and exit NON-ZERO — so not passing --effort is what keeps
+        # this seat ALIVE, not merely what keeps provenance tidy. The 2026-08-08 probe on
+        # 1.1.11/3.6 recorded `high` as a ceiling; 3.7 removed the knob. 1.1.7/1.1.8 agreed;
+        # `--mode plan` was present on 1.1.11 too — present is not effective, see
+        # make_readonly. tests/test_council_seat_validity.py pins that agy argv never carries
+        # `--effort`.
+        # `agy models` also lists `gemini-3.1-pro-high`; a Pro deep seat is UNPROBED
+        # (entitlement, latency, cost) and is the only candidate for making agy's deep seat
+        # differ from normal. See the plan's handover list.
+        "agy":    {"model": "Gemini 3.7 Flash (High)", "thinking": "high"},
     },
 }
 DEFAULT_MODE = "normal"
@@ -108,7 +122,7 @@ DEFAULT_MODE = "normal"
 # big deep prompts also prefer --retries 0/1: a member that rode the window once will ride it
 # again, and retries multiply the wait.
 # `forge` is a BUILD window, not a review window: a forge seat does the whole task in an
-# isolated clone — read, edit, test, commit — where `deep`'s 1200s sizes a single review turn.
+# isolated clone — read, edit, test, commit — where `deep`'s 1800s sizes a single review turn.
 # The inputs that exist are all review-shaped and already sit ~3x apart (claude 533s and codex
 # 876s on one review prompt during this design's own review; agy re-probed at 608s on a SIMPLE
 # prompt, recorded in build_real_spec), so an hour is chosen to clear a build strictly larger
@@ -867,7 +881,7 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
         # Since agy 1.1.1, `--model` pins the model per-run (thinking tier is encoded in
-        # the model string, e.g. "Gemini 3.6 Flash (High)"; `agy models` prints the slug
+        # the model string, e.g. "Gemini 3.7 Flash (High)"; `agy models` prints the slug
         # form of the same set, and both resolve) —
         # the settings.json read remains only as manifest-provenance fallback. Since 1.1.2
         # an unresolvable --model hard-fails non-zero instead of silently downgrading to
@@ -932,17 +946,29 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
     forbids writes — the executor can read/plan but cannot mutate config. Shared by the
     eval harness (executor runs) and reused by any read-only council mode.
 
-    agy's read-only flag is `--mode plan` (1.1.1+). `--sandbox` (the earlier candidate) BROKE agy
-    non-interactively: agy locates/reads files via terminal commands (find/grep) that the
-    sandbox's terminal restrictions block, so it stalls on "searching…" and hangs the full
-    engine window with EMPTY output — verified 2026-06-26 (--sandbox, even WITH
-    --dangerously-skip-permissions, never completes a file read; plain
-    --dangerously-skip-permissions reads + answers in seconds). So agy stays headless and its
-    read-only posture no longer rests on intent alone: since agy 1.1.1, `--mode plan`
-    works headless (probed 2026-07-11: reads files, answers fast, and mechanically blocked
-    a write it claimed to have made) — so the bypass flag is swapped for it, mirroring
-    claude's plan mode. Two soft layers remain on top: the READONLY_POSTURE prompt line
-    and isolate_agy_worktree (cwd-relative mutations land in a throwaway git worktree).
+    agy's read-only flag is `--mode plan` (accepted since 1.1.1). `--sandbox` (the earlier
+    candidate) BROKE agy non-interactively: agy locates/reads files via terminal commands
+    (find/grep) that the sandbox's terminal restrictions block, so it stalls on
+    "searching…" and hangs the full engine window with EMPTY output — verified 2026-06-26
+    (--sandbox, even WITH --dangerously-skip-permissions, never completes a file read;
+    plain --dangerously-skip-permissions reads + answers in seconds). So agy stays
+    headless and the bypass flag is swapped for `--mode plan` instead, mirroring claude's
+    plan mode.
+
+    WHAT IS VERIFIED, AND ON WHAT: on 1.1.13 (probed 2026-08-14) the flag reaches the run
+    — agy logs `printmode.go: Print mode: applying agent mode plan` and `manager.go:
+    SetCycleMode called: plan`, and a requested file creation produced a plan and NO file.
+    FOR 1.1.11 AND EARLIER THIS IS UNPROVEN AND PROBABLY FALSE: agy 1.1.12's changelog
+    says `--mode` was ignored in headless `-p` runs, and no archived read-only harness log
+    from the 1.1.8-1.1.11 era carries either line. The 2026-07-11 probe once cited here
+    could not settle it: isolate_agy_worktree landed 2026-07-11 11:58 and the plan-mode
+    claim was recorded 2026-07-11 23:01, so a cwd-relative write already had a second
+    sufficient explanation, and a model narrating a write it never attempted looks
+    identical. Treat the pre-1.1.13 period as posture-line + worktree only. Plan mode is a
+    CLI execution-mode guard, NOT OS filesystem containment.
+
+    Two soft layers remain on top: the READONLY_POSTURE prompt line and
+    isolate_agy_worktree (cwd-relative mutations land in a throwaway git worktree).
     HISTORY: `--sandbox` (the pre-1.1.1 candidate) hung agy headless — verified
     2026-06-26; do not resurrect it without re-probing."""
     if spec.name == "claude":
@@ -1756,8 +1782,9 @@ def _render_text(manifest: dict) -> str:
 
 # Prepended to the prompt (identically for every member) when the council runs
 # read-only. Defense in depth: every member is now mechanically constrained (claude
-# plan mode, codex sandbox, agy --mode plan since 1.1.1) — this line and the agy
-# worktree are the soft layers on top, added after agy executed a review-framed
+# plan mode, codex sandbox, agy --mode plan verified on 1.1.13 — see make_readonly) —
+# this line and the agy worktree are the soft layers on top, added after agy executed
+# a review-framed
 # prompt (editing files, re-seeding receipts, staging) on 2026-07-11. claude also gets
 # the plan-mode-specific READONLY_REVIEWER_NOTE via make_readonly — keep both in mind
 # when editing either wording. Says "as text", not "prose only": answers may still
@@ -2941,8 +2968,9 @@ def main(argv=None) -> int:
 
     # Read-only is the default council posture: claude/codex are mechanically
     # constrained (claude: plan mode + plan-file suppression; codex: read-only sandbox;
-    # agy: --mode plan since 1.1.1) — agy additionally gets a throwaway-worktree cwd so
-    # cwd-relative mutations are discarded (defense in depth). --allow-writes opts out. Applied after
+    # agy: --mode plan, verified on 1.1.13 — see make_readonly) — agy additionally gets a
+    # throwaway-worktree cwd so cwd-relative mutations are discarded (defense in depth).
+    # --allow-writes opts out. Applied after
     # overrides so a test override's binary is preserved (overrides replace argv[0]
     # only, so the bypass flag make_readonly swaps is always present).
     agy_wt = None
