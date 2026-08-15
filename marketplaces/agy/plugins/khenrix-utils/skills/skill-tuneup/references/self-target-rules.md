@@ -24,7 +24,9 @@ must NOT be its own reviewer:
 also extracts the OLD panel — a model bump is necessarily reviewed by the models it replaces,
 and the new panel never reviews its own diff. That is the intended independence, not a bug.
 The compensating control is integration evidence: smoke **every changed seat** with the
-working-tree engine (`--smoke` defaults to claude only — pass `--providers` or check the
+working-tree engine (pass `--providers` explicitly to isolate the changed seat and avoid
+spending on unrelated ones — note `--providers` DEFAULTS to `claude,codex,agy`, so
+`smoke()`'s `["claude"]` fallback is unreachable from the CLI; measured 2026-08-15 — or check the
 manifest's per-seat `model`/`thinking` provenance) and probe any timing claim the change
 alters. The smoke proves the seats resolve and answer; it is not a review of their judgment.
 

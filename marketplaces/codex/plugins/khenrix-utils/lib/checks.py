@@ -62,14 +62,27 @@ def model_crosscheck(root: Path) -> list[str]:
     except Exception as e:  # noqa: BLE001
         return [f"model-crosscheck: cannot import fanout.py: {e}"]
     caps = _load_caps(root)
-    registered = set()
-    for v in caps.get("models", {}).values():
-        if isinstance(v, list):
-            registered.update(v)
-    used = {cell["model"] for mode in fanout.MODES.values() for cell in mode.values()}
-    missing = sorted(m for m in used if m not in registered)
-    return [f"model-crosscheck: fanout MODES model '{m}' not in capabilities [models]"
-            for m in missing]
+    # PER-PROVIDER, not a flattened union. The union let a model registered under ANY
+    # provider satisfy a MODES cell for a DIFFERENT one — so a Gemini label mis-filed under
+    # `claude`, or a seat pointed at another provider's model, passed the lint silently.
+    # MODES cells and the [models] table are keyed by the same provider names, so the
+    # stricter check costs nothing and catches the mis-file this was blind to.
+    models = caps.get("models", {})
+    problems = []
+    for mode, cells in fanout.MODES.items():
+        for provider, cell in cells.items():
+            m = cell["model"]
+            reg = models.get(provider)
+            if not isinstance(reg, list):
+                problems.append(f"model-crosscheck: capabilities [models] has no list for "
+                                f"provider '{provider}' (used by MODES[{mode!r}])")
+            elif m not in reg:
+                where = next((p for p, v in models.items()
+                              if isinstance(v, list) and m in v), None)
+                extra = f" — it is registered under '{where}'" if where else ""
+                problems.append(f"model-crosscheck: fanout MODES[{mode!r}] model '{m}' not "
+                                f"in capabilities [models].{provider}{extra}")
+    return sorted(set(problems))
 
 
 def pricing_coverage(root: Path) -> list[str]:
@@ -324,6 +337,13 @@ SKILL_EXTRA = {
     # affecting by this closure's own definition, and reachable from no other entry here
     # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
     "llm-forge":       ["scripts/lib/checks.py"],
+    # tuneup.py's `approved_models()` reads capabilities [models] AT RUNTIME and
+    # `tag_model()` returns "current" vs "stale-candidate" from it — so registering a new
+    # model changes what skill-tuneup REPORTS while nothing staled its receipt. That is the
+    # same "a gate could be NARROWED" hole GLOBAL_INPUTS was written to close, and it went
+    # live on 2026-08-14 when Gemini 3.7 was registered: every skill still naming 3.6 kept
+    # being tagged `current` by a skill whose receipt said it was unchanged.
+    "skill-tuneup":    ["capabilities.toml"],
 }
 # Extra behavior-affecting DIRECTORIES per skill (rglob'd into the closure). The wiki
 # skills' SKILL.md drives a shared stdlib engine — editing it must stale both receipts.
