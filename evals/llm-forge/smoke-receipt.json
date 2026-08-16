@@ -1,8 +1,8 @@
 {
-  "adapter_sha256": "8b865f8568ab175d0346eab2a5ad412587efbc0f6d8235265da34b84adc29748",
+  "adapter_sha256": "fc54350bb8014c40bda6699ea82d9cff5870cbffbd1fb50013868ac070c25cca",
   "cli_versions": {
-    "agy": "1.1.11",
-    "claude": "2.1.220 (Claude Code)",
+    "agy": "1.1.13",
+    "claude": "2.1.233 (Claude Code)",
     "codex": "codex-cli 0.147.0"
   },
   "original_checkout_unchanged": true,
