@@ -466,6 +466,21 @@ def _receipt_is_certified(rec: dict) -> bool:
 CURRENT_RECEIPT_SCHEMA = 2
 
 
+def is_self_test_gated(rec: dict) -> bool:
+    """Does this receipt come from a deterministic suite rather than a judge panel?
+
+    ONE definition, because there are now two readers. `validate_receipt` uses it to
+    SKIP the provenance and full-panel checks; `verify-final-receipt` uses it to say
+    which gate it actually proved. That command used to print "receipt is full-panel"
+    unconditionally — including for the very skills exempted from the panel check — so
+    its success line asserted the one property it had deliberately not verified. Copying
+    the predicate into the CLI would have recreated the two-rulebook drift this module's
+    own docstring warns about, so it is exported instead.
+    """
+    return (rec.get("self_test") is True
+            or str(rec.get("blind_winner", "")).startswith("n/a-"))
+
+
 def validate_receipt(root: Path, skill: str, *, final: bool = False,
                      panel: list | None = None) -> list[str]:
     """The single source of receipt truth. Freshness + certification always; provenance,
@@ -526,8 +541,7 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
 
     # Self-test-gated skills earn their receipt from a deterministic suite, so a full
     # panel and per-provider deltas prove nothing extra about them.
-    self_test_gated = (rec.get("self_test") is True
-                       or str(rec.get("blind_winner", "")).startswith("n/a-"))
+    self_test_gated = is_self_test_gated(rec)
     # Whitelist the earned value rather than blacklisting a seeded one: the producer
     # writes "seeded: blessed current committed state", so an equality test against
     # "seed" was dead code — and that made `--seed-receipt` a one-flag way to make this

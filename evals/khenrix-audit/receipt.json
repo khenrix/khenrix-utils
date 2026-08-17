@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
   "skill": "khenrix-audit",
-  "source_hash": "82e7b15ba9368ac4039acd26912494917148460062a05dac0552a53158e28250",
+  "source_hash": "24f3ff6202176cba98ec477eb2135802ec619710319705cd81f1e300d50532b3",
   "eval_set_hash": "adc7fadfae229a06016de37b5b04a51bf707aaa8c8cd42784aeb1331105c8d85",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.6667,
+  "delta_pass_rate": 0.4444,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "claude": {
-      "delta": 0.6667,
+      "delta": 0.4444,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"

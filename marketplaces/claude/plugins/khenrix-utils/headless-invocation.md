@@ -123,7 +123,7 @@ stale checkout gives a confident wrong answer with a plausible citation.
 |---|---|---|
 | What JSONL events does `codex exec --json` emit, and which are terminal? | `codex-rs/exec/src/exec_events.rs` (full Rust source, Apache-2.0) | **read** — validates `extract_codex_json`, including that `item.completed` is terminal for the ITEM ("either success or failure") and so must NOT decide the turn |
 | What changed in claude between versions? | `anthropics/claude-code` CHANGELOG | **read** — the repo has no CLI source; the binary is compiled |
-| What does claude's JSON result contain? | the licensed install's `sdk-tools.d.ts` + a live probe | **verified 2026-07-29 on 2.1.220** |
+| What does claude's JSON result contain? | the licensed install's `sdk-tools.d.ts` + a live probe | **verified 2026-07-29 on 2.1.220; re-probed 2026-08-16 on 2.1.233, shape unchanged** |
 | What does agy emit headlessly? | no public source — live probe, plus `yuting0624/antigravity-for-claude-code` as a dated written record | **verified 2026-07-29 on 1.1.8** |
 
 Measured on 2026-07-29, not inferred:

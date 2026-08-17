@@ -357,7 +357,13 @@ council diff-review → record** (Steps 7–9 minus the checkpoint) until conver
   `deferred`-with-trigger, nothing risky awaiting sign-off, and (**full-gate targets only**)
   a green full-panel eval on exactly that candidate — if its last green eval wasn't
   full-panel, run the full panel ONCE on the unchanged candidate (that is the gate, not a
-  new cycle). A council-only target converges on the first three conditions alone; there is
+  new cycle). NOT for a self-test-gated target — anything `checks.is_self_test_gated` returns
+  True for (today: llm-council, the wiki pair, **and llm-forge**). Its receipt is earned by a
+  suite, `validate_receipt` exempts it from the panel check, and running a full panel there
+  spends tokens on a gate that does not exist — on llm-forge, the most expensive skill in the
+  repo. Ask the predicate rather than trusting this list: it was written naming three of the
+  four and the missing one was the costliest. `verify-final-receipt` names which of the two
+  gates it actually proved. A council-only target converges on the first three conditions alone; there is
   no KHENRIX receipt to earn, and claiming one would be a lie — report any target-native
   gate you ran separately, and never as a receipt. **Prove it, don't assert it** —
   `make precommit` only compares hashes, so a single-provider receipt satisfies it and this
@@ -367,9 +373,10 @@ council diff-review → record** (Steps 7–9 minus the checkpoint) until conver
 python3 "$TUNEUP" verify-final-receipt --repo "$REPO" --skill <target>   # exit 0 required
 ```
 
-  It checks the receipt is full-panel, was earned (not seeded), and matches the current
-  source; self-test-gated skills (llm-council, the wiki pair) are exempt from the panel
-  requirement because their receipts come from a test suite. It applies to the TARGET —
+  It checks the receipt was earned (not seeded), matches the current source, and is
+  full-panel UNLESS `checks.is_self_test_gated` exempts it — llm-council, the wiki pair and
+  llm-forge today — because those receipts come from a test suite and a panel proves nothing
+  extra about them. Its success line names which of the two it proved. It applies to the TARGET —
   cross-target receipts re-earned for a shared-file edit keep their own skill's gate.
 - **The eval-fix cap of 5 is RUN-GLOBAL, not per-cycle** — it counts fix-iterations on the
   target across every cycle, so a run cannot buy more attempts by starting another cycle.
@@ -396,8 +403,11 @@ python3 "$TUNEUP" convergence-status --repo "$REPO" --target <log_target>   # 0 
   not decisions — resolve the diagnosis first, then re-run. Severity is assigned when a
   finding is RECORDED, before you know whether fixing it ends the run — an untagged applied
   finding counts as serious, so forgetting can never end a run early. The rule needs TWO
-  markers: `run-start` once at Step 1, and `cycle-end` after each cycle's council review
-  carrying a REQUIRED monotonic `cycle` number. **`references/convergence-rules.md` has the
+  markers: `run-start` once at Step 1, and `cycle-end` carrying a REQUIRED monotonic `cycle`
+  number — written after that cycle's findings are RECORDED, not merely after its review ran.
+  `cycle_severity_counts` segments on this marker, so a `cycle-end` appended before its own
+  cycle's findings attributes them to the NEXT cycle and can report a clean cycle that was
+  not. Findings logged before the run's `run-start` are outside the count entirely. **`references/convergence-rules.md` has the
   reasoning for all of it** — read it before changing any of these rules.
 
 ```bash

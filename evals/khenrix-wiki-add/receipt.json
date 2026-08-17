@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
   "skill": "khenrix-wiki-add",
-  "source_hash": "86fb3e2a5cd452164e66aaa604183a175a11635efde2ef4d76e863fbe51fd7ea",
+  "source_hash": "755c1c8e11155fafa87f477e0287bd4f912b683a01c68227876d55ddf4f3938a",
   "eval_set_hash": "aed9f752fefb80217ee70a83ac3018f6773829b8035782402a6e1fd18a265ef5",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1111,
+  "delta_pass_rate": 0.0,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "per_provider": {
     "claude": {
-      "delta": 0.1111,
+      "delta": 0.0,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
@@ -35,7 +35,7 @@
     "/home/khenrix/git/khenrix-utils/shared/lib/wikisync/tests"
   ],
   "gate_counts": {
-    "tests_run": 92,
+    "tests_run": 93,
     "skipped": 0,
     "failed": 0
   }

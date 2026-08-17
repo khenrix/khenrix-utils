@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
   "skill": "hookify",
-  "source_hash": "ece1151e96a930ca7423a5b6da6e86b048a66a38540216b1e88fe70f6d6fdc45",
+  "source_hash": "b27b5d28f0f1f4b4b45dee37cbd9e05f0f110c3a6218ede0da7a8d36286c8c1f",
   "eval_set_hash": "b7ae260500cdd9772b98bb4cd1c594d1a2a33b995b160e6a290a83240933dc08",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.3333,
-  "blind_winner": "tie",
+  "delta_pass_rate": 0.4583,
+  "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "claude": {
-      "delta": 0.3333,
+      "delta": 0.4583,
       "quantum": 0.0833,
       "n_evals": 4,
       "status": "ok"

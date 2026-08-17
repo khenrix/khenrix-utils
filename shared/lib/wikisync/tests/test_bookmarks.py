@@ -110,13 +110,35 @@ class TestEmptyReadCannotAuthoriseRemoval(unittest.TestCase):
 
 class TestChromeProfileIsDiscovered(unittest.TestCase):
     """The default was one machine's literal path, so `probe` reported bookmarks:false
-    everywhere else — including this machine, whose Windows user and profile both differ."""
+    everywhere else. On THIS machine the Windows username matches that literal and only the
+    profile differs — which is what made the original substring guard undiscriminating."""
 
-    def test_default_is_not_a_hardcoded_username(self):
+    def test_default_discovers_the_username_it_finds(self):
+        """Prove DISCOVERY, not the absence of one machine's string.
+
+        This asserted `"/chris/" not in got`. That guard stopped discriminating on any
+        machine whose Windows user IS `chris` — the hardcoded literal it was written to
+        catch and the correctly discovered answer are the same text there, so it failed on
+        the CORRECT behaviour and blocked both wiki receipts. A fixture with a username no
+        machine has makes the two states distinguishable again: a hardcoded default cannot
+        follow it, and discovery must.
+        """
         from wikisync.config import _default_chrome_profile
-        got = _default_chrome_profile()
-        self.assertNotIn("/chris/", got, "the one-machine literal is back")
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        who = "wikisync-fixture-user"
+        prof = root / who / "AppData/Local/Google/Chrome/User Data/Default"
+        prof.mkdir(parents=True)
+        (prof / "Bookmarks").write_text("{}")
+        got = _default_chrome_profile(root)
+        self.assertIn(who, got, "did not follow the fixture — the default is not discovered")
         self.assertTrue(got.endswith("Bookmarks"), got)
+
+    def test_default_falls_back_when_nothing_is_found(self):
+        from wikisync.config import _default_chrome_profile
+        empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        got = _default_chrome_profile(empty)
+        self.assertTrue(got.endswith("Bookmarks"), got)
+        self.assertIn("/mnt/c/Users/Default/", got)
 
     def test_it_finds_a_real_profile_when_one_exists(self):
         from wikisync.config import _default_chrome_profile

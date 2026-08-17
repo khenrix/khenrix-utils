@@ -1,6 +1,6 @@
 ---
 name: llm-council
-description: Run the same prompt across all three CLIs on this machine (Claude, Codex, agy) headlessly, then synthesize the single best answer from their three independent responses — a cross-model "council" for high-stakes questions. Use this whenever the user wants a second opinion, cross-model consensus, to "ask all three", to compare what different models say, or maximum confidence on a hard, important, or ambiguous question (architecture decisions, tricky debugging, risky changes, judgment calls). Also trigger on "llm-council", "council", "ask the other CLIs", "what do codex/agy think", or any request to poll several LLMs and merge their answers. Costs roughly 3x a normal turn (three full agent runs), so prefer it when the decision justifies the spend.
+description: Run the same prompt across all three CLIs on this machine (Claude, Codex, agy) headlessly, then synthesize the single best answer from their three independent responses — a cross-model "council" for high-stakes questions. Use this whenever the user wants a second opinion, cross-model consensus, to "ask all three", to compare what different models say, or maximum confidence on a hard, important, or ambiguous question (architecture decisions, tricky debugging, risky changes, judgment calls). Also trigger on "llm-council", "council", "ask the other CLIs", "what do codex/agy think", or any request to poll several LLMs and merge their answers. Costs roughly 3x a normal turn (three full agent runs) — a floor, and `--mode deep` costs more — so prefer it when the decision justifies the spend.
 allowed-tools: Bash, Read
 ---
 
@@ -19,7 +19,8 @@ running the three CLIs in parallel, validating each result, and retrying failure
 fan-out in bash; run the engine and synthesize from its manifest.
 
 > **Cost & when to use.** This runs three full agent turns in parallel (including a
-> fresh headless run of *this* CLI), so it costs ~3x a normal turn. Use it for
+> fresh headless run of *this* CLI), so it costs ~3x a normal turn — a FLOOR, and for
+> `--mode deep` only a floor (see Models & thinking modes). Use it for
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
 > not routine tasks.
 >
@@ -112,7 +113,12 @@ seat's reasoning tier and how hard the others think:
 - **`deep`** — Opus 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
   above High exists) + a longer timeout. Use for genuinely high-stakes /
   maximum-confidence asks (architecture, risky changes), or when the user says "deep",
-  "think hard", or "maximum confidence".
+  "think hard", or "maximum confidence". **Deep is not bounded by the ~3x figure above.**
+  That figure counts three top-level seats; codex 0.147.0 ships a sub-agent capability
+  (`max_concurrent_threads_per_session`, `default_subagent_reasoning_effort`) and the
+  engine passes no `agents.enabled=false`, so a deep Sol seat may do more than one model
+  turn. Whether `ultra` delegates *proactively* is UNMEASURED here — the honest statement
+  is that deep's ceiling is not known to be 3x, not that it is.
 
 `ultracode` and `ultra` are real but **undocumented** tiers (probed 2026-08-05, each with
 a garbage-value control): claude's `--help` lists only `low…max` yet accepts `ultracode`

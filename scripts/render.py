@@ -214,12 +214,24 @@ def render():
                 shutil.rmtree(dst)
             shutil.copytree(ROOT / d, dst,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        # 2. copy shared skills (canonical bodies) into the plugin
+        # 2. copy shared skills (canonical bodies) into the plugin.
+        # The ignore list is defence in depth: it keeps bytecode out of the copy in the first
+        # place, independently of the sweep at the end of this loop — which is the mechanism
+        # `tests/test_render_packaging.py` actually pins, and which would clean up after this
+        # line even if it were dropped. This was the ONE copytree here
+        # without it, so running any bundled script before a render (a `--self-test`, an
+        # eval) left a `scripts/__pycache__/` that got copied into all three plugins and
+        # then shipped into every live CLI install by refresh.py. The bytecode is gitignored
+        # at both ends, so git never showed it and the render looked clean. It also made the
+        # rendered tree depend on which interpreters had happened to run — this machine
+        # carried both cpython-313 and cpython-314 copies. Same patterns as the other four
+        # calls, and the same exclusion `checks.py` already applies to the receipt closure.
         for s in shared_skills:
             dst = pdir / "skills" / s.name
             if dst.exists():
                 shutil.rmtree(dst)
-            shutil.copytree(s, dst)
+            shutil.copytree(s, dst,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         # 3. bundle the shared engine/helper scripts into every skill's scripts/
         skills_root = pdir / "skills"
         if skills_root.exists():
@@ -239,6 +251,30 @@ def render():
                     shutil.rmtree(dst)
                 shutil.copytree(src, dst,
                                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
+        # Belt to the ignore-patterns' braces. Those only filter what a copy BRINGS IN;
+        # bytecode also APPEARS IN PLACE whenever anything imports a module from the
+        # rendered tree, and the paths built with copy2 into an existing dir (lib/) are
+        # never rmtree'd, so that residue survives every later render.
+        #
+        # WHAT THIS GUARANTEES, PRECISELY: the render -> sync window. `refresh.py` renders
+        # and then copies with `copytree(..., dirs_exist_ok=True)` and no ignore list, so
+        # whatever is here at render time is what reaches the live CLI installs. refresh.py
+        # sweeps `__pycache__` at the destination too — that is a SECOND, independent guard
+        # covering the residue a merge cannot remove, not this one.
+        # WHAT IT DOES NOT: hold afterwards. Any later import re-dirties this tree within
+        # seconds, and NOTHING detects that — `render.py --check` runs validate_skill +
+        # a tomllib parse + checks.run_all and compares nothing, while precommit's real
+        # drift check (`git diff --quiet -- marketplaces/`, Makefile) is structurally blind
+        # here because .gitignore excludes `__pycache__/` and `*.pyc` at both ends. Measured
+        # 2026-08-16: 106 .pyc reappeared under marketplaces/ within the hour after a clean
+        # render. Treat this as hygiene at the shipping boundary, not an invariant.
+        #
+        # `list()` is load-bearing: rglob is lazy, so deleting a directory the walker has
+        # not finished descending is a mutation-during-iteration. 3.13's glob wraps scandir
+        # in `except OSError` and tolerates it; this repo supports 3.11+, whose older
+        # selector catches only PermissionError. Materialize before deleting.
+        for cache in list(pdir.rglob("__pycache__")):
+            shutil.rmtree(cache, ignore_errors=True)
     if problems:
         print("RENDER FAILED:")
         for p in problems:

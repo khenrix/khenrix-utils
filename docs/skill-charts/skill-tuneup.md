@@ -37,8 +37,8 @@ flowchart TD
     end
 
     G_CHECK -- approved --> APPLY
-    G_CONV -- converged --> G_RECEIPT{verify-final-receipt:<br/>earned, full-panel, current?}
-    G_RECEIPT -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate] --> G_RECEIPT
+    G_CONV -- converged --> G_RECEIPT{verify-final-receipt:<br/>earned, panel-or-self-test, current?}
+    G_RECEIPT -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate<br/>—not for a self-test-gated target] --> G_RECEIPT
     G_RECEIPT -- yes --> G_PRE{make precommit clean?}
     G_PRE -- no --> FIXPRE[fix in-scope, hand off unrelated] --> G_PRE
     G_PRE -- yes --> SHIP[one commit + khenrix-refresh<br/>+ release the lock] --> DONE([done])
@@ -55,5 +55,5 @@ flowchart TD
 | G_EVAL | code | `scripts/eval_harness.py::gate_ok` — the delta gate itself; the cap-5 rule beside it is an agent rule (SKILL.md non-negotiable) |
 | G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def review_material` — exits 2 on a git error rather than returning "", because an empty result is what tells Step 9 there is nothing to review |
 | G_CONV | code | `shared/skills/skill-tuneup/scripts/tuneup.py::a clean final cycle converges` |
-| G_RECEIPT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def verify_final_receipt` |
+| G_RECEIPT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def verify_final_receipt` and `scripts/lib/checks.py::def is_self_test_gated` |
 | G_PRE | code | `Makefile::precommit` |

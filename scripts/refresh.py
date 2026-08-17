@@ -64,6 +64,14 @@ def sync(cli: str) -> list[str]:
         return [f"{cli}: not installed (run `make setup-{cli}`)"]
     for d in dests:
         shutil.copytree(src, d, dirs_exist_ok=True)
+        # `dirs_exist_ok=True` merges and never deletes, so a clean source cannot remove
+        # what an earlier sync already put here — and bytecode also appears in place when a
+        # CLI imports these modules from the install. Closing the tap in render.py leaves
+        # the puddle: measured 2026-08-16, the three live installs still held 25 .pyc after
+        # the source tree was clean. Sweep the destination too, for the same reason and with
+        # the same idiom (see render.py: `list()` before deleting, rglob is lazy).
+        for cache in list(Path(d).rglob("__pycache__")):
+            shutil.rmtree(cache, ignore_errors=True)
         notes.append(f"{cli}: synced → {d}")
     return notes
 

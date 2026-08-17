@@ -55,7 +55,9 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # claude-opus-5[1m] long-context variant would price headroom these runs don't use.
 # Prompt size is caller-controlled, though — for an unusually large one, override per run
 # with `--model-claude "claude-opus-5[1m]"` rather than repinning the seat.
-# `thinking` is an ABSTRACT tier (high|max); build_real_spec maps it to each
+# `thinking` is an ABSTRACT tier — high|max for `normal`, plus the undocumented
+# `ultracode`/`ultra` that `deep` uses and CLAUDE_EFFORT/CODEX_EFFORT pass through
+# verbatim via `.get(t, t)`; build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
 # applied at run time. `agy models` prints SLUGS (gemini-3.7-flash-high) since 1.1.5;
@@ -83,13 +85,23 @@ MODES = {
         "agy":    {"model": "Gemini 3.7 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with
-        # a garbage control on each: claude's help enumerates only low..max and
-        # warn-and-IGNORES an unknown value (so a dropped tier would silently downgrade
-        # this seat — the smoke asserts the warning's absence); codex accepts `ultra` and
-        # fails CLOSED on garbage with an API 400. agy refuses `--effort` outright on
-        # Gemini 3.7 Flash — all five values, not just those above high (see the agy
-        # cell below).
+        # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with a
+        # garbage control on each: claude's help enumerates only low..max yet accepts
+        # `ultracode` and warn-and-IGNORES an unknown value; codex accepts `ultra` and fails
+        # CLOSED on garbage with an API 400; agy refuses `--effort` outright on Gemini 3.7
+        # Flash — all five values, not just those above high (see the agy cell below).
+        #
+        # A DROPPED TIER WOULD SILENTLY DOWNGRADE THE CLAUDE SEAT, AND NOTHING AT RUNTIME
+        # DETECTS IT. This comment used to claim "the smoke asserts the warning's absence".
+        # It never did: `smoke()` scores a seat on `valid` plus the word "pong" and never
+        # reads stderr, `make smoke-llm-council` runs NORMAL mode so `ultracode` is not
+        # exercised by any repeatable command, and "unknown --effort" is in no sentinel list,
+        # so a downgraded seat classifies `ok`. The 2026-08-05 check was a one-off manual read
+        # of one run's stderr, which this comment silently promoted into an assertion. What IS
+        # enforced now is the WIRING: `_self_test` asserts build_real_spec emits `--effort
+        # ultracode` for claude, `model_reasoning_effort="ultra"` for codex, and NO `--effort`
+        # for agy under MODES["deep"]. That catches the typo class; upstream REMOVAL of a tier
+        # still needs a live probe.
         "claude": {"model": "claude-opus-5",           "thinking": "ultracode"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug), and
@@ -159,10 +171,36 @@ MODE_TIMEOUT = {"normal": 900, "deep": 1800, "forge": 3600}
 # header still prints `reasoning effort: ultra`, and claude's --help still omits
 # `ultracode` while accepting it. The versions are stamped because a claim carrying a
 # version it was NOT checked against is the provenance defect this repo keeps finding.
+# RE-PROBED 2026-08-16 on claude 2.1.233 / codex 0.147.0 / agy 1.1.13 — appended, not
+# overwritten, because a dated measurement is evidence and the later one does not repeal it.
+# COVERED: claude accepts `ultracode` silently (is_error false, stderr empty); claude's
+# garbage control still warn-and-ignores, and its warning now NAMES the domain
+# ("Valid values: low, medium, high, xhigh, max"), which is the enumeration `--help` shows
+# on its wrapped continuation line — so `ultracode` remains real-but-undocumented; codex
+# accepts `model_reasoning_effort="ultra"`, rc=0; `agy --help` still lists low|medium|high.
+# NOT COVERED, and deliberately not restamped: codex's exec-header line above. `codex exec
+# --json` evacuates that transcript from stderr (see extract_codex_json), so the 2026-08-08
+# reading of it was not reproduced here and is left carrying its own date.
 CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,high,xhigh,max
-# gpt-5.6-sol accepts low/medium/high/xhigh/max/ultra (probed 2026-07-11); "ultra" is
-# deliberately unused — it spawns internal sub-agents (a council inside a council member)
-# and is Pro-plan-gated, so deep mode maps to "max".
+# gpt-5.6-sol accepts low/medium/high/xhigh/max/ultra (probed 2026-07-11; `ultra` re-probed
+# 2026-08-16 on 0.147.0, accepted, rc=0). normal maps to "high"; deep uses "ultra", which is
+# absent from this table and reaches the CLI through `.get(t, t)` — see MODES["deep"].
+# This comment previously said "ultra" was deliberately UNUSED because it spawns internal
+# sub-agents and is Pro-plan-gated. 5bf93cd (2026-08-07) adopted `ultra` for deep and verified
+# it live, leaving this sentence behind as an untouched context line.
+# The "deliberately unused" inference is retracted outright — MODES["deep"] uses it, which the
+# S13b assertion now pins. The PRO-GATING claim is SCOPED, not falsified, and the distinction
+# matters: six successful deep councils and the 2026-08-16 rc=0 probe all ran on THIS codex
+# account, and success is equally consistent with "not gated" and "gated, and this account
+# qualifies". Nothing here establishes the tier, so the honest statement is: ultra is not
+# gated for this machine's account; gating elsewhere is UNTESTED. Settling it means reading
+# codex-rs (`make cli-sources`), not another black-box probe.
+# Sub-agents are a SEPARATE codex feature
+# — `max_concurrent_threads_per_session` / `default_subagent_reasoning_effort` in
+# ~/.codex/config.toml, plus a spawn tool — available at any effort and not a property of
+# the tier. If recursion cost ever needs bounding on this seat, the lever is a `-c` override
+# in its argv, not the effort value. LLM_COUNCIL_DEPTH guards a COUNCIL nested in a member;
+# it would not guard codex-internal sub-agents.
 CODEX_EFFORT = {"high": "high", "max": "max"}
 
 # A seat whose MODEL is the plausible cause of its failure retries on this model instead
@@ -648,8 +686,11 @@ def extract_usage(name: str, stdout: str) -> Optional[dict]:
       * claude - the `usage` object in its --output-format json result, declared in the
         LICENSED package's own `sdk-tools.d.ts` (input_tokens, output_tokens,
         cache_creation_input_tokens, cache_read_input_tokens) and confirmed by probing
-        2.1.220. It also reports `total_cost_usd`, which the CLI computes itself — so for
-        this seat the cost is measured upstream rather than derived from pricing.toml.
+        2.1.220; RE-PROBED 2026-08-16 on 2.1.233 — all four usage fields plus
+        `total_cost_usd` and `is_error` still present, so the shape has not drifted and cost
+        accounting is intact. It also reports `total_cost_usd`, which the CLI computes
+        itself — so for this seat the cost is measured upstream rather than derived from
+        pricing.toml.
 
     Returns None when a CLI reports nothing usable. Absent beats invented — a wrong cost is
     worse than no cost, and every field above was read off source or a live probe, never a
@@ -805,7 +846,10 @@ class ProviderSpec:
     stdin: Optional[str]             # text piped to stdin, or None
     extract: Callable[[str], tuple[str, Optional[str]]]
     model: Optional[str] = None
-    thinking: Optional[str] = None   # abstract tier (high|max) recorded for provenance
+    # The provider-resolved reasoning tier, recorded for provenance — NOT an exhaustive
+    # enum. MODES supplies high|max|ultracode|ultra, and the agy branch instead DERIVES it
+    # from the model label, so low|medium reach this field too (see build_real_spec).
+    thinking: Optional[str] = None
     log_file: Optional[str] = None   # if set, scanned for sentinels on failure
     cwd: Optional[str] = None        # if set, the provider runs from this directory
     sentinel: Optional[str] = None   # per-run proof-of-reading token this seat must quote
@@ -853,8 +897,10 @@ def swap_model(argv: list, name: str, old: str, new: str):
 
 def build_real_spec(name: str, prompt: str, timeout: int,
                     cfg: dict, workdir: Path) -> ProviderSpec:
-    """cfg maps provider -> {"model": str, "thinking": "high"|"max"} (from MODES,
-    with per-run --model-* overrides already merged in by resolve_mode_config)."""
+    """cfg maps provider -> {"model": str, "thinking": "high"|"max"|"ultracode"|"ultra"}
+    (from MODES, with per-run --model-* overrides already merged in by
+    resolve_mode_config). `deep` uses the last two tiers, which are absent from
+    CLAUDE_EFFORT/CODEX_EFFORT and pass through `.get(t, t)` verbatim."""
     pc = cfg.get(name, {})
     model, thinking = pc.get("model"), pc.get("thinking")
     if name == "claude":
@@ -2154,6 +2200,27 @@ def self_test() -> int:
     check("sentinel: prose about needing a newer version stays retryable",
           classify_sentinel("this feature requires a newer version of the agy CLI; "
                             "the request also hit a 503") == "error_sentinel")
+
+    # S13b — the DEEP tiers actually reach the CLIs. `ultracode`/`ultra` are absent from
+    # CLAUDE_EFFORT/CODEX_EFFORT and survive only via `.get(t, t)`, so a typo in MODES or a
+    # "tidying" of those tables would silently downgrade two seats: claude warn-and-IGNOREs
+    # an unknown --effort, and the manifest copies `thinking` from MODES so it cannot
+    # witness resolution. It does NOT cover upstream REMOVAL of a tier — that needs a live
+    # probe, and the comment in MODES["deep"] says so.
+    # The claude and codex halves are asserted nowhere else. The agy half IS duplicated —
+    # tests/test_council_seat_validity.py::test_agy_argv_never_carries_effort loops every
+    # MODES entry and matches more spellings — and is kept deliberately: that suite runs
+    # under `make verify`, whereas llm-council's RECEIPT is certified by `fanout --self-test`
+    # alone, so only a check living here is bound to the gate that certifies this skill.
+    _dc = build_real_spec("claude", "q", 30, MODES["deep"], wd("deep"))
+    check("deep: claude seat carries --effort ultracode",
+          "--effort" in _dc.argv and "ultracode" in _dc.argv)
+    _dx = build_real_spec("codex", "q", 30, MODES["deep"], wd("deep"))
+    check("deep: codex seat carries model_reasoning_effort=ultra",
+          any('model_reasoning_effort="ultra"' in str(a) for a in _dx.argv))
+    _da = build_real_spec("agy", "q", 30, MODES["deep"], wd("deep"))
+    check("deep: agy seat still carries NO --effort (3.7 refuses every value)",
+          "--effort" not in _da.argv)
 
     # S14 — make_readonly argv contracts (plan-file suppression is mechanical + prompt).
     cl = build_real_spec("claude", "q", 30, {"claude": {"model": "m", "thinking": "high"}}, wd("ro"))

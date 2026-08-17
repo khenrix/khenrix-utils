@@ -847,6 +847,32 @@ def _self_test() -> int:
                        {"providers": ["claude"], "provenance": "eval", "self_test": True})))
         ok.append(("missing receipt is reported",
                    "no receipt" in " ".join(verify_final_receipt(r, "zeta", ["claude"]))))
+        # THE SUCCESS LINE IS THE BEHAVIOUR, so assert it through the CLI. The checks above
+        # call verify_final_receipt() directly and only ever inspect PROBLEMS, so the
+        # message printed when there are none was unpinned: this command spent a long time
+        # announcing "receipt is full-panel" for the very skills it EXEMPTS from the panel
+        # check, and reverting to that wording would still leave every gate green. Only
+        # main() chooses the wording, so only a CLI-level run can witness it.
+        _chk = _load_checks()
+
+        def _say(extra: dict) -> tuple[int, str]:
+            rec = {"schema_version": 2, "skill": "alpha", "providers": ["claude", "codex", "agy"],
+                   "provenance": "eval", "certified_by": "delta-gate",
+                   "per_provider": {"claude": {}},
+                   "source_hash": _chk.source_hash(r, "alpha"),
+                   "eval_set_hash": _chk.eval_set_hash(r, "alpha"), **extra}
+            ev.joinpath("receipt.json").write_text(json.dumps(rec))
+            p = subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                                "verify-final-receipt", "--repo", str(r), "--skill", "alpha"],
+                               capture_output=True, text=True)
+            return p.returncode, p.stdout
+        _rc_panel, _out_panel = _say({})
+        _rc_self, _out_self = _say({"self_test": True, "certified_by": "some --self-test"})
+        ok.append(("CLI: a judge-gated receipt is announced as full-panel",
+                   _rc_panel == 0 and "full-panel and matches source" in _out_panel))
+        ok.append(("CLI: an EXEMPT receipt is not announced as full-panel",
+                   _rc_self == 0 and "panel-exempt" in _out_self
+                   and "is full-panel" not in _out_self))
     # severity-gated convergence: the rule that replaced the fixed cycle cap
     def _hist(counts, tail=0):
         e = [{"finding_id": RUN_START, "decision": "applied"}]
@@ -1578,7 +1604,18 @@ def main(argv=None) -> int:
                 print(f"  ✗ {p}")
             print("FINAL GATE NOT PROVEN — do not record convergence")
         else:
-            print(f"final gate proven: {args.skill} receipt is full-panel and matches source")
+            # Name the gate that ACTUALLY ran. A self-test-gated skill is exempt from the
+            # panel check, so claiming "full-panel" for it asserted the one thing this
+            # command deliberately did not verify.
+            _rp = repo / "evals" / args.skill / "receipt.json"
+            try:
+                _exempt = _load_checks().is_self_test_gated(json.loads(_rp.read_text()))
+            except Exception:
+                _exempt = False   # unreadable receipt cannot have produced `problems == []`
+
+            _how = ("self-test-gated (panel-exempt) and matches source" if _exempt
+                    else "full-panel and matches source")
+            print(f"final gate proven: {args.skill} receipt is {_how}")
         return 1 if problems else 0
     elif args.cmd == "stale-models":
         approved = approved_models(repo, args.approved)

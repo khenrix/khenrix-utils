@@ -18,22 +18,32 @@ def _default_state_dir() -> Path:
     return Path(base) / "khenrix-wiki-sync"
 
 
-def _default_chrome_profile() -> str:
+def _default_chrome_profile(users_root: str | Path = "/mnt/c/Users") -> str:
     """WSL path to the live Chrome Bookmarks JSON (read directly — no manual export).
 
     DISCOVERED, NOT HARDCODED. This returned one machine's literal
-    `/mnt/c/Users/<name>/.../Profile 3/Bookmarks`, so on every other machine — including
-    this one, whose Windows user and profile are both different — `probe` reported
-    `bookmarks: false` and the whole channel silently went unavailable. A default that is
-    right on exactly one machine is a default that is wrong.
+    `/mnt/c/Users/<name>/.../Profile 3/Bookmarks`, so on every other machine `probe`
+    reported `bookmarks: false` and the whole channel silently went unavailable. A default
+    that is right on exactly one machine is a default that is wrong. (On THIS machine the
+    Windows username happens to match that literal and only the PROFILE differed — which is
+    precisely why the guard below had to stop testing the string and start testing the
+    mechanism.)
 
     Prefers `Default` because that is the profile Chrome creates first, then falls back to
     the largest `Profile N` Bookmarks file: size is the best available proxy for "the one
     actually in use" without opening any of them. Returns the conventional path unchanged
     when nothing is found, so the caller's `is_file()` probe still reports honestly rather
     than this raising at import time.
+
+    `users_root` exists ONLY so the regression guard can prove DISCOVERY rather than
+    inspect a string. Its predecessor asserted the result did not contain `/chris/`, which
+    silently stopped discriminating the moment the machine running it had a Windows user of
+    that name: the hardcoded literal it was written to catch and the correct discovered
+    answer are then textually identical, and the guard fails on the CORRECT behaviour.
+    Pointing this at a fixture whose username is known-different tests the mechanism, and
+    is the same on every machine. No production caller passes it.
     """
-    candidates = sorted(Path("/mnt/c/Users").glob(
+    candidates = sorted(Path(users_root).glob(
         "*/AppData/Local/Google/Chrome/User Data/*/Bookmarks"))
     if not candidates:
         return "/mnt/c/Users/Default/AppData/Local/Google/Chrome/User Data/Default/Bookmarks"

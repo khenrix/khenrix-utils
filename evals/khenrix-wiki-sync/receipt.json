@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "khenrix-wiki-sync",
-  "source_hash": "c4ed16bd466eb9440377ed147f3ba9c154ad778d2741122318145ba6b4ab1e6d",
+  "source_hash": "3d91cd2eb96d8393aa67ba76947e72547481bb5ae993af71263422705edb1170",
   "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
   "providers": [
     "claude"
@@ -35,7 +35,7 @@
     "/home/khenrix/git/khenrix-utils/shared/lib/wikisync/tests"
   ],
   "gate_counts": {
-    "tests_run": 92,
+    "tests_run": 93,
     "skipped": 0,
     "failed": 0
   }
