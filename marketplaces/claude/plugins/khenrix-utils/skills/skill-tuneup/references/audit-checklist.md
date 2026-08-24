@@ -98,6 +98,61 @@ beats completeness.
 - A fix applied to one provider's code path must say why the others need none — "not
   applicable" is a finding, silence is not.
 
+## 10. Changed-contract counterexample review
+
+Apply this protocol whenever a diff changes a producer, consumer, persisted shape, state
+transition, identity/snapshot boundary, compatibility path, or gate verdict. A path list is
+not a contract inventory.
+
+For a large surface, decompose it before review using the sibling `mikado-graph` method:
+make each independently mergeable changed contract a graph node, prerequisites its children,
+and review ready leaves first. Split a leaf again if it still contains more than one state
+transition. Multiple independent contracts or a truncated review diff automatically qualify;
+never call the monolith reviewed while any leaf remains unaccounted for.
+
+Review independent ready leaves concurrently when coordinator-owned agent slots and machine
+resources permit, then run one seam and whole-diff pass after they join. Provider-internal
+children do not count as extra council seats or independent evidence unless the council manifest
+mechanically records their topology, read-only boundary, completion, model/effort, and cost;
+prompt-only claims of delegation prove none of those things.
+
+Build one row per contract cell:
+
+| cell | producer(s) | consumer(s) | state / invariant | transition | probes | evidence |
+|---|---|---|---|---|---|---|
+
+List every producer and consumer, including validators, migrations, legacy readers, receipt
+writers, and rendered or cached copies. For every cell, run or trace every applicable family:
+
+- inverse direction;
+- missing versus explicit null;
+- duplicate versus malformed;
+- boundary, tie, and open states;
+- lifecycle ordering and interruption;
+- identity and path substitution;
+- mutation after snapshot/capture;
+- legacy/bootstrap input;
+- a positive control proving the probe harness and ordinary valid path work.
+
+Use exactly one evidence label per probe or finding:
+
+- `EXECUTED_NOW` — the current candidate ran in this run and its raw output was inspected.
+- `TRACED_COUNTEREXAMPLE` — an exact input and complete producer-to-consumer path were traced,
+  but not executed.
+- `INSPECTED_ONLY` — source or a hunk was read without demonstrating the claimed behavior.
+- `UNINSPECTED` — the surface was not examined; state why and what shipping risk remains.
+
+Do not stop at the first blocker. Continue across every independent cell and applicable
+probe. If a blocker makes a later probe meaningless, label that probe `UNINSPECTED`, fix the
+blocker, then rerun the whole affected leaf. Record one independent counterexample per
+`finding_id`; related failures may cross-link one root cause but may not be bundled into one
+finding whose partial fix would hide the remainder.
+
+Council verdicts are hypotheses, not evidence. The coordinator independently executes the
+counterexample or retraces it from the supplied artifact before accepting, rejecting, or
+applying it, then assigns the label. End with the complete cell roster and an explicit list
+of every `UNINSPECTED` surface; silence never means not applicable.
+
 ## What makes a finding `risky` (requires explicit sign-off)
 
 Behavior change to what the skill delivers · any model-ID change · a new dependency ·

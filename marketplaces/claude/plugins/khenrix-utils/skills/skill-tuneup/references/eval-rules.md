@@ -77,6 +77,17 @@ Classify every failure before touching anything:
 | Invalid run — judge | `errors == 1` with `reason: "judge returned no verdict"` — the *answer* was fine; the grade is the artifact | Also not a regression, and `TIMEOUT=` won't help: the judge already retries twice. Plain re-run, then check the judge model/quota. Same cap exemption |
 | Flaky / judge noise | same input passes sometimes | re-run ONCE; if it passes, accept and note it — do NOT edit the skill to chase a noisy grader |
 
+## Raw regrade for changed contracts
+
+For every eval case mapped to a changed contract cell, open both conditions' raw
+`answer.md` and `grading.json` plus the iteration's `benchmark.json`. Independently regrade
+the frozen answers against the canonical assertions and recompute the affected counts; do
+not accept a judge observation, summary, blind verdict, or receipt as semantic
+authentication. A false green is an `Eval-gap` or real regression and must be fixed and
+rerun. Label each regraded case with the counterexample protocol's evidence labels, and
+carry every applicable case not regraded as `UNINSPECTED` with its ship impact. A green
+receipt proves that its named harness ran, not that its semantic grades survived this check.
+
 An invalid run **biases** the delta rather than merely adding noise: it scores 0 and is
 averaged into its own side, so a with_skill error sinks the delta and a **baseline** error
 inflates it. The gate now fails closed on any invalid run (where the delta is the gate), so

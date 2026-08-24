@@ -47,7 +47,12 @@ covers agy, which has no native skill tooling at all.
    fails). The blind A/B winner is **recorded but advisory**: use it to triage a weak/zero
    delta, never to veto a non-negative one. For a deterministic target, the named certifier
    is the gate and all judged deltas/winners are advisory.
-7. **Only then** verify the final receipt and run the repository's `make precommit` gate
+7. **Regrade changed contracts from raw artifacts.** For every case mapped to a changed
+   contract, inspect both conditions' frozen `answer.md` and `grading.json`, independently
+   regrade them against the canonical assertions, and recompute the affected counts. The
+   summary, blind verdict, and receipt do not authenticate a semantic grade. Record cases
+   not examined as `UNINSPECTED`; a false green must be fixed and rerun.
+8. **Only then** verify the final receipt and run the repository's `make precommit` gate
    before committing.
 
 ## Layout

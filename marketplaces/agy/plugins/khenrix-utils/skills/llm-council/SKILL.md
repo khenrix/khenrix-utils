@@ -135,8 +135,8 @@ comment above `MODES` in `engine.py`), so Opus 5 now holds the claude seat in bo
 (`engine.py:169`), so there is nothing left to fall back FROM: the `spec.model != fb`
 guard (`engine.py:1617`) correctly refuses to swap a seat that is already on the
 fallback model, because doing so would record a phantom `opus-5 → opus-5` entry. The
-mechanism — retry on a **model-attributable** failure (`auth_or_quota`, a structured
-claude error; never a timeout, parse failure, or tool-permission denial), disclosure via
+mechanism — retry/fallback on an eligible **model-attributable** failure (never a timeout,
+parse failure, tool-permission denial, or recognised structured quota wall), disclosure via
 `model_fallback {from,to,reason}` on the provider record, and the `summary.header`
 `Model fallback:` clause — stays wired for when Fable's credits return and the seat is
 repinned; until then, expect it never to fire.
@@ -160,6 +160,15 @@ make sure any outer command cap exceeds
 `--timeout × (retries+1)` — a killed fan-out loses its results, and a SIGKILL
 (unlike SIGTERM, which the engine now handles) bypasses the worktree cleanup.
 
+Retries inside one invocation preserve the same provider spec and argv, so the model and
+effort resolved from the selected mode do not change; they do reuse the same per-attempt
+timeout. After a **true exhausted timeout**, a
+deliberate re-run may therefore use the same mode, provider panel and model overrides with
+a larger explicit, bounded `--timeout` (cap the operational retry at the current 3600s
+forge window unless new evidence supports more). Run that long retry in the background
+and wait for its exit before reading `manifest.json`; never turn `deep` into `normal`,
+which would lower claude from `ultracode` to `max` and codex from `ultra` to `high`.
+
 **The engine handles the "valid result or retry" contract for you.** Each provider
 is validated and retried with backoff on failure. What decides whether a failure is
 terminal is **where the reason came from**, not the phrase:
@@ -172,7 +181,8 @@ terminal is **where the reason came from**, not the phrase:
   An unrecognised structured error still retries.
 - **A missing binary** is terminal either way; it cannot appear between attempts.
 
-You just consume the manifest — never paper over a failure by re-running a provider yourself.
+You just consume the manifest — never paper over a failed seat by invoking that provider
+outside the engine. The bounded whole-council timeout re-run above is the explicit exception.
 
 **Non-empty is not a pass.** A seat scores `valid` only if it cleared a length floor
 *and* quoted the per-run `SENTINEL-…` token the engine injected into its prompt —
@@ -259,7 +269,7 @@ council was inconclusive and offer to answer directly or retry with a longer `--
 |----------------------|---------------|-----------------------|
 | `ok` | valid answer | use it |
 | `not_installed` | that CLI isn't on PATH | "provider X isn't installed here"; proceed with the rest |
-| `auth_or_quota` | not logged in, a quota/usage wall, **or (codex only) a CLI too old for the model pinned in `MODES`**. **Retried** — same reason as `tool_permission`: scan-derived, and *this file itself* classifies as `auth_or_quota` because its own table names those strings. Retrying a genuine wall costs up to `retries`+1 attempts plus backoff; a phantom cost a third of the panel, silently | name the provider and the cause (e.g. "agy hit its Antigravity quota"); proceed with the rest. If codex's stderr says the model needs a newer Codex, the fix is `codex update`, not re-auth — 0.143.0 rejected `gpt-5.6-sol` that way on 2026-07-25. Only codex's phrasing is recognised; the same wall on another CLI lands in `nonzero_exit` until its string joins `PERSISTENT_SENTINELS` |
+| `auth_or_quota` | not logged in, a quota/usage wall, **or (codex only) a CLI too old for the model pinned in `MODES`**. Provenance decides retry: scan-derived matches are **retried** because this file itself names the strings and may be echoed into stderr; a recognised structured wall is terminal. In particular, Claude's own `is_error=true` JSON is terminal after one attempt only when it also reports HTTP 429 and a result beginning exactly `You've hit your weekly limit`; the prose or status alone remains an unrecognised retryable `claude_error` | name the provider and the cause (e.g. "Claude hit its weekly limit" or "agy hit its Antigravity quota"); proceed with the rest. If codex's stderr says the model needs a newer Codex, the fix is `codex update`, not re-auth — 0.143.0 rejected `gpt-5.6-sol` that way on 2026-07-25. Only codex's phrasing is recognised; the same wall on another CLI lands in `nonzero_exit` until its string joins `PERSISTENT_SENTINELS` |
 | `tool_permission` | the seat could not get its OWN tool call approved — headless mode has no one to prompt, so it soft-denied its read and answered blind. **Retried** when SCANNED — a seat that merely READ a file containing one of these phrases lands here too (this repo's own docs do), and a phantom must cost an attempt, not a seat. `tool_permission` is not in `STRUCTURED_TERMINAL_REASONS`, so it retries on either path | confirm the match is a real CLI diagnostic before acting — see `TOOL_PERMISSION_SENTINELS` below. If real, the invocation needs its auto-approve flag and the manifest `hint` says which; report it as a bug, not a flake |
 | `claude_error` / `codex_error` / `agy_error` | the provider reported a failure in its OWN structured field (claude `is_error`, codex `turn.failed`, agy `status != SUCCESS`) but the message matched no known cause. STRUCTURED, so it is trustworthy about *that a failure happened*; unrecognised, so it is **retried** | quote the provider's own wording from `result_text` — it is the CLI speaking, not a phrase scanned out of a transcript. No flag change is implied |
 | `parse_failure` | the structured stream was malformed, or (in JSON mode) never started | the seat produced no usable answer; treat as a failed attempt, not as an empty one |
@@ -267,7 +277,7 @@ council was inconclusive and offer to answer directly or retry with a longer `--
 | `did_not_read_input` | long enough, but never quoted the run's `SENTINEL-…` token, so it cannot be shown to have read the material | drop it from synthesis; treat its content as unfounded even though it reads confidently |
 | `error_sentinel` | a transient error (rate-limit, overloaded) that survived retries | name the provider, quote the stderr tail; proceed with ≥2 if possible |
 | `nonzero_exit` | crashed with no recognized cause | name the provider, quote the stderr tail; proceed if possible |
-| `timeout` | hung past `--timeout` | offer a re-run with a larger `--timeout`; use partial output only as low-confidence. For **agy**: pre-1.1.1 CLIs reliably rode the whole window on substantive prompts (fixed upstream — see the HISTORY note in `build_real_spec`; 1.1.1 completed 54–97s reviews on 2026-07-11). If it recurs, retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
+| `timeout` | hung past `--timeout`; retries preserve mode/model/effort but use the same timeout window | for a true exhausted timeout, offer one background whole-council re-run with the same mode, panel and model overrides plus a larger finite explicit `--timeout` (operational cap: current 3600s forge window), then wait for exit before reading the manifest. Never substitute `normal` for `deep`; use partial output only as low-confidence. For **agy**: pre-1.1.1 CLIs reliably rode the whole window on substantive prompts (fixed upstream — see the HISTORY note in `build_real_spec`; 1.1.1 completed 54–97s reviews on 2026-07-11). If it recurs, retries multiply the wait — prefer `--providers claude,codex` when the third seat isn't worth the delay |
 | `empty` / `parse_failure` | no usable answer extracted | drop it from synthesis; note it failed |
 
 Note: some CLIs report their real failure only in a log, not on stdout/stderr (agy prints

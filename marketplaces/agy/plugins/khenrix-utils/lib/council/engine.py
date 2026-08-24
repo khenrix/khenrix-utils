@@ -581,8 +581,11 @@ def council_header(manifest: dict) -> str:
 # --------------------------------------------------------------------------- #
 # Result extraction — turn raw stdout into the substantive answer text.
 # Each returns (text, extract_err) where extract_err is None on success or one of
-# {"parse_failure", "claude_error"}.
+# {"parse_failure", "claude_error", "claude_weekly_quota"}.
 # --------------------------------------------------------------------------- #
+CLAUDE_WEEKLY_QUOTA_PREFIX = "You've hit your weekly limit"
+
+
 def extract_claude_json(stdout: str) -> tuple[str, Optional[str]]:
     """claude -p --output-format json → a single JSON object with a `result` field."""
     s = stdout.strip()
@@ -604,8 +607,20 @@ def extract_claude_json(stdout: str) -> tuple[str, Optional[str]]:
     if not isinstance(obj, dict):
         return "", "parse_failure"
     if obj.get("is_error") or obj.get("subtype") not in (None, "success"):
-        txt = obj.get("result") or obj.get("error") or ""
-        return (txt if isinstance(txt, str) else json.dumps(txt)), "claude_error"
+        result_field = obj.get("result")
+        txt = result_field or obj.get("error") or ""
+        rendered = txt if isinstance(txt, str) else json.dumps(txt)
+        # Claude's own JSON envelope makes this one wall authoritative. Keep the match
+        # deliberately conjunctive: the prose alone may occur in a file the seat read,
+        # and a generic 429 may be transient. Only the measured weekly-limit shape is
+        # terminal; every other structured Claude error keeps the existing retry path.
+        if (obj.get("is_error") is True
+                and type(obj.get("api_error_status")) is int
+                and obj.get("api_error_status") == 429
+                and isinstance(result_field, str)
+                and result_field.strip().startswith(CLAUDE_WEEKLY_QUOTA_PREFIX)):
+            return rendered, "claude_weekly_quota"
+        return rendered, "claude_error"
     res = obj.get("result")
     if isinstance(res, str):
         return res, None
@@ -1474,6 +1489,10 @@ def evaluate(exit_code: Optional[int], stdout: str, stderr: str,
     result_text, extract_err = spec.extract(stdout)
     if extract_err == "parse_failure":
         return False, "parse_failure", result_text, False
+    if extract_err == "claude_weekly_quota":
+        # STRUCTURED and deliberately narrow: extract_claude_json required Claude's own
+        # is_error=true envelope, HTTP 429, and the measured weekly-limit message.
+        return False, "auth_or_quota", result_text, True
     if extract_err == "claude_error":
         # STRUCTURED: this text is claude's own `is_error`/`result` field. Merging stderr in
         # used to hand it the same phantom surface the structured path exists to remove —
@@ -2404,6 +2423,31 @@ def self_test() -> int:
     _cl = evaluate(0, json.dumps({"is_error": True, "result": "quota reached"}), "", _clspec)
     check("claude-json: an is_error result carries STRUCTURED provenance",
           _cl[1] == "auth_or_quota" and _cl[3] is True)
+    _weekly_text = "You've hit your weekly limit · resets Aug 27, 4pm (Europe/Stockholm)"
+    _weekly = evaluate(1, json.dumps({"is_error": True, "terminal_reason": "api_error",
+                                     "api_error_status": 429, "result": _weekly_text}),
+                       "", _clspec)
+    check("claude-json: the structured 429 weekly wall is terminal auth_or_quota",
+          _weekly[1] == "auth_or_quota" and _weekly[3] is True)
+    _weekly_no_429 = evaluate(1, json.dumps({"is_error": True, "result": _weekly_text}),
+                              "", _clspec)
+    check("claude-json: weekly-limit prose without 429 stays an unrecognised error",
+          _weekly_no_429[1] == "claude_error" and _weekly_no_429[3] is True)
+    _other_429 = evaluate(1, json.dumps({"is_error": True, "api_error_status": 429,
+                                        "result": "temporary provider failure"}),
+                          "", _clspec)
+    check("claude-json: a different 429 stays an unrecognised retryable error",
+          _other_429[1] == "claude_error" and _other_429[3] is True)
+    _float_429 = evaluate(1, json.dumps({"is_error": True, "api_error_status": 429.0,
+                                        "result": _weekly_text}),
+                          "", _clspec)
+    check("claude-json: a non-integer 429 cannot impersonate the measured envelope",
+          _float_429[1] == "claude_error" and _float_429[3] is True)
+    _error_only_429 = evaluate(1, json.dumps({"is_error": True, "api_error_status": 429,
+                                             "error": _weekly_text}),
+                               "", _clspec)
+    check("claude-json: an error-only 429 cannot impersonate the measured result envelope",
+          _error_only_429[1] == "claude_error" and _error_only_429[3] is True)
     check("claude-json: stderr cannot confer structured terminality",
           evaluate(1, "", "quota reached", ProviderSpec("codex", ["x"], None, extract_raw,
                                                         None, None))[3] is False)

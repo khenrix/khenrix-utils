@@ -5334,6 +5334,18 @@ def _self_test() -> int:
             ok.append((f"review-material classifies all of {name} as binary metadata",
                        "BINARY — metadata only" in section))
         ok.append(("complete review prompt contains no embedded NUL", "\0" not in out))
+        protocol_terms = (
+            "Mikado leaves", "producer(s)", "consumer(s)", "state/invariant", "transition",
+            "inverse", "missing-vs-explicit-null", "duplicate-vs-malformed",
+            "boundary/tie/open", "lifecycle", "identity/path", "mutation-after-snapshot",
+            "legacy/bootstrap", "positive-control", "EXECUTED_NOW",
+            "TRACED_COUNTEREXAMPLE", "INSPECTED_ONLY", "UNINSPECTED",
+            "Continue after the first blocker", "Atomize", "explicit list of every unprobed",
+        )
+        ok.append(("review prompt carries the complete counterexample protocol",
+                   all(term in out for term in protocol_terms)))
+        ok.append(("review prompt no longer rewards first-finding truncation",
+                   "prefer one strong finding" not in out))
         ok.append(("invalid UTF-8 is not silently replaced", "PAYLOAD" not in out
                    and "\ufffd" not in out))
         ok.append(("review-material handles spaces in a path", "name with spaces.md" in out))
@@ -6057,15 +6069,21 @@ TRACKED_TRUNCATION_MARKER = "…[tracked diff cap reached;"
 TRACKED_MARKER_RESERVE = 2048
 REVIEW_INSTRUCTIONS = (
     "Adversarially review this diff (a skill-tuneup pass on {target} in {repo}) — look "
-    "for the strongest reasons it should not ship; do not modify anything. Prioritize "
-    "correctness, over-engineering, stale references, and missed edge cases. Give a "
-    "verdict PER admissible category (Bug / Inconsistency / Stale-reference / "
-    "Missing-edge-case / Eval-gap / Over-engineering) with the evidence checked for "
-    "each; a clean category stated with its evidence is useful. Then list findings by "
-    "severity, each tied to a file or hunk with a concrete fix; ground every claim in "
-    "the supplied candidate, prefer one strong finding over several weak ones, and name "
-    "residual risks separately. Never answer briefly — replies under 400 characters are "
-    "scored non_substantive and dropped.")
+    "for every reason it should not ship; do not modify anything. First decompose a large "
+    "or truncated surface into independently reviewable Mikado leaves. For every changed "
+    "contract cell, inventory its producer(s), consumer(s), state/invariant, and transition. "
+    "Run or trace every applicable probe family: inverse; missing-vs-explicit-null; "
+    "duplicate-vs-malformed; boundary/tie/open; lifecycle; identity/path; "
+    "mutation-after-snapshot; legacy/bootstrap; positive-control. Label each probe and "
+    "finding exactly EXECUTED_NOW, TRACED_COUNTEREXAMPLE, INSPECTED_ONLY, or UNINSPECTED; "
+    "do not call inspection execution. Continue after the first blocker across all "
+    "independent cells. Give a verdict PER admissible category (Bug / Inconsistency / "
+    "Stale-reference / Missing-edge-case / Eval-gap / Over-engineering) with its evidence. "
+    "Atomize each independent counterexample into its own finding tied to a file or hunk, "
+    "severity, and concrete fix. End with the complete cell roster and an explicit list of "
+    "every unprobed/UNINSPECTED surface and residual risk. Ground every claim in the "
+    "supplied candidate. Never answer briefly — replies under 400 characters are scored "
+    "non_substantive and dropped.")
 
 _COUNCIL_ENGINE = None
 REVIEWER_ENGINE_RELPATH = "shared/lib/council/engine.py"

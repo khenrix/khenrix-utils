@@ -272,17 +272,17 @@ absent, and weak evidence of thoroughness when present.
 
 ## Step 7 — Audit, then CHECKPOINT
 
-**Read `references/audit-checklist.md` now.** Grade the target against every section;
-merge with the researched deltas into a findings list — each with a stable `finding_id`,
-a category, and a `proportionate`/`risky` tag; suppress previously-rejected findings.
+**Read `references/audit-checklist.md` now.** Grade every section; for changed contracts,
+complete §10's Mikado leaf decomposition, cell/probe matrix, evidence labels, and explicit
+uninspected list. Atomize findings by stable ID/category/risk; suppress prior rejections.
 
 **Refresh the lock immediately BEFORE presenting this checkpoint and again immediately on
 resume** — a human wait is unbounded, so it is the one step `LOCK_STALE_MIN` cannot cover;
 refreshing around it turns an unbounded wait into a bounded gap.
 
-**CHECKPOINT (hard stop):** present the findings grouped by category with the council's
-verdicts, the proposed fix per finding, and the cost note (in khenrix-utils any source change re-arms the
-target's receipt → an eval run before commit). The user approves, trims, or defers.
+**CHECKPOINT (hard stop):** present findings grouped by category, the contract-cell roster
+and `UNINSPECTED` surfaces, council verdicts, each proposed fix, and the cost note (a khenrix
+source change re-arms its receipt → an eval before commit). The user approves/trims/defers.
 Nothing tagged `risky` is applied without explicit sign-off; model-ID bumps are proposed
 with rationale, never auto-applied.
 
@@ -347,8 +347,8 @@ named, never followed. Any Git error, oversized mandatory block, or wrapper-boun
 exits 2. Exact UTF-8, byte-accounting and recovery-marker guards live in
 `review_material`'s docstring.
 
-3. Triage verdicts: apply proportionate fixes (re-run Step 8's applicable gates if they
-   touch the target, still under the cap); note disagreements for the commit message.
+3. Treat verdicts as hypotheses: independently execute or trace each counterexample, label
+   it per checklist §10, atomize it, then apply proportionate fixes; never stop at one blocker.
 4. Record every finding's outcome in the run log:
 
 ```bash
@@ -366,7 +366,7 @@ applicable target gate → council diff-review → record** (Steps 7–9 minus t
   converges — that candidate IS the fixed point; no further cycle runs on it. The candidate
   must be the one those reviews actually examined, so a `minor` fix applied after the review
   starts a new cycle rather than shipping unreviewed. Converged additionally requires: every residual explicitly `rejected` or
-  `deferred`-with-trigger, nothing risky awaiting sign-off, and (**full-gate targets only**)
+  `deferred`-with-trigger, every cell probed or dispositioned `UNINSPECTED`, nothing risky awaiting sign-off, and (**full-gate targets only**)
   the Step-8 gate green on exactly that candidate. Classify with
   `checks.requires_deterministic_gate(<target>)`, never its receipt: True means the named
   deterministic `make eval` gate; False means the fixed full panel (run it ONCE on the

@@ -135,8 +135,9 @@ def test_make_eval_keeps_all_user_values_out_of_recipe_expansion(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert not marker.exists()
-    assert result.stdout.rstrip().endswith(
-        "python3 scripts/eval_harness.py --from-make-process=$PPID")
+    commands = [line.strip() for line in result.stdout.splitlines()]
+    assert commands.count(
+        "python3 scripts/eval_harness.py --from-make-process=$PPID") == 1
 
 
 @pytest.mark.parametrize(("target", "assignment"), (

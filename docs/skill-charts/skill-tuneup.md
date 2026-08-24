@@ -1,8 +1,8 @@
 # skill-tuneup — flow
 
-One deep target per run: baseline → research → council review 1 → audit → CHECKPOINT →
-apply → applicable target gate → council review 2 → converge → ship. A read-only triage mode ranks and
-stops instead. Source: `shared/skills/skill-tuneup/SKILL.md`.
+One deep target per run: baseline → research → council review 1 → contract-cell audit →
+CHECKPOINT → apply → applicable target gate + raw regrade → council review 2 →
+independent reproduction → converge → ship. Triage ranks and stops instead. Source: `shared/skills/skill-tuneup/SKILL.md`.
 
 ```mermaid
 flowchart TD
@@ -19,7 +19,7 @@ flowchart TD
     G_LOCK -- yes --> BASE[Step 4: baseline commit + stale-models<br/>+ prior run-log decisions]
     BASE --> RESEARCH[Step 5: upstream research<br/>every provider finding probed on available CLIs]
     RESEARCH --> COUNCIL1[Step 6: council review 1 - the findings]
-    COUNCIL1 --> AUDIT[Step 7: audit vs checklist<br/>incl. chart-vs-body drift]
+    COUNCIL1 --> AUDIT[Step 7: audit vs checklist<br/>changed contracts: Mikado leaves + cell/probe matrix]
     AUDIT --> G_CHECK{CHECKPOINT:<br/>user approves scope?}
     G_CHECK -- "trims / defers" --> AUDIT
 
@@ -38,14 +38,17 @@ flowchart TD
         G_NATIVE -- "green / absent" --> G_MAT
         G_EVAL -- "red: below cap" --> FIXE[classify + fix] --> APPLY
         G_EVAL -- "cap reached" --> HAND([stop: hand unresolved to the user])
-        G_EVAL -- green --> G_MAT{review-diff<br/>result?}
+        G_EVAL -- green --> G_RAW{mapped raw eval answers regraded<br/>or UNINSPECTED dispositioned?}
         G_DET -- "red: below cap" --> FIXE
         G_DET -- "cap reached" --> HAND
-        G_DET -- green --> G_MAT
+        G_DET -- green --> G_RAW
+        G_RAW -- "false green / incomplete" --> FIXE
+        G_RAW -- yes --> G_MAT{review-diff<br/>result?}
         G_MAT -- "exit 2 - fails closed" --> HAND
         G_MAT -- "empty: nothing changed" --> RECORD
         G_MAT -- "non-empty prompt" --> COUNCIL2[Step 9: council review 2 - the diff]
-        COUNCIL2 --> RECORD[record every finding + a cycle-end marker]
+        COUNCIL2 --> REPRO[coordinator independently execute/trace claims<br/>label evidence + atomize + list unprobed]
+        REPRO --> RECORD[record every finding + a cycle-end marker]
         RECORD --> G_CONV{convergence-status<br/>verdict?}
         G_CONV -- keep-iterating --> APPLY
         G_CONV -- stalled --> STALL_TERM[append deferred, converged:false<br/>run-convergence] --> HAND
@@ -82,12 +85,13 @@ flowchart TD
 | G_MODE | agent | `evals/skill-tuneup/evals.json::Refuses to deep-tune every skill in one run` |
 | G_CLEAN | agent | no eval covers this; SKILL.md Step 2 clean-tree rule — shipping stages with `git add -A`, so any unrelated edit would be swept into the tune-up commit |
 | G_LOCK | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def lock_acquire` |
-| G_CHECK | agent | `evals/skill-tuneup/evals.json::Proposes the change as a checkpoint finding` |
+| G_CHECK | agent | `evals/skill-tuneup/evals.json::Treats the model hit as a checkpoint proposal rather than an automatic edit` |
 | G_VALID | agent | `evals/skill-tuneup/evals.json::After every edit, including a later-cycle fix` |
 | G_CYCLE_TIER | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def target_info` |
 | G_TARGET_GATE | code | `scripts/lib/checks.py::def requires_deterministic_gate` — routes by target, never receipt contents |
 | G_DET | code | `scripts/eval_harness.py::def _write_receipt` — `make eval` runs the target's named certifier and records its evidence |
 | G_EVAL | code | `scripts/eval_harness.py::gate_ok` — the delta gate itself; the cap-5 rule beside it is an agent rule (SKILL.md non-negotiable) |
+| G_RAW | agent | `evals/skill-tuneup/evals.json::Regrades every eval case mapped to a changed contract` |
 | G_NATIVE | agent | `evals/skill-tuneup/evals.json::Before council review #2 and convergence` |
 | G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::review-material returns exactly empty for an unchanged candidate`, `shared/skills/skill-tuneup/scripts/tuneup.py::review sizing and fanout use the exact same captured module`, and `shared/skills/skill-tuneup/scripts/tuneup.py::def run_diff_review` — unchanged, reviewable, and failed results remain distinct; the exact captured reviewer sizes and executes the fanout |
 | G_CONV | code | `shared/skills/skill-tuneup/scripts/tuneup.py::a clean final cycle converges` |

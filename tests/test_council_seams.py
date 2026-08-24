@@ -255,3 +255,67 @@ def test_agys_structured_timeout_keeps_its_retries_but_its_quota_wall_does_not(t
     rec = eng.run_provider(spec, 2, 5, 0.0, wall)
     assert rec["reason"] == "auth_or_quota", "a wall reported as a timeout is still a wall"
     assert len(seen) == 1, "and a wall is terminal — it must not spend three attempts on one"
+
+
+def test_claude_weekly_429_is_terminal_only_for_the_exact_structured_shape(tmp_path,
+                                                                          monkeypatch):
+    """Claude's weekly wall is authoritative only as the measured JSON conjunction.
+
+    The weekly-limit prose alone can be material the seat read, while 429 alone can be a
+    transient rate limit. Neither negative control may inherit terminality from the exact
+    `is_error=true` + 429 + weekly-message envelope.
+    """
+    eng = _engine()
+    payload, seen = {}, []
+
+    def fake_run_member(argv, stdin=None, timeout=None, env=None, cwd=None):
+        seen.append(argv)
+        return types.SimpleNamespace(stdout=json.dumps(payload["json"]), stderr="",
+                                     returncode=1)
+
+    monkeypatch.setattr(eng, "run_member", fake_run_member)
+    spec = eng.ProviderSpec("claude", ["true"], None, eng.extract_claude_json)
+    weekly = "You've hit your weekly limit · resets Aug 27, 4pm (Europe/Stockholm)"
+
+    payload["json"] = {"is_error": True, "terminal_reason": "api_error",
+                       "api_error_status": 429, "result": weekly}
+    exact = tmp_path / "exact"
+    exact.mkdir()
+    rec = eng.run_provider(spec, 2, 5, 0.0, exact)
+    assert (rec["reason"], rec["structured"]) == ("auth_or_quota", True)
+    assert len(seen) == 1, "the authoritative weekly wall must not spend retry attempts"
+
+    seen.clear()
+    payload["json"] = {"is_error": True, "result": weekly}
+    prose_only = tmp_path / "prose-only"
+    prose_only.mkdir()
+    rec = eng.run_provider(spec, 2, 5, 0.0, prose_only)
+    assert (rec["reason"], rec["structured"]) == ("claude_error", True)
+    assert len(seen) == 3, "weekly prose without the 429 envelope remains retryable"
+
+    seen.clear()
+    payload["json"] = {"is_error": True, "api_error_status": 429,
+                       "result": "temporary provider failure"}
+    other_429 = tmp_path / "other-429"
+    other_429.mkdir()
+    rec = eng.run_provider(spec, 2, 5, 0.0, other_429)
+    assert (rec["reason"], rec["structured"]) == ("claude_error", True)
+    assert len(seen) == 3, "an unrelated structured 429 remains retryable"
+
+    seen.clear()
+    payload["json"] = {"is_error": True, "api_error_status": 429.0,
+                       "result": weekly}
+    float_429 = tmp_path / "float-429"
+    float_429.mkdir()
+    rec = eng.run_provider(spec, 2, 5, 0.0, float_429)
+    assert (rec["reason"], rec["structured"]) == ("claude_error", True)
+    assert len(seen) == 3, "a non-integer status cannot impersonate the exact envelope"
+
+    seen.clear()
+    payload["json"] = {"is_error": True, "api_error_status": 429,
+                       "error": weekly}
+    error_only_429 = tmp_path / "error-only-429"
+    error_only_429.mkdir()
+    rec = eng.run_provider(spec, 2, 5, 0.0, error_only_429)
+    assert (rec["reason"], rec["structured"]) == ("claude_error", True)
+    assert len(seen) == 3, "only Claude's measured result field is terminal"
