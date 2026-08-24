@@ -3,7 +3,8 @@
 **Every change to a skill in this repo must be eval-tested and blind-reviewed before it
 is committed.** This is a hard gate, not a suggestion. The point is the same rigor the
 `llm-council` work proved out — with-skill vs baseline, judged against assertions, then a
-blind A/B — applied to *every* skill and *every* provider, not just Claude.
+blind A/B — applied across the repo, with the receipt gate selected from the target rather
+than guessed from an existing receipt.
 
 This repo ships a portable, stdlib-only harness (`scripts/eval_harness.py`) that delivers
 that loop for all three CLIs. Claude's `skill-creator` and Codex's native skill tooling
@@ -21,10 +22,14 @@ covers agy, which has no native skill tooling at all.
    optional `files`, and `assertions`. Make assertions **discriminating**: things a
    no-skill baseline would structurally fail (that gap is the skill's measured value).
    Objective and answer-only — "runs the engine read-only first", not "is well written".
-3. **Run with-skill vs baseline, per provider.** `make eval SKILL=<name>` (defaults to
-   the `claude` executor; add `PROVIDERS=claude,codex,agy` for the full panel). The
-   harness injects the rendered SKILL.md for the with_skill run and uses the bare prompt
-   for the baseline.
+3. **Select the gate from the target.** Call
+   `checks.requires_deterministic_gate(<name>)`; never infer the route from receipt contents.
+   - **True:** `make eval SKILL=<name>` runs the target's named deterministic certifier and
+     records its evidence. Its judged with-skill/baseline run is advisory; no full panel is
+     owed.
+   - **False:** run with-skill vs baseline per provider. Iterate with the default `claude`
+     executor, then use the fixed `PROVIDERS=claude,codex,agy` panel for the final gate.
+     The harness injects rendered SKILL.md for with_skill and the bare prompt for baseline.
 
    **Baseline caveat:** `without_skill` is the executor's *ambient* environment — truly
    skill-free only if the skill isn't already installed on that CLI. If it is installed
@@ -36,13 +41,13 @@ covers agy, which has no native skill tooling at all.
    (`text`/`passed`/`evidence`).
 5. **Blind A/B.** The two outputs are shuffled into A/B (with a hidden key) and the judge
    picks the better one blind → `comparison.json`, then de-anonymized.
-6. **Iterate** until with_skill matches or beats baseline on the discriminating assertions
-   (`run_summary.delta.pass_rate >= 0` — the commit gate; zero passes, negative fails).
-   The blind A/B winner is **recorded but advisory** (not a gate): on a strong executor it
-   rewards the tighter baseline over a correct-but-more-thorough skill answer, so a
-   non-negative-delta run is never failed on a blind tie/loss. Use the recorded winner to
-   triage a weak/zero delta.
-7. **Only then** `make verify && make eval-test && make eval SKILL=<name>` → commit.
+6. **Iterate.** For a non-deterministic target, with_skill must match or beat baseline on
+   the discriminating assertions (`run_summary.delta.pass_rate >= 0`; zero passes, negative
+   fails). The blind A/B winner is **recorded but advisory**: use it to triage a weak/zero
+   delta, never to veto a non-negative one. For a deterministic target, the named certifier
+   is the gate and all judged deltas/winners are advisory.
+7. **Only then** verify the final receipt and run the repository's `make precommit` gate
+   before committing.
 
 ## Layout
 
@@ -71,7 +76,7 @@ the other.
 ```bash
 make eval-test                              # hermetic harness logic tests (no tokens)
 make eval SKILL=khenrix-setup               # claude executor, normal mode
-make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep
+make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep  # nondeterministic final panel
 ```
 
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
@@ -84,8 +89,10 @@ so cwd-relative writes are discarded —
 so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
 mechanically constrained on all three during an eval, while the real HOME is kept so auth still resolves
 (sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
-three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
-iteration and the full panel for the final gate. `--no-readonly` opts out when a skill
+three-provider runs are token-expensive (~3-4×); for non-deterministic targets, use the
+single-provider `claude` loop for iteration and the fixed full panel for the final gate.
+Deterministic targets owe no panel: their named certifier earns the receipt, while any
+target-specific required checks remain. `--no-readonly` opts out when a skill
 genuinely must write. agy's plan mode is a mechanical write barrier but not an OS sandbox —
 still less sealed than codex's, so lower-risk rather than sealed.
 
@@ -96,8 +103,9 @@ when the executor died, on a missing verdict when the judge did — and averaged
 side's mean, so it BIASES the delta — a `with_skill` error
 sinks it, a `without_skill` error inflates it and would otherwise earn a receipt off a
 baseline that never answered. The gate therefore fails closed whenever any run is invalid,
-for every skill whose gate IS the delta; `llm-council` and every `DETERMINISTIC_GATED` skill
-are exempt because their receipts are earned by a self-test / unit suite instead. The
+for every skill whose gate IS the delta; every target for which
+`checks.requires_deterministic_gate` is true is exempt because its receipt is earned by a
+named self-test / unit suite instead. The
 run summary prints a `⚠ INVALID RUN` line per occurrence. If one recurs with nothing else in
 flight, the eval is under-timed — raise the per-attempt cap with `make eval … TIMEOUT=<secs>`
 rather than `MODE=deep`, which would also change reasoning depth.
@@ -109,14 +117,15 @@ rather than `MODE=deep`, which would also change reasoning depth.
 `per_provider`. Pooling across executors hid real regressions — `khenrix-upgrade` pooled
 to `+0.0972` while claude sat at `-0.1250`.
 
-**The pooled `delta.pass_rate` is still the gate.** The per-provider numbers are a
+**For non-deterministic targets, pooled `delta.pass_rate` is the gate.** For deterministic
+targets it is advisory. The per-provider numbers are a
 measurement, not yet a gate. Why: measured run-to-run drift on *unchanged* skill bodies is
 0.06–0.08, and splitting by provider triples single-flip sensitivity, so a gate at
 threshold 0 would fire on noise. Demonstrated live — the same unchanged `khenrix-upgrade`
 gave `claude -0.125 / codex +0.125 / agy +0.292` one week and
-`claude +0.25 / codex -0.042 / agy -0.083` the next. **When pooled and per-provider
-disagree, the pooled number is authoritative for the gate and the per-provider numbers are
-authoritative for diagnosis.**
+`claude +0.25 / codex -0.042 / agy -0.083` the next. **On this non-deterministic branch,
+when pooled and per-provider disagree, the pooled number is authoritative for the gate and
+the per-provider numbers are authoritative for diagnosis.**
 
 `quantum` is the noise floor: `1 / (n_evals × smallest assertion count)`, floored at 0.05 —
 the largest mean shift one assertion flip can produce. A per-provider delta smaller than
@@ -182,37 +191,37 @@ which the behaviour harness cannot evaluate at all.
 `llm-council` is special: harness executors run under `LLM_COUNCIL_DEPTH=1`, so an
 injected body cannot convene a real nested council — the with-skill/baseline benchmark
 still runs but its delta measures solo answers and is **advisory only**, never the
-receipt gate. What earns the receipt is the model/mode wiring verified
-**deterministically** by `python3 shared/skills/llm-council/scripts/fanout.py
---self-test` and a live `--smoke` (inspect the manifest's `model`/`thinking` and
-`[mode: …]`). Its synthesis quality has a bespoke blind-review workspace under
-`evals/llm-council/` (authored with skill-creator).
+receipt gate. `make eval SKILL=llm-council` earns the receipt only by running
+`fanout.py --self-test`. A live `--smoke` (inspect manifest `model`/`thinking` and
+`[mode: …]`) and `make council-test` are additional required checks; neither earns the
+receipt. Its synthesis quality has a bespoke blind-review workspace under
+`evals/llm-council/`.
 
-## Deterministically-gated skills (`DETERMINISTIC_GATED`)
+## Deterministic receipt gates
 
 Some skills the judge harness cannot fairly gate route their receipt through a real test
-suite instead. `eval_harness.DETERMINISTIC_GATED` maps the skill to the command, and
-`DETERMINISTIC_GATE_NAMES` maps it to the NAME the receipt records — two tables rather than
-one, because a single hardcoded gate name became a false provenance string the moment a
-third skill was routed through the dict, on the one artifact whose whole job is to say what
-ran. A skill in the first table and not the second raises a `KeyError` rather than writing a
-receipt that cannot name its gate; `make eval-test` catches that before a paid run does.
+suite instead. `checks.requires_deterministic_gate(<name>)` is the target-only router and
+`checks.SELF_TEST_CERTIFIERS` is the authoritative name the receipt must record. The
+producer has a dedicated llm-council branch and `eval_harness.DETERMINISTIC_GATED` commands
+for the other targets; `make eval-test` asserts those producer routes match the verifier.
 
 | Skill | Why the delta cannot gate it | Gate |
 |---|---|---|
+| `llm-council` | nesting is suppressed in harness executors, so the benchmark measures solo answers | `fanout.py --self-test` |
 | `khenrix-wiki-add` / `khenrix-wiki-sync` | the read-only baseline can read the in-repo skill source and engine, so "skill-free" is contaminated | the wikisync unit suite |
 | `llm-forge` | a read-only with-skill/baseline harness cannot drive a clone fleet, three providers and a fresh verifier — a judge receipt would certify prose and leave the dangerous mechanics untouched | the hermetic forge handover/CLI/`--gc` suites |
 
 **The judge run still executes.** `gate_ok = True` is applied *after* it in `run()`, so
 routing makes the delta **advisory, not free** — the cost control is a cheap eval set. Read
 the recorded delta when triaging; do not treat it as the evidence in the receipt. The
-evidence is the suite named in `deterministic_gate`, which `_write_receipt` runs and refuses
-to write on.
+evidence is the named certifier (`certified_by`, plus deterministic command/count evidence
+where that certifier emits it), which `_write_receipt` runs and refuses to write on.
 
 ## Maintenance runs (skill-tuneup)
 
 The `skill-tuneup` skill automates this loop for periodic maintenance of an existing
 skill: it researches upstream drift since the target's last substantive commit, audits,
-applies user-approved fixes, scaffolds a missing eval set per this doc, and iterates
-`make eval` to a fresh receipt before committing. Its per-target decisions live in
+applies user-approved fixes, scaffolds a missing eval set per this doc, routes by
+`checks.requires_deterministic_gate`, and earns the applicable fresh receipt before
+committing. Its per-target decisions live in
 `docs/tuneups/log/`.

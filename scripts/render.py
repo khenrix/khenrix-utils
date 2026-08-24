@@ -59,6 +59,12 @@ def plugin_dir(cli: str) -> Path:
     return ROOT / "marketplaces" / cli / "plugins" / "khenrix-utils"
 
 
+def _copy_shared_lib(src: Path, dst: Path) -> None:
+    """Copy one runtime package while keeping its test suite out of shipped plugins."""
+    shutil.copytree(
+        src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
+
+
 def parse_frontmatter(text: str) -> dict:
     """Minimal YAML front-matter reader — including FOLDED/LITERAL block scalars.
 
@@ -249,8 +255,7 @@ def render():
                 dst = pdir / "lib" / name
                 if dst.exists():
                     shutil.rmtree(dst)
-                shutil.copytree(src, dst,
-                                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"))
+                _copy_shared_lib(src, dst)
         # Belt to the ignore-patterns' braces. Those only filter what a copy BRINGS IN;
         # bytecode also APPEARS IN PLACE whenever anything imports a module from the
         # rendered tree, and the paths built with copy2 into an existing dir (lib/) are

@@ -1,16 +1,16 @@
 # skill-tuneup — flow
 
 One deep target per run: baseline → research → council review 1 → audit → CHECKPOINT →
-apply → eval → council review 2 → converge → ship. A read-only triage mode ranks and
+apply → applicable target gate → council review 2 → converge → ship. A read-only triage mode ranks and
 stops instead. Source: `shared/skills/skill-tuneup/SKILL.md`.
 
 ```mermaid
 flowchart TD
     accTitle: skill-tuneup deep-run flow
-    accDescr: One skill per run - baseline, upstream research probed on all three CLIs, two council reviews, a user checkpoint, a capped eval-fix loop, severity-gated convergence, then ship. Triage ranks and stops.
+    accDescr: One skill per run - baseline, upstream research on all three CLIs, two council reviews, a user checkpoint, the applicable target gate, severity-gated convergence, then ship. Triage ranks and stops.
 
     START([user names a target]) --> G_MODE{triage or<br/>deep run?}
-    G_MODE -- "sweep / ranking ask" --> TRIAGE[rank khenrix skills<br/>read-only, no tokens, no edits] --> STOP_T([stop: present the worklist])
+    G_MODE -- "sweep / ranking ask" --> TRIAGE[rank khenrix skills<br/>refuse source conflicts; no edits] --> STOP_T([stop: present the worklist])
     G_MODE -- "one target" --> LOCATE[Step 2: locate repo + engines<br/>resolve tier via target-info]
     LOCATE --> G_CLEAN{working tree<br/>entirely clean?}
     G_CLEAN -- no --> HALT_D([stop: ask the user])
@@ -24,24 +24,55 @@ flowchart TD
     G_CHECK -- "trims / defers" --> AUDIT
 
     subgraph CYCLE [improvement cycle - repeats to a fixed point]
-        APPLY[Step 8: edit source of truth + render<br/>update the target's chart if the flow changed]
-        APPLY --> G_EVAL{eval green?<br/>cap 5 fix-iterations, RUN-GLOBAL}
+        APPLY[Step 8: edit target source of truth<br/>full-gate: render + chart upkeep]
+        APPLY --> G_VALID{all discovered runtime validators<br/>rerun after this edit?}
+        G_VALID -- "red: caused by this run" --> FIXV[fix in-scope] --> APPLY
+        G_VALID -- "red: unrelated" --> DEFERV[report + log deferred<br/>continue unchanged] --> G_CYCLE_TIER
+        G_VALID -- "green / absent" --> G_CYCLE_TIER{resolved tier?}
+        G_CYCLE_TIER -- full-gate --> G_TARGET_GATE{requires deterministic<br/>gate for TARGET?}
+        G_TARGET_GATE -- yes --> G_DET{named make-eval certifier + evidence green?<br/>llm-council: smoke + council-test too}
+        G_TARGET_GATE -- no --> G_EVAL{judge eval green?<br/>cap 5 fix-iterations, RUN-GLOBAL}
+        G_CYCLE_TIER -- council-only --> G_NATIVE{target tests + hooks<br/>green or absent?}
+        G_NATIVE -- "red: caused by this run" --> FIXN[fix in-scope] --> APPLY
+        G_NATIVE -- "red: unrelated" --> DEFERN[report + log deferred<br/>continue unchanged] --> G_MAT
+        G_NATIVE -- "green / absent" --> G_MAT
+        G_EVAL -- "red: below cap" --> FIXE[classify + fix] --> APPLY
         G_EVAL -- "cap reached" --> HAND([stop: hand unresolved to the user])
-        G_EVAL -- green --> G_MAT{review-material<br/>exit 0?}
+        G_EVAL -- green --> G_MAT{review-material<br/>result?}
+        G_DET -- "red: below cap" --> FIXE
+        G_DET -- "cap reached" --> HAND
+        G_DET -- green --> G_MAT
         G_MAT -- "exit 2 - fails closed" --> HAND
-        G_MAT -- yes --> COUNCIL2[Step 9: council review 2 - the diff]
+        G_MAT -- "empty: nothing changed" --> RECORD
+        G_MAT -- "non-empty prompt" --> COUNCIL2[Step 9: council review 2 - the diff]
         COUNCIL2 --> RECORD[record every finding + a cycle-end marker]
         RECORD --> G_CONV{convergence-status<br/>verdict?}
         G_CONV -- keep-iterating --> APPLY
-        G_CONV -- stalled --> HAND
+        G_CONV -- stalled --> STALL_TERM[append deferred, converged:false<br/>run-convergence] --> HAND
+        G_CONV -- ambiguous-log --> G_AMBIG{exact OPEN pre-start<br/>run_gap emitted?}
+        G_AMBIG -- yes --> G_GAP{any pre-start occurrences<br/>belong to this run?}
+        G_GAP -- yes --> RELOG[re-record current ordinary occurrences;<br/>use bound serious surrogates for lifecycle debt] --> RESOLVE_R[append exact v3 gap resolution<br/>partitioning every index prior/current] --> APPLY
+        G_GAP -- "no: all verified prior history" --> RESOLVE_P[append exact v3 gap resolution<br/>with every index classified prior] --> G_CONV
+        G_AMBIG -- "no: closed window / terminal tail / no active run" --> START_NEXT[append run-start before<br/>any next-run finding]
     end
 
+    START_NEXT --> RESTART([next run: restart at Step 4 baseline])
     G_CHECK -- approved --> APPLY
-    G_CONV -- converged --> G_RECEIPT{verify-final-receipt:<br/>earned, panel-or-self-test, current?}
-    G_RECEIPT -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate<br/>—not for a self-test-gated target] --> G_RECEIPT
-    G_RECEIPT -- yes --> G_PRE{make precommit clean?}
-    G_PRE -- no --> FIXPRE[fix in-scope, hand off unrelated] --> G_PRE
-    G_PRE -- yes --> SHIP[one commit + khenrix-refresh<br/>+ release the lock] --> DONE([done])
+    G_CONV -- converged --> G_SHIP_TIER{resolved tier?}
+    G_SHIP_TIER -- full-gate --> G_RECEIPT{verify-final-receipt:<br/>earned, panel-or-self-test, current?}
+    G_RECEIPT -- no --> G_GATE_KIND{requires deterministic<br/>gate for target?}
+    G_GATE_KIND -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate] --> G_RECEIPT
+    G_GATE_KIND -- yes --> SUITE[run make eval once<br/>to earn the deterministic receipt] --> G_RECEIPT
+    G_RECEIPT -- yes --> STAGE[recheck status + stage everything<br/>while run remains open] --> G_PRE{make precommit clean?}
+    G_PRE -- "no: in-scope fix" --> FIXPRE[fix in-scope] --> APPLY
+    G_PRE -- "no: unrelated" --> HAND
+    G_PRE -- yes --> TERMINAL[append run-convergence as FINAL bookkeeping<br/>+ stage the run log]
+    G_SHIP_TIER -- council-only --> FOREIGN_FINAL[recheck status + stage target<br/>native gate remains clean] --> TERMINAL
+    TERMINAL --> G_TERMINAL{terminal parses, convergence still green<br/>+ staged diff check clean?}
+    G_TERMINAL -- no --> HAND
+    G_TERMINAL -- yes --> G_COMMIT_TIER{resolved tier?}
+    G_COMMIT_TIER -- full-gate --> SHIP[one commit + khenrix-refresh<br/>+ release the lock] --> DONE([done])
+    G_COMMIT_TIER -- council-only --> SHIP_F[commit target + run log separately<br/>state: no khenrix receipt + release lock] --> DONE
 ```
 
 ## Gate evidence
@@ -52,8 +83,19 @@ flowchart TD
 | G_CLEAN | agent | no eval covers this; SKILL.md Step 2 clean-tree rule — shipping stages with `git add -A`, so any unrelated edit would be swept into the tune-up commit |
 | G_LOCK | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def lock_acquire` |
 | G_CHECK | agent | `evals/skill-tuneup/evals.json::Proposes the change as a checkpoint finding` |
+| G_VALID | agent | `evals/skill-tuneup/evals.json::After every edit, including a later-cycle fix` |
+| G_CYCLE_TIER | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def target_info` |
+| G_TARGET_GATE | code | `scripts/lib/checks.py::def requires_deterministic_gate` — routes by target, never receipt contents |
+| G_DET | code | `scripts/eval_harness.py::def _write_receipt` — `make eval` runs the target's named certifier and records its evidence |
 | G_EVAL | code | `scripts/eval_harness.py::gate_ok` — the delta gate itself; the cap-5 rule beside it is an agent rule (SKILL.md non-negotiable) |
-| G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def review_material` — exits 2 on a git error rather than returning "", because an empty result is what tells Step 9 there is nothing to review |
+| G_NATIVE | agent | `evals/skill-tuneup/evals.json::Before council review #2 and convergence` |
+| G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::review-material returns exactly empty for an unchanged candidate` and `shared/skills/skill-tuneup/scripts/tuneup.py::def review_material` — unchanged, reviewable, and failed results remain distinct |
 | G_CONV | code | `shared/skills/skill-tuneup/scripts/tuneup.py::a clean final cycle converges` |
-| G_RECEIPT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def verify_final_receipt` and `scripts/lib/checks.py::def is_self_test_gated` |
+| G_AMBIG | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def convergence_status` — distinguishes an exact `run_gap` from a terminal tail whose remedy is a new `run-start` |
+| G_GAP | agent | `evals/skill-tuneup/evals.json::For an ambiguous pre-start gap` — exact marker validation is additionally code-enforced by `shared/skills/skill-tuneup/scripts/tuneup.py::def _validate_run_gap_resolution` |
+| G_SHIP_TIER | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def target_info` |
+| G_RECEIPT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def verify_final_receipt` — validates an existing receipt; missing or corrupt evidence fails closed |
+| G_GATE_KIND | code | `scripts/lib/checks.py::def requires_deterministic_gate` — routes by target even before a receipt exists; `is_self_test_gated` validates existing receipt evidence only |
 | G_PRE | code | `Makefile::precommit` |
+| G_TERMINAL | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def log_append` — validates terminal semantics; `convergence-status` and staged diff checks run after its final append |
+| G_COMMIT_TIER | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def target_info` |

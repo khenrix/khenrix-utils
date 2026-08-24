@@ -13,7 +13,7 @@ tooling) is re-created per machine — `khenrix-setup` does most of that for you
 |---|---|---|
 | MCP servers, skills, base instructions, baseline settings | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** (this repo) + `/khenrix-setup` applies it into the live CLI |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
-| Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
+| Project repos (e.g. `hunter`) + their `.agents/skills/`, `.claude/skills/`, or `skills/` | each project repo | **git** (each repo's own remote) |
 | Claude baseline settings + Stop hook + statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + `/khenrix-setup` installs/registers them (add-when-absent, never overrides your tuning) |
 | MCP secrets / OAuth tokens | machine-local (`~/.config/...`, env) | **not git** — re-auth per machine |
 | WSL Windows bridges (`powershell.exe`, `windows-chrome` shims) | machine-local `~/.local/bin` | **not git, but not manual either** — `scripts/bootstrap-tier0.sh` provisions them from this repo |
@@ -145,7 +145,7 @@ never fake either name.
 ```bash
 git clone git@github.com:khenrix/obsidian-vault.git  ~/git/obsidian-vault   # private
 # + your project repos, e.g.:
-git clone <hunter remote> ~/git/hunter               # brings its .claude/skills along
+git clone <hunter remote> ~/git/hunter               # brings its project skills along
 ```
 
 ## 3. Install the Claude plugins

@@ -40,11 +40,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -52,48 +55,28 @@ FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
 sys.path.insert(0, str(FANOUT_DIR))
 import fanout  # noqa: E402  (maintainer dev tool: reach into the council engine)
 
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _checks():
+    sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+    import checks  # noqa: E402
+    return checks
+
 EVALS_ROOT = ROOT / "evals"
 DEFAULT_JUDGE = "claude"
 
-# Skills the LLM-judge harness cannot fairly gate, so their receipt is blessed by a
-# deterministic test suite instead (analogous to llm-council's fanout --self-test).
-# The wiki skills wrap the in-repo `wikisync` engine: a read-only executor can READ the
-# skill source + engine from the repo cwd, so the "skill-free" baseline is contaminated
-# and the with-vs-without delta is meaningless. The 70 wikisync unit tests are the real
-# correctness gate; the judge run (if any) stays advisory.
+# Compatibility/readability view only. checks.py owns command construction and receipt
+# validation; execution calls it again at candidate-capture time so this import-time view
+# cannot become the command that earns a receipt after the test roster changes.
 DETERMINISTIC_GATED = {
-    "khenrix-wiki-add":  ["python3", "-m", "unittest", "discover", "-s",
-                          str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
-    "khenrix-wiki-sync": ["python3", "-m", "unittest", "discover", "-s",
-                          str(ROOT / "shared" / "lib" / "wikisync" / "tests")],
-    # A read-only with-skill/baseline harness cannot exercise forge's defining behaviour —
-    # a clone fleet, three providers, a fresh verifier — and an ordinary judge receipt would
-    # certify prose while leaving the dangerous mechanics untouched. The gate is the hermetic
-    # forge suite, which `_write_receipt` runs and refuses to write on. It is a REAL suite,
-    # not a `--help`: handover's record and provenance rules, the CLI front end, and every
-    # refusal `--gc` makes before it deletes anything.
-    #
-    # NOTE the judge run still EXECUTES: `gate_ok = True` is applied AFTER it in `run()`, so
-    # routing makes the delta advisory, not the run free. The cost control is the cheap eval
-    # set beside this file.
-    #
-    # `uvx`, NOT `sys.executable` and not a hardcoded "python3", and that is a MEASUREMENT
-    # rather than a preference: this machine's interpreter is 3.14.4 against a stated 3.11
-    # floor and cannot import pytest at all (`python3 -c "import pytest"` → ModuleNotFoundError,
-    # rc=1), so both spellings would fail here for a reason that has nothing to do with forge.
-    # The two entries above survive on `python3` only because `unittest` is stdlib. This is
-    # the same fallback `RUN_PYTEST` in the Makefile takes for the same reason.
-    # DERIVED FROM DISK, NOT RESTATED. This named three suites while the Makefile named
-    # thirty-one, and the omitted set included `test_forge_packaging.py` — the module that
-    # checks rendered-facade resolution and the quote prose — so breaking the facade left the
-    # certifying gate green. A hand-kept list is a second place to be right about what
-    # "certified" means, and it was already wrong.
-    "llm-forge": ["uvx", "--with", "pytest", "pytest", "-q"] + [
-        str(p) for p in sorted((ROOT / "tests").glob("test_forge_*.py"))],
+    skill: _checks().deterministic_gate_command(ROOT, skill)
+    for skill in _checks().GATE_EVIDENCE_SKILLS
 }
 
 
-_COUNT = re.compile(r"\b(\d+)\s+(passed|failed|skipped|error|errors|xfailed|xpassed)\b")
+_COUNT = re.compile(
+    r"\b(\d+)\s+(passed|failed|skipped|deselected|error|errors|xfailed|xpassed)\b")
 # unittest's summary is a DIFFERENT SHAPE and two of the three gated skills use it. Reading
 # only pytest's meant `tests_run: 0` for a run of 83 real tests, so the counts check refused a
 # receipt it should have written — fail-closed, and wrong about which runner it was looking at.
@@ -123,9 +106,12 @@ def _pytest_counts(text: str) -> dict:
         return out
     for n, word in _COUNT.findall(text):
         n = int(n)
-        if word in ("passed", "xfailed", "xpassed"):
+        if word == "passed":
             out["tests_run"] += n
-        elif word == "skipped":
+        elif word in ("skipped", "deselected", "xfailed", "xpassed"):
+            # Expected failures and unexpected passes are both unresolved suite states,
+            # not clean certification. The receipt schema has one non-clean count, so keep
+            # them with skips/deselections and make `_counts_are_evidence` fail closed.
             out["skipped"] += n
         elif word in ("failed", "error", "errors"):
             out["failed"] += n
@@ -148,14 +134,22 @@ def _counts_are_evidence(counts: dict) -> bool:
 # recording nothing. A `KeyError` is the right failure for a skill routed through
 # DETERMINISTIC_GATED with no name: `.get(skill, "unknown")` would write the receipt anyway.
 DETERMINISTIC_GATE_NAMES = {
-    "khenrix-wiki-add":  "wikisync-unittests",
-    "khenrix-wiki-sync": "wikisync-unittests",
-    # NOT "forge-handover-cli-gc-suites" ANY MORE. That named three modules, and the command
-    # above is now derived from disk and runs every one — so the string was a provenance claim
-    # about what earned the receipt that stopped being true the moment the gate widened. A
-    # receipt exists to say what ran; being wrong about that is worse than saying less.
-    "llm-forge":         "forge-suite-all",
+    skill: _checks().SELF_TEST_CERTIFIERS[skill]
+    for skill in _checks().GATE_EVIDENCE_SKILLS
 }
+
+
+def _deterministic_gate_env(skill: str) -> dict[str, str] | None:
+    """Remove ambient pytest selectors that a receipt cannot hash or attest."""
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    if skill != "llm-forge":
+        return env
+    env.pop("PYTEST_ADDOPTS", None)
+    env.pop("PYTEST_PLUGINS", None)
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    return env
 
 
 # --------------------------------------------------------------------------- #
@@ -170,23 +164,107 @@ def strip_frontmatter(skill_md: str) -> str:
     return skill_md
 
 
+def _no_symlink_components(path: Path, label: str) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise ValueError(f"{label} must not traverse a symlink ({current})")
+        if not current.exists():
+            break
+
+
+def _contained(anchor: Path, candidate: Path, label: str) -> None:
+    _no_symlink_components(anchor, f"{label} anchor")
+    _no_symlink_components(candidate, label)
+    try:
+        candidate.resolve(strict=False).relative_to(anchor.resolve(strict=False))
+    except ValueError as exc:
+        raise ValueError(f"{label} escapes its anchor") from exc
+
+
+def _eval_workspace_base(ev: dict, itdir: Path) -> Path:
+    """Construct one eval workspace from the manifest's unique rendered ID."""
+    checks = _checks()
+    eval_id = checks._safe_eval_component(Path("<eval>"), 0, "id", ev.get("id"))
+    checks._safe_eval_component(Path("<eval>"), 0, "name", ev.get("name"))
+    base = itdir / f"eval-{eval_id}"
+    _contained(itdir, base, "eval workspace")
+    return base
+
+
+def _prepare_condition_workspace(itdir: Path, workdir: Path) -> None:
+    """Create one clean condition workspace, anchored beneath the iteration."""
+    _contained(itdir, workdir, "eval condition workspace")
+    if workdir.exists():
+        if not workdir.is_dir():
+            raise ValueError(f"eval condition workspace is not a directory: {workdir}")
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
+
+
 def materialize_fixtures(ev: dict, src_dir: Path, dest: Path) -> Path:
-    """Copy every fixture named in ev['files'] from src_dir into dest (created), so
-    both conditions read identical local files. A name may be a file or a subdir
-    (copied recursively). Missing sources are skipped silently — the eval author
-    owns evals/<skill>/fixtures/. Returns dest (what {fixture_dir} resolves to)."""
-    dest.mkdir(parents=True, exist_ok=True)
-    for name in ev.get("files") or []:
-        src = src_dir / name
+    """Copy validated fixtures while proving both paths stay inside their anchors.
+
+    This is intentionally independent of manifest parsing: a caller can hand this helper a
+    synthetic eval, so containment and symlink checks must run before it creates, reads, or
+    writes anything. Requested fixtures are required; silently skipping one makes two eval
+    conditions look comparable while evaluating different inputs.
+    """
+    checks = _checks()
+
+    names = ev.get("files")
+    if names is None:
+        names = []
+    if not isinstance(names, list):
+        raise ValueError("eval files must be a list")
+
+    if not names:
+        _no_symlink_components(dest, "fixture destination")
+        dest.mkdir(parents=True, exist_ok=True)
+        return dest
+    if src_dir.is_symlink() or not src_dir.is_dir():
+        raise ValueError(f"fixture source directory is not a regular directory: {src_dir}")
+
+    copy_plan: list[tuple[Path, Path]] = []
+    for index, raw_name in enumerate(names):
+        name = checks._safe_fixture_path(Path("<eval>"), index, raw_name)
+        relative = Path(*name.split("/"))
+        src = src_dir / relative
+        target = dest / relative
+        _contained(src_dir, src, f"fixture source {name!r}")
+        _contained(dest, target, f"fixture destination {name!r}")
+        if src.is_symlink():
+            raise ValueError(f"fixture source {name!r} must not be a symlink")
         if src.is_file():
-            (dest / name).parent.mkdir(parents=True, exist_ok=True)
-            (dest / name).write_bytes(src.read_bytes())
-        elif src.is_dir():
-            for p in src.rglob("*"):
-                if p.is_file():
-                    d = dest / name / p.relative_to(src)
-                    d.parent.mkdir(parents=True, exist_ok=True)
-                    d.write_bytes(p.read_bytes())
+            copy_plan.append((src, target))
+            continue
+        if not src.is_dir():
+            raise ValueError(f"requested fixture is missing or not a regular file/directory: {name}")
+        stack = [src]
+        while stack:
+            directory = stack.pop()
+            for child in sorted(directory.iterdir(), reverse=True):
+                child_relative = child.relative_to(src_dir)
+                child_target = dest / child_relative
+                _contained(src_dir, child, f"fixture source {child_relative.as_posix()!r}")
+                _contained(dest, child_target,
+                           f"fixture destination {child_relative.as_posix()!r}")
+                if child.is_symlink():
+                    raise ValueError(f"fixture source {child_relative.as_posix()!r} must not be a symlink")
+                if child.is_file():
+                    copy_plan.append((child, child_target))
+                elif child.is_dir():
+                    stack.append(child)
+                else:
+                    raise ValueError(
+                        f"fixture source {child_relative.as_posix()!r} is not a regular file/directory")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    for src, target in copy_plan:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(src.read_bytes())
     return dest
 
 
@@ -542,19 +620,217 @@ def compare(with_text: str, without_text: str, ev: dict, judge: str, cfg: dict,
 # --------------------------------------------------------------------------- #
 # Orchestration.
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class CandidateSnapshot:
+    """The exact source, eval inputs, rendered bodies, and certifier being evaluated."""
+
+    skill: str
+    source_hash: str
+    source_inputs: object
+    eval_inputs: object
+    gate_tree: object | None
+    rendered_bodies: tuple[tuple[str, str], ...]
+    gate_command: tuple[str, ...] | None
+
+
+def _capture_candidate_once(skill: str, providers: list[str] | tuple[str, ...], *,
+                            include_bodies: bool) -> CandidateSnapshot:
+    c = _checks()
+    skill = c.validate_skill_name(skill)
+    unknown = [provider for provider in providers if provider not in c.CLIS]
+    if unknown:
+        raise ValueError(f"unsupported eval provider(s): {unknown}; expected {list(c.CLIS)}")
+    source_inputs = c.source_input_snapshot(ROOT, skill)
+    inputs = c.eval_input_snapshot(ROOT, skill)
+    bodies = tuple(
+        (provider, load_skill_body(skill, provider))
+        for provider in providers
+    ) if include_bodies else ()
+    command = c.deterministic_gate_command(ROOT, skill)
+    gate_tree = c.gate_tree_snapshot(ROOT) if command is not None else None
+    return CandidateSnapshot(
+        skill=skill,
+        source_hash=source_inputs.source_hash,
+        source_inputs=source_inputs,
+        eval_inputs=inputs,
+        gate_tree=gate_tree,
+        rendered_bodies=bodies,
+        gate_command=tuple(command) if command is not None else None,
+    )
+
+
+def _candidate_drift(before: CandidateSnapshot, after: CandidateSnapshot) -> list[str]:
+    drift = []
+    if before.source_hash != after.source_hash:
+        drift.append("source")
+    if before.eval_inputs.eval_set_hash != after.eval_inputs.eval_set_hash:
+        drift.append("eval set")
+    if (before.eval_inputs.manifest != after.eval_inputs.manifest
+            or before.eval_inputs.roster != after.eval_inputs.roster
+            or before.eval_inputs.fixture_dirs != after.eval_inputs.fixture_dirs
+            or before.eval_inputs.fixture_files != after.eval_inputs.fixture_files):
+        drift.append("eval manifest/fixtures")
+    if before.rendered_bodies != after.rendered_bodies:
+        drift.append("rendered skill body")
+    if before.gate_command != after.gate_command:
+        drift.append("deterministic gate command")
+    if ((before.gate_tree is None) != (after.gate_tree is None)
+            or (before.gate_tree is not None and after.gate_tree is not None
+                and (before.gate_tree.gate_tree_hash != after.gate_tree.gate_tree_hash
+                     or before.gate_tree.directories != after.gate_tree.directories
+                     or before.gate_tree.files != after.gate_tree.files))):
+        drift.append("deterministic gate tree")
+    return drift
+
+
+def capture_candidate(skill: str, providers: list[str] | tuple[str, ...], *,
+                      include_bodies: bool = True) -> CandidateSnapshot:
+    """Capture a stable candidate; refuse an edit that lands during the capture itself."""
+    first = _capture_candidate_once(skill, providers, include_bodies=include_bodies)
+    second = _capture_candidate_once(skill, providers, include_bodies=include_bodies)
+    drift = _candidate_drift(first, second)
+    if drift:
+        raise SystemExit(
+            f"{skill} changed while the eval candidate was being captured ({', '.join(drift)}); "
+            "not starting or writing a receipt")
+    return first
+
+
+def _assert_candidate_current(candidate: CandidateSnapshot) -> None:
+    providers = [provider for provider, _body in candidate.rendered_bodies]
+    first = _capture_candidate_once(
+        candidate.skill,
+        providers,
+        include_bodies=bool(candidate.rendered_bodies),
+    )
+    second = _capture_candidate_once(
+        candidate.skill, providers, include_bodies=bool(candidate.rendered_bodies))
+    drift = sorted(set(_candidate_drift(candidate, first)
+                       + _candidate_drift(candidate, second)
+                       + _candidate_drift(first, second)))
+    if drift:
+        raise SystemExit(
+            f"{candidate.skill} changed during the eval ({', '.join(drift)}); "
+            "not writing a receipt")
+
+
+def _materialize_input_snapshot(candidate: CandidateSnapshot, dest: Path) -> Path:
+    """Write captured fixture bytes to an isolated source tree used by every condition."""
+    _contained(dest.parent, dest, "captured fixture directory")
+    if dest.exists():
+        if dest.is_symlink() or not dest.is_dir():
+            raise ValueError(f"captured fixture directory is unsafe: {dest}")
+        shutil.rmtree(dest)
+    if not candidate.eval_inputs.fixture_dirs and not candidate.eval_inputs.fixture_files:
+        return dest
+    dest.mkdir(parents=True)
+    prefix = Path("fixtures")
+    directory_modes = []
+    for rel, mode in candidate.eval_inputs.fixture_dirs:
+        directory = dest / Path(rel).relative_to(prefix)
+        directory.mkdir(parents=True, exist_ok=True)
+        directory_modes.append((directory, mode))
+    for rel, mode, content in candidate.eval_inputs.fixture_files:
+        target = dest / Path(rel).relative_to(prefix)
+        _contained(dest, target, "captured fixture file")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        target.chmod(mode)
+    for directory, mode in reversed(directory_modes):
+        directory.chmod(mode)
+    return dest
+
+
+def _gate_git_env(skill: str) -> dict[str, str]:
+    return _checks().sanitized_git_env(_deterministic_gate_env(skill))
+
+
+def _rebase_gate_command(command: tuple[str, ...], live_root: Path,
+                         snapshot_root: Path) -> list[str]:
+    """Rebase standalone absolute argv paths under live_root into the snapshot."""
+    rebased = []
+    for arg in command:
+        path = Path(arg)
+        if path.is_absolute():
+            try:
+                arg = str(snapshot_root / path.relative_to(live_root))
+            except ValueError:
+                pass
+        rebased.append(arg)
+    return rebased
+
+
+def _materialize_gate_tree(candidate: CandidateSnapshot, dest: Path) -> Path:
+    """Create and stage the exact Git-visible tree a deterministic certifier executes."""
+    if candidate.gate_tree is None:
+        raise ValueError(f"{candidate.skill} has no captured deterministic gate tree")
+    _contained(dest.parent, dest, "deterministic candidate snapshot")
+    if dest.exists():
+        raise ValueError(f"deterministic candidate snapshot already exists: {dest}")
+    dest.mkdir(parents=True)
+    directory_modes = []
+    for rel, mode in candidate.gate_tree.directories:
+        directory = dest / rel
+        _contained(dest, directory, "deterministic candidate directory")
+        directory.mkdir(parents=True, exist_ok=True)
+        directory_modes.append((directory, mode))
+    for rel, mode, content in candidate.gate_tree.files:
+        target = dest / rel
+        _contained(dest, target, "deterministic candidate source")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        target.chmod(mode)
+    for directory, mode in reversed(directory_modes):
+        directory.chmod(mode)
+    command = _checks().deterministic_gate_command(dest, candidate.skill)
+    if tuple(command or ()) != tuple(candidate.gate_command or ()):
+        raise SystemExit(
+            f"{candidate.skill} deterministic snapshot does not reproduce its captured "
+            "gate command; not writing a receipt")
+    git_env = _gate_git_env(candidate.skill)
+    for git_command in (["git", "init", "-q"],
+                        ["git", "-c", f"core.hooksPath={os.devnull}", "add", "-f", "-A"]):
+        result = _REAL_SUBPROCESS_RUN(
+            git_command, cwd=dest, env=git_env, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(
+                f"cannot prepare deterministic gate snapshot Git identity: "
+                f"{result.stderr.strip()}; not writing a receipt")
+    materialized = _checks().gate_tree_snapshot(dest)
+    if (materialized.gate_tree_hash != candidate.gate_tree.gate_tree_hash
+            or materialized.directories != candidate.gate_tree.directories
+            or materialized.files != candidate.gate_tree.files):
+        raise SystemExit(
+            f"{candidate.skill} deterministic candidate changed while its private Git "
+            "snapshot was materialized; not writing a receipt")
+    return dest
+
+
 def load_evals(skill: str) -> dict:
-    path = EVALS_ROOT / skill / "evals.json"
-    if not path.exists():
+    skill = _checks().validate_skill_name(skill)
+    try:
+        spec, _raw = _checks().load_eval_manifest(ROOT, skill)
+    except FileNotFoundError:
+        path = EVALS_ROOT / skill / "evals.json"
         sys.exit(f"no evals at {path.relative_to(ROOT)} — create it first")
-    return json.loads(path.read_text())
+    return spec
 
 
 def load_skill_body(skill: str, provider: str) -> str:
+    c = _checks()
+    skill = c.validate_skill_name(skill)
+    provider = c.validate_provider_name(provider)
     path = (ROOT / "marketplaces" / provider / "plugins" / "khenrix-utils"
             / "skills" / skill / "SKILL.md")
     if not path.exists():
         sys.exit(f"rendered skill body missing: {path.relative_to(ROOT)} (run render.py)")
-    return strip_frontmatter(path.read_text())
+    _mode, body = c._regular_file_state(path, ROOT)
+    expected = c.expected_rendered_skill(ROOT, skill, provider)
+    if body != expected:
+        sys.exit(
+            f"rendered skill body is stale: {path.relative_to(ROOT)} "
+            "(run render.py before eval)")
+    return strip_frontmatter(body.decode("utf-8"))
 
 
 def build_run_result(rec: dict, g: dict) -> dict:
@@ -584,15 +860,20 @@ def build_run_result(rec: dict, g: dict) -> dict:
 
 def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: dict,
                           itdir: Path, *, timeout: int, retries: int,
-                          readonly: bool) -> list:
-    body = load_skill_body(skill, provider)
-    base = itdir / f"eval-{ev['id']}-{ev['name']}"
-    fixtures_src = EVALS_ROOT / skill / "fixtures"
+                          readonly: bool, skill_body: str | None = None,
+                          fixtures_src: Path | None = None) -> list:
+    c = _checks()
+    skill = c.validate_skill_name(skill)
+    provider = c.validate_provider_name(provider)
+    base = _eval_workspace_base(ev, itdir)
+    body = load_skill_body(skill, provider) if skill_body is None else skill_body
+    fixtures_src = (EVALS_ROOT / skill / "fixtures"
+                    if fixtures_src is None else fixtures_src)
     runs = []
     outputs = {}
     for condition in ("with_skill", "without_skill"):
         wd = base / f"{provider}__{condition}"
-        wd.mkdir(parents=True, exist_ok=True)
+        _prepare_condition_workspace(itdir, wd)
         fx = materialize_fixtures(ev, fixtures_src, wd / "fixtures")
         eval_prompt = render_prompt(ev, fx)
         prompt = build_condition_prompt(body, eval_prompt, condition)
@@ -618,30 +899,33 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
     return runs, cmp
 
 
-def _checks():
-    sys.path.insert(0, str(ROOT / "scripts" / "lib"))
-    import checks  # noqa: E402
-    return checks
-
-
 def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner=None,
-                   models=None, summary=None):
-    """Write evals/<skill>/receipt.json stamping the current source/eval-set hashes.
+                   models=None, summary=None, candidate: CandidateSnapshot):
+    """Write a receipt for the captured candidate, never for whatever is live at the end.
+
     For llm-council (orchestrator) gate on fanout --self-test, not a judge benchmark.
     `blind_winner` is the aggregated blind A/B verdict of the run (None when seeded).
     `models` records the resolved executor/judge model(s) actually used, so a run on a
     non-default model (e.g. --model-claude claude-opus-4-8 while Fable-5 is walled) is
     provable from the receipt, not silently attributed to the MODES default."""
     c = _checks()
+    skill = c.validate_skill_name(skill)
+    if candidate.skill != skill:
+        raise ValueError(
+            f"receipt candidate is for {candidate.skill!r}, not requested skill {skill!r}")
+    deterministic = c.requires_deterministic_gate(skill)
     rec = {
         "schema_version": c.CURRENT_RECEIPT_SCHEMA,
         "skill": skill,
-        "source_hash": c.source_hash(ROOT, skill),
-        "eval_set_hash": c.eval_set_hash(ROOT, skill),
+        "source_hash": candidate.source_hash,
+        "eval_set_hash": candidate.eval_inputs.eval_set_hash,
         "providers": providers, "mode": mode, "judge": judge,
         "delta_pass_rate": delta,
         "blind_winner": blind_winner,
-        "provenance": "seeded: blessed current committed state" if seeded else "eval",
+        # A deterministic target really runs its certifier below even through the legacy
+        # --seed-receipt entry point. Record what happened, not which flag reached it.
+        "provenance": ("seeded: blessed current committed state"
+                       if seeded and not deterministic else "eval"),
     }
     if summary:
         # WHICH EXECUTOR CARRIED THE DELTA, readable from the receipt alone. The pooled
@@ -669,51 +953,102 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         # so writing this field is recording the gate that already passed, not asserting a
         # second one. The two branches below overwrite it with the stronger thing they ran.
         rec["certified_by"] = "delta-gate"
-    if skill == "llm-council":
-        rc = subprocess.run([sys.executable, str(FANOUT_DIR / "fanout.py"), "--self-test"])
-        if rc.returncode != 0:  # never bless a failing engine with a green receipt
-            raise SystemExit("llm-council self-test failed; not writing receipt")
-        rec.update(self_test=True, certified_by="fanout --self-test",
-                   synthesis_review="manual-attested")
-    elif skill in DETERMINISTIC_GATED:
-        cmd = DETERMINISTIC_GATED[skill]
-        rc = subprocess.run(cmd, capture_output=True, text=True)
-        print(rc.stdout[-2000:] if rc.stdout else "", end="")
-        if rc.returncode != 0:  # unit tests are the gate — never bless a failing engine
-            raise SystemExit(f"{skill} deterministic tests failed; not writing receipt")
-        counts = _pytest_counts((rc.stdout or "") + (rc.stderr or ""))
-        if not _counts_are_evidence(counts):
-            # AN EXIT CODE IS NOT A TEST COUNT. An all-skipped run exits 0, and so does a
-            # command that runs nothing at all — both would have written a green receipt.
+    if deterministic:
+        if candidate.gate_command is None:
+            raise SystemExit(f"{skill} has no deterministic gate command; not writing receipt")
+        with tempfile.TemporaryDirectory(prefix="khenrix-eval-gate-") as gate_td:
+            gate_root = _materialize_gate_tree(candidate, Path(gate_td) / "candidate")
+            cmd = _rebase_gate_command(candidate.gate_command, ROOT, gate_root)
+            rc = subprocess.run(
+                cmd, capture_output=(skill != "llm-council"),
+                text=(skill != "llm-council"), env=_gate_git_env(skill), cwd=gate_root)
+        canonical_command = list(candidate.gate_command)
+        rec.update(gate_command=canonical_command,
+                   gate_tree_hash=candidate.gate_tree.gate_tree_hash)
+        if skill == "llm-council":
+            if rc.returncode != 0:
+                raise SystemExit("llm-council self-test failed; not writing receipt")
+            rec.update(self_test=True, certified_by="fanout --self-test")
+        else:
+            print(rc.stdout[-2000:] if rc.stdout else "", end="")
+            if rc.returncode != 0:  # unit tests are the gate — never bless a failing engine
+                raise SystemExit(f"{skill} deterministic tests failed; not writing receipt")
+            counts = _pytest_counts((rc.stdout or "") + (rc.stderr or ""))
+            if not _counts_are_evidence(counts):
+                # AN EXIT CODE IS NOT A TEST COUNT. An all-skipped run exits 0, and so does a
+                # command that runs nothing at all — both would have written a green receipt.
+                raise SystemExit(
+                    f"{skill} deterministic gate exited 0 but its counts are not evidence "
+                    f"({counts}); not writing receipt")
+            gate_name = c.SELF_TEST_CERTIFIERS[skill]
+            rec.update(deterministic_gate=gate_name, self_test=True,
+                       certified_by=gate_name, gate_counts=counts)
+    receipt_dir = EVALS_ROOT / skill
+    _contained(ROOT, receipt_dir, "receipt directory")
+    if receipt_dir.is_symlink() or not receipt_dir.is_dir():
+        raise SystemExit(f"unsafe or missing receipt directory: {receipt_dir}")
+    receipt_path = receipt_dir / "receipt.json"
+    _contained(receipt_dir, receipt_path, "receipt path")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=receipt_dir,
+                prefix=".receipt.", suffix=".tmp", delete=False) as tmp:
+            tmp.write(json.dumps(rec, indent=2))
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        # The certifier may run for minutes. Two identical captures after the complete temp
+        # file close the recapture race immediately before publication.
+        _assert_candidate_current(candidate)
+        os.replace(tmp_path, receipt_path)
+        tmp_path = None
+        # A mutation triggered at the replacement seam must not leave even a stale receipt.
+        _assert_candidate_current(candidate)
+        problems = c.validate_receipt(ROOT, skill, final=False)
+        if problems:
             raise SystemExit(
-                f"{skill} deterministic gate exited 0 but its counts are not evidence "
-                f"({counts}); not writing receipt")
-        rec.update(deterministic_gate=DETERMINISTIC_GATE_NAMES[skill], self_test=True,
-                   certified_by=DETERMINISTIC_GATE_NAMES[skill],
-                   gate_command=cmd, gate_counts=counts)
-    (EVALS_ROOT / skill / "receipt.json").write_text(json.dumps(rec, indent=2))
+                f"published receipt failed its own validator ({'; '.join(problems)}); removing it")
+    except BaseException:
+        receipt_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def seed_receipts(args) -> int:
     """Stamp a receipt at the current committed state. With --skill, seed just that one
-    (e.g. re-blessing a skill whose only change is a mechanical render.py bundling, or a
-    deterministic-gated skill); otherwise seed every eval'd skill."""
-    skills = [args.skill] if args.skill else _checks()._evald_skills(ROOT)
+    (e.g. re-blessing a skill whose only change is mechanical rendering); otherwise seed
+    every eval'd skill. Panel-exempt targets still run and record their real certifier."""
+    c = _checks()
+    skills = [c.validate_skill_name(args.skill)] if args.skill else c._evald_skills(ROOT)
+    providers = [provider.strip() for provider in args.providers.split(",")
+                 if provider.strip()]
     for skill in skills:
-        _write_receipt(skill, providers=args.providers.split(","), mode=args.mode,
-                       judge=args.judge, delta=None, seeded=True)
-        print(f"  seeded receipt: {skill}")
+        candidate = capture_candidate(skill, providers, include_bodies=False)
+        _write_receipt(skill, providers=providers, mode=args.mode,
+                       judge=args.judge, delta=None, seeded=True, candidate=candidate)
+        action = ("earned deterministic receipt" if c.requires_deterministic_gate(skill)
+                  else "seeded receipt")
+        print(f"  {action}: {skill}")
     return 0
 
 
 def run(args) -> int:
-    spec = load_evals(args.skill)
-    evals = spec["evals"]
+    c = _checks()
+    args.skill = c.validate_skill_name(args.skill)
     providers = [p.strip() for p in args.providers.split(",") if p.strip()]
+    candidate = capture_candidate(args.skill, providers)
+    evals = candidate.eval_inputs.spec["evals"]
     cfg = fanout.resolve_mode_config(_mode_args(args))
     timeout = fanout.effective_timeout(_mode_args(args))
     itdir = EVALS_ROOT / args.skill / "workspace" / f"iteration-{args.iteration}"
+    _contained(ROOT, itdir, "eval iteration workspace")
     itdir.mkdir(parents=True, exist_ok=True)
+    fixtures_snapshot = _materialize_input_snapshot(
+        candidate, itdir / "_candidate-fixtures")
+    rendered_bodies = dict(candidate.rendered_bodies)
 
     all_runs = []
     comparisons = []
@@ -722,7 +1057,8 @@ def run(args) -> int:
             print(f"  · {provider} / eval-{ev['id']}-{ev['name']} …", flush=True)
             runs, cmp = run_eval_for_provider(
                 args.skill, provider, ev, args.judge, cfg, itdir,
-                timeout=timeout, retries=args.retries, readonly=args.readonly)
+                timeout=timeout, retries=args.retries, readonly=args.readonly,
+                skill_body=rendered_bodies[provider], fixtures_src=fixtures_snapshot)
             all_runs.extend(runs)
             comparisons.append(cmp)
 
@@ -776,7 +1112,7 @@ def run(args) -> int:
         # --self-test (enforced inside _write_receipt), never this delta/winner.
         gate_ok = True
         bw = "n/a-orchestrator"
-    elif args.skill in DETERMINISTIC_GATED:
+    elif c.requires_deterministic_gate(args.skill):
         # For the wiki skills the read-only baseline reads the in-repo skill source, so the
         # with-vs-without delta is meaningless; for llm-forge a read-only harness cannot drive
         # a clone fleet at all. Either way the judge run is advisory and the receipt gate is
@@ -788,7 +1124,8 @@ def run(args) -> int:
         models["judge"] = cfg.get(args.judge, {}).get("model")
         _write_receipt(args.skill, providers=providers, mode=args.mode,
                        judge=args.judge, delta=d, blind_winner=bw, seeded=False,
-                       models=models, summary=benchmark["run_summary"])
+                       models=models, summary=benchmark["run_summary"],
+                       candidate=candidate)
     return 0 if gate_ok else 1
 
 
@@ -872,6 +1209,7 @@ def _print_summary(benchmark: dict, itdir: Path) -> None:
 # Live execution is covered by fanout.py --self-test and a real --run smoke.
 # --------------------------------------------------------------------------- #
 def self_test() -> int:
+    global ROOT, EVALS_ROOT, DETERMINISTIC_GATED, DETERMINISTIC_GATE_NAMES
     results = []
 
     def check(label, cond, detail=""):
@@ -884,6 +1222,122 @@ def self_test() -> int:
     check("every deterministic-gated skill names its gate",
           set(DETERMINISTIC_GATED) == set(DETERMINISTIC_GATE_NAMES),
           str(sorted(set(DETERMINISTIC_GATED) ^ set(DETERMINISTIC_GATE_NAMES))))
+    expected_self_test_certifiers = {
+        "llm-council": "fanout --self-test",
+        **DETERMINISTIC_GATE_NAMES,
+    }
+    check("receipt verifier and producer agree on every panel-exempt certifier",
+          _checks().SELF_TEST_CERTIFIERS == expected_self_test_certifiers,
+          str({"producer": expected_self_test_certifiers,
+               "verifier": _checks().SELF_TEST_CERTIFIERS}))
+    forge_command = _checks().deterministic_gate_command(ROOT, "llm-forge")
+    forge_inputs = [arg for arg in forge_command if arg.endswith(".py")]
+    expected_forge_inputs = [
+        str(path.relative_to(ROOT))
+        for pattern in _checks().DETERMINISTIC_GATE_INPUT_GLOBS["llm-forge"]
+        for path in sorted(ROOT.glob(pattern))
+    ]
+    check("forge producer executes every source-closure certifier input exactly once",
+          forge_inputs == expected_forge_inputs,
+          str({"producer": forge_inputs, "closure": expected_forge_inputs}))
+    check("forge certifier pins pytest and disables repository pytest configuration",
+          "pytest==9.1.1" in forge_command
+          and forge_command[forge_command.index("-c") + 1] == os.devnull
+          and forge_command[forge_command.index("--rootdir") + 1] == ".")
+    makefile = (ROOT / "Makefile").read_text()
+    check("Makefile pytest gates share the pinned ambient-free collection contract",
+          "pytest==9.1.1" in makefile
+          and "env -u PYTEST_ADDOPTS -u PYTEST_PLUGINS" in makefile
+          and "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in makefile
+          and "pytest -q -c /dev/null --rootdir $(REPO)" in makefile)
+    saved_addopts = os.environ.get("PYTEST_ADDOPTS")
+    saved_plugins = os.environ.get("PYTEST_PLUGINS")
+    os.environ["PYTEST_ADDOPTS"] = "-m not_slow"
+    os.environ["PYTEST_PLUGINS"] = "outside_plugin"
+    try:
+        forge_env = _deterministic_gate_env("llm-forge")
+    finally:
+        if saved_addopts is None:
+            os.environ.pop("PYTEST_ADDOPTS", None)
+        else:
+            os.environ["PYTEST_ADDOPTS"] = saved_addopts
+        if saved_plugins is None:
+            os.environ.pop("PYTEST_PLUGINS", None)
+        else:
+            os.environ["PYTEST_PLUGINS"] = saved_plugins
+    check("forge certifier ignores unhashable ambient pytest selectors",
+          forge_env is not None
+          and "PYTEST_ADDOPTS" not in forge_env
+          and "PYTEST_PLUGINS" not in forge_env
+          and forge_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1")
+    narrowed = _pytest_counts("1074 passed, 2 deselected in 1.0s")
+    check("a deselected deterministic test makes counts non-certifying",
+          narrowed["skipped"] == 2 and not _counts_are_evidence(narrowed))
+    xresults = _pytest_counts("1074 passed, 1 xfailed, 1 xpassed in 1.0s")
+    check("pytest expected and unexpected outcomes make counts non-certifying",
+          xresults == {"tests_run": 1074, "skipped": 2, "failed": 0}
+          and not _counts_are_evidence(xresults))
+
+    # Producer-to-validator round trip for the legacy seed entry point. A deterministic
+    # target really runs its suite there, so the receipt must say `eval`, not claim it was
+    # merely blessed. Exercise the writer, not a hand-assembled approximation of its shape.
+    _saved_root, _saved_evals = ROOT, EVALS_ROOT
+    _saved_run = subprocess.run
+    _receipt_checks = _checks()
+    _roundtrip_ok = False
+    _roundtrip_detail = ""
+    try:
+        with tempfile.TemporaryDirectory() as _td:
+            ROOT = Path(_td)
+            EVALS_ROOT = ROOT / "evals"
+            (ROOT / "capabilities.toml").write_text("[models]\n")
+            for _skill in ("khenrix-wiki-add", "llm-council"):
+                (ROOT / "shared" / "skills" / _skill).mkdir(parents=True)
+                (ROOT / "shared" / "skills" / _skill / "SKILL.md").write_text(
+                    f"# {_skill}\n")
+                (EVALS_ROOT / _skill).mkdir(parents=True)
+                (EVALS_ROOT / _skill / "evals.json").write_text(
+                    '{"evals":[{"id":0,"name":"case","prompt":"p",'
+                    '"assertions":["a"],"files":[]}]}')
+            _REAL_SUBPROCESS_RUN(
+                ["git", "init", "-q", str(ROOT)], check=True, capture_output=True)
+
+            class _Completed:
+                returncode = 0
+                stdout = "1 passed\n"
+                stderr = ""
+
+            subprocess.run = lambda *a, **kw: _Completed()
+            _wiki_candidate = capture_candidate(
+                "khenrix-wiki-add", ["claude"], include_bodies=False)
+            _write_receipt(
+                "khenrix-wiki-add", providers=["claude"], mode="normal", judge="claude",
+                delta=None, seeded=True, candidate=_wiki_candidate)
+            _receipt = json.loads(
+                (EVALS_ROOT / "khenrix-wiki-add" / "receipt.json").read_text())
+            _roundtrip_problems = _receipt_checks.validate_receipt(
+                ROOT, "khenrix-wiki-add", final=True, panel=["claude", "codex", "agy"])
+            _council_candidate = capture_candidate(
+                "llm-council", ["claude"], include_bodies=False)
+            _write_receipt(
+                "llm-council", providers=["claude"], mode="normal", judge="claude",
+                delta=None, seeded=True, candidate=_council_candidate)
+            _council_receipt = json.loads(
+                (EVALS_ROOT / "llm-council" / "receipt.json").read_text())
+            _council_problems = _receipt_checks.validate_receipt(
+                ROOT, "llm-council", final=True, panel=["claude", "codex", "agy"])
+            _roundtrip_ok = (
+                _receipt.get("provenance") == "eval" and not _roundtrip_problems
+                and _council_receipt.get("provenance") == "eval"
+                and _council_receipt.get("self_test") is True
+                and _council_receipt.get("certified_by") == "fanout --self-test"
+                and "synthesis_review" not in _council_receipt and not _council_problems)
+            _roundtrip_detail = str(_roundtrip_problems + _council_problems)
+    finally:
+        ROOT, EVALS_ROOT = _saved_root, _saved_evals
+        subprocess.run = _saved_run
+    check("deterministic seeding records real certifiers without a false manual attestation",
+          _roundtrip_ok, _roundtrip_detail)
 
     # frontmatter stripping
     body = strip_frontmatter("---\nname: x\ndescription: y\n---\n\n# Title\nbody")
@@ -1020,8 +1474,35 @@ def self_test() -> int:
         check("fixtures materialized into workspace", (ws / "bm.json").exists())
         rp = render_prompt(ev, ws)
         check("fixture_dir placeholder substituted", "{fixture_dir}" not in rp and str(ws) in rp)
-        check("no-files eval is a no-op copy",
-              materialize_fixtures({"prompt": "x"}, src_dir=src, dest=tdp / "ws2").exists())
+        itdir = tdp / "iteration"
+        itdir.mkdir()
+        empty_wd = itdir / "eval-empty" / "claude__with_skill"
+        empty_dest = empty_wd / "fixtures"
+        empty_dest.mkdir(parents=True)
+        (empty_dest / "stale.json").write_text("stale")
+        _prepare_condition_workspace(itdir, empty_wd)
+        materialize_fixtures(
+            {"prompt": "x", "files": []},
+            src_dir=tdp / "missing-fixtures", dest=empty_dest)
+        check("no-files eval needs no source and clears prior fixtures",
+              empty_dest.exists() and list(empty_dest.iterdir()) == [])
+
+        # A composite `<id>-<name>` is not injective: these two safe pairs used to share
+        # one workspace, so the no-files case inherited the first eval's fixture.
+        left = {"id": "alpha-beta", "name": "gamma", "files": ["bm.json"]}
+        right = {"id": "alpha", "name": "beta-gamma", "files": []}
+        left_base = _eval_workspace_base(left, itdir)
+        right_base = _eval_workspace_base(right, itdir)
+        left_wd = left_base / "claude__with_skill"
+        right_wd = right_base / "claude__with_skill"
+        _prepare_condition_workspace(itdir, left_wd)
+        _prepare_condition_workspace(itdir, right_wd)
+        materialize_fixtures(left, src, left_wd / "fixtures")
+        materialize_fixtures(right, tdp / "missing-fixtures", right_wd / "fixtures")
+        check("distinct safe eval IDs cannot collide or leak fixtures",
+              left_base != right_base
+              and (left_wd / "fixtures" / "bm.json").is_file()
+              and list((right_wd / "fixtures").iterdir()) == [])
 
     # blind-winner aggregation across comparisons (Task 1)
     comps = [{"winner_condition": "with_skill"}, {"winner_condition": "with_skill"},
@@ -1064,7 +1545,7 @@ def parse_args(argv=None):
                     help="run executors with full permissions (only for skills that must write)")
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")
     ap.add_argument("--seed-receipt", action="store_true",
-                    help="stamp receipt.json for every eval'd skill at its current committed state")
+                    help="stamp ordinary receipts; panel-exempt skills still run their certifier")
     return ap.parse_args(argv)
 
 

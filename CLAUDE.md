@@ -79,7 +79,8 @@ sync AND that every eval'd skill's receipt matches its current source (a changed
 stale/missing receipt fails). `make verify` only warns about stale receipts — run
 `make precommit` before committing a skill change. The source closure includes the bundled
 `scripts/lib/*` and `scripts/render.py`, so editing the reconcile engine correctly stales
-every skill. Seed receipts for the current blessed state with `eval_harness.py --seed-receipt`.
+every skill. Re-earn receipts with `make eval SKILL=<name>`; `--seed-receipt` is a scoped
+bootstrap/migration tool, not a substitute for the normal eval workflow.
 
 `make precommit` also depends on **`make forge-test-slow`**, and that is load-bearing rather
 than incidental. The forge suite is split by weight: `FORGE_TESTS` (the fast half) runs inside

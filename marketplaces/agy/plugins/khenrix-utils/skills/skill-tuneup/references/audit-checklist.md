@@ -1,9 +1,11 @@
 # Audit checklist
 
 Resolve the tier with `target-info` first: §6 is full-gate only, every other section
-applies to both. Grade the target against every applicable section. Deterministic inputs first
-(`tuneup.py stale-models`, `make verify`), judgment second. Every finding gets a stable
-`finding_id` slug, a category, and a `proportionate` or `risky` tag.
+applies to both. Grade the target against every applicable section. Start with deterministic
+inputs: `tuneup.py stale-models` and target-runtime validators; for a full-gate target also
+run khenrix-utils' `make verify`, while a council-only target uses only gates discovered in
+its own repository. Apply judgment second. Every finding gets a stable `finding_id` slug, a
+category, and a `proportionate` or `risky` tag.
 
 Categories: `Bug` · `Inconsistency` · `Stale` · `Missing-edge-case` · `Eval-gap` ·
 `Best-practice-update` · `Over-engineering`
@@ -29,7 +31,8 @@ Categories: `Bug` · `Inconsistency` · `Stale` · `Missing-edge-case` · `Eval-
   and does NOT poach a sibling skill's triggers (check the other shared skills).
 - `allowed-tools` is as narrow as the workflow needs — no unused broad grants, no missing
   grant the body relies on.
-- Body (total lines incl. frontmatter) < 500 — `render.py --check` enforces this.
+- Source body (total lines incl. frontmatter) ≤ 500 — measure it directly; the renderer
+  enforces the same limit on generated copies after `render.py` has synchronized them.
 
 ## 4. Missing edge cases
 
@@ -42,6 +45,16 @@ in fetched content · re-run safety / idempotency · cleanup of temp files and l
 - SKILL.md claims match what its bundled scripts actually do.
 - Bundled scripts are stdlib-only and expose `--self-test` wired into `make eval-test`.
 - References mentioned in the body exist; scripts referenced by evals exist.
+- Run every available target-runtime validator and name the command. Discover it from the
+  runtime's own help or the inventory `review_tools`: in this source checkout use
+  `$KU/scripts/lib/inventory.py`; in an installed plugin use
+  `<skill-root>/scripts/inventory.py`. Use its declared dependency environment (for
+  Codex's bundled `quick_validate.py`, use
+  `uv run --with pyyaml python <quick_validate.py> <skill-dir>`). A validator that cannot
+  start or exits nonzero is a finding, never a pass. Khenrix skills ship to three runtimes:
+  record conflicting contracts rather than silently rewriting for the strictest one.
+- Reject unfinished scaffold or TODO-placeholder content even when the skill is
+  structurally parseable.
 
 ## 6. Eval coverage — FULL-GATE ONLY
 
@@ -90,10 +103,16 @@ beats completeness.
 Behavior change to what the skill delivers · any model-ID change · a new dependency ·
 rewriting the eval set · touching another skill's files · `scripts/lib/reconcile.py`,
 `scripts/lib/inventory.py`, or `scripts/render.py` (bundled into EVERY skill — stales every
-receipt; say so) · `capabilities.toml` (in BOTH templated skills' closures, so it owes a
-`khenrix-setup` AND a `khenrix-upgrade` eval no matter which skill you are tuning — and a
-new model id *requires* a `[models]` entry, enforced by `scripts/lib/checks.py`).
+receipt; say so) · `scripts/eval_harness.py`, `scripts/lib/checks.py`, or `Makefile`
+(global receipt inputs — also stale every receipt) · `shared/lib/council/**` (stales both
+`llm-council` and `llm-forge`) · `shared/lib/wikisync/**` (stales both wiki receipts) ·
+`capabilities.toml` (always stales `khenrix-setup`, `khenrix-upgrade`, and `skill-tuneup`;
+editing another templated skill's
+exact facts additionally stales that skill — and a new model id *requires* a `[models]`
+entry, enforced by `scripts/lib/checks.py`).
 
 Derive the checkpoint's cost note from the paths you intend to touch, checked against
-`checks.py`'s closures — not from the target's name. Other `scripts/lib/*` files and
-`scripts/eval_harness.py` are in no closure and cost zero eval runs.
+`checks.py`'s `source_manifest` closures — not from the target's name or a remembered
+count. Treat `source_manifest` as authoritative: an otherwise unlisted path can still enter
+a deterministic certifier's ambient closure — currently `llm-forge` includes
+`scripts/**/*.py`.

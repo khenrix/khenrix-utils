@@ -6,8 +6,11 @@ them; render.check() prints + fails on any. Self-test (`--self-test`) covers the
 logic with no repo/network dependency.
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, tempfile, tomllib
+import hashlib, json, os, re, stat, string, subprocess, sys, tempfile, tomllib
+from dataclasses import dataclass
 from pathlib import Path
+
+_REAL_SUBPROCESS_RUN = subprocess.run
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
@@ -18,6 +21,7 @@ FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
 # plugin enumerate `marketplaces/` from disk instead of iterating this — see
 # forge_packaging.
 CLIS = ("claude", "codex", "agy")
+SKILL_NAME_RX = re.compile(r"^[a-z0-9-]{1,64}$")
 
 # High-confidence secret shapes (fail). Written as full regex so they never match
 # their own source text here. Loose shapes (bearer) are advisory, reported separately.
@@ -332,11 +336,6 @@ SKILL_EXTRA = {
     "khenrix-setup":   ["capabilities.toml", "house-style.md"],
     "khenrix-upgrade": ["capabilities.toml", "house-style.md"],
     "llm-council":     ["headless-invocation.md"],
-    # forge/screen.py reads SECRET_FAIL + SECRET_ALLOW_SHA out of this module, so editing
-    # the patterns changes what forge screens before launching a fleet — behaviour-
-    # affecting by this closure's own definition, and reachable from no other entry here
-    # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
-    "llm-forge":       ["scripts/lib/checks.py"],
     # tuneup.py's `approved_models()` reads capabilities [models] AT RUNTIME and
     # `tag_model()` returns "current" vs "stale-candidate" from it — so registering a new
     # model changes what skill-tuneup REPORTS while nothing staled its receipt. That is the
@@ -359,25 +358,70 @@ SKILL_EXTRA_DIRS = {
     "llm-forge":         ["shared/lib/forge", "shared/lib/council"],
 }
 
+# Test files that directly earn deterministic receipts. Keeping the patterns beside the
+# source-closure authority makes additions and removals stale the receipt just as edits do;
+# eval_harness imports this map when it constructs the certifying command.
+DETERMINISTIC_GATE_INPUT_GLOBS = {
+    "llm-forge": ["tests/test_forge_*.py"],
+}
+DETERMINISTIC_GATE_AMBIENT_INPUT_GLOBS = {
+    # The certifier runs with repository pytest configuration disabled, but conftests and
+    # imported/scanned repository Python remain behavior-affecting inputs even though they
+    # are not positional test arguments. Two Forge meta-tests deliberately inspect every
+    # Python module under shared/scripts and every test module, so that complete transitive
+    # read set belongs in the receipt closure too.
+    "llm-forge": [
+        "conftest.py", "tests/**/conftest.py", "tests/forge_fixtures.py",
+        "shared/**/*.py", "scripts/**/*.py", "tests/test_*.py", "tests/test_*.bats",
+        # Packaging tests execute the checked-in plugin facade and bundled engine. These
+        # are derived outputs, but they are still direct certifier inputs: deleting one
+        # must stale the receipt before the suite is re-run.
+        "marketplaces/*/plugins/khenrix-utils/lib/forge/**/*",
+        "marketplaces/*/plugins/khenrix-utils/lib/council/**/*",
+        "marketplaces/*/plugins/khenrix-utils/lib/checks.py",
+        "marketplaces/*/plugins/khenrix-utils/skills/llm-forge/**/*",
+    ],
+}
+
 
 def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
+
+
+def validate_skill_name(skill: object) -> str:
+    """Return one safe skill-name component or refuse it before any path join."""
+    if not isinstance(skill, str) or not SKILL_NAME_RX.fullmatch(skill):
+        raise ValueError(
+            f"invalid skill name {skill!r}; expected lowercase letters, digits, and "
+            "hyphens (1-64 characters)")
+    return skill
+
+
+def validate_provider_name(provider: object) -> str:
+    if provider not in CLIS:
+        raise ValueError(f"invalid provider {provider!r}; expected one of {list(CLIS)}")
+    return str(provider)
+
+
+def _normalized_path(path: Path) -> Path:
+    """Absolute lexical normalization without following a possibly hostile symlink."""
+    return Path(os.path.abspath(os.fspath(path)))
 
 
 def _skill_source_files(root: Path, skill: str) -> list[Path]:
     """Full behavior-affecting input closure for a skill: its own dir, the LIB_SCRIPTS
     + render.py bundled/applied to every skill, and skill-specific extras (reconcile
     inputs / overlays / headless doc). Excludes pycache/pyc."""
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
     files = []
     for base in (root / "shared" / "skills" / skill,
                  root / "shared" / "skill-templates" / skill):
         if base.is_dir():
             files += [p for p in base.rglob("*") if p.is_file()
                       and "__pycache__" not in p.parts and p.suffix != ".pyc"]
-    # `dict.fromkeys`, not a set: order is what `source_manifest` sorts and a duplicate is
-    # what happens when a file earns its place twice — `checks.py` is a GLOBAL_INPUT because
-    # it decides what the gate accepts, and llm-forge's SKILL_EXTRA because forge/screen.py
-    # reads its constants. Both reasons are right; hashing it twice is not.
+    # `dict.fromkeys`, not a set: a file can earn its place through more than one closure
+    # edge, but source_manifest must hash it once.
     for rel in dict.fromkeys(LIB_SCRIPTS + GLOBAL_INPUTS + SKILL_EXTRA.get(skill, [])):
         p = root / rel
         if p.is_file():
@@ -387,51 +431,478 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
         if base.is_dir():
             files += [p for p in base.rglob("*") if p.is_file()
                       and "__pycache__" not in p.parts and p.suffix != ".pyc"]
+    gate_patterns = (
+        DETERMINISTIC_GATE_INPUT_GLOBS.get(skill, [])
+        + DETERMINISTIC_GATE_AMBIENT_INPUT_GLOBS.get(skill, []))
+    for pattern in gate_patterns:
+        files += [p for p in root.glob(pattern) if p.is_file()
+                  and "__pycache__" not in p.parts and p.suffix != ".pyc"]
     if skill in ("khenrix-setup", "khenrix-upgrade"):  # overlays change reconcile output
         caps = _load_caps(root)
         for ov in (caps.get("instructions", {}).get("overlays") or {}).values():
             p = root / ov
             if p.is_file():
                 files.append(p)
-    return files
+    return list(dict.fromkeys(files))
 
 
-def source_manifest(root: Path, skill: str) -> list:
-    """Sorted (relpath, sha256) pairs + canonical skill_facts slice for templated skills."""
+def _regular_file_state(path: Path, root: Path) -> tuple[int, bytes]:
+    """Return mode and bytes without crossing a symlink inside the receipt root."""
+    root = _normalized_path(root)
+    path = _normalized_path(path)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"{path}: receipt input is outside {root}") from exc
+    current = root
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            raise ValueError(
+                f"{path}: receipt inputs must be regular files under regular directories, "
+                f"not symlinks ({current})")
+    if not path.is_file():
+        raise ValueError(f"{path}: receipt input is not a regular file")
+    return path.lstat().st_mode & 0o7777, path.read_bytes()
+
+
+@dataclass(frozen=True)
+class SourceInputSnapshot:
+    """Exact regular source files and semantic facts behind one source hash."""
+
+    source_files: tuple[tuple[str, int, bytes], ...]
+    manifest: tuple[tuple[str, str], ...]
+    source_hash: str
+
+
+@dataclass(frozen=True)
+class GateTreeSnapshot:
+    """Typed Git-visible working-tree state used by deterministic certifiers."""
+
+    directories: tuple[tuple[str, int], ...]
+    files: tuple[tuple[str, int, bytes], ...]
+    gate_tree_hash: str
+
+
+_GATE_CACHE_DIRS = frozenset({
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+})
+_GIT_REPOSITORY_ENV = frozenset({
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_TEMPLATE_DIR", "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_SHALLOW_FILE",
+    "GIT_PREFIX", "GIT_INTERNAL_SUPER_PREFIX", "GIT_CONFIG_PARAMETERS",
+})
+
+
+def sanitized_git_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Return a Git environment bound to arguments/cwd, never an ambient repository.
+
+    Candidate capture and private-snapshot execution share this authority. Otherwise an
+    exported GIT_DIR or GIT_INDEX_FILE can make `git -C <candidate>` enumerate a foreign
+    index while still exiting successfully, silently omitting force-tracked ignored files.
+    Isolating config also keeps a machine-global excludes file from changing the tree the
+    receipt claims to certify.
+    """
+    env = dict(os.environ if base is None else base)
+    for key in _GIT_REPOSITORY_ENV:
+        env.pop(key, None)
+    for key in list(env):
+        if key == "GIT_CONFIG_COUNT" or key.startswith(
+                ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(key, None)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    return env
+
+
+def _gate_tree_excluded(rel: str, *, is_dir: bool) -> bool:
+    parts = Path(rel).parts
+    if not parts or ".git" in parts or any(part in _GATE_CACHE_DIRS for part in parts):
+        return True
+    # Tune-up run logs are mutable bookkeeping, deliberately outside receipt closure.
+    # Exclude the directory itself as well as its file roster so appending the terminal
+    # marker after certification cannot immediately stale the receipt it records.
+    if parts[:3] == ("docs", "tuneups", "log"):
+        return True
+    if not is_dir and (rel.endswith(".pyc")
+                       or (Path(rel).name.startswith(".receipt.")
+                           and Path(rel).name.endswith(".tmp"))):
+        return True
+    if len(parts) >= 3 and parts[0] == "evals" and parts[2] == "workspace":
+        return True
+    if (not is_dir and len(parts) == 3 and parts[0] == "evals"
+            and parts[2] == "receipt.json"):
+        return True
+    return False
+
+
+def _git_paths(root: Path) -> set[str]:
+    # Repository enumeration is part of candidate capture, not part of the certifier.
+    # Replacing the latter for a seam test must not also replace this trusted operation.
+    result = _REAL_SUBPROCESS_RUN(
+        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard"], capture_output=True, env=sanitized_git_env())
+    if result.returncode != 0:
+        raise ValueError(
+            f"{root}: cannot enumerate deterministic gate tree: "
+            f"{result.stderr.decode(errors='replace').strip()}")
+    paths = set()
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = os.fsdecode(raw)
+        candidate = Path(rel)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ValueError(f"{root}: Git returned unsafe gate-tree path {rel!r}")
+        if not _gate_tree_excluded(rel, is_dir=False):
+            paths.add(candidate.as_posix())
+    return paths
+
+
+def _ignored_gate_directories(root: Path, rels: list[str]) -> set[str]:
+    if not rels:
+        return set()
+    payload = b"\0".join(os.fsencode(rel) for rel in rels) + b"\0"
+    result = _REAL_SUBPROCESS_RUN(
+        ["git", "-C", str(root), "check-ignore", "--no-index", "--stdin", "-z"],
+        input=payload, capture_output=True, env=sanitized_git_env())
+    if result.returncode not in (0, 1):
+        raise ValueError(
+            f"{root}: cannot classify gate-tree directories: "
+            f"{result.stderr.decode(errors='replace').strip()}")
+    return {Path(os.fsdecode(raw)).as_posix()
+            for raw in result.stdout.split(b"\0") if raw}
+
+
+def gate_tree_snapshot(root: Path) -> GateTreeSnapshot:
+    """Capture regular tracked/untracked inputs plus non-ignored directory identity.
+
+    Git supplies the file roster so ignored local archives and secrets never enter the
+    snapshot. A filesystem walk contributes typed directories (including empty ones) and
+    rejects any Git-visible symlink or special file before a certifier can observe it.
+    """
+    root = _normalized_path(root)
+    file_roster = _git_paths(root)
+    directory_candidates: set[str] = set()
+    special_candidates: list[tuple[str, int]] = []
+    for current, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        rel_current = current_path.relative_to(root)
+        kept_dirs = []
+        for name in sorted(dirnames):
+            rel = (rel_current / name).as_posix()
+            if _gate_tree_excluded(rel, is_dir=True):
+                continue
+            path = current_path / name
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                special_candidates.append((rel, mode))
+                continue
+            if not stat.S_ISDIR(mode):
+                special_candidates.append((rel, mode))
+                continue
+            directory_candidates.add(rel)
+            kept_dirs.append(name)
+        dirnames[:] = kept_dirs
+        for name in filenames:
+            rel = (rel_current / name).as_posix()
+            if _gate_tree_excluded(rel, is_dir=False):
+                continue
+            mode = (current_path / name).lstat().st_mode
+            if not stat.S_ISREG(mode) and rel in file_roster:
+                special_candidates.append((rel, mode))
+
+    ignored_dirs = _ignored_gate_directories(
+        root, sorted(directory_candidates | {rel for rel, _mode in special_candidates}))
+    directories = []
+    for rel in sorted(directory_candidates - ignored_dirs):
+        path = root / rel
+        mode = path.lstat().st_mode
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"{path}: gate-tree directory changed type during capture")
+        directories.append((rel, mode & 0o7777))
+
+    for rel, mode in special_candidates:
+        if rel in file_roster or rel not in ignored_dirs:
+            kind = "symlink" if stat.S_ISLNK(mode) else "special file"
+            raise ValueError(f"{root / rel}: deterministic gate tree contains a {kind}")
+
+    files = []
+    for rel in sorted(file_roster):
+        path = root / rel
+        if not os.path.lexists(path):
+            continue  # tracked deletion: absence is the candidate state
+        mode, content = _regular_file_state(path, root)
+        files.append((rel, mode, content))
+
+    identity = ([('directory', rel, mode, '') for rel, mode in directories]
+                + [('regular', rel, mode, _sha(content))
+                   for rel, mode, content in files])
+    return GateTreeSnapshot(
+        directories=tuple(directories), files=tuple(files),
+        gate_tree_hash=_sha(json.dumps(identity, separators=(",", ":")).encode()),
+    )
+
+
+def source_input_snapshot(root: Path, skill: str) -> SourceInputSnapshot:
+    """Read each behavior-affecting source once for hashing and hermetic execution."""
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
+    files = []
     entries = []
     for p in _skill_source_files(root, skill):
-        entries.append((str(p.relative_to(root)), _sha(p.read_bytes())))
+        mode, content = _regular_file_state(p, root)
+        rel = p.relative_to(root).as_posix()
+        framed = f"regular:{mode:o}\0".encode() + content
+        files.append((rel, mode, content))
+        entries.append((rel, _sha(framed)))
     caps = _load_caps(root)
     facts = caps.get("skill_facts", {}).get(skill)
     if facts is not None:
         entries.append((f"skill_facts:{skill}",
                         _sha(json.dumps(facts, sort_keys=True).encode())))
-    return sorted(entries)
+    manifest = tuple(sorted(entries))
+    return SourceInputSnapshot(
+        source_files=tuple(sorted(files, key=lambda item: item[0])),
+        manifest=manifest,
+        source_hash=_sha(json.dumps(manifest, sort_keys=True).encode()),
+    )
+
+
+def source_manifest(root: Path, skill: str) -> list:
+    """Sorted (relpath, identity+content hash) pairs plus canonical skill facts."""
+    return list(source_input_snapshot(root, skill).manifest)
 
 
 def source_hash(root: Path, skill: str) -> str:
-    return _sha(json.dumps(source_manifest(root, skill), sort_keys=True).encode())
+    validate_skill_name(skill)
+    return source_input_snapshot(root, skill).source_hash
+
+
+def expected_rendered_skill(root: Path, skill: str, provider: str) -> bytes:
+    """Compute the exact SKILL.md bytes render.py should have produced for one provider."""
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
+    provider = validate_provider_name(provider)
+    shared = root / "shared" / "skills" / skill / "SKILL.md"
+    if shared.is_file():
+        _mode, body = _regular_file_state(shared, root)
+        return body
+    template = root / "shared" / "skill-templates" / skill / "SKILL.md.tmpl"
+    _mode, raw = _regular_file_state(template, root)
+    facts = _load_caps(root).get("skill_facts", {}).get(skill, {}).get(provider)
+    if not isinstance(facts, dict):
+        raise ValueError(
+            f"{skill}: no [skill_facts.{skill}.{provider}] in capabilities.toml")
+    try:
+        return string.Template(raw.decode("utf-8")).substitute(facts).encode("utf-8")
+    except (UnicodeDecodeError, KeyError, ValueError) as exc:
+        raise ValueError(f"{skill}/{provider}: cannot render canonical skill: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class EvalInputSnapshot:
+    """One exact manifest/fixture read, suitable for both execution and hashing."""
+
+    spec: dict
+    manifest: bytes
+    fixture_dirs: tuple[tuple[str, int], ...]
+    fixture_files: tuple[tuple[str, int, bytes], ...]
+    roster: tuple[tuple[object, str], ...]
+    eval_set_hash: str
+
+
+def eval_input_snapshot(root: Path, skill: str) -> EvalInputSnapshot:
+    """Capture the complete eval input set once, refusing traversal and symlinks."""
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
+    ev_dir = root / "evals" / skill
+    spec, manifest = load_eval_manifest(root, skill)
+    fixture_dirs: list[tuple[str, int]] = []
+    fixture_files: list[tuple[str, int, bytes]] = []
+    fx = ev_dir / "fixtures"
+    if fx.is_symlink():
+        raise ValueError(
+            f"{fx}: receipt inputs must be regular files under regular directories, "
+            f"not symlinks ({fx})")
+    if fx.exists() and not fx.is_dir():
+        raise ValueError(f"{fx}: fixture root must be a regular directory")
+    if fx.is_dir():
+        fixture_dirs.append(("fixtures", fx.lstat().st_mode & 0o7777))
+        for p in sorted(fx.rglob("*")):
+            if p.is_symlink():
+                raise ValueError(
+                    f"{p}: receipt inputs must be regular files under regular directories, "
+                    f"not symlinks ({p})")
+            rel = p.relative_to(ev_dir).as_posix()
+            if p.is_dir():
+                fixture_dirs.append((rel, p.lstat().st_mode & 0o7777))
+            elif p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
+                mode, content = _regular_file_state(p, root)
+                fixture_files.append((rel, mode, content))
+            elif not p.is_file():
+                raise ValueError(f"{p}: fixture input is not a regular file or directory")
+
+    available = ({rel for rel, _mode in fixture_dirs}
+                 | {rel for rel, _mode, _content in fixture_files})
+    for index, case in enumerate(spec["evals"]):
+        for requested in case.get("files", []):
+            key = f"fixtures/{requested}"
+            if key not in available:
+                raise _manifest_problem(
+                    ev_dir / "evals.json", index, "files entry",
+                    f"requested fixture {requested!r} does not exist in fixtures/")
+
+    h = hashlib.sha256()
+    h.update(manifest)
+    for rel, mode in fixture_dirs:
+        h.update(f"directory\0{rel}\0{mode:o}\0".encode())
+    for rel, mode, content in fixture_files:
+        h.update(f"regular\0{rel}\0{mode:o}\0".encode())
+        h.update(_sha(content).encode())
+    return EvalInputSnapshot(
+        spec=spec,
+        manifest=manifest,
+        fixture_dirs=tuple(fixture_dirs),
+        fixture_files=tuple(fixture_files),
+        roster=tuple((case["id"], case["name"]) for case in spec["evals"]),
+        eval_set_hash=h.hexdigest(),
+    )
 
 
 def eval_set_hash(root: Path, skill: str) -> str:
-    """Hash evals.json PLUS the evals/<skill>/fixtures/ tree, so changing a fixture
-    re-arms the receipt. Backward-compatible: a skill with no fixtures/ dir hashes to
-    exactly sha256(evals.json) as before."""
-    ev_dir = root / "evals" / skill
-    h = hashlib.sha256()
-    h.update((ev_dir / "evals.json").read_bytes())
-    fx = ev_dir / "fixtures"
-    if fx.is_dir():
-        for p in sorted(fx.rglob("*")):
-            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
-                h.update(str(p.relative_to(ev_dir)).encode())
-                h.update(_sha(p.read_bytes()).encode())
-    return h.hexdigest()
+    """Hash the exact manifest and fixture bytes returned by eval_input_snapshot()."""
+    validate_skill_name(skill)
+    return eval_input_snapshot(root, skill).eval_set_hash
+
+
+EVAL_COMPONENT_MAX_BYTES = 120
+EVAL_FIXTURE_PATH_MAX_BYTES = 240
+
+
+def _manifest_problem(path: Path, index: int, field: str, detail: str) -> ValueError:
+    return ValueError(f"{path}: eval at index {index} has invalid {field}: {detail}")
+
+
+def _safe_eval_component(path: Path, index: int, field: str, value: object) -> int | str:
+    """Validate a single filename component used in an eval workspace path."""
+    if field == "id" and type(value) is int:
+        if value < 0 or len(str(value).encode("utf-8")) > EVAL_COMPONENT_MAX_BYTES:
+            raise _manifest_problem(path, index, field, "integer is outside the safe range")
+        return value
+    if not isinstance(value, str):
+        raise _manifest_problem(path, index, field, "must be a non-empty string"
+                                + (" or non-negative integer" if field == "id" else ""))
+    encoded = value.encode("utf-8")
+    if (not value.strip() or len(encoded) > EVAL_COMPONENT_MAX_BYTES
+            or value in (".", "..") or value.startswith(".")
+            or "/" in value or "\\" in value
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+        raise _manifest_problem(
+            path, index, field,
+            f"must be one safe component of at most {EVAL_COMPONENT_MAX_BYTES} UTF-8 bytes")
+    return value
+
+
+def _safe_fixture_path(path: Path, index: int, value: object) -> str:
+    """Validate a normalized, portable relative fixture path."""
+    if not isinstance(value, str):
+        raise _manifest_problem(path, index, "files entry", "must be a string")
+    encoded = value.encode("utf-8")
+    parts = value.split("/")
+    if (not value or len(encoded) > EVAL_FIXTURE_PATH_MAX_BYTES
+            or value.startswith("/") or "\\" in value or ":" in value
+            or any(not part or part in (".", "..") for part in parts)
+            or any(len(part.encode("utf-8")) > EVAL_COMPONENT_MAX_BYTES for part in parts)
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)):
+        raise _manifest_problem(
+            path, index, "files entry",
+            "must be a normalized relative path with safe bounded components")
+    return value
+
+
+def load_eval_manifest(root: Path, skill: str) -> tuple[dict, bytes]:
+    """Read an eval manifest once and validate every runtime-consumed field.
+
+    The returned bytes are the exact bytes receipt hashing must include. Keeping parsing and
+    validation together means the eval runner validates the same single read it later runs;
+    malformed paths cannot reach workspace creation first.
+    """
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
+    path = root / "evals" / skill / "evals.json"
+    _mode, raw = _regular_file_state(path, root)
+    try:
+        spec = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(spec, dict) or not isinstance(spec.get("evals"), list):
+        raise ValueError(f"{path}: root must contain an evals list")
+    if not spec["evals"]:
+        raise ValueError(f"{path}: evals list must not be empty")
+    ids: list[int | str] = []
+    rendered: set[str] = set()
+    for index, case in enumerate(spec["evals"]):
+        if not isinstance(case, dict):
+            raise ValueError(f"{path}: eval at index {index} must be an object")
+        if "id" not in case:
+            raise _manifest_problem(path, index, "id", "is required")
+        value = _safe_eval_component(path, index, "id", case["id"])
+        key = str(value)
+        if key in rendered:
+            raise ValueError(f"{path}: duplicate rendered eval id {key!r}")
+        rendered.add(key)
+        ids.append(value)
+        if "name" not in case:
+            raise _manifest_problem(path, index, "name", "is required")
+        _safe_eval_component(path, index, "name", case["name"])
+        if not isinstance(case.get("prompt"), str) or not case["prompt"].strip():
+            raise _manifest_problem(path, index, "prompt", "must be a non-empty string")
+        assertions = case.get("assertions")
+        if (not isinstance(assertions, list) or not assertions
+                or any(not isinstance(item, str) or not item.strip() for item in assertions)):
+            raise _manifest_problem(path, index, "assertions",
+                                    "must be a non-empty list of non-empty strings")
+        files = case.get("files", [])
+        if not isinstance(files, list):
+            raise _manifest_problem(path, index, "files", "must be a list")
+        for item in files:
+            _safe_fixture_path(path, index, item)
+    return spec, raw
+
+
+def eval_ids(root: Path, skill: str) -> list[int | str]:
+    """Return the unique workspace IDs from a complete validated manifest."""
+    validate_skill_name(skill)
+    spec, _raw = load_eval_manifest(root, skill)
+    return [case["id"] for case in spec["evals"]]
 
 
 def _evald_skills(root: Path) -> list[str]:
     return sorted(p.name for p in (root / "evals").glob("*/")
                   if (p / "evals.json").exists())
+
+
+def expected_eval_skills(root: Path) -> list[str]:
+    """Every full-gate source plus every extant eval directory.
+
+    Sources are authoritative for whether a receipt is required: deleting an eval manifest
+    must not remove its skill from the gate. Existing directories remain in the roster so a
+    stray or partially deleted eval tree is diagnosed instead of becoming invisible.
+    """
+    sources = set()
+    for base, manifest in (
+        (root / "shared" / "skills", "SKILL.md"),
+        (root / "shared" / "skill-templates", "SKILL.md.tmpl"),
+    ):
+        if base.is_dir():
+            sources.update(path.name for path in base.iterdir()
+                           if path.is_dir() and (path / manifest).is_file())
+    eval_root = root / "evals"
+    existing = ({path.name for path in eval_root.iterdir() if path.is_dir()}
+                if eval_root.is_dir() else set())
+    return sorted(sources | existing)
 
 
 def _receipt_is_certified(rec: dict) -> bool:
@@ -458,15 +929,95 @@ def _receipt_is_certified(rec: dict) -> bool:
         # delta +0.07 and +0.03, refused at the gate, with seeding over the real result the
         # only way past. `certified_by` names the gate that ran, so the receipt says which.
         return bool(rec["certified_by"])
-    # NEITHER is the seeded shape: `--seed-receipt` blesses a committed state without running
-    # a gate, and says so in `provenance`. A receipt with none of the three claims nothing.
+    # NEITHER is the ordinary seeded shape: deterministic targets run their real certifier
+    # and therefore take one of the branches above. For other skills `--seed-receipt`
+    # blesses a committed state without running a gate and says so in `provenance`.
     return str(rec.get("provenance", "")).startswith("seeded")
 
 
 CURRENT_RECEIPT_SCHEMA = 2
 
+# Exact deterministic certifier expected for each panel-exempt skill. A receipt is an
+# input file, not an authority: `self_test: true` cannot be allowed to choose its own gate.
+# eval_harness.py asserts that its producer-side routing is identical to this map.
+SELF_TEST_CERTIFIERS = {
+    "khenrix-wiki-add": "wikisync-unittests",
+    "khenrix-wiki-sync": "wikisync-unittests",
+    "llm-council": "fanout --self-test",
+    "llm-forge": "forge-suite-all",
+}
+GATE_EVIDENCE_SKILLS = frozenset({"khenrix-wiki-add", "khenrix-wiki-sync", "llm-forge"})
+GATE_COUNT_KEYS = frozenset({"tests_run", "skipped", "failed"})
 
-def is_self_test_gated(rec: dict) -> bool:
+
+def requires_deterministic_gate(skill: str) -> bool:
+    """Whether a target's receipt must be earned by a deterministic certifier.
+
+    This target-only question is deliberately separate from receipt evidence: it remains
+    true while a receipt is missing, corrupt, stale, or names the wrong certifier.
+    """
+    return skill in SELF_TEST_CERTIFIERS
+
+
+def deterministic_gate_command(root: Path, skill: str) -> list[str] | None:
+    """Return the exact command allowed to earn this skill's deterministic receipt.
+
+    Commands use repo-relative paths and must run with cwd=root. The receipt producer and
+    verifier both call this function, so a receipt cannot nominate a narrower command.
+    """
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
+    if skill in ("khenrix-wiki-add", "khenrix-wiki-sync"):
+        return ["python3", "-m", "unittest", "discover", "-s",
+                "shared/lib/wikisync/tests"]
+    if skill == "llm-council":
+        return ["python3", "shared/skills/llm-council/scripts/fanout.py", "--self-test"]
+    if skill == "llm-forge":
+        tests = [
+            p.relative_to(root).as_posix()
+            for pattern in DETERMINISTIC_GATE_INPUT_GLOBS[skill]
+            for p in sorted(root.glob(pattern))
+        ]
+        return ["uvx", "--with", "pytest==9.1.1", "pytest", "-q",
+                "-c", os.devnull, "--rootdir", ".", *tests]
+    return None
+
+
+def _deterministic_gate_evidence_problem(root: Path, skill: str,
+                                         rec: dict) -> str | None:
+    """Validate the producer evidence carried by test-suite-gated receipts.
+
+    llm-council remains separate: its receipt is earned by the fanout self-test, which does
+    not emit this subprocess command/count shape. Do not fabricate evidence it has not
+    produced.
+    """
+    if not requires_deterministic_gate(skill):
+        return None
+    command = rec.get("gate_command")
+    if (not isinstance(command, list) or not command
+            or any(not isinstance(item, str) or not item.strip() for item in command)):
+        return "gate_command must be a non-empty list of non-empty strings"
+    expected_command = deterministic_gate_command(root, skill)
+    if command != expected_command:
+        return ("gate_command does not exactly match the current deterministic certifier "
+                f"(expected {expected_command!r})")
+    gate_tree_hash = rec.get("gate_tree_hash")
+    if (not isinstance(gate_tree_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", gate_tree_hash) is None):
+        return "gate_tree_hash must be a lowercase SHA-256 digest"
+    if skill == "llm-council":
+        return None
+    counts = rec.get("gate_counts")
+    if not isinstance(counts, dict) or set(counts) != GATE_COUNT_KEYS:
+        return "gate_counts must contain exactly tests_run, skipped, and failed"
+    if any(type(counts[key]) is not int for key in GATE_COUNT_KEYS):
+        return "gate_counts values must be non-bool integers"
+    if counts["tests_run"] <= 0 or counts["skipped"] != 0 or counts["failed"] != 0:
+        return "gate_counts must record tests_run > 0 with skipped=0 and failed=0"
+    return None
+
+
+def is_self_test_gated(skill: str, rec: object, root: Path = ROOT) -> bool:
     """Does this receipt come from a deterministic suite rather than a judge panel?
 
     ONE definition, because there are now two readers. `validate_receipt` uses it to
@@ -477,8 +1028,19 @@ def is_self_test_gated(rec: dict) -> bool:
     the predicate into the CLI would have recreated the two-rulebook drift this module's
     own docstring warns about, so it is exported instead.
     """
-    return (rec.get("self_test") is True
-            or str(rec.get("blind_winner", "")).startswith("n/a-"))
+    if not isinstance(rec, dict):
+        return False
+    expected = SELF_TEST_CERTIFIERS.get(skill)
+    if (not requires_deterministic_gate(skill)
+            or rec.get("self_test") is not True
+            or rec.get("certified_by") != expected
+            or rec.get("provenance") != "eval"):
+        return False
+    if _deterministic_gate_evidence_problem(root, skill, rec) is not None:
+        return False
+    if skill == "llm-council":
+        return True
+    return rec.get("deterministic_gate") == expected
 
 
 def validate_receipt(root: Path, skill: str, *, final: bool = False,
@@ -496,16 +1058,44 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
     re-earned until their skills next change. An explicit `"schema_version": null` is NOT
     the same thing — that is a malformed receipt and is rejected.
     """
+    root = _normalized_path(root)
+    skill = validate_skill_name(skill)
     rp = root / "evals" / skill / "receipt.json"
-    if not rp.is_file():
-        return [f"receipt: {skill} has no receipt — run `make eval SKILL={skill}` "
-                f"(or `--seed-receipt`)"]
+    if not os.path.lexists(rp):
+        return [f"receipt: {skill} has no receipt — run `make eval SKILL={skill}`"]
     try:
-        rec = json.loads(rp.read_text())
+        _mode, raw = _regular_file_state(rp, root)
+        rec = json.loads(raw)
     except Exception as e:  # noqa: BLE001
         return [f"receipt: {skill} is unreadable: {e}"]
+    if not isinstance(rec, dict):
+        return [(f"receipt: {skill} root must be a JSON object, got "
+                 f"{type(rec).__name__}")]
 
     problems = []
+    providers = rec.get("providers")
+    providers_valid = (
+        isinstance(providers, list)
+        and all(isinstance(provider, str) and bool(provider.strip())
+                for provider in providers)
+        and len(providers) == len(set(providers))
+    )
+    if "providers" in rec and not providers_valid:
+        problems.append(
+            f"receipt: {skill} providers must be a list of unique non-empty strings")
+    self_test_gated = is_self_test_gated(skill, rec, root)
+    evidence_problem = _deterministic_gate_evidence_problem(root, skill, rec)
+    if rec.get("self_test") is True and evidence_problem:
+        problems.append(f"receipt: {skill} {evidence_problem}")
+    if rec.get("self_test") is True and not self_test_gated:
+        expected = SELF_TEST_CERTIFIERS.get(skill)
+        if expected is None:
+            problems.append(
+                f"receipt: {skill} is not eligible for a self-test panel exemption")
+        else:
+            problems.append(
+                f"receipt: {skill} does not prove its expected deterministic certifier "
+                f"{expected!r}")
     if not _receipt_is_certified(rec):
         problems.append(f"receipt: {skill} records a certification that did not pass "
                         f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")
@@ -519,6 +1109,10 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
         elif rec.get("eval_set_hash") != eval_set_hash(root, skill):
             problems.append(f"receipt: {skill} eval set changed — "
                             f"run `make eval SKILL={skill}`")
+        if (requires_deterministic_gate(skill)
+                and rec.get("gate_tree_hash") != gate_tree_snapshot(root).gate_tree_hash):
+            problems.append(f"receipt: {skill} deterministic gate tree changed — "
+                            f"run `make eval SKILL={skill}`")
     except Exception as e:  # noqa: BLE001
         problems.append(f"receipt: {skill} — cannot recompute hashes: {e}")
 
@@ -531,17 +1125,25 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
     v1 = "schema_version" not in rec
     if not v1:
         ver = rec["schema_version"]
-        if not isinstance(ver, int):
+        if type(ver) is not int:
             return problems + [f"receipt: {skill} has a malformed schema_version {ver!r}"]
         if ver > CURRENT_RECEIPT_SCHEMA:
-            return problems + [f"receipt: {skill} has an unknown schema_version {ver} — "
-                               f"this checkout understands up to {CURRENT_RECEIPT_SCHEMA}"]
+            return problems + [(f"receipt: {skill} has an unknown schema_version {ver} — "
+                                f"this checkout understands up to {CURRENT_RECEIPT_SCHEMA}")]
+        if ver != CURRENT_RECEIPT_SCHEMA:
+            return problems + [(f"receipt: {skill} has unsupported schema_version {ver} — "
+                                f"explicit receipts must use {CURRENT_RECEIPT_SCHEMA}; only "
+                                "an absent schema_version receives v1 grandfathering")]
     if not final:
         return problems
 
     # Self-test-gated skills earn their receipt from a deterministic suite, so a full
     # panel and per-provider deltas prove nothing extra about them.
-    self_test_gated = is_self_test_gated(rec)
+    self_test_gated = is_self_test_gated(skill, rec, root)
+    if skill in SELF_TEST_CERTIFIERS and not self_test_gated:
+        problems.append(
+            f"receipt: {skill} requires its deterministic certifier "
+            f"{SELF_TEST_CERTIFIERS[skill]!r}; an ordinary panel receipt cannot replace it")
     # Whitelist the earned value rather than blacklisting a seeded one: the producer
     # writes "seeded: blessed current committed state", so an equality test against
     # "seed" was dead code — and that made `--seed-receipt` a one-flag way to make this
@@ -550,10 +1152,15 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
         problems.append(f"receipt: {skill} provenance is {rec.get('provenance')!r}, not "
                         f"'eval' — it was seeded, not earned; no eval actually ran")
     if not self_test_gated:
-        got, want = set(rec.get("providers") or []), set(panel or [])
-        if not want <= got:
-            problems.append(f"receipt: {skill} is not FULL-PANEL — earned on "
-                            f"{sorted(got)}, needs {sorted(want)}")
+        if not providers_valid:
+            if "providers" not in rec:
+                problems.append(
+                    f"receipt: {skill} providers must be a list of unique non-empty strings")
+        else:
+            got, want = set(providers), set(panel or [])
+            if not want <= got:
+                problems.append(f"receipt: {skill} is not FULL-PANEL — earned on "
+                                f"{sorted(got)}, needs {sorted(want)}")
         if not v1 and not rec.get("per_provider"):
             problems.append(f"receipt: {skill} is schema v2 but carries no per_provider "
                             f"block — re-run `make eval SKILL={skill}`")
@@ -568,8 +1175,20 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
     the receipt but ADVISORY — it rewards concision on a strong executor and would
     false-fail a correct, positive-delta skill — so precommit does NOT gate on it.
     """
+    root = _normalized_path(root)
     out = []
-    for skill in _evald_skills(root):
+    for skill in expected_eval_skills(root):
+        try:
+            validate_skill_name(skill)
+        except ValueError as exc:
+            out.append(f"receipt: {exc}")
+            continue
+        manifest = root / "evals" / skill / "evals.json"
+        if not manifest.is_file():
+            out.append(
+                f"receipt: {skill} has no eval manifest at evals/{skill}/evals.json — "
+                "restore it or remove the canonical skill source")
+            continue
         out.extend(validate_receipt(root, skill, final=False))
     return ["(advisory) " + m for m in out] if advisory else out
 
@@ -669,10 +1288,229 @@ def _self_test() -> int:
     ok.append(("eval_set_hash == sha256(evals.json) when no fixtures",
                eval_set_hash(ROOT, "llm-council") ==
                _sha((ROOT / "evals" / "llm-council" / "evals.json").read_bytes())))
+    ok.append(("eval roster covers every canonical shared skill/template source",
+               expected_eval_skills(ROOT) == sorted(set(_evald_skills(ROOT)) | {
+                   path.name for path in (ROOT / "shared" / "skills").iterdir()
+                   if path.is_dir() and (path / "SKILL.md").is_file()
+               } | {
+                   path.name for path in (ROOT / "shared" / "skill-templates").iterdir()
+                   if path.is_dir() and (path / "SKILL.md.tmpl").is_file()
+               })))
     # the wiki skills route their shared engine into the closure via SKILL_EXTRA_DIRS
     ok.append(("wiki skills map shared/lib/wikisync into their closure",
                SKILL_EXTRA_DIRS.get("khenrix-wiki-add") == ["shared/lib/wikisync"] and
                SKILL_EXTRA_DIRS.get("khenrix-wiki-sync") == ["shared/lib/wikisync"]))
+    # Complete receipt-closure matrix. Spot checks repeatedly missed the exact fan-out cost
+    # of a shared edit; compute every evaluated skill from source_manifest, the gate's own
+    # authority, and pin every global/file/directory edge in one assertion family.
+    evaluated = _evald_skills(ROOT)
+    manifests = {
+        skill: {rel for rel, _ in source_manifest(ROOT, skill)}
+        for skill in evaluated
+    }
+    for skill in evaluated:
+        rows = [rel for rel, _ in source_manifest(ROOT, skill)]
+        ok.append((f"receipt closure: {skill} hashes every path exactly once",
+                   len(rows) == len(set(rows))))
+    for rel in LIB_SCRIPTS + GLOBAL_INPUTS:
+        missing = [skill for skill in evaluated if rel not in manifests[skill]]
+        ok.append((f"receipt closure: {rel} reaches every evaluated skill", not missing))
+    for skill, relpaths in SKILL_EXTRA.items():
+        if skill not in manifests:
+            continue
+        for rel in relpaths:
+            ok.append((f"receipt closure: {skill} includes extra file {rel}",
+                       rel in manifests[skill]))
+    for skill, directories in SKILL_EXTRA_DIRS.items():
+        if skill not in manifests:
+            continue
+        for directory in directories:
+            expected = {
+                str(path.relative_to(ROOT))
+                for path in (ROOT / directory).rglob("*")
+                if path.is_file() and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            }
+            ok.append((f"receipt closure: {skill} includes every file under {directory}",
+                       expected <= manifests[skill]))
+    for skill, patterns in DETERMINISTIC_GATE_INPUT_GLOBS.items():
+        if skill not in manifests:
+            continue
+        for pattern in patterns:
+            expected = {
+                str(path.relative_to(ROOT)) for path in ROOT.glob(pattern)
+                if path.is_file() and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            }
+            ok.append((f"receipt closure: {skill} includes every certifier input {pattern}",
+                       expected <= manifests[skill]))
+    for skill, patterns in DETERMINISTIC_GATE_AMBIENT_INPUT_GLOBS.items():
+        if skill not in manifests:
+            continue
+        for pattern in patterns:
+            expected = {
+                str(path.relative_to(ROOT)) for path in ROOT.glob(pattern)
+                if path.is_file() and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            }
+            ok.append((f"receipt closure: {skill} includes ambient certifier input {pattern}",
+                       expected <= manifests[skill]))
+    for skill in ("khenrix-setup", "khenrix-upgrade"):
+        ok.append((f"receipt closure: {skill} includes every instruction overlay",
+                   set((_load_caps(ROOT).get("instructions", {}).get("overlays") or {}).values())
+                   <= manifests[skill]))
+    for skill in _load_caps(ROOT).get("skill_facts", {}):
+        if skill in manifests:
+            ok.append((f"receipt closure: {skill} includes its semantic facts slice",
+                       f"skill_facts:{skill}" in manifests[skill]))
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        (_r / "capabilities.toml").write_text("[models]\n")
+        (_r / "shared" / "skills" / "llm-forge").mkdir(parents=True)
+        (_r / "shared" / "skills" / "llm-forge" / "SKILL.md").write_text("# forge\n")
+        (_r / "tests").mkdir()
+        (_r / "tests" / "test_forge_one.py").write_text("ONE = 1\n")
+        _before = source_hash(_r, "llm-forge")
+        (_r / "tests" / "test_forge_one.py").write_text("ONE = 2\n")
+        _edited = source_hash(_r, "llm-forge")
+        (_r / "tests" / "test_forge_two.py").write_text("TWO = 2\n")
+        _added = source_hash(_r, "llm-forge")
+        (_r / "tests" / "test_unrelated.py").write_text("OTHER = 1\n")
+        _transitive_test = source_hash(_r, "llm-forge")
+        (_r / "scripts").mkdir()
+        (_r / "scripts" / "forge_smoke.py").write_text("SMOKE = 1\n")
+        _transitive_script = source_hash(_r, "llm-forge")
+        (_r / "pytest.ini").write_text("[pytest]\naddopts = -q\n")
+        _configured = source_hash(_r, "llm-forge")
+        (_r / "tests" / "conftest.py").write_text("VALUE = 1\n")
+        _conftest_added = source_hash(_r, "llm-forge")
+        ok.append(("editing a deterministic certifier input stales its receipt",
+                   _before != _edited))
+        ok.append(("adding a deterministic certifier input stales its receipt",
+                   _edited != _added))
+        ok.append(("adding a test scanned by a Forge meta-test stales its receipt",
+                   _added != _transitive_test))
+        ok.append(("adding an imported/scanned script stales its receipt",
+                   _transitive_test != _transitive_script))
+        ok.append(("disabled repository pytest configuration does not affect the receipt",
+                   _transitive_script == _configured))
+        ok.append(("adding a deterministic certifier conftest stales its receipt",
+                   _configured != _conftest_added))
+        _mode_before = source_hash(_r, "llm-forge")
+        (_r / "tests" / "test_forge_one.py").chmod(0o755)
+        _mode_after = source_hash(_r, "llm-forge")
+        ok.append(("changing a certifier input's executable mode stales its receipt",
+                   _mode_before != _mode_after))
+        _same_bytes = _r / "same-bytes.py"
+        _same_bytes.write_bytes((_r / "tests" / "test_forge_one.py").read_bytes())
+        (_r / "tests" / "test_forge_one.py").unlink()
+        (_r / "tests" / "test_forge_one.py").symlink_to(_same_bytes)
+        try:
+            source_hash(_r, "llm-forge")
+            _linked_refused = False
+        except ValueError as e:
+            _linked_refused = "not symlinks" in str(e)
+        ok.append(("a byte-identical symlink cannot masquerade as a regular input",
+                   _linked_refused))
+        (_r / "tests" / "test_forge_one.py").unlink()
+        (_r / "tests" / "test_forge_one.py").write_text("ONE = 2\n")
+        (_r / "tests").rename(_r / "alternate-tests")
+        (_r / "tests").symlink_to(_r / "alternate-tests", target_is_directory=True)
+        try:
+            source_hash(_r, "llm-forge")
+            _linked_source_ancestor_refused = False
+        except ValueError as e:
+            _linked_source_ancestor_refused = "regular directories" in str(e)
+        ok.append(("a symlinked source ancestor cannot redirect certifier inputs",
+                   _linked_source_ancestor_refused))
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        _ev = _r / "evals" / "ids"
+        _ev.mkdir(parents=True)
+
+        def _ids(cases):
+            base = {"name": "case", "prompt": "p", "assertions": ["a"], "files": []}
+            _ev.joinpath("evals.json").write_text(
+                json.dumps({"evals": [{**base, **case} for case in cases]}))
+            try:
+                return eval_ids(_r, "ids"), ""
+            except ValueError as e:
+                return [], str(e)
+
+        ok.append(("integer and non-empty string eval ids are accepted",
+                   _ids([{"id": 0}, {"id": "named"}])[0] == [0, "named"]))
+        for _label, _cases in (
+            ("missing", [{}]), ("null", [{"id": None}]),
+            ("bool", [{"id": True}]), ("blank", [{"id": "  "}]),
+            ("duplicate", [{"id": 1}, {"id": 1}]),
+            ("render-collision", [{"id": 1}, {"id": "1"}]),
+        ):
+            ok.append((f"{_label} eval ids are rejected", bool(_ids(_cases)[1])))
+        _ids([{"id": 0}])
+        _fixture = _ev / "fixtures" / "generator.py"
+        _fixture.parent.mkdir()
+        _fixture.write_text("VALUE = 1\n")
+        _fixture_mode_before = eval_set_hash(_r, "ids")
+        _fixture.chmod(0o755)
+        _fixture_mode_after = eval_set_hash(_r, "ids")
+        ok.append(("changing an eval fixture's executable mode changes its hash",
+                   _fixture_mode_before != _fixture_mode_after))
+        _outside_fixture = _r / "same-fixture.py"
+        _outside_fixture.write_bytes(_fixture.read_bytes())
+        _fixture.unlink()
+        _fixture.symlink_to(_outside_fixture)
+        try:
+            eval_set_hash(_r, "ids")
+            _linked_fixture_refused = False
+        except ValueError as e:
+            _linked_fixture_refused = "not symlinks" in str(e)
+        ok.append(("a byte-identical symlink cannot masquerade as an eval fixture",
+                   _linked_fixture_refused))
+        _fixture.unlink()
+        _fixture.write_text("VALUE = 1\n")
+        (_ev / "fixtures").rename(_ev / "alternate-fixtures")
+        (_ev / "fixtures").symlink_to(
+            _ev / "alternate-fixtures", target_is_directory=True)
+        try:
+            eval_set_hash(_r, "ids")
+            _linked_fixture_ancestor_refused = False
+        except ValueError as e:
+            _linked_fixture_ancestor_refused = "regular directories" in str(e)
+        ok.append(("a symlinked fixture ancestor cannot redirect eval inputs",
+                   _linked_fixture_ancestor_refused))
+        (_ev / "alternate-fixtures" / "generator.py").unlink()
+        try:
+            eval_set_hash(_r, "ids")
+            _empty_linked_fixture_ancestor_refused = False
+        except ValueError as e:
+            _empty_linked_fixture_ancestor_refused = "regular directories" in str(e)
+        ok.append(("an empty symlinked fixture directory is still refused",
+                   _empty_linked_fixture_ancestor_refused))
+    with tempfile.TemporaryDirectory() as _td:
+        _r = Path(_td)
+        (_r / "capabilities.toml").write_text("[models]\n")
+        (_r / "shared" / "skills" / "alpha").mkdir(parents=True)
+        (_r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# alpha\n")
+        (_r / "shared" / "skill-templates" / "beta").mkdir(parents=True)
+        (_r / "shared" / "skill-templates" / "beta" / "SKILL.md.tmpl").write_text("# beta\n")
+        (_r / "evals" / "alpha").mkdir(parents=True)
+        (_r / "evals" / "alpha" / "evals.json").write_text(
+            '{"evals":[{"id":0,"name":"alpha","prompt":"p",'
+            '"assertions":["a"]}]}')
+        (_r / "evals" / "orphan").mkdir(parents=True)
+        _roster_before = expected_eval_skills(_r)
+        _closure_before = source_manifest(_r, "alpha")
+        (_r / "evals" / "alpha" / "evals.json").unlink()
+        _closure_after = source_manifest(_r, "alpha")
+        _gate_after_delete = receipt_gate(_r, advisory=False)
+        ok.append(("eval roster unions canonical sources and extant eval directories",
+                   _roster_before == ["alpha", "beta", "orphan"]))
+        ok.append(("deleting a canonical skill manifest remains a fatal receipt-gate problem",
+                   any("alpha has no eval manifest" in problem for problem in _gate_after_delete)))
+        ok.append(("deleting an eval manifest cannot remove its canonical source closure",
+                   _closure_before == _closure_after and bool(_closure_after)))
+        ok.append(("an extant orphan eval directory is diagnosed too",
+                   any("orphan has no eval manifest" in problem for problem in _gate_after_delete)))
     # scan_path: file-scoped shim for gitignored artifacts. Build a slack-shaped token from
     # fragments at RUNTIME so no contiguous token literal lives in this file — otherwise the
     # synthetic test value itself trips push-protection / secret scanners.
@@ -741,11 +1579,15 @@ def _self_test() -> int:
         _r = Path(_td)
         _ev = _r / "evals" / "alpha"
         _ev.mkdir(parents=True)
-        _ev.joinpath("evals.json").write_text("{}")
+        _ev.joinpath("evals.json").write_text(
+            '{"evals":[{"id":0,"name":"alpha","prompt":"p",'
+            '"assertions":["a"],"files":[]}]}')
         (_r / "shared" / "skills" / "alpha").mkdir(parents=True)
         (_r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# a\n")
         # source_hash reaches capabilities.toml for the overlay closure.
         (_r / "capabilities.toml").write_text("[instructions]\n")
+        subprocess.run(["git", "init", "-q", str(_r)], check=True,
+                       capture_output=True)
 
         def _v(rec, **kw):
             _ev.joinpath("receipt.json").write_text(json.dumps(rec))
@@ -754,11 +1596,18 @@ def _self_test() -> int:
         _fresh = {"source_hash": source_hash(_r, "alpha"),
                   "eval_set_hash": eval_set_hash(_r, "alpha"),
                   "provenance": "eval", "certified_by": "assertion_delta"}
+        for malformed_root in ([], "x", None):
+            ok.append((f"a {type(malformed_root).__name__} receipt root is refused cleanly",
+                       "root must be a JSON object" in _v(malformed_root)))
         ok.append(("v1 receipt with no schema_version is grandfathered", _v(_fresh) == ""))
         ok.append(("explicit null schema_version is malformed, not grandfathered",
                    "malformed" in _v({**_fresh, "schema_version": None})))
         ok.append(("unknown future schema_version is rejected",
                    "unknown schema_version" in _v({**_fresh, "schema_version": 99})))
+        for malformed_version in (True, False, 0, 1, -1):
+            ok.append((f"explicit schema_version={malformed_version!r} is not v1",
+                       "schema_version" in _v({**_fresh,
+                                               "schema_version": malformed_version})))
         ok.append(("v2 without per_provider passes the NON-final gate",
                    _v({**_fresh, "schema_version": 2}) == ""))
         ok.append(("v2 without per_provider FAILS the final gate",
@@ -779,10 +1628,75 @@ def _self_test() -> int:
                                        "providers": ["claude"],
                                        "per_provider": {"claude": {"delta": 0.1}}},
                                       final=True, panel=["claude", "codex", "agy"])))
-        ok.append(("a self-test-gated receipt skips the panel requirement",
-                   "FULL-PANEL" not in _v({**_fresh, "schema_version": 2,
-                                           "self_test": True, "providers": ["claude"]},
-                                          final=True, panel=["claude", "codex", "agy"])))
+        for label, malformed_providers in (
+            ("null", None),
+            ("mapping", {"claude": True}),
+            ("unhashable member", ["claude", ["agy"]]),
+            ("duplicate", ["claude", "claude"]),
+            ("empty member", ["claude", ""]),
+        ):
+            ok.append((f"{label} providers are refused without set conversion",
+                       "providers must be a list of unique non-empty strings" in _v(
+                           {**_fresh, "schema_version": 2,
+                            "providers": malformed_providers, "per_provider": {}},
+                           final=True, panel=["claude", "codex", "agy"])))
+        _deterministic = {
+            **_fresh,
+            "schema_version": 2,
+            "self_test": True,
+            "providers": ["claude"],
+            "certified_by": "wikisync-unittests",
+            "deterministic_gate": "wikisync-unittests",
+            "gate_command": deterministic_gate_command(_r, "khenrix-wiki-add"),
+            "gate_tree_hash": gate_tree_snapshot(_r).gate_tree_hash,
+            "gate_counts": {"tests_run": 1, "skipped": 0, "failed": 0},
+        }
+        ok.append(("an eligible, exactly certified self-test receipt is recognized",
+                   is_self_test_gated("khenrix-wiki-add", _deterministic, _r)))
+        ok.append(("only the skill's exact deterministic certifier earns the exemption",
+                   is_self_test_gated("khenrix-wiki-add", _deterministic, _r)
+                   and not is_self_test_gated("alpha", _deterministic, _r)
+                   and not is_self_test_gated(
+                       "khenrix-wiki-add", {**_deterministic,
+                                            "certified_by": "some --self-test"}, _r)))
+        _without_command = dict(_deterministic)
+        _without_command.pop("gate_command")
+        _without_counts = dict(_deterministic)
+        _without_counts.pop("gate_counts")
+        for _label, _evidence in (
+            ("missing command", _without_command),
+            ("missing counts", _without_counts),
+            ("zero tests", {**_deterministic,
+                            "gate_counts": {"tests_run": 0, "skipped": 0, "failed": 0}}),
+            ("skipped tests", {**_deterministic,
+                               "gate_counts": {"tests_run": 1, "skipped": 1, "failed": 0}}),
+            ("failed tests", {**_deterministic,
+                              "gate_counts": {"tests_run": 1, "skipped": 0, "failed": 1}}),
+            ("malformed counts", {**_deterministic, "gate_command": [""],
+                                  "gate_counts": {"tests_run": True, "skipped": 0,
+                                                  "failed": 0}}),
+        ):
+            ok.append((f"{_label} deterministic gate evidence is refused",
+                       not is_self_test_gated("khenrix-wiki-add", _evidence, _r)))
+        ok.append(("valid deterministic gate evidence earns the exemption",
+                   is_self_test_gated("khenrix-wiki-add", _deterministic, _r)))
+        _council = {**_deterministic, "certified_by": "fanout --self-test"}
+        _council.pop("deterministic_gate")
+        _council.pop("gate_counts")
+        _council["gate_command"] = deterministic_gate_command(_r, "llm-council")
+        ok.append(("llm-council requires its exact command but not test counts",
+                   is_self_test_gated("llm-council", _council, _r)))
+        ok.append(("an ordinary skill cannot forge a self-test panel exemption",
+                   "not eligible" in _v(
+                       {**_fresh, "schema_version": 2, "self_test": True,
+                        "providers": ["claude"], "certified_by": "some --self-test"},
+                       final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("an n/a blind_winner alone cannot bypass the panel requirement",
+                   "FULL-PANEL" in _v(
+                       {**_fresh, "schema_version": 2, "providers": ["claude"],
+                        "blind_winner": "n/a-deterministic",
+                        "per_provider": {"claude": {"delta": 0.1}}},
+                       final=True, panel=["claude", "codex", "agy"])))
         ok.append(("stale source_hash fails even a grandfathered v1",
                    "changed since last eval" in _v({**_fresh, "source_hash": "deadbeef"})))
         ok.append(("a missing receipt is reported, not skipped",

@@ -7,6 +7,7 @@
 
 REPO := $(shell pwd)
 PY   := python3
+export SKILL
 
 .DEFAULT_GOAL := help
 
@@ -49,18 +50,20 @@ BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
 
-# Run a pytest file via whichever runner exists. Failing loudly when neither does is
-# deliberate: a green gate must never mean "the suite was skipped" — that is the exact
-# defect doctor.py exists to catch, and silently exiting 0 would hide it in our own gate.
+# Run pytest with the same pinned, configuration-independent collection used by the
+# deterministic receipt producer. Ambient selectors must not turn a green target into
+# "collected but ran nothing"; use an exact local fallback only when uvx is unavailable.
 define RUN_PYTEST
-	@if $(PY) -c "import pytest" >/dev/null 2>&1; then \
-		$(PY) -m pytest -q $(1); \
-	elif command -v uvx >/dev/null 2>&1; then \
-		uvx --with pytest pytest -q $(1); \
+	@if command -v uvx >/dev/null 2>&1; then \
+		env -u PYTEST_ADDOPTS -u PYTEST_PLUGINS PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		uvx --with 'pytest==9.1.1' pytest -q -c /dev/null --rootdir $(REPO) $(1); \
+	elif $(PY) -c "import pytest,sys; sys.exit(pytest.__version__ != '9.1.1')" \
+		>/dev/null 2>&1; then \
+		env -u PYTEST_ADDOPTS -u PYTEST_PLUGINS PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+		$(PY) -m pytest -q -c /dev/null --rootdir $(REPO) $(1); \
 	else \
-		echo "  ✗ CANNOT RUN $(1) — it needs pytest, which is not importable by"; \
-		echo "    '$(PY)', and 'uvx' is not on PATH either."; \
-		echo "    Install uv (https://docs.astral.sh/uv/) or 'pip install pytest'."; \
+		echo "  ✗ CANNOT RUN $(1) — it needs uvx or pytest 9.1.1 in '$(PY)'."; \
+		echo "    Install uv (https://docs.astral.sh/uv/) or that exact pytest version."; \
 		exit 1; \
 	fi
 endef
@@ -208,12 +211,12 @@ eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) scripts/env_inventory.py --self-test
 	$(PY) scripts/lib/mcp_merge.py --self-test
 
-eval: ## Run the skill-eval harness — SKILL=<name> [PROVIDERS=…] [MODE=normal|deep] [TIMEOUT=secs] [RETRIES=n] (costs tokens)
+eval: render ## Render the canonical candidate, then run the skill-eval harness — SKILL=<name> [PROVIDERS=…] [MODE=normal|deep] [TIMEOUT=secs] [RETRIES=n] (costs tokens)
 # TIMEOUT raises the per-attempt cap without MODE=deep, which would also change reasoning
 # depth. Heavy eval prompts (a full skill body + a research-shaped task) can exceed the
 # 300s normal-mode default even with nothing else running — that is an under-timed eval,
 # not contention, and the harness now fails closed on it instead of scoring it 0.
-	$(PY) $(EVAL) --skill $(SKILL) $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),) $(if $(TIMEOUT),--timeout $(TIMEOUT),) $(if $(RETRIES),--retries $(RETRIES),) $(if $(MODELCLAUDE),--model-claude "$(MODELCLAUDE)",) $(if $(MODELCODEX),--model-codex "$(MODELCODEX)",) $(if $(MODELAGY),--model-agy "$(MODELAGY)",)
+	$(PY) $(EVAL) --skill "$$SKILL" $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),) $(if $(TIMEOUT),--timeout $(TIMEOUT),) $(if $(RETRIES),--retries $(RETRIES),) $(if $(MODELCLAUDE),--model-claude "$(MODELCLAUDE)",) $(if $(MODELCODEX),--model-codex "$(MODELCODEX)",) $(if $(MODELAGY),--model-agy "$(MODELAGY)",)
 
 eval-trigger: ## Trigger/near-miss DESCRIPTION eval — SKILL=<name> [MODE=…] (costs tokens)
 # The behaviour harness (`eval`) injects a skill body and assumes it already triggered.

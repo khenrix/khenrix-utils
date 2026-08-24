@@ -48,14 +48,20 @@ def test_forge_is_bundled_into_every_cli():
         assert (p / "gitcmd.py").is_file(), cli
 
 
-def test_the_tests_stripper_is_live_and_not_merely_unexercised():
-    """shared/lib/forge/ ships no tests/ dir, so the assertion above cannot fail today —
-    it is a forward guard, not evidence that render.py strips anything. wikisync does
-    ship one, and is the witness that SHARED_LIBS' ignore_patterns actually fires."""
-    assert (ROOT / "shared" / "lib" / "wikisync" / "tests").is_dir(), \
-        "witness moved — re-point this at whichever shared lib still ships tests/"
-    for cli in CLIS:
-        assert not (_plugin(cli) / "lib" / "wikisync" / "tests").exists(), cli
+def test_the_tests_stripper_is_live_and_not_merely_unexercised(tmp_path):
+    """Exercise the exact copy helper on a synthetic package that contains tests."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import render
+    finally:
+        sys.path.pop(0)
+    src, dst = tmp_path / "source", tmp_path / "rendered"
+    (src / "tests").mkdir(parents=True)
+    (src / "runtime.py").write_text("RUNTIME = True\n")
+    (src / "tests" / "test_runtime.py").write_text("assert False\n")
+    render._copy_shared_lib(src, dst)
+    assert (dst / "runtime.py").is_file()
+    assert not (dst / "tests").exists()
 
 
 def _make_variable(name: str) -> set:
@@ -139,12 +145,11 @@ def test_llm_forge_closure_covers_both_libs():
 
 
 def test_llm_forge_closure_covers_the_shared_secret_patterns():
-    """Asserted against the COMPUTED closure, not the declaration — the declaration is
-    one of three routes into it, and checks.py arrives by a different one (SKILL_EXTRA).
+    """Assert against the computed closure, not one declaration route into it.
 
     screen.py reads SECRET_FAIL/SECRET_ALLOW_SHA from checks.py, so editing the patterns
-    changes what forge screens before a fleet launches. checks.py is in neither
-    LIB_SCRIPTS nor GLOBAL_INPUTS, so without the entry nothing would stale the receipt.
+    must stale the receipt. checks.py is a global certifier input and therefore reaches the
+    Forge closure independently of the two shared engine directories asserted here.
     """
     rels = {r for r, _ in _checks_mod().source_manifest(ROOT, "llm-forge")}
     assert "scripts/lib/checks.py" in rels
@@ -172,7 +177,9 @@ def test_a_rendered_plugin_resolves_checks_from_its_own_lib(tmp_path):
     sibling suites in this session.
     """
     lib = tmp_path / "lib"
-    shutil.copytree(_plugin("claude") / "lib", lib)
+    lib.mkdir()
+    shutil.copytree(_plugin("claude") / "lib" / "forge", lib / "forge")
+    shutil.copy2(_plugin("claude") / "lib" / "checks.py", lib / "checks.py")
     prog = (
         "import sys; sys.path.insert(0, sys.argv[1]);"
         "from forge import screen;"
@@ -262,8 +269,10 @@ def test_the_cli_list_has_exactly_one_definition():
     assert render.CLIS is _checks_mod().CLIS
 
 
-def test_run_all_passes_the_packaging_gate_on_the_real_repo():
-    assert _packaging_diagnostics(ROOT) == []
+def test_the_packaging_gate_passes_on_the_real_repo():
+    """The synthetic cases above prove run_all wiring; keep this real-tree assertion scoped
+    to Forge packaging so unrelated repository checks are not hidden certifier inputs."""
+    assert _checks_mod().forge_packaging(ROOT) == []
 
 
 def test_the_bundled_checks_copies_are_exempt_from_the_secret_scan():

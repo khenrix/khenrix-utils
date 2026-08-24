@@ -12,19 +12,17 @@ read it before scaffolding). Key invariants:
 - **Baseline caveat**: `without_skill` is the executor's ambient env; if the old skill
   version is installed (a prior `make khenrix-refresh`), the comparison is new-vs-old,
   not with-vs-without. Iterate BEFORE refreshing for the cleanest signal.
-- A run with `delta.pass_rate >= 0` (the skill doesn't make answers worse) passes the
-  gate and writes `evals/<t>/receipt.json` — the exact artifact `make precommit` gates
-  on. The blind A/B winner is **recorded but advisory**, not a gate: on a strong executor
+- For a non-deterministic target, `delta.pass_rate >= 0` (the skill doesn't make answers
+  worse) passes the gate and writes `evals/<t>/receipt.json` — the exact artifact
+  `make precommit` gates on. The blind A/B winner is **recorded but advisory**, not a gate: on a strong executor
   it rewards the tighter baseline over a correct-but-more-thorough skill answer (a
   concision bias, not correctness — observed 2026-07-12 on hookify: a clearly positive
   assertion delta yet a blind loss to the tighter baseline). Read it when triaging a weak
   delta; never fail a non-negative-delta run on it. The assertion delta is the "does it
   help" signal.
-- **llm-council is special**: its receipt is WRITTEN by `make eval SKILL=llm-council`,
-  which gates on `fanout.py --self-test` alone, not the judge harness — executors run under
-  `LLM_COUNCIL_DEPTH=1`, so the judged delta never exercises a real council and is advisory
-  only. A live `--smoke` and `make council-test` are additional REQUIRED checks, not what
-  earns the receipt; `council-test` runs inside `verify`/`precommit`.
+- **Gate selection is target-only**: ask
+  `checks.requires_deterministic_gate(<target>)`, never infer it from a receipt. This stays
+  correct when the receipt is absent, corrupt, stale, or names the wrong certifier.
 
 ## Scaffolding a missing eval set
 
@@ -35,12 +33,30 @@ discriminating signal. Prefer inline-answer prompts ("Answer inline in prose —
 enter plan mode or run tools") for decision-shaped skills; they are cheap, provider-safe,
 and non-recursive. Checkpoint the proposed prompts with the user before running them.
 
-## The loop
+## Select and run the target's gate
+
+For `requires_deterministic_gate(<target>) == True`:
+
+```bash
+make eval SKILL=<t>
+```
+
+That command must run the certifier named for the target in `checks.SELF_TEST_CERTIFIERS`
+and write matching deterministic evidence; judge-provider output is advisory and no full
+panel is owed. For llm-council, the certifier is `fanout.py --self-test`; a live `--smoke`
+and `make council-test` are additional REQUIRED checks, not what earns the receipt
+(`council-test` also runs inside `verify`/`precommit`).
+
+Only when `requires_deterministic_gate(<target>) == False` use the judge loop:
 
 ```bash
 make eval SKILL=<t> PROVIDERS=claude     # iterate here (cheap)
 make eval SKILL=<t> PROVIDERS=claude,codex,agy   # final gate (~3-4x tokens)
 ```
+
+The final panel is fixed and may not be narrowed or reordered. A receipt's current shape
+can verify evidence through `checks.is_self_test_gated(<target>, receipt)`; it never chooses
+which branch applies.
 
 **Run it in the background and with no other token-heavy agent work in flight.** An eval is
 strictly serial — every case × condition × judge call in sequence — so it routinely outlives

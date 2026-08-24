@@ -15,6 +15,9 @@ must NOT be its own reviewer:
    git -C <repo> show HEAD:shared/lib/council/engine.py > "$GOOD"
    python3 "$GOOD" --prompt-file <diff-prompt> --out json
    ```
+   `review-material` applies that same regular HEAD blob when it models the council
+   wrappers and proves the prompt's argv bound; it must not import candidate code before
+   the independent review starts.
 2. If that is unusable too (e.g. the fix targets a bug in the committed engine), fall
    back to a single-provider review: run one other CLI headlessly against the diff
    (see `headless-invocation.md` at the plugin root) and treat it as a 1-member panel.
@@ -48,11 +51,14 @@ do not "fix" that guard away.
 - For the final review: council-review the diff as usual (fanout.py is not under test),
   but the ultimate reviewer is the **user reading the diff** — say so explicitly.
 
-## Target = khenrix-setup / khenrix-upgrade
+## Target = a templated skill
 
-Normal rules, plus: edits go to `shared/skill-templates/<t>/SKILL.md.tmpl` and the
-`[skill_facts.<t>.<cli>]` tables — and `capabilities.toml` is in BOTH templated skills'
-receipt closures, so a facts edit for one stales the other's receipt too. Budget a real
-eval for **both**. Re-seeding is no longer an option even with sign-off:
+This currently covers `khenrix-setup`, `khenrix-upgrade`, and `khenrix-audit`. Normal
+rules apply, plus: edits go to `shared/skill-templates/<t>/SKILL.md.tmpl` and the
+`[skill_facts.<t>.<cli>]` tables. Derive the required eval set from `checks.py`'s
+`source_manifest`: any `capabilities.toml` edit stales `khenrix-setup`,
+`khenrix-upgrade`, and `skill-tuneup`; changing another templated skill's exact facts also
+stales that skill (so an audit-facts edit owes four evals). Re-seeding is no longer an
+option even with sign-off:
 `verify-final-receipt` rejects any receipt whose `provenance` isn't `"eval"`, so a seeded
 receipt now fails the convergence gate it was meant to satisfy.

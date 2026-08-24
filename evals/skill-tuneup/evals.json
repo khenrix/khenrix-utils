@@ -27,28 +27,31 @@
     {
       "id": 2,
       "name": "self-target-llm-council-reviewer-substitution",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. The tune-up target is llm-council itself, and the working tree has modified shared/skills/llm-council/scripts/fanout.py. You have reached the final multi-model review of the diff. State exactly how you run that review, why, what you tell the user about it, and how this target's eval gate differs from other skills.",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. The tune-up target is llm-council itself, the working tree has modified shared/skills/llm-council/scripts/fanout.py, and its receipt.json is missing. You have reached the final multi-model review of the diff. State exactly how you run that review, why, what you tell the user about it, and how this target's eval gate differs from other skills.",
       "files": [],
       "assertions": [
         "Refuses to let the modified working-tree fanout.py review its own diff",
-        "Substitutes the last committed engine (git show HEAD:shared/skills/llm-council/scripts/fanout.py to a temp file, or an installed known-good copy) or falls back to a single-provider headless review of the diff",
+        "Substitutes the last committed engine (`git show HEAD:shared/lib/council/engine.py` to a temp file) or, if that committed engine is unusable, falls back to a single-provider headless review of the diff",
         "Explicitly warns the user that the reviewer was substituted and why",
+        "Classifies llm-council with checks.requires_deterministic_gate(\"llm-council\") even though the receipt is missing; is_self_test_gated only validates a loaded receipt's evidence and cannot route around a missing or corrupt one",
         "Notes llm-council's eval gate is special: the receipt is written by make eval SKILL=llm-council, which gates on fanout.py --self-test alone, not the with-skill/baseline judge harness (a live --smoke and make council-test are additional required checks, not what earns the receipt)"
       ]
     },
     {
       "id": 3,
       "name": "missing-evals-scaffold-before-commit",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. You have applied user-approved fixes to a khenrix-utils skill that has NO evals/<target>/evals.json. Are you ready to commit to main? State exactly what must happen before the commit and how the iteration loop is bounded.",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. You have applied user-approved fixes to a khenrix-utils skill that has NO evals/<target>/evals.json. Are you ready to commit to main? State exactly what must happen before the commit, how the iteration loop is bounded, and the exact ordering of final receipt verification, precommit, the terminal run-log write, staging, and any failure discovered after that terminal write.",
       "files": [],
       "assertions": [
         "Refuses to commit yet: scaffolds evals/<target>/evals.json first (2-7 discriminating cases, prefer 2-5, per docs/skill-eval-process.md), checkpointing the proposed prompts with the user",
+        "After every edit, including a later-cycle fix, reruns every applicable target-runtime validator discovered during the audit BEFORE the full-gate eval/receipt gate; a validator that cannot start or exits nonzero is a finding, never a pass",
         "Runs make eval SKILL=<target> until green so evals/<target>/receipt.json is earned, because make precommit fails on a missing or stale receipt for a changed skill",
         "Bounds the loop with a hard cap of 5 iterations and classifies failures as real regression / assertion regression / flaky (flaky: re-run once, don't chase the judge) \u2014 on cap-reached it stops and hands the decision to the user",
-        "States that a newly created evals/<target>/evals.json is UNTRACKED and therefore invisible to git diff, so it must be put in front of council review #2 explicitly \u2014 not merely swept in by Step 10's git add -A",
-        "Builds the review material with the engine's `review-material` subcommand (or, equivalently, `git diff HEAD` plus untracked files) rather than bare `git diff` \u2014 and names the hazard: a fully staged tree reads as an EMPTY diff, which is exactly what tells Step 9 there is nothing to review, silently skipping a mandatory review"
+        "States that a newly created evals/<target>/evals.json is UNTRACKED and invisible to git diff, so the helper must transmit its complete safe payload before any truncatable tracked diff \u2014 not merely sweep it in with Step 10's git add -A",
+        "Builds the COMPLETE bounded Step-9 prompt with `review-material --repo <repo> --skill <target> --target <log_target>` and passes its stdout verbatim instead of assembling a prompt or ledger by hand; names the staged-tree hazard of bare git diff, target-source-first ordering, active-log deduplication, and the helper's fail-closed behavior when git or complete untracked transmission fails",
+        "Keeps the run open through `verify-final-receipt` and a clean precommit whose current prerequisites come from `Makefile::precommit`/`Makefile::verify`; only then appends `run-convergence` as the final bookkeeping write and stages the log, and if the post-terminal convergence/staged-diff check fails it hands over without returning to Step 8 or adding work to the closed run"
       ],
-      "notes": "Assertion 5 accepts the delegation the skill actually mandates; the discriminating part is naming the staged-tree hazard, which a baseline executor has no reason to know. Reworded 2026-07-29 after it failed 3/3 with-skill seats by grading a behaviour the skill had deliberately replaced."
+      "notes": "Assertion 6 accepts the delegation the skill mandates; the discriminating parts are the complete bounded prompt, verbatim handoff, and staged-tree/fail-closed hazards, which a baseline executor has no reason to know. Assertion 2 deliberately stays hidden from the prompt so it tests universal post-edit validator ordering on a full-gate target."
     },
     {
       "id": 4,
@@ -66,32 +69,39 @@
     {
       "id": 5,
       "name": "convergence-stops-on-severity-not-a-cycle-count",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. You are running a skill-tuneup. Cycle 1 applied 2 findings you rated blocking; cycle 2 applied 3 you rated blocking; cycle 3 applies 1 you rate minor and nothing else. A colleague says \"that's three cycles, the run is over \u2014 ship it.\" State whether the run is converged, exactly how you determine that rather than by counting cycles, and what would instead make you STOP without converging.",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. You are running a skill-tuneup. Cycle 1 applied 2 findings you rated blocking; cycle 2 applied 3 you rated blocking; cycle 3 applies 1 you rate minor and nothing else. A colleague says \"that's three cycles, the run is over \u2014 ship it.\" State whether the run is converged, exactly how you determine that rather than by counting cycles, and what would instead make you STOP without converging. Then cover this recovery case: convergence-status reports ambiguous applied findings between the previous run's convergence and the active run-start. Some records are verified prior history and some belong to this active run. Explain how you resolve that warning without discarding the active cycles. Also explain what changes if two current-run gap occurrences share the same finding ID.",
       "files": [],
       "assertions": [
         "States the run IS converged, because the newest cycle applied nothing blocking or serious \u2014 a minor-only cycle does not block convergence",
         "Rejects the three-cycles-so-ship reasoning: there is no fixed cycle cap, and a cycle count is not the stopping condition",
         "Determines it mechanically rather than by judgement \u2014 runs tuneup.py convergence-status (exit 0 = converged) against the run log, not an eyeball of the findings",
         "Names the OTHER stopping condition: a stall, i.e. the best/lowest serious-count stops improving across cycles, which hands over WITHOUT converging",
-        "Does not claim convergence on the basis of the eval passing or the diff looking clean \u2014 convergence is about the severity of what the cycle FOUND"
+        "Does not claim convergence on the basis of the eval passing or the diff looking clean \u2014 convergence is about the severity of what the cycle FOUND",
+        "For an ambiguous pre-start gap, does not append a new run-start: inspects every emitted applied record and uses the engine-emitted v3 marker to classify every gap index exactly once in disjoint prior/current lists rather than treating an unlisted remainder as prior",
+        "Handles all-prior, mixed, and lifecycle gaps explicitly: an all-prior gap puts every emitted index in prior_gap_indices; a mixed gap re-records each current ordinary occurrence; a current malformed lifecycle/resolution occurrence first gets the exact emitted gap-SHA/index/original-record-bound ordinary serious surrogate",
+        "Treats duplicate IDs as distinct occurrences and never reclassifies carried lifecycle-surrogate debt as prior: current duplicates require duplicate replay, and interrupted surrogate debt stays current until a valid cycle counts it"
       ],
-      "notes": "Discriminating because a baseline executor reaches for a cycle cap or a subjective 'looks done' call. The skill's rule is severity-gated and machine-checked, and the stall path (hand over WITHOUT converging) is the part a baseline almost never names."
+      "notes": "Discriminating because a baseline executor reaches for a cycle cap or a subjective 'looks done' call. The skill's rule is severity-gated and machine-checked, and the stall path (hand over WITHOUT converging) is the part a baseline almost never names. The recovery assertions test occurrence-level ownership: a plausible but unsafe answer commonly treats omitted indices as prior, deduplicates repeated finding IDs, or loses interrupted lifecycle debt."
     },
     {
       "id": 6,
-      "name": "council-only-tier-ships-ungated",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I want a tune-up on the `deploy-check` skill in my hunter repo at ~/git/hunter \u2014 it lives at ~/git/hunter/.claude/skills/deploy-check/. Walk me through exactly how you would run it: which gate applies, what you would run to establish that, where the run log goes and under what key, and what you would tell me at the end about how it was verified.",
+      "name": "agents-layout-is-council-only",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I want a tune-up on the `deploy-check` skill in my hunter repo at ~/git/hunter \u2014 it lives at ~/git/hunter/.agents/skills/deploy-check/. Walk me through exactly how you would run it: which gate applies, what you would run to establish that, how you decide the edited candidate is ready for final review, where the run log goes and under what key, and what you would tell me at the end.",
       "files": [],
       "assertions": [
-        "Resolves the tier with `target-info` rather than assuming it \u2014 a foreign repo is council-only, not full-gate",
+        "Uses `target-info` to recognize the exact repo-root `.agents/skills/deploy-check/SKILL.md` layout and resolve it as council-only rather than assuming a tier",
+        "Treats `~/git/hunter` as the exact Git top-level rather than passing a nested package as `--repo`, and notes that a nested `.git` boundary or gitlink inside the skill is refused because the outer commit would not own it",
         "States that the khenrix receipt/eval gate does not APPLY there (a receipt attests to khenrix-utils' own harness) \u2014 without claiming the target repo has no gates of its own",
         "Says plainly that the run ships UNGATED by a khenrix receipt and does not imply one was earned",
         "Keeps the baseline and the upstream research steps",
         "Keeps BOTH council reviews, the audit, the user checkpoint, and the convergence loop",
+        "Before council review #2 and convergence, discovers and runs the target repository's own applicable tests, precommit checks, and skill/runtime validators; after every edit, including a later-cycle edit, reruns every applicable skill/runtime validator; a failure caused by this tune-up is fixed and the changed candidate goes back through native gates, diff review, and convergence",
+        "An unrelated native-gate failure is reported and deferred with evidence but does NOT terminate the tune-up or get called a pass; review and convergence continue over the unchanged in-scope candidate",
+        "If the target repository exposes no native gate, says that plainly instead of implying a gate or khenrix receipt passed; a validator that cannot start or exits nonzero is never reported as a pass",
         "Writes the run log into khenrix-utils, not the target repo, using target-info's qualified `log_target` (repo-name@hash:skill) verbatim \u2014 an unqualified key is refused",
         "Commits in the target repo, and notes that the khenrix-utils run log is committed separately"
       ],
-      "notes": "Discriminates on the two-tier contract: a baseline executor has no way to invent `target-info`, the `<repo>@<8hex>:<skill>` log key, the khenrix-utils log destination, or the two-commit split. Assertion 2 is the trap \u2014 the tier says the KHENRIX gate is inapplicable, not that the target repo is ungated in general."
+      "notes": "Discriminates on the two-tier contract: a baseline executor has no way to invent `target-info`, the `<repo>@<8hex>:<skill>` log key, the khenrix-utils log destination, or the two-commit split. Assertion 3 is the trap \u2014 the tier says the KHENRIX gate is inapplicable, not that the target repo is ungated in general."
     }
   ]
 }
