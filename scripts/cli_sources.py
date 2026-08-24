@@ -28,6 +28,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import git_authority  # noqa: E402
+
 ROOT = Path.home() / ".cache" / "khenrix-utils" / "cli-sources"
 
 # name -> (url, why we read it). Canonical upstreams only.
@@ -63,7 +66,7 @@ PROBE_FIRST = {
 
 
 def _git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return git_authority.run(args, cwd=cwd, capture_output=True, text=True)
 
 
 def sync(name: str, url: str, root: Path = ROOT) -> tuple[bool, str]:

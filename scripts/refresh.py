@@ -15,6 +15,8 @@ Only files are copied (additive overwrite); nothing in your live CLI *config*
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -56,6 +58,56 @@ def installed_dirs(cli: str) -> list[Path]:
     return out
 
 
+def _tree_identity(root: Path, roster: list[str] | None = None) -> tuple[str, list[str]]:
+    """Hash regular bytes + executable bits for a fixed relative-path roster."""
+    problems = []
+    if root.is_symlink() or not root.is_dir():
+        return "", [f"unsafe or missing plugin root: {root}"]
+    if roster is None:
+        roster = []
+        for path in sorted(root.rglob("*")):
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            if path.is_symlink():
+                problems.append(f"plugin tree contains a symlink: {path}")
+            elif path.is_file():
+                roster.append(path.relative_to(root).as_posix())
+    framed = []
+    for rel in roster:
+        path = root / rel
+        current = root
+        for part in Path(rel).parts:
+            current /= part
+            if current.is_symlink():
+                problems.append(f"plugin path crosses a symlink: {current}")
+                break
+        else:
+            if not path.is_file():
+                problems.append(f"plugin file missing after refresh: {path}")
+                continue
+            mode = path.stat().st_mode & 0o111
+            framed.append((rel, mode, hashlib.sha256(path.read_bytes()).hexdigest()))
+    payload = repr(framed).encode()
+    return hashlib.sha256(payload).hexdigest(), problems
+
+
+def verify_install(src: Path, dest: Path) -> str:
+    source_hash, source_problems = _tree_identity(src)
+    if source_problems:
+        raise RuntimeError("; ".join(source_problems))
+    roster = [p.relative_to(src).as_posix() for p in sorted(src.rglob("*"))
+              if p.is_file() and not p.is_symlink()
+              and "__pycache__" not in p.parts and p.suffix != ".pyc"]
+    installed_hash, installed_problems = _tree_identity(dest, roster)
+    if installed_problems:
+        raise RuntimeError("; ".join(installed_problems))
+    if installed_hash != source_hash:
+        raise RuntimeError(
+            f"installed plugin hash mismatch for {dest}: "
+            f"source={source_hash} installed={installed_hash}")
+    return source_hash
+
+
 def sync(cli: str) -> list[str]:
     src = ROOT / "marketplaces" / cli / "plugins" / "khenrix-utils"
     notes = []
@@ -63,6 +115,9 @@ def sync(cli: str) -> list[str]:
     if not dests:
         return [f"{cli}: not installed (run `make setup-{cli}`)"]
     for d in dests:
+        _before, unsafe = _tree_identity(d)
+        if unsafe:
+            raise RuntimeError("; ".join(unsafe))
         shutil.copytree(src, d, dirs_exist_ok=True)
         # `dirs_exist_ok=True` merges and never deletes, so a clean source cannot remove
         # what an earlier sync already put here — and bytecode also appears in place when a
@@ -72,7 +127,8 @@ def sync(cli: str) -> list[str]:
         # the same idiom (see render.py: `list()` before deleting, rglob is lazy).
         for cache in list(Path(d).rglob("__pycache__")):
             shutil.rmtree(cache, ignore_errors=True)
-        notes.append(f"{cli}: synced → {d}")
+        digest = verify_install(src, d)
+        notes.append(f"{cli}: synced + hash-verified {digest[:12]} → {d}")
     return notes
 
 
@@ -89,17 +145,35 @@ def meta_refresh(cli: str) -> str | None:
         return f"{cli}: metadata refresh skipped ({e})"
 
 
-def main() -> int:
+def _selected_clis(raw: str) -> tuple[str, ...]:
+    selected = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if not selected or len(selected) != len(set(selected)):
+        raise ValueError("--clis must be a non-empty comma list without duplicates")
+    bad = [item for item in selected if item not in CLIS]
+    if bad:
+        raise ValueError(f"unknown CLI(s) {bad}; expected values from {list(CLIS)}")
+    return selected
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--clis", default=",".join(CLIS),
+                    help="exact CLIs to refresh, comma-separated (default: all)")
+    args = ap.parse_args(argv)
+    try:
+        selected = _selected_clis(args.clis)
+    except ValueError as exc:
+        ap.error(str(exc))
     print("Rendering…")
     render()
     print("\nSyncing installed plugins…")
-    for cli in CLIS:
+    for cli in selected:
         for note in sync(cli):
             print(f"  • {note}")
         m = meta_refresh(cli)
         if m:
             print(f"  • {m}")
-    print("\n✅ Refresh complete. Restart any open CLI session to pick up changes.")
+    print("\n✅ Refresh complete. Restart the selected CLI sessions to pick up changes.")
     return 0
 
 

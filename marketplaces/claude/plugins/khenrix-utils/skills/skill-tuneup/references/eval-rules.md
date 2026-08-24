@@ -42,19 +42,22 @@ make eval SKILL=<t>
 ```
 
 That command must run the certifier named for the target in `checks.SELF_TEST_CERTIFIERS`
-and write matching deterministic evidence; judge-provider output is advisory and no full
-panel is owed. For llm-council, the certifier is `fanout.py --self-test`; a live `--smoke`
+and write matching deterministic evidence. Judge-provider output is advisory for deciding
+whether the certifier passed, but the schema-3 shipping receipt also requires that advisory
+run over the canonical Codex+agy panel. For llm-council, the certifier is `fanout.py --self-test`; a live `--smoke`
 and `make council-test` are additional REQUIRED checks, not what earns the receipt
 (`council-test` also runs inside `verify`/`precommit`).
 
 Only when `requires_deterministic_gate(<target>) == False` use the judge loop:
 
 ```bash
-make eval SKILL=<t> PROVIDERS=claude     # iterate here (cheap)
-make eval SKILL=<t> PROVIDERS=claude,codex,agy   # final gate (~3-4x tokens)
+make eval SKILL=<t> PROVIDERS=codex      # optional cheap iteration; advisory only
+make eval SKILL=<t>                      # canonical Codex+agy shipping panel
 ```
 
-The final panel is fixed and may not be narrowed or reordered. A receipt's current shape
+Only the canonical providers/judge/mode policy can refresh a receipt; a narrowed green run
+leaves the prior receipt untouched. The final panel is fixed and may not be narrowed or
+reordered. A receipt's current shape
 can verify evidence through `checks.is_self_test_gated(<target>, receipt)`; it never chooses
 which branch applies.
 

@@ -44,10 +44,12 @@ LIB_SCRIPTS = [ROOT / "scripts" / "lib" / "reconcile.py",
 # Runtime code only — tests are excluded to keep the plugin lean.
 SHARED_LIBS = ["wikisync", "council", "forge"]
 # Single MODULES (not packages) that land beside those engines at lib/<file>.py, because
-# an engine imports them at runtime. forge/screen.py loads checks.py by path to get the
-# secret patterns rather than forking them; once the marketplace copies a plugin out of
-# this repo, lib/checks.py is the only candidate its resolver can still reach.
-SHARED_LIB_FILES = [ROOT / "scripts" / "lib" / "checks.py"]
+# runtime engines import them. forge/screen.py loads checks.py by path to get the secret
+# patterns rather than forking them, and checks.py delegates every Git subprocess to
+# git_authority.py. Once a marketplace copies a plugin out of this repo, these bundled
+# siblings are the only candidates their resolvers can still reach.
+SHARED_LIB_FILES = [ROOT / "scripts" / "lib" / "checks.py",
+                    ROOT / "scripts" / "lib" / "git_authority.py"]
 NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # Per-CLI skills whose SHARED body is one template + per-CLI [skill_facts.*] in
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.

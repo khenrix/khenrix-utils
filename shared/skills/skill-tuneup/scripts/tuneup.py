@@ -16,18 +16,22 @@ from __future__ import annotations
 import argparse
 import codecs
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import types
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,19 +50,147 @@ SCAN_SUFFIXES = (".md", ".py", ".toml", ".json", ".sh", ".tmpl", ".txt")
 # and this script's own self-test fixtures would flag themselves.
 EXCLUDE_RX = re.compile(r"(^|/)(marketplaces/|__pycache__/|workspace/|evals/_fixtures/)"
                         r"|skills/skill-tuneup/scripts/tuneup\.py/?$")
-FINAL_PANEL = ("claude", "codex", "agy")
+FINAL_PANEL = ("codex", "agy")
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"non-finite JSON number {value!r} is not allowed")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number {value!r} is not allowed")
+    return parsed
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        out[key] = value
+    return out
+
+
+def _validate_finite_json(value: object, *, path: str = "$") -> None:
+    """Reject values Python's permissive JSON encoder would silently emit."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path}: non-finite JSON number is not allowed")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path}: JSON object keys must be strings, got {key!r}")
+            _validate_finite_json(child, path=f"{path}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _validate_finite_json(child, path=f"{path}[{index}]")
+
+
+def _strict_json_loads(raw: str | bytes, *, context: str = "JSON"):
+    """Decode standards-compliant JSON with duplicate-key and finite-number checks."""
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+            parse_float=_finite_json_float,
+        )
+        _validate_finite_json(value)
+        return value
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{context}: {exc}") from exc
+
+
+def _strict_json_dumps(value: object, **kwargs) -> str:
+    _validate_finite_json(value)
+    try:
+        return json.dumps(value, allow_nan=False, **kwargs)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"cannot serialize strict JSON: {exc}") from exc
+
+
+def _atomic_jsonl_append(path: Path, serialized_line: str) -> None:
+    """Append one pre-serialized line without exposing a torn tracked ledger."""
+    payload = serialized_line.encode("utf-8")
+    lock_root = Path.home() / ".cache" / "khenrix-utils" / "skill-tuneup-log-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_name = hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest() + ".lock"
+    lock_fd = os.open(lock_root / lock_name, os.O_CREAT | os.O_RDWR, 0o600)
+    temp_path = None
+    try:
+        with os.fdopen(lock_fd, "rb", closefd=True) as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            existing = path.read_bytes() if path.exists() else b""
+            if existing and not existing.endswith(b"\n"):
+                raise ValueError(f"{path}: existing JSONL does not end with a newline")
+            # Revalidate after taking the stable external lock. A concurrent or manual
+            # edit between the caller's read and publication must fail closed.
+            for line_number, line in enumerate(existing.decode("utf-8").splitlines(), 1):
+                if line.strip():
+                    _strict_json_loads(line, context=f"{path} line {line_number}")
+            mode = path.stat().st_mode & 0o7777 if path.exists() else 0o644
+            with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=path.parent, prefix=f".{path.name}.",
+                    suffix=".tmp", delete=False) as handle:
+                temp_path = Path(handle.name)
+                handle.write(existing)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.chmod(mode)
+            os.replace(temp_path, path)
+            temp_path = None
+            try:
+                directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            except OSError:
+                directory_fd = None
+            if directory_fd is not None:
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+_GIT_AUTHORITY = None
+
+
+def _git_authority():
+    """Load the Git authority owned by this source checkout or rendered plugin."""
+    global _GIT_AUTHORITY
+    if _GIT_AUTHORITY is not None:
+        return _GIT_AUTHORITY
+    import importlib.util
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[4] / "scripts" / "lib" / "git_authority.py",
+        here.parents[3] / "lib" / "git_authority.py",
+    ]
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location("_khenrix_git_authority", candidate)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _GIT_AUTHORITY = module
+        return module
+    raise RuntimeError(
+        f"Git authority not found; looked in {[str(path) for path in candidates]}")
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, text=True, check=True).stdout
+    return _git_authority().run(
+        args, repo=repo, capture_output=True, text=True, check=True).stdout
 
 
 def _require_exact_git_toplevel(repo: Path) -> None:
     """Require the CLI's --repo to name the checkout root, never a nested directory."""
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+        result = _git_authority().run(
+            ["rev-parse", "--show-toplevel"], repo=repo,
             capture_output=True, text=True, check=False)
     except OSError as e:
         raise ValueError(
@@ -141,8 +273,8 @@ def _skill_tree_git_boundary(repo: Path, path: Path) -> tuple[Path, str] | None:
     # A pathspec BELOW a gitlink does not match the gitlink itself. Query from the layout
     # anchor and retain only entries on or below this target, or between the repo and it.
     # This also catches a deinitialized gitlink whose worktree no longer contains `.git`.
-    result = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "--stage", "-z", "--", rel.parts[0]],
+    result = _git_authority().run(
+        ["ls-files", "--stage", "-z", "--", rel.parts[0]], repo=repo,
         capture_output=True, check=False)
     if result.returncode == 0:
         for record in result.stdout.split(b"\0"):
@@ -177,8 +309,8 @@ def _manifest_ownership_problem(repo: Path, manifest_path: Path) -> str | None:
     rel = manifest_path.relative_to(repo)
     git_rel = rel.as_posix()
     raw_rel = os.fsencode(git_rel)
-    index = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "--stage", "-z", "--", git_rel],
+    index = _git_authority().run(
+        ["ls-files", "--stage", "-z", "--", git_rel], repo=repo,
         capture_output=True, check=False)
     index_owned = False
     if index.returncode == 0:
@@ -191,8 +323,8 @@ def _manifest_ownership_problem(repo: Path, manifest_path: Path) -> str | None:
                     and fields[0] in (b"100644", b"100755")):
                 index_owned = True
                 break
-    head = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "-z", "HEAD", "--", git_rel],
+    head = _git_authority().run(
+        ["ls-tree", "-z", "HEAD", "--", git_rel], repo=repo,
         capture_output=True, check=False)
     head_owned = False
     if head.returncode == 0:
@@ -222,10 +354,9 @@ def _ignored_consumable_problem(repo: Path, path: Path) -> str | None:
     inconsistently, irrespective of its extension.
     """
     rel = path.relative_to(repo)
-    result = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "--others", "--ignored",
-         "--exclude-standard", "-z", "--", rel.as_posix()],
-        capture_output=True, check=False)
+    result = _git_authority().run(
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+         rel.as_posix()], repo=repo, capture_output=True, check=False)
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace").strip()
         return (f"cannot prove ignored-source ownership for {rel}: git ls-files failed"
@@ -470,8 +601,9 @@ def pick_baseline(commits: list[dict]) -> dict | None:
 
 
 def _git_file_at(repo: Path, revision: str, relpath: str) -> str | None:
-    result = subprocess.run(["git", "-C", str(repo), "show", f"{revision}:{relpath}"],
-                            capture_output=True, text=True, check=False)
+    result = _git_authority().run(
+        ["show", f"{revision}:{relpath}"], repo=repo,
+        capture_output=True, text=True, check=False)
     return result.stdout if result.returncode == 0 else None
 
 
@@ -921,8 +1053,8 @@ def _require_active_log_append_only(repo: Path, path: Path) -> None:
     the ledger. A log absent from HEAD is a legitimate new run log and has no prefix yet.
     """
     relpath = str(path.relative_to(repo))
-    tree = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "-z", "HEAD", "--", relpath],
+    tree = _git_authority().run(
+        ["ls-tree", "-z", "HEAD", "--", relpath], repo=repo,
         capture_output=True, check=False)
     if tree.returncode != 0:
         raise RuntimeError(
@@ -940,8 +1072,8 @@ def _require_active_log_append_only(repo: Path, path: Path) -> None:
             or fields[1] != b"blob" or recorded_path != os.fsencode(relpath)):
         raise RuntimeError(
             f"committed active run log HEAD:{relpath} is not a regular blob")
-    blob = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "blob", fields[2]],
+    blob = _git_authority().run(
+        ["cat-file", "blob", fields[2]], repo=repo,
         capture_output=True, check=False)
     if blob.returncode != 0:
         raise RuntimeError(
@@ -1169,8 +1301,9 @@ def _pre_start_gap(entries: list, start: int | None = None) -> dict | None:
             "between": between,
             "start": entries[current_start],
         }
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False).encode("utf-8")
+        raw = _strict_json_dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False).encode("utf-8")
         return {
             "after_index": after_index,
             "between_end_index": between_end,
@@ -1844,10 +1977,10 @@ def log_append(repo: Path, target: str, entry: dict) -> dict:
     if entry["finding_id"] == RUN_GAP_RESOLUTION:
         _validate_run_gap_resolution(repo, target, entry)
     entry.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    serialized = _strict_json_dumps(entry, sort_keys=True) + "\n"
     p = _require_owned_log_path(repo, target)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, sort_keys=True) + "\n")
+    _atomic_jsonl_append(p, serialized)
     return entry
 
 
@@ -1866,7 +1999,7 @@ def log_entries(repo: Path, target: str) -> list[dict]:
     for line_number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
-        entry = json.loads(line)
+        entry = _strict_json_loads(line, context=f"run log line {line_number}")
         if not isinstance(entry, dict):
             raise ValueError(f"run log line {line_number} must be a JSON object")
         missing = REQUIRED_LOG_KEYS - entry.keys()
@@ -1949,8 +2082,18 @@ def _self_test() -> int:
     self_test_registry = _mark_khenrix(Path(self_test_registry_td.name) / "registry")
     (self_test_registry / "shared" / "skills").mkdir(parents=True)
     (self_test_registry / "capabilities.toml").write_text("[models]\n")
+    self_test_engine = self_test_registry / REVIEWER_ENGINE_RELPATH
+    self_test_engine.parent.mkdir(parents=True)
+    self_test_engine.write_text(
+        "SENTINEL_PREFIX = 'SENTINEL-'\n"
+        "MODES = {'normal': {}, 'deep': {}}\n"
+        "def apply_member_note(prompt): return prompt\n"
+        "def apply_readonly_posture(prompt): return prompt\n"
+        "def apply_sentinel(prompt, token): return prompt\n")
     _init_repo(self_test_registry)
-    _commit_fixture(self_test_registry, "capabilities.toml", message="registry base")
+    _commit_fixture(
+        self_test_registry, "capabilities.toml", REVIEWER_ENGINE_RELPATH,
+        message="registry base")
     globals()["_SELF_TEST_REGISTRY_ROOT"] = self_test_registry
 
     # model regex: must-match and must-NOT-match shapes
@@ -2010,6 +2153,9 @@ def _self_test() -> int:
     # actual strings rather than trusting the shape.
     with tempfile.TemporaryDirectory() as td:
         r = _mark_khenrix(Path(td))
+        policy_toml = (
+            "[eval]\nrequired_providers=['codex','agy']\n"
+            "judge='codex'\nmode='normal'\n")
         git_env = {key: value for key, value in os.environ.items()
                    if not key.startswith("GIT_")}
         git_env.update({
@@ -2032,7 +2178,7 @@ def _self_test() -> int:
                 check=True, env=env).stdout
 
         _make_skill(r, "shared/skills/alpha")
-        (r / "capabilities.toml").write_text("[models]\nclaude = []\n")
+        (r / "capabilities.toml").write_text("[models]\nclaude = []\n" + policy_toml)
         _fixture_git("init", "-q")
         _fixture_git("add", "-A")
         _fixture_git("commit", "-qm", "add alpha", date="2026-01-01T00:00:00+00:00")
@@ -2047,6 +2193,8 @@ def _self_test() -> int:
             ["verify-final-receipt", "--repo", str(nested_repo_arg),
              "--skill", "alpha"],
             ["review-material", "--repo", str(nested_repo_arg), "--skill", "alpha",
+             "--target", "alpha"],
+            ["review-diff", "--repo", str(nested_repo_arg), "--skill", "alpha",
              "--target", "alpha"],
             ["log", "list", "--repo", str(nested_repo_arg), "--target", "alpha"],
         )
@@ -2063,6 +2211,7 @@ def _self_test() -> int:
         _make_skill(r, "shared/skill-templates/alpha")
         (r / "capabilities.toml").write_text(
             "[models]\nclaude = []\n"
+            + policy_toml +
             "[skill_facts.alpha.claude]\nmodel = 'claude-opus-4-6'\n")
         _fixture_git("add", "-A")
         _fixture_git("commit", "-qm", "add invalid template",
@@ -2075,6 +2224,7 @@ def _self_test() -> int:
         # selects the same SHA and the baseline assertion cannot prove the -G branch ran.
         (r / "capabilities.toml").write_text(
             "[models]\nclaude = []\n"
+            + policy_toml +
             "[skill_facts.alpha.claude]\nmodel = 'claude-opus-4-6'\n"
             "[skill_facts.templated.claude]\nmodel = 'gpt-5.5'\nnote = 'one'\n")
         _fixture_git("add", "capabilities.toml")
@@ -2472,19 +2622,47 @@ def _self_test() -> int:
         ev.mkdir(parents=True)
         ev.joinpath("evals.json").write_text(json.dumps(
             {"evals": [_receipt_eval(i) for i in range(7)]}))
+        _chk = _load_checks()
+
+        def _current_receipt(**overrides):
+            rec = {
+                "schema_version": _chk.CURRENT_RECEIPT_SCHEMA,
+                "skill": "alpha",
+                "providers": list(FINAL_PANEL),
+                "judge": "codex",
+                "mode": "normal",
+                "models": {"judge": "gpt-test"},
+                "per_provider": {
+                    provider: {"delta": 0.1, "n_evals": 7, "status": "ok"}
+                    for provider in FINAL_PANEL
+                },
+                "provenance": "eval",
+                "certified_by": "delta-gate",
+                "source_hash": _chk.source_hash(r, "alpha"),
+                "eval_set_hash": _chk.eval_set_hash(r, "alpha"),
+                "eval_policy_hash": _chk.eval_policy_hash(r),
+            }
+            rec.update(overrides)
+            return rec
+
         def _probs(rec):
             ev.joinpath("receipt.json").write_text(json.dumps(rec))
-            return " ".join(verify_final_receipt(r, "alpha", ["claude", "codex", "agy"]))
+            return " ".join(verify_final_receipt(r, "alpha", list(FINAL_PANEL)))
         ok.append(("seeded receipt is rejected",
                    "seeded, not earned" in _probs(
-                       {"providers": ["claude", "codex", "agy"],
-                        "provenance": "seeded: blessed current committed state"})))
-        ok.append(("single-provider receipt is rejected",
-                   "FULL-PANEL" in _probs({"providers": ["claude"], "provenance": "eval"})))
+                       _current_receipt(
+                           provenance="seeded: blessed current committed state"))))
+        ok.append(("schema-3 single-provider receipt is rejected by Codex+agy policy",
+                   "provider order" in _probs(
+                       _current_receipt(
+                           providers=["codex"],
+                           per_provider={
+                               "codex": {"delta": 0.1, "n_evals": 7, "status": "ok"}
+                           }))))
         ok.append(("ordinary receipt cannot claim a self-test panel exemption",
                    "not eligible" in _probs(
-                       {"providers": ["claude"], "provenance": "eval",
-                        "self_test": True, "certified_by": "some --self-test"})))
+                       _current_receipt(
+                           self_test=True, certified_by="some --self-test"))))
         _make_skill(r, "shared/skills/zeta")
         _fixture_git("add", "shared/skills/zeta/SKILL.md")
         _fixture_git("commit", "-qm", "add zeta",
@@ -2501,7 +2679,6 @@ def _self_test() -> int:
         # announcing "receipt is full-panel" for the very skills it EXEMPTS from the panel
         # check, and reverting to that wording would still leave every gate green. Only
         # main() chooses the wording, so only a CLI-level run can witness it.
-        _chk = _load_checks()
         ok.append(("receipt validator dynamic import supports registered dataclasses",
                    hasattr(_chk, "EvalInputSnapshot")))
 
@@ -2518,12 +2695,16 @@ def _self_test() -> int:
             return rc, output.getvalue()
 
         def _say(extra: dict, per_provider: dict | None = None,
-                 schema_version: int | None = 2) -> tuple[int, str]:
+                 schema_version: int | None = _chk.CURRENT_RECEIPT_SCHEMA) -> tuple[int, str]:
             complete = {provider: {"delta": 0.1, "n_evals": 7, "status": "ok"}
-                        for provider in ("claude", "codex", "agy")}
-            rec = {"skill": "alpha", "providers": ["claude", "codex", "agy"],
+                        for provider in FINAL_PANEL}
+            rec = {"skill": "alpha", "providers": list(FINAL_PANEL),
                    "provenance": "eval", "certified_by": "delta-gate",
                    "per_provider": complete if per_provider is None else per_provider,
+                   "judge": "codex", "mode": "normal",
+                   "models": {"codex": "gpt-test", "agy": "gemini-test",
+                              "judge": "gpt-test"},
+                   "eval_policy_hash": _chk.eval_policy_hash(r),
                    "source_hash": _chk.source_hash(r, "alpha"),
                    "eval_set_hash": _chk.eval_set_hash(r, "alpha"), **extra}
             if schema_version is not None:
@@ -2536,7 +2717,8 @@ def _self_test() -> int:
             deterministic_root = _mark_khenrix(Path(deterministic_td))
             _make_skill(
                 deterministic_root, f"shared/skills/{deterministic_skill}")
-            (deterministic_root / "capabilities.toml").write_text("[models]\n")
+            (deterministic_root / "capabilities.toml").write_text(
+                "[models]\n" + policy_toml)
             _init_repo(deterministic_root)
             _commit_fixture(deterministic_root)
             deterministic_evals = deterministic_root / "evals" / deterministic_skill
@@ -2544,9 +2726,16 @@ def _self_test() -> int:
             deterministic_evals.joinpath("evals.json").write_text(json.dumps(
                 {"evals": [_receipt_eval(i) for i in range(7)]}))
             deterministic_receipt = {
-                "schema_version": 2,
+                "schema_version": _chk.CURRENT_RECEIPT_SCHEMA,
                 "skill": deterministic_skill,
-                "providers": ["claude"],
+                "providers": list(FINAL_PANEL),
+                "judge": "codex",
+                "mode": "normal",
+                "models": {"codex": "gpt-test", "agy": "gemini-test",
+                           "judge": "gpt-test"},
+                "per_provider": {
+                    provider: {"delta": 0.0, "n_evals": 7, "status": "ok"}
+                    for provider in FINAL_PANEL},
                 "provenance": "eval",
                 "self_test": True,
                 "certified_by": "wikisync-unittests",
@@ -2560,13 +2749,14 @@ def _self_test() -> int:
                     deterministic_root, deterministic_skill),
                 "eval_set_hash": _chk.eval_set_hash(
                     deterministic_root, deterministic_skill),
+                "eval_policy_hash": _chk.eval_policy_hash(deterministic_root),
             }
             _rc_self, _out_self = _invoke_receipt_cli(
                 deterministic_receipt, deterministic_skill, deterministic_root)
         _rc_v1, _out_v1 = _say({}, {}, schema_version=None)
         _rc_blind, _out_blind = _say(
-            {"providers": ["claude"], "blind_winner": "n/a-deterministic"},
-            {"claude": {"delta": 0.1, "n_evals": 7, "status": "ok"}})
+            {"providers": ["codex"], "blind_winner": "n/a-deterministic"},
+            {"codex": {"delta": 0.1, "n_evals": 7, "status": "ok"}})
         _say({})
         _narrowed_output = io.StringIO()
         with contextlib.redirect_stdout(_narrowed_output):
@@ -2574,38 +2764,38 @@ def _self_test() -> int:
                 ["verify-final-receipt", "--repo", str(r), "--skill", "alpha",
                  "--panel", "claude"])
         ok.append(("CLI: a partial per-provider block cannot prove a full panel",
-                   _rc_partial == 1 and "no completed per-provider evidence"
+                   _rc_partial == 1 and "no completed codex evidence"
                    in _out_partial))
         for label, bad_delta in (("NaN", float("nan")),
                                  ("infinite", float("inf")),
                                  ("out-of-range", 999.0)):
             rows = {provider: {"delta": 0.1, "n_evals": 7, "status": "ok"}
-                    for provider in ("claude", "codex", "agy")}
+                    for provider in FINAL_PANEL}
             rows["codex"]["delta"] = bad_delta
             _rc_bad, _out_bad = _say({}, rows)
             ok.append((f"CLI: {label} provider delta cannot prove a full panel",
-                       _rc_bad == 1 and "no completed per-provider evidence"
+                       _rc_bad == 1 and "no completed codex evidence"
                        in _out_bad))
-        for provider, bad_count in (("claude", 1), ("codex", 8), ("agy", 10 ** 21)):
+        for provider, bad_count in (("codex", 8), ("agy", 10 ** 21)):
             rows = {name: {"delta": 0.1, "n_evals": 7, "status": "ok"}
-                    for name in ("claude", "codex", "agy")}
+                    for name in FINAL_PANEL}
             rows[provider]["n_evals"] = bad_count
             _rc_bad, _out_bad = _say({}, rows)
             ok.append((f"CLI: provider {provider} must report all 7 distinct eval ids",
                        _rc_bad == 1 and provider in _out_bad
-                       and "expected n_evals=7" in _out_bad))
-        ok.append(("CLI: manifest-matching n_evals=7 proves the full panel",
-                   _rc_panel == 0 and "full-panel and matches source" in _out_panel))
-        ok.append(("CLI: an EXEMPT receipt is not announced as full-panel",
-                   _rc_self == 0 and "panel-exempt" in _out_self
-                   and "is full-panel" not in _out_self))
+                       and "all 7 current evals" in _out_bad))
+        ok.append(("CLI: manifest-matching n_evals=7 proves the canonical panel",
+                   _rc_panel == 0 and "canonical-panel and matches source" in _out_panel))
+        ok.append(("CLI: deterministic receipt proves both authorities",
+                   _rc_self == 0
+                   and "deterministic-certifier + canonical-panel" in _out_self))
         ok.append(("CLI: a v1 receipt cannot bypass per-provider eval counts",
-                   _rc_v1 == 1 and "no completed per-provider evidence" in _out_v1))
+                   _rc_v1 == 1 and "legacy schema v1" in _out_v1))
         ok.append(("CLI: n/a blind_winner without self_test cannot bypass the panel",
-                   _rc_blind == 1 and "FULL-PANEL" in _out_blind
+                   _rc_blind == 1 and "provider order" in _out_blind
                    and "Traceback" not in _out_blind))
         ok.append(("CLI: --panel cannot narrow the canonical final panel",
-                   _narrowed_rc == 2 and "fixed at claude,codex,agy"
+                   _narrowed_rc == 2 and "at codex,agy"
                    in _narrowed_output.getvalue()
                    and "Traceback" not in _narrowed_output.getvalue()))
         for malformed_root in ([], "x", None):
@@ -5277,7 +5467,9 @@ def _self_test() -> int:
         ok.append(("review-material fails closed instead of truncating untracked text",
                    "too-big-untracked.md" in _overflow and "review cap" in _overflow))
         try:
-            _assert_review_prompt_bound(r, "x" * REVIEW_TOTAL_CAP)
+            _assert_review_prompt_bound(
+                r, "x" * REVIEW_TOTAL_CAP,
+                reviewer=_capture_council_reviewer(r))
             _argv_safe = True
         except RuntimeError:
             _argv_safe = False
@@ -5369,14 +5561,15 @@ def _self_test() -> int:
                 except (RuntimeError, ValueError) as ex:
                     problem = str(ex)
                 ok.append((f"review-material refuses a {mode} symlink-backed wrapper",
-                           "symlink-backed" in problem
+                           ("symlink-backed" in problem
+                            or "missing or ambiguous" in problem)
                            and "EXTERNAL_ENGINE_WAS_IMPORTED" not in problem))
         finally:
             globals()["_COUNCIL_ENGINE"] = saved_engine
 
-        # llm-council is the one self-target whose working-tree wrapper is itself under
-        # review. Even argv sizing must use HEAD: importing the candidate here would let
-        # the implementation being reviewed lie about (or crash) its own review gate.
+        # Dirty council machinery is under test regardless of the target's name. Even argv
+        # sizing for an ordinary target must use HEAD: importing the candidate here would
+        # let the implementation being reviewed lie about (or crash) its own review gate.
         repo = _mark_khenrix(root / "committed-reviewer")
         (repo / "shared" / "skills").mkdir(parents=True)
         (repo / "capabilities.toml").write_text("[models]\n")
@@ -5406,15 +5599,129 @@ def _self_test() -> int:
             ok.append(("llm-council argv sizing applies the committed wrapper behavior",
                        _raises(lambda: _assert_review_prompt_bound(
                            repo, "x" * REVIEW_TOTAL_CAP, committed=True), RuntimeError)))
-            try:
-                _assert_review_prompt_bound(repo, "ordinary review")
-                _working_problem = ""
-            except RuntimeError as ex:
-                _working_problem = str(ex)
-            ok.append(("ordinary review sizing still uses the working-tree wrapper",
-                       "WORKING_COUNCIL_ENGINE_EXECUTED" in _working_problem))
+            _ordinary_reviewer = _capture_council_reviewer(repo)
+            _assert_review_prompt_bound(
+                repo, "ordinary review", reviewer=_ordinary_reviewer)
+            ok.append(("ordinary targets also substitute HEAD when council code is dirty",
+                       _ordinary_reviewer.selection == "committed-head"
+                       and REVIEWER_ENGINE_RELPATH in _ordinary_reviewer.dirty_paths))
         finally:
             globals()["_COUNCIL_ENGINE"] = saved_engine
+
+        # BOTH implementation trees are reviewer authority for EVERY target. A staged
+        # skill edit or an untracked helper beneath llm-council must substitute HEAD even
+        # while the skill being tuned is entirely unrelated.
+        selection_repo = _mark_khenrix(root / "reviewer-selection")
+        (selection_repo / "shared" / "skills").mkdir(parents=True)
+        (selection_repo / "capabilities.toml").write_text("[models]\n")
+        selection_council = _make_skill(
+            selection_repo, "shared/skills/llm-council")
+        selection_engine = selection_repo / REVIEWER_ENGINE_RELPATH
+        selection_engine.parent.mkdir(parents=True)
+        selection_engine.write_text(
+            "SENTINEL_PREFIX = 'x'\n"
+            "MODES = {'normal': {}}\n"
+            "def apply_member_note(prompt): return prompt\n"
+            "def apply_readonly_posture(prompt): return prompt\n"
+            "def apply_sentinel(prompt, token): return prompt\n")
+        subprocess.run(["git", "-C", str(selection_repo), "init", "-q", "."], check=True)
+        subprocess.run(["git", "-C", str(selection_repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(selection_repo), "-c", "user.email=t@t",
+             "-c", "user.name=t", "commit", "-qm", "base"], check=True)
+        clean_reviewer = _capture_council_reviewer(selection_repo)
+        ok.append(("a clean reviewer capture records working-tree bytes and provenance",
+                   clean_reviewer.selection == "working-tree-clean"
+                   and not clean_reviewer.dirty_paths
+                   and clean_reviewer.engine_sha256 == hashlib.sha256(
+                       selection_engine.read_bytes()).hexdigest()))
+        planted = selection_council / "scripts" / "planted.py"
+        planted.parent.mkdir()
+        planted.write_text("raise RuntimeError('candidate reviewer')\n")
+        untracked_reviewer = _capture_council_reviewer(selection_repo)
+        ok.append(("an untracked llm-council descendant selects committed HEAD",
+                   untracked_reviewer.selection == "committed-head"
+                   and "shared/skills/llm-council/scripts/planted.py"
+                   in untracked_reviewer.dirty_paths))
+        planted.unlink()
+        selection_council.joinpath("SKILL.md").write_text("# staged candidate\n")
+        subprocess.run(
+            ["git", "-C", str(selection_repo), "add",
+             "shared/skills/llm-council/SKILL.md"], check=True)
+        staged_reviewer = _capture_council_reviewer(selection_repo)
+        ok.append(("a staged llm-council skill edit selects committed HEAD",
+                   staged_reviewer.selection == "committed-head"
+                   and "shared/skills/llm-council/SKILL.md"
+                   in staged_reviewer.dirty_paths))
+
+        # One module instance crosses the boundary calculation and the fanout call. The
+        # fake has no providers behind it: its state counter exposes a second import, and
+        # its argv record proves the production command fixes the panel to Codex+agy.
+        exact_repo = _mark_khenrix(root / "exact-reviewer-capture")
+        (exact_repo / "shared" / "skills").mkdir(parents=True)
+        (exact_repo / "capabilities.toml").write_text("[models]\n")
+        exact_target = _make_skill(exact_repo, "shared/skills/ordinary")
+        exact_engine = exact_repo / REVIEWER_ENGINE_RELPATH
+        exact_engine.parent.mkdir(parents=True)
+        exact_engine.write_text(
+            "import json\n"
+            "from pathlib import Path\n"
+            "SENTINEL_PREFIX = 'x'\n"
+            "MODES = {'normal': {}}\n"
+            "BOUND_CALLS = 0\n"
+            "def apply_member_note(prompt):\n"
+            "    global BOUND_CALLS\n"
+            "    BOUND_CALLS += 1\n"
+            "    return prompt\n"
+            "def apply_readonly_posture(prompt): return prompt\n"
+            "def apply_sentinel(prompt, token): return prompt\n"
+            "def main(argv):\n"
+            "    before = BOUND_CALLS\n"
+            "    providers = argv[argv.index('--providers') + 1]\n"
+            "    workdir = Path(argv[argv.index('--workdir') + 1])\n"
+            "    manifest = {'schema': 1, 'workdir': str(workdir),\n"
+            "                'summary': {'valid': 2},\n"
+            "                'bound_calls_before_fanout': before,\n"
+            "                'providers_arg': providers}\n"
+            "    (workdir / 'manifest.json').write_text(json.dumps(manifest))\n"
+            "    print(json.dumps(manifest))\n"
+            "    return 0\n")
+        log_append(exact_repo, "ordinary", {
+            "target": "ordinary", "finding_id": RUN_START, "decision": "applied"})
+        subprocess.run(["git", "-C", str(exact_repo), "init", "-q", "."], check=True)
+        subprocess.run(["git", "-C", str(exact_repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(exact_repo), "-c", "user.email=t@t",
+             "-c", "user.name=t", "commit", "-qm", "base"], check=True)
+        exact_target.joinpath("SKILL.md").write_text("# candidate\n")
+        exact_capture = _capture_council_reviewer(exact_repo)
+        exact_outdir = root / "exact-review-output"
+        exact_rc, exact_manifest = run_diff_review(
+            exact_repo, "ordinary", "ordinary", workdir=exact_outdir,
+            reviewer=exact_capture)
+        persisted_exact = _strict_json_loads(
+            (exact_outdir / "manifest.json").read_bytes(), context="test manifest")
+        ok.append(("review sizing and fanout use the exact same captured module",
+                   exact_rc == 0
+                   and exact_manifest["bound_calls_before_fanout"] == 1))
+        ok.append(("final diff fanout is fixed to the Codex+agy panel",
+                   exact_manifest["providers_arg"] == ",".join(FINAL_PANEL)))
+        ok.append(("reviewer provenance is persisted beside the fanout manifest",
+                   persisted_exact["reviewer_source"] == exact_capture.provenance()
+                   and persisted_exact["review_prompt"]["sha256"]
+                   == exact_manifest["review_prompt"]["sha256"]))
+        exact_cli_out = io.StringIO()
+        with contextlib.redirect_stdout(exact_cli_out), contextlib.redirect_stderr(
+                exact_cli_out):
+            exact_cli_rc = main([
+                "review-diff", "--repo", str(exact_repo), "--skill", "ordinary",
+                "--target", "ordinary", "--workdir", str(root / "exact-review-cli")])
+        exact_cli_manifest = _strict_json_loads(
+            exact_cli_out.getvalue(), context="test review-diff CLI manifest")
+        ok.append(("public review-diff preserves the one-capture contract",
+                   exact_cli_rc == 0
+                   and exact_cli_manifest["bound_calls_before_fanout"] == 1
+                   and exact_cli_manifest["providers_arg"] == ",".join(FINAL_PANEL)))
 
         linked_repo = _mark_khenrix(root / "committed-linked-reviewer")
         linked_engine = linked_repo / "shared" / "lib" / "council" / "engine.py"
@@ -5461,7 +5768,50 @@ def _self_test() -> int:
         got = log_list(repo, "markitdown")
         ok.append(("log keeps latest decision per finding",
                    len(got) == 1 and got[0]["decision"] == "applied"))
+        ok.append(("JSONL preserves distinct occurrences with the same finding id",
+                   len(log_entries(repo, "markitdown")) == 2))
         ok.append(("log adds a timestamp", "ts" in got[0]))
+        for label, raw in (
+            ("duplicate keys", '{"target":"strict","target":"other",'
+                               '"finding_id":"x","decision":"applied"}'),
+            ("NaN", '{"target":"strict","finding_id":"x",'
+                    '"decision":"applied","value":NaN}'),
+            ("Infinity", '{"target":"strict","finding_id":"x",'
+                         '"decision":"applied","value":Infinity}'),
+            ("overflow", '{"target":"strict","finding_id":"x",'
+                         '"decision":"applied","value":1e999}'),
+        ):
+            strict_path = log_path(repo, "strict")
+            before = strict_path.read_bytes() if strict_path.exists() else b""
+            _buf = io.StringIO()
+            with contextlib.redirect_stdout(_buf), contextlib.redirect_stderr(_buf):
+                _rc = main(["log", "append", "--repo", str(repo),
+                            "--target", "strict", "--entry", raw])
+            after = strict_path.read_bytes() if strict_path.exists() else b""
+            ok.append((f"strict log CLI rejects {label} without mutation",
+                       _rc == 2 and before == after and "log append input" in _buf.getvalue()))
+        strict_path = log_path(repo, "strict-direct")
+        log_append(repo, "strict-direct", {
+            "target": "strict-direct", "finding_id": "valid", "decision": "applied"})
+        strict_before = strict_path.read_bytes()
+        ok.append(("direct log append rejects a nested non-finite value before publication",
+                   _raises(lambda: log_append(repo, "strict-direct", {
+                       "target": "strict-direct", "finding_id": "bad",
+                       "decision": "applied", "nested": {"value": float("nan")}}),
+                           ValueError)
+                   and strict_path.read_bytes() == strict_before))
+        duplicate_path = log_path(repo, "strict-persisted")
+        duplicate_path.write_text(
+            '{"target":"strict-persisted","finding_id":"x",'
+            '"finding_id":"y","decision":"applied"}\n', encoding="utf-8")
+        try:
+            log_entries(repo, "strict-persisted")
+            duplicate_problem = ""
+        except ValueError as exc:
+            duplicate_problem = str(exc)
+        ok.append(("persisted strict JSON errors retain their JSONL line context",
+                   "run log line 1" in duplicate_problem
+                   and "duplicate JSON object key" in duplicate_problem))
         for label, bad_ts in (
             ("null", None), ("empty", ""), ("blank", "  "), ("integer", 7),
             ("boolean", True), ("list", []), ("object", {}),
@@ -5673,62 +6023,31 @@ def _load_checks():
 
 
 def verify_final_receipt(repo: Path, skill: str, panel: list) -> list:
-    """Prove Step 10's full-panel requirement instead of asserting it in prose.
+    """Prove Step 10's schema-3 shipping policy instead of asserting it in prose.
 
-    `make precommit` only compares hashes, so a receipt earned on a single provider
-    satisfies it — correct for mid-run iteration but NOT for the convergence gate, which
-    requires a green full-panel eval on the exact candidate. Nothing checked that, and in
-    practice every receipt stayed single-provider. Returns problems; empty means proven.
-
-    Common freshness, provenance, and panel rules live in
-    `checks.validate_receipt(final=True)`. This command additionally checks that each named
-    provider has a completed per-provider measurement: the global receipt gate treats that
-    block as diagnostic, while this command promises to prove the final panel. Only
-    deterministic/self-test receipts retain their documented exemption; a historical v1
-    receipt may remain usable for ordinary freshness checks but cannot prove this final gate.
+    Common freshness, provenance, canonical Codex+agy order, judge/mode, policy digest,
+    model provenance, and per-provider eval-count rules live in the single
+    ``checks.validate_receipt(final=True)`` authority used by precommit too. This command
+    supplies the target-scoped diagnosis needed before staging. Deterministic targets must
+    prove both their named certifier and the canonical advisory panel; a historical v1
+    receipt may remain usable for ordinary freshness checks but cannot prove shipping.
     """
-    requested_panel = tuple(panel)
-    if requested_panel != FINAL_PANEL:
-        raise ValueError(
-            "the final receipt panel is fixed at claude,codex,agy and cannot be "
-            f"narrowed or reordered (got {','.join(requested_panel) or '<empty>'})")
     info, _ = _require_skill_paths(repo, skill)
     if info["tier"] != "full-gate":
         raise ValueError(
             f"verify-final-receipt applies only to full-gate khenrix targets; {skill!r} "
             "is council-only and has no khenrix receipt gate")
     checks = _load_checks()
-    problems = checks.validate_receipt(repo, skill, final=True, panel=list(FINAL_PANEL))
-    if problems:
-        return problems
-    receipt = json.loads((repo / "evals" / skill / "receipt.json").read_text())
-    if checks.is_self_test_gated(skill, receipt):
-        return problems
-    try:
-        expected_n_evals = len(checks.eval_ids(repo, skill))
-    except Exception as e:  # noqa: BLE001 — a malformed manifest is a gate problem
-        return problems + [(
-            f"receipt: {skill} cannot read distinct eval ids from the current eval "
-            f"manifest: {e}")]
-    evidence = receipt.get("per_provider")
-    evidence = evidence if isinstance(evidence, dict) else {}
-    invalid = []
-    for provider in FINAL_PANEL:
-        row = evidence.get(provider)
-        if (not isinstance(row, dict)
-                or type(row.get("delta")) not in (int, float)
-                or not -1 <= row["delta"] <= 1
-                or type(row.get("n_evals")) is not int
-                or row["n_evals"] <= 0
-                or row["n_evals"] != expected_n_evals
-                or row.get("status") != "ok"):
-            invalid.append(provider)
-    if invalid:
-        problems.append(
-            f"receipt: {skill} has no completed per-provider evidence for {invalid} — "
-            f"expected n_evals={expected_n_evals}, the current distinct eval-id count; "
-            f"re-run the full panel with {list(FINAL_PANEL)}")
-    return problems
+    policy = checks.eval_policy(repo)
+    canonical_panel = tuple(policy.required_providers)
+    requested_panel = tuple(panel)
+    if requested_panel != canonical_panel:
+        raise ValueError(
+            "the final receipt panel is fixed by capabilities.toml [eval] at "
+            f"{','.join(canonical_panel)} and cannot be narrowed or reordered "
+            f"(got {','.join(requested_panel) or '<empty>'})")
+    return checks.validate_receipt(
+        repo, skill, final=True, panel=list(canonical_panel))
 
 
 REVIEW_TOTAL_CAP = 96 * 1024
@@ -5749,6 +6068,32 @@ REVIEW_INSTRUCTIONS = (
     "scored non_substantive and dropped.")
 
 _COUNCIL_ENGINE = None
+REVIEWER_ENGINE_RELPATH = "shared/lib/council/engine.py"
+REVIEWER_WATCH_PATHS = (
+    "shared/lib/council",
+    "shared/skills/llm-council",
+)
+
+
+@dataclass(frozen=True)
+class CouncilReviewer:
+    """One immutable engine capture used for both prompt sizing and fanout."""
+
+    module: object
+    registry: Path
+    selection: str
+    engine_sha256: str
+    head_commit: str
+    dirty_paths: tuple[str, ...]
+
+    def provenance(self) -> dict:
+        return {
+            "selection": self.selection,
+            "engine_path": REVIEWER_ENGINE_RELPATH,
+            "engine_sha256": self.engine_sha256,
+            "head_commit": self.head_commit,
+            "dirty_paths": list(self.dirty_paths),
+        }
 
 
 def _diff_starts(raw: bytes, paths: list[str] | tuple[str, ...]) -> list[tuple[int, str]]:
@@ -5957,107 +6302,204 @@ def _current_run_decisions(repo: Path, target: str) -> str:
         for finding_id in sorted(latest))
 
 
-def _council_engine_module(repo: Path, *, committed: bool = False):
-    """Load the wrapper that will receive this argv, optionally from committed HEAD."""
-    global _COUNCIL_ENGINE
-    if committed:
-        relpath = "shared/lib/council/engine.py"
-        tree = subprocess.run(
-            ["git", "-C", str(repo), "ls-tree", "-z", "HEAD", "--", relpath],
-            capture_output=True, check=False)
-        if tree.returncode != 0:
-            raise RuntimeError(
-                f"cannot resolve committed council wrapper HEAD:{relpath}: "
-                f"{tree.stderr.decode('utf-8', 'replace').strip()}")
-        records = [record for record in tree.stdout.split(b"\0") if record]
-        if len(records) != 1 or b"\t" not in records[0]:
-            raise RuntimeError(
-                f"committed council wrapper HEAD:{relpath} is missing or ambiguous")
-        metadata, recorded_path = records[0].split(b"\t", 1)
-        fields = metadata.split()
-        if (len(fields) != 3 or fields[0] not in (b"100644", b"100755")
-                or fields[1] != b"blob" or recorded_path != relpath.encode()):
-            raise RuntimeError(
-                f"committed council wrapper HEAD:{relpath} is not a regular blob")
-        blob = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "blob", fields[2]],
-            capture_output=True, check=False)
-        if blob.returncode != 0:
-            raise RuntimeError(
-                f"cannot read committed council wrapper {fields[2].decode()}: "
-                f"{blob.stderr.decode('utf-8', 'replace').strip()}")
-        digest = hashlib.sha256(blob.stdout).hexdigest()
-        name = f"_skill_tuneup_council_head_{digest[:12]}"
-        module = types.ModuleType(name)
-        module.__file__ = f"{repo}@HEAD:{relpath}"
-        sys.modules[name] = module
-        try:
-            exec(compile(blob.stdout, module.__file__, "exec"), module.__dict__)  # noqa: S102
-        except Exception as e:
-            sys.modules.pop(name, None)
-            raise RuntimeError(
-                f"cannot execute committed council wrapper HEAD:{relpath}: {e}") from e
-        return module
-
-    candidates: list[tuple[Path, Path]] = []
-    try:
-        registry = registry_repo(repo)
-        candidates.append(
-            (registry, registry / "shared" / "lib" / "council" / "engine.py"))
-    except FileNotFoundError:
-        pass
-    here = Path(os.path.abspath(__file__))
-    candidates.extend(
-        (parent, parent / "shared" / "lib" / "council" / "engine.py")
-        for parent in here.parents)
-    path = None
-    for root, candidate in candidates:
-        link = _symlink_component(root, candidate)
-        if link is not None:
-            raise RuntimeError(
-                f"council wrapper source {candidate} is symlink-backed at {link}; "
-                "refusing to import code outside the repository-owned engine")
-        if candidate.is_file():
-            path = candidate
-            break
-    if path is None:
+def _committed_regular_blob(repo: Path, relpath: str) -> tuple[bytes, str]:
+    """Read one exact regular blob from HEAD without consulting worktree bytes."""
+    tree = _git_authority().run(
+        ["ls-tree", "-z", "HEAD", "--", relpath], repo=repo,
+        capture_output=True, check=False)
+    if tree.returncode != 0:
         raise RuntimeError(
-            "cannot locate shared/lib/council/engine.py to prove the final argv bound; "
+            f"cannot resolve committed council wrapper HEAD:{relpath}: "
+            f"{tree.stderr.decode('utf-8', 'replace').strip()}")
+    records = [record for record in tree.stdout.split(b"\0") if record]
+    if len(records) != 1 or b"\t" not in records[0]:
+        raise RuntimeError(
+            f"committed council wrapper HEAD:{relpath} is missing or ambiguous")
+    metadata, recorded_path = records[0].split(b"\t", 1)
+    fields = metadata.split()
+    if (len(fields) != 3 or fields[0] not in (b"100644", b"100755")
+            or fields[1] != b"blob" or recorded_path != relpath.encode()):
+        raise RuntimeError(
+            f"committed council wrapper HEAD:{relpath} is not a regular blob")
+    blob = _git_authority().run(
+        ["cat-file", "blob", fields[2]], repo=repo,
+        capture_output=True, check=False)
+    if blob.returncode != 0:
+        raise RuntimeError(
+            f"cannot read committed council wrapper {fields[2].decode()}: "
+            f"{blob.stderr.decode('utf-8', 'replace').strip()}")
+    return blob.stdout, fields[2].decode("ascii")
+
+
+def _compile_council_engine(source: bytes, origin: str, *, cache: bool = False):
+    """Compile one already-captured engine blob; never re-read it during this run."""
+    global _COUNCIL_ENGINE
+    digest = hashlib.sha256(source).hexdigest()
+    if (cache and _COUNCIL_ENGINE is not None
+            and getattr(_COUNCIL_ENGINE, "_skill_tuneup_origin", None) == origin
+            and getattr(_COUNCIL_ENGINE, "_skill_tuneup_digest", None) == digest):
+        return _COUNCIL_ENGINE
+    name = f"_skill_tuneup_council_{digest[:12]}_{uuid.uuid4().hex[:8]}"
+    module = types.ModuleType(name)
+    module.__file__ = origin
+    module._skill_tuneup_origin = origin
+    module._skill_tuneup_digest = digest
+    module._skill_tuneup_source = source
+    sys.modules[name] = module
+    try:
+        exec(compile(source, origin, "exec"), module.__dict__)  # noqa: S102
+    except Exception as e:
+        sys.modules.pop(name, None)
+        raise RuntimeError(f"cannot execute council engine from {origin}: {e}") from e
+    if cache:
+        _COUNCIL_ENGINE = module
+    return module
+
+
+def _council_engine_module(repo: Path, *, committed: bool = False,
+                           fresh: bool = False):
+    """Compatibility loader; final reviews use :func:`_capture_council_reviewer`."""
+    registry = registry_repo(repo)
+    if committed:
+        source, _blob_id = _committed_regular_blob(registry, REVIEWER_ENGINE_RELPATH)
+        return _compile_council_engine(
+            source, f"{registry}@HEAD:{REVIEWER_ENGINE_RELPATH}")
+
+    path = registry / REVIEWER_ENGINE_RELPATH
+    link = _symlink_component(registry, path)
+    if link is not None:
+        raise RuntimeError(
+            f"council wrapper source {path} is symlink-backed at {link}; "
+            "refusing to import code outside the repository-owned engine")
+    if not path.is_file():
+        raise RuntimeError(
+            f"cannot locate {REVIEWER_ENGINE_RELPATH} to prove the final argv bound; "
             "run tuneup.py from the khenrix-utils checkout")
     try:
         source = path.read_bytes()
     except OSError as e:
         raise RuntimeError(f"cannot read council engine from {path}: {e}") from e
-    digest = hashlib.sha256(source).hexdigest()
-    if (_COUNCIL_ENGINE is not None
-            and Path(getattr(_COUNCIL_ENGINE, "__file__", "")) == path
-            and getattr(_COUNCIL_ENGINE, "_skill_tuneup_digest", None) == digest):
-        return _COUNCIL_ENGINE
-    name = f"_skill_tuneup_council_{digest[:12]}"
-    module = types.ModuleType(name)
-    module.__file__ = str(path)
-    module._skill_tuneup_digest = digest
-    sys.modules[name] = module
-    try:
-        exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
-    except Exception as e:
-        sys.modules.pop(name, None)
-        raise RuntimeError(f"cannot execute council engine from {path}: {e}") from e
-    _COUNCIL_ENGINE = module
-    return module
+    return _compile_council_engine(source, str(path), cache=not fresh)
 
 
-def _assert_review_prompt_bound(repo: Path, prompt: str, *, committed: bool = False) -> None:
-    """Fail before fanout if its exact wrappers could cross Linux MAX_ARG_STRLEN."""
+def _reviewer_dirty_paths(registry: Path) -> tuple[str, ...]:
+    """Tracked, staged, untracked, or index-hidden reviewer inputs under both trees."""
+    changed = _git_authority().run(
+        ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only",
+         "-z", "HEAD", "--", *REVIEWER_WATCH_PATHS],
+        repo=registry, capture_output=True, check=False)
+    if changed.returncode != 0:
+        raise RuntimeError(
+            "cannot determine council reviewer tracked state: "
+            + changed.stderr.decode("utf-8", "replace").strip())
+    untracked = _git_authority().run(
+        ["ls-files", "--others", "--exclude-standard", "-z", "--",
+         *REVIEWER_WATCH_PATHS],
+        repo=registry, capture_output=True, check=False)
+    if untracked.returncode != 0:
+        raise RuntimeError(
+            "cannot determine council reviewer untracked state: "
+            + untracked.stderr.decode("utf-8", "replace").strip())
+    flags = _git_authority().run(
+        ["ls-files", "-v", "-z", "--", *REVIEWER_WATCH_PATHS],
+        repo=registry, capture_output=True, check=False)
+    if flags.returncode != 0:
+        raise RuntimeError(
+            "cannot determine council reviewer index flags: "
+            + flags.stderr.decode("utf-8", "replace").strip())
+    paths = {
+        os.fsdecode(raw) for payload in (changed.stdout, untracked.stdout)
+        for raw in payload.split(b"\0") if raw
+    }
+    for record in flags.stdout.split(b"\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1:2] != b" ":
+            raise RuntimeError("malformed git ls-files -v reviewer record")
+        # H is the ordinary cached-file marker. Lowercase means assume-unchanged and S
+        # means skip-worktree; either can hide a worktree edit from `git diff HEAD`.
+        if record[:1] != b"H":
+            paths.add(f"{os.fsdecode(record[2:])} [index-flag {os.fsdecode(record[:1])}]")
+    return tuple(sorted(paths))
+
+
+def _capture_council_reviewer(repo: Path) -> CouncilReviewer:
+    """Freeze the exact reviewer once, selecting HEAD if either council tree is dirty.
+
+    The dirty decision is repository-global, not target-specific: an ordinary target must
+    not be reviewed by under-test council machinery merely because its own skill name is
+    different. A second state sample closes the ordinary read-between-checks race. If Git
+    reports clean but the engine bytes differ from HEAD (for example an index bit hid the
+    edit), HEAD wins and the discrepancy remains visible in provenance.
+    """
+    registry = registry_repo(repo).resolve()
+    # Hermetic self-test repositories intentionally contain only the source relevant to
+    # each case. When a fixture has no reviewer tree of its own, bind it to the dedicated
+    # clean registry fixture instead of reaching into the developer's real checkout.
+    if (not os.path.lexists(registry / REVIEWER_ENGINE_RELPATH)
+            and _SELF_TEST_REGISTRY_ROOT is not None
+            and registry != _SELF_TEST_REGISTRY_ROOT.resolve()):
+        registry = _SELF_TEST_REGISTRY_ROOT.resolve()
+    head = _git_authority().run(
+        ["rev-parse", "--verify", "HEAD^{commit}"], repo=registry,
+        capture_output=True, text=True, check=False)
+    if head.returncode != 0 or not head.stdout.strip():
+        raise RuntimeError(
+            "cannot resolve the committed council reviewer HEAD: " + head.stderr.strip())
+    head_commit = head.stdout.strip()
+    dirty = _reviewer_dirty_paths(registry)
+    head_source = None
+    if dirty:
+        head_source, _blob_id = _committed_regular_blob(
+            registry, REVIEWER_ENGINE_RELPATH)
+        module = _compile_council_engine(
+            head_source, f"{registry}@{head_commit}:{REVIEWER_ENGINE_RELPATH}")
+        selection = "committed-head"
+    else:
+        module = _council_engine_module(registry, fresh=True)
+        dirty = _reviewer_dirty_paths(registry)
+        if dirty:
+            head_source, _blob_id = _committed_regular_blob(
+                registry, REVIEWER_ENGINE_RELPATH)
+            module = _compile_council_engine(
+                head_source, f"{registry}@{head_commit}:{REVIEWER_ENGINE_RELPATH}")
+            selection = "committed-head"
+        else:
+            head_source, _blob_id = _committed_regular_blob(
+                registry, REVIEWER_ENGINE_RELPATH)
+            captured = getattr(module, "_skill_tuneup_source", b"")
+            if captured != head_source:
+                dirty = (f"{REVIEWER_ENGINE_RELPATH} [working bytes differ from HEAD]",)
+                module = _compile_council_engine(
+                    head_source, f"{registry}@{head_commit}:{REVIEWER_ENGINE_RELPATH}")
+                selection = "committed-head"
+            else:
+                selection = "working-tree-clean"
+    return CouncilReviewer(
+        module=module,
+        registry=registry,
+        selection=selection,
+        engine_sha256=module._skill_tuneup_digest,
+        head_commit=head_commit,
+        dirty_paths=dirty,
+    )
+
+
+def _assert_review_prompt_bound(repo: Path, prompt: str, *, committed: bool = False,
+                                reviewer: CouncilReviewer | None = None) -> None:
+    """Fail before fanout if the captured engine's exact wrappers could cross argv."""
     if "\0" in prompt:
         raise RuntimeError(
             "complete council prompt contains a NUL byte and cannot be passed as argv")
-    engine = _council_engine_module(repo, committed=committed)
+    if reviewer is not None and committed:
+        raise ValueError("pass either reviewer= or committed=True, not both")
+    engine = (reviewer.module if reviewer is not None
+              else _council_engine_module(repo, committed=committed))
     token = f"{engine.SENTINEL_PREFIX}{'0' * 12}"
     try:
         wrapped = engine.apply_sentinel(
             engine.apply_readonly_posture(engine.apply_member_note(prompt)), token)
-    except Exception as e:  # noqa: BLE001 — malformed reviewer API is a clean gate refusal
+    except Exception as e:  # malformed reviewer API is a clean gate refusal
         raise RuntimeError(f"council wrapper cannot apply its prompt boundary: {e}") from e
     size = len(wrapped.encode("utf-8"))
     if size + REVIEW_WRAPPER_HEADROOM > REVIEW_SINGLE_ARG_MAX:
@@ -6067,7 +6509,8 @@ def _assert_review_prompt_bound(repo: Path, prompt: str, *, committed: bool = Fa
 
 
 def review_material(repo: Path, skill: str, target: str,
-                    total_cap: int = REVIEW_TOTAL_CAP) -> str:
+                    total_cap: int = REVIEW_TOTAL_CAP,
+                    reviewer: CouncilReviewer | None = None) -> str:
     """Build the complete bounded Step-9 prompt, with mandatory untracked content first.
 
     This was a shell loop in SKILL.md and shell was the wrong tool — three cycles of
@@ -6090,9 +6533,14 @@ def review_material(repo: Path, skill: str, target: str,
     Only the tracked diff may be truncated, with an exact working-tree recovery marker.
     The total includes instructions and a compact current-run decision ledger. The exact
     council wrappers are then applied in memory and checked with one page of argv headroom.
+    The reviewer is captured once. If either council implementation tree is dirty, this
+    uses the regular engine blob at HEAD for every target; otherwise it captures the clean
+    working-tree bytes. ``review-diff`` passes this same capture to the actual fanout, so
+    prompt sizing and execution cannot silently use two generations of the engine.
     The ledger and ordinary working-tree wrapper paths are independently refused when any
     lexical component is a symlink, because both are consumed outside the untracked-payload
-    loop. The full-gate llm-council self-target instead uses the regular wrapper blob at HEAD.
+    loop. A dirty council tree always uses the regular wrapper blob at HEAD, regardless of
+    which skill is being tuned.
 
     The two non-obvious choices, kept here so a later 'simplification' meets them at the
     code rather than only in SKILL.md:
@@ -6119,14 +6567,15 @@ def review_material(repo: Path, skill: str, target: str,
         # Review bytes must be native and canonical: repository attributes, user color
         # configuration, and an inherited external diff program can otherwise change what
         # the council sees or execute code merely while assembling the prompt.
-        env = os.environ.copy()
-        env.pop("GIT_EXTERNAL_DIFF", None)
         if a and a[0] == "diff":
-            a = ("-c", "core.quotePath=true", "diff",
+            a = ("diff",
                  "--no-ext-diff", "--no-textconv", "--no-color",
                  "--no-renames", "--default-prefix", *a[1:])
-        p = subprocess.run(["git", "-C", str(repo), *a], capture_output=True,
-                           check=False, env=env)
+        # This wrapper owns the only pathspec-magic call sites in the engine: its trusted
+        # :(exclude) filters. The authority still strips every ambient pathspec mode.
+        p = _git_authority().run(
+            a, repo=repo, literal_pathspecs=False, config=("core.quotePath=true",),
+            capture_output=True, check=False)
         if p.returncode != 0:
             raise RuntimeError(f"git {' '.join(a)} failed in {repo}: "
                                f"{p.stderr.decode('utf-8', 'replace').strip()}")
@@ -6140,12 +6589,12 @@ def review_material(repo: Path, skill: str, target: str,
         return _parse_atomic_tracked_diff(payload)
 
     _validate_skill_name(skill)
+    reviewer = reviewer or _capture_council_reviewer(repo)
     bound_skill = _log_target_skill(repo, target)
     if bound_skill != skill:
         raise ValueError(
             f"review target {target!r} belongs to skill {bound_skill!r}, not {skill!r}")
     info, target_paths = _require_skill_paths(repo, skill)
-    committed_reviewer = skill == "llm-council" and info["tier"] == "full-gate"
     target_relpaths = [str(path.relative_to(repo)) for path in target_paths]
 
     excluded_pathspecs = []
@@ -6309,8 +6758,105 @@ def review_material(repo: Path, skill: str, target: str,
                        if tracked else "")
     if len(prompt.encode("utf-8")) > total_cap:
         raise RuntimeError("internal review cap error: assembled prompt exceeds total cap")
-    _assert_review_prompt_bound(repo, prompt, committed=committed_reviewer)
+    _assert_review_prompt_bound(repo, prompt, reviewer=reviewer)
     return prompt
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """Publish one review artifact without exposing a partially-written file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(path) and path.is_symlink():
+        raise RuntimeError(f"refusing to replace symlink-backed review artifact {path}")
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="wb", dir=path.parent, prefix=f".{path.name}.",
+                suffix=".tmp", delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def run_diff_review(repo: Path, skill: str, target: str, *, mode: str = "normal",
+                    retries: int = 2, timeout: int | None = None,
+                    workdir: Path | None = None,
+                    reviewer: CouncilReviewer | None = None) -> tuple[int, dict]:
+    """Build, size, and fan out one final diff through one immutable engine capture.
+
+    This is deliberately one operation. The old two-command recipe sized the prompt by
+    importing one engine and then executed ``fanout.py`` from the filesystem again. A
+    candidate or concurrent edit between those commands could therefore be sized by HEAD
+    and executed by different bytes. The returned manifest records the capture digest and
+    why HEAD was selected. Providers are fixed to the shipping Codex+agy panel.
+    """
+    if type(retries) is not int or retries < 0:
+        raise ValueError("review retries must be a non-negative integer")
+    if timeout is not None and (type(timeout) is not int or timeout <= 0):
+        raise ValueError("review timeout must be a positive integer")
+    reviewer = reviewer or _capture_council_reviewer(repo)
+    modes = getattr(reviewer.module, "MODES", {})
+    if mode not in modes:
+        raise ValueError(
+            f"review mode {mode!r} is not supported by captured council engine "
+            f"({sorted(modes)})")
+    prompt = review_material(repo, skill, target, reviewer=reviewer)
+    if not prompt:
+        return 0, {
+            "status": "no-diff",
+            "reviewer_source": reviewer.provenance(),
+        }
+
+    review_dir = (Path(workdir).resolve() if workdir is not None else
+                  Path(tempfile.mkdtemp(prefix="skill-tuneup-review-")).resolve())
+    if os.path.lexists(review_dir) and review_dir.is_symlink():
+        raise RuntimeError(f"review workdir is symlink-backed: {review_dir}")
+    review_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = review_dir / "review-prompt.txt"
+    prompt_bytes = prompt.encode("utf-8")
+    _atomic_write_bytes(prompt_path, prompt_bytes)
+    engine_argv = [
+        "--prompt-file", str(prompt_path),
+        "--providers", ",".join(FINAL_PANEL),
+        "--mode", mode,
+        "--retries", str(retries),
+        "--workdir", str(review_dir),
+        "--out", "json",
+    ]
+    if timeout is not None:
+        engine_argv.extend(("--timeout", str(timeout)))
+
+    output = io.StringIO()
+    previous_cwd = Path.cwd()
+    try:
+        os.chdir(repo)
+        with contextlib.redirect_stdout(output):
+            result = reviewer.module.main(engine_argv)
+    finally:
+        os.chdir(previous_cwd)
+    if type(result) is not int:
+        raise RuntimeError(
+            f"captured council engine returned non-integer status {result!r}")
+    manifest = _strict_json_loads(
+        output.getvalue(), context="captured council engine manifest")
+    if not isinstance(manifest, dict):
+        raise RuntimeError("captured council engine manifest root must be an object")
+    manifest["reviewer_source"] = reviewer.provenance()
+    manifest["review_prompt"] = {
+        "path": str(prompt_path),
+        "sha256": hashlib.sha256(prompt_bytes).hexdigest(),
+        "bytes": len(prompt_bytes),
+    }
+    _atomic_write_bytes(
+        review_dir / "manifest.json",
+        (_strict_json_dumps(manifest, indent=2) + "\n").encode("utf-8"),
+    )
+    return result, manifest
 
 
 def main(argv=None) -> int:
@@ -6341,12 +6887,20 @@ def main(argv=None) -> int:
     fp.add_argument("--skill", required=True)
     fp.add_argument(
         "--panel", default=",".join(FINAL_PANEL),
-        help="compatibility spelling for the fixed final panel; only claude,codex,agy is valid")
+        help="compatibility spelling for the fixed capabilities.toml [eval] panel")
     fp.add_argument("--json", action="store_true")
     rp = sub.add_parser("review-material")
     rp.add_argument("--repo", required=True)
     rp.add_argument("--skill", required=True)
     rp.add_argument("--target", required=True)
+    rd = sub.add_parser("review-diff")
+    rd.add_argument("--repo", required=True)
+    rd.add_argument("--skill", required=True)
+    rd.add_argument("--target", required=True)
+    rd.add_argument("--mode", default="normal")
+    rd.add_argument("--retries", type=int, default=2)
+    rd.add_argument("--timeout", type=int)
+    rd.add_argument("--workdir")
     lp = sub.add_parser("log")
     lp.add_argument("action", choices=["append", "list"])
     lp.add_argument("--repo", required=True)
@@ -6409,6 +6963,17 @@ def main(argv=None) -> int:
         print(json.dumps(b, indent=2) if args.json else
               f"baseline {b['sha'][:9]}  {b['date']}  {b['subject']}"
               f"  ({b['skipped_as_chore']} newer chore/docs commit(s) skipped)")
+    if args.cmd == "review-diff":
+        try:
+            rc, manifest = run_diff_review(
+                repo, args.skill, args.target, mode=args.mode,
+                retries=args.retries, timeout=args.timeout,
+                workdir=Path(args.workdir) if args.workdir else None)
+        except (RuntimeError, ValueError, FileNotFoundError, OSError) as e:
+            print(f"  ✗ {e}", file=sys.stderr)
+            return 2
+        print(_strict_json_dumps(manifest, indent=2))
+        return rc
     if args.cmd == "review-material":
         try:
             sys.stdout.write(review_material(repo, args.skill, args.target))
@@ -6496,9 +7061,8 @@ def main(argv=None) -> int:
                 print(f"  ✗ {p}")
             print("FINAL GATE NOT PROVEN — do not record convergence")
         else:
-            # Name the gate that ACTUALLY ran. A self-test-gated skill is exempt from the
-            # panel check, so claiming "full-panel" for it asserted the one thing this
-            # command deliberately did not verify.
+            # Name both authorities. Deterministic targets retain their certifier and now
+            # also prove the same canonical advisory panel as every other shipping skill.
             _rp = repo / "evals" / args.skill / "receipt.json"
             try:
                 _exempt = _load_checks().is_self_test_gated(
@@ -6506,8 +7070,8 @@ def main(argv=None) -> int:
             except (OSError, TypeError, ValueError):
                 _exempt = False   # unreadable receipt cannot have produced `problems == []`
 
-            _how = ("self-test-gated (panel-exempt) and matches source" if _exempt
-                    else "full-panel and matches source")
+            _how = ("deterministic-certifier + canonical-panel and matches source"
+                    if _exempt else "canonical-panel and matches source")
             print(f"final gate proven: {args.skill} receipt is {_how}")
         return 1 if problems else 0
     elif args.cmd == "stale-models":
@@ -6545,7 +7109,9 @@ def main(argv=None) -> int:
         try:
             if args.action == "append":
                 raw = args.entry or sys.stdin.read()
-                entry = log_append(repo, args.target, json.loads(raw))
+                entry = log_append(
+                    repo, args.target,
+                    _strict_json_loads(raw, context="log append input"))
                 print(json.dumps(entry, sort_keys=True))
             else:
                 entries = log_list(repo, args.target)

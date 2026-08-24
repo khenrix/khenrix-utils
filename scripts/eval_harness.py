@@ -64,7 +64,95 @@ def _checks():
     return checks
 
 EVALS_ROOT = ROOT / "evals"
-DEFAULT_JUDGE = "claude"
+
+_MAKE_ENV_ARGUMENTS = (
+    ("KHENRIX_EVAL_SKILL_RAW", "--skill", True),
+    ("KHENRIX_EVAL_PROVIDERS_RAW", "--providers", False),
+    ("KHENRIX_EVAL_MODE_RAW", "--mode", False),
+    ("KHENRIX_EVAL_TIMEOUT_RAW", "--timeout", False),
+    ("KHENRIX_EVAL_RETRIES_RAW", "--retries", False),
+    ("KHENRIX_EVAL_MODEL_CLAUDE_RAW", "--model-claude", False),
+    ("KHENRIX_EVAL_MODEL_CODEX_RAW", "--model-codex", False),
+    ("KHENRIX_EVAL_MODEL_AGY_RAW", "--model-agy", False),
+)
+_MAKE_ORIGINAL_ARGUMENTS = (
+    "SKILL", "PROVIDERS", "MODE", "TIMEOUT", "RETRIES",
+    "MODELCLAUDE", "MODELCODEX", "MODELAGY",
+)
+_MAKE_CONTROL_ENV = ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")
+
+
+def _argv_from_make_env(env: dict[str, str]) -> list[str]:
+    """Convert raw target-private Make exports into argv without a shell expansion seam."""
+    argv = []
+    for env_name, flag, required in _MAKE_ENV_ARGUMENTS:
+        value = env.pop(env_name, "")
+        if value or required:
+            argv.append(f"{flag}={value}")
+    for name in (*_MAKE_ORIGINAL_ARGUMENTS, *_MAKE_CONTROL_ENV):
+        env.pop(name, None)
+    return argv
+
+
+def _argv_from_make_process(pid: str, env: dict[str, str],
+                            *, proc_root: Path = Path("/proc")) -> list[str]:
+    """Recover literal command-line assignments before GNU Make can expand them."""
+    if not pid.isascii() or not pid.isdigit() or int(pid) <= 0:
+        raise ValueError("--from-make-process requires a positive decimal parent pid")
+    path = proc_root / pid / "cmdline"
+    try:
+        tokens = [os.fsdecode(raw) for raw in path.read_bytes().split(b"\0") if raw]
+    except OSError as exc:
+        raise ValueError(
+            f"cannot read raw GNU Make argv from {path}; invoke eval_harness.py directly: {exc}") from exc
+    names = {name.removeprefix("KHENRIX_EVAL_").removesuffix("_RAW"): (flag, required)
+             for name, flag, required in _MAKE_ENV_ARGUMENTS}
+    # The model variables use Make's historical spellings without underscores.
+    names.update({
+        "MODELCLAUDE": ("--model-claude", False),
+        "MODELCODEX": ("--model-codex", False),
+        "MODELAGY": ("--model-agy", False),
+    })
+    names.pop("MODEL_CLAUDE", None)
+    names.pop("MODEL_CODEX", None)
+    names.pop("MODEL_AGY", None)
+    values = {}
+    for token in tokens[1:]:
+        name, separator, value = token.partition("=")
+        if separator and name in names:
+            values[name] = value
+    argv = []
+    ordered = (
+        ("SKILL", "--skill", True),
+        ("PROVIDERS", "--providers", False),
+        ("MODE", "--mode", False),
+        ("TIMEOUT", "--timeout", False),
+        ("RETRIES", "--retries", False),
+        ("MODELCLAUDE", "--model-claude", False),
+        ("MODELCODEX", "--model-codex", False),
+        ("MODELAGY", "--model-agy", False),
+    )
+    for name, flag, required in ordered:
+        value = values.get(name, "")
+        if value or required:
+            argv.append(f"{flag}={value}")
+    for name in (*_MAKE_ORIGINAL_ARGUMENTS, *_MAKE_CONTROL_ENV):
+        env.pop(name, None)
+    return argv
+
+
+def _normalize_entry_argv(argv: list[str] | None) -> list[str]:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    make_process = [arg for arg in raw if arg.startswith("--from-make-process=")]
+    if make_process:
+        if len(raw) != 1:
+            raise ValueError("--from-make-process must be the only command-line argument")
+        return _argv_from_make_process(make_process[0].split("=", 1)[1], os.environ)
+    if "--from-make-env" not in raw:
+        return raw
+    if raw != ["--from-make-env"]:
+        raise ValueError("--from-make-env must be the only command-line argument")
+    return _argv_from_make_env(os.environ)
 
 # Compatibility/readability view only. checks.py owns command construction and receipt
 # validation; execution calls it again at candidate-capture time so this import-time view
@@ -788,10 +876,11 @@ def _materialize_gate_tree(candidate: CandidateSnapshot, dest: Path) -> Path:
             f"{candidate.skill} deterministic snapshot does not reproduce its captured "
             "gate command; not writing a receipt")
     git_env = _gate_git_env(candidate.skill)
-    for git_command in (["git", "init", "-q"],
-                        ["git", "-c", f"core.hooksPath={os.devnull}", "add", "-f", "-A"]):
-        result = _REAL_SUBPROCESS_RUN(
-            git_command, cwd=dest, env=git_env, capture_output=True, text=True)
+    git_authority = _checks().git_authority
+    for git_command in (["init", "-q"], ["add", "-f", "-A"]):
+        result = git_authority.run(
+            git_command, cwd=dest, env=git_env, capture_output=True, text=True,
+            runner=_REAL_SUBPROCESS_RUN)
         if result.returncode != 0:
             raise SystemExit(
                 f"cannot prepare deterministic gate snapshot Git identity: "
@@ -919,6 +1008,7 @@ def _write_receipt(skill, *, providers, mode, judge, delta, seeded, blind_winner
         "skill": skill,
         "source_hash": candidate.source_hash,
         "eval_set_hash": candidate.eval_inputs.eval_set_hash,
+        "eval_policy_hash": c.eval_policy_hash(ROOT),
         "providers": providers, "mode": mode, "judge": judge,
         "delta_pass_rate": delta,
         "blind_winner": blind_winner,
@@ -1119,13 +1209,20 @@ def run(args) -> int:
         # the suite named in DETERMINISTIC_GATE_NAMES (enforced inside _write_receipt).
         gate_ok = True
         bw = "n/a-deterministic"
-    if gate_ok:  # passing run → refresh the receipt
+    policy = c.eval_policy(ROOT)
+    canonical = (providers == list(policy.required_providers)
+                 and args.judge == policy.judge and args.mode == policy.mode)
+    if gate_ok and canonical:  # only the canonical run may refresh a shipping receipt
         models = {p: cfg.get(p, {}).get("model") for p in providers}
         models["judge"] = cfg.get(args.judge, {}).get("model")
         _write_receipt(args.skill, providers=providers, mode=args.mode,
                        judge=args.judge, delta=d, blind_winner=bw, seeded=False,
                        models=models, summary=benchmark["run_summary"],
                        candidate=candidate)
+    elif gate_ok:
+        print(
+            "  advisory-only: result is green, but its providers/mode/judge do not "
+            "exactly match capabilities.toml [eval]; receipt left untouched")
     return 0 if gate_ok else 1
 
 
@@ -1215,6 +1312,48 @@ def self_test() -> int:
     def check(label, cond, detail=""):
         results.append((label, bool(cond), detail))
 
+    hostile_make_env = {
+        "KHENRIX_EVAL_SKILL_RAW": "$(shell touch should-not-run)",
+        "KHENRIX_EVAL_PROVIDERS_RAW": "codex,agy; echo nope",
+        "KHENRIX_EVAL_MODE_RAW": "normal\n--seed-receipt",
+        "KHENRIX_EVAL_TIMEOUT_RAW": "$(value HOME)",
+        "KHENRIX_EVAL_RETRIES_RAW": "`id`",
+        "KHENRIX_EVAL_MODEL_CLAUDE_RAW": "--option-shaped",
+        "KHENRIX_EVAL_MODEL_CODEX_RAW": "$$(escaped)",
+        "KHENRIX_EVAL_MODEL_AGY_RAW": '"quoted value"',
+        "SKILL": "expanded-skill", "PROVIDERS": "expanded-provider",
+        "MODE": "deep", "TIMEOUT": "1", "RETRIES": "99",
+        "MODELCLAUDE": "expanded", "MODELCODEX": "expanded", "MODELAGY": "expanded",
+        "MAKEFLAGS": "--eval=bad", "MFLAGS": "-e", "MAKEOVERRIDES": "SKILL",
+        "KEEP": "yes",
+    }
+    hostile_argv = _argv_from_make_env(hostile_make_env)
+    check("Make adapter preserves hostile values as single --flag=value argv atoms",
+          hostile_argv == [
+              "--skill=$(shell touch should-not-run)",
+              "--providers=codex,agy; echo nope",
+              "--mode=normal\n--seed-receipt",
+              "--timeout=$(value HOME)",
+              "--retries=`id`",
+              "--model-claude=--option-shaped",
+              "--model-codex=$$(escaped)",
+              '--model-agy="quoted value"',
+          ], repr(hostile_argv))
+    check("Make adapter scrubs originals and recursive Make control state",
+          hostile_make_env == {"KEEP": "yes"}, repr(hostile_make_env))
+    makefile = (ROOT / "Makefile").read_text()
+    check("Make eval recipe contains no user-controlled expansion point",
+          "python3 scripts/eval_harness.py --from-make-process=$$PPID" in makefile
+          and "$(if $(PROVIDERS)" not in makefile
+          and all(f"$(value {name})" not in makefile for name in _MAKE_ORIGINAL_ARGUMENTS))
+    try:
+        _normalize_entry_argv(["--from-make-process=1", "--self-test"])
+        mixed_make_problem = False
+    except ValueError:
+        mixed_make_problem = True
+    check("Make adapter cannot be combined with injected command-line flags",
+          mixed_make_problem)
+
     # Every DETERMINISTIC_GATED skill must have a gate NAME. `_write_receipt` indexes
     # DETERMINISTIC_GATE_NAMES directly — deliberately, since a receipt that cannot say what
     # gated it should not be written — but that KeyError would land at the END of a paid run.
@@ -1244,7 +1383,6 @@ def self_test() -> int:
           "pytest==9.1.1" in forge_command
           and forge_command[forge_command.index("-c") + 1] == os.devnull
           and forge_command[forge_command.index("--rootdir") + 1] == ".")
-    makefile = (ROOT / "Makefile").read_text()
     check("Makefile pytest gates share the pinned ambient-free collection contract",
           "pytest==9.1.1" in makefile
           and "env -u PYTEST_ADDOPTS -u PYTEST_PLUGINS" in makefile
@@ -1290,7 +1428,9 @@ def self_test() -> int:
         with tempfile.TemporaryDirectory() as _td:
             ROOT = Path(_td)
             EVALS_ROOT = ROOT / "evals"
-            (ROOT / "capabilities.toml").write_text("[models]\n")
+            (ROOT / "capabilities.toml").write_text(
+                "[models]\n[eval]\nrequired_providers=['codex','agy']\n"
+                "judge='codex'\nmode='normal'\n")
             for _skill in ("khenrix-wiki-add", "llm-council"):
                 (ROOT / "shared" / "skills" / _skill).mkdir(parents=True)
                 (ROOT / "shared" / "skills" / _skill / "SKILL.md").write_text(
@@ -1309,34 +1449,37 @@ def self_test() -> int:
 
             subprocess.run = lambda *a, **kw: _Completed()
             _wiki_candidate = capture_candidate(
-                "khenrix-wiki-add", ["claude"], include_bodies=False)
+                "khenrix-wiki-add", ["codex", "agy"], include_bodies=False)
             _write_receipt(
-                "khenrix-wiki-add", providers=["claude"], mode="normal", judge="claude",
+                "khenrix-wiki-add", providers=["codex", "agy"], mode="normal", judge="codex",
                 delta=None, seeded=True, candidate=_wiki_candidate)
             _receipt = json.loads(
                 (EVALS_ROOT / "khenrix-wiki-add" / "receipt.json").read_text())
             _roundtrip_problems = _receipt_checks.validate_receipt(
-                ROOT, "khenrix-wiki-add", final=True, panel=["claude", "codex", "agy"])
+                ROOT, "khenrix-wiki-add", final=True, panel=["codex", "agy"])
             _council_candidate = capture_candidate(
-                "llm-council", ["claude"], include_bodies=False)
+                "llm-council", ["codex", "agy"], include_bodies=False)
             _write_receipt(
-                "llm-council", providers=["claude"], mode="normal", judge="claude",
+                "llm-council", providers=["codex", "agy"], mode="normal", judge="codex",
                 delta=None, seeded=True, candidate=_council_candidate)
             _council_receipt = json.loads(
                 (EVALS_ROOT / "llm-council" / "receipt.json").read_text())
             _council_problems = _receipt_checks.validate_receipt(
-                ROOT, "llm-council", final=True, panel=["claude", "codex", "agy"])
+                ROOT, "llm-council", final=True, panel=["codex", "agy"])
             _roundtrip_ok = (
-                _receipt.get("provenance") == "eval" and not _roundtrip_problems
+                _receipt.get("provenance") == "eval" and bool(_roundtrip_problems)
                 and _council_receipt.get("provenance") == "eval"
                 and _council_receipt.get("self_test") is True
                 and _council_receipt.get("certified_by") == "fanout --self-test"
-                and "synthesis_review" not in _council_receipt and not _council_problems)
+                and "synthesis_review" not in _council_receipt and bool(_council_problems)
+                and all("evidence" in problem or "model provenance" in problem
+                        or "per_provider" in problem
+                        for problem in _roundtrip_problems + _council_problems))
             _roundtrip_detail = str(_roundtrip_problems + _council_problems)
     finally:
         ROOT, EVALS_ROOT = _saved_root, _saved_evals
         subprocess.run = _saved_run
-    check("deterministic seeding records real certifiers without a false manual attestation",
+    check("deterministic seeding retains its suite but cannot fabricate panel evidence",
           _roundtrip_ok, _roundtrip_detail)
 
     # frontmatter stripping
@@ -1526,11 +1669,11 @@ def self_test() -> int:
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Portable skill-eval harness")
     ap.add_argument("--skill", help="skill name under evals/<skill>/evals.json")
-    ap.add_argument("--providers", default="claude",
-                    help="executors to run the eval on (default: claude)")
-    ap.add_argument("--judge", default=DEFAULT_JUDGE, help="grading/comparison model")
-    ap.add_argument("--mode", choices=list(fanout.MODES), default="normal",
-                    help="thinking mode for executors + judge (fanout MODES)")
+    ap.add_argument("--providers",
+                    help="executors to run (default: canonical capabilities [eval] panel)")
+    ap.add_argument("--judge", help="grading/comparison provider (default: eval policy)")
+    ap.add_argument("--mode", choices=list(fanout.MODES),
+                    help="thinking mode (default: canonical capabilities [eval] mode)")
     ap.add_argument("--model-claude", help="override the claude executor+judge model "
                     "(e.g. claude-opus-4-8 when the MODES default is unavailable)")
     ap.add_argument("--model-codex", help="override the codex executor model")
@@ -1546,11 +1689,26 @@ def parse_args(argv=None):
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")
     ap.add_argument("--seed-receipt", action="store_true",
                     help="stamp ordinary receipts; panel-exempt skills still run their certifier")
+    try:
+        argv = _normalize_entry_argv(argv)
+    except ValueError as exc:
+        ap.error(str(exc))
     return ap.parse_args(argv)
 
 
+def _apply_policy_defaults(args):
+    policy = _checks().eval_policy(ROOT)
+    if args.providers is None:
+        args.providers = ",".join(policy.required_providers)
+    if args.judge is None:
+        args.judge = policy.judge
+    if args.mode is None:
+        args.mode = policy.mode
+    return args
+
+
 def main(argv=None) -> int:
-    args = parse_args(argv)
+    args = _apply_policy_defaults(parse_args(argv))
     if args.self_test:
         return self_test()
     if args.seed_receipt:

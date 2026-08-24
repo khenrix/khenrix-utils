@@ -25,10 +25,11 @@ covers agy, which has no native skill tooling at all.
 3. **Select the gate from the target.** Call
    `checks.requires_deterministic_gate(<name>)`; never infer the route from receipt contents.
    - **True:** `make eval SKILL=<name>` runs the target's named deterministic certifier and
-     records its evidence. Its judged with-skill/baseline run is advisory; no full panel is
-     owed.
-   - **False:** run with-skill vs baseline per provider. Iterate with the default `claude`
-     executor, then use the fixed `PROVIDERS=claude,codex,agy` panel for the final gate.
+     records its evidence. Its judged with-skill/baseline result is advisory to the
+     certifier verdict, but the schema-3 shipping receipt still records the canonical
+     Codex+agy advisory panel on the same candidate.
+   - **False:** run with-skill vs baseline per provider. Optionally iterate with a narrowed
+     `PROVIDERS=codex` run, then use the default canonical Codex+agy panel for the final gate.
      The harness injects rendered SKILL.md for with_skill and the bare prompt for baseline.
 
    **Baseline caveat:** `without_skill` is the executor's *ambient* environment — truly
@@ -75,8 +76,8 @@ the other.
 
 ```bash
 make eval-test                              # hermetic harness logic tests (no tokens)
-make eval SKILL=khenrix-setup               # claude executor, normal mode
-make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep  # nondeterministic final panel
+make eval SKILL=khenrix-setup PROVIDERS=codex  # optional narrowed iteration; no receipt
+make eval SKILL=khenrix-setup               # canonical Codex+agy panel, normal mode
 ```
 
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
@@ -89,10 +90,10 @@ so cwd-relative writes are discarded —
 so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
 mechanically constrained on all three during an eval, while the real HOME is kept so auth still resolves
 (sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
-three-provider runs are token-expensive (~3-4×); for non-deterministic targets, use the
-single-provider `claude` loop for iteration and the fixed full panel for the final gate.
-Deterministic targets owe no panel: their named certifier earns the receipt, while any
-target-specific required checks remain. `--no-readonly` opts out when a skill
+canonical runs are token-expensive; a narrowed Codex run is advisory-only and never
+overwrites the last shipping receipt. Deterministic targets owe both authorities: their
+named certifier gates correctness and the canonical Codex+agy run records advisory semantic
+coverage; any target-specific required checks remain. `--no-readonly` opts out when a skill
 genuinely must write. agy's plan mode is a mechanical write barrier but not an OS sandbox —
 still less sealed than codex's, so lower-risk rather than sealed.
 

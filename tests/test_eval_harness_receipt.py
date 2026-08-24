@@ -19,6 +19,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import checks  # noqa: E402
 import eval_harness  # noqa: E402
+import eval_trigger  # noqa: E402
+
+POLICY_TOML = ("[models]\n[eval]\nrequired_providers=['codex','agy']\n"
+               "judge='codex'\nmode='normal'\n")
 
 
 def _write_evals(tmp_path, cases):
@@ -45,7 +49,7 @@ def _write_candidate_repo(tmp_path, *, skill="demo", source_body="# current\n",
     source = tmp_path / "shared" / "skills" / skill
     source.mkdir(parents=True)
     (source / "SKILL.md").write_text(source_body)
-    (tmp_path / "capabilities.toml").write_text("[models]\n")
+    (tmp_path / "capabilities.toml").write_text(POLICY_TOML)
     manifest = tmp_path / "evals" / skill / "evals.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(json.dumps({"evals": [_valid_eval()]}))
@@ -119,24 +123,127 @@ def test_make_eval_renders_before_starting_provider_execution():
     assert "eval: render ##" in makefile
 
 
-def test_make_eval_quotes_exported_skill_and_refuses_shell_injection(tmp_path):
+def test_make_eval_keeps_all_user_values_out_of_recipe_expansion(tmp_path):
     marker = tmp_path / "injected"
-    fake_python = tmp_path / "fake-python"
-    fake_python.write_text(
-        "#!/bin/sh\n"
-        "case \"$1\" in\n"
-        "  *eval_harness.py) exit 7 ;;\n"
-        "  *) exit 0 ;;\n"
-        "esac\n")
-    fake_python.chmod(0o755)
-
+    make_function = f"$(shell touch {marker})"
     result = subprocess.run(
-        ["make", "-f", str(ROOT / "Makefile"), "eval", f"PY={fake_python}",
-         f"SKILL=demo; touch {marker}"],
-        cwd=tmp_path, capture_output=True, text=True)
+        ["make", "-n", "eval", f"SKILL={make_function}",
+         f"PROVIDERS={make_function}", f"MODE={make_function}",
+         "TIMEOUT=--option-shaped", "RETRIES=1; touch never",
+         "MODELCLAUDE=`id`", "MODELCODEX=$HOME", "MODELAGY=quoted value"],
+        cwd=ROOT, capture_output=True, text=True)
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     assert not marker.exists()
+    assert result.stdout.rstrip().endswith(
+        "python3 scripts/eval_harness.py --from-make-process=$PPID")
+
+
+@pytest.mark.parametrize(("target", "assignment"), (
+    ("eval-trigger", "SKILL"), ("eval-arena", "SKILLS")))
+def test_make_trigger_targets_keep_user_values_out_of_expansion(
+        tmp_path, target, assignment):
+    marker = tmp_path / "injected"
+    hostile = f"$(shell touch {marker})"
+    result = subprocess.run(
+        ["make", "-n", target, f"{assignment}={hostile}", f"MODE={hostile}",
+         f"JUDGE={hostile}"], cwd=ROOT, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not marker.exists()
+    assert "--from-make-process=$PPID --make-target=" in result.stdout
+
+
+@pytest.mark.parametrize(("target", "want"), (
+    ("trigger", ["--skill=$(shell nope)", "--mode=deep", "--judge=codex"]),
+    ("arena", ["--arena=one,two; nope", "--mode=normal", "--judge=agy"]),
+))
+def test_trigger_make_adapter_recovers_literal_atoms(tmp_path, target, want):
+    proc = tmp_path / "456"
+    proc.mkdir()
+    assignment = (b"SKILL=$(shell nope)\0" if target == "trigger"
+                  else b"SKILLS=one,two; nope\0")
+    mode = b"MODE=deep\0" if target == "trigger" else b"MODE=normal\0"
+    judge = b"JUDGE=codex\0" if target == "trigger" else b"JUDGE=agy\0"
+    (proc / "cmdline").write_bytes(b"make\0" + assignment + mode + judge)
+
+    assert eval_trigger._argv_from_make_process(
+        "456", target, proc_root=tmp_path) == want
+
+
+def test_make_environment_adapter_scrubs_parent_make_state():
+    env = {
+        "KHENRIX_EVAL_SKILL_RAW": "--option-shaped",
+        "KHENRIX_EVAL_PROVIDERS_RAW": "codex,agy",
+        "SKILL": "expanded", "PROVIDERS": "expanded",
+        "MAKEFLAGS": "--eval=bad", "MFLAGS": "-e", "MAKEOVERRIDES": "SKILL",
+        "KEEP": "yes",
+    }
+
+    argv = eval_harness._argv_from_make_env(env)
+
+    assert argv == ["--skill=--option-shaped", "--providers=codex,agy"]
+    assert env == {"KEEP": "yes"}
+
+
+def test_eval_policy_digest_is_semantic_and_part_of_every_skill_identity(tmp_path):
+    _write_candidate_repo(tmp_path)
+    original_policy = checks.eval_policy_hash(tmp_path)
+    original_source = checks.source_hash(tmp_path, "demo")
+
+    (tmp_path / "capabilities.toml").write_text(
+        "[models]\n\n[eval]\nmode = 'normal'\njudge = 'codex'\n"
+        "required_providers = [ 'codex', 'agy' ]\n")
+    assert checks.eval_policy_hash(tmp_path) == original_policy
+    assert checks.source_hash(tmp_path, "demo") == original_source
+
+    (tmp_path / "capabilities.toml").write_text(
+        "[models]\n[eval]\nrequired_providers=['claude','codex','agy']\n"
+        "judge='codex'\nmode='normal'\n")
+    assert checks.eval_policy_hash(tmp_path) != original_policy
+    assert checks.source_hash(tmp_path, "demo") != original_source
+
+
+def test_policy_defaults_are_the_canonical_codex_gemini_panel(monkeypatch, tmp_path):
+    _write_candidate_repo(tmp_path)
+    monkeypatch.setattr(eval_harness, "ROOT", tmp_path)
+    args = eval_harness._apply_policy_defaults(eval_harness.parse_args(["--skill=demo"]))
+
+    assert args.providers == "codex,agy"
+    assert args.judge == "codex"
+    assert args.mode == "normal"
+
+
+def test_precommit_invokes_the_fail_closed_all_final_receipt_gate():
+    makefile = (ROOT / "Makefile").read_text()
+    assert "verify-all-final-receipts:" in makefile
+    assert "checks.final_receipt_gate(checks.ROOT)" in makefile
+    assert "$(MAKE) --no-print-directory verify-all-final-receipts" in makefile
+
+
+def test_make_process_adapter_recovers_literal_argv_and_scrubs_environment(tmp_path):
+    process = tmp_path / "123"
+    process.mkdir()
+    (process / "cmdline").write_bytes(
+        b"make\0eval\0SKILL=$(shell touch nope)\0PROVIDERS=codex,agy; echo nope\0"
+        b"MODE=normal\n--seed-receipt\0TIMEOUT=--option-shaped\0RETRIES=2\0"
+        b"MODELCLAUDE=`id`\0MODELCODEX=$HOME\0MODELAGY=quoted value\0")
+    env = {"SKILL": "expanded", "MAKEFLAGS": "--eval=bad", "KEEP": "yes"}
+
+    argv = eval_harness._argv_from_make_process(
+        "123", env, proc_root=tmp_path)
+
+    assert argv == [
+        "--skill=$(shell touch nope)",
+        "--providers=codex,agy; echo nope",
+        "--mode=normal\n--seed-receipt",
+        "--timeout=--option-shaped",
+        "--retries=2",
+        "--model-claude=`id`",
+        "--model-codex=$HOME",
+        "--model-agy=quoted value",
+    ]
+    assert env == {"KEEP": "yes"}
 
 
 def test_receipt_validator_refuses_an_outside_symlink_without_reading_it(tmp_path):
@@ -652,7 +759,7 @@ def test_seeded_llm_council_receipt_records_real_certifier_without_manual_attest
     (evals / "llm-council" / "evals.json").write_text(json.dumps({"evals": [{
         "id": 0, "name": "council", "prompt": "p", "assertions": ["a"]
     }]}))
-    (tmp_path / "capabilities.toml").write_text("[models]\n")
+    (tmp_path / "capabilities.toml").write_text(POLICY_TOML)
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True,
                    capture_output=True)
     monkeypatch.setattr(eval_harness, "ROOT", tmp_path)
@@ -662,8 +769,8 @@ def test_seeded_llm_council_receipt_records_real_certifier_without_manual_attest
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0),
     )
 
-    args = SimpleNamespace(skill="llm-council", providers="claude", mode="normal",
-                           judge="claude")
+    args = SimpleNamespace(skill="llm-council", providers="codex,agy", mode="normal",
+                           judge="codex")
     assert eval_harness.seed_receipts(args) == 0
     receipt = json.loads((evals / "llm-council" / "receipt.json").read_text())
     assert receipt["provenance"] == "eval"

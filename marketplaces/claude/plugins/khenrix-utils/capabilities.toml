@@ -108,6 +108,15 @@ claude = ["claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8
 codex  = ["gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.7 Flash (High)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"]  # rollback is manual — FALLBACK_MODELS in engine.py has no agy key, so listing 3.6 enables a one-string revert, not automatic runtime fallback.
 
+# Canonical shipping-eval policy.  A different panel is still useful while iterating,
+# but only this exact ordered panel/mode/judge may publish a receipt accepted by the
+# commit gate.  The normalized table is hashed into every skill's source identity, so
+# changing it deliberately invalidates every prior receipt.
+[eval]
+required_providers = ["codex", "agy"]
+judge = "codex"
+mode = "normal"
+
 # ---------------------------------------------------------------------------
 # Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
 # each plugin by scripts/render.py. `khenrix-setup`, `khenrix-upgrade`, and

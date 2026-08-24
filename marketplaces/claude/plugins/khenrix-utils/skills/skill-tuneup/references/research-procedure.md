@@ -80,8 +80,10 @@ only on what the user approves.
 ## Cross-CLI loop
 
 A provider-specific finding — a CLI bug, flag change, timeout behaviour, parse quirk,
-capability gap — **is not closed until it has been probed on the other two CLIs.** What one
-CLI teaches is checked against the others before it is recorded.
+capability gap — **is not closed until it has been probed on every other available CLI.**
+What one CLI teaches is checked against the others before it is recorded. When a provider
+is explicitly known to be quota-exhausted or otherwise unavailable, record that state and
+probe the remaining CLIs; do not spend a call merely to reproduce the known failure.
 
 The record is **one required sentence** in the run-log entry naming what was checked per
 provider and what was found ("codex: same wall, different phrasing; agy: no such flag").

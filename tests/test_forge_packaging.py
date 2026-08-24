@@ -157,7 +157,7 @@ def test_llm_forge_closure_covers_the_shared_secret_patterns():
     assert any(r.startswith("shared/lib/council/") for r in rels)
 
 
-def test_checks_py_is_bundled_beside_forge_in_every_cli():
+def test_checks_and_git_authority_are_bundled_beside_forge_in_every_cli():
     """screen.py imports the secret patterns from checks.py and must never fork them.
 
     A plugin is copied away from this repo by the marketplace, so the repo-layout
@@ -166,6 +166,7 @@ def test_checks_py_is_bundled_beside_forge_in_every_cli():
     """
     for cli in CLIS:
         assert (_plugin(cli) / "lib" / "checks.py").is_file(), cli
+        assert (_plugin(cli) / "lib" / "git_authority.py").is_file(), cli
 
 
 def test_a_rendered_plugin_resolves_checks_from_its_own_lib(tmp_path):
@@ -180,6 +181,10 @@ def test_a_rendered_plugin_resolves_checks_from_its_own_lib(tmp_path):
     lib.mkdir()
     shutil.copytree(_plugin("claude") / "lib" / "forge", lib / "forge")
     shutil.copy2(_plugin("claude") / "lib" / "checks.py", lib / "checks.py")
+    shutil.copy2(
+        _plugin("claude") / "lib" / "git_authority.py",
+        lib / "git_authority.py",
+    )
     prog = (
         "import sys; sys.path.insert(0, sys.argv[1]);"
         "from forge import screen;"
@@ -226,6 +231,19 @@ def test_run_all_reports_a_forge_plugin_that_lacks_checks_py(tmp_path):
     problems = _packaging_diagnostics(root)
     assert problems and "checks.py" in problems[0], problems
     (lib / "checks.py").write_text("SECRET_FAIL = []\n")
+    (lib / "git_authority.py").write_text("# bundled Git authority\n")
+    assert _packaging_diagnostics(root) == []
+
+
+def test_run_all_reports_a_forge_plugin_that_lacks_git_authority(tmp_path):
+    root = _fake_root(tmp_path)
+    lib = root / "marketplaces" / "claude" / "plugins" / "khenrix-utils" / "lib"
+    (lib / "forge").mkdir(parents=True)
+    (lib / "forge" / "screen.py").write_text("# bundled engine\n")
+    (lib / "checks.py").write_text("SECRET_FAIL = []\n")
+    problems = _packaging_diagnostics(root)
+    assert problems and "git_authority.py" in problems[0], problems
+    (lib / "git_authority.py").write_text("# bundled Git authority\n")
     assert _packaging_diagnostics(root) == []
 
 
@@ -255,6 +273,7 @@ def test_the_gate_covers_a_cli_no_hardcoded_list_has_heard_of(tmp_path):
     problems = _packaging_diagnostics(root)
     assert problems and "newcli" in problems[0], problems
     (lib / "checks.py").write_text("SECRET_FAIL = []\n")
+    (lib / "git_authority.py").write_text("# bundled Git authority\n")
     assert _packaging_diagnostics(root) == []
 
 

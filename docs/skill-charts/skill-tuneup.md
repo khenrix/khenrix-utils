@@ -7,7 +7,7 @@ stops instead. Source: `shared/skills/skill-tuneup/SKILL.md`.
 ```mermaid
 flowchart TD
     accTitle: skill-tuneup deep-run flow
-    accDescr: One skill per run - baseline, upstream research on all three CLIs, two council reviews, a user checkpoint, the applicable target gate, severity-gated convergence, then ship. Triage ranks and stops.
+    accDescr: One skill per run - baseline, upstream research on every available CLI, two council reviews, a user checkpoint, the applicable target gate, severity-gated convergence, then ship. Triage ranks and stops.
 
     START([user names a target]) --> G_MODE{triage or<br/>deep run?}
     G_MODE -- "sweep / ranking ask" --> TRIAGE[rank khenrix skills<br/>refuse source conflicts; no edits] --> STOP_T([stop: present the worklist])
@@ -17,7 +17,7 @@ flowchart TD
     G_CLEAN -- yes --> G_LOCK{lock acquired<br/>with an owner token?}
     G_LOCK -- refused --> HALT_L([stop: another run holds it])
     G_LOCK -- yes --> BASE[Step 4: baseline commit + stale-models<br/>+ prior run-log decisions]
-    BASE --> RESEARCH[Step 5: upstream research<br/>every provider finding probed on ALL THREE CLIs]
+    BASE --> RESEARCH[Step 5: upstream research<br/>every provider finding probed on available CLIs]
     RESEARCH --> COUNCIL1[Step 6: council review 1 - the findings]
     COUNCIL1 --> AUDIT[Step 7: audit vs checklist<br/>incl. chart-vs-body drift]
     AUDIT --> G_CHECK{CHECKPOINT:<br/>user approves scope?}
@@ -38,7 +38,7 @@ flowchart TD
         G_NATIVE -- "green / absent" --> G_MAT
         G_EVAL -- "red: below cap" --> FIXE[classify + fix] --> APPLY
         G_EVAL -- "cap reached" --> HAND([stop: hand unresolved to the user])
-        G_EVAL -- green --> G_MAT{review-material<br/>result?}
+        G_EVAL -- green --> G_MAT{review-diff<br/>result?}
         G_DET -- "red: below cap" --> FIXE
         G_DET -- "cap reached" --> HAND
         G_DET -- green --> G_MAT
@@ -61,7 +61,7 @@ flowchart TD
     G_CONV -- converged --> G_SHIP_TIER{resolved tier?}
     G_SHIP_TIER -- full-gate --> G_RECEIPT{verify-final-receipt:<br/>earned, panel-or-self-test, current?}
     G_RECEIPT -- no --> G_GATE_KIND{requires deterministic<br/>gate for target?}
-    G_GATE_KIND -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate] --> G_RECEIPT
+    G_GATE_KIND -- no --> PANEL[run the canonical panel ONCE<br/>on the unchanged candidate] --> G_RECEIPT
     G_GATE_KIND -- yes --> SUITE[run make eval once<br/>to earn the deterministic receipt] --> G_RECEIPT
     G_RECEIPT -- yes --> STAGE[recheck status + stage everything<br/>while run remains open] --> G_PRE{make precommit clean?}
     G_PRE -- "no: in-scope fix" --> FIXPRE[fix in-scope] --> APPLY
@@ -89,7 +89,7 @@ flowchart TD
 | G_DET | code | `scripts/eval_harness.py::def _write_receipt` — `make eval` runs the target's named certifier and records its evidence |
 | G_EVAL | code | `scripts/eval_harness.py::gate_ok` — the delta gate itself; the cap-5 rule beside it is an agent rule (SKILL.md non-negotiable) |
 | G_NATIVE | agent | `evals/skill-tuneup/evals.json::Before council review #2 and convergence` |
-| G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::review-material returns exactly empty for an unchanged candidate` and `shared/skills/skill-tuneup/scripts/tuneup.py::def review_material` — unchanged, reviewable, and failed results remain distinct |
+| G_MAT | code | `shared/skills/skill-tuneup/scripts/tuneup.py::review-material returns exactly empty for an unchanged candidate`, `shared/skills/skill-tuneup/scripts/tuneup.py::review sizing and fanout use the exact same captured module`, and `shared/skills/skill-tuneup/scripts/tuneup.py::def run_diff_review` — unchanged, reviewable, and failed results remain distinct; the exact captured reviewer sizes and executes the fanout |
 | G_CONV | code | `shared/skills/skill-tuneup/scripts/tuneup.py::a clean final cycle converges` |
 | G_AMBIG | code | `shared/skills/skill-tuneup/scripts/tuneup.py::def convergence_status` — distinguishes an exact `run_gap` from a terminal tail whose remedy is a new `run-start` |
 | G_GAP | agent | `evals/skill-tuneup/evals.json::For an ambiguous pre-start gap` — exact marker validation is additionally code-enforced by `shared/skills/skill-tuneup/scripts/tuneup.py::def _validate_run_gap_resolution` |

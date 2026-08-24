@@ -3,25 +3,25 @@
 Special handling when the tune-up target IS part of this skill's own machinery. The
 danger: a tool reviewing its own under-test diff, or unbounded recursion.
 
-## Target = llm-council
+## Any dirty council machinery
 
-The council reviews (findings + diff) run through `fanout.py`. If the working tree has
-modified `shared/skills/llm-council/**` OR `shared/lib/council/**`, the under-test engine
-must NOT be its own reviewer:
+The final diff review runs through `tuneup.py review-diff`. If the working tree has any
+tracked, staged, or untracked change under `shared/skills/llm-council/**` OR
+`shared/lib/council/**`, the under-test engine must NOT review any target — not just an
+llm-council target:
 
-1. Extract the last committed engine and run that instead:
-   ```bash
-   GOOD=$(mktemp -d)/engine.py
-   git -C <repo> show HEAD:shared/lib/council/engine.py > "$GOOD"
-   python3 "$GOOD" --prompt-file <diff-prompt> --out json
-   ```
-   `review-material` applies that same regular HEAD blob when it models the council
-   wrappers and proves the prompt's argv bound; it must not import candidate code before
-   the independent review starts.
+1. Let `review-diff` select the regular engine blob at HEAD. It captures that blob once,
+   applies those exact wrapper functions for prompt sizing, and invokes the Codex+agy
+   fanout through the same in-memory module. The manifest records the engine digest, HEAD
+   commit, dirty paths, and `selection: committed-head`. Never manually extract an engine
+   or pair `review-material` with a later filesystem `fanout.py`; either recreates a second
+   source-selection path and a check/use gap.
 2. If that is unusable too (e.g. the fix targets a bug in the committed engine), fall
    back to a single-provider review: run one other CLI headlessly against the diff
    (see `headless-invocation.md` at the plugin root) and treat it as a 1-member panel.
 3. Either way, **tell the user the reviewer was substituted and why.**
+
+## Target = llm-council
 
 **Consequence for a panel change.** `MODES` lives in `engine.py`, so extracting HEAD's engine
 also extracts the OLD panel — a model bump is necessarily reviewed by the models it replaces,

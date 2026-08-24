@@ -14,6 +14,8 @@ _REAL_SUBPROCESS_RUN = subprocess.run
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import git_authority  # noqa: E402
 
 # The CLIs a plugin is rendered for. Defined HERE and imported by render.py rather than
 # the other way round: render.py already imports this module (render.check), so the
@@ -58,6 +60,54 @@ def _load_caps(root: Path) -> dict:
         return tomllib.load(f)
 
 
+@dataclass(frozen=True)
+class EvalPolicy:
+    """Normalized authority for receipts that are allowed to ship."""
+
+    required_providers: tuple[str, ...]
+    judge: str
+    mode: str
+
+    def semantic_dict(self) -> dict:
+        return {
+            "required_providers": list(self.required_providers),
+            "judge": self.judge,
+            "mode": self.mode,
+        }
+
+
+def eval_policy(root: Path) -> EvalPolicy:
+    """Load the exact shipping panel, rejecting ambiguous or ignored policy keys."""
+    table = _load_caps(_normalized_path(root)).get("eval")
+    expected = {"required_providers", "judge", "mode"}
+    if not isinstance(table, dict) or set(table) != expected:
+        got = sorted(table) if isinstance(table, dict) else type(table).__name__
+        raise ValueError(
+            "capabilities [eval] must contain exactly required_providers, judge, and "
+            f"mode (got {got!r})")
+    providers = table.get("required_providers")
+    if (not isinstance(providers, list) or not providers
+            or any(not isinstance(item, str) or item not in CLIS for item in providers)
+            or len(providers) != len(set(providers))):
+        raise ValueError(
+            "capabilities [eval].required_providers must be a non-empty ordered list "
+            f"of unique providers from {list(CLIS)}")
+    judge = table.get("judge")
+    if not isinstance(judge, str) or judge not in CLIS:
+        raise ValueError(f"capabilities [eval].judge must be one of {list(CLIS)}")
+    mode = table.get("mode")
+    if not isinstance(mode, str) or not mode.strip():
+        raise ValueError("capabilities [eval].mode must be a non-empty string")
+    return EvalPolicy(tuple(providers), judge, mode)
+
+
+def eval_policy_hash(root: Path) -> str:
+    """Semantic policy digest: comments/formatting do not invalidate receipts."""
+    payload = json.dumps(
+        eval_policy(root).semantic_dict(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def model_crosscheck(root: Path) -> list[str]:
     """Every model in fanout.py MODES must be registered in capabilities [models]."""
     sys.path.insert(0, str(root / "shared" / "skills" / "llm-council" / "scripts"))
@@ -87,6 +137,23 @@ def model_crosscheck(root: Path) -> list[str]:
                 problems.append(f"model-crosscheck: fanout MODES[{mode!r}] model '{m}' not "
                                 f"in capabilities [models].{provider}{extra}")
     return sorted(set(problems))
+
+
+def eval_policy_check(root: Path) -> list[str]:
+    try:
+        policy = eval_policy(root)
+    except Exception as exc:  # noqa: BLE001 — this is a fail-closed lint boundary
+        return [f"eval-policy: {exc}"]
+    # fanout owns supported mode spellings; import it here so the policy cannot name a
+    # well-formed string the executor later rejects.
+    sys.path.insert(0, str(root / "shared" / "skills" / "llm-council" / "scripts"))
+    try:
+        import fanout
+    except Exception as exc:  # noqa: BLE001
+        return [f"eval-policy: cannot import fanout.py to validate mode: {exc}"]
+    if policy.mode not in fanout.MODES:
+        return [f"eval-policy: mode {policy.mode!r} is not in fanout.MODES"]
+    return []
 
 
 def pricing_coverage(root: Path) -> list[str]:
@@ -167,8 +234,8 @@ def scan_secrets(root: Path) -> list[str]:
     # `café.txt` arrives as `"caf\303\251.txt"` — and opening that literal raised
     # FileNotFoundError, which the ENOENT branch below reads as an ordinary deletion. So the
     # file was never scanned and the gate went green over it. Measured 2026-08-04.
-    out = subprocess.run(["git", "ls-files", "-z"], cwd=root,
-                         capture_output=True, check=True).stdout
+    out = git_authority.run(
+        ["ls-files", "-z"], repo=root, capture_output=True, check=True).stdout
     files = [b.decode("utf-8", "surrogateescape") for b in out.split(b"\0") if b]
     problems = []
     for rel in files:
@@ -192,8 +259,8 @@ def scan_secrets(root: Path) -> list[str]:
                 f"{e.strerror or e}) — this file is tracked and its bytes were never read, "
                 f"so `make verify` cannot certify it. Make it readable and re-run.")
             continue
-        blob = subprocess.run(["git", "cat-file", "-p", f":{rel}"], cwd=root,
-                              capture_output=True)
+        blob = git_authority.run(
+            ["cat-file", "-p", f":{rel}"], repo=root, capture_output=True)
         if blob.returncode == 0:
             sources.append(("index", blob.stdout.decode("utf-8", "ignore")))
         if not sources:
@@ -260,26 +327,33 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
 
 
 def forge_packaging(root: Path) -> list[str]:
-    """A plugin that bundles lib/forge/ must bundle lib/checks.py beside it.
+    """A plugin that bundles lib/forge/ must bundle checks and its Git authority.
 
     forge/screen.py imports SECRET_FAIL/SECRET_ALLOW_SHA from this module by path so the
     patterns have one definition. Its repo-layout candidate dies the moment a marketplace
-    copies the plugin elsewhere, leaving <plugin>/lib/checks.py as the only reachable one;
-    absent that, screen.py raises on a user's first forge run. This moves the failure to
-    `make verify`, where someone is looking.
+    copies the plugin elsewhere, leaving <plugin>/lib/checks.py as the only reachable one.
+    checks.py in turn imports <plugin>/lib/git_authority.py. Absent either file, screen.py
+    raises on a user's first forge run. This moves the failure to `make verify`, where
+    someone is looking.
 
     Enumerated from DISK, not from CLIS. This is the one restatement of the CLI list that
-    failed OPEN: a fourth plugin bundling lib/forge/ without lib/checks.py is exactly the
-    state the gate exists to catch, and a hardcoded triple would say nothing about it
+    failed OPEN: a fourth plugin bundling lib/forge/ without one of these modules is exactly
+    the state the gate exists to catch, and a hardcoded triple would say nothing about it
     while every other check that iterates CLIS at least fails loudly. The check must cover
     whatever plugins are actually on disk, so an unlisted one cannot ship past it.
     """
     problems = []
     for lib in sorted((root / "marketplaces").glob("*/plugins/khenrix-utils/lib")):
-        if (lib / "forge").is_dir() and not (lib / "checks.py").is_file():
-            cli = lib.parents[2].name
-            problems.append(f"forge-packaging: {cli} plugin bundles lib/forge/ without "
-                            f"lib/checks.py — screen.py would raise at runtime")
+        if not (lib / "forge").is_dir():
+            continue
+        cli = lib.parents[2].name
+        missing = [name for name in ("checks.py", "git_authority.py")
+                   if not (lib / name).is_file()]
+        if missing:
+            problems.append(
+                f"forge-packaging: {cli} plugin bundles lib/forge/ without "
+                f"{', '.join('lib/' + name for name in missing)} — screen.py would "
+                "raise at runtime")
     return problems
 
 
@@ -308,7 +382,7 @@ def _optional(root: Path, module: str, fn: str) -> list[str]:
 
 def run_all(root: Path = ROOT) -> list[str]:
     caps = _load_caps(root)
-    return (model_crosscheck(root) + pricing_coverage(root)
+    return (model_crosscheck(root) + eval_policy_check(root) + pricing_coverage(root)
             + scan_secrets(root) + structure_checks(root, caps)
             + forge_packaging(root)
             # THE TWO SIBLING LINTS, appended AFTER forge_packaging — the plans that
@@ -329,6 +403,7 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
                  "scripts/eval_harness.py",  # decides what the gate RUNS
                  "scripts/lib/checks.py",    # decides what the gate ACCEPTS
+                 "scripts/lib/git_authority.py",  # decides which Git state gates OBSERVE
                  "Makefile"]                 # names the suites a gate can name
 # Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
 # capabilities.toml + house-style.md (+ overlays); llm-council bundles headless-invocation.md.
@@ -487,14 +562,6 @@ class GateTreeSnapshot:
 _GATE_CACHE_DIRS = frozenset({
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 })
-_GIT_REPOSITORY_ENV = frozenset({
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_TEMPLATE_DIR", "GIT_COMMON_DIR",
-    "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_SHALLOW_FILE",
-    "GIT_PREFIX", "GIT_INTERNAL_SUPER_PREFIX", "GIT_CONFIG_PARAMETERS",
-})
-
-
 def sanitized_git_env(base: dict[str, str] | None = None) -> dict[str, str]:
     """Return a Git environment bound to arguments/cwd, never an ambient repository.
 
@@ -504,16 +571,7 @@ def sanitized_git_env(base: dict[str, str] | None = None) -> dict[str, str]:
     Isolating config also keeps a machine-global excludes file from changing the tree the
     receipt claims to certify.
     """
-    env = dict(os.environ if base is None else base)
-    for key in _GIT_REPOSITORY_ENV:
-        env.pop(key, None)
-    for key in list(env):
-        if key == "GIT_CONFIG_COUNT" or key.startswith(
-                ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
-            env.pop(key, None)
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    return env
+    return git_authority.sanitized_environment(base)
 
 
 def _gate_tree_excluded(rel: str, *, is_dir: bool) -> bool:
@@ -540,9 +598,9 @@ def _gate_tree_excluded(rel: str, *, is_dir: bool) -> bool:
 def _git_paths(root: Path) -> set[str]:
     # Repository enumeration is part of candidate capture, not part of the certifier.
     # Replacing the latter for a seam test must not also replace this trusted operation.
-    result = _REAL_SUBPROCESS_RUN(
-        ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
-         "--exclude-standard"], capture_output=True, env=sanitized_git_env())
+    result = git_authority.run(
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        repo=root, capture_output=True, runner=_REAL_SUBPROCESS_RUN)
     if result.returncode != 0:
         raise ValueError(
             f"{root}: cannot enumerate deterministic gate tree: "
@@ -564,9 +622,13 @@ def _ignored_gate_directories(root: Path, rels: list[str]) -> set[str]:
     if not rels:
         return set()
     payload = b"\0".join(os.fsencode(rel) for rel in rels) + b"\0"
-    result = _REAL_SUBPROCESS_RUN(
-        ["git", "-C", str(root), "check-ignore", "--no-index", "--stdin", "-z"],
-        input=payload, capture_output=True, env=sanitized_git_env())
+    result = git_authority.run(
+        ["check-ignore", "--no-index", "--stdin", "-z"], repo=root,
+        # check-ignore rejects Git's global --literal-pathspecs mode for --stdin. Its
+        # NUL-delimited stdin records are already path records rather than shell patterns;
+        # ambient pathspec variables remain scrubbed by the authority either way.
+        literal_pathspecs=False, input=payload, capture_output=True,
+        runner=_REAL_SUBPROCESS_RUN)
     if result.returncode not in (0, 1):
         raise ValueError(
             f"{root}: cannot classify gate-tree directories: "
@@ -662,6 +724,9 @@ def source_input_snapshot(root: Path, skill: str) -> SourceInputSnapshot:
     if facts is not None:
         entries.append((f"skill_facts:{skill}",
                         _sha(json.dumps(facts, sort_keys=True).encode())))
+    # Every receipt is interpreted through the same shipping policy.  Bind its
+    # normalized meaning—not TOML whitespace or comments—into every source identity.
+    entries.append(("eval_policy", eval_policy_hash(root)))
     manifest = tuple(sorted(entries))
     return SourceInputSnapshot(
         source_files=tuple(sorted(files, key=lambda item: item[0])),
@@ -935,7 +1000,7 @@ def _receipt_is_certified(rec: dict) -> bool:
     return str(rec.get("provenance", "")).startswith("seeded")
 
 
-CURRENT_RECEIPT_SCHEMA = 2
+CURRENT_RECEIPT_SCHEMA = 3
 
 # Exact deterministic certifier expected for each panel-exempt skill. A receipt is an
 # input file, not an authority: `self_test: true` cannot be allowed to choose its own gate.
@@ -1043,6 +1108,64 @@ def is_self_test_gated(skill: str, rec: object, root: Path = ROOT) -> bool:
     return rec.get("deterministic_gate") == expected
 
 
+def _shipping_evidence_problems(root: Path, skill: str, rec: dict) -> list[str]:
+    """Validate the canonical advisory panel for every shipping receipt.
+
+    Deterministic skills retain their stronger suite gate, but that gate no longer
+    exempts them from recording a completed Codex/Gemini review of the same candidate.
+    """
+    try:
+        policy = eval_policy(root)
+        policy_digest = eval_policy_hash(root)
+    except Exception as exc:  # noqa: BLE001
+        return [f"receipt: {skill} cannot load canonical eval policy: {exc}"]
+    problems = []
+    if rec.get("eval_policy_hash") != policy_digest:
+        problems.append(
+            f"receipt: {skill} eval policy digest is stale or missing — re-run the "
+            "canonical panel")
+    if rec.get("providers") != list(policy.required_providers):
+        problems.append(
+            f"receipt: {skill} provider order is {rec.get('providers')!r}, needs exact "
+            f"canonical order {list(policy.required_providers)!r}")
+    if rec.get("judge") != policy.judge:
+        problems.append(
+            f"receipt: {skill} judge is {rec.get('judge')!r}, needs {policy.judge!r}")
+    if rec.get("mode") != policy.mode:
+        problems.append(
+            f"receipt: {skill} mode is {rec.get('mode')!r}, needs {policy.mode!r}")
+    models = rec.get("models")
+    if (not isinstance(models, dict)
+            or not isinstance(models.get("judge"), str)
+            or not models["judge"].strip()):
+        problems.append(
+            f"receipt: {skill} has no recorded model provenance for the "
+            f"{policy.judge} judge")
+    try:
+        expected_n_evals = len(eval_ids(root, skill))
+    except Exception as exc:  # noqa: BLE001
+        return problems + [
+            f"receipt: {skill} cannot read current eval ids: {exc}"]
+    evidence = rec.get("per_provider")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    if set(evidence) != set(policy.required_providers):
+        problems.append(
+            f"receipt: {skill} per_provider keys are {sorted(evidence)!r}, need exactly "
+            f"{sorted(policy.required_providers)!r}")
+    for provider in policy.required_providers:
+        row = evidence.get(provider)
+        if (not isinstance(row, dict)
+                or type(row.get("delta")) not in (int, float)
+                or not -1 <= row["delta"] <= 1
+                or type(row.get("n_evals")) is not int
+                or row["n_evals"] != expected_n_evals
+                or row.get("status") != "ok"):
+            problems.append(
+                f"receipt: {skill} has no completed {provider} evidence for all "
+                f"{expected_n_evals} current evals")
+    return problems
+
+
 def validate_receipt(root: Path, skill: str, *, final: bool = False,
                      panel: list | None = None) -> list[str]:
     """The single source of receipt truth. Freshness + certification always; provenance,
@@ -1137,8 +1260,17 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
     if not final:
         return problems
 
-    # Self-test-gated skills earn their receipt from a deterministic suite, so a full
-    # panel and per-provider deltas prove nothing extra about them.
+    try:
+        policy = eval_policy(root)
+    except Exception as exc:  # noqa: BLE001
+        return problems + [f"receipt: {skill} cannot load canonical eval policy: {exc}"]
+    if panel is not None and list(panel) != list(policy.required_providers):
+        problems.append(
+            f"receipt: {skill} validator panel {list(panel)!r} is not the canonical "
+            f"ordered panel {list(policy.required_providers)!r}")
+
+    # Self-test-gated skills retain their deterministic authority.  They also carry the
+    # canonical advisory panel below; one kind of evidence no longer erases the other.
     self_test_gated = is_self_test_gated(skill, rec, root)
     if skill in SELF_TEST_CERTIFIERS and not self_test_gated:
         problems.append(
@@ -1148,22 +1280,16 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
     # writes "seeded: blessed current committed state", so an equality test against
     # "seed" was dead code — and that made `--seed-receipt` a one-flag way to make this
     # print "proven". Whitelisting fails closed if the producer string changes again.
-    if not self_test_gated and rec.get("provenance") != "eval":
+    if rec.get("provenance") != "eval":
         problems.append(f"receipt: {skill} provenance is {rec.get('provenance')!r}, not "
                         f"'eval' — it was seeded, not earned; no eval actually ran")
-    if not self_test_gated:
-        if not providers_valid:
-            if "providers" not in rec:
-                problems.append(
-                    f"receipt: {skill} providers must be a list of unique non-empty strings")
-        else:
-            got, want = set(providers), set(panel or [])
-            if not want <= got:
-                problems.append(f"receipt: {skill} is not FULL-PANEL — earned on "
-                                f"{sorted(got)}, needs {sorted(want)}")
-        if not v1 and not rec.get("per_provider"):
-            problems.append(f"receipt: {skill} is schema v2 but carries no per_provider "
-                            f"block — re-run `make eval SKILL={skill}`")
+    # A historical schema-less receipt can remain a local freshness record, but it can
+    # never prove today's canonical shipping policy.
+    if v1:
+        problems.append(
+            f"receipt: {skill} is legacy schema v1 and cannot prove the canonical panel")
+    else:
+        problems.extend(_shipping_evidence_problems(root, skill, rec))
     return problems
 
 
@@ -1193,6 +1319,30 @@ def receipt_gate(root: Path, *, advisory: bool) -> list[str]:
     return ["(advisory) " + m for m in out] if advisory else out
 
 
+def final_receipt_gate(root: Path = ROOT) -> list[str]:
+    """Fail-closed commit gate for every canonical skill receipt."""
+    root = _normalized_path(root)
+    try:
+        policy = eval_policy(root)
+    except Exception as exc:  # noqa: BLE001
+        return [f"receipt: cannot load canonical eval policy: {exc}"]
+    out = []
+    for skill in expected_eval_skills(root):
+        try:
+            validate_skill_name(skill)
+        except ValueError as exc:
+            out.append(f"receipt: {exc}")
+            continue
+        manifest = root / "evals" / skill / "evals.json"
+        if not manifest.is_file():
+            out.append(
+                f"receipt: {skill} has no eval manifest at evals/{skill}/evals.json")
+            continue
+        out.extend(validate_receipt(
+            root, skill, final=True, panel=list(policy.required_providers)))
+    return out
+
+
 def _raises(fn, exc) -> bool:
     try:
         fn()
@@ -1205,6 +1355,9 @@ def _raises(fn, exc) -> bool:
 
 def _self_test() -> int:
     ok = []
+    policy_toml = (
+        "[eval]\nrequired_providers=['codex','agy']\n"
+        "judge='codex'\nmode='normal'\n")
     ok.append(("secret regex detects slack", any(rx.search("xoxp-1234567890abcde") for rx in SECRET_FAIL)))
     ok.append(("secret regex ignores prose", not any(rx.search("the quick brown fox jumps") for rx in SECRET_FAIL)))
     ok.append(("secret regex detects AKIA", any(rx.search("AKIAIOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
@@ -1365,7 +1518,7 @@ def _self_test() -> int:
                        f"skill_facts:{skill}" in manifests[skill]))
     with tempfile.TemporaryDirectory() as _td:
         _r = Path(_td)
-        (_r / "capabilities.toml").write_text("[models]\n")
+        (_r / "capabilities.toml").write_text("[models]\n" + policy_toml)
         (_r / "shared" / "skills" / "llm-forge").mkdir(parents=True)
         (_r / "shared" / "skills" / "llm-forge" / "SKILL.md").write_text("# forge\n")
         (_r / "tests").mkdir()
@@ -1488,7 +1641,7 @@ def _self_test() -> int:
                    _empty_linked_fixture_ancestor_refused))
     with tempfile.TemporaryDirectory() as _td:
         _r = Path(_td)
-        (_r / "capabilities.toml").write_text("[models]\n")
+        (_r / "capabilities.toml").write_text("[models]\n" + policy_toml)
         (_r / "shared" / "skills" / "alpha").mkdir(parents=True)
         (_r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# alpha\n")
         (_r / "shared" / "skill-templates" / "beta").mkdir(parents=True)
@@ -1574,7 +1727,7 @@ def _self_test() -> int:
             ok.append(("...and it names the errno cause, not just the path",
                        any("PermissionError" in x for x in _p)))
         (_r / "locked.txt").chmod(0o644)
-    # ---- receipt schema v2 + grandfathering + the single validator -------------
+    # ---- receipt schema v3 + grandfathering + the single validator -------------
     with tempfile.TemporaryDirectory() as _td:
         _r = Path(_td)
         _ev = _r / "evals" / "alpha"
@@ -1585,7 +1738,7 @@ def _self_test() -> int:
         (_r / "shared" / "skills" / "alpha").mkdir(parents=True)
         (_r / "shared" / "skills" / "alpha" / "SKILL.md").write_text("# a\n")
         # source_hash reaches capabilities.toml for the overlay closure.
-        (_r / "capabilities.toml").write_text("[instructions]\n")
+        (_r / "capabilities.toml").write_text("[instructions]\n" + policy_toml)
         subprocess.run(["git", "init", "-q", str(_r)], check=True,
                        capture_output=True)
 
@@ -1608,26 +1761,44 @@ def _self_test() -> int:
             ok.append((f"explicit schema_version={malformed_version!r} is not v1",
                        "schema_version" in _v({**_fresh,
                                                "schema_version": malformed_version})))
-        ok.append(("v2 without per_provider passes the NON-final gate",
-                   _v({**_fresh, "schema_version": 2}) == ""))
-        ok.append(("v2 without per_provider FAILS the final gate",
-                   "per_provider" in _v({**_fresh, "schema_version": 2},
-                                        final=True, panel=["claude"])))
-        ok.append(("v2 with per_provider passes the final gate",
-                   _v({**_fresh, "schema_version": 2, "providers": ["claude"],
-                       "per_provider": {"claude": {"delta": 0.1}}},
-                      final=True, panel=["claude"]) == ""))
-        _seeded = {**_fresh, "schema_version": 2,
+        ok.append(("schema v2 is rejected rather than treated as current",
+                   "unsupported schema_version 2" in _v(
+                       {**_fresh, "schema_version": 2})))
+        ok.append(("v3 without shipping evidence passes the NON-final freshness gate",
+                   _v({**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA}) == ""))
+        ok.append(("v3 without canonical panel evidence FAILS the final gate",
+                   "eval policy digest" in _v(
+                       {**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA},
+                       final=True, panel=["codex", "agy"])))
+        _canonical = {
+            **_fresh,
+            "schema_version": CURRENT_RECEIPT_SCHEMA,
+            "providers": ["codex", "agy"],
+            "judge": "codex",
+            "mode": "normal",
+            "models": {"judge": "gpt-test"},
+            "eval_policy_hash": eval_policy_hash(_r),
+            "per_provider": {
+                provider: {"delta": 0.1, "n_evals": 1, "status": "ok"}
+                for provider in ("codex", "agy")
+            },
+        }
+        ok.append(("v3 canonical Codex+agy evidence passes the final gate",
+                   _v(_canonical, final=True, panel=["codex", "agy"]) == ""))
+        _seeded = {**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA,
                    "provenance": "seeded: blessed current committed state"}
         _seeded.pop("certified_by")
-        ok.append(("seeded v2 is legal for the non-final gate", _v(_seeded) == ""))
-        ok.append(("seeded v2 is rejected by the final gate",
-                   "seeded" in _v(_seeded, final=True, panel=["claude"])))
-        ok.append(("a single-provider receipt fails the FULL-PANEL final gate",
-                   "FULL-PANEL" in _v({**_fresh, "schema_version": 2,
-                                       "providers": ["claude"],
-                                       "per_provider": {"claude": {"delta": 0.1}}},
-                                      final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("seeded v3 is legal for the non-final freshness gate",
+                   _v(_seeded) == ""))
+        ok.append(("seeded v3 is rejected by the final shipping gate",
+                   "seeded" in _v(_seeded, final=True, panel=["codex", "agy"])))
+        ok.append(("a single-provider receipt fails the canonical Codex+agy gate",
+                   "provider order" in _v(
+                       {**_canonical, "providers": ["codex"],
+                        "per_provider": {
+                            "codex": {"delta": 0.1, "n_evals": 1, "status": "ok"}
+                        }},
+                       final=True, panel=["codex", "agy"])))
         for label, malformed_providers in (
             ("null", None),
             ("mapping", {"claude": True}),
@@ -1637,12 +1808,12 @@ def _self_test() -> int:
         ):
             ok.append((f"{label} providers are refused without set conversion",
                        "providers must be a list of unique non-empty strings" in _v(
-                           {**_fresh, "schema_version": 2,
+                           {**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA,
                             "providers": malformed_providers, "per_provider": {}},
-                           final=True, panel=["claude", "codex", "agy"])))
+                           final=True, panel=["codex", "agy"])))
         _deterministic = {
             **_fresh,
-            "schema_version": 2,
+            "schema_version": CURRENT_RECEIPT_SCHEMA,
             "self_test": True,
             "providers": ["claude"],
             "certified_by": "wikisync-unittests",
@@ -1688,15 +1859,19 @@ def _self_test() -> int:
                    is_self_test_gated("llm-council", _council, _r)))
         ok.append(("an ordinary skill cannot forge a self-test panel exemption",
                    "not eligible" in _v(
-                       {**_fresh, "schema_version": 2, "self_test": True,
+                       {**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA,
+                        "self_test": True,
                         "providers": ["claude"], "certified_by": "some --self-test"},
-                       final=True, panel=["claude", "codex", "agy"])))
+                       final=True, panel=["codex", "agy"])))
         ok.append(("an n/a blind_winner alone cannot bypass the panel requirement",
-                   "FULL-PANEL" in _v(
-                       {**_fresh, "schema_version": 2, "providers": ["claude"],
+                   "provider order" in _v(
+                       {**_fresh, "schema_version": CURRENT_RECEIPT_SCHEMA,
+                        "providers": ["codex"],
                         "blind_winner": "n/a-deterministic",
-                        "per_provider": {"claude": {"delta": 0.1}}},
-                       final=True, panel=["claude", "codex", "agy"])))
+                        "per_provider": {
+                            "codex": {"delta": 0.1, "n_evals": 1, "status": "ok"}
+                        }},
+                       final=True, panel=["codex", "agy"])))
         ok.append(("stale source_hash fails even a grandfathered v1",
                    "changed since last eval" in _v({**_fresh, "source_hash": "deadbeef"})))
         ok.append(("a missing receipt is reported, not skipped",
@@ -1709,9 +1884,10 @@ def _self_test() -> int:
         _v1seed.pop("certified_by")
         ok.append(("a v1 receipt is NOT exempt from the final provenance check",
                    "seeded, not earned" in _v(_v1seed, final=True, panel=["claude"])))
-        ok.append(("a v1 receipt is NOT exempt from the final panel check",
-                   "FULL-PANEL" in _v({**_fresh, "providers": ["claude"]},
-                                      final=True, panel=["claude", "codex", "agy"])))
+        ok.append(("a v1 receipt cannot prove today's canonical shipping panel",
+                   "legacy schema v1" in _v(
+                       {**_fresh, "providers": ["codex"]},
+                       final=True, panel=["codex", "agy"])))
         ok.append(("a v1 receipt IS exempt from the per_provider requirement",
                    "per_provider" not in _v({**_fresh, "providers": ["claude"]},
                                             final=True, panel=["claude"])))

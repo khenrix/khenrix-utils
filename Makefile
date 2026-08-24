@@ -5,13 +5,11 @@
 # CLI. They write NO machine config themselves — all reconciliation happens
 # interactively inside the CLI via the skill, which is non-destructive.
 
-REPO := $(shell pwd)
+REPO := $(CURDIR)
 PY   := python3
-export SKILL
-
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit verify-all-final-receipts test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -20,7 +18,8 @@ AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py \
                  tests/test_checks_secrets.py tests/test_mutate.py \
-                 tests/test_eval_harness_receipt.py tests/test_render_packaging.py
+                 tests/test_eval_harness_receipt.py tests/test_render_packaging.py \
+                 tests/test_refresh.py tests/test_git_authority.py
 # The forge suite, split by weight. The fast subset — schema, state machine,
 # classification, journal parsing — is in `verify` and therefore in `precommit`. The clone-
 # and process-heavy subset is NOT, because `make verify` is the obvious confirmed verify
@@ -113,11 +112,14 @@ verify: render doctor-test audit-test bats-test council-test eval-test ## Valida
 # would spawn clone fleets inside its own verifier clones. `precommit` is neither: nothing
 # runs it inside a verifier. Without this dependency `baseline`, `fleet`, `harvest`,
 # `bundle`, `verify`, `runner` and `review` sit in no commit-boundary gate at all.
-precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + every changed skill has a fresh eval receipt
+precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + every skill has canonical final evidence
 	$(PY) scripts/render.py
 	@git diff --quiet -- marketplaces/ || { echo "✗ render drift: regenerate + stage rendered output ('git add marketplaces/')"; exit 1; }
-	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
-	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
+	@$(MAKE) --no-print-directory verify-all-final-receipts
+	@echo "✅ precommit clean (render in sync + every canonical receipt proven)"
+
+verify-all-final-receipts: ## Prove every skill has exact Codex+Gemini evidence on current bytes
+	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.final_receipt_gate(checks.ROOT); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
 
 test: council-test forge-test-slow ## Run the deterministic llm-council engine self-test + slow suites (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
@@ -211,20 +213,26 @@ eval-test: ## Hermetic eval-harness logic tests (no token cost)
 	$(PY) scripts/env_inventory.py --self-test
 	$(PY) scripts/lib/mcp_merge.py --self-test
 
+# GNU Make recursively expands command-line variables when exporting them to a recipe,
+# even when the recipe never references those variables. The fixed adapter recovers the
+# literal argv from /proc instead, so keep the recursive values out of every child env.
+unexport SKILL SKILLS PROVIDERS MODE JUDGE TIMEOUT RETRIES MODELCLAUDE MODELCODEX MODELAGY
+unexport MAKEFLAGS MFLAGS MAKEOVERRIDES
+
 eval: render ## Render the canonical candidate, then run the skill-eval harness — SKILL=<name> [PROVIDERS=…] [MODE=normal|deep] [TIMEOUT=secs] [RETRIES=n] (costs tokens)
 # TIMEOUT raises the per-attempt cap without MODE=deep, which would also change reasoning
 # depth. Heavy eval prompts (a full skill body + a research-shaped task) can exceed the
 # 300s normal-mode default even with nothing else running — that is an under-timed eval,
 # not contention, and the harness now fails closed on it instead of scoring it 0.
-	$(PY) $(EVAL) --skill "$$SKILL" $(if $(PROVIDERS),--providers $(PROVIDERS),) $(if $(MODE),--mode $(MODE),) $(if $(TIMEOUT),--timeout $(TIMEOUT),) $(if $(RETRIES),--retries $(RETRIES),) $(if $(MODELCLAUDE),--model-claude "$(MODELCLAUDE)",) $(if $(MODELCODEX),--model-codex "$(MODELCODEX)",) $(if $(MODELAGY),--model-agy "$(MODELAGY)",)
+	python3 scripts/eval_harness.py --from-make-process=$$PPID
 
 eval-trigger: ## Trigger/near-miss DESCRIPTION eval — SKILL=<name> [MODE=…] (costs tokens)
 # The behaviour harness (`eval`) injects a skill body and assumes it already triggered.
 # This covers the other axis: given ONLY name+description, would the agent pick it?
-	$(PY) scripts/eval_trigger.py --skill $(SKILL) $(if $(MODE),--mode $(MODE),) $(if $(JUDGE),--judge $(JUDGE),)
+	python3 scripts/eval_trigger.py --from-make-process=$$PPID --make-target=trigger
 
 eval-arena: ## Cross-skill ROUTING eval — SKILLS=a,b[,c] reads evals/<a>/arena.json (costs tokens)
-	$(PY) scripts/eval_trigger.py --arena $(SKILLS) $(if $(MODE),--mode $(MODE),) $(if $(JUDGE),--judge $(JUDGE),)
+	python3 scripts/eval_trigger.py --from-make-process=$$PPID --make-target=arena
 
 status: ## Show what each CLI currently has vs the source of truth (read-only)
 	$(PY) scripts/lib/reconcile.py --status --all

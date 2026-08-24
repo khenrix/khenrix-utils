@@ -12,7 +12,7 @@ Stdlib only; reuses the llm-council fan-out engine for the judge call.
   eval_trigger.py --self-test     # hermetic logic, no tokens
 """
 from __future__ import annotations
-import argparse, json, re, sys
+import argparse, json, os, re, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,7 +21,50 @@ sys.path.insert(0, str(FANOUT_DIR))
 import fanout  # noqa: E402
 
 EVALS_ROOT = ROOT / "evals"
-DEFAULT_JUDGE = "claude"
+DEFAULT_JUDGE = "codex"
+
+
+def _argv_from_make_process(pid: str, target: str,
+                            *, proc_root: Path = Path("/proc")) -> list[str]:
+    """Recover literal Make assignments without evaluating Make or shell syntax."""
+    if not pid.isascii() or not pid.isdigit() or int(pid) <= 0:
+        raise ValueError("--from-make-process requires a positive decimal parent pid")
+    if target not in ("trigger", "arena"):
+        raise ValueError("--make-target must be trigger or arena")
+    try:
+        tokens = [os.fsdecode(raw) for raw in
+                  (proc_root / pid / "cmdline").read_bytes().split(b"\0") if raw]
+    except OSError as exc:
+        raise ValueError(
+            "cannot read raw GNU Make argv; invoke eval_trigger.py directly: "
+            f"{exc}") from exc
+    accepted = (("SKILL", "--skill") if target == "trigger" else
+                ("SKILLS", "--arena"))
+    values = {}
+    for token in tokens[1:]:
+        name, separator, value = token.partition("=")
+        if separator and name in {accepted[0], "MODE", "JUDGE"}:
+            values[name] = value
+    argv = [f"{accepted[1]}={values.get(accepted[0], '')}"]
+    for name, flag in (("MODE", "--mode"), ("JUDGE", "--judge")):
+        if values.get(name):
+            argv.append(f"{flag}={values[name]}")
+    for name in ("SKILL", "SKILLS", "MODE", "JUDGE",
+                 "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"):
+        os.environ.pop(name, None)
+    return argv
+
+
+def _normalize_entry_argv(argv: list[str] | None) -> list[str]:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    process = [item for item in raw if item.startswith("--from-make-process=")]
+    target = [item for item in raw if item.startswith("--make-target=")]
+    if not process and not target:
+        return raw
+    if len(raw) != 2 or len(process) != 1 or len(target) != 1:
+        raise ValueError("Make adapter arguments cannot be combined with public flags")
+    return _argv_from_make_process(
+        process[0].split("=", 1)[1], target[0].split("=", 1)[1])
 
 JUDGE_TMPL = """A coding agent has exactly one skill available:
 
@@ -478,6 +521,10 @@ def main(argv=None) -> int:
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--arena", default=None,
                     help="comma-separated skill names — pairwise routing eval")
+    try:
+        argv = _normalize_entry_argv(argv)
+    except ValueError as exc:
+        ap.error(str(exc))
     args = ap.parse_args(argv)
     if args.self_test:
         return _self_test()
