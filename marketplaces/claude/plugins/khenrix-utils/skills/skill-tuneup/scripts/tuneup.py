@@ -345,6 +345,36 @@ def _manifest_ownership_problem(repo: Path, manifest_path: Path) -> str | None:
             "maintains an existing skill whose history and eventual commit own its manifest")
 
 
+def _link_ownership_problem(repo: Path, link: Path) -> str | None:
+    """Why a layout symlink is not a committed 120000 entry in outer HEAD and index."""
+    rel = link.relative_to(repo)
+    git_rel = rel.as_posix()
+    raw_rel = os.fsencode(git_rel)
+    owned = {"outer index": False, "outer HEAD": False}
+    index = _git_authority().run(
+        ["ls-files", "--stage", "-z", "--", git_rel], repo=repo,
+        capture_output=True, check=False)
+    head = _git_authority().run(
+        ["ls-tree", "-z", "HEAD", "--", git_rel], repo=repo,
+        capture_output=True, check=False)
+    for name, result, mode_at in (("outer index", index, 0), ("outer HEAD", head, 0)):
+        if result.returncode != 0:
+            continue
+        for record in result.stdout.split(b"\0"):
+            if not record or b"\t" not in record:
+                continue
+            metadata, raw_name = record.split(b"\t", 1)
+            fields = metadata.split()
+            if raw_name == raw_rel and fields and fields[mode_at] == b"120000":
+                owned[name] = True
+                break
+    if all(owned.values()):
+        return None
+    missing = " and ".join(name for name, is_owned in owned.items() if not is_owned)
+    return (f"{rel} is a symlink that is not tracked in {missing}; commit the alias so "
+            "history and the eventual commit own it")
+
+
 def _ignored_consumable_problem(repo: Path, path: Path) -> str | None:
     """First non-disposable ignored entry below target source ``path``.
 
@@ -410,11 +440,34 @@ def _skill_candidates(repo: Path, skill: str) -> list[dict]:
             kind = "absent"
         states.append({"path": path, "manifest": manifest, "link": link,
                        "boundary": boundary, "ownership": ownership, "kind": kind})
+    # A project may expose one body to a second CLI by linking one foreign layout root
+    # onto another (Claude Code reads .claude/skills, Codex reads .agents/skills). Such a
+    # link is an alias of the usable directory, not a competing source: it must be the
+    # layout root itself, relative, committed as a 120000 entry, and resolve to a usable
+    # candidate of this same resolution. Anything else stays a refused link.
+    usable_by_real = {state["path"].resolve(): state["path"]
+                      for state in states if state["kind"] == "usable"}
+    for state in states:
+        if state["kind"] != "linked" or state["link"] != state["path"]:
+            continue
+        try:
+            real = state["path"].resolve(strict=True)
+        except OSError:
+            continue
+        target = usable_by_real.get(real)
+        if target is None or os.path.isabs(os.readlink(state["path"])):
+            continue
+        if _link_ownership_problem(repo, state["path"]) is not None:
+            continue
+        state["kind"] = "alias"
+        state["alias_of"] = target
     return states
 
 
 def _candidate_diagnostic(repo: Path, state: dict) -> str:
     rel = state["path"].relative_to(repo)
+    if state["kind"] == "alias":
+        return f"{rel} is a committed alias of {state['alias_of'].relative_to(repo)}"
     if state["kind"] == "linked":
         link = state["link"].relative_to(repo)
         return (f"{rel} is symlink-backed at {link}; replace the linked path with "
@@ -497,6 +550,8 @@ def target_info(repo: Path, skill: str) -> dict:
                         for state in states if state["kind"] == "unowned"]
     missing_misses = [_candidate_diagnostic(repo, state)
                       for state in states if state["kind"] == "missing-manifest"]
+    alias_candidates = [str(state["path"].relative_to(repo))
+                        for state in states if state["kind"] == "alias"]
     khenrix = is_khenrix_repo(repo)
     cap_refusal = _capabilities_source_refusal(repo) if khenrix else None
     source_refusals = [cap_refusal] if cap_refusal else []
@@ -510,7 +565,9 @@ def target_info(repo: Path, skill: str) -> dict:
     # consumes a target; this descriptive result stays useful to target-info JSON callers.
     # A linked same-name candidate is not merely an ignorable near miss when another
     # layout is valid: silently dropping it turns an ambiguous target into a successful
-    # resolution and can make the run edit/commit the wrong source of truth.
+    # resolution and can make the run edit/commit the wrong source of truth. The one
+    # exception is a committed relative alias onto the usable path (see _skill_candidates):
+    # it names the same directory, so editing the source edits the alias too.
     ambiguous = len(paths) > 1 or bool(
         paths and (linked_misses or boundary_misses or ownership_misses or source_refusals))
     return {
@@ -520,6 +577,7 @@ def target_info(repo: Path, skill: str) -> dict:
         "git_boundary_near_misses": boundary_misses,
         "ownership_near_misses": ownership_misses,
         "missing_manifest_near_misses": missing_misses,
+        "alias_candidates": alias_candidates,
         "source_refusals": source_refusals,
         "repo": str(repo),
         "repo_name": repo.name,
@@ -2453,8 +2511,19 @@ def _self_test() -> int:
         _make_skill(f, ".agents/skills/three-layouts")
         _make_skill(f, ".claude/skills/three-layouts")
         (f / "skills" / "three-layouts").mkdir(parents=True)
+        # A project can expose one skill body to a second CLI through a committed relative
+        # symlink between two foreign layouts; the real directory stays the only source.
+        _make_skill(f, ".agents/skills/aliased")
+        (f / ".claude" / "skills" / "aliased").symlink_to(
+            Path("../../.agents/skills/aliased"), target_is_directory=True)
+        _make_skill(f, ".agents/skills/aliased-abs")
+        (f / ".claude" / "skills" / "aliased-abs").symlink_to(
+            f / ".agents" / "skills" / "aliased-abs", target_is_directory=True)
+        _make_skill(f, ".agents/skills/aliased-late")
         _init_repo(f)
         _commit_fixture(f)
+        (f / ".claude" / "skills" / "aliased-late").symlink_to(
+            Path("../../.agents/skills/aliased-late"), target_is_directory=True)
         nested_boundary = _make_skill(f, ".agents/skills/nested-git")
         (nested_boundary / "component").mkdir()
         (nested_boundary / "component" / ".git").write_text(
@@ -2545,6 +2614,31 @@ def _self_test() -> int:
         ok.append(("linked-plus-valid ambiguity is refused with both candidates named",
                    _rc == 2 and "skills/shadowed" in _buf.getvalue()
                    and ".agents/skills/shadowed is symlink-backed" in _buf.getvalue()))
+        alias_info = target_info(f, "aliased")
+        ok.append(("a committed relative same-repo layout link is an alias, not an ambiguity",
+                   alias_info["found"] and not alias_info["ambiguous"]
+                   and alias_info["paths"] == [".agents/skills/aliased"]
+                   and alias_info.get("alias_candidates") == [".claude/skills/aliased"]
+                   and alias_info["linked_near_misses"] == []))
+        _buf = io.StringIO()
+        with contextlib.redirect_stdout(_buf):
+            _rc = main(["target-info", "--repo", str(f), "--skill", "aliased"])
+        ok.append(("target-info accepts an aliased target and names the alias",
+                   _rc == 0 and ".claude/skills/aliased" in _buf.getvalue()))
+        for command in ("baseline", "stale-models"):
+            _buf = io.StringIO()
+            with contextlib.redirect_stdout(_buf), contextlib.redirect_stderr(_buf):
+                _rc = main([command, "--repo", str(f), "--skill", "aliased"])
+            ok.append((f"{command} does not refuse an aliased target",
+                       _rc != 2 and "refusing" not in _buf.getvalue()
+                       and "Traceback" not in _buf.getvalue()))
+        for refused in ("aliased-abs", "aliased-late"):
+            refused_info = target_info(f, refused)
+            ok.append((f"{refused} link stays an ambiguity, not an alias",
+                       refused_info["found"] and refused_info["ambiguous"]
+                       and not refused_info.get("alias_candidates")
+                       and any("symlink-backed" in miss
+                               for miss in refused_info["linked_near_misses"])))
         for linked in ("dangling-dir", "dangling-manifest"):
             linked_info = target_info(f, linked)
             ok.append((f"standalone dangling candidate {linked} is refused",
@@ -7062,6 +7156,8 @@ def main(argv=None) -> int:
             print(f"tier:   {info['tier']}")
             print(f"gate:   {info['gate']}")
             print(f"log:    docs/tuneups/log/{info['log_target']}.jsonl (in khenrix-utils)")
+            if info["alias_candidates"]:
+                print(f"alias:  {', '.join(info['alias_candidates'])} (committed links onto the source)")
             if info["missing_manifest_near_misses"]:
                 print("note:   present but not a skill: "
                       + "; ".join(info["missing_manifest_near_misses"]))

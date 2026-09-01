@@ -40,19 +40,19 @@ python3 "$TUNEUP" target-info --repo "$REPO" --skill <target>
   + `[skill_facts.<name>.<cli>]` in `capabilities.toml`. Gate = evals + receipt +
   `make precommit`.
 - **`council-only`** — a skill in any OTHER repo (`.agents/skills/<name>`,
-  `.claude/skills/<name>`, or `skills/<name>`), rooted directly under the exact `--repo`
-  path. A khenrix receipt is meaningless there —
-  it attests to THIS repo's harness — **so the receipt gate does not apply.** That is a
-  claim about the khenrix gate, not about the repo: if the target has its own tests or
-  precommit hook, find and run them; they just cannot earn a receipt.
-  Everything else still applies: baseline, research, both council reviews, the audit, the
-  checkpoint, and convergence. **Say plainly in the run's output that it shipped without a
-  khenrix receipt** — never imply one was earned, and report any target-native gate you ran
-  as its own separate result. Run-log entries are keyed
-  `<repo-name>@<hash>:<skill>` (the hash disambiguates two repos sharing a basename), and
-  the log itself is written into khenrix-utils, which is also the approved-model registry
-  for `stale-models`. Pass `target-info`'s `log_target` verbatim as `--target`; an
-  unqualified key for a foreign repo is refused.
+  `.claude/skills/<name>`, or `skills/<name>`), rooted directly under the exact `--repo` path. A
+  committed relative symlink from one of those layouts onto another (`.claude/skills/<name>` →
+  `../../.agents/skills/<name>`) is an alias `target-info` lists; the real directory stays the
+  target. A khenrix receipt is meaningless there — it attests to THIS repo's harness — **so the
+  receipt gate does not apply.** That is a claim about the khenrix gate, not about the repo: if
+  the target has its own tests or precommit hook, find and run them; they just cannot earn a
+  receipt. Everything else still applies: baseline, research, both council reviews, the audit,
+  the checkpoint, and convergence. **Say plainly in the run's output that it shipped without a
+  khenrix receipt** — never imply one was earned, and report any target-native gate you ran as
+  its own separate result. Run-log entries are keyed `<repo-name>@<hash>:<skill>` (the hash
+  disambiguates two repos sharing a basename), and the log itself is written into khenrix-utils,
+  which is also the approved-model registry for `stale-models`. Pass `target-info`'s `log_target`
+  verbatim as `--target`; an unqualified key for a foreign repo is refused.
 
 ## Non-negotiables
 
@@ -479,7 +479,7 @@ git -C "$REPO" diff --cached --check                                      # and 
 | Situation | Do |
 |---|---|
 | Target doesn't exist | read `target-info`'s near-miss diagnostic first (an existing directory may simply lack `SKILL.md`); otherwise list valid targets FOR THE TIER — in khenrix-utils `shared/skills/*` + `shared/skill-templates/*`; in any other repo `.agents/skills/*`, `.claude/skills/*`, and `skills/*` — then ask |
-| Target source is symlink-backed | `target-info` refuses it because source, history, dirty-tree check and commit must share one repository, and tuned content must be tracked rather than reached through a link; replace the link with the file or move its content under the skill |
+| Target source is symlink-backed | `target-info` refuses it because source, history, dirty-tree check and commit must share one repository, and tuned content must be tracked rather than reached through a link; replace the link with the file or move its content under the skill. The one exception is a committed relative alias from one foreign layout root onto the usable one, which is listed as `alias_candidates` rather than refused |
 | Target manifest is unowned, or its tree contains ignored source | Restore and commit an existing manifest first; remove the ignored input, or unignore and commit it. Only `__pycache__/` and `*.pyc` are disposable. |
 | `--repo` is nested, or the skill contains a nested `.git`/gitlink | rerun with the exact Git top-level; move the skill content into that repository's owned tree rather than tuning across a repository boundary |
 | Target matches more than one foreign layout | `target-info`, `baseline`, `stale-models`, and `verify-final-receipt` refuse with the same matching paths — pick or remove one, never guess |
