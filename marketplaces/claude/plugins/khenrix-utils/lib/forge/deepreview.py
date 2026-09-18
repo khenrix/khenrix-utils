@@ -419,19 +419,23 @@ def _parse_findings(answer: str, seat: str, checkpoint_round: int) -> tuple:
     return tuple(out), True
 
 
-def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS,
+def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=SEATS,
+             claude_model: str | None = None,
              agy_model: str | None = None):
     """One read-only council fan-out. Returns the engine's manifest.
 
     READ-ONLY IS MECHANICAL, NOT ASKED FOR. `make_readonly` swaps each provider's bypass
-    flag for a plan-only posture, and agy additionally gets a throwaway worktree cwd. A
-    reviewer that can write is a reviewer that can "fix" the diff it was asked to judge.
+    flag for a plan-only posture, and agy additionally gets a throwaway worktree cwd rooted
+    in the checkout being reviewed. Using the process cwd here can silently isolate a
+    different repository when Forge is launched through a development script. A reviewer
+    that can write is a reviewer that can "fix" the diff it was asked to judge.
     """
     cfg = {name: dict(values) for name, values in engine.MODES[mode].items()}
-    if agy_model is not None:
-        if not isinstance(agy_model, str) or not agy_model.strip():
-            raise DeepReviewError(f"agy_model must be a non-empty model name, not {agy_model!r}")
-        cfg["agy"]["model"] = agy_model
+    for seat, model in (("claude", claude_model), ("agy", agy_model)):
+        if model is not None:
+            if not isinstance(model, str) or not model.strip():
+                raise DeepReviewError(f"{seat}_model must be a non-empty model name, not {model!r}")
+            cfg[seat]["model"] = model
     timeout = engine.MODE_TIMEOUT[mode]
     workdir.mkdir(parents=True, exist_ok=True)
     specs, worktrees = [], []
@@ -439,7 +443,8 @@ def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS,
         spec = engine.build_real_spec(name, prompt, timeout, cfg, workdir)
         engine.make_readonly(spec)
         if spec.name == "agy":
-            worktrees.append(engine.isolate_agy_worktree(spec, workdir))
+            worktrees.append(engine.isolate_agy_worktree(
+                spec, workdir, repo_dir=str(checkout)))
         specs.append(spec)
     try:
         return engine.run_council(specs, retries=1, timeout=timeout, backoff=2.0,
@@ -451,6 +456,7 @@ def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS,
 
 def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
                     enabled: bool = True, mode: str = "deep", council=None,
+                    claude_model: str | None = None,
                     agy_model: str | None = None) -> DeepReview:
     """The post-fusion pass, from the synthesis checkout, after the council loop terminated.
 
@@ -490,7 +496,8 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
     workdir = Path(run_dir) / "deep-review"
     workdir.mkdir(parents=True, exist_ok=True)
     if council is None:
-        manifest = _council(PROMPT + body, workdir, mode=mode, agy_model=agy_model)
+        manifest = _council(PROMPT + body, workdir, checkout=checkout, mode=mode,
+                            claude_model=claude_model, agy_model=agy_model)
     else:
         manifest = council(PROMPT + body, workdir, mode=mode)
     valid = [p for p in manifest.get("providers", []) if p.get("valid")]

@@ -349,9 +349,10 @@ class Manifest:
     # so a fleet driven at a different width than the one quoted is a fleet nobody costed.
     # 1 is serial — every run before this field existed, and still the default.
     concurrency: int
-    # The agy model is resolved once at --start and survives every later process. Without
-    # this field, resume and review silently follow whatever ambient council default happens
-    # to be installed then, so one run can be built and judged by two different models.
+    # Provider models are resolved once at --start and survive every later process. Without
+    # these fields, resume and review silently follow whatever ambient council defaults happen
+    # to be installed then, so one run can be built and judged by different models.
+    claude_model: str
     agy_model: str
 
 
@@ -996,6 +997,7 @@ _DECODERS = {
     "review_rounds": _budget,
     "synthesis_fix_cap": _budget,
     "concurrency": count,
+    "claude_model": _nonempty_text,
     "agy_model": _nonempty_text,
 }
 

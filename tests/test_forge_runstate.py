@@ -34,6 +34,7 @@ def _manifest(repo, **kw):
                 index_digest=runstate.snapshot_index(repo),
                 created_at="2026-08-01T00:00:00Z", seats=3, attempts=3,
                 review_rounds=2, synthesis_fix_cap=3, concurrency=1,
+                claude_model="claude-sonnet-5",
                 agy_model="Gemini 3.8 Flash (High)")
     return runstate.Manifest(**{**base, **kw})
 
@@ -98,17 +99,18 @@ def test_a_manifest_round_trips_every_field(tmp_path):
     assert runstate.read_manifest(run) == m
 
 
-def test_agy_model_is_mandatory_and_nonempty_on_disk(tmp_path):
+@pytest.mark.parametrize("field", ["claude_model", "agy_model"])
+def test_provider_model_is_mandatory_and_nonempty_on_disk(tmp_path, field):
     repo = make_repo(tmp_path)
     for index, value in enumerate((None, "", "   ")):
         run = tmp_path / f"run-model-{index}"
         run.mkdir()
         runstate.write_manifest(run, _manifest(repo))
         if value is None:
-            _tamper(run, lambda row: row.pop("agy_model"))
+            _tamper(run, lambda row, f=field: row.pop(f))
         else:
-            _tamper(run, lambda row, v=value: row.update(agy_model=v))
-        with pytest.raises(runstate.ManifestError, match="agy_model"):
+            _tamper(run, lambda row, f=field, v=value: row.update({f: v}))
+        with pytest.raises(runstate.ManifestError, match=field):
             runstate.read_manifest(run)
 
 

@@ -56,8 +56,9 @@ def _payload(*rows):
     return "prose before\n```json\n" + json.dumps({"findings": list(rows)}) + "\n```\nafter"
 
 
-def test_deep_review_overlays_only_the_recorded_agy_model(monkeypatch, tmp_path):
+def test_deep_review_overlays_only_the_recorded_provider_models(monkeypatch, tmp_path):
     seen = {}
+    isolated = {}
     original = {name: dict(values) for name, values in deepreview.engine.MODES["deep"].items()}
 
     def build(name, prompt, timeout, cfg, workdir):
@@ -66,17 +67,25 @@ def test_deep_review_overlays_only_the_recorded_agy_model(monkeypatch, tmp_path)
 
     monkeypatch.setattr(deepreview.engine, "build_real_spec", build)
     monkeypatch.setattr(deepreview.engine, "make_readonly", lambda spec: spec)
-    monkeypatch.setattr(deepreview.engine, "isolate_agy_worktree",
-                        lambda spec, workdir: Path(workdir) / "agy-isolated")
+    def isolate(spec, workdir, *, repo_dir):
+        isolated["repo_dir"] = repo_dir
+        return Path(workdir) / "agy-isolated"
+
+    monkeypatch.setattr(deepreview.engine, "isolate_agy_worktree", isolate)
     monkeypatch.setattr(deepreview.engine, "remove_agy_worktree", lambda path: None)
     monkeypatch.setattr(deepreview.engine, "run_council", lambda specs, **kw: {"providers": []})
 
-    deepreview._council("review", tmp_path, agy_model="Gemini 3.7 Flash (High)")
+    checkout = tmp_path / "repository-being-reviewed"
+    deepreview._council("review", tmp_path, checkout=checkout,
+                        claude_model="claude-sonnet-5",
+                        agy_model="Gemini 3.7 Flash (High)")
 
     cfg = seen["agy"]
+    assert cfg["claude"]["model"] == "claude-sonnet-5"
     assert cfg["agy"]["model"] == "Gemini 3.7 Flash (High)"
-    assert cfg["claude"] == original["claude"]
+    assert cfg["claude"] == {**original["claude"], "model": "claude-sonnet-5"}
     assert cfg["codex"] == original["codex"]
+    assert isolated["repo_dir"] == str(checkout)
 
 
 # --------------------------------------------------------------------------- #

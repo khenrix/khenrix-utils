@@ -74,7 +74,8 @@ def _manifest(repo, b, setup, gate, seats, attempts, concurrency=1):
         protected_refs=refs, forge_refs={b.ref: b.commit}, status_digest=digest,
         index_digest=runstate.snapshot_index(repo), created_at="2026-08-03T00:00:00Z",
         seats=seats, attempts=attempts, review_rounds=2, synthesis_fix_cap=3,
-        concurrency=concurrency, agy_model="Gemini 3.8 Flash (High)")
+        concurrency=concurrency, claude_model="claude-sonnet-5",
+        agy_model="Gemini 3.8 Flash (High)")
 
 
 def _open(tmp_path, *, setup=(verify.Step(argv=("true",)),),

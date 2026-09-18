@@ -1743,6 +1743,7 @@ def _manifest(**kw):
                   forge_refs={"refs/khenrix-forge/r1/base": "b" * 40}, status_digest="d",
                   index_digest="e", created_at="2026-08-02T00:00:00+00:00", seats=3,
                   attempts=3, review_rounds=2, synthesis_fix_cap=3, concurrency=1,
+                  claude_model="claude-sonnet-5",
                   agy_model="Gemini 3.8 Flash (High)")
     return runstate.Manifest(**{**fields, **kw})
 
@@ -1780,7 +1781,7 @@ def test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse(tmp_p
     """
     shared = [f.name for f in dataclasses.fields(gate.Confirmation)
               if f.name in {g.name for g in dataclasses.fields(runstate.Manifest)}]
-    assert sorted(shared) == ["agy_model", "attempts", "concurrency", "review_rounds",
+    assert sorted(shared) == ["agy_model", "attempts", "claude_model", "concurrency", "review_rounds",
                               "seats", "setup", "synthesis_fix_cap", "verify"], \
         "the two records' shared fields moved; the rows below decide what this test measures"
     c = _confirmation()

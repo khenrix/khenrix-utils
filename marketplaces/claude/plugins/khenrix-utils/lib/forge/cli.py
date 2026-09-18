@@ -96,17 +96,17 @@ def _resolve_seat_timeout() -> int:
     return t
 
 
-def _resolve_agy_model(override=None) -> str:
-    """Resolve agy's model once; the manifest owns it after the run starts."""
-    model = override if override is not None else engine.MODES.get("normal", {}).get("agy", {}).get("model")
+def _resolve_model(seat: str, override=None) -> str:
+    """Resolve a provider model once; the manifest owns it after the run starts."""
+    model = override if override is not None else engine.MODES.get("normal", {}).get(seat, {}).get("model")
     if not isinstance(model, str) or not model.strip():
-        raise CliError("council.engine normal mode has no usable agy model; pass --model-agy "
+        raise CliError(f"council.engine normal mode has no usable {seat} model; pass --model-{seat} "
                        "with --start or repair the council defaults")
     return model
 
 
-def _agy_cfg(model: str) -> dict:
-    return {"agy": {"model": model}}
+def _model_cfg(claude_model: str, agy_model: str) -> dict:
+    return {"claude": {"model": claude_model}, "agy": {"model": agy_model}}
 
 
 def _closures() -> dict:
@@ -277,7 +277,8 @@ def start(args, *, out, make_launcher=None) -> int:
     for line in _abandoned_runs(Path(args.repo).resolve()):
         print(f"  {line}", file=out)
     timeout = _resolve_seat_timeout()
-    agy_model = _resolve_agy_model(args.model_agy)
+    claude_model = _resolve_model("claude", args.model_claude)
+    agy_model = _resolve_model("agy", args.model_agy)
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
                         review_rounds=args.review_rounds, deep_review=not args.skip_deep_review,
@@ -305,6 +306,7 @@ def start(args, *, out, make_launcher=None) -> int:
     # recorded answer rather than re-deriving it from a flag it is not given.
     answers["deep_review"] = not args.skip_deep_review
     confirmation = dataclasses.replace(gate.confirm(report, quote_, answers),
+                                       claude_model=claude_model,
                                        agy_model=agy_model)
 
     run_id = storage.new_run_id()
@@ -319,7 +321,8 @@ def start(args, *, out, make_launcher=None) -> int:
     # HASHED OFF THE RECORD, NOT OFF THE VALUE IN HAND. `read_task_bundle` is what a resume and
     # `--collect` read, so hashing the same bytes they will is what makes §11's `bundle_sha256`
     # a statement about the run rather than about this process's memory.
-    launcher = mk(prompt=instruction, timeout=timeout, cfg=_agy_cfg(agy_model),
+    launcher = mk(prompt=instruction, timeout=timeout,
+                  cfg=_model_cfg(claude_model, agy_model),
                   bundle_sha256=taskbundle.bundle_hash(taskbundle.read_task_bundle(run_dir)))
     results = runnermod.run(run_dir, repo, identity=confirmation.author, launch=launcher)
 
@@ -398,7 +401,7 @@ def _resume(args, *, out, make_launcher=None) -> int:
                         "the task entrypoint this run recorded")
     mk = _launcher_factory(make_launcher)
     launcher = mk(prompt=instruction, timeout=_resolve_seat_timeout(),
-                  cfg=_agy_cfg(manifest.agy_model),
+                  cfg=_model_cfg(manifest.claude_model, manifest.agy_model),
                   bundle_sha256=taskbundle.bundle_hash(b))
     results = runnermod.run(run_dir, repo, identity=identity, launch=launcher, resume=True)
     return _finish_the_fleet(run_dir, repo, run_id, results, out=out)
@@ -1178,6 +1181,7 @@ def collect(args, *, out) -> int:
         log.record(journal.intent(_DEEP_KIND), operation_id=op, round=max(1, rounds))
         u = deepreview.run_deep_review(run_dir, checkout=synth, base=manifest.baseline_commit,
                                        head=head, round_=max(1, rounds), enabled=enabled,
+                                       claude_model=manifest.claude_model,
                                        agy_model=manifest.agy_model)
         # `findings` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
         # and `handover` then called `len()` on it. `None` and `()` are DIFFERENT here and the
@@ -1382,7 +1386,7 @@ def _review(args, *, out) -> int:
         baseline_commit=manifest.base_commit, baseline_tree=manifest.tracked_tree_oid,
         artifact_manifest=None, log=log,
         other_clones=tuple(others) + (Path(synth),),
-        cfg=_agy_cfg(manifest.agy_model))
+        cfg=_model_cfg(manifest.claude_model, manifest.agy_model))
     after_digest, after = reviewmod.worktree_identity(tree_dir, quota)
     reviewmod.record_worktree_after(log, round_=round_, digest=after_digest,
                                     entries=len(after),
@@ -1618,6 +1622,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="--start: an untracked path to carry into the baseline (repeatable)")
     ap.add_argument("--seats", type=int, default=3)
     ap.add_argument("--attempts", type=int, default=3)
+    ap.add_argument("--model-claude", dest="model_claude",
+                    help="--start: Claude model to persist for builders and every review stage; "
+                         "defaults to council normal mode")
     ap.add_argument("--model-agy", dest="model_agy",
                     help="--start: agy model to persist for builders and every review stage; "
                          "defaults to council normal mode")
@@ -1664,9 +1671,10 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
     try:
-        if args.model_agy is not None and not args.start:
-            return _fail(out, ["--model-agy is only valid with --start; later stages use the "
-                               "model recorded in the run manifest"])
+        for seat, model in (("claude", args.model_claude), ("agy", args.model_agy)):
+            if model is not None and not args.start:
+                return _fail(out, [f"--model-{seat} is only valid with --start; later stages "
+                                   "use the model recorded in the run manifest"])
         if args.start:
             for required in ("task", "answers"):
                 if not getattr(args, required):

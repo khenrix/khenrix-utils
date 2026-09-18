@@ -123,6 +123,7 @@ MODES = {
         "agy":    {"model": "Gemini 3.8 Flash (High)", "thinking": "high"},
     },
 }
+DEFAULT_CLAUDE_MODEL = MODES["normal"]["claude"]["model"]
 DEFAULT_AGY_MODEL = MODES["normal"]["agy"]["model"]
 DEFAULT_MODE = "normal"
 # Deep raised 600->1200 (2026-07-11): fable-5@max measured 649s and sol@max 796s on a
