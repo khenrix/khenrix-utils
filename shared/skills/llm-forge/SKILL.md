@@ -97,6 +97,12 @@ python3 "$FORGE" --start \
   --seats 3 --attempts 3 --review-rounds 2
 ```
 
+Forge resolves agy's model once at `--start`, defaulting to council normal mode (currently
+`Gemini 3.8 Flash (High)`), and records it in the immutable run manifest. Builders, resume,
+`--review`, and the deep review all reuse that exact value. Use `--model-agy "<label>"` only
+with `--start` for an explicit per-run override; later verbs refuse the flag rather than
+silently changing the model mid-run. Claude and Codex keep their existing stage defaults.
+
 `--start` runs the static preflight, prints the quote, opens the run, builds the baseline
 **B1**, launches the fleet, verifies each candidate — and **stops at `comparing`**. It
 prints the run id, the synthesis worktree path, and a seat table.
@@ -250,7 +256,8 @@ python3 "$FORGE" --resume <run-id> --repo .
 
 It re-reads the run off disk, reloads every seat that already settled from its persisted
 candidate bundle, and drives **only** the seats that never did. A seat that settled costs
-nothing the second time.
+nothing the second time. The agy model is also read from that run's manifest, so an ambient
+council upgrade cannot change a resumed fleet or its reviewers.
 
 **It refuses rather than guessing.** Each reloaded bundle is checked against the Fwork
 snapshot its harvest measured, so a preserved clone that was edited after the run stopped is

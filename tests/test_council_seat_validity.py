@@ -231,3 +231,9 @@ def test_agy_argv_never_carries_effort():
                         or a.startswith("-effort=") for a in argv), (
                         f"mode {mode} ({label}): agy argv must never carry --effort; "
                         f"got {joined}")
+
+
+def test_both_council_modes_default_to_gemini_38_high():
+    assert {MODES[mode]["agy"]["model"] for mode in ("normal", "deep")} == {
+        "Gemini 3.8 Flash (High)"
+    }

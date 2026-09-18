@@ -285,10 +285,10 @@ def agreement_label(ids) -> str:
     `model_requested` DOES NOT CARRY ANY OF THAT WEIGHT, though this paragraph used to say
     "three CLIs on three models" and rest half the argument on it. `launch.make_launcher` fills
     it from `spec.model`, which is `build_real_spec`'s reading of a caller-supplied `cfg`;
-    with no `cfg` it is `None` for claude, codex and agy alike (measured), and by the paragraph
-    above an absence on both sides is not a difference. It differs only when a caller names a
-    different model per provider, and today no production caller names one at all. `cli_version`
-    is what actually reaches the verdict.
+    with no `cfg` it is `None` for claude, codex and agy alike (measured). Forge now supplies
+    only the agy model recorded at `--start`; Claude and Codex remain absent here and keep
+    their CLI defaults. The fleet-wide label still follows `cli_version`, which differs across
+    the three providers regardless of whether a model request is recorded.
 
     NOTHING DOWNSTREAM MAY TREAT `identically-prompted` AS A CORRECTNESS ARGUMENT. §11's last
     line: agreement never substitutes for one.

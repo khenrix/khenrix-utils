@@ -60,7 +60,7 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # verbatim via `.get(t, t)`; build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
-# applied at run time. `agy models` prints SLUGS (gemini-3.7-flash-high) since 1.1.5;
+# applied at run time. `agy models` prints SLUGS (gemini-3.8-flash-high) since 1.1.5;
 # the display label we pin is equally valid — agy's own model-resolution error lists
 # the labels, and both forms were verified live on 1.1.8 and RE-PROBED 2026-08-08 on
 # 1.1.11 — `agy models` lists slug and label side by side, and pinning the LABEL
@@ -82,14 +82,14 @@ MODES = {
     "normal": {
         "claude": {"model": "claude-opus-5",           "thinking": "max"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
-        "agy":    {"model": "Gemini 3.7 Flash (High)", "thinking": "high"},
+        "agy":    {"model": "Gemini 3.8 Flash (High)", "thinking": "high"},
     },
     "deep": {
         # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with a
         # garbage control on each: claude's help enumerates only low..max yet accepts
         # `ultracode` and warn-and-IGNORES an unknown value; codex accepts `ultra` and fails
-        # CLOSED on garbage with an API 400; agy refuses `--effort` outright on Gemini 3.7
-        # Flash — all five values, not just those above high (see the agy cell below).
+        # CLOSED on garbage with an API 400; agy receives no separate `--effort`. The last
+        # full negative probe was Gemini 3.7 Flash — all five values were refused (see below).
         #
         # A DROPPED TIER WOULD SILENTLY DOWNGRADE THE CLAUDE SEAT, AND NOTHING AT RUNTIME
         # DETECTS IT. This comment used to claim "the smoke asserts the warning's absence".
@@ -105,9 +105,10 @@ MODES = {
         "claude": {"model": "claude-opus-5",           "thinking": "ultracode"},
         "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug), and
-        # on 3.7 `--effort` is not accepted AT ALL. RE-PROBED 2026-08-14 on agy 1.1.13 with
-        # Gemini 3.7 Flash (High), all five values: low|medium|high are refused with
-        # `--effort is not supported for model "Gemini 3.7 Flash (High)"`, ultra|max with
+        # on Flash `--effort` is not accepted AT ALL. RE-PROBED 2026-09-18 on agy 1.2.0;
+        # `agy models` lists Gemini 3.8 Flash (High) and no Max variant. The prior 2026-08-14
+        # probe on agy 1.1.13 with Gemini 3.7 Flash (High) found all five values refused:
+        # low|medium|high with `--effort is not supported`, ultra|max with
         # `invalid --effort ... (valid: low, medium, high)`. All five land in the --log-file
         # log as `Print mode: invalid model selection` (STDERR instead shows `Error: invalid
         # model selection (...)`) and exit NON-ZERO — so not passing --effort is what keeps
@@ -119,9 +120,10 @@ MODES = {
         # `agy models` also lists `gemini-3.1-pro-high`; a Pro deep seat is UNPROBED
         # (entitlement, latency, cost) and is the only candidate for making agy's deep seat
         # differ from normal. See the plan's handover list.
-        "agy":    {"model": "Gemini 3.7 Flash (High)", "thinking": "high"},
+        "agy":    {"model": "Gemini 3.8 Flash (High)", "thinking": "high"},
     },
 }
+DEFAULT_AGY_MODEL = MODES["normal"]["agy"]["model"]
 DEFAULT_MODE = "normal"
 # Deep raised 600->1200 (2026-07-11): fable-5@max measured 649s and sol@max 796s on a
 # substantive review — 600 killed both. Re-measured on the current panel (2026-07-25,
@@ -927,7 +929,7 @@ def build_real_spec(name: str, prompt: str, timeout: int,
         # must come BEFORE the prompt — otherwise it's silently dropped, which leaves
         # --dangerously-skip-permissions un-applied and agy returns empty in seconds.
         # Since agy 1.1.1, `--model` pins the model per-run (thinking tier is encoded in
-        # the model string, e.g. "Gemini 3.7 Flash (High)"; `agy models` prints the slug
+        # the model string, e.g. "Gemini 3.8 Flash (High)"; `agy models` prints the slug
         # form of the same set, and both resolve) —
         # the settings.json read remains only as manifest-provenance fallback. Since 1.1.2
         # an unresolvable --model hard-fails non-zero instead of silently downgrading to
@@ -2054,10 +2056,12 @@ def self_test() -> int:
                     prompt="hi")
     ag = m["providers"][0]
     # S6a — A SPAWN THE KERNEL REFUSES IS A DEAD SEAT, NOT A TRACEBACK. Measured on this
-    # machine: a 200_000-byte argv element raises OSError E2BIG, 120_000 does not. Before
+    # Linux caps one element near 128 KiB, while macOS permits 200 KiB; use more than the
+    # platform's advertised total argv ceiling so the negative control is portable. Before
     # this was caught, the error left run_council entirely and crashed the caller.
     big = _stub_spec("claude", "ok")
-    big = replace(big, argv=[*big.argv, "--pad", "x" * 200_000])
+    arg_max = int(os.sysconf("SC_ARG_MAX")) if hasattr(os, "sysconf") else 2_000_000
+    big = replace(big, argv=[*big.argv, "--pad", "x" * max(2_000_000, arg_max + 1)])
     m = run_council([big], retries=1, timeout=5, backoff=0.05, workdir=wd("e2big"),
                     prompt="hi")
     sp = m["providers"][0]
@@ -2219,7 +2223,7 @@ def self_test() -> int:
     check("deep: codex seat carries model_reasoning_effort=ultra",
           any('model_reasoning_effort="ultra"' in str(a) for a in _dx.argv))
     _da = build_real_spec("agy", "q", 30, MODES["deep"], wd("deep"))
-    check("deep: agy seat still carries NO --effort (3.7 refuses every value)",
+    check("deep: agy seat still carries NO --effort (Flash tier is in the model label)",
           "--effort" not in _da.argv)
 
     # S14 — make_readonly argv contracts (plan-file suppression is mechanical + prompt).

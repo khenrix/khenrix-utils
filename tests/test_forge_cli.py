@@ -219,7 +219,7 @@ def test_the_deep_review_this_file_neutralises_really_convenes_a_panel():
 
 
 def _drive_a_start(tmp_path, monkeypatch, *, skip_deep_review=False, refuse_seat=None,
-                   make_launcher=_a_fake_make_launcher):
+                   model_agy=None, make_launcher=_a_fake_make_launcher):
     """§5's gate and §7's fleet, with nothing paid and nothing written outside tmp_path.
 
     THE NEUTRALISATIONS ARE NOT OPTIONAL AND THIS IS WHY THE FIXTURE IS REQUIRED RATHER THAN
@@ -248,6 +248,8 @@ def _drive_a_start(tmp_path, monkeypatch, *, skip_deep_review=False, refuse_seat
             "--answers", str(_answers(tmp_path)), "--attempts", "1"]
     if skip_deep_review:
         argv.append("--skip-deep-review")
+    if model_agy is not None:
+        argv.extend(["--model-agy", model_agy])
     buf = io.StringIO()
     rc = cli.main(argv, out=buf, make_launcher=make_launcher)
     assert rc == 0, buf.getvalue()
@@ -459,6 +461,21 @@ def test_start_records_the_task_bundle_and_hands_the_launcher_its_hash(tmp_path,
     assert seen["bundle_sha256"] is not None
     assert seen["timeout"] == _FORGE_TIMEOUT, \
         "§19's window comes off the engine's own table and from nowhere else"
+    assert seen["cfg"] == {"agy": {"model": "Gemini 3.8 Flash (High)"}}
+    assert runstate.read_manifest(run_dir).agy_model == "Gemini 3.8 Flash (High)"
+
+
+def test_start_model_override_wins_and_is_persisted(tmp_path, monkeypatch):
+    seen = {}
+
+    def spy(**kw):
+        seen.update(kw)
+        return _a_fake_make_launcher(**kw)
+
+    run_dir = _drive_a_start(tmp_path, monkeypatch, model_agy="Gemini 3.7 Flash (High)",
+                             make_launcher=spy)
+    assert seen["cfg"] == {"agy": {"model": "Gemini 3.7 Flash (High)"}}
+    assert runstate.read_manifest(run_dir).agy_model == "Gemini 3.7 Flash (High)"
 
 
 def test_every_seats_recorded_fingerprint_carries_the_bundle_hash(tmp_path, monkeypatch):
@@ -1394,6 +1411,7 @@ def test_review_convenes_a_round_in_a_clone_and_never_in_the_worktree(tmp_path, 
     def _fake_round(rd, *, round_, checkout, checkpoint, **kw):
         seen["checkout"] = Path(checkout)
         seen["round"] = round_
+        seen["cfg"] = kw["cfg"]
         r = reviewmod.Round(round_, checkpoint, (), (), ("claude", "codex", "agy"), ())
         reviewmod.write_round(rd, r)
         return r
@@ -1403,6 +1421,7 @@ def test_review_convenes_a_round_in_a_clone_and_never_in_the_worktree(tmp_path, 
     rc = cli.main(["--review", _run_id(run_dir), "--repo", str(repo)], out=out)
     assert rc == 0, out.getvalue()
     assert seen["round"] == 1
+    assert seen["cfg"] == {"agy": {"model": "Gemini 3.8 Flash (High)"}}
     assert seen["checkout"] != run_dir / "synthesis", "the panel sat in the worktree"
     assert (seen["checkout"] / ".git").is_dir(), \
         "the review tree is not an independent repository"

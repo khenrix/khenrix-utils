@@ -108,7 +108,7 @@ fine for most runs.
 The council is a fixed panel of three models. The two modes differ in **both** the claude
 seat's reasoning tier and how hard the others think:
 
-- **`normal`** (default) — Opus 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.7 Flash
+- **`normal`** (default) — Opus 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.8 Flash
   (High). Use for most council runs.
 - **`deep`** — Opus 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
   above High exists) + a longer timeout. Use for genuinely high-stakes /
@@ -124,8 +124,10 @@ seat's reasoning tier and how hard the others think:
 a garbage-value control): claude's `--help` lists only `low…max` yet accepts `ultracode`
 silently — and *warn-and-ignores* an unknown value, so if a future CLI drops the tier the
 seat downgrades to default effort with only a stderr line; codex accepts `ultra` and fails
-**closed** with an API 400 on garbage; agy refuses `--effort` outright on Gemini 3.7 Flash
-— all five values, not merely those above `high` (re-probed 2026-08-14 on agy 1.1.13).
+**closed** with an API 400 on garbage; agy receives no separate `--effort` because Flash
+encodes the tier in its model label. All five values were refused on Gemini 3.7 Flash
+(re-probed 2026-08-14 on agy 1.1.13); `agy models` confirmed the 3.8 High label and no Max
+variant on 2026-09-18.
 
 **Automatic model fallback — currently INERT.** The claude seat is pinned to
 `claude-opus-5` because Fable 5 is credit-walled on this account (2026-08-12: a fable-5
@@ -147,8 +149,8 @@ The panel and tiers live in **one place** — the `MODES` table at the top of
 change a tier, edit one cell there. A *new* model id must also be registered in
 `capabilities.toml [models]` — `make verify` fails otherwise. Since agy 1.1.1 the
 engine pins agy's model per-run via `--model` (the thinking tier is encoded in the model
-string — `agy models` prints them as slugs, e.g. `gemini-3.7-flash-high`; the display
-label we pin resolves too, re-probed on 1.1.13 (2026-08-14)), so the agy cell's MODEL is
+string — `agy models` prints them as slugs, e.g. `gemini-3.8-flash-high`; the display
+label we pin is listed beside it (re-probed on 2026-09-18), so the agy cell's MODEL is
 enforced like the others; its tier tops out at "(High)" (no Flash Max tier exists), so
 deep mode deepens the claude and codex seats only.
 

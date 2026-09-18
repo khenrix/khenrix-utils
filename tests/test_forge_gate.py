@@ -1332,11 +1332,9 @@ def test_the_gate_reads_the_identity_the_engines_own_git_is_blind_to(tmp_path, m
     and the asymmetry it exists for is measured here: the same repository and the same key,
     answered by this call and refused by `baseline._resolve_author` beside it.
 
-    HALF AN IDENTITY IS NONE, and the control is what makes that a choice rather than a
-    limitation: over the same half-configured repository `git var GIT_AUTHOR_IDENT` — the
-    call `baseline`'s docstring recommended — answers a complete ident at exit 0, with an
-    email it built out of user@hostname. That value would reach B1 and `git log` with nothing
-    marking the invented half, which is why this reads `config --get` instead.
+    HALF AN IDENTITY IS NONE. Depending on hostname policy, `git var GIT_AUTHOR_IDENT` either
+    invents user@hostname or refuses the same half-configured repository. Neither behavior
+    supplies a trustworthy explicit answer, which is why this reads `config --get` instead.
     """
     cfg = global_identity(tmp_path, monkeypatch)
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
@@ -1351,9 +1349,13 @@ def test_the_gate_reads_the_identity_the_engines_own_git_is_blind_to(tmp_path, m
 
     cfg.write_text(f"[user]\n\tname = {GLOBAL_IDENTITY[0]}\n")
     assert gate.propose_identity(repo) is None, "a name with no email is not an identity"
-    guessed = _git(repo, "var", "GIT_AUTHOR_IDENT").stdout
-    assert guessed.startswith(GLOBAL_IDENTITY[0]) and "@" in guessed, \
-        f"the control: git invents the missing half and reports success — {guessed!r}"
+    guessed = _git(repo, "var", "GIT_AUTHOR_IDENT", check=False)
+    if guessed.returncode == 0:
+        assert guessed.stdout.startswith(GLOBAL_IDENTITY[0]) and "@" in guessed.stdout, \
+            f"the control: git invented an unusable identity — {guessed.stdout!r}"
+    else:
+        assert "identity unknown" in guessed.stderr.lower() \
+            or "unable to auto-detect" in guessed.stderr.lower(), guessed.stderr
 
 
 def test_the_seats_and_attempts_the_quote_priced_are_what_the_manifest_records(tmp_path,
@@ -1740,7 +1742,8 @@ def _manifest(**kw):
                   verify=(verify.Step(argv=("true",)),), protected_refs={},
                   forge_refs={"refs/khenrix-forge/r1/base": "b" * 40}, status_digest="d",
                   index_digest="e", created_at="2026-08-02T00:00:00+00:00", seats=3,
-                  attempts=3, review_rounds=2, synthesis_fix_cap=3, concurrency=1)
+                  attempts=3, review_rounds=2, synthesis_fix_cap=3, concurrency=1,
+                  agy_model="Gemini 3.8 Flash (High)")
     return runstate.Manifest(**{**fields, **kw})
 
 
@@ -1777,8 +1780,8 @@ def test_no_value_a_confirmation_can_hold_is_one_the_manifest_would_refuse(tmp_p
     """
     shared = [f.name for f in dataclasses.fields(gate.Confirmation)
               if f.name in {g.name for g in dataclasses.fields(runstate.Manifest)}]
-    assert sorted(shared) == ["attempts", "concurrency", "review_rounds", "seats", "setup",
-                              "synthesis_fix_cap", "verify"], \
+    assert sorted(shared) == ["agy_model", "attempts", "concurrency", "review_rounds",
+                              "seats", "setup", "synthesis_fix_cap", "verify"], \
         "the two records' shared fields moved; the rows below decide what this test measures"
     c = _confirmation()
     targets = [(f".{n}", lambda x, n=n: dataclasses.replace(c, **{n: x})) for n in shared]

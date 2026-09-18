@@ -192,6 +192,21 @@ def test_no_provider_names_a_model_so_model_reported_is_the_absence_it_is(tmp_pa
     assert seen[0].model == "opus-5-asked", "and the cfg reached the real spec builder"
 
 
+def test_a_forge_cfg_can_pin_only_agy_without_pinning_claude_or_codex(tmp_path):
+    seen = []
+    fn = launch.make_launcher(
+        prompt="p", timeout=60,
+        cfg={"agy": {"model": "Gemini 3.8 Flash (High)"}},
+        run_provider=_fake_provider(seen), probe=_probe())
+    for name in ("claude", "codex", "agy"):
+        fn(name=name, seat_path=tmp_path, token=f"SENTINEL-{name}", env={})
+    assert {spec.name: spec.model for spec in seen} == {
+        "claude": None,
+        "codex": None,
+        "agy": "Gemini 3.8 Flash (High)",
+    }
+
+
 def test_the_council_record_names_the_model_that_was_asked_for_not_one_observed():
     """The measurement the test above rests on, taken from the producer rather than assumed.
 

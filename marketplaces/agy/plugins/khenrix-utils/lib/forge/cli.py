@@ -96,6 +96,19 @@ def _resolve_seat_timeout() -> int:
     return t
 
 
+def _resolve_agy_model(override=None) -> str:
+    """Resolve agy's model once; the manifest owns it after the run starts."""
+    model = override if override is not None else engine.MODES.get("normal", {}).get("agy", {}).get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise CliError("council.engine normal mode has no usable agy model; pass --model-agy "
+                       "with --start or repair the council defaults")
+    return model
+
+
+def _agy_cfg(model: str) -> dict:
+    return {"agy": {"model": model}}
+
+
 def _closures() -> dict:
     """The three live installed plugin closures, resolved once. `None` for a CLI that is not
     installed, which `taskbundle.ambient_verdict` reads as False — three absences do not hash
@@ -264,6 +277,7 @@ def start(args, *, out, make_launcher=None) -> int:
     for line in _abandoned_runs(Path(args.repo).resolve()):
         print(f"  {line}", file=out)
     timeout = _resolve_seat_timeout()
+    agy_model = _resolve_agy_model(args.model_agy)
     answers = _answer_sheet(args.answers)
     quote_ = gate.quote(report, seats=args.seats, attempts=args.attempts,
                         review_rounds=args.review_rounds, deep_review=not args.skip_deep_review,
@@ -290,7 +304,8 @@ def start(args, *, out, make_launcher=None) -> int:
     # here; `gate.confirm` refuses the two if they ever disagree, and `--collect` reads the
     # recorded answer rather than re-deriving it from a flag it is not given.
     answers["deep_review"] = not args.skip_deep_review
-    confirmation = gate.confirm(report, quote_, answers)
+    confirmation = dataclasses.replace(gate.confirm(report, quote_, answers),
+                                       agy_model=agy_model)
 
     run_id = storage.new_run_id()
     run_dir = gate.open_run(report, confirmation, run_id, quote_=quote_)
@@ -304,7 +319,7 @@ def start(args, *, out, make_launcher=None) -> int:
     # HASHED OFF THE RECORD, NOT OFF THE VALUE IN HAND. `read_task_bundle` is what a resume and
     # `--collect` read, so hashing the same bytes they will is what makes §11's `bundle_sha256`
     # a statement about the run rather than about this process's memory.
-    launcher = mk(prompt=instruction, timeout=timeout,
+    launcher = mk(prompt=instruction, timeout=timeout, cfg=_agy_cfg(agy_model),
                   bundle_sha256=taskbundle.bundle_hash(taskbundle.read_task_bundle(run_dir)))
     results = runnermod.run(run_dir, repo, identity=confirmation.author, launch=launcher)
 
@@ -383,6 +398,7 @@ def _resume(args, *, out, make_launcher=None) -> int:
                         "the task entrypoint this run recorded")
     mk = _launcher_factory(make_launcher)
     launcher = mk(prompt=instruction, timeout=_resolve_seat_timeout(),
+                  cfg=_agy_cfg(manifest.agy_model),
                   bundle_sha256=taskbundle.bundle_hash(b))
     results = runnermod.run(run_dir, repo, identity=identity, launch=launcher, resume=True)
     return _finish_the_fleet(run_dir, repo, run_id, results, out=out)
@@ -1161,7 +1177,8 @@ def collect(args, *, out) -> int:
         op = f"deep-review-{manifest.run_id}"
         log.record(journal.intent(_DEEP_KIND), operation_id=op, round=max(1, rounds))
         u = deepreview.run_deep_review(run_dir, checkout=synth, base=manifest.baseline_commit,
-                                       head=head, round_=max(1, rounds), enabled=enabled)
+                                       head=head, round_=max(1, rounds), enabled=enabled,
+                                       agy_model=manifest.agy_model)
         # `findings` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
         # and `handover` then called `len()` on it. `None` and `()` are DIFFERENT here and the
         # round-trip must keep them apart: `deepreview.DeepReview` refuses `findings=None` on a `ran` status
@@ -1364,7 +1381,8 @@ def _review(args, *, out) -> int:
         run_dir, round_=round_, checkout=tree_dir, checkpoint=head,
         baseline_commit=manifest.base_commit, baseline_tree=manifest.tracked_tree_oid,
         artifact_manifest=None, log=log,
-        other_clones=tuple(others) + (Path(synth),))
+        other_clones=tuple(others) + (Path(synth),),
+        cfg=_agy_cfg(manifest.agy_model))
     after_digest, after = reviewmod.worktree_identity(tree_dir, quota)
     reviewmod.record_worktree_after(log, round_=round_, digest=after_digest,
                                     entries=len(after),
@@ -1600,6 +1618,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="--start: an untracked path to carry into the baseline (repeatable)")
     ap.add_argument("--seats", type=int, default=3)
     ap.add_argument("--attempts", type=int, default=3)
+    ap.add_argument("--model-agy", dest="model_agy",
+                    help="--start: agy model to persist for builders and every review stage; "
+                         "defaults to council normal mode")
     # DEFAULT 1 = SERIAL, which is what every run did before this flag existed. §19's window
     # is a timeout rather than a budget, so builders sharing one machine can push a seat past
     # its cap; the quote states that trade and the operator opts in, rather than this front
@@ -1643,6 +1664,9 @@ def main(argv=None, *, out=None, make_launcher=None) -> int:
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
     try:
+        if args.model_agy is not None and not args.start:
+            return _fail(out, ["--model-agy is only valid with --start; later stages use the "
+                               "model recorded in the run manifest"])
         if args.start:
             for required in ("task", "answers"):
                 if not getattr(args, required):

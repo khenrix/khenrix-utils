@@ -349,6 +349,10 @@ class Manifest:
     # so a fleet driven at a different width than the one quoted is a fleet nobody costed.
     # 1 is serial — every run before this field existed, and still the default.
     concurrency: int
+    # The agy model is resolved once at --start and survives every later process. Without
+    # this field, resume and review silently follow whatever ambient council default happens
+    # to be installed then, so one run can be built and judged by two different models.
+    agy_model: str
 
 
 def write_manifest(run_dir, manifest: Manifest) -> None:
@@ -791,6 +795,13 @@ def _text(name, value, source):
     return value
 
 
+def _nonempty_text(name, value, source):
+    value = _text(name, value, source)
+    if not value.strip():
+        raise ManifestError(f"{source}: {name} must not be empty")
+    return value
+
+
 def count(name, value, source, *, floor=1):
     """A whole count of at least `floor` — the shape a run's own numbers have to survive in.
 
@@ -985,6 +996,7 @@ _DECODERS = {
     "review_rounds": _budget,
     "synthesis_fix_cap": _budget,
     "concurrency": count,
+    "agy_model": _nonempty_text,
 }
 
 

@@ -419,14 +419,19 @@ def _parse_findings(answer: str, seat: str, checkpoint_round: int) -> tuple:
     return tuple(out), True
 
 
-def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS):
+def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS,
+             agy_model: str | None = None):
     """One read-only council fan-out. Returns the engine's manifest.
 
     READ-ONLY IS MECHANICAL, NOT ASKED FOR. `make_readonly` swaps each provider's bypass
     flag for a plan-only posture, and agy additionally gets a throwaway worktree cwd. A
     reviewer that can write is a reviewer that can "fix" the diff it was asked to judge.
     """
-    cfg = engine.MODES[mode]
+    cfg = {name: dict(values) for name, values in engine.MODES[mode].items()}
+    if agy_model is not None:
+        if not isinstance(agy_model, str) or not agy_model.strip():
+            raise DeepReviewError(f"agy_model must be a non-empty model name, not {agy_model!r}")
+        cfg["agy"]["model"] = agy_model
     timeout = engine.MODE_TIMEOUT[mode]
     workdir.mkdir(parents=True, exist_ok=True)
     specs, worktrees = [], []
@@ -445,7 +450,8 @@ def _council(prompt: str, workdir: Path, *, mode: str = "deep", seats=SEATS):
 
 
 def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
-                    enabled: bool = True, mode: str = "deep", council=None) -> DeepReview:
+                    enabled: bool = True, mode: str = "deep", council=None,
+                    agy_model: str | None = None) -> DeepReview:
     """The post-fusion pass, from the synthesis checkout, after the council loop terminated.
 
     ORDER: the local pre-flight first, so a diff definitely over the prompt cap costs
@@ -483,7 +489,10 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
 
     workdir = Path(run_dir) / "deep-review"
     workdir.mkdir(parents=True, exist_ok=True)
-    manifest = (council or _council)(PROMPT + body, workdir, mode=mode)
+    if council is None:
+        manifest = _council(PROMPT + body, workdir, mode=mode, agy_model=agy_model)
+    else:
+        manifest = council(PROMPT + body, workdir, mode=mode)
     valid = [p for p in manifest.get("providers", []) if p.get("valid")]
     seats = tuple(p["name"] for p in valid)
     if not valid:

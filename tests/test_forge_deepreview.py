@@ -10,6 +10,7 @@ classification are gone with the code they covered.
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,29 @@ def _panel(tmp_path, *seats):
 
 def _payload(*rows):
     return "prose before\n```json\n" + json.dumps({"findings": list(rows)}) + "\n```\nafter"
+
+
+def test_deep_review_overlays_only_the_recorded_agy_model(monkeypatch, tmp_path):
+    seen = {}
+    original = {name: dict(values) for name, values in deepreview.engine.MODES["deep"].items()}
+
+    def build(name, prompt, timeout, cfg, workdir):
+        seen[name] = {provider: dict(values) for provider, values in cfg.items()}
+        return SimpleNamespace(name=name, cwd=str(workdir))
+
+    monkeypatch.setattr(deepreview.engine, "build_real_spec", build)
+    monkeypatch.setattr(deepreview.engine, "make_readonly", lambda spec: spec)
+    monkeypatch.setattr(deepreview.engine, "isolate_agy_worktree",
+                        lambda spec, workdir: Path(workdir) / "agy-isolated")
+    monkeypatch.setattr(deepreview.engine, "remove_agy_worktree", lambda path: None)
+    monkeypatch.setattr(deepreview.engine, "run_council", lambda specs, **kw: {"providers": []})
+
+    deepreview._council("review", tmp_path, agy_model="Gemini 3.7 Flash (High)")
+
+    cfg = seen["agy"]
+    assert cfg["agy"]["model"] == "Gemini 3.7 Flash (High)"
+    assert cfg["claude"] == original["claude"]
+    assert cfg["codex"] == original["codex"]
 
 
 # --------------------------------------------------------------------------- #

@@ -20,7 +20,7 @@ flowchart TD
     G_REFUSED -- "no" --> QUOTE[--start prints the full quote<br/>+ a wall-clock upper bound]
     QUOTE --> G_AGREE{operator agrees<br/>to the priced answer sheet?}
     G_AGREE -- "no" --> STOP([nothing spent])
-    G_AGREE -- "yes" --> FLEET[opens the run, builds baseline B1,<br/>launches the fleet, verifies each<br/>candidate - stops at comparing]
+    G_AGREE -- "yes" --> FLEET[opens the run, records agy's model,<br/>builds baseline B1, launches the fleet,<br/>verifies - stops at comparing]
     FLEET --> LEDGER[Step 3: you write the claim ledger<br/>reading all three candidates]
     LEDGER --> G_LEDGER_OK{ledger validates?}
     G_LEDGER_OK -- "no, fix and resubmit" --> LEDGER

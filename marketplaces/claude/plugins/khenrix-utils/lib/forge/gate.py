@@ -148,6 +148,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
+from council import engine as council_engine
+
 from . import baseline, bundle, gitcmd, journal, preflight, runstate, storage, verify
 
 
@@ -1310,6 +1312,9 @@ class Confirmation:
     # Defaulted to serial so every `Confirmation` assembled beside `confirm` — §12.4's
     # consumer and the suite's fixtures — keeps meaning what it meant before the field existed.
     concurrency: int = 1
+    # A tooling default, not a second answer-sheet policy. The CLI may replace it exactly
+    # once for --start; open_run then persists it in the immutable manifest.
+    agy_model: str = council_engine.DEFAULT_AGY_MODEL
 
     def __post_init__(self):
         # NORMALIZING as well as refusing, through the same helpers `confirm` used to call:
@@ -1360,6 +1365,8 @@ class Confirmation:
         # why: a cross-field test on an unvalidated field raises TypeError out of a gate whose
         # whole job is to answer in GateError.
         _confirmed_count("concurrency", self.concurrency, "§5 step 2")
+        if not isinstance(self.agy_model, str) or not self.agy_model.strip():
+            raise GateError(f"agy_model must be a non-empty model name, not {self.agy_model!r}")
         _confirmed_count("seats", self.seats, "§5 step 2")
         if self.concurrency > self.seats:
             raise GateError(
@@ -1943,7 +1950,8 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
         attempts=confirmation.attempts,
         review_rounds=confirmation.review_rounds,
         synthesis_fix_cap=confirmation.synthesis_fix_cap,
-        concurrency=confirmation.concurrency))
+        concurrency=confirmation.concurrency,
+        agy_model=confirmation.agy_model))
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,
