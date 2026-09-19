@@ -13,7 +13,7 @@ flowchart TD
 
     START([user asks a high-stakes<br/>or contested question]) --> G_JUSTIFIES{worth ~3x<br/>a normal turn?}
     G_JUSTIFIES -- "no" --> ANSWER([answer directly, no council])
-    G_JUSTIFIES -- "yes" --> LOCATE[Step 1: locate fanout.py<br/>across CLI plugin roots]
+    G_JUSTIFIES -- "yes" --> LOCATE[Step 1: locate fanout.py<br/>beside the loaded SKILL.md]
     LOCATE --> BUILD[Step 2: write the underlying<br/>question to a file]
     BUILD --> FANOUT[engine injects one sentinel<br/>+ read-only posture, launches<br/>3 seats in parallel]
 

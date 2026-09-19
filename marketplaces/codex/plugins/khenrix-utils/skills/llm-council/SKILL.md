@@ -42,20 +42,16 @@ fan-out in bash; run the engine and synthesize from its manifest.
 
 ## 1. Locate the engine
 
-The skill body is identical in all three plugins, but each CLI exposes its plugin
-root differently. Run this first to set `$FANOUT` to whichever copy exists:
+Use `scripts/fanout.py` beside the `SKILL.md` loaded for this invocation. Resolve
+that skill's filesystem path from the CLI's skill catalog, expanding any root alias
+first; a skill reader may instead return the absolute `skill_root`. This works for
+source checkouts and versioned plugin caches without a plugin-root environment variable.
 
-```bash
-FANOUT=""
-for c in \
-  "${CLAUDE_PLUGIN_ROOT:-}/skills/llm-council/scripts/fanout.py" \
-  "${PLUGIN_ROOT:-}/skills/llm-council/scripts/fanout.py" \
-  "$HOME/.gemini/config/plugins/khenrix-utils/skills/llm-council/scripts/fanout.py"; do
-  [ -f "$c" ] && FANOUT="$c" && break
-done
-[ -z "$FANOUT" ] && echo "fanout.py not found — is khenrix-utils installed?" && exit 1
-echo "engine: $FANOUT"
-```
+`$FANOUT` below means that script's exact absolute path. Substitute the quoted path
+in each command, or define the variable in the shell running that command. Verify
+the file exists before launching; if it is missing, report the exact path and stop.
+Keep the engine and instructions in the same skill copy instead of selecting a
+different CLI's installation or guessing which cached version is active.
 
 ## 2. Run the fan-out
 

@@ -78,6 +78,35 @@ def test_monkeypatch_run_member_is_seen_by_run_provider():
     assert m["providers"][0]["valid"] is True
 
 
+@pytest.mark.parametrize("retries", [0, 1])
+@pytest.mark.parametrize("provider", ["claude", "codex", "agy", "timeout"])
+def test_retryable_failure_header_does_not_claim_a_retry(tmp_path, provider, retries):
+    f = import_fanout()
+    payloads = {
+        "claude": {"is_error": True, "result": "unrecognised internal failure"},
+        "codex": {"type": "turn.failed", "error": {"message": "unrecognised internal failure"}},
+        "agy": {"status": "ERROR", "response": "", "error": "unrecognised internal failure"},
+    }
+    if provider == "timeout":
+        spec = _stub_spec(f, tmp_path, mode="timeout")
+        timeout = 0.05
+        reason = "timeout"
+    else:
+        argv = [sys.executable, "-c", f"print({json.dumps(payloads[provider])!r})"]
+        extractor = getattr(f, f"extract_{provider}_json")
+        spec = f.ProviderSpec(provider, argv, None, extractor, min_chars=0)
+        timeout = 10
+        reason = f"{provider}_error"
+    manifest = f.run_council([spec], retries=retries, timeout=timeout,
+                             backoff=0, workdir=tmp_path, prompt="review")
+    seat = manifest["providers"][0]
+    assert seat["valid"] is False and seat["reason"] == reason
+    assert seat["attempts"] == len(seat["attempt_log"]) == retries + 1
+    assert manifest["summary"]["valid"] == 0
+    assert "retryable" in manifest["summary"]["header"]
+    assert "retried" not in manifest["summary"]["header"]
+
+
 # --- CLI surface -----------------------------------------------------------
 
 def test_cli_help_flag_surface():

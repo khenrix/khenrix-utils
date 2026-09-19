@@ -366,16 +366,21 @@ REASON_HINTS = {
     # The three structured catch-alls: the provider reported an error in its OWN field but
     # the text matched no sentinel. Unrecognised, therefore RETRYABLE — and the hint has to
     # say so, or an operator reads a bare token with no next step (which is what shipped).
+    # Eligibility does not prove another attempt ran; retries may be disabled.
     "claude_error": ("claude reported an error in its own JSON (`is_error`) that matched no "
-                     "known cause — read `result_text` for the provider's wording; retried"),
+                     "known cause — read `result_text` for the provider's wording; "
+                     "retryable within the configured budget"),
     "codex_error": ("codex reported turn.failed / an error event that matched no known "
-                    "cause — read `result_text` for the provider's wording; retried"),
+                    "cause — read `result_text` for the provider's wording; "
+                    "retryable within the configured budget"),
     "agy_error": ("agy returned status != SUCCESS with an error that matched no known cause "
-                  "— read `result_text` for the provider's wording; retried"),
+                  "— read `result_text` for the provider's wording; "
+                  "retryable within the configured budget"),
     # Reached two ways that mean the same thing: this engine's own window closed on a live
     # seat (scanned provenance), or agy reported its own wait in its structured `error` field.
     # Retried on both paths.
-    "timeout": ("the seat did not answer inside the per-attempt window — retried; if it "
+    "timeout": ("the seat did not answer inside the per-attempt window — retryable within "
+                "the configured budget; if it "
                 "keeps timing out, widen the window (--timeout, or the mode's MODE_TIMEOUT "
                 "entry) rather than adding a second, tighter one somewhere else"),
     "did_not_read_input": ("the seat answered without opening its input — check that its "
