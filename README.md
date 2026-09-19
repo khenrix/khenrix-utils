@@ -44,6 +44,14 @@ make setup-agy      # ... into Antigravity
 Then, inside the CLI, invoke the skill (e.g. `/khenrix-setup` in Claude Code).
 It prints a review table and asks before writing anything.
 
+Maka is available as a companion CLI. Its pinned package, shared skills, and
+machine configuration live in the separate `agentic-setup` repository. Supported
+macOS and Linux/WSL machines can use Maka's ChatGPT subscription login for
+non-sensitive work. The exact-account Keychain-backed OpenAI API route is
+macOS-only. This repository does not provide a `make setup-maka` target. See
+[`docs/maka.md`](docs/maka.md) for installation, authentication, daily use,
+verification, and the reviewed update process.
+
 ### Keeping a CLI current — `khenrix-upgrade`
 
 Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:

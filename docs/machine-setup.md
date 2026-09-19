@@ -148,6 +148,17 @@ git clone git@github.com:khenrix/obsidian-vault.git  ~/git/obsidian-vault   # pr
 git clone <hunter remote> ~/git/hunter               # brings its .claude/skills along
 ```
 
+Maka is installed separately from the three Khenrix plugins. Agentic Setup does
+not currently have a published remote; obtain or update `~/git/agentic-setup`
+through the team-approved source or transfer. Then follow
+[the Maka guide](maka.md) to install its pinned package and choose the machine's
+authentication route: the macOS-only Keychain-backed OpenAI API relay or, on
+supported macOS and Linux/WSL machines, a ChatGPT subscription with Codex access
+for non-sensitive work.
+`scripts/bootstrap-machine.sh` does not install Maka, and there is no
+`make setup-maka` target. Credentials and OAuth sessions remain local to each
+machine.
+
 ## 3. Install the Claude plugins
 
 > **Or let Tier 1 do sections 3–4 for you.** `scripts/bootstrap-machine.sh` is the
