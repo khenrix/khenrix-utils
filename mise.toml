@@ -114,23 +114,23 @@ run = "mise -C components/maka run maka:install-apply"
 
 [tasks."maka:migrate-plan"]
 description = "Inspect legacy Agentic Setup Maka state without copying it"
-run = "mise -C components/maka run maka:migrate-plan"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:migrate-plan"
 
 [tasks."maka:migrate"]
 description = "Copy only reviewed non-secret legacy Maka selectors and relay decoys"
-run = "mise -C components/maka run maka:migrate-apply"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:migrate-apply"
 
 [tasks."maka:migrate-rollback"]
 description = "Remove unchanged Khenrix migration copies while preserving legacy state"
-run = "mise -C components/maka run maka:migrate-rollback"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:migrate-rollback"
 
 [tasks."maka:auth-mode"]
 description = "Choose this machine's write-once Maka auth route"
-run = "mise -C components/maka run maka:auth-mode"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:auth-mode"
 
 [tasks."maka:auth-doctor"]
 description = "Verify the lightweight interactive Maka authentication setup"
-run = "mise -C components/maka run maka:auth-doctor"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:auth-doctor"
 
 [tasks."maka:component-doctor"]
 description = "Verify Maka pins, provenance, attribution, and installed component drift"
@@ -138,31 +138,31 @@ run = "mise -C components/maka run maka:component-doctor"
 
 [tasks."maka:doctor"]
 description = "Verify the complete Maka eval lab, including its Colima VM"
-run = "mise -C components/maka run maka:doctor"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:doctor"
 
 [tasks."maka:audit-smoke"]
 description = "Run a credential-free audit and export smoke test"
-run = "mise -C components/maka run maka:audit-smoke"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:audit-smoke"
 
 [tasks."maka:import-smoke"]
 description = "Verify synthetic Claude and Codex session adapters"
-run = "mise -C components/maka run maka:import-smoke"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:import-smoke"
 
 [tasks."maka:harbor-smoke"]
 description = "Run one pinned fix-git Harbor cell in the disposable lab"
-run = "mise -C components/maka run maka:harbor-smoke"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:harbor-smoke"
 
 [tasks."maka:pier-preflight"]
 description = "Validate the pinned Pier environment and Maka preflight"
-run = "mise -C components/maka run maka:pier-preflight"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:pier-preflight"
 
 [tasks."maka:harden-python"]
 description = "Harden the locked Python runtime before Maka Keychain access"
-run = "mise -C components/maka run maka:harden-python"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:harden-python"
 
 [tasks."maka:relay-install"]
 description = "Run the explicit Maka API relay installer"
-run = "mise -C components/maka run maka:relay-install"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:relay-install"
 
 [tasks."maka:test"]
 description = "Run the credential-free portable Maka regression suite"
