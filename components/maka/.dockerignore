@@ -1,0 +1,13 @@
+.git
+.DS_Store
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+evidence
+runtime
+trials
+controller/.build
+benchmark
+.mise/*
+!.mise/locks
+!.mise/locks/**

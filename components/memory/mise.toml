@@ -1,0 +1,16 @@
+[tools]
+bun = "1.4.2"
+python = "3.12.14"
+uv = "0.12.15"
+
+[tasks.test]
+description = "Run the hermetic portable-memory suite"
+run = "uvx --python 3.12 --with pytest pytest -q ../../tests/test_memory_runtime.py"
+
+[tasks.plan]
+description = "Preview memory installation (pass route flags after --)"
+run = "python memoryctl.py setup"
+
+[tasks.doctor]
+description = "Check the installed local memory runtime"
+run = "python memoryctl.py doctor"

@@ -1,0 +1,11 @@
+.DS_Store
+.mise/*
+!.mise/locks/
+!.mise/locks/**
+evidence/runs/
+runtime/
+trials/
+controller/.build/
+**/__pycache__/
+**/*.pyc
+**/*.pyo

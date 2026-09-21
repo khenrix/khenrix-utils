@@ -9,7 +9,7 @@ snapshot_date = "2026-07-12"
 
 [[plugins]]
 name = "khenrix-utils"
-source = "local:~/git/khenrix-utils"
+source = "local:~/khenrix-utils"
 version = "local"
 components = ["skills", "hooks"]
 claude = "present"

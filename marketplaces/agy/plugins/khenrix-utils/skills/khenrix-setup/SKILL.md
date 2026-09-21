@@ -76,7 +76,7 @@ only after the user confirms.
    ```
 
    This merges MCP servers into `mcp_config.json`, adds trusted workspaces,
-   ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
+   adds the portable model default, ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
    block in `~/.gemini/GEMINI.md`.
 
 5. **Verify.** Show `~/.gemini/config/mcp_config.json` so the user can confirm.

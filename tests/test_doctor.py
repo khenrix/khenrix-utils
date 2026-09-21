@@ -1873,3 +1873,88 @@ def test_scan_rc_exits_2_on_an_unreadable_file(tmp_path):
     assert r.returncode == 2, r.stdout
     assert r.stdout.strip() == "", "silent stdout is exactly what reads as 'nothing to migrate'"
     assert FAKE_GOOGLE not in r.stdout + r.stderr
+
+
+# --- portable CLI defaults ------------------------------------------------
+
+def write_default_configs(home, *, claude_model="best"):
+    claude = home / ".claude" / "settings.json"
+    claude.parent.mkdir(parents=True, exist_ok=True)
+    claude.write_text(json.dumps({
+        "model": claude_model,
+        "effortLevel": "xhigh",
+        "ultracode": True,
+        "unrelatedSecretSentinel": "never-print-this-value",
+    }))
+
+    codex = home / ".codex" / "config.toml"
+    codex.parent.mkdir(parents=True, exist_ok=True)
+    codex.write_text(
+        'model = "gpt-5.6-sol"\n'
+        'model_reasoning_effort = "xhigh"\n'
+        'plan_mode_reasoning_effort = "ultra"\n\n'
+        '[agents]\n'
+        'default_subagent_reasoning_effort = "xhigh"\n\n'
+        '[mcp_servers.private]\n'
+        'command = "never-print-this-command"\n')
+
+    agy = home / ".gemini" / "antigravity-cli" / "settings.json"
+    agy.parent.mkdir(parents=True, exist_ok=True)
+    agy.write_text(json.dumps({
+        "model": "Gemini 3.8 Flash (High)",
+        "authReference": "never-print-this-reference",
+    }))
+
+
+def test_cli_model_defaults_passes_for_matching_configs(tmp_path):
+    home = fake_home(tmp_path)
+    write_default_configs(home)
+    r = run("--json", "--only", "cli-model-defaults", env={"HOME": str(home)})
+    check = checks_of(r)["cli-model-defaults"]
+    assert r.returncode == 0
+    assert check["status"] == "PASS", check
+    assert "8 portable" in check["detail"]
+
+
+def test_cli_model_defaults_reports_field_but_never_observed_values(tmp_path):
+    home = fake_home(tmp_path)
+    observed = "private-custom-model-never-print"
+    write_default_configs(home, claude_model=observed)
+    r = run("--json", "--only", "cli-model-defaults", env={"HOME": str(home)})
+    check = checks_of(r)["cli-model-defaults"]
+    assert r.returncode == 1
+    assert check["status"] == "FAIL", check
+    assert "claude:model" in check["detail"]
+    output = r.stdout + r.stderr
+    assert observed not in output
+    assert "never-print-this" not in output
+
+
+def test_cli_model_defaults_fails_closed_on_malformed_config(tmp_path):
+    home = fake_home(tmp_path)
+    write_default_configs(home)
+    (home / ".gemini" / "antigravity-cli" / "settings.json").write_text("{broken")
+    r = run("--json", "--only", "cli-model-defaults", env={"HOME": str(home)})
+    check = checks_of(r)["cli-model-defaults"]
+    assert check["status"] == "FAIL", check
+    assert "agy:config" in check["detail"]
+    assert "{broken" not in r.stdout + r.stderr
+
+
+def test_cli_model_defaults_supports_an_explicit_capabilities_fixture(tmp_path):
+    home = fake_home(tmp_path)
+    caps = tmp_path / "capabilities.toml"
+    caps.write_text('[settings.defaults.agy]\nmodel = "fixture-model"\n')
+    agy = home / ".gemini" / "antigravity-cli" / "settings.json"
+    agy.parent.mkdir(parents=True, exist_ok=True)
+    agy.write_text('{"model":"fixture-model"}')
+    r = run("--json", "--only", "cli-model-defaults", env={
+        "HOME": str(home), "KHENRIX_CAPABILITIES": str(caps),
+    })
+    check = checks_of(r)["cli-model-defaults"]
+    # A fixture that omits the other two CLI declarations fails closed, while
+    # proving the override was loaded and the declared agy leaf was evaluated.
+    assert check["status"] == "FAIL", check
+    assert "claude:declaration" in check["detail"]
+    assert "codex:declaration" in check["detail"]
+    assert "agy:config" not in check["detail"]

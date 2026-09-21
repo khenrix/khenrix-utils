@@ -1391,6 +1391,99 @@ def _onepassword():
                     f"Tried: {cli_detail} | {mcp_detail}")
 
 
+# --- Portable CLI defaults ------------------------------------------------
+
+CLI_DEFAULT_CONFIGS = {
+    "claude": (".claude/settings.json", "json"),
+    "codex": (".codex/config.toml", "toml"),
+    "agy": (".gemini/antigravity-cli/settings.json", "json"),
+}
+
+
+def _default_leaves(value, prefix=()):
+    if not isinstance(value, dict):
+        raise ValueError(f"{'.'.join(prefix) or 'settings.defaults'} is not a table")
+    for key, child in value.items():
+        path = (*prefix, str(key))
+        if isinstance(child, dict):
+            yield from _default_leaves(child, path)
+        else:
+            yield path, child
+
+
+def _config_leaf(data, path):
+    current = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False, None
+        current = current[key]
+    return True, current
+
+
+def _load_default_config(path, kind):
+    text = path.read_text()
+    if kind == "toml":
+        if tomllib is None:
+            raise ValueError("this Python has no tomllib support")
+        data = tomllib.loads(text)
+    else:
+        data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("config root is not an object/table")
+    return data
+
+
+@check("cli-model-defaults")
+def _cli_model_defaults():
+    """Prove each declared portable model/effort leaf matches live config.
+
+    Details name only the CLI and field. Observed values and unrelated config
+    are intentionally withheld so a future poorly placed secret cannot spread
+    into terminal output, JSON reports or agent transcripts.
+    """
+    override = os.environ.get("KHENRIX_CAPABILITIES")
+    caps_path = Path(override).expanduser() if override else Path(__file__).resolve().parents[1] / "capabilities.toml"
+    try:
+        if tomllib is None:
+            raise ValueError("this Python has no tomllib support")
+        with caps_path.open("rb") as f:
+            caps = tomllib.load(f)
+        defaults = caps.get("settings", {}).get("defaults", {})
+        if not isinstance(defaults, dict) or not defaults:
+            raise ValueError("settings.defaults is absent or empty")
+    except (OSError, ValueError, TypeError) as e:
+        return "FAIL", f"could not read portable-default declarations: {type(e).__name__}"
+
+    problems = []
+    checked = 0
+    for cli, (relative, kind) in CLI_DEFAULT_CONFIGS.items():
+        declared = defaults.get(cli)
+        if not isinstance(declared, dict) or not declared:
+            problems.append(f"{cli}:declaration")
+            continue
+        path = Path.home() / relative
+        try:
+            live = _load_default_config(path, kind)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            problems.append(f"{cli}:config")
+            continue
+        try:
+            leaves = list(_default_leaves(declared))
+        except ValueError:
+            problems.append(f"{cli}:declaration")
+            continue
+        for key_path, want in leaves:
+            checked += 1
+            present, have = _config_leaf(live, key_path)
+            if not present or have != want:
+                problems.append(f"{cli}:{'.'.join(key_path)}")
+    if problems:
+        return "FAIL", ("portable model/effort defaults are missing, unreadable, or drifted: "
+                        + ", ".join(problems)
+                        + ". Run `mise run defaults:apply`; observed values withheld.")
+    return "PASS", f"{checked} portable model/effort defaults match across claude, codex and agy"
+
+
 # --- runner ---------------------------------------------------------------
 
 def run_checks(profile="full", only=None, wsl=None, skip_invasive=False,

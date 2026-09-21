@@ -7,7 +7,7 @@ Snapshot: 2026-07-12. Desired-state — the reproduction target. Versions are be
 
 | Plugin | Source | Version | Components | Claude | Codex | agy | Portability |
 |---|---|---|---|---|---|---|---|
-| khenrix-utils | local:~/git/khenrix-utils | local | skills, hooks | present | present | present | already cross-CLI via reconcile |
+| khenrix-utils | local:~/khenrix-utils | local | skills, hooks | present | present | present | already cross-CLI via reconcile |
 | superpowers | gh:anthropics/claude-plugins-official | 6.1.1 | skills, hooks | present | native | ported | codex uses native plugin; skills ported to agy only; hooks claude-only |
 | claude-obsidian | local:~/git/obsidian-vault | local | skills, commands, hooks, agents | present | ported | ported | non-wiki skills ported; wiki set OUT of scope; commands/hooks/agents claude-only |
 | skill-creator | claude-plugins-official | best-effort | skills | present | native | ported | codex has it built-in (.system/skill-creator); port to agy only |

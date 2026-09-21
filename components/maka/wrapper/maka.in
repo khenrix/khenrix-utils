@@ -1,0 +1,129 @@
+#!/bin/sh
+set -eu
+umask 077
+
+# Maka auto-onboards provider keys found in the process environment into its
+# local vault. Keep the managed profile keyless and select credentials only
+# through the configured subscription or loopback-relay route.
+unset OPENAI_API_KEY ANTHROPIC_API_KEY DEEPSEEK_API_KEY GEMINI_API_KEY GOOGLE_API_KEY \
+  GOOGLE_GENERATIVE_AI_API_KEY XAI_API_KEY GROQ_API_KEY MISTRAL_API_KEY COHERE_API_KEY \
+  TOGETHER_API_KEY OPENROUTER_API_KEY MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL
+for variable_name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*_API_KEY\)=.*/\1/p'); do
+  unset "$variable_name"
+done
+
+unset NODE_OPTIONS NODE_PATH MAKA_PACKAGE_ROOT
+unset XDG_CONFIG_HOME XDG_DATA_HOME
+for variable_name in $(env | sed -n 's/^\(MISE_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  unset "$variable_name"
+done
+
+if test "${1:-}" = update; then
+  echo 'maka update is disabled; update the pinned khenrix-utils component instead' >&2
+  exit 64
+fi
+
+# v44 applies xhigh from the per-model catalog default in interactive sessions.
+# Keep the command boundary explicit for headless sessions while respecting an
+# intentional --thinking value (API-key planning may select max explicitly).
+case "${1:-}" in
+  run|-p)
+    thinking_specified=false
+    for argument in "$@"; do
+      case "$argument" in
+        --thinking|--thinking=*) thinking_specified=true ;;
+      esac
+    done
+    if test "$thinking_specified" = false; then
+      set -- "$@" --thinking xhigh
+    fi
+    ;;
+esac
+
+account_root=@@ACCOUNT_ROOT@@
+account_name=@@ACCOUNT_NAME@@
+mise_bin=@@MISE_BIN@@
+maka_lab_root=@@MAKA_LAB_ROOT@@
+maka_package_root=@@MAKA_PACKAGE_ROOT@@
+export HOME="$account_root" USER="$account_name" LOGNAME="$account_name"
+case "$mise_bin" in
+  "$account_root/.local/bin/mise"|/opt/homebrew/bin/mise|/usr/local/bin/mise) ;;
+  *) echo 'maka: rendered mise path is outside the admitted locations' >&2; exit 78 ;;
+esac
+if test ! -x "$mise_bin"; then
+  echo 'maka: rendered mise executable is unavailable; rerun the khenrix-utils Maka installer' >&2
+  exit 78
+fi
+for required_path in "$maka_lab_root/mise.toml" "$maka_package_root/package.json"; do
+  if test ! -f "$required_path"; then
+    echo 'maka: the pinned khenrix-utils component is incomplete; reinstall Maka' >&2
+    exit 78
+  fi
+done
+mise_path=${mise_bin%/*}
+isolated_path="$mise_path:/usr/bin:/bin"
+
+if ! maka_auth_mode=$(/usr/bin/env -i \
+  HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+  PATH="$isolated_path" LANG=C LC_ALL=C \
+  "$mise_bin" -C "$maka_lab_root" exec -- \
+  python "$maka_lab_root/interactive/maka_auth_mode.py" show); then
+  echo 'maka: choose api-key-relay or chatgpt-subscription with mise run maka:auth-mode' >&2
+  exit 78
+fi
+
+case "$maka_auth_mode" in
+  api-key-relay)
+    test "$(uname -s)" = Darwin || {
+      echo 'maka: api-key-relay is supported only on macOS arm64' >&2
+      exit 78
+    }
+    if ! /usr/bin/env -i \
+      HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+      PATH="$isolated_path" LANG=C LC_ALL=C \
+      "$mise_bin" -C "$maka_lab_root" exec -- \
+      python "$maka_lab_root/interactive/maka_auth_mode.py" relay-ready >/dev/null; then
+      echo 'maka: run the explicit API relay installer before launching Maka' >&2
+      exit 78
+    fi
+    relay_service="gui/$(/usr/bin/id -u)/dev.khenrix.maka-openai-relay"
+    if ! /bin/launchctl kickstart "$relay_service" >/dev/null 2>&1; then
+      echo 'maka: local OpenAI relay is unavailable' >&2
+      exit 78
+    fi
+    if ! /usr/bin/env -i \
+      HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+      PATH="$isolated_path" LANG=C LC_ALL=C \
+      "$mise_bin" -C "$maka_lab_root" exec -- \
+      node "$maka_lab_root/interactive/configure_maka_openai_relay.mjs" \
+        --token-file "$account_root/.config/khenrix-utils/maka/relay/caller-token" \
+        --attestation-file "$account_root/.config/khenrix-utils/maka/relay/relay-attestation" \
+        --port 48173 \
+        --package-root "$maka_package_root" >/dev/null; then
+      echo 'maka: local OpenAI relay policy could not be verified' >&2
+      exit 78
+    fi
+    ;;
+  chatgpt-subscription)
+    export MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL=1
+    if ! /usr/bin/env -i \
+      HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+      PATH="$isolated_path" LANG=C LC_ALL=C \
+      MAKA_CODEX_SUBSCRIPTION_EXPERIMENTAL=1 \
+      "$mise_bin" -C "$maka_lab_root" exec -- \
+      node "$maka_lab_root/interactive/configure_maka_subscription.mjs" \
+        --package-root "$maka_package_root" >/dev/null; then
+      echo 'maka: ChatGPT subscription defaults could not be verified' >&2
+      exit 78
+    fi
+    ;;
+  *)
+    echo 'maka: local auth-mode selector is invalid' >&2
+    exit 78
+    ;;
+esac
+
+caller_working_directory=$PWD
+exec "$mise_bin" -C "$maka_lab_root" exec -- \
+  /bin/sh -c 'cd "$1" && shift && exec maka "$@"' maka \
+  "$caller_working_directory" "$@"

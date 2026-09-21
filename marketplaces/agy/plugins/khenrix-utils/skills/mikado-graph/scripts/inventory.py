@@ -45,7 +45,8 @@ DOCS = {
     "agy": {
         "docs": "https://ai.google.dev/gemini-api/docs",
         "changelog": "`agy changelog`",
-        "model_discovery": "Gemini model is chosen at runtime via the API; see `agy changelog` + Gemini docs.",
+        "model_discovery": "The default model label is stored in ~/.gemini/antigravity-cli/settings.json; "
+                           "see `agy changelog` + Gemini docs before changing it.",
         "review_tools": "`agy plugin validate <dir>` (no skill-creator/plugin-creator on agy).",
         "version_cmd": ["agy", "changelog"],
     },
@@ -69,10 +70,15 @@ def model_settings(cli: str) -> dict:
     if cli == "codex":
         cfg = reconcile.codex_load()
         feats = cfg.get("features", {})
+        agents = cfg.get("agents", {})
+        if not isinstance(agents, dict):
+            agents = {}
         return {
             "model": cfg.get("model"),
             "model_reasoning_effort": cfg.get("model_reasoning_effort"),
             "plan_mode_reasoning_effort": cfg.get("plan_mode_reasoning_effort"),
+            "default_subagent_reasoning_effort": agents.get(
+                "default_subagent_reasoning_effort"),
             "personality": cfg.get("personality"),
             "features": sorted(feats) if isinstance(feats, dict) else feats,
         }
@@ -81,11 +87,15 @@ def model_settings(cli: str) -> dict:
         data = json.loads(p.read_text()) if p.exists() and p.stat().st_size else {}
         return {
             "model": data.get("model", "(default — account/global)"),
+            "effortLevel": data.get("effortLevel"),
+            "ultracode": data.get("ultracode"),
             "permissions": "set" if data.get("permissions") else "(none)",
-            "note": "Claude has no static reasoning/experimental keys; tune via /model and settings.json.",
+            "note": "Portable model/effort/ultracode defaults are declared in capabilities.toml.",
         }
-    return {"model": "(runtime — chosen by Gemini API)",
-            "note": "agy exposes no static model/reasoning keys; recommendations only."}
+    p = reconcile.agy_settings_path()
+    data = reconcile.read_json_object(p)
+    return {"model": data.get("model", "(default — account/global)"),
+            "note": "The High effort tier is encoded in agy's selected model label."}
 
 
 def installed_skills() -> list[str]:

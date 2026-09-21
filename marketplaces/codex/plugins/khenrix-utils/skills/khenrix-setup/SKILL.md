@@ -74,7 +74,7 @@ only after the user confirms.
    ```
 
    New MCP servers are appended as TOML tables, absent `approval_policy` /
-   `sandbox_mode` / `[projects."…"]` trust keys are added, the managed alias
+   `sandbox_mode` / `[projects."…"]` trust keys and portable model/effort defaults are added, the managed alias
    block is ensured in `~/.bash_aliases`, and the house-style block is ensured in
    `~/.codex/AGENTS.md`.
 

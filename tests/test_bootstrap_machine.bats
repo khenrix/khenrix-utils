@@ -32,10 +32,12 @@ setup() {
   # Keep Tier 1 away from the developer's real checkout and vault.
   export KHENRIX_REPO="$BATS_TEST_TMPDIR/repo"
   export OBSIDIAN_VAULT="$BATS_TEST_TMPDIR/vault"
+  export KHENRIX_MEMORY_ROUTE="codex-subscription"
+  export KHENRIX_MAKA_AUTH_MODE="chatgpt-subscription"
 
   # Tier 1 runs with PATH=$STUB ONLY (see t1()), so binary presence is decided by
   # the fixture and not by the host: otherwise a missing-binary test would pass
-  # vacuously on a developer machine that has all seven installed anyway.
+  # vacuously on a developer machine that has all eight installed anyway.
   #
   # PATH is NOT exported here. setup() runs in the fallback harness's own shell
   # (it has to -- it exports what the bodies rely on), so clobbering PATH here
@@ -66,9 +68,9 @@ EOF
   chmod +x "$SBOX/bootstrap-tier0.sh"
 }
 
-# Put the seven authenticated binaries on PATH as no-op stubs.
+# Put the eight authenticated binaries on PATH as no-op stubs.
 plant_authenticated_bins() {
-  for b in claude codex agy uv gh node git; do
+  for b in claude codex agy uv gh node git mise; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB/$b"
     chmod +x "$STUB/$b"
   done
@@ -142,7 +144,7 @@ plant_authenticated_bins() {
 
 @test "EVERY authenticated binary is gated, not just the first" {
   plant_tier0 0
-  for missing in claude codex agy uv gh node git; do
+  for missing in claude codex agy uv gh node git mise; do
     plant_authenticated_bins
     rm -f "$STUB/$missing"
     run t1 --dry-run
@@ -151,20 +153,30 @@ plant_authenticated_bins() {
   done
 }
 
-@test "all seven present: the gate passes and the run proceeds" {
+@test "all eight present: the gate passes and the run proceeds" {
   plant_tier0 0
   plant_authenticated_bins
   run t1 --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"Tier 1 prereqs"* ]]
-  for b in claude codex agy uv gh node git; do
+  for b in claude codex agy uv gh node git mise; do
     [[ "$output" == *"ok: $b"* ]]
   done
 }
 
+@test "default repo is the checkout containing the bootstrap and clone keeps the dedicated SSH alias" {
+  plant_tier0 0
+  plant_authenticated_bins
+  unset KHENRIX_REPO
+  run t1 --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"git clone git@github.com-khenrix:khenrix/khenrix-utils.git $BATS_TEST_TMPDIR"* ]]
+  [[ "$output" != *"$HOME/git/khenrix-utils"* ]]
+}
+
 # --------------------------------------------------- wiring + dry-run purity --
 
-@test "--dry-run wires reconcile --apply --all and doctor, mutating nothing" {
+@test "--dry-run wires reconcile, portable runtimes, defaults, and doctors, mutating nothing" {
   # REGRESSION: both were commented out behind a 'confirm at T11' note, so a
   # bootstrap ended without applying config or proving anything about what it
   # built. Asserted as DRY: lines -- the run must PLAN them, not perform them.
@@ -173,10 +185,37 @@ plant_authenticated_bins() {
   run t1 --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"DRY:"*"reconcile.py --apply --all"* ]]
+  [[ "$output" == *"DRY:"*"mise"*"run defaults:apply"* ]]
+  [[ "$output" == *"DRY:"*"run memory:install"*"codex-subscription"* ]]
+  [[ "$output" == *"DRY:"*"run maka:stage"* ]]
+  [[ "$output" == *"DRY:"*"run maka:install"* ]]
+  [[ "$output" == *"DRY:"*"run maka:component-doctor"* ]]
+  [[ "$output" == *"DRY:"*"run memory:doctor"* ]]
   [[ "$output" == *"DRY:"*"doctor.py --profile full"* ]]
   [[ "$output" == *"Done (dry-run=1)"* ]]
   # Nothing may be executed for real.
   [[ "$output" != *"RUN:"* ]]
+}
+
+@test "a first install refuses to guess memory or Maka provider routes" {
+  plant_tier0 0
+  plant_authenticated_bins
+  unset KHENRIX_MEMORY_ROUTE KHENRIX_MAKA_AUTH_MODE
+  run t1 --dry-run
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"choose KHENRIX_MEMORY_ROUTE"* ]]
+  [[ "$output" != *"Claude marketplaces"* ]]
+}
+
+@test "API relay routes require exact non-secret Keychain account selectors" {
+  plant_tier0 0
+  plant_authenticated_bins
+  export KHENRIX_MEMORY_ROUTE="openai-keychain"
+  export KHENRIX_MAKA_AUTH_MODE="api-key-relay"
+  unset KHENRIX_MEMORY_KEYCHAIN_ACCOUNT KHENRIX_MAKA_KEYCHAIN_ACCOUNT
+  run t1 --dry-run
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"KHENRIX_MEMORY_KEYCHAIN_ACCOUNT"* ]]
 }
 
 @test "doctor runs LAST, after reconcile -- it verifies the finished machine" {
@@ -184,9 +223,12 @@ plant_authenticated_bins() {
   plant_authenticated_bins
   run t1 --dry-run
   rec=$(printf '%s\n' "$output" | grep -n 'reconcile.py' | head -1 | cut -d: -f1)
+  defaults=$(printf '%s\n' "$output" | grep -n 'run defaults:apply' | head -1 | cut -d: -f1)
   doc=$(printf '%s\n' "$output" | grep -n 'doctor.py'    | head -1 | cut -d: -f1)
-  [ -n "$rec" ] && [ -n "$doc" ]
+  [ -n "$rec" ] && [ -n "$defaults" ] && [ -n "$doc" ]
+  [ "$defaults" -gt "$rec" ]
   [ "$doc" -gt "$rec" ]
+  [ "$doc" -gt "$defaults" ]
 }
 
 @test "--dry-run creates no files at all" {

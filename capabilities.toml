@@ -160,6 +160,25 @@ approval_policy = "on-request"   # codex: approval_policy | claude: permissions 
 sandbox = "workspace-write"      # codex: sandbox_mode    | agy: --sandbox default
 trusted_paths = ["${HOME}", "${HOME}/git"]
 
+# Portable model and effort defaults. These exact leaves are authoritative on
+# every machine. `reconcile.py --defaults-only --apply --update-drift` aligns
+# them while preserving every unrelated setting, plugin, skill, MCP and secret.
+[settings.defaults.claude]
+model = "best"
+effortLevel = "xhigh"
+ultracode = true
+
+[settings.defaults.codex]
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+plan_mode_reasoning_effort = "ultra"
+
+[settings.defaults.codex.agents]
+default_subagent_reasoning_effort = "xhigh"
+
+[settings.defaults.agy]
+model = "Gemini 3.8 Flash (High)"
+
 # Codex TUI defaults. These are applied additively by khenrix-setup and can be
 # reordered later with `/statusline`.
 [settings.codex.tui]
@@ -183,8 +202,6 @@ status_line_use_colors = true
 # Claude baseline settings — written to ~/.claude/settings.json ONLY when the key is ABSENT
 # (never overrides your per-machine tuning; drift is reported, not changed).
 [settings.claude]
-model = "best"
-effortLevel = "xhigh"
 tui = "fullscreen"
 theme = "dark-ansi"
 skipDangerousModePermissionPrompt = true
@@ -271,14 +288,15 @@ summarize = """the diff for the user in plain language: what will be added,
    what is already in sync, and confirm that EXTRA entries will be left alone.
    Call out anything notable (e.g. a Windows-only server skipped on this host)."""
 apply_summary = """This adds MCP servers via `claude mcp add --scope user`; writes any MISSING
-   baseline settings (model, effort, tui, theme, voice, skip-prompts) to
-   `~/.claude/settings.json`; installs + registers the Stop hook and the statusline renderer;
+   baseline settings (tui, theme, voice, skip-prompts) and portable defaults (model, effort,
+   ultracode) to `~/.claude/settings.json`; installs + registers the Stop hook and the statusline renderer;
    ensures the managed alias block in `~/.bash_aliases` and the house-style block in
    `~/.claude/CLAUDE.md`; and reports each action taken."""
 verify_step = """Run `claude mcp list` and confirm the newly added servers appear.
    Note that MCP changes take effect in a new session."""
-settings_note = """- Baseline settings (model, effort, tui, theme, voice, skip-prompts) and the Stop
-  hook are applied ONLY when absent — your existing values are kept, never overridden. Only
+settings_note = """- Baseline settings (tui, theme, voice, skip-prompts) and the Stop hook are applied
+  ONLY when absent. Portable model/effort/ultracode defaults are also added when absent; use
+  `--update-drift` (or the repo's `mise run defaults:apply`) to align existing values. Only
   approval/sandbox stay informational (Claude uses permissions/--permission-mode, not static keys).
 """
 
@@ -292,7 +310,7 @@ summarize = """the diff: which `[mcp_servers.*]` tables will be appended,
    which settings/trust entries are added, and confirm EXTRA entries (e.g. a
    Windows-only `chrome-devtools` on a non-Windows host) are left untouched."""
 apply_summary = """New MCP servers are appended as TOML tables, absent `approval_policy` /
-   `sandbox_mode` / `[projects."…"]` trust keys are added, the managed alias
+   `sandbox_mode` / `[projects."…"]` trust keys and portable model/effort defaults are added, the managed alias
    block is ensured in `~/.bash_aliases`, and the house-style block is ensured in
    `~/.codex/AGENTS.md`."""
 verify_step = """Show the relevant `[mcp_servers.*]` sections of
@@ -312,7 +330,7 @@ summarize = """the diff: which MCP servers will be added to
    untouched. Note that http servers are written with `httpUrl` and stdio
    servers with `command`/`args`/`env`."""
 apply_summary = """This merges MCP servers into `mcp_config.json`, adds trusted workspaces,
-   ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
+   adds the portable model default, ensures the managed alias block in `~/.bash_aliases`, and ensures the house-style
    block in `~/.gemini/GEMINI.md`."""
 verify_step = """Show `~/.gemini/config/mcp_config.json` so the user can confirm.
    Restart agy to pick up new servers."""

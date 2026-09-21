@@ -21,6 +21,8 @@ Usage:
   reconcile.py --cli claude --apply         # add missing declared entries
   reconcile.py --cli codex --apply --update-drift
   reconcile.py --status --all               # review every CLI
+  reconcile.py --all --defaults-only --apply --update-drift
+                                             # align only portable model/effort defaults
 """
 from __future__ import annotations
 
@@ -442,14 +444,182 @@ def set_toml_table_key(text: str, table: str, key: str, value) -> str:
     return "".join(lines)
 
 
-def settings_report(cli: str, caps: dict):
+def set_toml_root_key(text: str, key: str, value) -> str:
+    """Set one root-level TOML scalar without disturbing any table.
+
+    Root keys must precede the first table. Existing root keys are replaced in
+    place; missing keys are inserted immediately before the first table. The
+    helper deliberately never searches inside tables, where an identical key
+    name has a different meaning.
+    """
+    rendered = f"{key} = {toml_value(value)}\n"
+    lines = text.splitlines(keepends=True)
+    first_table = len(lines)
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*\[[^\]]+\]\s*(?:#.*)?$", line):
+            first_table = i
+            break
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    for i in range(first_table):
+        if key_re.match(lines[i]):
+            lines[i] = rendered
+            return "".join(lines)
+    insert_at = first_table
+    if insert_at and lines[insert_at - 1].strip() == "":
+        insert_at -= 1
+    lines.insert(insert_at, rendered)
+    if first_table < len(lines) - 1 and insert_at + 1 < len(lines) \
+            and lines[insert_at + 1].strip() != "":
+        lines.insert(insert_at + 1, "\n")
+    return "".join(lines)
+
+
+_MISSING = object()
+
+
+def _flatten_defaults(value: dict, prefix=()):
+    """Yield (path_tuple, leaf_value) for a declared defaults mapping."""
+    if not isinstance(value, dict):
+        raise ReconcileReadError(
+            f"portable defaults at {'.'.join(prefix) or '<root>'} must be a table")
+    for key, child in value.items():
+        path = (*prefix, key)
+        if isinstance(child, dict):
+            yield from _flatten_defaults(child, path)
+        else:
+            yield path, expand(child)
+
+
+def _get_path(data: dict, path: tuple[str, ...]):
+    cur = data
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return _MISSING
+        cur = cur[key]
+    return cur
+
+
+def _non_mapping_parent(data: dict, path: tuple[str, ...]) -> str | None:
+    current = data
+    walked = []
+    for key in path[:-1]:
+        walked.append(key)
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+        if not isinstance(current, dict):
+            return ".".join(walked)
+    return None
+
+
+def _set_path(data: dict, path: tuple[str, ...], value):
+    cur = data
+    for key in path[:-1]:
+        child = cur.get(key)
+        if child is None:
+            child = {}
+            cur[key] = child
+        elif not isinstance(child, dict):
+            raise ReconcileReadError(
+                f"cannot set {'.'.join(path)}: {'.'.join(path[:-1])} is not a table")
+        cur = child
+    cur[path[-1]] = value
+
+
+def portable_defaults_report(cli: str, caps: dict):
+    """Return rows/apply for only the exact portable default leaves.
+
+    This is the authoritative, drift-aware layer. It is deliberately separate
+    from the older additive baseline settings so a bootstrap can align models
+    and effort without reading or touching MCPs, skills, plugins, aliases,
+    instructions, auth data or any unrelated config leaf.
+    """
+    declared = (caps.get("settings", {}).get("defaults", {}) or {}).get(cli, {})
+    leaves = list(_flatten_defaults(declared, ())) if declared else []
+    if cli == "codex":
+        path = codex_config_path()
+        data = codex_load()
+    elif cli == "claude":
+        path = claude_settings_path()
+        data = read_json_object(path)
+    else:
+        path = agy_settings_path()
+        data = read_json_object(path)
+
+    rows, todo = [], []
+    for key_path, want in leaves:
+        blocked_at = _non_mapping_parent(data, key_path)
+        if blocked_at:
+            rows.append([
+                "defaults." + ".".join(key_path), "REFUSED",
+                f"{blocked_at} exists but is not a table/object; left untouched",
+            ])
+            continue
+        have = _get_path(data, key_path)
+        name = "defaults." + ".".join(key_path)
+        if have == want:
+            rows.append([name, "MATCH", _fmt(want)])
+        elif have is _MISSING:
+            rows.append([name, "ADD", _fmt(want)])
+            todo.append(("ADD", key_path, want))
+        else:
+            rows.append([name, "UPDATE", f"{_fmt(have)} → {_fmt(want)}"])
+            todo.append(("UPDATE", key_path, want))
+
+    def apply(update_drift):
+        pending = [item for item in todo if item[0] == "ADD" or update_drift]
+        skipped = [".".join(item[1]) for item in todo
+                   if item[0] == "UPDATE" and not update_drift]
+        actions = []
+        if pending:
+            backup(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if cli == "codex":
+                text = path.read_text() if path.exists() else ""
+                for _, key_path, value in pending:
+                    if len(key_path) == 1:
+                        text = set_toml_root_key(text, key_path[0], value)
+                    else:
+                        text = set_toml_table_key(
+                            text, ".".join(key_path[:-1]), key_path[-1], value)
+                path.write_text(text)
+            else:
+                for _, key_path, value in pending:
+                    _set_path(data, key_path, value)
+                write_json_object(path, data)
+            actions.append(
+                f"{cli} portable defaults: wrote {len(pending)} key(s) to {path}")
+        if skipped:
+            actions.append(
+                f"{cli} portable defaults: skipped drifted key(s) "
+                + ", ".join(skipped) + " (use --update-drift)")
+        return actions
+
+    return rows, apply
+
+
+def settings_report(cli: str, caps: dict, defaults_only: bool = False):
     """Return (rows, apply_fn). apply_fn(update_drift) -> list[str] of actions."""
+    default_rows, default_apply = portable_defaults_report(cli, caps)
+    if defaults_only:
+        return default_rows, default_apply
     want = caps.get("settings", {})
     if cli == "codex":
-        return codex_settings(want)
-    if cli == "agy":
-        return agy_settings(want)
-    return claude_settings(want)
+        base_rows, base_apply = codex_settings(want)
+    elif cli == "agy":
+        base_rows, base_apply = agy_settings(want)
+    else:
+        base_rows, base_apply = claude_settings(want)
+
+    def apply(update_drift):
+        # Baseline and portable-default code may target the same JSON/TOML file.
+        # Re-read after the baseline write so a closure over the pre-write data
+        # cannot restore an older snapshot and erase the baseline additions.
+        actions = base_apply(update_drift)
+        _, fresh_default_apply = portable_defaults_report(cli, caps)
+        return actions + fresh_default_apply(update_drift)
+
+    return base_rows + default_rows, apply
 
 
 def desired_statusline(want: dict, cli: str) -> dict | None:
@@ -994,8 +1164,28 @@ def print_rows(title: str, rows, extras=None):
         print(f"  {MARK['EXTRA']} EXTRA   {e}  — not managed by khenrix (left untouched)")
 
 
-def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool):
+def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool,
+              defaults_only: bool = False):
     print(f"\n=== khenrix-setup · {cli} ===")
+    if defaults_only:
+        set_rows, set_apply = settings_report(cli, caps, defaults_only=True)
+        print_rows("Portable model/effort defaults:", set_rows)
+        if not apply:
+            adds = sum(1 for r in set_rows if r[1] == "ADD")
+            drift = sum(1 for r in set_rows if r[1] == "UPDATE")
+            print(f"\nReview only. {adds} to add, {drift} drifted. "
+                  "Re-run with --apply to add missing defaults; add "
+                  "--update-drift to align existing values.")
+            return
+        print("\nApplying portable defaults…")
+        actions = set_apply(update_drift)
+        if actions:
+            for action in actions:
+                print(f"  • {action}")
+        else:
+            print("  • nothing to do — already in sync")
+        return
+
     desired = desired_mcp(caps, cli)
     cur = mcp_current(cli)
     mcp_rows, extras = classify_mcp(desired, cur)
@@ -1049,6 +1239,10 @@ def main(argv=None):
     ap.add_argument("--status", action="store_true", help="read-only review (default)")
     ap.add_argument("--apply", action="store_true", help="add missing declared entries")
     ap.add_argument("--update-drift", action="store_true", help="also re-apply drifted managed entries")
+    ap.add_argument(
+        "--defaults-only", action="store_true",
+        help="inspect/apply only settings.defaults model and effort leaves; "
+             "does not read or touch MCPs, skills, plugins, aliases or instructions")
     args = ap.parse_args(argv)
 
     caps = load_caps()
@@ -1057,9 +1251,11 @@ def main(argv=None):
         # `reconcile.py --apply --all` a silent no-op (bootstrap-machine.sh:88).
         eff_apply = args.apply and not args.status
         for c in CLIS:
-            reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift)
+            reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift,
+                      defaults_only=args.defaults_only)
         return 0
-    reconcile(args.cli, caps, apply=args.apply and not args.status, update_drift=args.update_drift)
+    reconcile(args.cli, caps, apply=args.apply and not args.status,
+              update_drift=args.update_drift, defaults_only=args.defaults_only)
     return 0
 
 

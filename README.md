@@ -27,7 +27,7 @@ the CLI now has the `khenrix-setup` skill
 reconcile: review live config → diff vs source of truth → additively apply
 ```
 
-The `make` targets **only install** the plugin. They never write CLI config.
+The `setup-<cli>` targets **only install** the plugin. They never write CLI config.
 All configuration happens through the **`khenrix-setup` reconcile skill** that
 runs *inside* each CLI. The skill is **non-destructive**: it reports a diff and
 adds/updates only the entries khenrix owns. Anything you added outside the setup
@@ -44,13 +44,59 @@ make setup-agy      # ... into Antigravity
 Then, inside the CLI, invoke the skill (e.g. `/khenrix-setup` in Claude Code).
 It prints a review table and asks before writing anything.
 
-Maka is available as a companion CLI. Its pinned package, shared skills, and
-machine configuration live in the separate `agentic-setup` repository. Supported
-macOS and Linux/WSL machines can use Maka's ChatGPT subscription login for
-non-sensitive work. The exact-account Keychain-backed OpenAI API route is
-macOS-only. This repository does not provide a `make setup-maka` target. See
-[`docs/maka.md`](docs/maka.md) for installation, authentication, daily use,
-verification, and the reviewed update process.
+### Portable model and effort defaults
+
+The exact cross-machine defaults live under `[settings.defaults]` in
+`capabilities.toml`. Install the pinned repo tools once, then inspect or align
+only those declared leaves:
+
+```bash
+mise trust && mise install
+mise run defaults:status   # read-only; does not inspect MCPs, skills or plugins
+mise run defaults:apply    # backs up config, then aligns only declared leaves
+```
+
+| CLI | Portable defaults |
+|---|---|
+| Claude | provider-neutral `best`, `effortLevel=xhigh`, `ultracode=true` |
+| Codex | `gpt-5.6-sol`, execution/subagents `xhigh`, planning `ultra` |
+| agy | `Gemini 3.8 Flash (High)` |
+
+Existing auth, MCP, plugin, skill and machine-specific settings remain intact.
+The doctor check `cli-model-defaults` verifies the same fields without printing
+observed values.
+
+### Portable memory and Maka
+
+This repository also owns two public runtime components. They do not install or
+move any shared skill or plugin:
+
+- `components/memory` installs the integrity-pinned local `claude-mem` worker,
+  preserves its SQLite database, and additively merges capture hooks for Claude,
+  Codex, and agy. Maka can search the same loopback-only data without capturing
+  a second copy. Choose `claude-subscription`, `codex-subscription`,
+  `openai-keychain`, or an owner-only `local-claude` descriptor explicitly.
+- `components/maka` installs the pinned Maka v44 runtime, launcher, auth policy,
+  provenance, and audit lab. It supports ChatGPT subscription login on macOS and
+  Linux/WSL, plus a Keychain-backed API route on macOS.
+
+Review the dry runs before applying either component:
+
+```bash
+mise run memory:plan -- --route codex-subscription
+mise run memory:install -- --route codex-subscription --start
+mise run maka:plan
+mise run maka:stage
+mise run maka:auth-mode -- chatgpt-subscription
+mise run maka:install
+```
+
+`scripts/bootstrap-machine.sh` installs and verifies both runtimes. A first run
+must set `KHENRIX_MEMORY_ROUTE` and `KHENRIX_MAKA_AUTH_MODE`; it fails instead of
+guessing. The Keychain routes additionally require the matching non-secret
+account selector. See [`components/memory/README.md`](components/memory/README.md)
+and [`docs/maka.md`](docs/maka.md) for route-specific setup, migration, rollback,
+privacy boundaries, and verification.
 
 ### Keeping a CLI current — `khenrix-upgrade`
 
@@ -64,7 +110,8 @@ Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:
 4. apply repo improvements (SKILL.md / `capabilities.toml` / house-style) with
    diffs + confirmation, then `make khenrix-refresh`, and
 5. write a dated report to `docs/upgrades/<cli>-<date>.md` with recommended
-   live-config tuning (model, reasoning effort, experimental flags) to apply yourself.
+   model, reasoning-effort, and experimental-flag changes; portable default
+   changes belong in `capabilities.toml` and are applied with the command above.
 
 It only improves **how** we use the CLI and models — it never changes what a skill
 is meant to do. Live model/flag changes are recommended, not auto-applied.
@@ -83,8 +130,9 @@ identical — it's bundled into each plugin):
 Read-only inspection without installing:
 
 ```bash
-make status         # diff every CLI's live config against capabilities.toml
-make verify         # validate manifests + skills
+mise run defaults:status # model/effort drift only
+mise run verify          # validate manifests + skills
+make status              # full config diff for every CLI
 ```
 
 ## Editing the source of truth
@@ -99,13 +147,13 @@ make verify         # validate manifests + skills
   `[skill_facts.<skill>.<cli>]` tables in `capabilities.toml`. `render.py` fills the
   template per CLI — never edit the generated `marketplaces/.../SKILL.md`.
 
-After editing, run **`make khenrix-refresh`** — it re-renders and pushes the
+After editing, run **`mise exec -- make khenrix-refresh`** — it re-renders and pushes the
 updated plugin/skill/engine into every installed CLI in one step (Claude and
 Codex cache plugins by version, so a plain edit isn't picked up until you
 refresh). Then re-run `/khenrix-setup` in a CLI to apply any new capabilities.
 
 ```bash
-make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
+mise exec -- make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
 ```
 
 ## Layout
@@ -166,9 +214,10 @@ comments, and mirrors Codex's own `config.toml`.
 
 ## Non-destructive guarantee
 
-Every managed entry is tracked by name. On apply the engine will only:
+Every managed entry is tracked by name or exact field path. On apply the engine will only:
 - **add** a declared entry that is missing, or
-- **update** an entry it previously wrote (tagged `khenrix-managed`) that drifted.
+- **update** a declared drifted entry when `--update-drift` is explicitly used.
 
 It will **never remove** an MCP server, setting, or instruction it did not write.
-Files are backed up (`*.khenrix-backup`) before any change.
+Portable defaults update only their named leaves; all sibling fields remain in
+place. Files are backed up (`*.khenrix-backup`) before any change.

@@ -1,0 +1,169 @@
+min_version = "2026.9.10"
+
+[settings]
+lockfile = true
+
+[tools]
+bun = "1.4.2"
+python = "3.12.14"
+uv = "0.12.15"
+
+[tasks.verify]
+description = "Run the deterministic repository verification gate"
+run = "make verify"
+
+[tasks.test]
+description = "Run the full deterministic test suite"
+run = "make test"
+
+[tasks.precommit]
+description = "Run the commit-boundary gate"
+run = "make precommit"
+
+[tasks."defaults:status"]
+description = "Report portable model and effort drift without inspecting other surfaces"
+run = "make defaults-status"
+
+[tasks."defaults:apply"]
+description = "Align only the declared model and effort leaves"
+run = "make defaults-apply"
+
+[tasks."memory:plan"]
+description = "Preview the portable memory install without changing the machine"
+run = "python components/memory/memoryctl.py setup"
+
+[tasks."memory:install"]
+description = "Install memory with an explicit route (pass --route ... and optionally --start)"
+run = "python components/memory/memoryctl.py setup --apply"
+
+[tasks."memory:stage"]
+description = "Stage the exact integrity-pinned claude-mem artifact"
+run = "python components/memory/memoryctl.py stage"
+
+[tasks."memory:route"]
+description = "Select one explicit memory provider route"
+run = "python components/memory/memoryctl.py route"
+
+[tasks."memory:hooks"]
+description = "Install additive Claude, Codex, and agy memory hooks"
+run = "python components/memory/memoryctl.py hooks install"
+
+[tasks."memory:hooks-status"]
+description = "Report memory hook installation and Codex trust state"
+run = "python components/memory/memoryctl.py hooks status"
+
+[tasks."memory:doctor"]
+description = "Verify the installed local-only memory runtime and selected route"
+run = "python components/memory/memoryctl.py doctor"
+
+[tasks."memory:status"]
+description = "Report memory state without requiring services to be running"
+run = "python components/memory/memoryctl.py status"
+
+[tasks."memory:start"]
+description = "Start the loopback-only memory worker, relay, and gateway"
+run = "python components/memory/memoryctl.py start"
+
+[tasks."memory:stop"]
+description = "Stop the managed memory services"
+run = "python components/memory/memoryctl.py stop"
+
+[tasks."memory:restart"]
+description = "Restart the managed memory services"
+run = "python components/memory/memoryctl.py restart"
+
+[tasks."memory:viewer"]
+description = "Open the token-protected loopback memory viewer"
+run = "python components/memory/memoryctl.py viewer"
+
+[tasks."memory:backup"]
+description = "Create a consistent owner-only SQLite backup"
+run = "python components/memory/memoryctl.py backup"
+
+[tasks."memory:storage"]
+description = "Report local database and backup storage without deleting data"
+run = "python components/memory/memoryctl.py storage"
+
+[tasks."memory:upgrade"]
+description = "Upgrade to the reviewed memory pin with backup and hook merge"
+run = "python components/memory/memoryctl.py upgrade"
+
+[tasks."memory:rollback"]
+description = "Restore an explicit reviewed memory backup (pass --backup PATH)"
+run = "python components/memory/memoryctl.py rollback"
+
+[tasks."memory:exclude"]
+description = "List, add, or remove an exact local project exclusion"
+run = "python components/memory/memoryctl.py exclude"
+
+[tasks."memory:test"]
+description = "Run the hermetic portable-memory suite"
+run = "uvx --python 3.12 --with pytest pytest -q tests/test_memory_runtime.py"
+
+[tasks."maka:plan"]
+description = "Preview the portable Maka install without changing live state"
+run = "mise -C components/maka run maka:install-plan"
+
+[tasks."maka:stage"]
+description = "Stage the pinned Maka component without activating its wrapper"
+run = "mise -C components/maka run maka:stage"
+
+[tasks."maka:install"]
+description = "Install the staged Maka component and activate its wrapper"
+run = "mise -C components/maka run maka:install-apply"
+
+[tasks."maka:migrate-plan"]
+description = "Inspect legacy Agentic Setup Maka state without copying it"
+run = "mise -C components/maka run maka:migrate-plan"
+
+[tasks."maka:migrate"]
+description = "Copy only reviewed non-secret legacy Maka selectors and relay decoys"
+run = "mise -C components/maka run maka:migrate-apply"
+
+[tasks."maka:migrate-rollback"]
+description = "Remove unchanged Khenrix migration copies while preserving legacy state"
+run = "mise -C components/maka run maka:migrate-rollback"
+
+[tasks."maka:auth-mode"]
+description = "Choose this machine's write-once Maka auth route"
+run = "mise -C components/maka run maka:auth-mode"
+
+[tasks."maka:auth-doctor"]
+description = "Verify the lightweight interactive Maka authentication setup"
+run = "mise -C components/maka run maka:auth-doctor"
+
+[tasks."maka:component-doctor"]
+description = "Verify Maka pins, provenance, attribution, and installed component drift"
+run = "mise -C components/maka run maka:component-doctor"
+
+[tasks."maka:doctor"]
+description = "Verify the complete Maka eval lab, including its Colima VM"
+run = "mise -C components/maka run maka:doctor"
+
+[tasks."maka:audit-smoke"]
+description = "Run a credential-free audit and export smoke test"
+run = "mise -C components/maka run maka:audit-smoke"
+
+[tasks."maka:import-smoke"]
+description = "Verify synthetic Claude and Codex session adapters"
+run = "mise -C components/maka run maka:import-smoke"
+
+[tasks."maka:harbor-smoke"]
+description = "Run one pinned fix-git Harbor cell in the disposable lab"
+run = "mise -C components/maka run maka:harbor-smoke"
+
+[tasks."maka:pier-preflight"]
+description = "Validate the pinned Pier environment and Maka preflight"
+run = "mise -C components/maka run maka:pier-preflight"
+
+[tasks."maka:harden-python"]
+description = "Harden the locked Python runtime before Maka Keychain access"
+run = "mise -C components/maka run maka:harden-python"
+
+[tasks."maka:relay-install"]
+description = "Run the explicit Maka API relay installer"
+run = "mise -C components/maka run maka:relay-install"
+
+[tasks."maka:test"]
+description = "Run the credential-free portable Maka regression suite"
+run = "mise -C components/maka run maka:test"

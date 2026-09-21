@@ -1,0 +1,106 @@
+min_version = "2026.9.10"
+
+[settings]
+lockfile = true
+
+[tools]
+node = "24.16.0"
+python = "3.12.14"
+uv = "0.12.15"
+docker-cli = "29.8.1"
+docker-compose = "5.5.1"
+"npm:maka-agent" = "0.2.0-dev.44.20260920"
+"aqua:docker/buildx" = "0.37.1"
+
+[env]
+MAKA_LAB_ROOT = "{{ config_root }}"
+MAKA_EVAL_MODEL = "gpt-5.6-sol"
+MAKA_EVAL_THINKING = "xhigh"
+
+[tasks."maka:doctor"]
+description = "Verify the full pinned Maka eval lab, including starting its Colima VM"
+run = "./scripts/doctor.sh"
+
+[tasks."maka:auth-doctor"]
+description = "Verify the lightweight interactive auth setup without starting Colima"
+run = "./scripts/auth-doctor.sh"
+
+[tasks."maka:harden-python"]
+description = "Force-reinstall, harden, and verify pinned Python before Maka Keychain access"
+run = '''
+set -eu
+umask 077
+/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/python3 -I -S -B ./scripts/harden_python_runtime.py prepare
+'''
+
+[tasks."maka:relay-install"]
+description = "Run the explicit API relay installer with the verified hardened Python"
+run = "/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/python3 -I -S -B ./scripts/run_hardened_python.py relay-installer"
+
+[tasks."maka:auth-mode"]
+description = "Make this machine's write-once Maka auth choice"
+run = "python ./interactive/maka_auth_mode.py"
+
+[tasks."maka:audit-smoke"]
+description = "Run a credential-free audit/export smoke test in an isolated HOME"
+run = "./scripts/audit-smoke.sh"
+
+[tasks."maka:import-smoke"]
+description = "Verify synthetic Claude and Codex external-session adapters without touching real history"
+run = "./scripts/import-smoke.sh"
+
+[tasks."maka:harbor-smoke"]
+description = "Run one pinned fix-git Harbor cell in the disposable amd64 lab"
+run = "./scripts/harbor-smoke.sh"
+
+[tasks."maka:pier-preflight"]
+description = "Validate the pinned Pier environment and Maka preflight only"
+run = "./scripts/pier-preflight.sh"
+
+[tasks."maka:broker-boundary-smoke"]
+description = "Prove the synthetic key stays out of child env, evidence, and Docker metadata"
+run = "./scripts/broker-boundary-smoke.sh"
+
+[tasks."maka:colima-start"]
+description = "Create or start the isolated x86_64 Colima profile"
+run = "./scripts/colima-start.sh"
+
+[tasks."maka:controller-build"]
+description = "Build the pinned linux/amd64 controller image"
+run = "./scripts/controller-build.sh"
+
+[tasks."maka:install-plan"]
+description = "Show the portable Maka install/cutover plan without changing live state"
+run = "python ./scripts/install_component.py plan"
+
+[tasks."maka:install-apply"]
+description = "Install the portable Maka component and activate its wrapper"
+run = "python ./scripts/install_component.py apply"
+
+[tasks."maka:install-rollback"]
+description = "Restore a specific component backup created during apply"
+run = "python ./scripts/install_component.py rollback"
+
+[tasks."maka:stage"]
+description = "Install the portable Maka component without activating its wrapper"
+run = "python ./scripts/install_component.py apply --stage-only"
+
+[tasks."maka:migrate-plan"]
+description = "Inspect legacy Agentic Setup Maka state without copying it"
+run = "python ./scripts/migrate_legacy_state.py plan"
+
+[tasks."maka:migrate-apply"]
+description = "Copy only reviewed non-secret legacy Maka selectors and relay decoys"
+run = "python ./scripts/migrate_legacy_state.py apply"
+
+[tasks."maka:migrate-rollback"]
+description = "Remove unchanged Khenrix migration copies while preserving legacy state"
+run = "python ./scripts/migrate_legacy_state.py rollback"
+
+[tasks."maka:component-doctor"]
+description = "Verify pins, provenance, attribution, platform lock, and installed component drift"
+run = "python ./scripts/component_doctor.py"
+
+[tasks."maka:test"]
+description = "Run the credential-free portable Maka regression suite"
+run = "./scripts/test.sh"

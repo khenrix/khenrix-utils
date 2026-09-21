@@ -14,7 +14,7 @@ tooling) is re-created per machine — `khenrix-setup` does most of that for you
 | MCP servers, skills, base instructions, baseline settings | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** (this repo) + `/khenrix-setup` applies it into the live CLI |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
-| Claude baseline settings + Stop hook + statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + `/khenrix-setup` installs/registers them (add-when-absent, never overrides your tuning) |
+| CLI model/effort defaults + Claude baseline settings, Stop hook and statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + reconcile; portable default leaves can be aligned exactly while unrelated tuning is preserved |
 | MCP secrets / OAuth tokens | machine-local (`~/.config/...`, env) | **not git** — re-auth per machine |
 | WSL Windows bridges (`powershell.exe`, `windows-chrome` shims) | machine-local `~/.local/bin` | **not git, but not manual either** — `scripts/bootstrap-tier0.sh` provisions them from this repo |
 | Tooling (asdf/node, uv, the `claude` CLI) | machine-local | **not git** — install per machine |
@@ -31,8 +31,8 @@ distro one manual step comes first, and only one:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone git@github.com:khenrix/khenrix-utils.git ~/git/khenrix-utils
-cd ~/git/khenrix-utils
+git clone git@github.com-khenrix:khenrix/khenrix-utils.git ~/khenrix-utils
+cd ~/khenrix-utils
 ```
 
 ## 1. Prerequisites — run Tier 0
@@ -138,6 +138,15 @@ The **real `xclip` package is fine** — and is the right tool — for the *text
 clipboard. The rule is about the image chain: leave `wl-clipboard` off WSL, and
 never fake either name.
 
+After Tier 0 has installed `mise`, trust the checked-in tool manifest and install
+its lock-pinned Python and uv versions:
+
+```bash
+cd ~/khenrix-utils
+mise trust
+mise install
+```
+
 ## 2. Clone the remaining git-synced repos
 
 `khenrix-utils` is already cloned (step 0). The rest:
@@ -148,16 +157,32 @@ git clone git@github.com:khenrix/obsidian-vault.git  ~/git/obsidian-vault   # pr
 git clone <hunter remote> ~/git/hunter               # brings its .claude/skills along
 ```
 
-Maka is installed separately from the three Khenrix plugins. Agentic Setup does
-not currently have a published remote; obtain or update `~/git/agentic-setup`
-through the team-approved source or transfer. Then follow
-[the Maka guide](maka.md) to install its pinned package and choose the machine's
-authentication route: the macOS-only Keychain-backed OpenAI API relay or, on
-supported macOS and Linux/WSL machines, a ChatGPT subscription with Codex access
-for non-sensitive work.
-`scripts/bootstrap-machine.sh` does not install Maka, and there is no
-`make setup-maka` target. Credentials and OAuth sessions remain local to each
-machine.
+The portable memory and Maka runtimes are part of this repository. Their
+credentials, OAuth sessions, local provider descriptor, session history, and
+SQLite data remain local to each machine. Individual shared skills and plugins
+remain outside these runtime components.
+
+Choose both routes explicitly before the authenticated bootstrap. For a machine
+using the existing CLI subscriptions:
+
+```bash
+KHENRIX_MEMORY_ROUTE=codex-subscription \
+KHENRIX_MAKA_AUTH_MODE=chatgpt-subscription \
+  ./scripts/bootstrap-machine.sh --dry-run
+KHENRIX_MEMORY_ROUTE=codex-subscription \
+KHENRIX_MAKA_AUTH_MODE=chatgpt-subscription \
+  ./scripts/bootstrap-machine.sh
+```
+
+The first Maka launch still opens the official device-login flow. For memory on
+a local Anthropic or Vertex route, create the owner-only descriptor documented
+in `components/memory/README.md`, then set
+`KHENRIX_MEMORY_ROUTE=local-claude` and `KHENRIX_MEMORY_PROVIDER_FILE` to its
+absolute path. The macOS API routes use `openai-keychain` or `api-key-relay` and
+also require `KHENRIX_MEMORY_KEYCHAIN_ACCOUNT` or
+`KHENRIX_MAKA_KEYCHAIN_ACCOUNT`. The bootstrap refuses an absent or mismatched
+route rather than selecting a billable provider automatically. Existing legacy
+Maka state uses the reviewed migration in [the Maka guide](maka.md).
 
 ## 3. Install the Claude plugins
 
@@ -165,7 +190,7 @@ machine.
 > authenticated tier: marketplaces, plugins, skill porting, `reconcile.py --apply
 > --all`, and a closing `doctor.py --profile full` so the run *proves* what it
 > built. It **runs Tier 0 first and aborts if anything is missing**, then fails
-> hard if `claude codex agy uv gh node git` are not all present — by that point
+> hard if `claude codex agy uv gh node git mise` are not all present — by that point
 > their absence is a real error, not a bare-distro state. `--dry-run` propagates
 > into Tier 0 and mutates nothing, so start there:
 >
@@ -178,7 +203,7 @@ machine.
 > who wants to go one step at a time.
 
 ```bash
-cd ~/git/khenrix-utils && make setup-claude          # khenrix marketplace + plugin
+cd ~/khenrix-utils && make setup-claude          # khenrix marketplace + plugin
 
 claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin marketplace add ~/git/obsidian-vault   # claude-obsidian lives in the vault repo
@@ -195,15 +220,33 @@ Inside Claude Code, run **`/khenrix-setup`**. It diffs the live config against
 overriding your tuning** — all of:
 
 - **MCP servers** + **skills** + **base instructions** (`~/.claude/CLAUDE.md`)
-- **Baseline settings** → `~/.claude/settings.json`: `model=opus[1m]`, `effortLevel=xhigh`,
-  `tui=fullscreen`, `theme=dark-ansi`, `voice` (hold), `skipDangerousModePermissionPrompt`,
+- **Baseline settings** → `~/.claude/settings.json`: `tui=fullscreen`,
+  `theme=dark-ansi`, `voice` (hold), `skipDangerousModePermissionPrompt`,
   `skipWorkflowUsageWarning`
+- **Portable defaults** → the exact declared model/effort leaves: Claude
+  provider-neutral `best`, `effortLevel=xhigh`, `ultracode=true`; Codex
+  `gpt-5.6-sol`, execution/subagents `xhigh`, planning `ultra`; agy
+  `Gemini 3.8 Flash (High)`
 - **The Stop hook** — installs `wiki-autosave-gate.sh` → `~/.claude/hooks/` **and** registers
   the stanza (skipped if you already have a Stop hook)
 - **The statusline** — installs the renderer + points `statusLine` at it
 
 Review its table, approve. That's it — there's no longer a machine-local settings/hook to
 hand-copy (all of the above ships in this repo now).
+
+The ordinary skill apply adds missing values and leaves drift for review. To
+inspect or align only the portable defaults across all three CLIs, without
+reading or changing MCPs, skills, plugins, aliases or instructions, run:
+
+```bash
+mise run defaults:status
+mise run defaults:apply
+mise exec -- python3 scripts/doctor.py --only cli-model-defaults
+```
+
+The apply command creates numbered `*.khenrix-backup` files before changing a
+config and preserves every unrelated field. Tier 1 runs this narrow alignment
+automatically before its final doctor pass.
 
 ## 5. Re-auth MCP secrets — the only truly-manual step left (never copy)
 
@@ -261,7 +304,7 @@ two machines (rarely simultaneous), conflicts are rare; obsidian-git merges, and
 ### khenrix-utils + project repos — plain git
 
 ```bash
-cd ~/git/khenrix-utils && git pull        # then, after edits: git push
+cd ~/khenrix-utils && git pull        # then, after edits: git push
 cd ~/git/<project>      && git pull        # each project on its own remote
 ```
 

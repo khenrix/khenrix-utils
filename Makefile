@@ -10,11 +10,13 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test reconcile-defaults-test memory-runtime-test maka-component-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-apply clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
+RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py
+MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py \
@@ -100,7 +102,7 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 # collision guard -- i.e. a change that silently overwrites the user's existing
 # MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
 # suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
+verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -137,6 +139,15 @@ forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower
 # fixtures only — it never touches the real clipboard or the network.
 doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
 	$(call RUN_PYTEST,$(DOCTOR_TESTS))
+
+reconcile-defaults-test: ## Portable default reconciliation tests (no token cost)
+	$(call RUN_PYTEST,$(RECONCILE_DEFAULTS_TESTS))
+
+memory-runtime-test: ## Hermetic portable-memory tests (no network, credentials, or live writes)
+	$(call RUN_PYTEST,$(MEMORY_RUNTIME_TESTS))
+
+maka-component-test: ## Credential-free portable Maka component tests
+	mise -C components/maka run maka:test
 
 # Hermetic engine tests for the khenrix-audit skill — same stance as doctor-test:
 # a verifier whose own tests never run decays into a false assurance.
@@ -225,6 +236,12 @@ eval-arena: ## Cross-skill ROUTING eval — SKILLS=a,b[,c] reads evals/<a>/arena
 
 status: ## Show what each CLI currently has vs the source of truth (read-only)
 	$(PY) scripts/lib/reconcile.py --status --all
+
+defaults-status: ## Show model/effort drift only; reads no MCP/plugin/skill state
+	$(PY) scripts/lib/reconcile.py --status --all --defaults-only
+
+defaults-apply: ## Align only declared model/effort leaves; preserve all other config
+	$(PY) scripts/lib/reconcile.py --apply --update-drift --all --defaults-only
 
 clean: ## Remove rendered skill copies (keeps per-CLI khenrix-setup)
 	$(PY) scripts/render.py --clean

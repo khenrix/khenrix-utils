@@ -1,0 +1,11 @@
+{
+  "package": "claude-mem",
+  "version": "13.25.1",
+  "registry_url": "https://registry.npmjs.org/claude-mem/-/claude-mem-13.25.1.tgz",
+  "integrity": "sha512-zhqFluHfYWo5Xi8CoP6aNTZVCCdXwwsklUrWQyOMDG6MsO+4DPekdGB2COpQpt3i6oE++O0FUFjQxr2P3utX0w==",
+  "source_repository": "https://github.com/thedotmack/claude-mem.git",
+  "source_commit": "dcfc44221deabc228b0698a0012f87ed2fe6bbe7",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE.claude-mem.txt",
+  "bun_version": "1.4.2"
+}

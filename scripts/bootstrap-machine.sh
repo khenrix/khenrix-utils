@@ -29,10 +29,18 @@ skip() { echo "SKIP: $* (already present)"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${KHENRIX_REPO:-$HOME/git/khenrix-utils}"
-REPO_URL="git@github.com:khenrix/khenrix-utils.git"
+CHECKOUT_ROOT="$(cd "$HERE/.." && pwd)"
+REPO="${KHENRIX_REPO:-$CHECKOUT_ROOT}"
+# This public repo uses its own GitHub identity. Keep the SSH host alias so a
+# work-account default key is never selected or replaced.
+REPO_URL="git@github.com-khenrix:khenrix/khenrix-utils.git"
 VAULT="${OBSIDIAN_VAULT:-$HOME/git/obsidian-vault}"
 VAULT_URL="git@github.com:khenrix/obsidian-vault.git"
+MEMORY_ROUTE="${KHENRIX_MEMORY_ROUTE:-}"
+MEMORY_KEYCHAIN_ACCOUNT="${KHENRIX_MEMORY_KEYCHAIN_ACCOUNT:-}"
+MEMORY_PROVIDER_FILE="${KHENRIX_MEMORY_PROVIDER_FILE:-}"
+MAKA_AUTH_MODE="${KHENRIX_MAKA_AUTH_MODE:-}"
+MAKA_KEYCHAIN_ACCOUNT="${KHENRIX_MAKA_KEYCHAIN_ACCOUNT:-}"
 
 echo "== Tier 0 (unauthenticated prerequisites) =="
 # Tier 1 RUNS Tier 0 rather than assuming someone did. The two tiers split on
@@ -44,8 +52,16 @@ echo "== Tier 0 (unauthenticated prerequisites) =="
 # and Tier 0's own --dry-run mutates nothing (not even mkdir).
 TIER0="$HERE/bootstrap-tier0.sh"
 [ -x "$TIER0" ] || { echo "FATAL: Tier 0 missing or not executable: $TIER0" >&2; exit 1; }
-if [ "$DRY" = 1 ]; then TIER0_ARGS=(--dry-run); else TIER0_ARGS=(); fi
-if ! "$TIER0" "${TIER0_ARGS[@]}"; then
+if [ "$DRY" = 1 ]; then
+  TIER0_OK=0
+  "$TIER0" --dry-run || TIER0_OK=$?
+else
+  # Bash 3.2 with `set -u` treats an empty-array expansion as an unbound
+  # variable. Call the no-argument form directly so macOS can run a real Tier 1.
+  TIER0_OK=0
+  "$TIER0" || TIER0_OK=$?
+fi
+if [ "$TIER0_OK" -ne 0 ]; then
   echo "FATAL: Tier 0 reported missing prerequisites. Resolve them, then re-run." >&2
   exit 1
 fi
@@ -56,12 +72,70 @@ echo "== Tier 1 prereqs (authenticated; MUST be present) =="
 # Printing `MISSING:` and carrying on — which is what this used to do — meant every
 # step below ran against a machine known not to satisfy them.
 MISSING=0
-for bin in claude codex agy uv gh node git; do
+for bin in claude codex agy uv gh node git mise; do
   if have "$bin"; then echo "  ok: $bin"; else echo "  MISSING: $bin"; MISSING=1; fi
 done
 if [ "$MISSING" = 1 ]; then
   echo "FATAL: install the above (docs/machine-setup.md), then re-run." >&2
   exit 1
+fi
+
+echo "== Portable runtime route preflight =="
+MEMORY_SELECTOR="$HOME/.config/agentic-memory/route.json"
+if [ -z "$MEMORY_ROUTE" ]; then
+  if [ ! -f "$MEMORY_SELECTOR" ] || ! grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*2' "$MEMORY_SELECTOR"; then
+    echo "FATAL: choose KHENRIX_MEMORY_ROUTE=claude-subscription, codex-subscription," >&2
+    echo "       openai-keychain, or local-claude for the first memory install." >&2
+    exit 2
+  fi
+else
+  case "$MEMORY_ROUTE" in
+    claude-subscription|codex-subscription)
+      [ -z "$MEMORY_KEYCHAIN_ACCOUNT" ] && [ -z "$MEMORY_PROVIDER_FILE" ] || {
+        echo "FATAL: the selected memory route does not accept account/provider options." >&2
+        exit 2
+      }
+      ;;
+    openai-keychain)
+      [ -n "$MEMORY_KEYCHAIN_ACCOUNT" ] && [ -z "$MEMORY_PROVIDER_FILE" ] || {
+        echo "FATAL: openai-keychain requires KHENRIX_MEMORY_KEYCHAIN_ACCOUNT only." >&2
+        exit 2
+      }
+      ;;
+    local-claude)
+      [ -n "$MEMORY_PROVIDER_FILE" ] && [ -z "$MEMORY_KEYCHAIN_ACCOUNT" ] || {
+        echo "FATAL: local-claude requires KHENRIX_MEMORY_PROVIDER_FILE only." >&2
+        exit 2
+      }
+      ;;
+    *) echo "FATAL: unsupported KHENRIX_MEMORY_ROUTE: $MEMORY_ROUTE" >&2; exit 2 ;;
+  esac
+fi
+
+MAKA_SELECTOR="$HOME/.config/khenrix-utils/maka/maka-auth-mode"
+MAKA_LEGACY_SELECTOR="$HOME/.config/agentic-setup/maka-auth-mode"
+if [ -z "$MAKA_AUTH_MODE" ]; then
+  if [ ! -f "$MAKA_SELECTOR" ]; then
+    if [ -f "$MAKA_LEGACY_SELECTOR" ]; then
+      echo "FATAL: legacy Maka state needs the reviewed migration in docs/maka.md." >&2
+    else
+      echo "FATAL: choose KHENRIX_MAKA_AUTH_MODE=chatgpt-subscription or api-key-relay." >&2
+    fi
+    exit 2
+  fi
+elif [ "$MAKA_AUTH_MODE" = "chatgpt-subscription" ]; then
+  [ -z "$MAKA_KEYCHAIN_ACCOUNT" ] || {
+    echo "FATAL: chatgpt-subscription does not accept KHENRIX_MAKA_KEYCHAIN_ACCOUNT." >&2
+    exit 2
+  }
+elif [ "$MAKA_AUTH_MODE" = "api-key-relay" ]; then
+  [ -n "$MAKA_KEYCHAIN_ACCOUNT" ] || {
+    echo "FATAL: api-key-relay requires KHENRIX_MAKA_KEYCHAIN_ACCOUNT." >&2
+    exit 2
+  }
+else
+  echo "FATAL: unsupported KHENRIX_MAKA_AUTH_MODE: $MAKA_AUTH_MODE" >&2
+  exit 2
 fi
 
 echo "== Claude marketplaces (add if absent) =="
@@ -122,14 +196,45 @@ echo "== agy MCP config (stdlib merge, never clobber) =="
 echo "== khenrix-utils (source of truth) =="
 if [ -d "$REPO/.git" ]; then skip "clone $REPO"; else run git clone "$REPO_URL" "$REPO"; fi
 if [ -d "$VAULT/.git" ]; then skip "clone $VAULT"; else run git clone "$VAULT_URL" "$VAULT"; fi
-run make -C "$REPO" khenrix-refresh
+run mise -C "$REPO" trust
+run mise -C "$REPO" install
+run mise -C "$REPO" exec -- make khenrix-refresh
 
 echo "== Reconcile config into every CLI (deterministic; additive) =="
 # The headless equivalent of the `khenrix-setup` skill, NOT the agent skill: it adds
 # declared entries that are absent and leaves everything else untouched. `--all`
 # genuinely applies now — it used to hardcode apply=False, so this call would have
 # been a silent no-op had it been wired earlier. Non-zero here aborts (set -e).
-run python3 "$REPO/scripts/lib/reconcile.py" --apply --all
+run mise -C "$REPO" exec -- python3 scripts/lib/reconcile.py --apply --all
+
+echo "== Align portable model/effort defaults (exact declared leaves only) =="
+# Full reconcile remains additive for broad settings. This narrow pass owns only
+# settings.defaults and is intentionally drift-aware, so established machines
+# receive the same planning/execution defaults without touching any other key.
+run mise -C "$REPO" run defaults:apply
+
+echo "== Install local cross-CLI memory (explicit route; preserves the database) =="
+if [ -z "$MEMORY_ROUTE" ]; then
+  run mise -C "$REPO" run memory:install -- --start
+elif [ "$MEMORY_ROUTE" = "openai-keychain" ]; then
+  run mise -C "$REPO" run memory:install -- --route "$MEMORY_ROUTE" --keychain-account "$MEMORY_KEYCHAIN_ACCOUNT" --start
+elif [ "$MEMORY_ROUTE" = "local-claude" ]; then
+  run mise -C "$REPO" run memory:install -- --route "$MEMORY_ROUTE" --provider-file "$MEMORY_PROVIDER_FILE" --start
+else
+  run mise -C "$REPO" run memory:install -- --route "$MEMORY_ROUTE" --start
+fi
+
+echo "== Install pinned Maka runtime (skills remain owned elsewhere) =="
+run mise -C "$REPO" run maka:stage
+if [ -n "$MAKA_AUTH_MODE" ]; then
+  run mise -C "$REPO" run maka:auth-mode -- "$MAKA_AUTH_MODE"
+fi
+run mise -C "$REPO" run maka:install
+if [ "$MAKA_AUTH_MODE" = "api-key-relay" ]; then
+  run mise -C "$REPO" run maka:harden-python
+  run mise -C "$REPO" run maka:relay-install -- install --keychain-account "$MAKA_KEYCHAIN_ACCOUNT"
+fi
+run mise -C "$REPO" run maka:component-doctor
 
 echo "== Ported third-party skills (codex + agy) =="
 # Mirrors portable Claude skill bodies onto codex/agy from THIS machine's Claude caches
@@ -141,6 +246,7 @@ echo "== Verify what was built =="
 # chrome-devtools MCP that is configured and dead. doctor.py checks BEHAVIOUR, and
 # it runs last so it sees the finished machine. set -e makes a failed check fail
 # the bootstrap — the whole point is that this cannot be ignored.
-run python3 "$REPO/scripts/doctor.py" --profile full
+run mise -C "$REPO" exec -- python3 scripts/doctor.py --profile full
+run mise -C "$REPO" run memory:doctor
 
 echo "== Done (dry-run=$DRY) =="

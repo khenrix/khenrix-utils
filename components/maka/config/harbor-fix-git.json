@@ -1,0 +1,88 @@
+{
+  "schemaVersion": "maka.eval.v1",
+  "id": "maka-openai-fix-git-smoke-v1",
+  "benchmark": {
+    "id": "terminal-bench-2.1",
+    "version": "cd855d42cdea03da2d781ae1dbc89f74b39a4491",
+    "config": {
+      "repository": "file:///invalid/replaced-by-the-maka-controller"
+    }
+  },
+  "executor": {
+    "kind": "harbor",
+    "config": {
+      "frameworkVersion": "0.20.0",
+      "pythonPathEnv": "MAKA_EVAL_HARBOR_PYTHON",
+      "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
+      "environment": { "type": "docker", "delete": true },
+      "preparationEnvironment": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "MAKA_EVAL_SECRET_VOLUME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy"
+      ],
+      "egressProxy": {
+        "composeSourceEnv": "MAKA_EVAL_EGRESS_OVERLAY_PATH",
+        "composeRelativePath": "docker-compose-egress-proxy.yaml",
+        "networkPolicyRelativePath": "network-policy",
+        "proxyUrl": "http://maka-eval-mitmproxy:8080",
+        "allowedHost": "maka-eval-mitmproxy",
+        "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
+      },
+      "mounts": [
+        {
+          "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+          "target": "/opt/maka-agent",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_NODE_TOOLCHAIN_PATH",
+          "target": "/opt/maka-node-toolchain",
+          "readOnly": true
+        }
+      ]
+    }
+  },
+  "execution": { "maxConcurrentTaskGroups": 1 },
+  "subjects": [
+    {
+      "id": "maka",
+      "kind": "maka",
+      "credentials": ["OPENAI_API_KEY"],
+      "config": {
+        "providerType": "openai",
+        "apiKeyEnvironment": "OPENAI_API_KEY",
+        "nodePath": "/opt/maka-node-toolchain/bin/node",
+        "shimPath": "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-maka-subject.js",
+        "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+        "connectionSlug": "eval-openai",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-5.6-sol",
+        "thinkingLevel": "xhigh",
+        "permissionMode": "bypass",
+        "collaborationMode": "agent",
+        "orchestrationMode": "default",
+        "hostSettlementTimeoutMs": 120000,
+        "toolProfile": "headless-coding-v1"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "fix-git",
+      "input": "Resolved from the pinned Harbor task",
+      "config": { "harbor": { "path": "tasks/fix-git" } }
+    }
+  ],
+  "repetitions": 1,
+  "budget": { "timeoutMultiplier": 1, "maxSteps": 32 },
+  "verifier": { "reward": "reward" }
+}

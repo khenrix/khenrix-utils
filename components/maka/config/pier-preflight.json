@@ -1,0 +1,70 @@
+{
+  "schemaVersion": "maka.eval.v1",
+  "id": "maka-pier-preflight-v1",
+  "benchmark": {
+    "id": "pier-preflight",
+    "version": "0.3.0",
+    "config": {}
+  },
+  "executor": {
+    "kind": "pier",
+    "config": {
+      "frameworkVersion": "0.3.0",
+      "pythonPathEnv": "MAKA_EVAL_PIER_PYTHON",
+      "trialsRootEnv": "MAKA_EVAL_TRIALS_DIR",
+      "tasksRootEnv": "MAKA_EVAL_PIER_TASKS",
+      "environment": { "type": "docker", "delete": true },
+      "preparationEnvironment": [
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "DOCKER_TLS_VERIFY",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG"
+      ],
+      "mounts": [
+        {
+          "sourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
+          "target": "/opt/maka-agent",
+          "readOnly": true
+        },
+        {
+          "sourceEnv": "MAKA_EVAL_NODE_TOOLCHAIN_PATH",
+          "target": "/opt/maka-node-toolchain",
+          "readOnly": true
+        }
+      ]
+    }
+  },
+  "execution": { "maxConcurrentTaskGroups": 1 },
+  "subjects": [
+    {
+      "id": "maka",
+      "kind": "maka",
+      "credentials": [],
+      "config": {
+        "nodePath": "/opt/maka-node-toolchain/bin/node",
+        "shimPath": "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-maka-subject.js",
+        "runtimeHostsPath": "/tmp/maka-runtime-hosts",
+        "connectionSlug": "preflight-only",
+        "baseUrl": "https://invalid.local/v1",
+        "model": "preflight-only",
+        "thinkingLevel": "xhigh",
+        "permissionMode": "bypass",
+        "collaborationMode": "agent",
+        "orchestrationMode": "default",
+        "hostSettlementTimeoutMs": 120000,
+        "toolProfile": "headless-coding-v1"
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "id": "synthetic-preflight",
+      "input": "Preflight only; never execute this task",
+      "config": { "pier": { "path": "synthetic-task" } }
+    }
+  ],
+  "repetitions": 1,
+  "budget": { "timeoutMultiplier": 1, "maxSteps": 1 },
+  "verifier": { "reward": "reward" }
+}

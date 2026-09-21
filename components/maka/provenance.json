@@ -1,0 +1,80 @@
+{
+  "schema": "maka-lab-provenance-v1",
+  "maka": {
+    "package": "maka-agent",
+    "version": "0.2.0-dev.44.20260920",
+    "integrity": "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog==",
+    "sourceRepository": "https://github.com/apache/maka",
+    "releaseTag": "v0.2.0-dev.44.20260920",
+    "publishedAt": "2026-09-20T18:42:17.298Z",
+    "apacheCommit": "feb9cf22fa216ce499860ad7cbcd59c32d28aa97",
+    "compatibilityOverlays": [
+      {
+        "id": "relay-root-virtiofs-v2",
+        "target": "node_modules/@maka/eval/harbor/relay_agent.py",
+        "baseSha256": "c8654a17bd9ecefac2ce183c3fcc238fc142d9e2a47d703541c9cfc9a29fe3ee",
+        "patchedSha256": "8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0"
+      },
+      {
+        "id": "eval-openai-onboarding-v2",
+        "targets": [
+          {
+            "target": "node_modules/@maka/runtime/dist/model-fetcher.js",
+            "baseSha256": "2df217533e6aa47524fa4027493bfba721fa744b36612b34df0ea4015efe2af5",
+            "patchedSha256": "82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c"
+          },
+          {
+            "target": "node_modules/@maka/eval/dist/maka-subject.js",
+            "baseSha256": "20b5044736ed951b7b7a3a1c93cda168d04b3f6b84dcbc6aa7564fe61e641923",
+            "patchedSha256": "2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3"
+          }
+        ]
+      }
+    ]
+  },
+  "thirdParty": {
+    "apacheMaka": {
+      "source": "maka-agent@0.2.0-dev.44.20260920",
+      "files": {
+        "third_party/apache-maka/LICENSE": "ebd45d2cb43f6d451345b872b944b937e6b444fa34edb81b743b2330f4dfa927",
+        "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
+        "third_party/apache-maka/DISCLAIMER-WIP": "15f95f76e19f077133795ceb07b026003a29e4b80bfbe850dc5f4c32f9705c70"
+      }
+    }
+  },
+  "terminalBench": {
+    "repository": "https://github.com/harbor-framework/terminal-bench-2-1",
+    "commit": "d49e28f1e4ddd13d289e85a5f312a66750951932",
+    "task": "fix-git",
+    "upstreamTaskTree": "d46ee4917dc83bb69df73db134a8626c3251cf33",
+    "localRepository": "runtime/benchmark/fix-git-repo",
+    "sourceBundle": "benchmark/fix-git.bundle",
+    "sourceBundleSha256": "6ef73219e91ce92cb901f04b07c419f315da7f2a823730f7b994a1fb3cadfe51",
+    "localCommit": "cd855d42cdea03da2d781ae1dbc89f74b39a4491",
+    "taskImage": "alexgshaw/fix-git@sha256:389b9c8247610c2c5be080b1ac00429007c2c69bf57f7f26c79f0f75ba2d5c74",
+    "localTree": "43a3b7807bc2dc02c200f12b3575ae966e511c19",
+    "localTaskTree": "08b47ce8eebc1d6e43b814bba691d6d559d7c5de"
+  },
+  "controller": {
+    "base": "jdxcode/mise:2026.9.10",
+    "baseDigest": "sha256:993f61861001b816fd30f70c33a5421e85c2f310aafc1514084975e70ad0b24f",
+    "platform": "linux/amd64",
+    "dockerCli": "29.8.1",
+    "dockerCompose": "5.5.1",
+    "dockerBuildx": "0.37.1",
+    "node": "24.16.0",
+    "python": "3.12.14",
+    "uv": "0.12.15",
+    "harbor": "0.20.0",
+    "pier": "0.3.0"
+  },
+  "egressProxy": {
+    "mitmproxy": "12.2.3",
+    "pythonBase": "python:3.12-slim@sha256:2fe5997d249a808b8eeea52c58a1dbffbba28754dc11699ef5c029f2d818ce79",
+    "dependencyLock": "requirements/egress-proxy.lock",
+    "credentialBoundary": "The task receives a random decoy key. The real key moves from stdin to an in-memory broker and through a private Unix socket/pipe into the egress proxy, which replaces only api.openai.com Authorization headers.",
+    "note": "The upstream Dockerfile uses a moving python:3.12-slim tag; this lab pins the resolved Linux amd64 manifest and hash-locks the proxy dependency closure.",
+    "openaiRequestLimit": 32,
+    "openaiEndpoint": "POST https://api.openai.com/v1/responses"
+  }
+}

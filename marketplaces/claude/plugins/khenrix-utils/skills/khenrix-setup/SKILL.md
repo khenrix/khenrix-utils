@@ -75,8 +75,8 @@ only after the user confirms.
    ```
 
    This adds MCP servers via `claude mcp add --scope user`; writes any MISSING
-   baseline settings (model, effort, tui, theme, voice, skip-prompts) to
-   `~/.claude/settings.json`; installs + registers the Stop hook and the statusline renderer;
+   baseline settings (tui, theme, voice, skip-prompts) and portable defaults (model, effort,
+   ultracode) to `~/.claude/settings.json`; installs + registers the Stop hook and the statusline renderer;
    ensures the managed alias block in `~/.bash_aliases` and the house-style block in
    `~/.claude/CLAUDE.md`; and reports each action taken.
 
@@ -89,7 +89,8 @@ only after the user confirms.
   of truth (not just additions), add `--update-drift` to the apply command.
   Default behaviour leaves existing managed entries as-is to avoid clobbering
   local tweaks.
-- Baseline settings (model, effort, tui, theme, voice, skip-prompts) and the Stop
-  hook are applied ONLY when absent — your existing values are kept, never overridden. Only
+- Baseline settings (tui, theme, voice, skip-prompts) and the Stop hook are applied
+  ONLY when absent. Portable model/effort/ultracode defaults are also added when absent; use
+  `--update-drift` (or the repo's `mise run defaults:apply`) to align existing values. Only
   approval/sandbox stay informational (Claude uses permissions/--permission-mode, not static keys).
 - To inspect the source of truth, read `capabilities.toml` at the plugin root.
