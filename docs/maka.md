@@ -6,9 +6,11 @@ portable Maka runtime and policy used on managed machines: the exact package
 pin, launcher, authentication helpers, model and permission defaults,
 provenance, tests, and audit lab live in `components/maka`.
 
-The current pin is `maka-agent@0.2.0-dev.44.20260920`. Individual skills and
-plugins remain owned by Agentic Setup, which shares them across Claude, Codex,
-agy, and Maka. Moving Maka here does not duplicate or transfer those skills.
+The current pin is `maka-agent@0.2.0-dev.44.20260920`. Agentic Setup remains the
+broader inventory and sync owner for the other shared skills and plugins.
+Khenrix Utils owns and direct-delivers `khenrix-quality` and `khenrix-writing`
+to Claude, Codex, agy, and Maka. Installing the Maka runtime itself does not copy
+skills; Maka discovers the two Khenrix skills from the shared native skill root.
 
 ## Supported setups
 

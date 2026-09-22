@@ -1,0 +1,30 @@
+{
+  "skill_name": "khenrix-quality",
+  "notes": "The shared house style covers ordinary replies and coding. Natural-language requests using every former skill name route here, while exact retired command tokens are not advertised as live skills. Deep humanization belongs to khenrix-writing and broad engineering reviews belong to their specialist workflows.",
+  "should_trigger": [
+    "turn on ADHD mode and make the next steps easier to follow",
+    "use the former i-have-adhd workflow for this session",
+    "use no-ai-slop detect mode on this paragraph without rewriting it",
+    "apply the former no-ai-slop workflow to this draft",
+    "use the former ponytail lite mode on this small implementation",
+    "run ponytail full on this change",
+    "run ponytail ultra on this implementation",
+    "use the former ponytail-review workflow on this diff",
+    "use the former ponytail-audit workflow on this repository",
+    "use the former ponytail-debt workflow to inventory explicit markers",
+    "show me the former ponytail-gain benchmark",
+    "show the former ponytail-help workflow and its modes",
+    "review this diff only for safe simplifications and YAGNI",
+    "audit this repository for over-engineering and safe simplifications",
+    "inventory TODO, FIXME, HACK, and ponytail debt markers in this repo",
+    "show me Ponytail's published benchmark numbers",
+    "/khenrix-quality"
+  ],
+  "near_miss": [
+    "humanize this essay and match the voice sample I pasted",
+    "review this pull request for correctness and security",
+    "fix the failing booking test and open a pull request",
+    "write a normal implementation that follows this repository's conventions",
+    "research whether this claim is factually correct"
+  ]
+}

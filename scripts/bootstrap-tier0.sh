@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # bootstrap-tier0.sh -- UNAUTHENTICATED prerequisite provisioning.
 #
-# Runs on a BARE distro. No credentials, no marketplaces, no plugins, no CLIs.
+# Runs on a bare Linux/WSL or macOS host. No credentials, marketplaces,
+# plugins, or agent CLIs are required.
 # Tier 1 (scripts/bootstrap-machine.sh) assumes this has already succeeded.
 #
 # WHY TWO TIERS. bootstrap-machine.sh runs under `set -euo pipefail` and opens by
 # probing seven binaries (claude, codex, agy, uv, gh, node, git) that a fresh
-# distro does not have. "Fail hard on a missing prerequisite" and "validate on a
-# bare distro" cannot both hold in one script: the hard failure aborts before
+# host does not have. "Fail hard on a missing prerequisite" and "validate on a
+# bare host" cannot both hold in one script: the hard failure aborts before
 # anything useful runs. So they are split by AUTHENTICATION, which is the real
 # seam:
 #     Tier 0 (here)  unauthenticated, tolerant, PROVISIONS prerequisites.
@@ -36,9 +37,10 @@ Usage: bootstrap-tier0.sh [--dry-run] [--help]
   --dry-run   Print the plan and mutate NOTHING (not even mkdir).
   --help      This text.
 
-Provisions: the apt base (git curl jq unzip ca-certificates), and on WSL the
-Windows bridges ~/.local/bin/powershell.exe and ~/.local/bin/windows-chrome.
-Reports -- never installs -- the Windows-side prerequisites WSL cannot provide.
+Provisions: git, curl, jq, and unzip through apt on Linux/WSL or Homebrew on
+macOS (using macOS's native trust store). On WSL it also provisions the Windows
+bridges ~/.local/bin/powershell.exe and ~/.local/bin/windows-chrome. Reports --
+never installs -- the Windows-side prerequisites WSL cannot provide.
 
 Exit 0 when every prerequisite is satisfied, 1 when one is missing or a step
 failed, 2 on a usage error.
@@ -76,13 +78,19 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 BIN="$HOME/.local/bin"
 
+# Explicit platform seam for the behavioural tests. Normal runs always use the
+# kernel-reported host. Keeping this separate from WSL detection matters:
+# Darwin has neither apt nor Linux's ca-certificates bundle, while WSL still
+# needs the exact Linux path plus its Windows bridge checks.
+HOST_OS="${KHENRIX_TIER0_OS:-$(uname -s 2>/dev/null || printf 'unknown')}"
+
 # Seam for the portability test only. WSL detection is a file read; pointing it
 # at a fixture is the only way to exercise the native-Linux branch from WSL.
 PROC_VERSION="${KHENRIX_TIER0_PROC_VERSION:-/proc/version}"
 
 # The canonical Windows-side PowerShell, reachable without the shim and without
 # WSL's appendWindowsPath. Used to PROBE before the shim exists, so a dry run on
-# a bare distro still reports the Windows prerequisites accurately.
+# a bare WSL distro still reports the Windows prerequisites accurately.
 #
 # Seam for the tests only, same category as PROC_VERSION above: without it the
 # interop tests would silently fall through to the developer's REAL PowerShell
@@ -182,28 +190,58 @@ else
   mkdir -p "$BIN" || { echo "  FAILED: mkdir -p $BIN" >&2; FAIL=1; }
 fi
 
-echo "== apt prerequisites =="
-# Check-before-act: on a machine that already has these, Tier 0 must not invoke
-# sudo at all. ca-certificates ships no binary, so it is probed by its cert bundle.
-APT_PKGS=(git curl jq unzip ca-certificates)
-missing=()
-for b in git curl jq unzip; do have "$b" || missing+=("$b"); done
-[ -e /etc/ssl/certs/ca-certificates.crt ] || missing+=(ca-certificates)
-if [ "${#missing[@]}" -eq 0 ]; then
-  echo "SKIP: apt prerequisites already present (${APT_PKGS[*]})"
-else
-  echo "  missing: ${missing[*]}"
-  if [ "$(id -u)" -eq 0 ]; then
-    run apt-get update -qq
-    run apt-get install -y --no-install-recommends "${APT_PKGS[@]}"
-  else
-    run sudo apt-get update -qq
-    run sudo apt-get install -y --no-install-recommends "${APT_PKGS[@]}"
-  fi
-fi
+case "$HOST_OS" in
+  Linux)
+    echo "== apt prerequisites =="
+    # Check-before-act: on a machine that already has these, Tier 0 must not
+    # invoke sudo at all. ca-certificates ships no binary, so Linux probes its
+    # cert bundle. Preserve this exact apt path for both native Linux and WSL.
+    APT_PKGS=(git curl jq unzip ca-certificates)
+    missing=()
+    for b in git curl jq unzip; do have "$b" || missing+=("$b"); done
+    CA_BUNDLE="${KHENRIX_TIER0_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+    [ -e "$CA_BUNDLE" ] || missing+=(ca-certificates)
+    if [ "${#missing[@]}" -eq 0 ]; then
+      echo "SKIP: apt prerequisites already present (${APT_PKGS[*]})"
+    else
+      echo "  missing: ${missing[*]}"
+      if [ "$(id -u)" -eq 0 ]; then
+        run apt-get update -qq
+        run apt-get install -y --no-install-recommends "${APT_PKGS[@]}"
+      else
+        run sudo apt-get update -qq
+        run sudo apt-get install -y --no-install-recommends "${APT_PKGS[@]}"
+      fi
+    fi
+    ;;
+  Darwin)
+    echo "== macOS prerequisites =="
+    # macOS provides its trust roots through Keychain; Linux's
+    # /etc/ssl/certs/ca-certificates.crt and ca-certificates package do not
+    # apply. Only install command-line prerequisites that are actually absent.
+    missing=()
+    for b in git curl jq unzip; do have "$b" || missing+=("$b"); done
+    if [ "${#missing[@]}" -eq 0 ]; then
+      echo "SKIP: macOS prerequisites already present (git curl jq unzip)"
+    elif have brew; then
+      echo "  missing: ${missing[*]}"
+      run brew install "${missing[@]}"
+    else
+      echo "  MISSING: ${missing[*]}"
+      echo "           Homebrew is required to install missing macOS prerequisites."
+      echo "           Install it from https://brew.sh, then re-run Tier 0."
+      FAIL=1
+    fi
+    ;;
+  *)
+    echo "== host prerequisites =="
+    echo "  MISSING: unsupported host OS '$HOST_OS' (expected Linux or Darwin)."
+    FAIL=1
+    ;;
+esac
 
 echo "== WSL Windows bridges =="
-if is_wsl; then
+if [ "$HOST_OS" = Linux ] && is_wsl; then
   # powershell.exe shim: absolute path via /init so it resolves regardless of
   # appendWindowsPath, and regardless of what PATH the CLI hands an MCP server.
   #
@@ -293,8 +331,8 @@ fi
 
 rc=0
 for url in "$@"; do
-  # SCHEME ALLOWLIST. This shim is vercel's BROWSER, so its argument arrives
-  # from an MCP server -- it is untrusted input, not something a human typed.
+  # SCHEME ALLOWLIST. This shim receives URLs from browser-driving automation,
+  # so its argument is untrusted input, not necessarily something a human typed.
   #
   # `Start-Process -ArgumentList $u` appends $u to the target's command line
   # UNQUOTED, and Chrome's parser then splits it on whitespace. Measured
@@ -309,7 +347,8 @@ for url in "$@"; do
   # case-sensitive match used to refuse. Only the comparison is lowercased --
   # $url itself is passed through untouched, since the path and query are NOT
   # case-insensitive and must not be mangled.
-  case "${url,,}" in
+  url_lower=$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')
+  case "$url_lower" in
     http://*|https://*) ;;
     *) echo "windows-chrome: refusing to open a non-http(s) argument: $url" >&2
        rc=1; continue ;;

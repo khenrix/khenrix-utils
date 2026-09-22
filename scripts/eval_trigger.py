@@ -7,18 +7,19 @@ ONLY the skill's name+description, would the agent pick it for a prompt? Reads
 evals/<skill>/triggers.json {should_trigger:[…], near_miss:[…]}, asks the judge
 per prompt, and scores correct fires + correct abstains.
 
-Stdlib only; reuses the llm-council fan-out engine for the judge call.
+Stdlib only; reuses the behavior harness's isolated, no-tools provider runner.
   eval_trigger.py --skill <name> [--judge claude] [--mode normal]
   eval_trigger.py --self-test     # hermetic logic, no tokens
 """
 from __future__ import annotations
-import argparse, json, re, sys
+import argparse, json, re, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
 sys.path.insert(0, str(FANOUT_DIR))
 import fanout  # noqa: E402
+import eval_harness  # noqa: E402
 
 EVALS_ROOT = ROOT / "evals"
 DEFAULT_JUDGE = "claude"
@@ -61,11 +62,40 @@ def parse_frontmatter_field(skill_md: str, field: str) -> str:
     return ""
 
 
-def load_skill_meta(skill: str, provider: str = "claude") -> tuple[str, str]:
-    p = (ROOT / "marketplaces" / provider / "plugins" / "khenrix-utils"
-         / "skills" / skill / "SKILL.md")
-    if not p.exists():
-        sys.exit(f"rendered skill missing: {p.relative_to(ROOT)} (run render.py)")
+def resolve_skill_md(skill: str, provider: str = "claude", root: Path = ROOT) -> Path:
+    """Resolve the description source used by trigger and arena evals.
+
+    Provider-rendered files remain authoritative when present because templated skills
+    contain provider-specific descriptions only after rendering. Native-only direct-copy
+    skills are deliberately absent from every plugin bundle, so they fall back to their
+    canonical shared source.
+    """
+    rendered = (root / "marketplaces" / provider / "plugins" / "khenrix-utils"
+                / "skills" / skill / "SKILL.md")
+    if rendered.is_file():
+        return rendered
+
+    canonical = root / "shared" / "skills" / skill / "SKILL.md"
+    if canonical.is_file():
+        return canonical
+
+    template = root / "shared" / "skill-templates" / skill / "SKILL.md.tmpl"
+    if template.is_file():
+        raise FileNotFoundError(
+            f"rendered templated skill missing: {rendered.relative_to(root)} "
+            "(run render.py)"
+        )
+    raise FileNotFoundError(
+        f"skill metadata missing: checked {rendered.relative_to(root)} and "
+        f"{canonical.relative_to(root)}"
+    )
+
+
+def load_skill_meta(skill: str, provider: str = "claude", root: Path = ROOT) -> tuple[str, str]:
+    try:
+        p = resolve_skill_md(skill, provider, root)
+    except FileNotFoundError as exc:
+        sys.exit(str(exc))
     text = p.read_text()
     return (parse_frontmatter_field(text, "name") or skill,
             parse_frontmatter_field(text, "description"))
@@ -131,6 +161,19 @@ def score(cases: list) -> dict:
     }
 
 
+def run_isolated_judge(judge: str, prompt: str, cfg: dict, workdir: Path,
+                       timeout: int) -> tuple[str, dict]:
+    """Run a compact routing verdict through the shared no-tools boundary.
+
+    Trigger evals intentionally expose only the supplied names and descriptions. Using
+    the behavior harness's runner also hides ambient skills, rules, plugins, MCPs, and
+    provider tools, so an installed copy of the skill cannot answer on its own behalf.
+    """
+    return eval_harness.run_text(
+        judge, prompt, cfg, workdir, timeout=timeout, retries=1, readonly=False
+    )
+
+
 def run(args) -> int:
     path = EVALS_ROOT / args.skill / "triggers.json"
     if not path.exists():
@@ -148,17 +191,9 @@ def run(args) -> int:
     for kind in ("should_trigger", "near_miss"):
         for i, prompt in enumerate(spec.get(kind, [])):
             jp = JUDGE_TMPL.format(name=name, description=desc, prompt=prompt)
-            spec_ = fanout.build_real_spec(args.judge, jp, timeout, cfg, workdir)
-            spec_.min_chars = 0   # judge verdicts are intentionally compact JSON (~100-200
-                                  # chars) — fanout's MIN_SUBSTANTIVE_CHARS=400 floor exists
-                                  # for council-seat answers, not judge verdicts; without this
-                                  # every verdict scores invalid ("non_substantive") regardless
-                                  # of correctness and run() reads "" for every case (mirrors
-                                  # fanout.py's own --smoke precedent at s.min_chars = 0)
-            m = fanout.run_council([spec_], retries=1, timeout=timeout, backoff=2.0,
-                                   workdir=workdir / f"{kind}-{i}", prompt=jp)
-            rec = m["providers"][0]
-            raw = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
+            raw, rec = run_isolated_judge(
+                args.judge, jp, cfg, workdir / f"{kind}-{i}", timeout
+            )
             got = parse_verdict(raw)
             # `valid` and a readable verdict are TWO conditions and the second was assumed
             # from the first: a valid run whose text is prose parses to no verdict at all.
@@ -304,12 +339,9 @@ def run_arena(args) -> int:
     cases = []
     for i, case in enumerate(spec["prompts"]):
         jp = ARENA_TMPL.format(roster=roster, prompt=case["prompt"])
-        spec_ = fanout.build_real_spec(args.judge, jp, timeout, cfg, workdir)
-        spec_.min_chars = 0   # see run(): judge verdicts are compact JSON, not council answers
-        m = fanout.run_council([spec_], retries=1, timeout=timeout, backoff=2.0,
-                               workdir=workdir / f"p-{i}", prompt=jp)
-        rec = m["providers"][0]
-        raw = Path(rec["result_file"]).read_text() if rec.get("valid") else ""
+        raw, rec = run_isolated_judge(
+            args.judge, jp, cfg, workdir / f"p-{i}", timeout
+        )
         got = parse_arena_verdict(raw, names + ["none"])
         # `valid` and a readable verdict are TWO conditions — see run(): a valid run whose
         # text is prose names no winner at all.
@@ -339,9 +371,57 @@ def run_arena(args) -> int:
 
 def _self_test() -> int:
     ok = []
+    original_run_text = eval_harness.run_text
+    seen = {}
+    try:
+        def fake_run_text(provider, prompt, cfg, workdir, **kwargs):
+            seen.update(provider=provider, prompt=prompt, cfg=cfg, workdir=workdir,
+                        kwargs=kwargs)
+            return '{"activate": true}', {"valid": True, "reason": "ok"}
+
+        eval_harness.run_text = fake_run_text
+        raw, rec = run_isolated_judge("claude", "route this", {"claude": {}},
+                                      Path("/tmp/routing-eval"), 17)
+        ok.append(("routing verdicts use the shared isolated no-tools runner",
+                   raw == '{"activate": true}' and rec["valid"]
+                   and seen.get("provider") == "claude"
+                   and seen.get("kwargs") == {
+                       "timeout": 17, "retries": 1, "readonly": False
+                   }))
+    finally:
+        eval_harness.run_text = original_run_text
     fm = '---\nname: x\ndescription: >-\n  line one\n  line two\nallowed-tools: Bash\n---\nbody'
     ok.append(("folded description parsed", parse_frontmatter_field(fm, "description") == "line one line two"))
     ok.append(("plain name parsed", parse_frontmatter_field(fm, "name") == "x"))
+    # Resolution is hermetic: native-only skills have no marketplace copy, while
+    # templated skills must use their provider-rendered metadata rather than raw tokens.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        direct = root / "shared" / "skills" / "direct-skill" / "SKILL.md"
+        direct.parent.mkdir(parents=True)
+        direct.write_text("---\nname: direct-skill\ndescription: canonical direct copy\n---\n")
+        resolved = resolve_skill_md("direct-skill", "claude", root)
+        ok.append(("native-only shared skill falls back to its canonical source",
+                   resolved == direct
+                   and load_skill_meta("direct-skill", "claude", root)
+                   == ("direct-skill", "canonical direct copy")))
+
+        template = (root / "shared" / "skill-templates" / "templated-skill"
+                    / "SKILL.md.tmpl")
+        template.parent.mkdir(parents=True)
+        template.write_text(
+            "---\nname: templated-skill\ndescription: $provider_description\n---\n"
+        )
+        rendered = (root / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
+                    / "skills" / "templated-skill" / "SKILL.md")
+        rendered.parent.mkdir(parents=True)
+        rendered.write_text(
+            "---\nname: templated-skill\ndescription: rendered for Claude\n---\n"
+        )
+        ok.append(("templated skill keeps its provider-rendered source",
+                   resolve_skill_md("templated-skill", "claude", root) == rendered
+                   and load_skill_meta("templated-skill", "claude", root)
+                   == ("templated-skill", "rendered for Claude")))
     ok.append(("verdict true", parse_verdict('{"activate": true, "why": "y"}') is True))
     ok.append(("verdict fenced false", parse_verdict('```json\n{"activate": false}\n```') is False))
     # Not "false" — garbage with no JSON at all is unreadable, not a verdict of "don't

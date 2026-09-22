@@ -6,10 +6,11 @@
 # plugins install at marketplace HEAD). Secrets/auth are provisioned by hand — see
 # docs/environment/auth-and-secrets.md. This script NEVER prints or stores a secret value.
 #
-# Ownership: the 4 shared MCPs (context7, vercel, chrome-devtools, linkedin)
+# Ownership: the 4 shared MCPs (context7, chrome-devtools, 1password, linkedin)
 # are owned by khenrix reconcile (via `khenrix-setup`), NOT by this script. Bootstrap only
-# adds the parity additions (playwright / slack / codebase-memory-mcp on codex+agy) and the
-# one-time marketplace/plugin setup.
+# adds the parity additions (playwright / slack / codebase-memory-mcp on codex+agy) and
+# third-party marketplace/plugin setup. The khenrix-utils plugin bundles stay explicitly
+# opt-in through the setup-* targets.
 set -euo pipefail
 
 DRY=0
@@ -145,7 +146,6 @@ add_mkt "claude-plugins-official"       "anthropics/claude-plugins-official"
 add_mkt "last30days-skill"              "mvanhorn/last30days-skill"
 add_mkt "claude-video"                  "bradautomates/claude-video"
 add_mkt "openai-codex"                  "openai/codex-plugin-cc"
-add_mkt "khenrix-claude-marketplace"    "$REPO/marketplaces/claude"
 add_mkt "agricidaniel-claude-obsidian"  "$VAULT"
 
 echo "== Claude plugins (install if absent; name@marketplace) =="
@@ -167,7 +167,7 @@ add_plug "claude-obsidian"      "agricidaniel-claude-obsidian"   # local-dir plu
 # Postcondition: `claude plugin list` shows each enabled.
 
 echo "== Claude MCP =="
-# The 5 shared MCPs + slack + codebase-memory-mcp are reconcile-owned / already present on
+# The 4 shared MCPs + slack + codebase-memory-mcp are reconcile-owned / already present on
 # Claude — NOT re-added here. The claude.ai OAuth connectors (Gmail/Calendar/Drive) are an
 # interactive `/mcp` login inside Claude Code — MANUAL, not scripted.
 
@@ -181,7 +181,7 @@ echo "== Codex (native XOR shared-MCP) =="
 # install time (T11); these mutate, so they run in the parity-install step, not the dry-run.
 
 echo "== agy MCP config (stdlib merge, never clobber) =="
-# The 5 declared MCPs reach agy through reconcile below (reconcile.py --all covers
+# The 4 declared MCPs reach agy through reconcile below (reconcile.py --all covers
 # claude, codex AND agy), so nothing is merged by hand here.
 #
 # scripts/lib/mcp_merge.py --apply is the mechanism for the parity additions
@@ -198,7 +198,11 @@ if [ -d "$REPO/.git" ]; then skip "clone $REPO"; else run git clone "$REPO_URL" 
 if [ -d "$VAULT/.git" ]; then skip "clone $VAULT"; else run git clone "$VAULT_URL" "$VAULT"; fi
 run mise -C "$REPO" trust
 run mise -C "$REPO" install
-run mise -C "$REPO" exec -- make khenrix-refresh
+# Canonical quality/writing skills use their native direct-copy path. Running the machine
+# bootstrap is the explicit authorization for this apply; interactive maintenance still
+# uses skills:plan plus `skills:apply -- --expect ...`. Optional plugin bundles are
+# installed only through the explicit `make setup-<cli>` targets.
+run mise -C "$REPO" run skills:apply
 
 echo "== Reconcile config into every CLI (deterministic; additive) =="
 # The headless equivalent of the `khenrix-setup` skill, NOT the agent skill: it adds

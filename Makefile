@@ -10,13 +10,16 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow doctor-test reconcile-defaults-test memory-runtime-test maka-component-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-apply clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow forge-host-smoke forge-proc-host-smoke tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-apply clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
 RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py
 MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py
+MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py
+SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
+                        tests/test_refresh.py
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py \
@@ -50,6 +53,7 @@ FORGE_SLOW_TESTS := tests/test_forge_baseline.py tests/test_forge_fleet.py \
 BATS_RUNNER := tests/bats-fallback.sh
 BATS_SUITES := tests/test_repo_sweep.bats tests/test_reconcile_apply.bats \
                tests/test_bootstrap_tier0.bats tests/test_bootstrap_machine.bats
+TIER0_HOST_SMOKE_TESTS := tests/test_bootstrap_tier0_host_smoke.bats
 
 # Run a pytest file via whichever runner exists. Failing loudly when neither does is
 # deliberate: a green gate must never mean "the suite was skipped" — that is the exact
@@ -102,7 +106,7 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 # collision guard -- i.e. a change that silently overwrites the user's existing
 # MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
 # suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
+verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -133,6 +137,18 @@ council-test: ## Council engine (seat/characterization/seam/facade) + fast forge
 forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower)
 	$(call RUN_PYTEST,$(FORGE_SLOW_TESTS))
 
+# Real installed-plugin and Linux /proc witnesses belong outside the certifying suite: their
+# absence says something about this host, not about Forge. Run this explicitly on a suitable
+# machine; DETERMINISTIC_GATED requires zero skips and therefore never names it.
+forge-host-smoke: ## Optional host integration checks for installed CLI plugin caches
+	$(call RUN_PYTEST,tests/forge_host_smoke.py)
+
+forge-proc-host-smoke: ## Optional Linux witness for hostile /proc process names
+	$(PY) tests/forge_proc_host_smoke.py
+
+tier0-host-smoke: ## Optional WSL/Windows PowerShell-to-Chrome integration witness
+	bash $(BATS_RUNNER) $(TIER0_HOST_SMOKE_TESTS)
+
 # Wired into `verify` (and so into `precommit`) on purpose. A verifier whose own
 # tests nothing ever runs decays into exactly the "claims a capability, never
 # checks it" state doctor.py exists to prevent. Hermetic: fake $HOME/$PATH
@@ -147,14 +163,18 @@ memory-runtime-test: ## Hermetic portable-memory tests (no network, credentials,
 	$(call RUN_PYTEST,$(MEMORY_RUNTIME_TESTS))
 
 maka-component-test: ## Credential-free portable Maka component tests
+	$(call RUN_PYTEST,$(MAKA_COMPONENT_TESTS))
 	mise -C components/maka run maka:test
+
+skill-delivery-test: ## Selective skill delivery, upstream provenance, and refresh tests
+	$(call RUN_PYTEST,$(SKILL_DELIVERY_TESTS))
 
 # Hermetic engine tests for the khenrix-audit skill — same stance as doctor-test:
 # a verifier whose own tests never run decays into a false assurance.
 audit-test: ## Hermetic tests for the khenrix-audit engine (no token cost)
 	$(call RUN_PYTEST,$(AUDIT_TESTS))
 
-# Wired into `verify` for the same reason doctor-test is: four suites (84 tests)
+# Wired into `verify` for the same reason doctor-test is: four suites (95 tests)
 # that no target runs are suites that rot, exactly as tests/test_doctor.py
 # was about to. ~10s total, no token cost, no network.
 #
@@ -172,7 +192,7 @@ audit-test: ## Hermetic tests for the khenrix-audit engine (no token cost)
 bats-test: ## Behavioural .bats suites: repo-sweep, reconcile --apply, Tier 0/1 (no token cost)
 	@test -x $(BATS_RUNNER) || { \
 		echo "  ✗ CANNOT RUN the .bats suites — $(BATS_RUNNER) is missing or"; \
-		echo "    not executable, so 84 behavioural tests would silently not run."; \
+		echo "    not executable, so 95 behavioural tests would silently not run."; \
 		exit 1; \
 	}
 	@rc=0; \

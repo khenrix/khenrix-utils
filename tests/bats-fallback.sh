@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # bats-fallback.sh -- run a .bats file WITHOUT the bats binary.
 #
-# `bats` cannot be installed on this machine (sudo requires a password that is
-# not available non-interactively). Rather than hand-copying each @test body
-# into a parallel script -- which silently drifts from the real suite -- this
-# harness TRANSLATES tests/test_repo_sweep.bats itself, so the assertions run
-# here are byte-identical to the ones bats will run once it is installed.
+# When `bats` is unavailable, hand-copying each @test body into a parallel
+# script would silently drift from the real suite. This harness translates the
+# requested .bats file itself, so the assertions stay byte-identical to the ones
+# the real runner executes.
 #
 # Reproduced bats semantics:
 #   * fresh $BATS_TEST_TMPDIR per test, setup() re-run before each
@@ -18,11 +17,23 @@
 # Usage: tests/bats-fallback.sh [path/to/file.bats]
 set -uo pipefail
 
-BATS_FILE="${1:-$(dirname "$(readlink -f "$0")")/test_repo_sweep.bats}"
+# BSD `readlink` (the macOS default) has no `-f`.  The suite files are regular
+# files, so resolving their parent with `pwd -P` gives us the same stable path
+# without depending on GNU coreutils.
+absolute_file() {
+  local path="$1" dir base
+  dir=$(dirname "$path")
+  base=$(basename "$path")
+  dir=$(cd -P "$dir" 2>/dev/null && pwd) || return 1
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+BATS_FILE="${1:-$(dirname "$(absolute_file "$0")")/test_repo_sweep.bats}"
 [ -f "$BATS_FILE" ] || { echo "no such .bats file: $BATS_FILE" >&2; exit 2; }
+BATS_FILE=$(absolute_file "$BATS_FILE") || { echo "cannot resolve .bats file: $BATS_FILE" >&2; exit 2; }
 
 export BATS_TEST_DIRNAME
-BATS_TEST_DIRNAME=$(dirname "$(readlink -f "$BATS_FILE")")
+BATS_TEST_DIRNAME=$(dirname "$BATS_FILE")
 
 GEN=$(mktemp); NAMES=$(mktemp)
 trap 'rm -f "$GEN" "$NAMES"' EXIT
@@ -44,6 +55,8 @@ run() {
   local rc=0
   output=$("$@" 2>&1) || rc=$?
   status=$rc
+  printf '%s' "$output" > "${BATS_RUN_OUTPUT_FILE:-/dev/null}"
+  printf '%s' "$status" > "${BATS_RUN_STATUS_FILE:-/dev/null}"
   return 0
 }
 
@@ -62,13 +75,17 @@ source "$GEN"
 
 PASS=0; FAIL=0; SKIP=0; FAILED=(); SKIPPED=()
 BATS_SKIP_REASON_FILE=$(mktemp); export BATS_SKIP_REASON_FILE
-trap 'rm -f "$GEN" "$NAMES" "$BATS_SKIP_REASON_FILE"' EXIT
+BATS_RUN_OUTPUT_FILE=$(mktemp); export BATS_RUN_OUTPUT_FILE
+BATS_RUN_STATUS_FILE=$(mktemp); export BATS_RUN_STATUS_FILE
+trap 'rm -f "$GEN" "$NAMES" "$BATS_SKIP_REASON_FILE" "$BATS_RUN_OUTPUT_FILE" "$BATS_RUN_STATUS_FILE"' EXIT
 i=0
 # The work list is read on FD 3, not stdin, for the same reason.
 while IFS= read -r name <&3; do
   i=$((i+1))
   BATS_TEST_TMPDIR=$(mktemp -d); export BATS_TEST_TMPDIR
   : > "$BATS_SKIP_REASON_FILE"
+  : > "$BATS_RUN_OUTPUT_FILE"
+  : > "$BATS_RUN_STATUS_FILE"
   setup   # must run in THIS shell: it exports FIXT/SWEEP the body relies on
   # NOT `if "bats_test_$i"; then` -- calling it in a condition context makes
   # bash suppress errexit for the whole call INCLUDING the body's own subshell,
@@ -88,6 +105,8 @@ while IFS= read -r name <&3; do
     PASS=$((PASS+1)); echo "ok $i - $name"
   else
     FAIL=$((FAIL+1)); FAILED+=("$name"); echo "not ok $i - $name"
+    output=$(cat "$BATS_RUN_OUTPUT_FILE" 2>/dev/null)
+    status=$(cat "$BATS_RUN_STATUS_FILE" 2>/dev/null)
     echo "  --- last \$output ---"; printf '%s\n' "${output:-}" | sed 's/^/  /'
     echo "  --- last \$status: ${status:-?} ---"
   fi

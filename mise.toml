@@ -167,3 +167,43 @@ run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:relay-instal
 [tasks."maka:test"]
 description = "Run the credential-free portable Maka regression suite"
 run = "mise -C components/maka run maka:test"
+
+[tasks."skills:plan"]
+description = "Preview selective skill and house-style delivery without changing live state"
+run = "python components/skills/skillctl.py plan"
+
+[tasks."skills:status"]
+description = "Report drift for the two managed skills and four bounded instruction targets"
+run = "python components/skills/skillctl.py status"
+
+[tasks."skills:apply"]
+description = "Apply the content-addressed selective skill and house-style plan"
+run = "python components/skills/skillctl.py apply"
+
+[tasks."skills:restore"]
+description = "Restore a selective skill delivery backup (latest by default)"
+run = "python components/skills/skillctl.py restore"
+
+[tasks."skills:doctor"]
+description = "Verify selective skill hashes, instruction blocks, and the install receipt"
+run = "python components/skills/skillctl.py doctor"
+
+[tasks."skills:upstream-status"]
+description = "Compare reviewed skill source paths with current upstream refs"
+run = "python components/skills/upstreamctl.py status"
+
+[tasks."skills:upstream-diff"]
+description = "Show the relevant upstream diff for one named skill source"
+run = "python components/skills/upstreamctl.py diff"
+
+[tasks."skills:upstream-record"]
+description = "Record one reviewed upstream pin, notice revision, and exact license copy"
+run = "python components/skills/upstreamctl.py record"
+
+[tasks."skills:maka-smoke"]
+description = "Run bounded explicit and natural Maka routing cases and write a hash-bound receipt"
+run = "python components/skills/maka_smoke.py"
+
+[tasks."skills:test"]
+description = "Run hermetic selective-delivery, provenance, and Maka smoke tests"
+run = "uvx --python 3.12 --with pytest pytest -q tests/test_skill_delivery.py tests/test_skill_upstreams.py tests/test_maka_skill_smoke.py"

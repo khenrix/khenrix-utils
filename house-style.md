@@ -1,11 +1,11 @@
 <!-- khenrix-managed:begin house-style -->
-<!-- Managed by khenrix-utils (capabilities.yaml -> instructions.source).
+<!-- Managed by khenrix-utils (capabilities.toml -> instructions.source).
      Edit this block in the khenrix-utils repo, not in the rendered file.
      Content outside this marker block is yours and is never touched. -->
 
 # khenrix house style
 
-Shared working agreement for every agentic CLI (Claude Code, Codex, Antigravity/agy)
+Shared working agreement for every agentic CLI (Claude Code, Codex, Antigravity/agy, Maka)
 on this machine. Keep guidance provider-agnostic — anything CLI-specific belongs in
 that CLI's own config, not here.
 
@@ -67,6 +67,28 @@ that CLI's own config, not here.
 - Readable beats concise: shorten by dropping detail that doesn't change what the reader
   does next, not by compressing prose into fragments, arrow-chains, or invented shorthand.
 
+## Quality defaults
+
+- Make every response easy to start and resume: lead with the answer or current action,
+  keep multi-step work bounded, show completed results, and omit unrelated tangents. If
+  work remains, end with one concrete next action; add no next action after completion.
+  `normal mode` disables this response shape for the session, and `resume ADHD mode`
+  restores it.
+- Give user-facing prose a quiet sentence-level quality pass. Use plain, direct language;
+  remove throat-clearing, faux insight, puffery, unsupported attribution, dramatic
+  fragments, decorative formatting, synonym cycling, and repeated contrast formulas.
+  Preserve facts, uncertainty, technical identifiers, source text, and the requested
+  voice. Do not announce the pass or append an editing report during ordinary work.
+- Whenever writing or changing code, use the full code mode from `khenrix-quality`:
+  understand the relevant flow, prefer an existing pattern or standard facility, and add
+  the fewest clear concepts needed. Preserve required validation, security, accessibility,
+  observability, error handling, repository conventions, and enough tests to prove the
+  change. A task-specific workflow still controls planning, review, and delivery.
+- Load `khenrix-quality` when the user explicitly requests ADHD controls, prose editing or
+  detection, a named code minimalism level, or its review, audit, debt, benchmark, or help
+  workflow. Load `khenrix-writing` for humanization, voice matching, or a deeper rewrite.
+  Never run both prose rewrite modes over the same artifact.
+
 ## Sub-agents
 
 - Enforce delegation structurally, not by prose: a coordinator agent should have its write
@@ -121,8 +143,10 @@ that CLI's own config, not here.
 
 ## Tooling
 
-- These CLIs share a managed set of MCP servers and skills via `khenrix-utils`.
-  Run the `khenrix-setup` skill to reconcile a CLI's config with the source of truth.
+- `khenrix-quality`, `khenrix-writing`, and this bounded instruction block are copied
+  directly from `khenrix-utils` with `mise run skills:plan` and `skills:apply`.
+- Optional MCP servers, settings, and plugin content use the broader reconcile flow.
+  Run `khenrix-setup` only in a CLI where that optional plugin was explicitly installed.
 - MCP servers and settings added outside `khenrix-utils` are intentionally preserved —
   do not remove machine-specific configuration.
 - To get a second opinion, a sibling CLI can be run headlessly with permissions bypassed

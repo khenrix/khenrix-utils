@@ -29,6 +29,10 @@ a rule: a dense state machine may cap at 200; a flat list of DTOs can run to 800
 can no longer answer "what does this do, what does it expose, what does it depend on" without
 re-reading. Never split mid-responsibility just to hit a line count.
 
+When explaining a sizing decision, state that three-part diagnostic explicitly: the chunk must be
+small enough to say what it **does**, what it **exposes**, and what it **depends on** without
+re-reading it. A line-count-only explanation is incomplete even when it reaches the same boundary.
+
 ## Boundaries — co-change first, imports second
 The **#1 signal is git temporal co-change**: files that change together belong together, even when
 no import links them (hidden coupling — a serializer and its schema, a flag and its three readers).
@@ -93,6 +97,10 @@ Any changed file maps back to its chunk(s) → those chunks are stale; re-derive
 stale BOTH the source chunk (old path) and the destination chunk — `--name-only` shows only the new
 path and silently leaves the source chunk looking current. A map is a snapshot of understanding at
 `reviewed_sha`, not a live index.
+
+When reporting staleness, say both consequences explicitly: re-derive **only** the chunks reached
+by changed paths, not the whole map; and treat the map as a point-in-time snapshot at
+`reviewed_sha`, not a live index. Do not leave either implication implicit.
 
 ## Seam-leak verification
 A chunk's seam is a lie if other chunks reach *past* it into internals. After drafting boundaries,

@@ -109,8 +109,10 @@ codex  = ["gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.8 Flash (High)", "Gemini 3.7 Flash (High)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"]  # rollback is manual — FALLBACK_MODELS in engine.py has no agy key, so older Flash labels are explicit rollback candidates, not automatic runtime fallbacks.
 
 # ---------------------------------------------------------------------------
-# Skills — canonical bodies live in shared/skills/<name>/ and are rendered into
-# each plugin by scripts/render.py. `khenrix-setup`, `khenrix-upgrade`, and
+# Skills — canonical bodies live in shared/skills/<name>/. Plugin-delivered shared
+# skills are rendered into each plugin by scripts/render.py; `khenrix-quality` and
+# `khenrix-writing` are native-only direct copies and are explicitly excluded.
+# `khenrix-setup`, `khenrix-upgrade`, and
 # `khenrix-audit` are per-CLI: their shared body lives in
 # shared/skill-templates/<name>/SKILL.md.tmpl and render.py fills the provider-specific
 # facts from [skill_facts.<name>.<cli>] at the bottom of this file. Edit the template
@@ -150,6 +152,33 @@ name = "khenrix-wiki-sync"
 # beside it. Listed for discoverability; render.py globs shared/skills/.
 [[skills]]
 name = "llm-forge"
+
+[[skills]]
+name = "khenrix-quality"
+
+[[skills]]
+name = "khenrix-writing"
+
+# Selective direct-copy delivery.  These public skills are intentionally not
+# installed through the Khenrix marketplace: skillctl copies only these two
+# named directories into the native shared skill roots and owns no sibling.
+[skill_delivery]
+skills = ["khenrix-quality", "khenrix-writing"]
+state_dir = "${HOME}/.local/state/khenrix-utils/skills"
+instruction_source = "house-style.md"
+
+[skill_delivery.targets]
+claude = "${HOME}/.claude/skills"
+codex_maka = "${HOME}/.agents/skills"
+agy = "${HOME}/.gemini/config/skills"
+
+# skillctl reconciles only the bounded khenrix-managed block at these paths.
+# This provides a selective cutover path without touching MCPs or CLI settings.
+[skill_delivery.instruction_targets]
+claude = "${HOME}/.claude/CLAUDE.md"
+codex = "${HOME}/.codex/AGENTS.md"
+agy = "${HOME}/.gemini/GEMINI.md"
+maka = "${HOME}/.maka/AGENTS.md"
 
 # ---------------------------------------------------------------------------
 # Baseline settings/policy — mapped to each CLI's native settings by the skill.

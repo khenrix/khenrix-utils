@@ -185,6 +185,7 @@ plant_authenticated_bins() {
   run t1 --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"DRY:"*"reconcile.py --apply --all"* ]]
+  [[ "$output" == *"DRY:"*"run skills:apply"* ]]
   [[ "$output" == *"DRY:"*"mise"*"run defaults:apply"* ]]
   [[ "$output" == *"DRY:"*"run memory:install"*"codex-subscription"* ]]
   [[ "$output" == *"DRY:"*"run maka:stage"* ]]
@@ -195,6 +196,18 @@ plant_authenticated_bins() {
   [[ "$output" == *"Done (dry-run=1)"* ]]
   # Nothing may be executed for real.
   [[ "$output" != *"RUN:"* ]]
+}
+
+@test "bootstrap direct-copies canonical skills without enabling khenrix-utils plugins" {
+  plant_tier0 0
+  plant_authenticated_bins
+  run t1 --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"run skills:apply"* ]]
+  [[ "$output" != *"khenrix-claude-marketplace"* ]]
+  [[ "$output" != *"make khenrix-refresh"* ]]
+  [[ "$output" != *"plugin install khenrix-utils"* ]]
+  [[ "$output" != *"plugin add khenrix-utils"* ]]
 }
 
 @test "a first install refuses to guess memory or Maka provider routes" {

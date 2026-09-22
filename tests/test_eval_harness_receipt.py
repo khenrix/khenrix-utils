@@ -5,6 +5,7 @@ code. Neither asks whether anything was TESTED — so an all-skipped run, a comm
 zero tests, and a certifier weakened between runs all left a fresh green receipt.
 """
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,6 +33,74 @@ def test_the_deterministic_gate_runs_the_whole_forge_suite_not_three_modules():
     assert named == on_disk, (
         f"the gate runs {len(named)} of {len(on_disk)} forge suites; missing "
         f"{sorted(on_disk - named)}")
+
+
+def test_deterministic_receipt_command_removes_the_machine_checkout_path():
+    executable = eval_harness.DETERMINISTIC_GATED["llm-forge"]
+    portable = eval_harness.portable_gate_command(executable)
+
+    assert portable[:5] == executable[:5]
+    assert all(not Path(argument).is_absolute() for argument in portable)
+    assert all(str(Path.home()) not in argument for argument in portable)
+    assert {Path(argument).name for argument in portable if argument.endswith(".py")} == {
+        path.name for path in (ROOT / "tests").glob("test_forge_*.py")
+    }
+
+
+@pytest.mark.parametrize(
+    "leaking_argument",
+    [
+        "/Users/alice@example.test/src/repo/tests/test_gate.py",
+        "/home/alice/src/repo/tests/test_gate.py",
+        "~/src/repo/tests/test_gate.py",
+        "--suite=/Users/alice/src/repo/tests/test_gate.py",
+        "${HOME}/src/repo/tests/test_gate.py",
+    ],
+)
+def test_receipt_gate_rejects_machine_specific_paths(
+    tmp_path, monkeypatch, leaking_argument
+):
+    eval_dir = tmp_path / "evals" / "example"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "receipt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_hash": "source",
+                "eval_set_hash": "evals",
+                "provenance": "seeded: blessed current committed state",
+                "self_test": True,
+                "gate_command": ["pytest", leaking_argument],
+            }
+        )
+    )
+    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: "source")
+    monkeypatch.setattr(checks, "eval_set_hash", lambda _root, _skill: "evals")
+
+    problems = checks.validate_receipt(tmp_path, "example")
+
+    assert any("machine-specific absolute/home path" in problem for problem in problems)
+
+
+def test_receipt_gate_accepts_repo_relative_gate_paths(tmp_path, monkeypatch):
+    eval_dir = tmp_path / "evals" / "example"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "receipt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "source_hash": "source",
+                "eval_set_hash": "evals",
+                "provenance": "seeded: blessed current committed state",
+                "self_test": True,
+                "gate_command": ["pytest", "tests/test_gate.py"],
+            }
+        )
+    )
+    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: "source")
+    monkeypatch.setattr(checks, "eval_set_hash", lambda _root, _skill: "evals")
+
+    assert checks.validate_receipt(tmp_path, "example") == []
 
 
 def test_a_command_that_runs_no_tests_does_not_earn_a_receipt(tmp_path):
@@ -76,6 +145,40 @@ def test_the_certifier_and_the_test_manifest_are_in_the_source_closure():
         assert rel in paths, f"{rel} is not in llm-forge's source closure"
     assert len(paths) == len(set(paths)), \
         f"a file is hashed twice: {sorted({p for p in paths if paths.count(p) > 1})}"
+
+
+@pytest.mark.parametrize("skill", ["chunk-map", "khenrix-setup"])
+def test_council_engine_changes_stale_every_behavior_eval_receipt(tmp_path, skill):
+    """Ordinary evals execute through council.engine even when the skill does not bundle it."""
+    repo = tmp_path / "repo"
+    manifest = checks.source_manifest(ROOT, skill)
+    paths = [rel for rel, _hash in manifest if not rel.startswith("skill_facts:")]
+    assert "shared/lib/council/engine.py" in paths
+    for relative in paths:
+        source = ROOT / relative
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    # source_manifest always parses capabilities.toml, including for skills with no facts.
+    if not (repo / "capabilities.toml").exists():
+        shutil.copy2(ROOT / "capabilities.toml", repo / "capabilities.toml")
+    eval_dir = repo / "evals" / skill
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "evals.json").write_text("{}\n")
+    receipt = {
+        "source_hash": checks.source_hash(repo, skill),
+        "eval_set_hash": checks.eval_set_hash(repo, skill),
+        "provenance": "eval",
+        "certified_by": "delta-gate",
+    }
+    (eval_dir / "receipt.json").write_text(json.dumps(receipt))
+    assert checks.validate_receipt(repo, skill) == []
+
+    engine = repo / "shared" / "lib" / "council" / "engine.py"
+    engine.write_bytes(engine.read_bytes() + b"\n# simulated certifier change\n")
+
+    problems = checks.validate_receipt(repo, skill)
+    assert any("changed since last eval" in problem for problem in problems)
 
 
 def test_a_receipt_claiming_no_self_test_is_refused(tmp_path, monkeypatch):

@@ -102,7 +102,9 @@ def test_every_forge_suite_is_named_in_the_makefile_gate():
     on_disk = ({f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.py")}
                | {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.bats")})
     variables = ("FORGE_TESTS", "FORGE_SLOW_TESTS", "COUNCIL_TESTS",
-                 "DOCTOR_TESTS", "AUDIT_TESTS", "BATS_SUITES")
+                 "DOCTOR_TESTS", "RECONCILE_DEFAULTS_TESTS", "MEMORY_RUNTIME_TESTS",
+                 "MAKA_COMPONENT_TESTS", "SKILL_DELIVERY_TESTS", "AUDIT_TESTS",
+                 "BATS_SUITES", "TIER0_HOST_SMOKE_TESTS")
     named = set()
     for var in variables:
         named |= _make_variable(var)

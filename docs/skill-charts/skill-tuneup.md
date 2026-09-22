@@ -41,7 +41,7 @@ flowchart TD
     G_RECEIPT -- no --> PANEL[run the full panel ONCE<br/>on the unchanged candidate<br/>—not for a self-test-gated target] --> G_RECEIPT
     G_RECEIPT -- yes --> G_PRE{make precommit clean?}
     G_PRE -- no --> FIXPRE[fix in-scope, hand off unrelated] --> G_PRE
-    G_PRE -- yes --> SHIP[one commit + khenrix-refresh<br/>+ release the lock] --> DONE([done])
+    G_PRE -- yes --> SHIP[one commit + target-aware delivery:<br/>direct skills, plugin refresh, or both;<br/>then release the lock] --> DONE([done])
 ```
 
 ## Gate evidence

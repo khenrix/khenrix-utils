@@ -9,10 +9,8 @@ then work this checklist. Verify completeness with
 
 ## Stored secrets (files / env)
 
-| Secret | Referenced by | Provision |
-|---|---|---|
-| google-drive OAuth client | `GOOGLE_DRIVE_OAUTH_CREDENTIALS` = `~/.config/google-drive-mcp/gcp-oauth.keys.json` | download the OAuth client JSON from the GCP console |
-| google-drive token | `GOOGLE_DRIVE_MCP_TOKEN_PATH` = `~/.config/google-drive-mcp/tokens.json` | generated on first interactive google-drive auth |
+The shared setup currently declares no file-backed MCP secret. Keep provider and CLI
+credentials in their native stores; do not copy them into this repository.
 
 ## Interactive per-machine logins (no stored value)
 
@@ -34,7 +32,6 @@ None of these is a file you copy — each is an interactive login performed once
 | Name | Value | Note |
 |---|---|---|
 | `UV_HTTP_TIMEOUT` | `300` | linkedin `uvx` launch timeout — tuning, not a secret |
-| `BROWSER` | machine-local | browser launcher used by the vercel `mcp-remote` OAuth flow — tuning, not a secret |
 
 ## Local content provenance (required paths)
 

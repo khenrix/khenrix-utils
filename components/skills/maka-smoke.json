@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "explicit-quality",
+      "route": "explicit",
+      "skill": "khenrix-quality",
+      "prompt": "/skill:khenrix-quality Review this code for needless complexity and return one concise recommendation: def enabled(value): return True if value == True else False",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "natural-quality-legacy-prose",
+      "route": "natural",
+      "skill": "khenrix-quality",
+      "prompt": "Use the former i-have-adhd workflow to make the next action easy to start, then apply the former no-ai-slop detect workflow to this sentence without rewriting it: This isn't just useful; it is transformative.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "natural-quality-legacy-code",
+      "route": "natural",
+      "skill": "khenrix-quality",
+      "prompt": "Show concise help for the former ponytail, ponytail-review, ponytail-audit, ponytail-debt, ponytail-gain, and ponytail-help workflows, including what each now maps to.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "explicit-writing",
+      "route": "explicit",
+      "skill": "khenrix-writing",
+      "prompt": "/skill:khenrix-writing Humanize this sentence without changing its claim: It is important to note that our innovative solution leverages a robust framework.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "natural-writing-legacy",
+      "route": "natural",
+      "skill": "khenrix-writing",
+      "prompt": "Use the former humanizer workflow. Humanize this sentence without changing its claim: It is important to note that our innovative solution leverages a robust framework.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    }
+  ],
+  "flows": [
+    {
+      "id": "adhd-session-mode",
+      "skill": "khenrix-quality",
+      "steps": [
+        {
+          "id": "activate",
+          "prompt": "/skill:khenrix-quality Turn on ADHD mode for this session. Confirm briefly that it is active.",
+          "continue": false,
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "action-first-follow-up",
+          "prompt": "I have three things on my plate: review a pull request, answer email, and prepare lunch. Help me get unstuck.",
+          "continue": true,
+          "check": "adhd_action_first",
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "normal-mode-opt-out",
+          "prompt": "Normal mode. Stop ADHD mode. Confirm briefly.",
+          "continue": true,
+          "check": "normal_mode_ack",
+          "timeout_seconds": 120,
+          "max_steps": 2
+        }
+      ]
+    }
+  ]
+}

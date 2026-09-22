@@ -24,9 +24,12 @@ the tear, and the tear is then in the middle. `record` reconciles them by droppi
 before it appends, so the crash this file exists to survive is not also what makes the file
 unreadable.
 """
+import ctypes
 import fcntl
 import json
 import os
+import sys
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,6 +54,42 @@ _CORE = ("seq", "event", "operation_id", "at")
 _BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id"
 _PROC_STAT_PATH = "/proc/self/stat"
 _UNAVAILABLE = "unavailable"
+_PROC_SOURCE = "proc"
+_DARWIN_BOOT_SOURCE = "darwin:kern.bootsessionuuid"
+_DARWIN_PROCESS_SOURCE = "darwin:proc_pidinfo"
+
+# libproc.h. PROC_PIDTBSDINFO returns this fixed-layout structure. Keeping the layout here
+# avoids invoking `ps` and then trying to turn a locale-formatted wall-clock time back into a
+# process identity. The two start fields are the timeval recorded by the kernel when the
+# process was created.
+_PROC_PIDTBSDINFO = 3
+
+
+class _ProcBSDInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
 
 
 @dataclass(frozen=True)
@@ -308,28 +347,79 @@ def _read_boot_id() -> tuple[str, str]:
     The source travels with the value because the fallback is a string too, and a fallback
     that reads like a boot id makes "did this operation survive a reboot" answerable and
     wrong: two records written in different boots would both carry the sentinel and compare
-    equal. A consumer may compare two boot ids only when both records say `proc`.
+    equal. A consumer may compare two boot ids only when both records name the same available
+    kernel source.
 
     Degrading rather than refusing outright is deliberate, and it is the opposite call from the
-    rest of a package that narrows to Linux and fails loudly there. The start/done pair needs
-    nothing from /proc, and it is the pair that makes never-started, partly-ran and completed
-    distinguishable. So an unreadable /proc costs the liveness question, which then fails
-    closed to `outcome_unknown`; refusing instead would cost the record itself, and a crashed
-    run with no record is the state §14.1 exists to prevent.
+    rest of a package that fails loudly where it cannot keep its promises. The start/done pair
+    needs nothing from the kernel identity APIs, and it is the pair that makes never-started,
+    partly-ran and completed distinguishable. So an unreadable identity costs the liveness
+    question, which then fails closed to `outcome_unknown`; refusing instead would cost the
+    record itself, and a crashed run with no record is the state §14.1 exists to prevent.
     """
+    if sys.platform == "darwin":
+        return _read_darwin_boot_id()
+    return _read_proc_boot_id()
+
+
+def _read_proc_boot_id() -> tuple[str, str]:
+    """Linux's per-boot UUID and its explicit source."""
     try:
         value = Path(_BOOT_ID_PATH).read_text().strip()
     except OSError:
         return _UNAVAILABLE, _UNAVAILABLE
-    return (value, "proc") if value else (_UNAVAILABLE, _UNAVAILABLE)
+    return (value, _PROC_SOURCE) if value else (_UNAVAILABLE, _UNAVAILABLE)
+
+
+def _darwin_sysctl_text(name: str) -> str:
+    """Read one Darwin string sysctl without a command or locale in the middle."""
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    sysctlbyname = libc.sysctlbyname
+    sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p,
+                             ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p,
+                             ctypes.c_size_t]
+    sysctlbyname.restype = ctypes.c_int
+    encoded = name.encode("ascii")
+    size = ctypes.c_size_t()
+    if sysctlbyname(encoded, None, ctypes.byref(size), None, 0) != 0 or size.value == 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno), name)
+    value = ctypes.create_string_buffer(size.value)
+    if sysctlbyname(encoded, value, ctypes.byref(size), None, 0) != 0:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno), name)
+    return value.value.decode("ascii")
+
+
+def _read_darwin_boot_id() -> tuple[str, str]:
+    """Darwin's kernel-assigned boot-session UUID and its explicit source."""
+    try:
+        # Canonical spelling makes the value comparable even though the sysctl currently
+        # emits uppercase hexadecimal while Linux's proc entry emits lowercase.
+        value = str(uuid.UUID(_darwin_sysctl_text("kern.bootsessionuuid").strip()))
+    except (OSError, UnicodeError, ValueError):
+        return _UNAVAILABLE, _UNAVAILABLE
+    return value, _DARWIN_BOOT_SOURCE
 
 
 def _read_process_start() -> tuple[str, str]:
-    """Field 22 of /proc/self/stat — `starttime`, in clock ticks since boot — and its source.
+    """The current process's kernel start identity and its explicit platform source.
 
     A pid alone answers nothing, because pids are recycled: "is pid 4211 still the process
     that wrote this" needs the start time to reject a recycled pid, and the boot id to make
-    the start time comparable at all, since it is counted from boot.
+    the start time comparable at all.
+
+    Linux supplies clock ticks since boot in `/proc`; Darwin supplies the process creation
+    timeval through `proc_pidinfo`. Both are opaque strings to journal consumers: equality,
+    together with pid, boot id and matching source labels, is the only supported operation.
+    """
+    if sys.platform == "darwin":
+        return _read_darwin_process_start()
+    return _read_proc_process_start()
+
+
+def _read_proc_process_start() -> tuple[str, str]:
+    """Field 22 of /proc/self/stat — `starttime`, in clock ticks since boot — and its source.
 
     Field 2 is the executable name in parentheses and may itself contain spaces and
     parentheses, so splitting the line on whitespace mis-numbers every field after it for a
@@ -344,7 +434,33 @@ def _read_process_start() -> tuple[str, str]:
     fields = raw[cut + 1:].split() if cut >= 0 else []
     if len(fields) < 20 or not fields[19].isdigit():
         return _UNAVAILABLE, _UNAVAILABLE
-    return fields[19], "proc"
+    return fields[19], _PROC_SOURCE
+
+
+def _darwin_process_start(pid: int) -> tuple[int, int]:
+    """Return `(seconds, microseconds)` from Darwin's PROC_PIDTBSDINFO record."""
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    proc_pidinfo = libproc.proc_pidinfo
+    proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                             ctypes.c_void_p, ctypes.c_int]
+    proc_pidinfo.restype = ctypes.c_int
+    info = _ProcBSDInfo()
+    received = proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, ctypes.byref(info), ctypes.sizeof(info))
+    if received < ctypes.sizeof(info):
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno), f"pid {pid}")
+    if info.pbi_pid != pid or not info.pbi_start_tvsec or info.pbi_start_tvusec >= 1_000_000:
+        raise ValueError(f"invalid PROC_PIDTBSDINFO start identity for pid {pid}")
+    return info.pbi_start_tvsec, info.pbi_start_tvusec
+
+
+def _read_darwin_process_start() -> tuple[str, str]:
+    """Darwin process creation timeval from libproc and its explicit source."""
+    try:
+        seconds, microseconds = _darwin_process_start(os.getpid())
+    except (OSError, ValueError):
+        return _UNAVAILABLE, _UNAVAILABLE
+    return f"{seconds}.{microseconds:06d}", _DARWIN_PROCESS_SOURCE
 
 
 def _identity() -> dict:

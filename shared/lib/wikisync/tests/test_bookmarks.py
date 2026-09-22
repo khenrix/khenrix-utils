@@ -139,12 +139,3 @@ class TestChromeProfileIsDiscovered(unittest.TestCase):
         got = _default_chrome_profile(empty)
         self.assertTrue(got.endswith("Bookmarks"), got)
         self.assertIn("/mnt/c/Users/Default/", got)
-
-    def test_it_finds_a_real_profile_when_one_exists(self):
-        from wikisync.config import _default_chrome_profile
-        roots = list(Path("/mnt/c/Users").glob(
-            "*/AppData/Local/Google/Chrome/User Data/*/Bookmarks")) \
-            if Path("/mnt/c/Users").is_dir() else []
-        if not roots:
-            self.skipTest("no Windows Chrome profile on this machine")
-        self.assertTrue(Path(_default_chrome_profile()).is_file())

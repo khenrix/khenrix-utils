@@ -1,41 +1,29 @@
 {
   "schema_version": 2,
   "skill": "khenrix-wiki-add",
-  "source_hash": "755c1c8e11155fafa87f477e0287bd4f912b683a01c68227876d55ddf4f3938a",
+  "source_hash": "e1b9bd3604967b9593f6c57baedb8ca8a1005320dd461efe23ab790b79458c35",
   "eval_set_hash": "aed9f752fefb80217ee70a83ac3018f6773829b8035782402a6e1fd18a265ef5",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0,
-  "blind_winner": "n/a-deterministic",
-  "provenance": "eval",
-  "per_provider": {
-    "claude": {
-      "delta": 0.0,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    }
-  },
-  "models": {
-    "claude": "claude-opus-5",
-    "judge": "claude-opus-5"
-  },
-  "certified_by": "wikisync-unittests",
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state",
   "deterministic_gate": "wikisync-unittests",
   "self_test": true,
+  "certified_by": "wikisync-unittests",
   "gate_command": [
     "python3",
     "-m",
     "unittest",
     "discover",
     "-s",
-    "/home/khenrix/git/khenrix-utils/shared/lib/wikisync/tests"
+    "shared/lib/wikisync/tests"
   ],
   "gate_counts": {
-    "tests_run": 93,
+    "tests_run": 92,
     "skipped": 0,
     "failed": 0
   }

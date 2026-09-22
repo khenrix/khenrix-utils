@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -790,16 +791,33 @@ def test_the_status_digest_ignores_the_users_rename_display_preference(tmp_path)
     assert runstate.snapshot_refs(repo, ())[1] == before
 
 
-def test_the_status_digest_survives_a_path_that_is_not_valid_utf_8(tmp_path):
+def test_the_status_digest_survives_a_path_that_is_not_valid_utf_8(tmp_path, monkeypatch):
     """Under `-z` a path is git's raw bytes with no quoting, and a repository is allowed to
     hold one that is not valid UTF-8. Measured: decoding that output raises
     UnicodeDecodeError before any digest exists, and a drift check that raises is a drift
     check that does not run — on the repository least able to spare it."""
     repo = make_repo(tmp_path)
-    before = runstate.snapshot_refs(repo, ())[1]
-    with open(os.path.join(os.fsencode(repo), b"bad\xffname.txt"), "wb") as fh:
-        fh.write(b"x")
-    assert runstate.snapshot_refs(repo, ())[1] != before
+    porcelain = {"value": b""}
+
+    def git(_repo, *args, **kwargs):
+        if "--show-toplevel" in args:
+            assert kwargs.get("binary") is True
+            return SimpleNamespace(stdout=os.fsencode(os.path.realpath(repo)) + b"\n",
+                                   returncode=0, stderr=b"")
+        if "status" in args:
+            assert kwargs.get("binary") is True
+            return SimpleNamespace(stdout=porcelain["value"], returncode=0, stderr=b"")
+        if "symbolic-ref" in args:
+            return SimpleNamespace(stdout="refs/heads/main\n", returncode=0, stderr="")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runstate.gitcmd, "git", git)
+    before = runstate._status_digest(repo, "a" * 40, ())
+    # `??` matches the real untracked-file shape: it belongs in the raw porcelain digest but
+    # not the carried-content set. APFS rejects this byte sequence as a filename, so feeding
+    # the exact bytes at the git boundary is the portable fixture for the decoding rule.
+    porcelain["value"] = b"?? bad\xffname.txt\0"
+    assert runstate._status_digest(repo, "a" * 40, ()) != before
 
 
 def test_the_snapshot_does_not_rewrite_the_users_index(tmp_path):
@@ -978,16 +996,21 @@ def test_the_index_digest_ignores_the_users_path_quoting_preference(tmp_path):
     assert runstate.snapshot_index(repo) == before
 
 
-def test_the_index_digest_reads_a_path_that_is_not_valid_utf8(tmp_path):
+def test_the_index_digest_reads_a_path_that_is_not_valid_utf8(tmp_path, monkeypatch):
     """`-z` gives git's raw path bytes with no quoting, and a repository is allowed to hold a
     path that is not valid UTF-8. A text-mode read of that output raises before any digest
     exists."""
-    repo = make_repo(tmp_path)
-    before = runstate.snapshot_index(repo)
-    with open(os.path.join(os.fsencode(repo), b"bad\xffname.txt"), "wb") as fh:
-        fh.write(b"x")
-    _git(repo, "add", "-A")
-    assert runstate.snapshot_index(repo) != before
+    listing = {"value": b"H 100644 " + b"a" * 40 + b" 0\tseed.txt\0"}
+
+    def git(_repo, *args, **kwargs):
+        assert "ls-files" in args and kwargs.get("binary") is True
+        return SimpleNamespace(stdout=listing["value"], returncode=0, stderr=b"")
+
+    monkeypatch.setattr(runstate.gitcmd, "git", git)
+    before = runstate.snapshot_index(tmp_path)
+    listing["value"] += b"H 100644 " + b"b" * 40 + b" 0\tbad\xffname.txt\0"
+    assert runstate.snapshot_index(tmp_path) != before
+    assert runstate.snapshot_index(tmp_path) == hashlib.sha256(listing["value"]).hexdigest()
 
 
 # -------------------------------------------------------------------------- run-dir layout

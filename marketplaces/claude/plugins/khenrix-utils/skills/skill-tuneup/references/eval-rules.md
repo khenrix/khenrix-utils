@@ -3,15 +3,13 @@
 The repo's eval harness IS the benchmark (`docs/skill-eval-process.md` is the authority;
 read it before scaffolding). Key invariants:
 
-- Executors run **read-only by default** — the harness calls `fanout.make_readonly`, so all
-  three are mechanically constrained: claude (plan mode, plan-file writes suppressed), codex
-  (read-only sandbox), agy (`--mode plan`, since 1.1.1). agy additionally gets two soft
-  layers (a READONLY_POSTURE line + a throwaway git-worktree cwd) as defense in depth.
-  Plan mode is a mechanical write barrier, not an OS sandbox — still less sealed than
-  codex's, so lower-risk to run mid-tuneup rather than sealed.
-- **Baseline caveat**: `without_skill` is the executor's ambient env; if the old skill
-  version is installed (a prior `make khenrix-refresh`), the comparison is new-vs-old,
-  not with-vs-without. Iterate BEFORE refreshing for the cleanest signal.
+- Executors run in fresh temporary working directories with provider tools, MCPs, rules,
+  plugins, and ambient skill discovery disabled. Authentication is bridged into the child
+  without copying credentials into its workspace or artifacts. Both conditions use the
+  same no-tools boundary; only `with_skill` receives the bounded textual skill closure.
+- `without_skill` is therefore a true bare-prompt baseline even when an older copy is
+  installed on the machine. Provider isolation is fail-closed and its exact boundary is
+  covered by `make eval-test`.
 - A run with `delta.pass_rate >= 0` (the skill doesn't make answers worse) passes the
   gate and writes `evals/<t>/receipt.json` — the exact artifact `make precommit` gates
   on. The blind A/B winner is **recorded but advisory**, not a gate: on a strong executor

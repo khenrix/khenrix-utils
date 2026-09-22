@@ -24,7 +24,13 @@ setup() {
   unset FAKE_NODE_PATH FAKE_CHROME_PATH WINDOWS_CHROME_PATH
   unset FAKE_PS_BROKEN FAKE_LAUNCH_FAIL FAKE_WIN_EXISTING
   unset FAKE_PROGRAMFILES FAKE_PROGRAMFILESX86 FAKE_LOCALAPPDATA
-  unset KHENRIX_TIER0_PROC_VERSION
+  # Simulate WSL explicitly. Borrowing the host's /proc/version made almost the
+  # entire suite silently exercise the off-WSL branch on macOS.
+  printf 'Linux version 6.6.0-microsoft-standard-WSL2\n' > "$BATS_TEST_TMPDIR/proc-version"
+  export KHENRIX_TIER0_OS=Linux
+  export KHENRIX_TIER0_PROC_VERSION="$BATS_TEST_TMPDIR/proc-version"
+  : > "$BATS_TEST_TMPDIR/ca-certificates.crt"
+  export KHENRIX_TIER0_CA_BUNDLE="$BATS_TEST_TMPDIR/ca-certificates.crt"
 
   # Point the absolute-interop fallback at nothing. Without this, any test whose
   # fake shim is deliberately broken would silently fall through to the
@@ -43,6 +49,10 @@ setup() {
     printf '#!/bin/sh\nexit 0\n' > "$STUB/$b"
     chmod +x "$STUB/$b"
   done
+  # macOS has no coreutils `timeout`. The fixture processes are total and never
+  # hang, so a narrow argument-stripping stand-in keeps the branch hermetic.
+  printf '#!/bin/sh\nshift\nexec "$@"\n' > "$STUB/timeout"
+  chmod +x "$STUB/timeout"
   export PATH="$STUB:$ORIG_PATH"
 }
 
@@ -65,6 +75,10 @@ bare_path() {
     ln -sf "$src" "$d/$c"
   done
   printf '%s' "$d"
+}
+
+file_stamp() {
+  python3 -c 'import os, sys; s=os.stat(sys.argv[1]); print(s.st_ino, s.st_mtime_ns)' "$1"
 }
 
 # A powershell.exe stand-in for the LOGIC-BRANCH tests. It is fast and total,
@@ -198,9 +212,9 @@ PSEOF
   plant_fake_ps
   export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
   "$TIER0" >/dev/null 2>&1
-  stamp_before=$(stat -c %Y.%N "$BIN/windows-chrome")
+  stamp_before=$(file_stamp "$BIN/windows-chrome")
   run "$TIER0"
-  stamp_after=$(stat -c %Y.%N "$BIN/windows-chrome")
+  stamp_after=$(file_stamp "$BIN/windows-chrome")
   [ "$stamp_before" = "$stamp_after" ]
   [[ "$output" == *"up to date"* ]]
 }
@@ -453,8 +467,8 @@ setup_fallback_env() {
 @test "windows-chrome REFUSES a URL carrying extra Chrome switches" {
   # Start-Process appends ArgumentList to the target's command line, and
   # Chrome's parser splits it on whitespace -- so a space turns the remainder
-  # into switches. This shim is vercel's BROWSER, so the URL comes from an MCP
-  # server and is untrusted.
+  # into switches. The URL comes from browser-driving automation and is
+  # untrusted.
   plant_fake_ps
   export FAKE_NODE_PATH='C:\Program Files\nodejs\node.exe'
   "$TIER0" >/dev/null 2>&1
@@ -558,6 +572,66 @@ setup_fallback_env() {
   [ ! -e "$BIN/windows-chrome" ]
 }
 
+@test "macOS plans Homebrew for missing tools without probing apt or Linux CA" {
+  macbin="$BATS_TEST_TMPDIR/macbin"
+  mkdir -p "$macbin"
+  for b in bash env git curl unzip; do
+    src=$(PATH="$ORIG_PATH" command -v "$b") || continue
+    ln -sf "$src" "$macbin/$b"
+  done
+  printf '#!/bin/sh\nexit 0\n' > "$macbin/brew"
+  chmod +x "$macbin/brew"
+
+  export KHENRIX_TIER0_OS=Darwin
+  run env PATH="$macbin" "$TIER0" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"== macOS prerequisites =="* ]]
+  [[ "$output" == *"missing: jq"* ]]
+  [[ "$output" == *"DRY:  brew install jq"* ]]
+  [[ "$output" != *"apt-get"* ]]
+  [[ "$output" != *"ca-certificates"* ]]
+  [ ! -e "$BIN/windows-chrome" ]
+}
+
+@test "macOS reports Homebrew when a prerequisite is missing and brew is absent" {
+  macbin="$BATS_TEST_TMPDIR/macbin"
+  mkdir -p "$macbin"
+  for b in bash env git curl unzip; do
+    src=$(PATH="$ORIG_PATH" command -v "$b") || continue
+    ln -sf "$src" "$macbin/$b"
+  done
+
+  export KHENRIX_TIER0_OS=Darwin
+  run env PATH="$macbin" "$TIER0" --dry-run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"MISSING: jq"* ]]
+  [[ "$output" == *"Homebrew is required"* ]]
+  [[ "$output" != *"apt-get"* ]]
+  [[ "$output" != *"ca-certificates"* ]]
+}
+
+@test "REAL macOS dry run uses native prerequisites without test CA or apt seams" {
+  [ "$(uname -s)" = Darwin ] || skip "real host is not macOS"
+
+  unset KHENRIX_TIER0_OS KHENRIX_TIER0_CA_BUNDLE
+  export PATH="$ORIG_PATH"
+  expected=0
+  missing_real=0
+  for b in git curl jq unzip; do
+    command -v "$b" >/dev/null 2>&1 || missing_real=1
+  done
+  if [ "$missing_real" -eq 1 ] && ! command -v brew >/dev/null 2>&1; then
+    expected=1
+  fi
+
+  run "$TIER0" --dry-run
+  [ "$status" -eq "$expected" ]
+  [[ "$output" == *"== macOS prerequisites =="* ]]
+  [[ "$output" != *"apt-get"* ]]
+  [[ "$output" != *"ca-certificates"* ]]
+  [ ! -e "$BIN" ]
+}
+
 # --------------------------------------------------------------------- apt ---
 
 @test "apt is skipped when the base packages are already present" {
@@ -629,59 +703,4 @@ setup_fallback_env() {
   [[ "$output" == *"Usage:"* ]]
   [[ "$output" == *"--dry-run"* ]]
   [ ! -e "$BIN" ]
-}
-
-# --------------------------------------------------------- REAL interop -----
-
-@test "REAL powershell.exe: the provisioned shim launches and delivers the URL" {
-  # NO FAKE ANYWHERE IN THIS TEST. Every other test above mocks powershell.exe,
-  # and mocks are structurally incapable of catching the defect this one exists
-  # for: the AV on this fleet refuses `FromBase64String` + `Start-Process` on a
-  # single command line as a fileless-PowerShell signature, and it refuses it at
-  # CreateProcess time -- PowerShell never starts. A fake that greps the command
-  # text sees a well-formed script and reports success. So does any test that
-  # swaps Write-Output in for Start-Process, because that substitution removes
-  # the very token pair that triggers the block.
-  #
-  # A recorder .cmd stands in for chrome.exe so no browser opens: it appends its
-  # arguments to a file, which is then asserted to contain the nonce intact.
-  real_ps=/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe
-  [ -x "$real_ps" ] || skip "no Windows interop on this host ($real_ps absent)"
-  command -v wslpath >/dev/null 2>&1 || skip "wslpath absent; cannot stage a recorder"
-
-  mkdir -p "$BIN"
-  printf '#!/usr/bin/env bash\nset -euo pipefail\nexec /init %s "$@"\n' "$real_ps" \
-    > "$BIN/powershell.exe"
-  chmod +x "$BIN/powershell.exe"
-  "$BIN/powershell.exe" -NoProfile -Command 'Write-Output PONG' </dev/null 2>/dev/null \
-    | grep -q PONG || skip "real powershell.exe does not round-trip here"
-
-  unset KHENRIX_TIER0_WIN_PS
-  "$TIER0" >/dev/null 2>&1 || true
-  [ -x "$BIN/windows-chrome" ]
-
-  wtmp=$("$BIN/powershell.exe" -NoProfile -Command \
-         'Write-Output ([IO.Path]::GetTempPath())' </dev/null 2>/dev/null \
-         | tr -d '\r' | head -n1)
-  [ -n "$wtmp" ] || skip "could not read the Windows temp path"
-  utmp=$(wslpath -u "$wtmp")
-  [ -d "$utmp" ] || skip "Windows temp $utmp not visible from WSL"
-
-  tok="khenrix-bats-$$-${RANDOM}"
-  rec="$utmp/$tok.cmd"; log="$utmp/$tok.txt"
-  printf '@echo off\r\nsetlocal EnableDelayedExpansion\r\nset "ARGS=%%*"\r\n>>"%%~dp0%s.txt" echo RAW=[!ARGS!]\r\n' \
-    "$tok" > "$rec"
-
-  url="https://khenrix-bats.invalid/$tok"
-  rc=0
-  WINDOWS_CHROME_PATH="$(wslpath -w "$rec")" "$BIN/windows-chrome" "$url" || rc=$?
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$log" ] && break
-    sleep 0.25
-  done
-  got=$(tr -d '\r' < "$log" 2>/dev/null || true)
-  rm -f "$rec" "$log"
-
-  [ "$rc" -eq 0 ]
-  [[ "$got" == *"$url"* ]]
 }

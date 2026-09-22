@@ -4,7 +4,7 @@
 Makes every plugin self-contained so it works after being installed/copied by a
 marketplace:
   * copies capabilities.toml + house-style.md + statusline/ to the plugin root
-  * copies shared/skills/<name>/ into the plugin's skills/
+  * copies plugin-delivered shared skills into the plugin's skills/
   * copies scripts/lib/reconcile.py into each khenrix-setup skill's scripts/
   * validates every SKILL.md (name + description, length/char rules)
 
@@ -53,6 +53,10 @@ NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
 TEMPLATED_SKILLS = ("khenrix-setup", "khenrix-upgrade", "khenrix-audit")
 TMPL_ROOT = ROOT / "shared" / "skill-templates"
+# These two skills have one update path: components/skills/skillctl.py copies their
+# canonical directories directly into each native skill root. Bundling them in any plugin
+# creates a second installed copy with independent precedence and stale-update behavior.
+NATIVE_ONLY_SKILLS = frozenset({"khenrix-quality", "khenrix-writing"})
 
 
 def plugin_dir(cli: str) -> Path:
@@ -129,19 +133,22 @@ def parse_frontmatter(text: str) -> dict:
     return fm
 
 
-def validate_skill(skill_md: Path, problems: list):
-    fm = parse_frontmatter(skill_md.read_text())
+def validate_skill(skill_md: Path, problems: list, *, expected_name: str | None = None):
+    text = skill_md.read_text()
+    fm = parse_frontmatter(text)
     rel = skill_md.relative_to(ROOT)
     name, desc = fm.get("name"), fm.get("description")
     if not name:
         problems.append(f"{rel}: missing 'name'")
     elif not NAME_RE.match(name):
         problems.append(f"{rel}: name '{name}' must be lowercase letters/numbers/hyphens, ≤64 chars")
+    elif expected_name is not None and name != expected_name:
+        problems.append(f"{rel}: name '{name}' must match native skill directory '{expected_name}'")
     if not desc:
         problems.append(f"{rel}: missing 'description'")
     elif len(desc) > 1024:
         problems.append(f"{rel}: description >1024 chars ({len(desc)})")
-    body_lines = skill_md.read_text().count("\n")
+    body_lines = text.count("\n")
     if body_lines > 500:
         problems.append(f"{rel}: SKILL.md is {body_lines} lines (recommended <500)")
 
@@ -151,6 +158,12 @@ def iter_skills():
         sk = plugin_dir(cli) / "skills"
         if sk.exists():
             yield from sk.glob("*/SKILL.md")
+
+
+def native_only_skill_paths():
+    """Yield canonical native-only entrypoints that are deliberately not bundled."""
+    for name in sorted(NATIVE_ONLY_SKILLS):
+        yield name, ROOT / "shared" / "skills" / name / "SKILL.md"
 
 
 def load_caps() -> dict:
@@ -185,7 +198,10 @@ def render_templated_skill(skill: str, cli: str, caps: dict, problems: list):
 def render():
     caps = load_caps()
     problems: list[str] = []
-    shared_skills = sorted((ROOT / "shared" / "skills").glob("*/"))
+    shared_skills = sorted(
+        p for p in (ROOT / "shared" / "skills").glob("*/")
+        if p.name not in NATIVE_ONLY_SKILLS
+    )
     for cli in CLIS:
         pdir = plugin_dir(cli)
         pdir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +242,10 @@ def render():
         # rendered tree depend on which interpreters had happened to run — this machine
         # carried both cpython-313 and cpython-314 copies. Same patterns as the other four
         # calls, and the same exclusion `checks.py` already applies to the receipt closure.
+        for name in NATIVE_ONLY_SKILLS:
+            # Remove copies emitted by older renders; filtering future copytree calls alone
+            # would leave the stale bundle present forever.
+            shutil.rmtree(pdir / "skills" / name, ignore_errors=True)
         for s in shared_skills:
             dst = pdir / "skills" / s.name
             if dst.exists():
@@ -282,7 +302,8 @@ def render():
         raise SystemExit(1)
     libs = ", ".join(p.name for p in LIB_SCRIPTS)
     print(f"rendered: bundled {BUNDLED} + {BUNDLED_DIRS} + [{libs}] into {len(CLIS)} plugins; "
-          f"{len(shared_skills)} shared skill(s); {len(TEMPLATED_SKILLS)} templated skill(s)")
+          f"{len(shared_skills)} plugin shared skill(s); {len(NATIVE_ONLY_SKILLS)} native-only "
+          f"skill(s); {len(TEMPLATED_SKILLS)} templated skill(s)")
 
 
 def clean():
@@ -313,6 +334,20 @@ def check() -> int:
     skills = list(iter_skills())
     for s in skills:
         validate_skill(s, problems)
+    for name, skill_md in native_only_skill_paths():
+        if not skill_md.is_file() or skill_md.is_symlink():
+            problems.append(
+                f"{skill_md.relative_to(ROOT)}: native-only SKILL.md is missing or unsafe"
+            )
+            continue
+        skills.append(skill_md)
+        validate_skill(skill_md, problems, expected_name=name)
+        for cli in CLIS:
+            bundled = plugin_dir(cli) / "skills" / name
+            if bundled.exists() or bundled.is_symlink():
+                problems.append(
+                    f"{bundled.relative_to(ROOT)}: native-only skill must not be bundled"
+                )
     # capabilities.toml must parse
     try:
         with open(ROOT / "capabilities.toml", "rb") as f:

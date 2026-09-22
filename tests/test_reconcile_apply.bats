@@ -23,7 +23,7 @@ sys.path.insert(0, '$BATS_TEST_DIRNAME/../scripts/lib')
 import reconcile
 
 calls = []
-def fake_reconcile(cli, caps, apply, update_drift):
+def fake_reconcile(cli, caps, apply, update_drift, defaults_only=False):
     calls.append((cli, apply, update_drift))
 reconcile.reconcile = fake_reconcile
 

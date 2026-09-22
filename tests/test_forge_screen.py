@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -260,15 +261,18 @@ def test_a_fifo_under_a_selected_directory_breaches_instead_of_blocking_forever(
     The readable sibling carries a token so the walk is proved to have continued past the
     two refusals rather than aborted at the first.
     """
-    repo = make_repo(tmp_path)
-    write(repo, "run/live.py", f'K = "{TOKEN}"\n')
-    os.mkfifo(Path(repo) / "run" / "pipe")
-    sock = socket.socket(socket.AF_UNIX)
-    try:
-        sock.bind(str(Path(repo) / "run" / "app.sock"))
-        findings, breaches = _within(10, screen.screen_tree, repo, ["run"])
-    finally:
-        sock.close()
+    # Darwin caps AF_UNIX endpoints at 104 bytes, while pytest's tmp_path includes the full
+    # test name. A short, unique local root tests the socket rather than the fixture path.
+    with tempfile.TemporaryDirectory(prefix="kf-screen-", dir="/tmp") as short:
+        repo = make_repo(Path(short))
+        write(repo, "run/live.py", f'K = "{TOKEN}"\n')
+        os.mkfifo(Path(repo) / "run" / "pipe")
+        sock = socket.socket(socket.AF_UNIX)
+        try:
+            sock.bind(str(Path(repo) / "run" / "app.sock"))
+            findings, breaches = _within(10, screen.screen_tree, repo, ["run"])
+        finally:
+            sock.close()
     assert [f.path for f in findings] == ["run/live.py"], "the readable file was not screened"
     assert sorted(breaches) == [
         "run/app.sock: not screened — not a regular file or directory",

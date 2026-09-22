@@ -1,9 +1,9 @@
 # khenrix-utils
 
-One source of truth for the agentic CLIs on this machine — **Claude Code**,
-**Codex**, and **Antigravity (`agy`)** — so they all share the same MCP servers,
-skills, base instructions, baseline settings, a shared status line, and managed
-shell aliases.
+One source of truth for the agentic tools on this machine — **Claude Code**,
+**Codex**, **Antigravity (`agy`)**, and **Maka**. It keeps their shared skills and
+base instructions aligned, and also manages the portable settings, MCP servers,
+status line, and shell aliases supported by the three CLIs.
 
 > **Bringing up a new machine or syncing across two?** See
 > [`docs/machine-setup.md`](docs/machine-setup.md) — full replication steps + what
@@ -12,37 +12,53 @@ shell aliases.
 
 ## How it works
 
-```
-capabilities.toml ──┐
-house-style.md  ────┤  (LLM-agnostic source of truth)
-shared/skills/  ────┘
-        │  scripts/render.py
-        ▼
-plugins/{claude,codex,agy}/khenrix-utils/   ← self-contained, bundles a copy
-        │  make setup-<cli>  (thin: marketplace add + plugin install)
-        ▼
-the CLI now has the `khenrix-setup` skill
-        │  you run the skill inside the CLI
-        ▼
-reconcile: review live config → diff vs source of truth → additively apply
+```text
+capabilities.toml + house-style.md + shared/skills/
+                  │
+                  ├─ components/skills/skillctl.py
+                  │     ├─ khenrix-quality + khenrix-writing → native skill roots
+                  │     └─ bounded house-style block → Claude, Codex, agy, Maka
+                  │
+                  └─ scripts/render.py → optional per-CLI plugin bundles
 ```
 
-The `setup-<cli>` targets **only install** the plugin. They never write CLI config.
-All configuration happens through the **`khenrix-setup` reconcile skill** that
-runs *inside* each CLI. The skill is **non-destructive**: it reports a diff and
-adds/updates only the entries khenrix owns. Anything you added outside the setup
-(machine-specific MCP servers, hand-tuned settings) is left untouched.
+The normal skill path is a selective direct copy. It owns exactly
+`khenrix-quality` and `khenrix-writing`; it leaves every sibling skill and all
+instruction text outside the Khenrix markers untouched. It does not require the
+`khenrix-utils` marketplace, and the selective installer never installs or enables it.
+Generated plugin bundles exclude both native-only skills, so they have one copy and
+update path. The bundles carry other optional skills for the broader `khenrix-setup`
+reconcile flow for MCP servers and CLI-specific settings.
 
 ## Usage
 
+Install the pinned tools, review the content-addressed plan, then apply it:
+
 ```bash
-make setup-claude   # registers marketplace + installs plugin into Claude Code
-make setup-codex    # ... into Codex
-make setup-agy      # ... into Antigravity
+mise trust && mise install
+mise run skills:plan
+mise run skills:apply -- --expect sha256:PLAN_ID
+mise run skills:doctor
 ```
 
-Then, inside the CLI, invoke the skill (e.g. `/khenrix-setup` in Claude Code).
-It prints a review table and asks before writing anything.
+The apply copies both skills to Claude, Codex/Maka, and agy, then reconciles the
+bounded house-style block in all four instruction files. It writes an install
+receipt under `~/.local/state/khenrix-utils/skills/`. See
+[`docs/skills.md`](docs/skills.md) for the skill overview, routing rules, restore
+command, and upstream update process.
+
+The optional full plugin bundle is still available when a CLI needs the broader
+`khenrix-setup` flow:
+
+```bash
+mise exec -- make setup-claude
+mise exec -- make setup-codex
+mise exec -- make setup-agy
+```
+
+These targets install the plugin; they do not write live CLI config. Run
+`khenrix-setup` inside that CLI to review and add the declared MCP servers and
+settings.
 
 ### Portable model and effort defaults
 
@@ -68,8 +84,8 @@ observed values.
 
 ### Portable memory and Maka
 
-This repository also owns two public runtime components. They do not install or
-move any shared skill or plugin:
+This repository also owns two public runtime components. The runtime installers
+do not install or move shared skills or plugins:
 
 - `components/memory` installs the integrity-pinned local `claude-mem` worker,
   preserves its SQLite database, and additively merges capture hooks for Claude,
@@ -91,12 +107,17 @@ mise run maka:auth-mode -- chatgpt-subscription
 mise run maka:install
 ```
 
-`scripts/bootstrap-machine.sh` installs and verifies both runtimes. A first run
+`scripts/bootstrap-machine.sh` installs the two native skills and verifies both runtimes,
+but does not enable or install a `khenrix-utils` marketplace/plugin bundle. The explicit
+`make setup-claude`, `setup-codex`, and `setup-agy` targets remain the opt-in path. A first run
 must set `KHENRIX_MEMORY_ROUTE` and `KHENRIX_MAKA_AUTH_MODE`; it fails instead of
 guessing. The Keychain routes additionally require the matching non-secret
 account selector. See [`components/memory/README.md`](components/memory/README.md)
 and [`docs/maka.md`](docs/maka.md) for route-specific setup, migration, rollback,
 privacy boundaries, and verification.
+
+Invoking the machine bootstrap authorizes its direct `skills:apply`; routine updates
+remain plan-bound and should pass the reviewed `sha256:…` ID with `--expect`.
 
 ### Keeping a CLI current — `khenrix-upgrade`
 
@@ -108,7 +129,11 @@ Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:
 3. review the khenrix skills with the CLI's native tooling (Claude `skill-creator`
    / `skill-reviewer`; Codex `quick_validate.py`; agy `plugin validate`),
 4. apply repo improvements (SKILL.md / `capabilities.toml` / house-style) with
-   diffs + confirmation, then `make khenrix-refresh`, and
+   diffs + confirmation, then deliver by changed surface: use the reviewed
+   selective plan/apply, doctor, and Maka smoke for the two direct-copy skills,
+   their provenance, selective settings, or house style; use
+   `make khenrix-refresh` for optional rendered plugin content; run both paths
+   when both surfaces changed, and
 5. write a dated report to `docs/upgrades/<cli>-<date>.md` with recommended
    model, reasoning-effort, and experimental-flag changes; portable default
    changes belong in `capabilities.toml` and are applied with the command above.
@@ -116,10 +141,11 @@ Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:
 It only improves **how** we use the CLI and models — it never changes what a skill
 is meant to do. Live model/flag changes are recommended, not auto-applied.
 
-### Install mechanism differs per CLI
+### Optional plugin delivery differs per CLI
 
-The three CLIs ship the plugin slightly differently (the reconcile engine is
-identical — it's bundled into each plugin):
+The direct-copy skill setup above is the same for every consumer and needs no
+marketplace. If the broader plugin bundle is wanted, the three CLIs install it
+differently (the reconcile engine itself is identical):
 
 | CLI | Manifest | Install command (run by `make`) |
 |-----|----------|---------------------------------|
@@ -130,9 +156,11 @@ identical — it's bundled into each plugin):
 Read-only inspection without installing:
 
 ```bash
+mise run skills:plan      # selective skill and house-style diff
+mise run skills:status    # exits non-zero when managed content drifted
 mise run defaults:status # model/effort drift only
-mise run verify          # validate manifests + skills
-make status              # full config diff for every CLI
+mise run verify           # validate manifests + skills
+mise exec -- make status  # full config diff for every CLI
 ```
 
 ## Editing the source of truth
@@ -140,29 +168,40 @@ make status              # full config diff for every CLI
 - **MCP servers / settings / shell aliases / instruction targets:** `capabilities.toml`
 - **Shared house style:** `house-style.md` (rendered into each CLI's memory file
   inside an idempotent `khenrix-managed` block)
-- **Shared skills:** `shared/skills/<name>/SKILL.md` (rendered into every plugin)
+- **Canonical direct-copy skills:** `shared/skills/khenrix-quality/` and
+  `shared/skills/khenrix-writing/`
+- **Selective delivery, receipts, restore, and Maka smoke:** `components/skills/`
+- **Other shared skills:** `shared/skills/<name>/SKILL.md` (rendered into every plugin)
 - **The `khenrix-setup` / `khenrix-upgrade` skills:** one shared body in
   `shared/skill-templates/<skill>/SKILL.md.tmpl`, with the provider-specific bits
   (paths, commands, config terms, per-CLI procedure) in the
   `[skill_facts.<skill>.<cli>]` tables in `capabilities.toml`. `render.py` fills the
   template per CLI — never edit the generated `marketplaces/.../SKILL.md`.
 
-After editing, run **`mise exec -- make khenrix-refresh`** — it re-renders and pushes the
-updated plugin/skill/engine into every installed CLI in one step (Claude and
-Codex cache plugins by version, so a plain edit isn't picked up until you
-refresh). Then re-run `/khenrix-setup` in a CLI to apply any new capabilities.
+After editing either canonical direct-copy skill, run its evals, then apply the
+reviewed content-addressed plan:
 
 ```bash
-mise exec -- make khenrix-refresh   # sync repo → all installed CLIs (no config is changed)
+mise run skills:test
+mise run skills:upstream-status
+mise run skills:plan
+mise run skills:apply -- --expect sha256:PLAN_ID
+mise run skills:doctor
+mise run skills:maka-smoke
 ```
+
+For optional plugin content, run `mise exec -- make khenrix-refresh`. Claude and
+Codex cache plugins by version, so plain edits are not picked up until refresh.
+Then run `khenrix-setup` in the CLI if the change affects live capabilities.
 
 ## Layout
 
 | Path | Purpose |
 |------|---------|
 | `capabilities.toml` | LLM-agnostic capability manifest (zero-dependency TOML) |
-| `house-style.md` | Shared base instructions → CLAUDE.md / AGENTS.md / GEMINI.md |
-| `shared/skills/` | Canonical skill bodies copied into every plugin |
+| `house-style.md` | Bounded shared instructions → Claude, Codex, agy, and Maka instruction files |
+| `shared/skills/` | Canonical skill bodies; the two native-only skills are copied directly and excluded from plugins |
+| `components/skills/` | Selective delivery, restore, provenance checks, and Maka routing smoke |
 | `shared/skill-templates/` | Shared body templates for the per-CLI skills (filled from `[skill_facts.*]`) |
 | `statusline/khenrix-statusline` | Shared status line renderer (Claude + agy), installed by the reconcile engine |
 | `marketplaces/<cli>/` | Per-CLI marketplace + plugin (Claude/Codex have a marketplace manifest; agy installs the plugin dir directly) |

@@ -21,6 +21,25 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DOCTOR = ROOT / "scripts" / "doctor.py"
+REAL_EXECUTABLE = shutil.which("true") or sys.executable
+
+# Exercise the CLI in a separate process while fixing the platform seam the
+# fixtures model.  Calling scripts/doctor.py directly made every WSL-only check
+# depend on the machine running pytest: on macOS the checks were skipped before
+# their fake PowerShell/Windows fixtures could run.  Importing the real module
+# and replacing only is_wsl() keeps argument parsing, output, exit codes and all
+# check implementations in the subprocess without adding a production escape
+# hatch for applicability gating.
+DOCTOR_SUBPROCESS = """
+import sys
+
+sys.path.insert(0, sys.argv[1])
+import doctor
+
+simulated_wsl = sys.argv[2] == "1"
+doctor.is_wsl = lambda: simulated_wsl
+raise SystemExit(doctor.main(sys.argv[3:]))
+"""
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import doctor  # noqa: E402
@@ -28,10 +47,11 @@ import doctor  # noqa: E402
 
 # --- helpers --------------------------------------------------------------
 
-def run(*args, env=None, timeout=300):
+def run(*args, env=None, timeout=300, wsl=True):
     e = dict(os.environ)
     e.update(env or {})
-    return subprocess.run([sys.executable, str(DOCTOR), *args],
+    return subprocess.run([sys.executable, "-c", DOCTOR_SUBPROCESS,
+                           str(ROOT / "scripts"), "1" if wsl else "0", *args],
                           capture_output=True, text=True, env=e, timeout=timeout)
 
 
@@ -271,7 +291,7 @@ def test_script_shim_on_the_clipboard_path_is_detected(tmp_path):
 
 
 def test_real_binary_on_the_clipboard_path_is_accepted(tmp_path):
-    real = bin_dir(tmp_path, "xclip", copy_of="/bin/true")
+    real = bin_dir(tmp_path, "xclip", copy_of=REAL_EXECUTABLE)
     r = run("--json", "--profile", "portable", "--only", "clipboard-no-shim-intercept",
             env={"PATH": str(real)})
     c = checks_of(r)["clipboard-no-shim-intercept"]
@@ -576,10 +596,12 @@ sys.exit(0)
 """
 
 
-def _clip_env(tmp_path, stale=None):
+def _clip_env(tmp_path, stale=None, ps_body=PS_CLIPBOARD):
+    wslpath = bin_dir(tmp_path, "wslpath", body=WSLPATH_IDENTITY)
     env = {
-        "HOME": str(fake_home(tmp_path, PS_CLIPBOARD)),
+        "HOME": str(fake_home(tmp_path, ps_body)),
         "DOCTOR_TEST_STATE": str(tmp_path / "clipboard.state"),
+        "PATH": f"{wslpath}:{os.environ['PATH']}",
     }
     if stale:
         env["DOCTOR_TEST_STALE"] = str(stale)
@@ -610,7 +632,7 @@ case "$*" in *GetImage*) exit 3 ;; esac
 exit 0
 """
     r = run("--json", "--profile", "full", "--only", "clipboard-image-roundtrip",
-            env={"HOME": str(fake_home(tmp_path, empty))})
+            env=_clip_env(tmp_path, ps_body=empty))
     c = checks_of(r)["clipboard-image-roundtrip"]
     assert c["status"] == "FAIL", c
     assert "no image" in c["detail"].lower()
@@ -1679,7 +1701,7 @@ def test_the_failure_states_the_wsl_boundary_end_to_end(tmp_path):
     mcp.write_text(MCP_DEAD)
     mcp.chmod(0o755)
     c = op_check(tmp_path, op_home(tmp_path, mcp_command=mcp),
-                 path_dirs=[op_bin(tmp_path, copy_of="/bin/true")])
+                 path_dirs=[op_bin(tmp_path, copy_of=REAL_EXECUTABLE)])
     assert c["status"] == "FAIL", c
     assert "WSL BOUNDARY" in c["detail"], c
     assert "WINDOWS processes only" in c["detail"], c
@@ -1688,8 +1710,9 @@ def test_the_failure_states_the_wsl_boundary_end_to_end(tmp_path):
 # The boundary logic itself is exercised in-process so it is asserted on EVERY
 # host, not only on the WSL machine that happens to have written it.
 
-def test_boundary_note_is_attached_for_a_linux_op_under_wsl(tmp_path):
-    op = op_bin(tmp_path, copy_of="/bin/true") / "op"
+def test_boundary_note_is_attached_for_a_linux_op_under_wsl(tmp_path, monkeypatch):
+    op = op_bin(tmp_path, copy_of=REAL_EXECUTABLE) / "op"
+    monkeypatch.setattr(doctor, "is_elf", lambda _path: True)
     usable, detail = doctor.op_cli_status(str(op), wsl=True)
     assert usable is False, detail
     assert "WSL BOUNDARY" in detail
@@ -1699,7 +1722,7 @@ def test_boundary_note_is_attached_for_a_linux_op_under_wsl(tmp_path):
 
 def test_boundary_note_is_not_attached_off_wsl(tmp_path):
     """Off WSL there is no Windows desktop app to blame; the note would be noise."""
-    op = op_bin(tmp_path, copy_of="/bin/true") / "op"
+    op = op_bin(tmp_path, copy_of=REAL_EXECUTABLE) / "op"
     usable, detail = doctor.op_cli_status(str(op), wsl=False)
     assert usable is False, detail
     assert "WSL BOUNDARY" not in detail, detail

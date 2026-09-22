@@ -1,0 +1,28 @@
+{
+  "prompts": [
+    {
+      "prompt": "audit this paragraph for named AI-writing patterns but do not rewrite it",
+      "expected": "khenrix-quality"
+    },
+    {
+      "prompt": "humanize this cover letter and match the casual voice in my sample",
+      "expected": "khenrix-writing"
+    },
+    {
+      "prompt": "use ponytail ultra for this function",
+      "expected": "khenrix-quality"
+    },
+    {
+      "prompt": "rewrite this PR description so it stops sounding like ChatGPT",
+      "expected": "khenrix-writing"
+    },
+    {
+      "prompt": "review this authentication diff for security vulnerabilities",
+      "expected": "none"
+    },
+    {
+      "prompt": "what is the current weather in Stockholm?",
+      "expected": "none"
+    }
+  ]
+}

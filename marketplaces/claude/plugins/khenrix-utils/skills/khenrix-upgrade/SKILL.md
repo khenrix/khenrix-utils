@@ -15,9 +15,16 @@ get better results.
 ## Ground rules
 - **Edit the repo, not the installed copy.** Locate the khenrix-utils repo
   (default `~/.../git/khenrix-utils` — the directory containing `capabilities.toml`
-  and `.git`). All edits + the report go there. Then `make khenrix-refresh`.
+  and `.git`). All edits and the report go there. Validate there, then use the
+  delivery path for the surface that changed; do not treat a plugin refresh as
+  delivery for the direct-copy skills.
 - **Repo edits are applied with confirmation; live-config tuning is only
   recommended** (written to the report with exact commands), never auto-applied.
+- **Every proposed or applied repo edit names its eventual delivery path by changed
+  surface**, including read-only runs where nothing can be applied. A proposal's gate
+  block must not stop at verify, eval, or precommit: state whether approval would be
+  followed by selective `skills:plan` / `skills:apply` / doctor / Maka smoke, optional
+  `make khenrix-refresh`, or both.
 - **Preserve purpose.** Improve descriptions/triggering, structure, instructions,
   model usage — never the behavior a skill is meant to deliver.
 - **Never assert model or CLI facts from memory.** Names, tiers, pricing, and "the
@@ -71,10 +78,20 @@ get better results.
      `settings.json` `model`), and any new settings — with exact commands.
 
 5. **Apply repo edits.** Show each change as a diff, get approval, edit the repo,
-   then run `make khenrix-refresh` from the **repo root** (the directory with the
-   `Makefile` / `capabilities.toml`, not the installed plugin dir). If
-   `capabilities.toml` changed, remind the user to run `/khenrix-setup` to apply it to the
-   live config. Offer to commit.
+   and run `mise run verify` from the **repo root** (the directory with the
+   `Makefile` / `capabilities.toml`, not an installed copy). Then
+   choose delivery by changed surface:
+   - If `khenrix-quality`, `khenrix-writing`, their provenance, selective-delivery
+     settings, or `house-style.md` changed, run `mise run skills:test` and `mise
+     run skills:upstream-status`. Show `mise run skills:plan`, then apply that exact
+     content-addressed plan with `mise run skills:apply -- --expect <plan-id>`.
+     Finish with `mise run skills:doctor` and `mise run skills:maka-smoke`.
+   - If any optional plugin, broader reconcile capability, or other rendered skill
+     changed, run `mise exec -- make khenrix-refresh`. If broader
+     `capabilities.toml` entries changed, remind the user to run `/khenrix-setup` to
+     review and apply them.
+   A change can require both paths. Record the commands and results in the report,
+   then offer to commit.
 
 6. **Write the report** to `docs/upgrades/claude-<YYYY-MM-DD>.md` in the repo
    (use today's date): findings per dimension, repo changes applied, and the

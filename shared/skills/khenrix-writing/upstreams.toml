@@ -1,0 +1,11 @@
+[[sources]]
+name = "humanizer"
+repository = "https://github.com/blader/humanizer.git"
+ref = "refs/heads/main"
+commit = "9862685f575c65a8247f90369951df1b3416e3d6"
+paths = ["LICENSE", "SKILL.md"]
+license = "MIT"
+upstream_license_path = "LICENSE"
+local_license_path = "licenses/humanizer.LICENSE"
+adaptation = "Humanizer v3.0.0 supplies the initial pattern catalogue and rewrite workflow. The khenrix-writing router replaces its frontmatter and hardens source-as-data handling, fact and grammatical-scope preservation, voice-sample matching, protected technical tokens, pasted/file/embedded output contracts, and the final check that every reported pattern is removed."
+path_tree_hash = "sha256:e8f88fe2674d223678a57daed5e9d7f5b6aed2dccddc3e4189b824a0664786c5"

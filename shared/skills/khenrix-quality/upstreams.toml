@@ -1,0 +1,35 @@
+[[sources]]
+name = "i-have-adhd"
+repository = "https://github.com/ayghri/i-have-adhd.git"
+ref = "refs/heads/main"
+commit = "839872f9d1cd634fed642b4589ce7226199cc15f"
+paths = ["LICENSE", "skills/i-have-adhd"]
+license = "MIT"
+upstream_license_path = "LICENSE"
+local_license_path = "licenses/i-have-adhd.LICENSE"
+adaptation = "Condensed into the response-structure mode; preserves action-first output, bounded steps, session enable/disable, visible state, evidence-based errors, an under-two-minute remaining action, at most five visible items per group, literal wording, and the explanation/safety/debug/ambiguity/options/harness exceptions."
+path_tree_hash = "sha256:e1486f7a757ad8c95037325d4faa7b0e4016222b3467a86a2d3ce83d554b1b54"
+
+[[sources]]
+name = "no-ai-slop"
+repository = "https://github.com/petergyang/no-ai-slop.git"
+ref = "refs/heads/main"
+commit = "000650b156983f5159695b441477f4e63b25dc85"
+paths = ["LICENSE", "skills/no-ai-slop"]
+license = "MIT"
+upstream_license_path = "LICENSE"
+local_license_path = "licenses/no-ai-slop.LICENSE"
+adaptation = "Latest prose edit/detect instructions and checklist are retained as progressive references; routing is narrowed so deeper humanization and voice matching belong to khenrix-writing."
+path_tree_hash = "sha256:0f8d625656b8cf756d43c83ae7fc6ad2248da14852a5c6ee0d90fbd4ab403689"
+
+[[sources]]
+name = "ponytail"
+repository = "https://github.com/DietrichGebert/ponytail.git"
+ref = "refs/heads/main"
+commit = "e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156"
+paths = ["LICENSE", "skills/ponytail", "skills/ponytail-review", "skills/ponytail-audit", "skills/ponytail-debt", "skills/ponytail-gain", "skills/ponytail-help"]
+license = "MIT"
+upstream_license_path = "LICENSE"
+local_license_path = "licenses/ponytail.LICENSE"
+adaptation = "Folds six skills into code and code-workflow modes. Preserves lite/full/ultra scope, review/audit/debt/help contracts, the corrected agentic benchmark methodology and figures, local debt/audit handoffs, and scope-safe test-aware behavior; removes forced terse replies, arbitrary test caps, branded comments, and marketplace lifecycle instructions."
+path_tree_hash = "sha256:a61efcabe3503fb68e4dd0641ec98910c1a06c1b37d63e3aba4a041925c21c00"

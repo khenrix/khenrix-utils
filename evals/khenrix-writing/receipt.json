@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "skill": "khenrix-writing",
+  "source_hash": "447d9e4cddac560c19bd4a556aae848746ada59b6e90a0b14c2374c494eab864",
+  "eval_set_hash": "e14c008c227b5408823318f2f6973fbe64fb4c0d4c8c7644fc418fb194d6c1d8",
+  "providers": [
+    "claude",
+    "codex",
+    "agy"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.1528,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.25,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.125,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.0833,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.8 Flash (High)",
+    "judge": "claude-opus-5"
+  },
+  "certified_by": "delta-gate"
+}

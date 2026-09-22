@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-khenrix-utils is the single source of truth for the agentic CLIs on this machine
-(Claude Code, Codex, Antigravity/`agy`): shared MCP servers, baseline settings,
-shell aliases, base instructions, a status line, and the reconcile skills.
-`scripts/render.py` bundles the source of truth into a self-contained plugin per
-CLI under `marketplaces/<cli>/plugins/khenrix-utils/`; the `khenrix-setup` skill
-then reconciles each CLI's live config additively. See `README.md` for the full flow.
+khenrix-utils is the source of truth for Claude Code, Codex, Antigravity/`agy`,
+and Maka. `components/skills/skillctl.py` directly copies `khenrix-quality` and
+`khenrix-writing` into their native skill roots and reconciles a bounded
+house-style block in all four instruction files. This selective path does not
+use a marketplace. The repository also owns shared MCP servers, portable
+settings, shell aliases, a status line, and optional per-CLI plugin bundles for
+the broader reconcile flow. See `README.md` for both paths.
 
 ## Edit the source of truth, never the generated copies
 
@@ -17,8 +18,9 @@ then reconciles each CLI's live config additively. See `README.md` for the full 
 
 - `marketplaces/<cli>/plugins/khenrix-utils/{capabilities.toml,house-style.md,statusline/}`
 - any `marketplaces/.../skills/*/scripts/{reconcile.py,inventory.py}`
-- `marketplaces/.../skills/<name>/` for skills sourced from `shared/skills/`
-- `marketplaces/.../skills/{khenrix-setup,khenrix-upgrade}/SKILL.md` — generated from
+- `marketplaces/.../skills/<name>/` for plugin-delivered skills sourced from
+  `shared/skills/` (the native-only `khenrix-quality` and `khenrix-writing` are excluded)
+- `marketplaces/.../skills/{khenrix-setup,khenrix-upgrade,khenrix-audit}/SKILL.md` — generated from
   `shared/skill-templates/<skill>/SKILL.md.tmpl` + the per-CLI `[skill_facts.*]` tables
 
 Edit the originals instead:
@@ -27,8 +29,14 @@ Edit the originals instead:
 - Shared base instructions: `house-style.md` — keep it provider-agnostic; CLI-specific
   guidance belongs in that CLI's own config, not here.
 - Shared skills: `shared/skills/<name>/SKILL.md`
+- Selective skill delivery, restore, provenance checks, and Maka smoke:
+  `components/skills/`; its allowlist and targets live under `[skill_delivery]`
+  in `capabilities.toml`.
+- Composed-skill provenance: `shared/skills/<name>/upstreams.toml` plus that
+  skill's notices and exact license copies. `upstreamctl.py record` keeps the pin,
+  notice revision, and declared license bytes in one rollback-safe update.
 - Reconcile/inventory engine: `scripts/lib/reconcile.py`, `scripts/lib/inventory.py`
-- The per-CLI `khenrix-setup` / `khenrix-upgrade` skills are **generated** from a shared
+- The per-CLI `khenrix-setup` / `khenrix-upgrade` / `khenrix-audit` skills are **generated** from a shared
   template + per-CLI facts: edit the shared prose in
   `shared/skill-templates/<skill>/SKILL.md.tmpl` and the provider-specific values
   (paths, commands, config terms, per-CLI procedure) in the `[skill_facts.<skill>.<cli>]`
@@ -37,10 +45,15 @@ Edit the originals instead:
 
 ## After editing any source-of-truth file
 
-Run `make verify` (validates manifests + skills, and that `capabilities.toml` parses),
-then `make khenrix-refresh` (re-renders and pushes the plugin into every installed CLI —
-required because Claude/Codex cache plugins by version, so plain edits aren't picked up
-otherwise). `make status` diffs each CLI's live config against the source of truth (read-only).
+Run `mise run verify` to validate manifests, skills, charts, and
+`capabilities.toml`. For either direct-copy skill, also run `mise run
+skills:test`, `mise run skills:upstream-status`, and `mise run skills:plan`.
+Apply a reviewed plan with `mise run skills:apply -- --expect sha256:PLAN_ID`,
+then run `mise run skills:doctor` and `mise run skills:maka-smoke`.
+
+For optional plugin content, run `mise exec -- make khenrix-refresh`. Claude and
+Codex cache plugins by version, so plain edits are not picked up until refresh.
+`mise exec -- make status` diffs broader live CLI config read-only.
 
 ## Skill changes require evals (hard gate)
 
@@ -49,10 +62,10 @@ blind-reviewed before commit — for every provider, not just Claude. The full p
 `docs/skill-eval-process.md`; the loop runs through the portable harness
 (`scripts/eval_harness.py`). Pre-commit ritual for a skill change:
 
-```
-make verify          # render + validate
-make eval-test       # hermetic harness logic tests (no token cost)
-make eval SKILL=<changed-skill>   # with-skill vs baseline + LLM-judge + blind A/B
+```bash
+mise run verify
+mise exec -- make eval-test
+mise exec -- make eval SKILL=<changed-skill> PROVIDERS=claude,codex,agy
 ```
 
 Commit only when `run_summary.delta.pass_rate >= 0`. The blind A/B winner is recorded but
@@ -89,6 +102,13 @@ would otherwise spawn clone fleets inside its own verifier clones. `precommit` i
 nine suites land instead; nothing runs `precommit` inside a verifier. Adding a `tests/test_forge_*.py`
 to neither variable is a suite nothing runs, and `test_forge_packaging.py` fails on it.
 
+The provider harness covers Claude, Codex, and agy. Maka consumes the same
+installed skill body, but it is not a fourth `make eval` provider. Run `mise run
+skills:maka-smoke` after applying the skills. It verifies explicit and natural
+loading from Maka's recorded events, plus bounded ADHD activation, action-first
+continuation, and opt-out acknowledgement. This smoke check does not replace behavior evals or earn their
+receipts.
+
 ## Skill flowcharts
 
 Every skill has a mermaid flowchart at `docs/skill-charts/<skill>.md` — maintainer docs,
@@ -113,6 +133,10 @@ missing chart or a dangling evidence reference.
   `description` ≤1024 chars, body <500 lines (enforced by `render.py --check`).
 - Reconcile is non-destructive by design: it only adds missing entries or updates ones
   tagged `khenrix-managed`, and never removes machine-specific config. Preserve this invariant.
+- Selective delivery owns only `khenrix-quality`, `khenrix-writing`, its private
+  state directory, and the bounded house-style block. Preserve unrelated skills,
+  parent-directory modes, and instruction text outside the markers. Refuse
+  symlinked managed paths rather than following them.
 
 ## Etiquette
 

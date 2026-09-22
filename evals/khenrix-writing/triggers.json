@@ -1,0 +1,20 @@
+{
+  "skill_name": "khenrix-writing",
+  "notes": "The initial mode owns explicit humanization, voice matching, and deep rewrites. Minimal edits and detect-only audits stay with khenrix-quality.",
+  "should_trigger": [
+    "humanize this article without changing its facts",
+    "rewrite this so it sounds like me; here is a voice sample",
+    "remove the chatbot voice from this cover letter",
+    "deeply rewrite this AI-sounding PR description",
+    "use khenrix-writing humanize mode on this file",
+    "use the old humanizer workflow on this draft",
+    "/khenrix-writing"
+  ],
+  "near_miss": [
+    "detect AI-writing patterns in this paragraph but do not rewrite it",
+    "make the minimum clarity edit and show me what changed",
+    "use ponytail full mode on this function",
+    "check whether the claims in this article are true",
+    "summarize this document without changing its voice"
+  ]
+}

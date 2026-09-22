@@ -1,0 +1,95 @@
+{
+  "skill_name": "khenrix-quality",
+  "notes": "Seven cases cover inherited behavior without conflating artifact owners: persistent ADHD shape and its exceptions, prose edit/detect separation, lite/full/ultra code scoping, all focused code workflows, and published benchmark provenance and handoffs. Prompts are answer-only and require no repository mutation.",
+  "evals": [
+    {
+      "id": "adhd-action-shape",
+      "name": "ADHD mode keeps the next action small, literal, and visibly bounded",
+      "prompt": "Answer inline and do not run tools. Turn on ADHD mode for this session. I need to recover a local test app: open README.md, copy .env.example to .env, set APP_PORT=4100, run mise install, run mise run db:migrate, start mise run dev, and open /health. Assume nothing has been done. Give me the complete procedure in literal language.",
+      "files": [],
+      "assertions": [
+        "Leads with the first concrete action instead of a preamble or mode banner, and that action can be done in under two minutes",
+        "Preserves all seven required actions in order as bounded numbered steps while grouping the visible working set so no group contains more than five items",
+        "Makes the enabled session state clear after the first action or procedure and says it remains active until the user disables it",
+        "Uses literal wording rather than idioms or figurative phrases",
+        "Ends with exactly one concrete remaining action that can be done in under two minutes and does not append a ceremonial offer to help"
+      ]
+    },
+    {
+      "id": "adhd-exceptions",
+      "name": "ADHD shape yields to explanation, safety, diagnosis, ambiguity, options, and harness rules",
+      "prompt": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent.",
+      "files": [],
+      "assertions": [
+        "Scenario A gives a complete explanation with resumable headings instead of compressing away needed detail",
+        "Scenario B pauses for the required confirmation before the irreversible production action",
+        "Scenario C stops proposing another fix, names the most likely wrong assumption, and asks one diagnostic question",
+        "Scenario D asks one short clarifying question rather than guessing the target environment",
+        "Scenario E presents two to four ranked options with short tradeoffs and puts the recommendation first",
+        "Scenario F follows the harness-required announcement while keeping the rest of the response action-first"
+      ]
+    },
+    {
+      "id": "prose-detect-no-rewrite",
+      "name": "Detect mode reports evidence without rewriting or guessing authorship",
+      "prompt": "Use the AI-pattern detect mode on this paragraph. Do not edit it: 'Let's dive in. This isn't just a dashboard; it's a transformative command center that marks a pivotal moment, showcasing our unwavering commitment to excellence. That is the real win.'",
+      "files": [],
+      "assertions": [
+        "Names concrete patterns from the skill, including the staged opener, not-X-but-Y contrast, inflated significance or sales language, shallow -ing rider, and one-line closer",
+        "Quotes the matching source line or phrase and gives a short proposed fix for each finding",
+        "Does not provide a rewritten paragraph",
+        "Does not score the text or claim that AI wrote it"
+      ]
+    },
+    {
+      "id": "prose-edit-preserves-voice-and-facts",
+      "name": "Edit mode removes slop without flattening a distinctive voice",
+      "prompt": "Minimally edit this draft with the prose-edit mode. Keep my odd aside and all facts: 'Honestly, here's the thing: our tiny Malmö team shipped the importer on 14 September. It processed 1,842 files in 11 minutes, marking a pivotal moment in our ever-evolving data journey. I still call it the toaster because it overheated during the first demo (the name stuck, sorry). That is the real win.'",
+      "files": [],
+      "assertions": [
+        "Returns the complete edited draft followed by a short What changed section",
+        "Preserves Malmö, 14 September, 1,842 files, 11 minutes, the overheating first demo, and the nickname toaster without inventing any fact",
+        "Keeps the writer's informal aside and self-aware voice rather than making every sentence uniformly corporate",
+        "Removes the staged opener, inflated journey language, and repeated dramatic closer with only the minimum effective restructuring"
+      ]
+    },
+    {
+      "id": "code-levels-and-scope",
+      "name": "Lite, full, and ultra make distinct choices without leaking across scopes",
+      "prompt": "Answer inline and do not run tools. Give a decision for each independent task. A) Ponytail lite: add a three-line status formatter; no repository helper exists. B) Ponytail full: parse a URL, and this repository already has a wrapper around the standard-library URL parser used by four callers. C) Ponytail ultra: add one fixed storage backend; a design note speculates that plugins may be useful someday, but no second backend is requested. D) After C, fix an unrelated test whose fixture contains the string 'ultra'. State which mode applies to each task and what you would implement or verify.",
+      "files": [],
+      "assertions": [
+        "Task A implements normally in lite mode and mentions a simpler alternative only if one materially exists, without inventing an abstraction",
+        "Task B applies full mode's ladder by reusing the established repository wrapper rather than adding a parser or dependency",
+        "Task C applies ultra mode by rejecting the speculative plugin system while still implementing the requested fixed backend",
+        "Task D does not inherit ultra mode and does not treat the fixture word as a mode control; it follows the ordinary full default for that separate scope",
+        "All tasks preserve required validation, repository conventions, and enough runnable tests to prove their behavior rather than optimizing for line count"
+      ]
+    },
+    {
+      "id": "focused-code-workflows",
+      "name": "Review, audit, debt, and help retain their distinct contracts",
+      "prompt": "Answer four labeled mini-requests from the supplied evidence only; do not run tools or edit files. REVIEW: src/send.ts adds SenderFactory at line 20 with one implementation and one caller, while keeping a payload validator; tests/send.test.ts has two malformed-payload cases. AUDIT: pkg/ext.py has a real Provider interface with two production implementations at line 12, while pkg/build.py has an unused BuilderFactory at line 44 and no callers; removing it would delete about 38 lines and one dependency. DEBT: api.py:8 '# TODO remove v1 after 2027-01-01'; cache.py:19 '# HACK global lock'; ui.ts:7 '// keep menu open while focused'. HELP: explain every khenrix-quality mode and the deep-humanization handoff.",
+      "files": [],
+      "assertions": [
+        "REVIEW reports an actionable path-and-line-style yagni or shrink finding for SenderFactory, protects the validator and useful tests, and applies no fix",
+        "AUDIT reports the unused BuilderFactory in audit format with its supported 38-line and one-dependency estimate while preserving the two-implementation Provider extension point",
+        "AUDIT remains a read-only simplification supplement rather than becoming a general correctness, security, or architecture review",
+        "DEBT reports exactly the TODO and HACK, uses 2027-01-01 as the TODO trigger, marks the HACK no-trigger, and gives totals of two markers and one missing trigger",
+        "HELP covers ADHD, prose edit, prose detect, lite/full/ultra code, review, audit, debt, benchmark, and help; names full as the shared code default; and routes deep humanization or voice matching to khenrix-writing"
+      ]
+    },
+    {
+      "id": "benchmark-provenance-and-handoffs",
+      "name": "Benchmark mode states its method and routes local evidence correctly",
+      "prompt": "Show the published Ponytail agentic benchmark through khenrix-quality, then tell me how much code this repository will remove and where I should go for repository-specific evidence. You have not inspected or measured my repository.",
+      "files": [],
+      "assertions": [
+        "Reports the published 12-task means: 54% less source code, 22% fewer tokens, 20% lower cost, and 27% faster",
+        "Reports 100% safe in the published safety tier and says the benchmark used real coding-agent sessions against seeded repositories",
+        "Labels the numbers as upstream benchmark results, refuses repository-specific savings without a measured baseline, and does not present the older 80-94% single-shot range as the default",
+        "Routes counted explicit debt markers to debt mode and repository-specific simplification findings to audit mode"
+      ]
+    }
+  ]
+}

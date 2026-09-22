@@ -4,6 +4,7 @@ import shutil
 import signal
 import socket
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -226,15 +227,18 @@ def test_a_fifo_or_socket_is_recorded_without_being_opened(tmp_path):
     """A read-open on a FIFO blocks until a writer appears — an unbounded hang with no
     timeout in the call path — and a socket raises ENXIO. Deadlined so the bug fails the
     test rather than wedging the suite."""
-    d = tmp_path / "t"; d.mkdir()
-    os.mkfifo(d / "p.fifo")
-    sock = socket.socket(socket.AF_UNIX)
-    sock.bind(str(d / "s.sock"))
-    (d / "ordinary.txt").write_text("still inventoried\n")
-    try:
-        entries, breaches = _within(5.0, snapshot.take, d)
-    finally:
-        sock.close()
+    # Darwin's sockaddr_un is shorter than pytest's descriptive tmp_path. Keep the fixture
+    # unique and local, but bind it under a deliberately short root.
+    with tempfile.TemporaryDirectory(prefix="kf-snapshot-", dir="/tmp") as short:
+        d = Path(short)
+        os.mkfifo(d / "p.fifo")
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(str(d / "s.sock"))
+        (d / "ordinary.txt").write_text("still inventoried\n")
+        try:
+            entries, breaches = _within(5.0, snapshot.take, d)
+        finally:
+            sock.close()
     assert breaches == []
     assert entries["p.fifo"].kind == "special"
     assert entries["s.sock"].kind == "special"

@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
   "skill": "skill-tuneup",
-  "source_hash": "0803a25b8142d2e36afad8fc0bde097f85b3e938574cf0dee8aa08e97556de09",
-  "eval_set_hash": "4a736984af849d43dfc9106463783696b79392a312648f8f192e23e97327403b",
+  "source_hash": "575e364a6ab5f3fac561a01d42e74dd34d12149afb7228bd941da93d951cc657",
+  "eval_set_hash": "b39293e06b9b2753d894a67703fcbae4d15ed2df17bbf1d4d3397c04ce30f700",
   "providers": [
     "claude",
     "codex",
@@ -10,7 +10,34 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state"
+  "delta_pass_rate": 0.6413,
+  "blind_winner": "with_skill",
+  "provenance": "eval",
+  "per_provider": {
+    "agy": {
+      "delta": 0.7334,
+      "quantum": 0.05,
+      "n_evals": 7,
+      "status": "ok"
+    },
+    "claude": {
+      "delta": 0.55,
+      "quantum": 0.05,
+      "n_evals": 7,
+      "status": "ok"
+    },
+    "codex": {
+      "delta": 0.6405,
+      "quantum": 0.05,
+      "n_evals": 7,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5",
+    "codex": "gpt-5.6-sol",
+    "agy": "Gemini 3.8 Flash (High)",
+    "judge": "claude-opus-5"
+  },
+  "certified_by": "delta-gate"
 }

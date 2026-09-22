@@ -1,0 +1,4 @@
+interface:
+  display_name: "Khenrix Quality"
+  short_description: "Focused response, prose, and code quality workflows"
+  default_prompt: "Use $khenrix-quality to apply the requested quality workflow."

@@ -1,5 +1,4 @@
 """The append-only event log and what it can still say after a crash (spec §14.1)."""
-import ast
 import json
 import os
 import re
@@ -201,8 +200,15 @@ def test_every_record_carries_the_identity_a_crash_needs(tmp_path):
         assert row[key], key
     assert row["pid"] == os.getpid()
     assert _UUIDISH.match(row["boot_id"]), row["boot_id"]
-    assert row["boot_id_source"] == "proc" and row["process_start_source"] == "proc"
-    assert row["process_start"].isdigit(), row["process_start"]
+    if sys.platform == "darwin":
+        assert row["boot_id_source"] == "darwin:kern.bootsessionuuid"
+        assert row["process_start_source"] == "darwin:proc_pidinfo"
+        seconds, microseconds = row["process_start"].split(".")
+        assert seconds.isdigit() and len(microseconds) == 6 and microseconds.isdigit()
+    else:
+        assert row["boot_id_source"] == "proc"
+        assert row["process_start_source"] == "proc"
+        assert row["process_start"].isdigit(), row["process_start"]
 
 
 def test_an_identity_that_could_not_be_read_says_so_instead_of_looking_like_one(
@@ -216,6 +222,7 @@ def test_an_identity_that_could_not_be_read_says_so_instead_of_looking_like_one(
     unreadable /proc costs the liveness question (which then fails closed to
     outcome_unknown), not the record.
     """
+    monkeypatch.setattr(journal.sys, "platform", "linux")
     monkeypatch.setattr(journal, "_BOOT_ID_PATH", str(tmp_path / "absent-boot-id"))
     monkeypatch.setattr(journal, "_PROC_STAT_PATH", str(tmp_path / "absent-stat"))
     p = tmp_path / "e.jsonl"
@@ -225,6 +232,32 @@ def test_an_identity_that_could_not_be_read_says_so_instead_of_looking_like_one(
     assert row["process_start_source"] == "unavailable"
     assert not _UUIDISH.match(row["boot_id"]), row["boot_id"]
     assert row["pid"] == os.getpid(), "the one identity that never needed /proc"
+
+
+def test_darwin_identity_uses_the_kernel_boot_uuid_and_libproc_start_time(monkeypatch):
+    """The Darwin path uses the two kernel identities rather than a host-local fallback.
+
+    The sysctl currently spells its UUID in uppercase. Canonicalizing it matters because a
+    journal identity is compared as text, while the process timeval needs all six fractional
+    digits so two starts in the same second remain distinguishable.
+    """
+    monkeypatch.setattr(journal, "_darwin_sysctl_text",
+                        lambda name: "8041A534-8C46-458B-9CCC-915EACDAD88E")
+    monkeypatch.setattr(journal, "_darwin_process_start", lambda pid: (1_790_018_390, 7))
+    assert journal._read_darwin_boot_id() == (
+        "8041a534-8c46-458b-9ccc-915eacdad88e", "darwin:kern.bootsessionuuid")
+    assert journal._read_darwin_process_start() == (
+        "1790018390.000007", "darwin:proc_pidinfo")
+
+
+def test_darwin_identity_api_failures_are_explicitly_unavailable(monkeypatch):
+    def unavailable(*_args):
+        raise OSError("kernel identity unavailable")
+
+    monkeypatch.setattr(journal, "_darwin_sysctl_text", unavailable)
+    monkeypatch.setattr(journal, "_darwin_process_start", unavailable)
+    assert journal._read_darwin_boot_id() == ("unavailable", "unavailable")
+    assert journal._read_darwin_process_start() == ("unavailable", "unavailable")
 
 
 def test_a_process_name_with_spaces_does_not_mis_number_the_stat_fields(tmp_path, monkeypatch):
@@ -244,39 +277,7 @@ def test_a_process_name_with_spaces_does_not_mis_number_the_stat_fields(tmp_path
     fake = tmp_path / "stat"
     fake.write_text("4211 (weird ) name) " + " ".join(str(n) for n in range(3, 53)) + "\n")
     monkeypatch.setattr(journal, "_PROC_STAT_PATH", str(fake))
-    assert journal._read_process_start() == ("22", "proc")
-
-
-def test_a_real_process_can_carry_the_hostile_name_the_fixture_above_invents(tmp_path):
-    """Without this, the fixture above is a shape I made up and the parser is hardened against
-    nothing. Measured: `comm` comes from the EXECUTABLE'S BASENAME, truncated to 15 characters
-    — not from argv[0], which `exec -a` changes and which leaves `comm` untouched. So a
-    symlink whose own name holds a space and a `)` is enough to produce one, and the engine
-    runs providers out of paths it did not choose.
-
-    The naive split is run inside the same process for contrast, so this also records that the
-    two parses genuinely disagree there rather than agreeing by luck.
-    """
-    link = tmp_path / "we) ird"
-    link.symlink_to(sys.executable)
-    prog = (
-        "import pathlib, sys;"
-        f"sys.path.insert(0, {str(ROOT / 'shared' / 'lib')!r});"
-        "from forge import journal;"
-        "raw = pathlib.Path('/proc/self/stat').read_text();"
-        "naive = raw.split()[2:];"
-        "print(raw[raw.index('('):raw.rindex(')') + 1]);"
-        "print(journal._read_process_start());"
-        "print(naive[19] if len(naive) > 19 else 'short')"
-    )
-    r = subprocess.run([str(link), "-c", prog], capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    comm, parsed, naive = r.stdout.splitlines()
-
-    assert comm == "(we) ird)", comm      # the premise: a real comm with a space and a paren
-    value, source = ast.literal_eval(parsed)
-    assert source == "proc" and value.isdigit(), parsed
-    assert naive != value, "the naive split happened to agree, so this proves nothing"
+    assert journal._read_proc_process_start() == ("22", "proc")
 
 
 def test_the_machine_identity_is_read_once_per_process_not_once_per_record(

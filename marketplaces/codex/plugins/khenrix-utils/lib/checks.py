@@ -324,6 +324,10 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
                  "scripts/eval_harness.py",  # decides what the gate RUNS
+                 # eval_harness imports this engine to build/run the readonly council that
+                 # certifies every ordinary behavior eval. A certifier change must stale
+                 # those receipts even when the evaluated skill does not bundle council.
+                 "shared/lib/council/engine.py",
                  "scripts/lib/checks.py",    # decides what the gate ACCEPTS
                  "Makefile"]                 # names the suites a gate can name
 # Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
@@ -393,7 +397,10 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
             p = root / ov
             if p.is_file():
                 files.append(p)
-    return files
+    # Global certifier inputs can also be runtime inputs for a particular skill (the council
+    # and forge closures both include shared/lib/council). Hash each path once while keeping
+    # discovery order deterministic for the caller's sorted manifest.
+    return list(dict.fromkeys(files))
 
 
 def source_manifest(root: Path, skill: str) -> list:
@@ -466,6 +473,34 @@ def _receipt_is_certified(rec: dict) -> bool:
 CURRENT_RECEIPT_SCHEMA = 2
 
 
+def receipt_path_privacy_problems(rec: dict, skill: str) -> list[str]:
+    """Reject machine-specific paths from committed receipt provenance."""
+
+    command = rec.get("gate_command")
+    if command is None:
+        return []
+    if not isinstance(command, list) or not command or not all(
+        isinstance(argument, str) and argument for argument in command
+    ):
+        return [f"receipt: {skill} has a malformed gate_command"]
+    for argument in command:
+        # Gate commands are argv arrays, so repository paths normally occupy their own
+        # argument. Reject option-assignment absolute paths too, plus both common HOME
+        # spellings, so a future producer cannot hide the same leak behind `--path=`.
+        assigned = argument.split("=", 1)[1] if "=" in argument else argument
+        if (
+            Path(assigned).is_absolute()
+            or assigned == "~"
+            or assigned.startswith("~/")
+            or "$HOME" in argument
+            or "${HOME}" in argument
+        ):
+            return [
+                f"receipt: {skill} gate_command contains a machine-specific absolute/home path"
+            ]
+    return []
+
+
 def is_self_test_gated(rec: dict) -> bool:
     """Does this receipt come from a deterministic suite rather than a judge panel?
 
@@ -505,7 +540,7 @@ def validate_receipt(root: Path, skill: str, *, final: bool = False,
     except Exception as e:  # noqa: BLE001
         return [f"receipt: {skill} is unreadable: {e}"]
 
-    problems = []
+    problems = receipt_path_privacy_problems(rec, skill)
     if not _receipt_is_certified(rec):
         problems.append(f"receipt: {skill} records a certification that did not pass "
                         f"(self_test={rec.get('self_test')!r}) — run `make eval SKILL={skill}`")

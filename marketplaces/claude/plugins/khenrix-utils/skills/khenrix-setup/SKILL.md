@@ -49,6 +49,27 @@ only after the user confirms.
 - **Name what will change.** Before any apply, enumerate what the review found to
   add — a bare "applied it" with no list is never acceptable.
 
+## Explain surprising safety cases completely
+
+When the user asks about drift or broken markers, include the mechanism as well
+as the outcome. Do not shorten either explanation to only “safe,” “unchanged,”
+or “refused.”
+
+- For a successful plain `--apply` that leaves drift unchanged, say all three
+  parts: it did not fail; ordinary apply is ADD-only and therefore will not
+  overwrite an entry that already exists; that no-overwrite rule is what makes
+  unattended apply safe. Then give `--apply --update-drift` as the explicit
+  overwrite command.
+- For an orphaned begin or end marker, say all three parts: the engine reports
+  `REFUSED` and writes nothing; one marker is not enough to identify the managed
+  span, so guessing its boundary could replace the user's own text; the user
+  must repair the marker pair by hand before retrying.
+- For repeated backups, say all three parts: names are numbered
+  `.khenrix-backup`, `.khenrix-backup.1`, `.khenrix-backup.2`, and each run takes
+  the first free name; every backup still exists because an existing backup is
+  never overwritten or removed; the unsuffixed file is the oldest and the
+  highest suffix is the newest.
+
 ## Steps
 
 1. **Review (read-only).** Run the engine and show the user its full output:

@@ -287,10 +287,12 @@ def test_rejects_an_escaping_symlink_NESTED_in_a_selected_directory(tmp_path):
     assert finspect.rejections(f, []) == [], "unselected: nothing to reject"
     # Whole-list, in walk order (dirnames before filenames, each sorted): a substring
     # check would pass on the in-tree alias too and certify nothing about the
-    # discrimination.
+    # discrimination. realpath is the vocabulary production reports; on Darwin /etc is a
+    # firmlink whose canonical spelling is /private/etc.
+    etc = os.path.realpath("/etc")
     assert finspect.rejections(f, ["scratch"]) == [
-        "symlink escapes the repository: scratch/linkdir -> /etc",
-        "symlink escapes the repository: scratch/creds -> /etc/passwd",
+        f"symlink escapes the repository: scratch/linkdir -> {etc}",
+        f"symlink escapes the repository: scratch/creds -> {etc}/passwd",
     ]
 
 

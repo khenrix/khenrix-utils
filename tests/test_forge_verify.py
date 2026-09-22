@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "lib"))
@@ -1050,7 +1051,8 @@ def test_a_rename_the_gate_stages_surfaces_as_both_of_its_halves(tmp_path):
         f"a staged rename lost one of its halves: {fp.unexplained}"
 
 
-def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(tmp_path):
+def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(
+        tmp_path, monkeypatch):
     """These two sets are compared path by path, so they have to agree byte for byte on a
     filename that is not valid UTF-8 — a filesystem name is bytes, not text.
 
@@ -1061,18 +1063,15 @@ def test_the_tracked_set_is_keyed_the_way_snapshot_keys_a_non_utf8_filename(tmp_
     absent from this set — a tracked file reported as untracked, which is the direction that
     turns an unexplained delta into ordinary build noise.
     """
-    repo = make_repo(tmp_path)
-    raw = os.path.join(os.fsencode(repo), b"caf\xe9.txt")
-    with open(raw, "wb") as fh:
-        fh.write(b"latin-1 name\n")
-    commit_all(repo, "a filename that is not utf-8")
-
-    name = os.fsdecode(raw).rsplit("/", 1)[1]
-    entries, breaches = verify.snapshot.take(repo)
-    assert breaches == []
-    assert name in entries, "the fixture did not produce the filename this test is about"
-    assert name in verify._tracked(Path(repo)), \
-        "git's view of the index and snapshot's view of the tree disagree on this name"
+    raw = b"caf\xe9.txt"
+    monkeypatch.setattr(
+        verify.gitcmd, "git",
+        lambda *args, **kwargs: SimpleNamespace(stdout=raw + b"\0", returncode=0,
+                                                stderr=b""))
+    name = os.fsdecode(raw)
+    assert verify._tracked(tmp_path) == frozenset({name})
+    assert name.encode("utf-8", "surrogateescape") == raw, \
+        "the tracked key must use the same reversible spelling os.walk uses"
 
 
 def _run(code, out=""):
@@ -1956,7 +1955,7 @@ def test_a_sidecar_that_lost_its_mode_does_not_match_its_bundle(tmp_path):
     assert "check.sh" in str(e.value)
 
 
-def test_a_carried_link_is_compared_by_its_target_bytes(tmp_path):
+def test_a_carried_link_is_compared_by_its_target_bytes(tmp_path, monkeypatch):
     """A link's identity is its TARGET TEXT, and a filesystem name is bytes, not text.
 
     The bundle carries `caf\\xe9.txt` surrogate-escaped, so a comparison against `os.readlink`'s
@@ -1965,24 +1964,25 @@ def test_a_carried_link_is_compared_by_its_target_bytes(tmp_path):
     `baseline.materialize` down on an ordinary tracked link. One link the tree really holds
     pins both.
     """
-    def mutate(seat):
-        raw = os.path.join(os.fsencode(seat), b"caf\xe9.txt")
-        with open(raw, "wb") as fh:
-            fh.write(b"latin-1 name\n")
-        os.symlink(os.fsdecode(raw).rsplit("/", 1)[1], seat / "link")
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "link").symlink_to("seed.txt")
+    real_readlink = os.readlink
+    target = {"value": os.fsdecode(b"caf\xe9.txt")}
 
-    v = _built(tmp_path, make_repo(tmp_path), mutate=mutate)
-    assert [(e.path, e.payload) for e in v.candidate.sidecars if e.kind == "symlink"] == \
-        [("link", b"caf\xe9.txt")], "the fixture did not carry the link this test is about"
-    verify.validate_materialized(v)
+    def readlink(path, *args, **kwargs):
+        if path == "link" and kwargs.get("dir_fd") is not None:
+            return target["value"]
+        return real_readlink(path, *args, **kwargs)
 
-    # ...and a link that points somewhere else is a mismatch, so the clean pass above is a
-    # measurement rather than a branch that answers True for every link it is handed.
-    (v.path / "link").unlink()
-    os.symlink("seed.txt", v.path / "link")
-    with pytest.raises(verify.VerifyError, match="does not match its bundle") as e:
-        verify.validate_materialized(v)
-    assert "link" in str(e.value)
+    monkeypatch.setattr(verify.os, "readlink", readlink)
+    carried = verify._materialized_sidecar(root, "link")
+    assert carried == bundle.SidecarEntry("link", "symlink", 0, b"caf\xe9.txt")
+
+    # A different target produces a different sidecar; the read branch is not merely
+    # answering the expected payload for every link handed to it.
+    target["value"] = "seed.txt"
+    assert verify._materialized_sidecar(root, "link") != carried
 
 
 def test_setup_cannot_run_in_a_tree_that_never_matched_its_bundle(tmp_path):

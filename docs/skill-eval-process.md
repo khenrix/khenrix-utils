@@ -6,9 +6,10 @@ is committed.** This is a hard gate, not a suggestion. The point is the same rig
 blind A/B — applied to *every* skill and *every* provider, not just Claude.
 
 This repo ships a portable, stdlib-only harness (`scripts/eval_harness.py`) that delivers
-that loop for all three CLIs. Claude's `skill-creator` and Codex's native skill tooling
-are optional accelerators on top (see below) — the harness is the baseline that also
-covers agy, which has no native skill tooling at all.
+that loop for the three provider CLIs: Claude, Codex, and agy. Claude's
+`skill-creator` and Codex's native skill tooling are optional accelerators on top
+(see below). Maka consumes the same installed skill bodies, but its invocation
+check is a separate smoke test rather than a fourth harness provider.
 
 ## The loop
 
@@ -23,15 +24,19 @@ covers agy, which has no native skill tooling at all.
    Objective and answer-only — "runs the engine read-only first", not "is well written".
 3. **Run with-skill vs baseline, per provider.** `make eval SKILL=<name>` (defaults to
    the `claude` executor; add `PROVIDERS=claude,codex,agy` for the full panel). The
-   harness injects the rendered SKILL.md for the with_skill run and uses the bare prompt
-   for the baseline.
-
-   **Baseline caveat:** `without_skill` is the executor's *ambient* environment — truly
-   skill-free only if the skill isn't already installed on that CLI. If it is installed
-   (a prior `make khenrix-refresh`), it can auto-trigger and the baseline becomes the
-   *old installed version*, so the comparison is new-body-vs-old, not with-vs-without.
-   For the cleanest signal, iterate with the harness BEFORE refreshing/installing the
-   change. The blind A/B and delta stay meaningful either way.
+   harness gives `with_skill` a private copy of the complete selected skill directory
+   (SKILL.md plus references, scripts, and assets). It also inlines the bounded UTF-8
+   textual closure with relative path labels. Scripts and opaque assets are named for
+   closure transparency but are unavailable to the model; an answer must not claim it read
+   or ran them. Binary text candidates and oversized closures fail instead of being omitted.
+   Each eval's declared fixtures are likewise bounded, decoded as UTF-8, and inlined as
+   labeled untrusted data into both conditions and the judge prompt. Missing, unsafe,
+   symlinked, duplicate, binary, non-UTF-8, or oversized fixture closures fail closed.
+   Baseline receives the same fixture data but no skill closure.
+   Both conditions run from fresh temporary working directories with ambient skills,
+   rules, plugins, and user configuration disabled. Authentication is bridged without
+   copying credential values into workspaces or artifacts, so an installed old version
+   cannot contaminate baseline.
 4. **Grade.** An LLM judge scores each output against the assertions → `grading.json`
    (`text`/`passed`/`evidence`).
 5. **Blind A/B.** The two outputs are shuffled into A/B (with a hidden key) and the judge
@@ -42,7 +47,18 @@ covers agy, which has no native skill tooling at all.
    rewards the tighter baseline over a correct-but-more-thorough skill answer, so a
    non-negative-delta run is never failed on a blind tie/loss. Use the recorded winner to
    triage a weak/zero delta.
-7. **Only then** `make verify && make eval-test && make eval SKILL=<name>` → commit.
+7. **Only then** run `mise run verify`, `mise exec -- make eval-test`, the final
+   three-provider eval, and `mise exec -- make precommit` before committing.
+
+For a composed skill, start with `mise run skills:upstream-status` and inspect a
+changed source with `mise run skills:upstream-diff -- SOURCE`. Review and accept
+the commit, then use `mise run skills:upstream-record -- SOURCE
+FULL_40_CHARACTER_COMMIT` before adapting the local reference and running the eval
+loop. Recording a pin does not copy upstream instructions into the skill; it updates the
+declared vendored license to the exact reviewed upstream bytes alongside the manifest and
+notice. Changed license bytes require an explicit `--accept-license-change` after reviewing
+the terms and attribution wording. It must precede eval because all three are inside the
+receipt's source closure.
 
 ## Layout
 
@@ -69,25 +85,51 @@ the other.
 ## Commands
 
 ```bash
-make eval-test                              # hermetic harness logic tests (no tokens)
-make eval SKILL=khenrix-setup               # claude executor, normal mode
-make eval SKILL=khenrix-setup PROVIDERS=claude,codex,agy MODE=deep
+mise exec -- make eval-test
+mise exec -- make eval SKILL=khenrix-quality
+mise exec -- make eval SKILL=khenrix-quality PROVIDERS=claude,codex,agy MODE=deep
 ```
 
 Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
 provider's bypass flag — claude `--permission-mode plan` plus plan-file suppression
 (`--disallowedTools ExitPlanMode` + an appended system prompt), codex `--sandbox read-only`;
 agy `--mode plan` — a mechanical read-only mode since agy 1.1.1, since its `--sandbox` hangs
-headless (see `make_readonly`'s docstring) — plus two SOFT layers as defense in depth: a
-READONLY_POSTURE line prepended to every executor's prompt and a throwaway git-worktree cwd,
-so cwd-relative writes are discarded —
+headless (see `make_readonly`'s docstring) — plus a READONLY_POSTURE line prepended to every
+executor's prompt and a fresh temporary cwd whose contents are discarded —
 so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
-mechanically constrained on all three during an eval, while the real HOME is kept so auth still resolves
-(sandboxing HOME instead hid credentials and every run failed `auth_or_quota`). Full
+mechanically constrained on all three during an eval.
+
+The installed-binary help and bounded hostile probes were checked on 2026-09-21 before
+these barriers were wired. Every executor and judge has an unconditional no-tools boundary:
+
+- Claude runs with `--safe-mode --disable-slash-commands --no-session-persistence
+  --strict-mcp-config --no-chrome --tools ''`. No MCP config is supplied.
+- Codex runs with a pinned eval model and `--ignore-user-config --ignore-rules --ephemeral`
+  in a fresh `HOME`/`CODEX_HOME`. It disables `plugins`, `skill_search`, `shell_tool`,
+  `unified_exec`, and `apps`; it also sets `agents.enabled=false`,
+  `tools.view_image=false`, `tools.web_search=false`, and `web_search="disabled"`.
+- agy invokes the absolute installed `agy-bin` in a fresh `HOME` and selects a private
+  `eval-no-tools` agent with `tools: []`, `excludeDefaultComponents: true`, and
+  `enable_mcp_tools: false`.
+
+The probes asked each provider to read a marker file and echo an environment canary; none
+returned either value. The hermetic self-test repeats the hostile request through
+`run_text` with provider-specific argv-parsing stubs and fails if any barrier is removed.
+Each real run also receives a random environment canary and a mode-`000` canary file.
+After the process exits, the harness scans stdout, stderr, result, and manifest artifacts
+for that canary, known child credential values (including ADC secrets), and credential
+shapes. A match removes the provider artifact tree, leaves only a generic security-failure
+marker, and aborts the run.
+
+Authentication remains outside the temporary homes: Claude retains its normal account
+access; Codex accepts `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or bridges
+its stored credential into the child environment; agy receives the existing ADC path.
+
+Full
 three-provider runs are token-expensive (~3-4×); use the single-provider `claude` loop for
-iteration and the full panel for the final gate. `--no-readonly` opts out when a skill
-genuinely must write. agy's plan mode is a mechanical write barrier but not an OS sandbox —
-still less sealed than codex's, so lower-risk rather than sealed.
+iteration and the full panel for the final gate. `--no-readonly` removes the additional
+plan/read-only posture but does not re-enable tools; behavior evals cannot execute scripts,
+read files, browse, call MCPs, or mutate the machine.
 
 **Invalid runs.** Each entry in `benchmark.json`'s `runs[]` carries `result.errors` (1 when
 the executor timed out or died, **or the judge returned no verdict** — `result.reason`
@@ -136,13 +178,17 @@ already triggered. `scripts/eval_trigger.py` covers the complementary axis: give
 skill's name and description, would the agent pick it?
 
 ```bash
-make eval-trigger SKILL=khenrix-setup          # fires / abstains, needs >= 0.8
-make eval-arena   SKILLS=khenrix-audit,khenrix-setup,skill-tuneup   # cross-skill routing
+mise exec -- make eval-trigger SKILL=khenrix-quality
+mise exec -- make eval-arena SKILLS=khenrix-quality,khenrix-writing
 ```
 
 `eval-trigger` reads `evals/<skill>/triggers.json`
 (`{"should_trigger": [...], "near_miss": [...]}`) and scores correct fires plus correct
-abstains. Near-misses should be prompts belonging to an *adjacent* skill:
+abstains. It reads the selected provider's rendered `SKILL.md` when one exists, preserving
+provider-specific metadata for templated skills. A native-only skill intentionally excluded
+from plugin bundles falls back to its canonical `shared/skills/<name>/SKILL.md`; raw
+`SKILL.md.tmpl` files are never evaluated. Near-misses should be prompts belonging to an
+*adjacent* skill:
 `khenrix-setup` and `khenrix-upgrade` are deliberately **mirrors** — each one's
 `should_trigger` cases are the other's `near_miss` set — so a description edit that blurs
 the boundary fails on both sides rather than silently passing one.
@@ -164,6 +210,30 @@ which the behaviour harness cannot evaluate at all.
   makes the committed arena set unpassable as authored. Either widen the roster or
   re-express those cases; do not "fix" it by rounding off-roster back to `none`, which is
   the exact collapse that docstring exists to prevent.
+
+## Maka routing smoke
+
+Maka does not run through `scripts/eval_harness.py` and has no native eval receipt
+in this repository. After the selective skills are applied and their install
+receipt is current, run:
+
+```bash
+mise run skills:maka-smoke
+```
+
+The smoke runner starts five bounded one-shot calls: one explicit route per composed
+skill and three grouped natural routes containing every former skill name. It also runs
+a three-turn ADHD flow that enables the mode, checks an action-first continuation in the
+same session,
+and checks a bounded acknowledgement of the opt-out. The runner
+never passes `--yolo`, uses fresh temporary working directories, caps steps and
+time, and verifies Maka's `message_admissions` and `skill_loaded` records. A pass
+writes `~/.local/state/khenrix-utils/skills/maka-smoke-receipt.json`, bound to the
+case manifest, installed skill hashes, install plan, and Maka version.
+
+This proves that Maka found and loaded the intended skill and checks two narrow
+session behaviors. It does not replace the Claude/Codex/agy behavior, trigger,
+and arena evals.
 
 ## Per-provider tooling (accelerators, not the gate)
 
@@ -200,7 +270,7 @@ receipt that cannot name its gate; `make eval-test` catches that before a paid r
 
 | Skill | Why the delta cannot gate it | Gate |
 |---|---|---|
-| `khenrix-wiki-add` / `khenrix-wiki-sync` | the read-only baseline can read the in-repo skill source and engine, so "skill-free" is contaminated | the wikisync unit suite |
+| `khenrix-wiki-add` / `khenrix-wiki-sync` | a read-only answer-quality run cannot exercise the stateful engine's commit, lock, ledger, and render behavior | the wikisync unit suite |
 | `llm-forge` | a read-only with-skill/baseline harness cannot drive a clone fleet, three providers and a fresh verifier — a judge receipt would certify prose and leave the dangerous mechanics untouched | the hermetic forge handover/CLI/`--gc` suites |
 
 **The judge run still executes.** `gate_ok = True` is applied *after* it in `run()`, so

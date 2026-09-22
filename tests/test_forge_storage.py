@@ -2,6 +2,7 @@
 import os
 import stat
 import sys
+import fcntl
 from pathlib import Path
 
 import pytest
@@ -66,24 +67,28 @@ def test_quota_default_and_breach():
 def _fd_path(fd: int) -> str:
     """The path an open fd currently points at.
 
-    Resolved through /proc/self/fd, which is Linux-only. A resolution failure RAISES instead
-    of recording a placeholder, for two measured reasons and not the obvious one. Most
+    Linux exposes this through /proc/self/fd. Darwin exposes the same fact through
+    F_GETPATH. A resolution failure RAISES instead of recording a placeholder, for two
+    measured reasons and not the obvious one. Most
     assertions below are POSITIVE membership tests, which a placeholder FAILS — so the
     obvious hazard, a suite going green while measuring nothing, is not what a placeholder
     produces here; it produces a false RED accusing correct code, with a diagnostic naming
     the wrong culprit. The one assertion a placeholder does satisfy silently is the NEGATIVE
     one — "this path was not synced" — and that is the false green spec §10.1 describes,
     reached from the test side. Raising closes both.
-    The forge package is POSIX-only anyway (verify._kill_group needs process groups); this
-    narrows these assertions to Linux and says so out loud rather than going quiet.
+    The forge package is POSIX-only (verify._kill_group needs process groups), and both
+    supported kernels provide a non-lossy descriptor-to-path query.
     """
     try:
+        if sys.platform == "darwin" and hasattr(fcntl, "F_GETPATH"):
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, b"\0" * 1024)
+            return os.fsdecode(raw.split(b"\0", 1)[0])
         return os.readlink(f"/proc/self/fd/{fd}")
     except OSError as e:
         raise AssertionError(
-            f"cannot resolve fd {fd} through /proc/self/fd ({e}). These assertions identify "
+            f"cannot resolve fd {fd} through the host descriptor API ({e}). These assertions identify "
             "WHICH object was fsync'd by reading that link, and none of them mean anything "
-            "on a machine without it") from e
+            "without that identity") from e
 
 
 def _require_fd_resolution() -> None:
@@ -99,8 +104,8 @@ def _require_fd_resolution() -> None:
         resolved = _fd_path(fd)
     finally:
         os.close(fd)
-    assert resolved == os.path.realpath(__file__), (
-        f"/proc/self/fd resolved this suite's own file to {resolved!r}; the fsync assertions "
+    assert os.path.realpath(resolved) == os.path.realpath(__file__), (
+        f"the descriptor API resolved this suite's own file to {resolved!r}; the fsync assertions "
         "below identify their target the same way and cannot be trusted here")
 
 

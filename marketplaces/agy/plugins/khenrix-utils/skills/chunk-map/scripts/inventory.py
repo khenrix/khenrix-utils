@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import reconcile  # bundled alongside this script
 
 CLIS = ("claude", "codex", "agy")
+DIRECT_TARGET = {
+    "claude": "claude",
+    "codex": "codex_maka",
+    "agy": "agy",
+}
+SHA256_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # Where to research changes + which native tooling reviews skills, per CLI.
 DOCS = {
@@ -98,14 +106,95 @@ def model_settings(cli: str) -> dict:
             "note": "The High effort tier is encoded in agy's selected model label."}
 
 
-def installed_skills() -> list[str]:
+def _read_capabilities(path: Path) -> dict:
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _plugin_skills(caps_path: Path) -> set[str]:
+    skills_dir = caps_path.parent / "skills"
+    if not skills_dir.is_dir() or skills_dir.is_symlink():
+        return set()
+    return {
+        item.name
+        for item in skills_dir.iterdir()
+        if item.is_dir()
+        and not item.is_symlink()
+        and (item / "SKILL.md").is_file()
+        and not (item / "SKILL.md").is_symlink()
+    }
+
+
+def _direct_skills(cli: str, caps: dict) -> set[str]:
+    """Return only receipt-backed skills owned by selective delivery for ``cli``."""
+
+    delivery = caps.get("skill_delivery")
+    if not isinstance(delivery, dict):
+        return set()
+    declared = delivery.get("skills")
+    targets = delivery.get("targets")
+    state_dir = delivery.get("state_dir")
+    target_name = DIRECT_TARGET[cli]
+    if (
+        not isinstance(declared, list)
+        or not all(isinstance(name, str) and name for name in declared)
+        or not isinstance(targets, dict)
+        or not isinstance(targets.get(target_name), str)
+        or not isinstance(state_dir, str)
+    ):
+        return set()
+
+    receipt_path = Path(reconcile.expand(state_dir)) / "install-receipt.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return set()
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(receipt, dict):
+        return set()
+    records = receipt.get("skills")
+    if receipt.get("schema_version") != 1 or not isinstance(records, dict):
+        return set()
+
+    expected_root = Path(reconcile.expand(targets[target_name])).absolute()
+    installed: set[str] = set()
+    # The declaration is the authority boundary. Extra receipt or native-root
+    # entries are deliberately ignored, so another installer cannot become
+    # Khenrix-owned merely by writing beside these two skills.
+    for name in sorted(set(declared)):
+        record = records.get(name)
+        target_records = record.get("targets") if isinstance(record, dict) else None
+        target = target_records.get(target_name) if isinstance(target_records, dict) else None
+        expected_path = expected_root / name
+        skill_file = expected_path / "SKILL.md"
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("source_hash"), str)
+            or not SHA256_ID.fullmatch(record["source_hash"])
+            or not isinstance(target, dict)
+            or target.get("path") != str(expected_path)
+            or target.get("hash") != record["source_hash"]
+            or expected_path.is_symlink()
+            or not expected_path.is_dir()
+            or skill_file.is_symlink()
+            or not skill_file.is_file()
+        ):
+            continue
+        installed.add(name)
+    return installed
+
+
+def installed_skills(cli: str) -> list[str]:
     caps = reconcile.find_upwards("capabilities.toml", Path(__file__).resolve().parent)
     if not caps:
         return []
-    skills_dir = caps.parent / "skills"
-    if not skills_dir.exists():
-        return []
-    return sorted(d.name for d in skills_dir.iterdir() if (d / "SKILL.md").exists())
+    capabilities = _read_capabilities(caps)
+    return sorted(_plugin_skills(caps) | _direct_skills(cli, capabilities))
 
 
 def snapshot(cli: str) -> dict:
@@ -114,7 +203,7 @@ def snapshot(cli: str) -> dict:
         "version": version(cli),
         "model_settings": model_settings(cli),
         "mcp_servers": sorted(reconcile.mcp_current(cli)),
-        "installed_khenrix_skills": installed_skills(),
+        "installed_khenrix_skills": installed_skills(cli),
         "research_inputs": {k: DOCS[cli][k] for k in ("docs", "changelog", "model_discovery", "review_tools")},
     }
 

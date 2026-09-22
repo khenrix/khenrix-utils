@@ -13,18 +13,24 @@ a different path. Two paths are planted here because they fail for different rea
 is brought IN by a copy, the other APPEARS IN PLACE and survives because `lib/` is built
 with `copy2` into a directory that is never `rmtree`'d.
 """
+import importlib.util
 import shutil
-import subprocess
-import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKET = ROOT / "marketplaces"
+SPEC = importlib.util.spec_from_file_location("khenrix_render", ROOT / "scripts" / "render.py")
+assert SPEC and SPEC.loader
+render_module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(render_module)
 
 
 def _render() -> None:
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "render.py")],
-                   check=True, cwd=ROOT, capture_output=True)
+    # Exercise packaging itself. Repository-wide chart/eval receipt validation belongs to
+    # render.py --check and must not make this output regression depend on unrelated edits.
+    render_module.render()
 
 
 def _plant(cache_dir: Path) -> tuple[Path, bool]:
@@ -59,3 +65,103 @@ def test_render_emits_no_bytecode_from_either_path():
 # the assertion was a restatement of the one above — at the cost of two more full 3-CLI
 # renders inside `make verify`. The residue-in-`pdir` path it looked like it covered is
 # already the second plant above.
+
+
+def test_native_only_skills_are_absent_from_every_plugin_bundle():
+    # Planting a stale copy proves render removes old output as well as skipping new copies.
+    skills = ("khenrix-quality", "khenrix-writing")
+    for skill in skills:
+        stale = MARKET / "claude" / "plugins" / "khenrix-utils" / "skills" / skill
+        stale.mkdir(parents=True, exist_ok=True)
+        (stale / "SKILL.md").write_text("stale plugin copy\n")
+
+    _render()
+
+    bundled = sorted(str(p.relative_to(ROOT)) for skill in skills
+                      for p in MARKET.glob(
+                          f"*/plugins/khenrix-utils/skills/{skill}/SKILL.md"))
+    assert bundled == [], f"native-only skill has a second plugin path: {bundled}"
+
+    # Capability/template validation treats ordinary shared entries as discoverability
+    # metadata; a declared native-only skill need not exist in a rendered plugin tree.
+    problems = render_module.checks.structure_checks(ROOT, render_module.load_caps())
+    named = [p for p in problems if any(skill in p for skill in skills)]
+    assert named == [], f"native-only declarations rejected by structure checks: {named}"
+
+
+@pytest.mark.parametrize(
+    ("skill", "body", "expected"),
+    [
+        (
+            "khenrix-quality",
+            "---\nname: wrong-but-valid\ndescription: test\n---\nbody\n",
+            "must match native skill directory 'khenrix-quality'",
+        ),
+        (
+            "khenrix-writing",
+            "---\nname: khenrix-writing\n---\nbody\n",
+            "missing 'description'",
+        ),
+        (
+            "khenrix-writing",
+            "---\nname: khenrix-writing\ndescription: test\n---\n" + "line\n" * 501,
+            "recommended <500",
+        ),
+    ],
+)
+def test_check_validates_native_only_skill_metadata_and_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    skill: str,
+    body: str,
+    expected: str,
+) -> None:
+    (tmp_path / "shared" / "skills" / "khenrix-quality").mkdir(parents=True)
+    (tmp_path / "shared" / "skills" / "khenrix-writing").mkdir(parents=True)
+    for name in render_module.NATIVE_ONLY_SKILLS:
+        content = f"---\nname: {name}\ndescription: test\n---\nbody\n"
+        (tmp_path / "shared" / "skills" / name / "SKILL.md").write_text(content)
+    (tmp_path / "shared" / "skills" / skill / "SKILL.md").write_text(body)
+    (tmp_path / "capabilities.toml").write_text("")
+
+    monkeypatch.setattr(render_module, "ROOT", tmp_path)
+    monkeypatch.setattr(render_module, "CLIS", ())
+    monkeypatch.setattr(render_module.checks, "run_all", lambda _root: [])
+
+    assert render_module.check() == 1
+    assert expected in capsys.readouterr().out
+
+
+def test_check_rejects_stale_native_only_marketplace_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for name in render_module.NATIVE_ONLY_SKILLS:
+        source = tmp_path / "shared" / "skills" / name
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\nbody\n"
+        )
+    stale = (
+        tmp_path
+        / "marketplaces"
+        / "claude"
+        / "plugins"
+        / "khenrix-utils"
+        / "skills"
+        / "khenrix-quality"
+    )
+    stale.mkdir(parents=True)
+    (stale / "SKILL.md").write_text(
+        "---\nname: khenrix-quality\ndescription: stale\n---\nbody\n"
+    )
+    (tmp_path / "capabilities.toml").write_text("")
+
+    monkeypatch.setattr(render_module, "ROOT", tmp_path)
+    monkeypatch.setattr(render_module, "CLIS", ("claude",))
+    monkeypatch.setattr(render_module.checks, "run_all", lambda _root: [])
+
+    assert render_module.check() == 1
+    assert "native-only skill must not be bundled" in capsys.readouterr().out

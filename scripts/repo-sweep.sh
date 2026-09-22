@@ -232,7 +232,10 @@ unpushed() {  # commits present locally but on no remote; one sha per line
   # nothing but its own stash. A false alarm erodes trust in a blocking gate.
   # Nothing is lost: a repo holding a stash already reports the INDEPENDENT
   # `has-stash` flag, so it is still unsafe and still reported.
-  mapfile -t lrefs < <(git -C "$d" for-each-ref --format='%(refname)' 2>/dev/null \
+  local ref
+  while IFS= read -r ref; do
+    [ -n "$ref" ] && lrefs+=("$ref")
+  done < <(git -C "$d" for-each-ref --format='%(refname)' 2>/dev/null \
     | grep -Ev '^refs/(remotes|stash)($|/)')
   {
     [ ${#lrefs[@]} -gt 0 ] && git -C "$d" rev-list "${lrefs[@]}" --not --remotes 2>/dev/null
@@ -262,14 +265,17 @@ candidates() {
     # objects/ and refs/. Matching the HEAD *file* is name-independent, so it
     # also catches bare repos NOT named *.git, which `-name '*.git'` would miss.
     #
-    # -printf '%h' instead of `xargs dirname` -- C3: xargs word-splits on
-    # whitespace, so a worktree under ".../my repo/" was dropped entirely and a
-    # truncated path got classified under the wrong label.
+    # Read whole paths directly. GNU find's `-printf` is absent from BSD find,
+    # while `-print` preserves whitespace just as well when the loop never runs
+    # through xargs.
     while IFS= read -r line; do
-      d="${line:2}"
       case "$line" in
-        'g '*) printf '%s\n' "$d" ;;
-        'h '*)
+        */.git)
+          d="${line%/.git}"
+          printf '%s\n' "$d"
+          ;;
+        */HEAD)
+          d="${line%/HEAD}"
           # Confirm rather than trust the filename: a stray file called HEAD is
           # not a repo, and a bare repo's own logs/HEAD would otherwise nominate
           # its logs/ directory. The STRUCTURAL check is the whole confirmation.
@@ -290,8 +296,8 @@ candidates() {
       esac
     done < <(find "$r" -mindepth 1 -maxdepth "$MAXDEPTH" \
       \( -type d \( -name node_modules -o -name .venv -o -name .cache -o -name .npm \) -prune \) -o \
-      \( -name .git -prune -printf 'g %h\n' \) -o \
-      \( -type f -name HEAD -printf 'h %h\n' \) 2>>"$SCAN_ERR")
+      \( -name .git -prune -print \) -o \
+      \( -type f -name HEAD -print \) 2>>"$SCAN_ERR")
     # ...plus the places where a repo is EXPECTED, so a missing one is visible.
     for p in "${EXPECT_PARENTS[@]}"; do
       p=$(norm "$p")
@@ -304,7 +310,10 @@ candidates() {
   done | grep -Ev "$EXCLUDE_RE" | sort -u
 }
 
-mapfile -t CANDS < <(candidates)
+CANDS=()
+while IFS= read -r candidate; do
+  [ -n "$candidate" ] && CANDS+=("$candidate")
+done < <(candidates)
 
 # (I6) A subtree we could not enter may hold anything, including the only copy
 # of some work. An incomplete scan is a scan error -- reporting it as clean is
@@ -318,7 +327,15 @@ fi
 [ ${#CANDS[@]} -eq 0 ] && die "no candidates found under: ${ROOTS[*]}"
 
 UNSAFE=0
-declare -A SEEN_REPO
+SEEN_REPO=()
+repo_seen() {
+  local needle="$1" seen
+  # Bash 3.2 treats an empty array expansion as an unbound variable under `-u`.
+  for seen in "${SEEN_REPO[@]-}"; do
+    [ "$seen" = "$needle" ] && return 0
+  done
+  return 1
+}
 [ "$FORMAT" = tsv ] && printf 'path\tflags\tdetail\n'
 for d in "${CANDS[@]}"; do
   [ -d "$d" ] || continue
@@ -333,8 +350,8 @@ for d in "${CANDS[@]}"; do
   if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
     repo_key=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null)
     if [ -n "$repo_key" ]; then
-      [ -n "${SEEN_REPO[$repo_key]+x}" ] && continue
-      SEEN_REPO["$repo_key"]=1
+      repo_seen "$repo_key" && continue
+      SEEN_REPO+=("$repo_key")
     fi
   fi
 
@@ -342,7 +359,7 @@ for d in "${CANDS[@]}"; do
   [ "$flags" = clean ] && continue          # only report actionable rows
   UNSAFE=1
   detail=""
-  [[ "$flags" == *ahead* ]] && detail="$(unpushed "$d" | wc -l) unpushed"
+  [[ "$flags" == *ahead* ]] && detail="$(unpushed "$d" | wc -l | tr -d '[:space:]') unpushed"
   if [ "$FORMAT" = human ]; then
     printf '%-52s %s %s\n' "$d" "$flags" "$detail"
   else

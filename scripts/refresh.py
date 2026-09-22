@@ -3,14 +3,16 @@
 
 Claude and Codex cache plugins by version (e.g. .../khenrix-utils/0.1.0/), so a
 plain edit to the repo is NOT picked up until you bump the version or reinstall.
-This refreshes everything in one step:
+This refreshes already-installed optional plugin bundles in one step:
 
   1. re-renders the plugins (bundles capabilities.toml + house-style.md + engine)
-  2. syncs each per-CLI plugin directory into its installed location(s), so the
-     skill + engine the CLI actually runs match the repo — no version bump needed
+  2. syncs each per-CLI plugin directory into its existing installed location(s), so
+     plugin content + engines match the repo — no version bump needed
   3. best-effort refresh of each CLI's marketplace metadata
 
-Only files are copied (additive overwrite); nothing in your live CLI *config*
+An absent plugin remains absent; use the explicit `make setup-<cli>` target to opt in.
+Plugin files are copied additively; obsolete bundled copies of the two native-only
+skills are removed from the plugin-owned skills directory. Nothing in live CLI *config*
 (MCP servers, settings) is touched — that is the khenrix-setup skill's job.
 """
 from __future__ import annotations
@@ -23,6 +25,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HOME = Path.home()
 CLIS = ("claude", "codex", "agy")
+NATIVE_ONLY_SKILLS = ("khenrix-quality", "khenrix-writing")
 
 # Where each CLI keeps the installed plugin (globs, ~ already expanded).
 INSTALL_GLOBS = {
@@ -64,6 +67,8 @@ def sync(cli: str) -> list[str]:
         return [f"{cli}: not installed (run `make setup-{cli}`)"]
     for d in dests:
         shutil.copytree(src, d, dirs_exist_ok=True)
+        for name in NATIVE_ONLY_SKILLS:
+            shutil.rmtree(d / "skills" / name, ignore_errors=True)
         # `dirs_exist_ok=True` merges and never deletes, so a clean source cannot remove
         # what an earlier sync already put here — and bytecode also appears in place when a
         # CLI imports these modules from the install. Closing the tap in render.py leaves
@@ -77,6 +82,10 @@ def sync(cli: str) -> list[str]:
 
 
 def meta_refresh(cli: str) -> str | None:
+    # A metadata refresh must never double as installation. In particular, agy's
+    # `plugin install <local-dir>` creates an absent plugin, so guard before building it.
+    if not installed_dirs(cli):
+        return None
     cmd = META_REFRESH[cli]
     if cli == "agy":
         cmd = ["agy", "plugin", "install", str(ROOT / "marketplaces" / "agy" / "plugins" / "khenrix-utils")]

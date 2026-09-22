@@ -1,9 +1,9 @@
-# Machine setup & two-machine sync (Claude Code)
+# Agentic tool setup and two-machine sync
 
-How to bring a **new machine** up to the same Claude Code setup, and how the two
-machines stay **in sync**. The guiding idea: everything that *can* live in a git
-repo does (and syncs via git); everything machine-local (settings, secrets,
-tooling) is re-created per machine — `khenrix-setup` does most of that for you.
+How to bring a **new machine** up to the same Claude Code, Codex, agy, and Maka
+setup, and how the two machines stay **in sync**. Everything that can live in a
+git repository does. Machine-local settings, credentials, and tooling are
+re-created from reviewed commands on each machine.
 
 ---
 
@@ -11,7 +11,8 @@ tooling) is re-created per machine — `khenrix-setup` does most of that for you
 
 | Thing | Home | Syncs how |
 |---|---|---|
-| MCP servers, skills, base instructions, baseline settings | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** (this repo) + `/khenrix-setup` applies it into the live CLI |
+| Canonical skills and base instructions | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** + `mise run skills:apply` copies only the two managed skills and bounded instructions |
+| MCP servers and baseline settings | `khenrix-utils` (`capabilities.toml`) | **git** + the broader reconcile flow when deliberately enabled |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
 | CLI model/effort defaults + Claude baseline settings, Stop hook and statusline | declared in `khenrix-utils` (`capabilities.toml`, `hooks/`, `statusline/`) | **git** + reconcile; portable default leaves can be aligned exactly while unrelated tuning is preserved |
@@ -27,7 +28,7 @@ per-machine = anything with a secret, a path, or an OS-specific shim.**
 ## 0. Get `git` and this repo
 
 Tier 0 lives *in* this repo and is what installs `git` — so on a genuinely bare
-distro one manual step comes first, and only one:
+host one manual step comes first. On Linux/WSL:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
@@ -35,17 +36,22 @@ git clone git@github.com-khenrix:khenrix/khenrix-utils.git ~/khenrix-utils
 cd ~/khenrix-utils
 ```
 
+On macOS, install Git through the Command Line Tools or Homebrew, then run the
+same `git clone` and `cd` commands.
+
 ## 1. Prerequisites — run Tier 0
 
-It needs no credentials and is safe on a bare distro:
+It needs no credentials and is safe on a bare Linux/WSL or macOS host:
 
 ```bash
 ./scripts/bootstrap-tier0.sh --dry-run   # see the plan; mutates nothing
 ./scripts/bootstrap-tier0.sh             # provision
 ```
 
-It installs the apt base (`git curl jq unzip ca-certificates`), **creates the WSL
-Windows bridges** in `~/.local/bin` (`powershell.exe` shim + `windows-chrome`) —
+It installs the base commands (`git curl jq unzip`) through apt on Linux/WSL or
+Homebrew on macOS. Linux also gets `ca-certificates`; macOS uses its native
+Keychain trust store. On WSL, Tier 0 **creates the Windows bridges** in
+`~/.local/bin` (`powershell.exe` shim + `windows-chrome`) —
 these used to be a hand-rolled manual step, which is exactly how a second machine
 ended up with a `chrome-devtools` MCP that was configured and dead — and reports
 anything it cannot install itself. It is idempotent; re-running is safe.
@@ -84,7 +90,8 @@ life unable to launch anything — an AV refuses `FromBase64String` next to
 reported PASS throughout, because Chrome did exist. Values now cross the
 boundary through `WSLENV`, never on the command line.
 
-Then, per machine (Tier 0 already covers `git curl jq unzip ca-certificates`):
+Then, per machine (Tier 0 already covers `git curl jq unzip` plus Linux
+`ca-certificates`):
 
 - **mise** (`~/.local/bin/mise`) → Node (currently `v26.2.0`), uv and jq — runtimes
   resolve through it (replaced asdf in the 2026-07-08 migration). Python comes from `uv`.
@@ -107,8 +114,8 @@ Then, per machine (Tier 0 already covers `git curl jq unzip ca-certificates`):
   `~/.codex/config.toml` and `~/.gemini/config/mcp_config.json`, then re-run
   `/khenrix-setup` — it re-ADDs the current definition. Same hazard as the vercel and
   google-drive removals noted in `capabilities.toml`.
-- On native Linux/macOS: Tier 0 skips the Windows bridges; on a host with no display,
-  drop `chrome-devtools` and point `vercel`'s `BROWSER` at your real browser.
+- On native Linux/macOS, Tier 0 skips the Windows bridges and the platform gate withholds
+  `chrome-devtools`; use the host's normal browser tooling when needed.
 
 ### Clipboard — do NOT install `wl-clipboard`
 
@@ -174,8 +181,9 @@ KHENRIX_MAKA_AUTH_MODE=chatgpt-subscription \
   ./scripts/bootstrap-machine.sh
 ```
 
-The first Maka launch still opens the official device-login flow. For memory on
-a local Anthropic or Vertex route, create the owner-only descriptor documented
+After the first install, start `maka`, enter `/setup`, choose **OpenAI OAuth
+(ChatGPT / Codex)**, and complete the official device login. For memory on a
+local Anthropic or Vertex route, create the owner-only descriptor documented
 in `components/memory/README.md`, then set
 `KHENRIX_MEMORY_ROUTE=local-claude` and `KHENRIX_MEMORY_PROVIDER_FILE` to its
 absolute path. The macOS API routes use `openai-keychain` or `api-key-relay` and
@@ -184,59 +192,52 @@ also require `KHENRIX_MEMORY_KEYCHAIN_ACCOUNT` or
 route rather than selecting a billable provider automatically. Existing legacy
 Maka state uses the reviewed migration in [the Maka guide](maka.md).
 
-## 3. Install the Claude plugins
+## 3. Install the shared skills
 
-> **Or let Tier 1 do sections 3–4 for you.** `scripts/bootstrap-machine.sh` is the
-> authenticated tier: marketplaces, plugins, skill porting, `reconcile.py --apply
-> --all`, and a closing `doctor.py --profile full` so the run *proves* what it
-> built. It **runs Tier 0 first and aborts if anything is missing**, then fails
-> hard if `claude codex agy uv gh node git mise` are not all present — by that point
-> their absence is a real error, not a bare-distro state. `--dry-run` propagates
-> into Tier 0 and mutates nothing, so start there:
->
-> ```bash
-> ./scripts/bootstrap-machine.sh --dry-run
-> ./scripts/bootstrap-machine.sh
-> ```
->
-> The manual steps below remain the reference for what it does, and for anyone
-> who wants to go one step at a time.
+The canonical skills use a selective direct copy. No Khenrix marketplace or
+plugin install is required.
 
 ```bash
-cd ~/khenrix-utils && make setup-claude          # khenrix marketplace + plugin
+cd ~/khenrix-utils
+mise run skills:plan
+mise run skills:apply -- --expect sha256:PLAN_ID
+mise run skills:doctor
+```
 
+This installs only `khenrix-quality` and `khenrix-writing` into the native skill
+roots for Claude, Codex/Maka, and agy. It also updates the bounded house-style
+block in all four instruction files. Existing sibling skills and text outside
+the markers stay unchanged.
+
+Other Claude plugins keep their normal install path. They are independent of the
+two Khenrix skills:
+
+```bash
 claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin marketplace add ~/git/obsidian-vault   # claude-obsidian lives in the vault repo
-# then install the 12 enabled plugins:
-#   khenrix-utils, claude-obsidian, and from claude-plugins-official:
+# then install the enabled plugins you use:
+#   claude-obsidian, and from claude-plugins-official:
 #   skill-creator, superpowers, frontend-design, code-review, code-simplifier,
 #   typescript-lsp, pyright-lsp, security-guidance, playwright, claude-md-management
 ```
 
-## 4. Reconcile config — the big step (does almost everything now)
+`scripts/bootstrap-machine.sh` is the broader authenticated bootstrap. It still
+handles marketplace plugins, MCP reconciliation, runtime installation, defaults,
+and a closing doctor pass. Use its dry run first when that full setup is wanted:
 
-Inside Claude Code, run **`/khenrix-setup`**. It diffs the live config against
-`capabilities.toml` and additively applies — **only when a value is absent, never
-overriding your tuning** — all of:
+```bash
+./scripts/bootstrap-machine.sh --dry-run
+./scripts/bootstrap-machine.sh
+```
 
-- **MCP servers** + **skills** + **base instructions** (`~/.claude/CLAUDE.md`)
-- **Baseline settings** → `~/.claude/settings.json`: `tui=fullscreen`,
-  `theme=dark-ansi`, `voice` (hold), `skipDangerousModePermissionPrompt`,
-  `skipWorkflowUsageWarning`
-- **Portable defaults** → the exact declared model/effort leaves: Claude
-  provider-neutral `best`, `effortLevel=xhigh`, `ultracode=true`; Codex
-  `gpt-5.6-sol`, execution/subagents `xhigh`, planning `ultra`; agy
-  `Gemini 3.8 Flash (High)`
-- **The Stop hook** — installs `wiki-autosave-gate.sh` → `~/.claude/hooks/` **and** registers
-  the stanza (skipped if you already have a Stop hook)
-- **The statusline** — installs the renderer + points `statusLine` at it
+Running the non-dry bootstrap explicitly authorizes its unbound `skills:apply` step;
+routine maintenance remains bound to the reviewed plan ID with `--expect`. The bootstrap
+does not add or install a `khenrix-utils` marketplace/plugin bundle. The direct-copy skill setup above
+does not depend on the separate third-party marketplace flow.
 
-Review its table, approve. That's it — there's no longer a machine-local settings/hook to
-hand-copy (all of the above ships in this repo now).
+## 4. Align portable CLI config
 
-The ordinary skill apply adds missing values and leaves drift for review. To
-inspect or align only the portable defaults across all three CLIs, without
-reading or changing MCPs, skills, plugins, aliases or instructions, run:
+The narrow defaults controller aligns only the declared model and effort leaves:
 
 ```bash
 mise run defaults:status
@@ -244,14 +245,20 @@ mise run defaults:apply
 mise exec -- python3 scripts/doctor.py --only cli-model-defaults
 ```
 
-The apply command creates numbered `*.khenrix-backup` files before changing a
-config and preserves every unrelated field. Tier 1 runs this narrow alignment
-automatically before its final doctor pass.
+The portable defaults are Claude provider-neutral `best`, `effortLevel=xhigh`,
+and `ultracode=true`; Codex `gpt-5.6-sol`, execution/subagents `xhigh`, and
+planning `ultra`; and agy `Gemini 3.8 Flash (High)`. Apply creates numbered
+`*.khenrix-backup` files and preserves every unrelated field.
+
+The broader `khenrix-setup` flow remains available for declared MCP servers,
+Claude baseline settings, the Stop hook, status line, and aliases. It is separate
+from selective skill delivery. Install the optional Khenrix plugin and run the
+skill only when those broader capabilities are wanted; review its table before
+applying.
 
 ## 5. Re-auth MCP secrets — the only truly-manual step left (never copy)
 
 
-- **vercel** — first run does a browser OAuth handshake.
 - **slack** — set `SLACK_MCP_XOXC_TOKEN` + `SLACK_MCP_XOXD_TOKEN` (from your Slack session).
 - **linkedin** — logs in via the tool (`uvx mcp-server-linkedin`).
 - **claude.ai account MCPs** (Gmail / Calendar / Drive) — just sign into the same
@@ -308,8 +315,20 @@ cd ~/khenrix-utils && git pull        # then, after edits: git push
 cd ~/git/<project>      && git pull        # each project on its own remote
 ```
 
-After pulling khenrix-utils changes that touch skills/MCP/settings, re-run
-`/khenrix-setup` (or `make khenrix-refresh`) so the live CLI picks them up.
+After pulling changes to either canonical skill or `house-style.md`, review and
+apply the new content-addressed plan:
+
+```bash
+mise run skills:plan
+mise run skills:apply -- --expect sha256:PLAN_ID
+mise run skills:doctor
+```
+
+Run `mise run skills:maka-smoke` after a skill or Maka runtime update. For
+changes to optional plugin content, run `mise exec -- make khenrix-refresh` and
+use the broader reconcile flow in the affected CLI. Refresh updates only plugins
+that are already installed; it never installs an absent plugin. Opt in with the
+explicit `make setup-claude`, `setup-codex`, or `setup-agy` target.
 
 ### What does NOT sync (re-apply per machine)
 
@@ -317,5 +336,6 @@ Only the things that *can't* safely travel through git: **MCP secrets/tokens** (
 section 5) and the **machine-local toolchain** (asdf/node, uv, the `claude` CLI — install,
 Prerequisites). The **WSL bridges are no longer in this list**: they are provisioned from
 this repo by `scripts/bootstrap-tier0.sh`, so re-running Tier 0 is how a second machine
-gets them, not hand-copying. Everything else — Claude settings, the Stop hook, the
-statusline — is declared in this repo and applied by `/khenrix-setup`.
+gets them, not hand-copying. The canonical skills and house style are declared in
+this repository and applied by `mise run skills:apply`. Optional CLI settings, the
+Stop hook, and the status line use the broader reconcile flow.

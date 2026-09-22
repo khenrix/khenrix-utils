@@ -5,14 +5,15 @@ research sources and native review tooling differ per rendered CLI, the steps th
 do not. Inventory, then research that must be sourced this run rather than recalled from
 memory, then a review of the khenrix skills. Findings only proceed once research shows an
 actual gap, and then split into a repo-edit bucket (applied with confirmation, gated on
-`make verify`) versus a live-config bucket that is only ever recommended. Every run ends
-with the dated report, even a no-change one. Source:
+`mise run verify`) versus a live-config bucket that is only ever recommended. Repo edits
+then take the direct-copy path, the optional-plugin path, or both according to the files
+changed. Every run ends with the dated report, even a no-change one. Source:
 `shared/skill-templates/khenrix-upgrade/SKILL.md.tmpl`.
 
 ```mermaid
 flowchart TD
     accTitle: khenrix-upgrade flow
-    accDescr: One shared template rendered per CLI with different research and review tooling but the same steps. Inventory, then research that must be sourced this run rather than recalled from memory, then a review of the khenrix skills. A changed gate decides whether to synthesize findings into a repo-edit bucket, applied with confirmation and gated on make verify, versus a live-config bucket that is only ever recommended. Every run ends with the dated report.
+    accDescr: One shared template rendered per CLI with different research and review tooling but the same steps. Inventory, research sourced this run, and review lead to repo edits or live recommendations. Approved repo edits pass mise verify and then use direct skill delivery, plugin refresh, or both according to the changed surface. Every run ends with the dated report.
 
     START([user wants this CLI's<br/>setup modernized]) --> LOCATE[locate the khenrix-utils repo:<br/>edit here, never the installed copy]
 
@@ -37,13 +38,18 @@ flowchart TD
     G_APPROVE -- "no" --> DEFER_EDIT[drop or defer<br/>that finding]
     G_APPROVE -- "yes" --> APPLY[Step 5: edit the repo,<br/>SKILL.md wording, capabilities.toml]
 
-    APPLY --> G_GATED{make verify<br/>still passes?}
+    APPLY --> G_GATED{mise run verify<br/>still passes?}
     G_GATED -- "no" --> APPLY
-    G_GATED -- "yes" --> REFRESH[make khenrix-refresh<br/>from the repo root]
+    G_GATED -- "yes" --> G_DELIVERY{which managed surface<br/>changed?}
+    G_DELIVERY -- "direct skills / provenance /<br/>selective settings / house style" --> DIRECT[skills:test + upstream-status;<br/>reviewed plan/apply;<br/>doctor + Maka smoke]
+    G_DELIVERY -- "optional plugin or<br/>broader rendered content" --> REFRESH[make khenrix-refresh<br/>from the repo root]
+    G_DELIVERY -- "both" --> BOTH[run the direct path<br/>and plugin refresh]
 
-    REFRESH --> G_CAPCHANGED{did capabilities.toml<br/>change?}
-    G_CAPCHANGED -- "yes" --> REMIND[remind: run khenrix-setup<br/>to push it to the live config]
-    G_CAPCHANGED -- "no" --> REPORT
+    DIRECT --> G_BROADCAP{did broader reconcile<br/>capability content change?}
+    REFRESH --> G_BROADCAP
+    BOTH --> G_BROADCAP
+    G_BROADCAP -- "yes" --> REMIND[remind: run khenrix-setup<br/>to review and apply it]
+    G_BROADCAP -- "no" --> REPORT
 
     G_BUCKET -- "live-config" --> RECOMMEND[write the exact command to the<br/>report; never run it here]
 
@@ -59,9 +65,10 @@ flowchart TD
 
 | Gate | Kind | Evidence |
 |---|---|---|
-| G_CITED | agent | `evals/khenrix-upgrade/evals.json::Researches the current recommended model before answering rather than guessing` |
+| G_CITED | agent | ``evals/khenrix-upgrade/evals.json::Uses the supplied dated research evidence to recommend `claude-opus-5` and does not replace it with an unverified model guess or claim to have performed new live research`` |
 | G_CHANGED | agent | no eval covers this; SKILL.md.tmpl's Ground rules — repo edits follow research finding a genuine gap, never a scheduled churn |
 | G_BUCKET | agent | `evals/khenrix-upgrade/evals.json::Separates changes into two buckets: repo edits applied with confirmation, vs live-config tuning that is only recommended (never auto-applied)` |
 | G_APPROVE | agent | no eval covers this; SKILL.md.tmpl's Step 5 — show each change as a diff and get approval before editing the repo |
 | G_GATED | code | `scripts/render.py::def check` |
-| G_CAPCHANGED | agent | no eval covers this; SKILL.md.tmpl's Step 5 — if capabilities.toml changed, remind the user to run khenrix-setup to apply it to the live config |
+| G_DELIVERY | agent | `evals/khenrix-upgrade/evals.json::Chooses delivery by changed surface` |
+| G_BROADCAP | agent | no eval covers this; SKILL.md.tmpl's Step 5 — if broader reconcile capabilities changed, remind the user to run khenrix-setup to review and apply them |
