@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -20,6 +21,27 @@ sys.path.insert(0, str(ROOT / "components" / "skills"))
 sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 import upstreamctl  # noqa: E402
 import inventory  # noqa: E402
+
+
+CLAUDE_MEM_DIRECT_PRIVACY_GUARDS = (
+    '"CLAUDE_MEM_SEMANTIC_INJECT": "false"',
+    '"CLAUDE_MEM_CLOUD_SYNC_TOKEN": ""',
+    '"CLAUDE_MEM_CLOUD_SYNC_USER_ID": ""',
+    '"CLAUDE_MEM_CLOUD_SYNC_HUB_URL": ""',
+    '"CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID": ""',
+    '"CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME": ""',
+    '"CLAUDE_MEM_CLOUD_SYNC_WS": "false"',
+    '"CLAUDE_MEM_PRO_MEMORY_KEY": ""',
+    '"CLAUDE_MEM_PRO_MEMORY_BASE_URL": ""',
+    '"CLAUDE_MEM_PRO_MEMORY_MODEL": ""',
+    '"CLAUDE_MEM_TRANSCRIPTS_ENABLED": "false"',
+    '"CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION": "false"',
+    '"CLAUDE_MEM_TELEMETRY": "0"',
+    '"CLAUDE_MEM_TELEMETRY_ERRORS": "0"',
+    '"DO_NOT_TRACK": "1"',
+    '"DISABLE_ERROR_REPORTING": "1"',
+    '"DISABLE_TELEMETRY": "1"',
+)
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -941,7 +963,7 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
         '{"enabled": False, "installId": "disabled-by-khenrix-utils", "decidedAt": "managed-by-khenrix-utils"}',
         'web_search="disabled"',
         'install_hooks(["claude", "codex", "agy"])',
-    }.issubset(protected)
+    }.union(CLAUDE_MEM_DIRECT_PRIVACY_GUARDS).issubset(protected)
     upstreamctl.validate_local_contract(source)
 
     missing_guard = replace(
@@ -955,6 +977,33 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
     no_guards = replace(source, required_text=())
     with pytest.raises(upstreamctl.UpstreamError, match="required_text.*non-empty"):
         upstreamctl.validate_local_contract(no_guards)
+
+
+@pytest.mark.parametrize("guard", CLAUDE_MEM_DIRECT_PRIVACY_GUARDS)
+def test_claude_mem_each_direct_privacy_guard_detects_removal(
+    tmp_path: Path, guard: str
+) -> None:
+    source = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "claude-mem-release"
+    )
+    for relative in source.local_contract_paths:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    memoryctl = tmp_path / "components/memory/memoryctl.py"
+    text = memoryctl.read_text()
+    assert text.count(guard) == 1
+    memoryctl.write_text(text.replace(guard, "REMOVED_PRIVACY_GUARD", 1))
+    tampered = replace(
+        source,
+        repo_root=tmp_path,
+        local_contract_hash=upstreamctl.local_contract_digest(
+            tmp_path, source.local_contract_paths
+        ),
+    )
+
+    with pytest.raises(upstreamctl.UpstreamError, match="required privacy/review text"):
+        upstreamctl.validate_local_contract(tampered)
 
 
 @pytest.mark.parametrize(
@@ -1006,6 +1055,151 @@ def test_npm_release_watch_orders_numeric_versions_and_checks_pinned_sri(
         "sha512-" + base64.b64encode(b"changed".ljust(64, b"!")).decode()
     )
     assert upstreamctl.npm_release_candidate(source)[3] is True
+
+
+def test_npm_watch_requires_canonical_package_selector(tmp_path: Path) -> None:
+    repo, _, initial = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    runtime = repo / "runtime-pin.txt"
+    integrity = "sha512-" + base64.b64encode(b"p" * 64).decode()
+    runtime.write_text(f"1.2.3\n{integrity}\n{initial}\n")
+    digest = upstreamctl.local_contract_digest(repo, ("runtime-pin.txt",))
+    manifest.write_text(
+        manifest.read_text()
+        + 'watch = "npm_releases"\n'
+        + 'tag_pattern = "^v([0-9]+)\\\\.([0-9]+)\\\\.([0-9]+)$"\n'
+        + 'package_name = "sample-package"\n'
+        + 'package_version = "1.2.3"\n'
+        + f'package_integrity = "{integrity}"\n'
+        + "[sources.local_contract]\n"
+        + 'paths = ["runtime-pin.txt"]\n'
+        + f'hash = "{digest}"\n'
+        + 'required_text = [{ path = "runtime-pin.txt", text = "1.2.3" }]\n'
+    )
+
+    with pytest.raises(upstreamctl.UpstreamError, match="canonical npm selector"):
+        upstreamctl.load_sources(repo)
+
+    manifest.write_text(
+        manifest.read_text().replace(
+            'ref = "refs/heads/main"', 'ref = "npm:sample-package@1.2.3"'
+        )
+    )
+    assert upstreamctl.load_sources(repo)[0].ref == "npm:sample-package@1.2.3"
+
+
+def test_npm_identical_pin_converges_to_current(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release")
+    canonical = f"npm:{source.package_name}@{source.package_version}"
+
+    class MatchingCheckout:
+        def __init__(self, _source: upstreamctl.Source, *, bounded: bool = False):
+            pass
+
+        def __enter__(self) -> "MatchingCheckout":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def path_hash(self, _commit: str) -> str:
+            return source.path_tree_hash
+
+        def file_bytes(self, _commit: str, _path: str) -> bytes:
+            return b"license"
+
+    monkeypatch.setattr(upstreamctl, "Checkout", MatchingCheckout)
+    monkeypatch.setattr(
+        upstreamctl,
+        "validated_license_copy",
+        lambda _source: (Path("LICENSE"), b"license"),
+    )
+    monkeypatch.setattr(
+        upstreamctl,
+        "npm_release_candidate",
+        lambda _source, bounded=False: (
+            source.commit,
+            canonical,
+            source.package_integrity,
+            False,
+        ),
+    )
+
+    inspected = upstreamctl.inspect_source(source)
+
+    assert source.ref == canonical
+    assert inspected["candidate_selector"] == canonical
+    assert inspected["status"] == "CURRENT"
+
+
+@pytest.mark.parametrize(
+    ("selector_changed", "pin_failure", "tree_changed", "license_changed", "expected"),
+    [
+        (True, False, False, False, "UPDATE"),
+        (False, True, False, False, "PIN_HASH_MISMATCH"),
+        (False, False, True, False, "PIN_HASH_MISMATCH"),
+        (False, False, False, True, "LICENSE_COPY_MISMATCH"),
+    ],
+)
+def test_npm_pin_mismatches_do_not_report_current(
+    monkeypatch: pytest.MonkeyPatch,
+    selector_changed: bool,
+    pin_failure: bool,
+    tree_changed: bool,
+    license_changed: bool,
+    expected: str,
+) -> None:
+    original = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "claude-mem-release"
+    )
+    canonical = f"npm:{original.package_name}@{original.package_version}"
+    source = replace(original, ref=canonical)
+    remote = "b" * 40 if selector_changed else source.commit
+    selector = (
+        f"npm:{source.package_name}@13.25.3" if selector_changed else canonical
+    )
+
+    class MismatchCheckout:
+        def __init__(self, _source: upstreamctl.Source, *, bounded: bool = False):
+            pass
+
+        def __enter__(self) -> "MismatchCheckout":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def path_hash(self, commit: str) -> str:
+            if tree_changed and commit == source.commit:
+                return "sha256:" + "0" * 64
+            return source.path_tree_hash
+
+        def file_bytes(self, _commit: str, _path: str) -> bytes:
+            return b"upstream-license"
+
+    monkeypatch.setattr(upstreamctl, "Checkout", MismatchCheckout)
+    monkeypatch.setattr(
+        upstreamctl,
+        "validated_license_copy",
+        lambda _source: (
+            Path("LICENSE"),
+            b"local-license" if license_changed else b"upstream-license",
+        ),
+    )
+    monkeypatch.setattr(
+        upstreamctl,
+        "npm_release_candidate",
+        lambda _source, bounded=False: (
+            remote,
+            selector,
+            source.package_integrity,
+            pin_failure,
+        ),
+    )
+
+    assert upstreamctl.inspect_source(source)["status"] == expected
 
 
 def test_npm_sri_must_be_canonical_sha512_and_malformed_candidate_is_incomplete(

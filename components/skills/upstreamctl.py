@@ -1015,6 +1015,12 @@ def load_sources(repo_root: Path) -> list[Source]:
                     package_integrity,
                     label=f"{manifest} source {name} package_integrity",
                 )
+                canonical_selector = f"npm:{package_name}@{package_version}"
+                if raw["ref"] != canonical_selector:
+                    raise UpstreamError(
+                        f"{manifest} source {name} ref must use canonical npm selector "
+                        f"{canonical_selector!r}"
+                    )
             elif any((package_name, package_version, package_integrity)):
                 raise UpstreamError(
                     f"{manifest} source {name} package fields require npm_releases"

@@ -1,7 +1,7 @@
 [[sources]]
 name = "maka-release"
 repository = "https://github.com/apache/maka.git"
-ref = "refs/tags/v0.2.0-dev.44.20260920"
+ref = "npm:maka-agent@0.2.0-dev.44.20260920"
 commit = "feb9cf22fa216ce499860ad7cbcd59c32d28aa97"
 paths = ["LICENSE", "packages/cli", "packages/runtime", "packages/runtime-host", "packages/eval"]
 path_tree_hash = "sha256:99e1cd3e1bf6072cea6f23d867d9c5e5734b967bfe82ed1eb1020d47e3707eb8"
