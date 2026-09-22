@@ -9,6 +9,7 @@ import tarfile
 import threading
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,6 +104,43 @@ def test_setup_is_dry_run_by_default(private_home: pathlib.Path, capsys: pytest.
     assert plan["route"] == "codex-subscription"
     assert not memoryctl.config_dir().exists()
     assert not memoryctl.install_root().exists()
+
+
+def test_controller_carries_mise_pin_and_resolves_bun_with_a_gui_path(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = memoryctl.install_controller()
+    assert (controller / "mise.toml").read_bytes() == (MEMORY_ROOT / "mise.toml").read_bytes()
+    assert (controller / "mise.lock").read_bytes() == (MEMORY_ROOT / "mise.lock").read_bytes()
+
+    calls: list[list[str]] = []
+    pinned_bun = (
+        private_home
+        / ".local"
+        / "share"
+        / "mise"
+        / "installs"
+        / "bun"
+        / "1.4.2"
+        / "bin"
+        / "bun"
+    )
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(list(command))
+        if command == ["/test/mise", "-C", str(controller), "which", "bun"]:
+            return SimpleNamespace(returncode=0, stdout=f"{pinned_bun}\n", stderr="")
+        if command == [str(pinned_bun), "--version"]:
+            return SimpleNamespace(returncode=0, stdout="1.4.2\n", stderr="")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.delenv("AGENTIC_MEMORY_BUN", raising=False)
+    monkeypatch.setattr(memoryctl, "_mise_candidates", lambda: ["/test/mise"])
+    monkeypatch.setattr(memoryctl.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(memoryctl.subprocess, "run", fake_run)
+
+    assert memoryctl._bun_path() == str(pinned_bun)
+    assert calls[0] == ["/test/mise", "-C", str(controller), "which", "bun"]
 
 
 def test_explicit_setup_replaces_legacy_route_without_guessing(
@@ -276,6 +314,26 @@ def test_hook_merge_preserves_unrelated_entries_and_is_idempotent(private_home: 
         "PostInvocation",
         "Stop",
     }
+
+
+def test_hook_commands_pin_the_running_python_instead_of_path_python(
+    private_home: pathlib.Path,
+) -> None:
+    memoryctl.install_controller()
+    memoryctl.install_hooks(["codex"])
+    document = json.loads(memoryctl.hook_path("codex").read_text())
+    commands = [
+        handler["command"]
+        for groups in document["hooks"].values()
+        for group in groups
+        for handler in group.get("hooks", [])
+        if "agentic-memory/controller/memoryctl.py" in handler.get("command", "")
+    ]
+    interpreter = str(pathlib.Path(sys.executable).resolve())
+
+    assert commands
+    assert all(memoryctl.shlex.split(command)[0] == interpreter for command in commands)
+    assert all(memoryctl.shlex.split(command)[0] != "python3" for command in commands)
 
 
 def test_stager_is_hermetic_python_311_compatible_and_integrity_checked(

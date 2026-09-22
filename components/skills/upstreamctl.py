@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Inspect and record reviewed upstreams for composed Khenrix skills.
 
-Each ``shared/skills/*/upstreams.toml`` stores immutable reviewed commits and a
+Each manifest beneath a declared shared source root stores immutable reviewed commits and a
 hash of only the relevant upstream paths.  This tool distinguishes a repository
 moving from those paths changing. It never merges upstream instructions into a
 skill; the declared license file is the one exception and is kept as an exact
@@ -15,6 +15,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import stat as stat_module
 import subprocess
 import sys
 import tempfile
@@ -26,6 +28,26 @@ from typing import Any
 
 class UpstreamError(RuntimeError):
     """An invalid manifest or Git operation that cannot be safely guessed."""
+
+
+@dataclass(frozen=True)
+class VerbatimOverlay:
+    """One reviewed text insertion reapplied to a verbatim upstream file."""
+
+    path: str
+    after: str
+    insert: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class VerbatimBundle:
+    """A group of sibling skills copied exactly from one upstream tree."""
+
+    upstream_root: str
+    members: tuple[str, ...]
+    control_paths: tuple[str, ...]
+    overlays: tuple[VerbatimOverlay, ...]
 
 
 @dataclass(frozen=True)
@@ -42,6 +64,14 @@ class Source:
     upstream_license_path: str
     local_license_path: str
     adaptation: str
+    verbatim_bundle: VerbatimBundle | None
+
+
+@dataclass(frozen=True)
+class BundleFile:
+    local_path: str
+    mode: int
+    content: bytes
 
 
 def notice_path(source: Source) -> Path:
@@ -138,11 +168,172 @@ def selected_paths_cover(paths: tuple[str, ...], candidate: str) -> bool:
     )
 
 
+def parse_verbatim_bundle(
+    raw: object,
+    *,
+    manifest: Path,
+    source_name: str,
+    source_skill: str,
+    selected_paths: tuple[str, ...],
+    local_license_path: str,
+) -> VerbatimBundle | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim_bundle must be a table"
+        )
+    required = {"upstream_root", "members", "control_paths"}
+    allowed = required | {"overlays"}
+    missing = sorted(required - set(raw))
+    extra = sorted(set(raw) - allowed)
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append(f"missing {missing}")
+        if extra:
+            detail.append(f"unknown {extra}")
+        raise UpstreamError(
+            f"{manifest} source {source_name} has invalid verbatim_bundle: "
+            + "; ".join(detail)
+        )
+
+    upstream_root = safe_relative_path(
+        raw["upstream_root"],
+        label=f"{manifest} source {source_name} verbatim_bundle.upstream_root",
+    )
+    if not selected_paths_cover(selected_paths, upstream_root):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim bundle root {upstream_root!r} "
+            "is outside its reviewed paths"
+        )
+    raw_members = raw["members"]
+    if not isinstance(raw_members, list) or not raw_members:
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim_bundle.members must be non-empty"
+        )
+    members: list[str] = []
+    for member in raw_members:
+        if not isinstance(member, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9-]*", member
+        ):
+            raise UpstreamError(
+                f"{manifest} source {source_name} has invalid verbatim member {member!r}"
+            )
+        members.append(member)
+    if len(set(members)) != len(members):
+        raise UpstreamError(
+            f"{manifest} source {source_name} has duplicate verbatim bundle members"
+        )
+    if source_skill not in members:
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim bundle must include its owning "
+            f"skill {source_skill!r}"
+        )
+
+    raw_controls = raw["control_paths"]
+    if not isinstance(raw_controls, list):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim_bundle.control_paths must be a list"
+        )
+    controls = tuple(
+        safe_relative_path(
+            item,
+            label=f"{manifest} source {source_name} verbatim bundle control path",
+        )
+        for item in raw_controls
+    )
+    if len(set(controls)) != len(controls):
+        raise UpstreamError(
+            f"{manifest} source {source_name} has duplicate verbatim control paths"
+        )
+    if any(PurePosixPath(path).parts[0] not in members for path in controls):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim control paths must live under "
+            "declared members"
+        )
+    required_controls = {
+        f"{source_skill}/upstreams.toml",
+        f"{source_skill}/THIRD_PARTY_NOTICES.md",
+        f"{source_skill}/{local_license_path}",
+    }
+    if not required_controls.issubset(controls):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim control_paths must include "
+            f"{sorted(required_controls)}"
+        )
+    raw_overlays = raw.get("overlays", [])
+    if not isinstance(raw_overlays, list):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim_bundle.overlays must be a list"
+        )
+    overlays: list[VerbatimOverlay] = []
+    overlay_paths: set[str] = set()
+    for index, raw_overlay in enumerate(raw_overlays):
+        if not isinstance(raw_overlay, dict) or set(raw_overlay) != {
+            "path",
+            "after",
+            "insert",
+            "reason",
+        }:
+            raise UpstreamError(
+                f"{manifest} source {source_name} verbatim overlay {index} must contain "
+                "exactly path, after, insert, and reason"
+            )
+        path = safe_relative_path(
+            raw_overlay["path"],
+            label=f"{manifest} source {source_name} verbatim overlay path",
+        )
+        if PurePosixPath(path).parts[0] not in members:
+            raise UpstreamError(
+                f"{manifest} source {source_name} verbatim overlay {path!r} must live "
+                "under a declared member"
+            )
+        if path in controls:
+            raise UpstreamError(
+                f"{manifest} source {source_name} verbatim overlay {path!r} may not be "
+                "a control path"
+            )
+        if path in overlay_paths:
+            raise UpstreamError(
+                f"{manifest} source {source_name} has duplicate overlay path {path!r}"
+            )
+        overlay_paths.add(path)
+        for field in ("after", "insert", "reason"):
+            if not isinstance(raw_overlay[field], str) or not raw_overlay[field]:
+                raise UpstreamError(
+                    f"{manifest} source {source_name} overlay {path!r} has empty {field}"
+                )
+        overlays.append(
+            VerbatimOverlay(
+                path=path,
+                after=raw_overlay["after"],
+                insert=raw_overlay["insert"],
+                reason=raw_overlay["reason"],
+            )
+        )
+    return VerbatimBundle(
+        upstream_root=upstream_root,
+        members=tuple(members),
+        control_paths=controls,
+        overlays=tuple(overlays),
+    )
+
+
 def load_sources(repo_root: Path) -> list[Source]:
     sources: list[Source] = []
     seen: set[str] = set()
     seen_license_copies: set[Path] = set()
-    for manifest in sorted((repo_root / "shared" / "skills").glob("*/upstreams.toml")):
+    manifest_roots = (
+        repo_root / "shared" / "skills",
+        repo_root / "shared" / "superpowers",
+    )
+    manifests = sorted(
+        manifest
+        for root in manifest_roots
+        for manifest in root.glob("*/upstreams.toml")
+    )
+    for manifest in manifests:
         try:
             with manifest.open("rb") as handle:
                 data = tomllib.load(handle)
@@ -222,6 +413,14 @@ def load_sources(repo_root: Path) -> list[Source]:
             scalar_keys = ("repository", "ref", "license", "adaptation")
             if not all(isinstance(raw[key], str) and raw[key] for key in scalar_keys):
                 raise UpstreamError(f"{manifest} source {name} has an empty string field")
+            verbatim_bundle = parse_verbatim_bundle(
+                raw.get("verbatim_bundle"),
+                manifest=manifest,
+                source_name=name,
+                source_skill=manifest.parent.name,
+                selected_paths=normalized_paths,
+                local_license_path=local_license_path,
+            )
             sources.append(
                 Source(
                     skill=manifest.parent.name,
@@ -236,10 +435,13 @@ def load_sources(repo_root: Path) -> list[Source]:
                     upstream_license_path=upstream_license_path,
                     local_license_path=local_license_path,
                     adaptation=raw["adaptation"],
+                    verbatim_bundle=verbatim_bundle,
                 )
             )
     if not sources:
-        raise UpstreamError("no shared/skills/*/upstreams.toml manifests found")
+        raise UpstreamError(
+            "no upstream manifests found under shared/skills or shared/superpowers"
+        )
     for source in sources:
         validated_notice(source)
         validated_license_copy(source)
@@ -306,6 +508,99 @@ class Checkout:
         self.fetch(commit)
         return run_git_bytes(["cat-file", "blob", f"{commit}:{path}"], cwd=self.path)
 
+    def bundle_files(self, commit: str, bundle: VerbatimBundle) -> dict[str, BundleFile]:
+        """Read a complete portable skill bundle from Git, including executable bits."""
+
+        self.fetch(commit)
+        output = run_git_bytes(
+            ["ls-tree", "-r", "-z", commit, "--", bundle.upstream_root],
+            cwd=self.path,
+        )
+        prefix = PurePosixPath(bundle.upstream_root)
+        files: dict[str, BundleFile] = {}
+        observed_members: set[str] = set()
+        for raw_row in output.split(b"\0"):
+            if not raw_row:
+                continue
+            try:
+                header, raw_path = raw_row.split(b"\t", 1)
+                raw_mode, raw_kind, raw_object = header.split(b" ", 2)
+                path_text = raw_path.decode("utf-8")
+            except (ValueError, UnicodeDecodeError) as error:
+                raise UpstreamError(
+                    f"{self.source.name}: verbatim bundle contains an unsupported Git path"
+                ) from error
+            path = PurePosixPath(path_text)
+            try:
+                relative = path.relative_to(prefix)
+            except ValueError as error:
+                raise UpstreamError(
+                    f"{self.source.name}: Git returned {path_text!r} outside bundle root"
+                ) from error
+            if len(relative.parts) < 2:
+                raise UpstreamError(
+                    f"{self.source.name}: verbatim bundle root may contain only skill "
+                    f"directories, found {path_text!r}"
+                )
+            member = relative.parts[0]
+            observed_members.add(member)
+            if raw_kind != b"blob" or raw_mode not in {b"100644", b"100755"}:
+                raise UpstreamError(
+                    f"{self.source.name}: unsupported entry {path_text!r} with "
+                    f"mode/type {raw_mode.decode('ascii', 'replace')} "
+                    f"{raw_kind.decode('ascii', 'replace')}"
+                )
+            local_path = relative.as_posix()
+            if local_path in files:
+                raise UpstreamError(
+                    f"{self.source.name}: duplicate bundle path {local_path!r}"
+                )
+            object_id = raw_object.decode("ascii")
+            content = run_git_bytes(["cat-file", "blob", object_id], cwd=self.path)
+            files[local_path] = BundleFile(
+                local_path=local_path,
+                mode=0o755 if raw_mode == b"100755" else 0o644,
+                content=content,
+            )
+        expected_members = set(bundle.members)
+        if observed_members != expected_members:
+            missing = sorted(expected_members - observed_members)
+            extra = sorted(observed_members - expected_members)
+            raise UpstreamError(
+                f"{self.source.name}: pinned verbatim bundle members differ from the "
+                f"manifest (missing={missing}, extra={extra})"
+            )
+        for member in bundle.members:
+            if f"{member}/SKILL.md" not in files:
+                raise UpstreamError(
+                    f"{self.source.name}: verbatim member {member!r} has no SKILL.md"
+                )
+        for overlay in bundle.overlays:
+            item = files.get(overlay.path)
+            if item is None:
+                raise UpstreamError(
+                    f"{self.source.name}: verbatim overlay target {overlay.path!r} "
+                    f"does not exist at {commit}"
+                )
+            after = overlay.after.encode()
+            insertion = overlay.insert.encode()
+            if item.content.count(after) != 1:
+                raise UpstreamError(
+                    f"{self.source.name}: overlay anchor for {overlay.path!r} must occur "
+                    "exactly once in the pinned upstream file"
+                )
+            if insertion in item.content:
+                raise UpstreamError(
+                    f"{self.source.name}: overlay insertion for {overlay.path!r} is already "
+                    "present upstream; review and remove or revise the overlay"
+                )
+            files[overlay.path] = BundleFile(
+                local_path=item.local_path,
+                mode=item.mode,
+                content=item.content.replace(after, after + insertion, 1),
+            )
+        return files
+
     def diff(self, old: str, new: str) -> tuple[str, str]:
         self.fetch(old)
         self.fetch(new)
@@ -323,6 +618,122 @@ class Checkout:
         return stat, patch
 
 
+def bundle_root(source: Source) -> Path:
+    return source.manifest.parent.parent
+
+
+def local_bundle_files(source: Source, *, root: Path | None = None) -> dict[str, Path]:
+    bundle = source.verbatim_bundle
+    if bundle is None:
+        return {}
+    root = root or bundle_root(source)
+    files: dict[str, Path] = {}
+    for member in bundle.members:
+        member_path = root / member
+        try:
+            member_stat = member_path.lstat()
+        except OSError as error:
+            raise UpstreamError(
+                f"{source.name}: cannot inspect local verbatim member {member_path}: {error}"
+            ) from error
+        if member_path.is_symlink() or not stat_module.S_ISDIR(member_stat.st_mode):
+            raise UpstreamError(
+                f"{source.name}: local verbatim member must be a real directory: {member_path}"
+            )
+        for current, directories, names in os.walk(member_path, followlinks=False):
+            current_path = Path(current)
+            for directory in list(directories):
+                path = current_path / directory
+                try:
+                    mode = path.lstat().st_mode
+                except OSError as error:
+                    raise UpstreamError(f"{source.name}: cannot inspect {path}: {error}") from error
+                if path.is_symlink() or not stat_module.S_ISDIR(mode):
+                    raise UpstreamError(
+                        f"{source.name}: unsafe entry in local verbatim bundle: {path}"
+                    )
+            for name in names:
+                path = current_path / name
+                try:
+                    mode = path.lstat().st_mode
+                except OSError as error:
+                    raise UpstreamError(f"{source.name}: cannot inspect {path}: {error}") from error
+                if path.is_symlink() or not stat_module.S_ISREG(mode):
+                    raise UpstreamError(
+                        f"{source.name}: unsafe entry in local verbatim bundle: {path}"
+                    )
+                relative = path.relative_to(root).as_posix()
+                files[relative] = path
+    return files
+
+
+def verbatim_bundle_mismatches(
+    source: Source,
+    checkout: Checkout,
+    commit: str,
+    *,
+    root: Path | None = None,
+) -> list[str]:
+    """Return byte, path, and executable-bit drift for an optional bundle."""
+
+    bundle = source.verbatim_bundle
+    if bundle is None:
+        return []
+    expected = checkout.bundle_files(commit, bundle)
+    controls = set(bundle.control_paths)
+    overlap = controls.intersection(expected)
+    if overlap:
+        raise UpstreamError(
+            f"{source.name}: control paths overlap pinned upstream files: {sorted(overlap)}"
+        )
+    actual_paths = local_bundle_files(source, root=root)
+    missing_controls = sorted(controls - set(actual_paths))
+    if missing_controls:
+        raise UpstreamError(
+            f"{source.name}: missing local verbatim control paths: {missing_controls}"
+        )
+    actual = {path: file for path, file in actual_paths.items() if path not in controls}
+    messages = [f"missing {path}" for path in sorted(set(expected) - set(actual))]
+    messages.extend(f"unexpected {path}" for path in sorted(set(actual) - set(expected)))
+    for path in sorted(set(expected).intersection(actual)):
+        wanted = expected[path]
+        local_path = actual[path]
+        try:
+            content = local_path.read_bytes()
+            mode = local_path.stat().st_mode
+        except OSError as error:
+            raise UpstreamError(f"{source.name}: cannot read {local_path}: {error}") from error
+        if content != wanted.content:
+            messages.append(f"content differs for {path}")
+        expected_executable = bool(wanted.mode & 0o111)
+        actual_executable = bool(mode & 0o111)
+        if expected_executable != actual_executable:
+            messages.append(
+                f"executable bit differs for {path} "
+                f"(expected={'on' if expected_executable else 'off'}, "
+                f"actual={'on' if actual_executable else 'off'})"
+            )
+    return messages
+
+
+def require_verbatim_bundle_match(
+    source: Source,
+    checkout: Checkout,
+    commit: str,
+    *,
+    purpose: str,
+) -> None:
+    mismatches = verbatim_bundle_mismatches(source, checkout, commit)
+    if mismatches:
+        preview = "; ".join(mismatches[:8])
+        if len(mismatches) > 8:
+            preview += f"; and {len(mismatches) - 8} more"
+        raise UpstreamError(
+            f"{source.name}: local verbatim bundle does not match {commit} before "
+            f"{purpose}: {preview}"
+        )
+
+
 def inspect_source(source: Source) -> dict[str, Any]:
     remote = resolve_remote(source)
     _, local_license = validated_license_copy(source)
@@ -330,10 +741,13 @@ def inspect_source(source: Source) -> dict[str, Any]:
         pinned_hash = checkout.path_hash(source.commit)
         remote_hash = checkout.path_hash(remote)
         pinned_license = checkout.file_bytes(source.commit, source.upstream_license_path)
+        bundle_mismatches = verbatim_bundle_mismatches(source, checkout, source.commit)
     if pinned_hash != source.path_tree_hash:
         status = "PIN_HASH_MISMATCH"
     elif local_license != pinned_license:
         status = "LICENSE_COPY_MISMATCH"
+    elif bundle_mismatches:
+        status = "VERBATIM_BUNDLE_MISMATCH"
     elif remote == source.commit:
         status = "CURRENT"
     elif remote_hash == source.path_tree_hash:
@@ -353,6 +767,7 @@ def inspect_source(source: Source) -> dict[str, Any]:
         "local_license_path": source.local_license_path,
         "pinned_license_hash": "sha256:" + hashlib.sha256(pinned_license).hexdigest(),
         "local_license_hash": "sha256:" + hashlib.sha256(local_license).hexdigest(),
+        "verbatim_bundle_mismatches": bundle_mismatches,
         "paths": list(source.paths),
         "manifest": str(source.manifest),
     }
@@ -369,7 +784,12 @@ def status(sources: list[Source], *, as_json: bool) -> int:
                 f"{record['pinned_commit'][:12]} -> {record['remote_commit'][:12]} "
                 f"({record['skill']})"
             )
-    failing = {"UPDATE", "PIN_HASH_MISMATCH", "LICENSE_COPY_MISMATCH"}
+    failing = {
+        "UPDATE",
+        "PIN_HASH_MISMATCH",
+        "LICENSE_COPY_MISMATCH",
+        "VERBATIM_BUNDLE_MISMATCH",
+    }
     return 1 if any(record["status"] in failing for record in records) else 0
 
 
@@ -397,6 +817,9 @@ def show_diff(source: Source) -> int:
                 f"{source.name}: local license copy {source.local_license_path} does not "
                 "match the pinned upstream license; repair provenance before review"
             )
+        require_verbatim_bundle_match(
+            source, checkout, source.commit, purpose="reviewing a newer commit"
+        )
         remote_hash = checkout.path_hash(remote)
         stat, patch = checkout.diff(source.commit, remote)
     print(f"source: {source.name}")
@@ -534,6 +957,7 @@ def record(source: Source, commit: str, *, accept_license_change: bool = False) 
                 f"{source.name}: local license copy {source.local_license_path} does not "
                 "match the pinned upstream license; repair provenance before recording"
             )
+        require_verbatim_bundle_match(source, checkout, source.commit, purpose="recording")
         tree_hash = checkout.path_hash(commit)
         upstream_license = checkout.file_bytes(commit, source.upstream_license_path)
         if upstream_license != pinned_license and not accept_license_change:
@@ -542,12 +966,191 @@ def record(source: Source, commit: str, *, accept_license_change: bool = False) 
                 "license diff and the manifest/notice license wording, then re-run record "
                 "with --accept-license-change"
             )
+        target_mismatches = verbatim_bundle_mismatches(source, checkout, commit)
+        if target_mismatches:
+            preview = "; ".join(target_mismatches[:8])
+            if len(target_mismatches) > 8:
+                preview += f"; and {len(target_mismatches) - 8} more"
+            raise UpstreamError(
+                f"{source.name}: record would pin a commit that does not match the local "
+                f"verbatim bundle: {preview}; use the sync command for reviewed bundle updates"
+            )
     write_provenance(source, commit, tree_hash, upstream_license)
     print(f"recorded {source.name} at {commit}")
     print(f"path_tree_hash = {tree_hash}")
     print(f"updated {notice_path(source)}")
     print(f"updated {license_copy_path(source)} from {source.upstream_license_path}")
     print("composed skill content was not changed; review and update it separately, then run evals")
+    return 0
+
+
+def updated_notice_text(source: Source, commit: str) -> str:
+    notice, old_notice = validated_notice(source)
+    text = old_notice.replace(source.commit, commit, 1)
+    if text.count(commit) != 1:
+        raise UpstreamError(
+            f"updating {notice} would not leave exactly one reference to {commit}"
+        )
+    return text
+
+
+def materialize_bundle(
+    source: Source,
+    files: dict[str, BundleFile],
+    destination: Path,
+    *,
+    manifest_text: str,
+    notice_text: str,
+    upstream_license: bytes,
+) -> None:
+    """Build a complete replacement tree without reading from it while it changes."""
+
+    bundle = source.verbatim_bundle
+    if bundle is None:
+        raise UpstreamError(f"{source.name}: source does not declare a verbatim bundle")
+    destination.mkdir(mode=0o700)
+    for member in bundle.members:
+        (destination / member).mkdir(mode=0o755)
+    for item in files.values():
+        path = destination / item.local_path
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        path.write_bytes(item.content)
+        os.chmod(path, item.mode)
+
+    current_root = bundle_root(source)
+    for control in bundle.control_paths:
+        old_path = current_root / control
+        new_path = destination / control
+        new_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        try:
+            old_mode = old_path.lstat().st_mode
+        except OSError as error:
+            raise UpstreamError(
+                f"{source.name}: cannot stage control path {old_path}: {error}"
+            ) from error
+        if old_path.is_symlink() or not stat_module.S_ISREG(old_mode):
+            raise UpstreamError(f"{source.name}: unsafe control path {old_path}")
+        new_path.write_bytes(old_path.read_bytes())
+        os.chmod(new_path, old_mode & 0o777)
+
+    replacements = {
+        f"{source.skill}/upstreams.toml": manifest_text.encode(),
+        f"{source.skill}/THIRD_PARTY_NOTICES.md": notice_text.encode(),
+        f"{source.skill}/{source.local_license_path}": upstream_license,
+    }
+    for relative, content in replacements.items():
+        path = destination / relative
+        path.write_bytes(content)
+
+
+def replace_bundle_transaction(source: Source, staged_root: Path, transaction: Path) -> None:
+    """Replace all bundle members with rollback on an interrupted rename sequence."""
+
+    bundle = source.verbatim_bundle
+    if bundle is None:
+        raise UpstreamError(f"{source.name}: source does not declare a verbatim bundle")
+    local_root = bundle_root(source)
+    old_root = transaction / "old"
+    old_root.mkdir(mode=0o700)
+    moved_old: list[str] = []
+    installed: list[str] = []
+    try:
+        for member in bundle.members:
+            os.replace(local_root / member, old_root / member)
+            moved_old.append(member)
+        for member in bundle.members:
+            os.replace(staged_root / member, local_root / member)
+            installed.append(member)
+    except OSError as error:
+        rollback_errors: list[str] = []
+        for member in reversed(installed):
+            try:
+                os.replace(local_root / member, staged_root / member)
+            except OSError as rollback_error:
+                rollback_errors.append(f"remove replacement {member}: {rollback_error}")
+        for member in reversed(moved_old):
+            try:
+                os.replace(old_root / member, local_root / member)
+            except OSError as rollback_error:
+                rollback_errors.append(f"restore {member}: {rollback_error}")
+        detail = f"cannot replace verbatim bundle: {error}"
+        if rollback_errors:
+            detail += "; rollback failed: " + "; ".join(rollback_errors)
+            detail += f"; recovery files retained at {transaction}"
+        else:
+            shutil.rmtree(transaction, ignore_errors=True)
+        raise UpstreamError(detail) from error
+
+
+def sync(source: Source, commit: str, *, accept_license_change: bool = False) -> int:
+    """Update a reviewed verbatim bundle and its provenance as one transaction."""
+
+    if source.verbatim_bundle is None:
+        raise UpstreamError(f"{source.name}: source does not declare a verbatim bundle")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise UpstreamError("sync requires an immutable 40-character lowercase commit")
+    _, local_license = validated_license_copy(source)
+    with Checkout(source) as checkout:
+        pinned_hash = checkout.path_hash(source.commit)
+        if pinned_hash != source.path_tree_hash:
+            raise UpstreamError(
+                f"{source.name}: manifest hash {source.path_tree_hash} does not match pinned "
+                f"tree {pinned_hash}; repair provenance before syncing"
+            )
+        pinned_license = checkout.file_bytes(source.commit, source.upstream_license_path)
+        if local_license != pinned_license:
+            raise UpstreamError(
+                f"{source.name}: local license copy {source.local_license_path} does not "
+                "match the pinned upstream license; repair provenance before syncing"
+            )
+        require_verbatim_bundle_match(source, checkout, source.commit, purpose="syncing")
+        tree_hash = checkout.path_hash(commit)
+        upstream_license = checkout.file_bytes(commit, source.upstream_license_path)
+        if upstream_license != pinned_license and not accept_license_change:
+            raise UpstreamError(
+                f"{source.name}: upstream license bytes changed at {commit}; review the "
+                "license diff and attribution wording, then re-run sync with "
+                "--accept-license-change"
+            )
+        files = checkout.bundle_files(commit, source.verbatim_bundle)
+
+    manifest_text = updated_manifest_text(source, commit, tree_hash)
+    notice_text = updated_notice_text(source, commit)
+    local_root = bundle_root(source)
+    transaction = Path(
+        tempfile.mkdtemp(prefix=".khenrix-upstream-sync-", dir=local_root)
+    )
+    staged_root = transaction / "new"
+    completed = False
+    try:
+        materialize_bundle(
+            source,
+            files,
+            staged_root,
+            manifest_text=manifest_text,
+            notice_text=notice_text,
+            upstream_license=upstream_license,
+        )
+        with Checkout(source) as checkout:
+            staged_mismatches = verbatim_bundle_mismatches(
+                source, checkout, commit, root=staged_root
+            )
+        if staged_mismatches:
+            raise UpstreamError(
+                f"{source.name}: staged verbatim bundle failed verification: "
+                + "; ".join(staged_mismatches[:8])
+            )
+        replace_bundle_transaction(source, staged_root, transaction)
+        completed = True
+    finally:
+        if completed and transaction.exists():
+            shutil.rmtree(transaction)
+        elif transaction.exists() and not (transaction / "old").exists():
+            shutil.rmtree(transaction)
+
+    print(f"synced {source.name} verbatim bundle at {commit}")
+    print(f"path_tree_hash = {tree_hash}")
+    print(f"updated {len(source.verbatim_bundle.members)} skill directories and provenance")
     return 0
 
 
@@ -567,6 +1170,14 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="confirm that changed upstream license bytes and attribution wording were reviewed",
     )
+    sync_parser = commands.add_parser("sync")
+    sync_parser.add_argument("source")
+    sync_parser.add_argument("commit")
+    sync_parser.add_argument(
+        "--accept-license-change",
+        action="store_true",
+        help="confirm that changed upstream license bytes and attribution wording were reviewed",
+    )
     return result
 
 
@@ -579,6 +1190,12 @@ def main(argv: list[str] | None = None) -> int:
         source = find_source(sources, options.source)
         if options.command == "diff":
             return show_diff(source)
+        if options.command == "sync":
+            return sync(
+                source,
+                options.commit,
+                accept_license_change=options.accept_license_change,
+            )
         return record(
             source,
             options.commit,

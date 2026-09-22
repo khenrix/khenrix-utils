@@ -173,7 +173,7 @@ description = "Preview selective skill and house-style delivery without changing
 run = "python components/skills/skillctl.py plan"
 
 [tasks."skills:status"]
-description = "Report drift for the two managed skills and four bounded instruction targets"
+description = "Report drift for the 17 managed skills and four bounded instruction targets"
 run = "python components/skills/skillctl.py status"
 
 [tasks."skills:apply"]
@@ -199,6 +199,10 @@ run = "python components/skills/upstreamctl.py diff"
 [tasks."skills:upstream-record"]
 description = "Record one reviewed upstream pin, notice revision, and exact license copy"
 run = "python components/skills/upstreamctl.py record"
+
+[tasks."skills:upstream-sync"]
+description = "Atomically sync one reviewed verbatim skill bundle and its provenance"
+run = "python components/skills/upstreamctl.py sync"
 
 [tasks."skills:maka-smoke"]
 description = "Run bounded explicit and natural Maka routing cases and write a hash-bound receipt"

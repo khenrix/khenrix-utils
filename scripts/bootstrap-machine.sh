@@ -158,7 +158,6 @@ add_plug "frontend-design"      "claude-plugins-official"
 add_plug "playwright"           "claude-plugins-official"
 add_plug "pyright-lsp"          "claude-plugins-official"
 add_plug "security-guidance"    "claude-plugins-official"
-add_plug "superpowers"          "claude-plugins-official"
 add_plug "typescript-lsp"       "claude-plugins-official"
 add_plug "last30days"           "last30days-skill"
 add_plug "watch"                "claude-video"
@@ -172,9 +171,11 @@ echo "== Claude MCP =="
 # interactive `/mcp` login inside Claude Code — MANUAL, not scripted.
 
 echo "== Codex (native XOR shared-MCP) =="
-# Native-preferred ONLY where reconcile does NOT own the capability: slack, github,
-# superpowers@openai-curated. (google-drive was decommissioned 2026-07-20 -- the native
-# claude.ai Drive MCP covers it, and the stdio one hardcoded an asdf node path.)
+# Native-preferred ONLY where reconcile does NOT own the capability: slack and github.
+# Superpowers is owned by the 17-skill direct-copy delivery below, so an upstream plugin
+# on any CLI would duplicate those native skills. (google-drive was decommissioned
+# 2026-07-20 -- the native claude.ai Drive MCP covers it, and the stdio one hardcoded an
+# asdf node path.)
 # Parity MCP additions on codex: playwright, codebase-memory-mcp (NOT slack — slack is native).
 # Reproduce the active openaiDeveloperDocs HTTP MCP.
 # NOTE: confirm exact `codex mcp add` / `codex plugin install` non-interactive syntax at
@@ -198,8 +199,9 @@ if [ -d "$REPO/.git" ]; then skip "clone $REPO"; else run git clone "$REPO_URL" 
 if [ -d "$VAULT/.git" ]; then skip "clone $VAULT"; else run git clone "$VAULT_URL" "$VAULT"; fi
 run mise -C "$REPO" trust
 run mise -C "$REPO" install
-# Canonical quality/writing skills use their native direct-copy path. Running the machine
-# bootstrap is the explicit authorization for this apply; interactive maintenance still
+# The 17 canonical quality, writing, and Superpowers skills use their native direct-copy
+# path. Running the machine bootstrap is the explicit authorization for this apply;
+# interactive maintenance still
 # uses skills:plan plus `skills:apply -- --expect ...`. Optional plugin bundles are
 # installed only through the explicit `make setup-<cli>` targets.
 run mise -C "$REPO" run skills:apply
@@ -242,7 +244,8 @@ run mise -C "$REPO" run maka:component-doctor
 
 echo "== Ported third-party skills (codex + agy) =="
 # Mirrors portable Claude skill bodies onto codex/agy from THIS machine's Claude caches
-# (not vendored — must run AFTER the Claude plugins above are installed). Idempotent.
+# (not vendored — must run AFTER the Claude plugins above are installed). Superpowers is
+# deliberately excluded because skills:apply already delivers its reviewed bundle. Idempotent.
 run bash "$REPO/scripts/port-skills.sh"
 
 echo "== Verify what was built =="

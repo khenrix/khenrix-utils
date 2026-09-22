@@ -17,6 +17,28 @@ import skillctl  # noqa: E402
 from test_skill_delivery import fixture as delivery_fixture  # noqa: E402
 
 
+def smoke_delivery_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, skillctl.Configuration]:
+    repo, home, _ = delivery_fixture(tmp_path)
+    names = ("using-superpowers", "brainstorming")
+    for name in names:
+        skill = repo / "shared" / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\nbody\n"
+        )
+    capabilities = repo / "capabilities.toml"
+    capabilities.write_text(
+        capabilities.read_text().replace(
+            'skills = ["khenrix-quality", "khenrix-writing"]',
+            'skills = ["khenrix-quality", "khenrix-writing", '
+            '"using-superpowers", "brainstorming"]',
+        )
+    )
+    return repo, home, skillctl.load_configuration(repo, home, None)
+
+
 def test_default_runtime_db_matches_managed_platform_profiles(tmp_path: Path) -> None:
     assert maka_smoke.default_runtime_db(tmp_path, platform="darwin") == (
         tmp_path / "Library" / "Application Support" / "Maka" / "workspaces" / "default" / "runtime.sqlite"
@@ -92,7 +114,11 @@ def fake_maka(tmp_path: Path) -> Path:
         "    admission = {'skillInvocation':invocation}\n"
         "    db.execute('INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)', (session_id,turn_id,int(time.time()*1000),json.dumps(admission)))\n"
         "elif '--continue' not in sys.argv:\n"
-        "    skill = 'khenrix-writing' if 'Humanize' in prompt else 'khenrix-quality'\n"
+        "    lower = prompt.lower()\n"
+        "    if 'react todo list' in lower: skill = 'brainstorming'\n"
+        "    elif 'supported tools and skills' in lower: skill = 'using-superpowers'\n"
+        "    elif 'humanize' in lower: skill = 'khenrix-writing'\n"
+        "    else: skill = 'khenrix-quality'\n"
         "    event_id = str(uuid.uuid4())\n"
         "    data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+skill,'skillId':skill,'skillName':skill,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
         "    record = {'type':'skill_loaded','data':data}\n"
@@ -110,7 +136,7 @@ def fake_maka(tmp_path: Path) -> Path:
 def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo, home, config = delivery_fixture(tmp_path)
+    repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
     binary = fake_maka(tmp_path)
     log = tmp_path / "argv.log"
@@ -152,6 +178,10 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
         ("khenrix-quality", "natural"),
         ("khenrix-writing", "explicit"),
         ("khenrix-writing", "natural"),
+        ("using-superpowers", "explicit"),
+        ("using-superpowers", "natural"),
+        ("brainstorming", "explicit"),
+        ("brainstorming", "natural"),
     }
     assert all(case["event_evidence"]["evidence_hash"].startswith("sha256:") for case in receipt["cases"])
     assert {
@@ -211,7 +241,7 @@ def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> Non
 def test_dry_run_executes_no_model_cases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo, home, config = delivery_fixture(tmp_path)
+    repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
     binary = fake_maka(tmp_path)
     log = tmp_path / "argv.log"
@@ -236,7 +266,7 @@ def test_dry_run_executes_no_model_cases(
 
 
 def test_smoke_rejects_non_mapping_nested_install_receipt(tmp_path: Path) -> None:
-    _, _, config = delivery_fixture(tmp_path)
+    _, _, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
     receipt_path = config.state_dir / skillctl.RECEIPT_NAME
     receipt = json.loads(receipt_path.read_text())
@@ -254,6 +284,9 @@ def test_manifest_requires_explicit_and_natural_case_per_skill(tmp_path: Path) -
         json.dumps(
             {
                 "schema_version": 1,
+                "required_routes": {
+                    "khenrix-quality": ["explicit", "natural"]
+                },
                 "cases": [
                     {
                         "id": "only-one",
@@ -267,7 +300,7 @@ def test_manifest_requires_explicit_and_natural_case_per_skill(tmp_path: Path) -
             }
         )
     )
-    with pytest.raises(maka_smoke.SmokeError, match="cover each skill"):
+    with pytest.raises(maka_smoke.SmokeError, match="cover every required skill route"):
         maka_smoke.load_cases(manifest)
 
 

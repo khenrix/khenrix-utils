@@ -14,6 +14,7 @@ import os
 import pathlib
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -51,6 +52,8 @@ CONTROLLER_FILES = (
     "memory_search.py",
     "memory_gateway.py",
     "provider_relay.py",
+    "mise.toml",
+    "mise.lock",
     "provenance.json",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
@@ -564,14 +567,87 @@ def install_controller() -> pathlib.Path:
     return target
 
 
+def _bun_version(candidate: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [candidate, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _mise_candidates() -> list[str]:
+    """Find mise even when a GUI-launched hook has a minimal PATH."""
+    home = account_home()
+    candidates = [
+        shutil.which("mise"),
+        str(home / ".local" / "bin" / "mise"),
+        str(home / ".local" / "share" / "mise" / "bin" / "mise"),
+        "/opt/homebrew/bin/mise",
+        "/usr/local/bin/mise",
+    ]
+    result: list[str] = []
+    for candidate in candidates:
+        if not candidate or candidate in result:
+            continue
+        path = pathlib.Path(candidate).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            result.append(str(path))
+    return result
+
+
+def _mise_bun_path() -> str | None:
+    """Resolve Bun from the controller's reviewed mise pin, independent of cwd."""
+    root = controller_root()
+    if not (root / "mise.toml").is_file() or not (root / "mise.lock").is_file():
+        return None
+    for mise in _mise_candidates():
+        try:
+            resolved = subprocess.run(
+                [mise, "-C", str(root), "which", "bun"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        candidate = resolved.stdout.strip()
+        if resolved.returncode == 0 and candidate and _bun_version(candidate) == BUN_VERSION:
+            return candidate
+    return None
+
+
 def _bun_path() -> str:
-    candidate = os.environ.get("AGENTIC_MEMORY_BUN") or shutil.which("bun")
-    if not candidate:
-        raise MemoryConfigurationError("mise-pinned Bun is unavailable; run mise install")
-    result = subprocess.run([candidate, "--version"], check=False, capture_output=True, text=True, timeout=5)
-    if result.returncode != 0 or result.stdout.strip() != BUN_VERSION:
-        raise MemoryConfigurationError(f"memory runtime requires Bun {BUN_VERSION}")
-    return candidate
+    override = os.environ.get("AGENTIC_MEMORY_BUN")
+    if override:
+        if _bun_version(override) != BUN_VERSION:
+            raise MemoryConfigurationError(
+                f"AGENTIC_MEMORY_BUN must select Bun {BUN_VERSION}"
+            )
+        return override
+
+    # Hook processes launched by desktop CLIs do not necessarily inherit the
+    # shell activation that places mise tools on PATH. Resolve against the
+    # controller's own copied config so an unrelated project cwd cannot select
+    # a different Bun version.
+    candidate = _mise_bun_path()
+    if candidate:
+        return candidate
+
+    # This covers setup and source-tree development under `mise run` before the
+    # installed controller has been refreshed.
+    candidate = shutil.which("bun")
+    if candidate and _bun_version(candidate) == BUN_VERSION:
+        return candidate
+    raise MemoryConfigurationError(
+        f"mise-pinned Bun {BUN_VERSION} is unavailable; run mise install in khenrix-utils"
+    )
 
 
 def _worker_script() -> pathlib.Path:
@@ -770,8 +846,20 @@ def worker_health(timeout: float = 0.35) -> bool:
         return False
 
 
+def _controller_command(*arguments: str) -> str:
+    """Build a hook command that does not depend on a GUI process's PATH.
+
+    Setup runs through the repository's mise-pinned Python. Recording that exact
+    interpreter also avoids macOS `/usr/bin/python3`, whose older stdlib may not
+    provide the modules required by the controller.
+    """
+    command = [str(pathlib.Path(sys.executable).resolve()),
+               str(installed_controller_root() / "memoryctl.py"), *arguments]
+    return " ".join(shlex.quote(part) for part in command)
+
+
 def _memory_command(platform: str, event: str) -> str:
-    return f"python3 {installed_controller_root() / 'memoryctl.py'} hook {platform} {event}"
+    return _controller_command("hook", platform, event)
 
 
 def _handler(platform: str, event: str, timeout: int, *, async_: bool = False) -> dict[str, Any]:
@@ -782,7 +870,7 @@ def _handler(platform: str, event: str, timeout: int, *, async_: bool = False) -
 
 
 def canonical_hooks(cli: str) -> dict[str, Any]:
-    start = {"type": "command", "command": f"python3 {installed_controller_root() / 'memoryctl.py'} start", "timeout": 60}
+    start = {"type": "command", "command": _controller_command("start"), "timeout": 60}
     if cli in {"claude", "codex"}:
         platform = "claude-code" if cli == "claude" else "codex"
         async_ = cli == "claude"

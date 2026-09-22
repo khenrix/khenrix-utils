@@ -1,5 +1,11 @@
 {
   "schema_version": 1,
+  "required_routes": {
+    "khenrix-quality": ["explicit", "natural"],
+    "khenrix-writing": ["explicit", "natural"],
+    "using-superpowers": ["explicit", "natural"],
+    "brainstorming": ["explicit", "natural"]
+  },
   "cases": [
     {
       "id": "explicit-quality",
@@ -38,6 +44,38 @@
       "route": "natural",
       "skill": "khenrix-writing",
       "prompt": "Use the former humanizer workflow. Humanize this sentence without changing its claim: It is important to note that our innovative solution leverages a robust framework.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "explicit-superpowers-bootstrap",
+      "route": "explicit",
+      "skill": "using-superpowers",
+      "prompt": "/skill:using-superpowers Explain in one sentence how you check applicable installed skills before acting.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "natural-superpowers-bootstrap",
+      "route": "natural",
+      "skill": "using-superpowers",
+      "prompt": "Check the supported tools and skills before you answer, then tell me what two plus two is.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "explicit-brainstorming",
+      "route": "explicit",
+      "skill": "brainstorming",
+      "prompt": "/skill:brainstorming Help me explore the design of a small React todo list.",
+      "timeout_seconds": 120,
+      "max_steps": 2
+    },
+    {
+      "id": "natural-brainstorming-acceptance",
+      "route": "natural",
+      "skill": "brainstorming",
+      "prompt": "Let's make a react todo list",
       "timeout_seconds": 120,
       "max_steps": 2
     }

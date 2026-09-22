@@ -13,10 +13,10 @@
 #        + `codex plugin marketplace remove khenrix-ported-marketplace`).
 #
 # Curation (design rule: port what resolves; keep Claude-mechanism / hook-and-script skills
-# Claude-only). superpowers is NATIVE on codex, so its methodology skills go to agy only;
-# skill-creator is native on both codex (.system) — not ported. using-superpowers /
-# subagent-driven-development / dispatching-parallel-agents (Claude subagent mechanics),
-# last30days / watch (hook+script+API setup) stay Claude-only.
+# Claude-only). The reviewed Superpowers bundle is direct-delivered from this repository by
+# `skills:apply`, so this plugin must never carry a second copy. skill-creator is native on
+# codex (.system) and is not ported. last30days / watch (hook+script+API setup) stay
+# Claude-only.
 set -euo pipefail
 
 CC="$HOME/.claude/plugins/cache"
@@ -24,8 +24,6 @@ OBS_SKILLS="${OBSIDIAN_VAULT:-$HOME/git/obsidian-vault}/skills"
 
 # Skills mirrored to BOTH codex and agy (harness-agnostic, dependency-light).
 SHARED_SKILLS=(frontend-design claude-md-improver autoresearch canvas defuddle obsidian-bases obsidian-markdown think)
-# superpowers methodology skills — agy ONLY (codex has superpowers native).
-SUPERPOWERS_SKILLS=(brainstorming writing-plans executing-plans systematic-debugging test-driven-development verification-before-completion requesting-code-review receiving-code-review finishing-a-development-branch using-git-worktrees)
 
 # Resolve a source skill dir by name (searches the Claude caches + the obsidian vault).
 # Prints the path, or nothing (caller warns) — takes the highest-sorted version dir.
@@ -49,7 +47,7 @@ stage_skills() {  # $1=dest skills dir ; rest=skill names
   done
 }
 
-echo "== agy: build + install khenrix-ported (superpowers methodology + shared) =="
+echo "== agy: build + install khenrix-ported (shared skills only) =="
 AGY_BUILD="$(mktemp -d)"
 mkdir -p "$AGY_BUILD/skills"
 cat > "$AGY_BUILD/plugin.json" <<'JSON'
@@ -62,7 +60,7 @@ cat > "$AGY_BUILD/plugin.json" <<'JSON'
   "skills": "./skills/"
 }
 JSON
-stage_skills "$AGY_BUILD/skills" "${SUPERPOWERS_SKILLS[@]}" "${SHARED_SKILLS[@]}"
+stage_skills "$AGY_BUILD/skills" "${SHARED_SKILLS[@]}"
 if command -v agy >/dev/null 2>&1; then
   agy plugin validate "$AGY_BUILD" >/dev/null && agy plugin install "$AGY_BUILD"
   echo "  agy skills installed: $(ls "$HOME/.gemini/config/plugins/khenrix-ported/skills/" 2>/dev/null | wc -l)"
@@ -71,7 +69,7 @@ else
 fi
 rm -rf "$AGY_BUILD"
 
-echo "== codex: build local marketplace + install khenrix-ported (shared only; superpowers/skill-creator native) =="
+echo "== codex: build local marketplace + install khenrix-ported (shared skills only) =="
 CODEX_ROOT="$HOME/.local/share/khenrix-ported-codex"
 rm -rf "$CODEX_ROOT"
 mkdir -p "$CODEX_ROOT/.agents/plugins" "$CODEX_ROOT/plugins/khenrix-ported/.codex-plugin" "$CODEX_ROOT/plugins/khenrix-ported/skills"

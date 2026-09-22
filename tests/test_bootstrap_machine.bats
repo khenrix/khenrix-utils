@@ -198,7 +198,7 @@ plant_authenticated_bins() {
   [[ "$output" != *"RUN:"* ]]
 }
 
-@test "bootstrap direct-copies canonical skills without enabling khenrix-utils plugins" {
+@test "bootstrap direct-copies canonical skills without enabling duplicate plugins" {
   plant_tier0 0
   plant_authenticated_bins
   run t1 --dry-run
@@ -208,6 +208,7 @@ plant_authenticated_bins() {
   [[ "$output" != *"make khenrix-refresh"* ]]
   [[ "$output" != *"plugin install khenrix-utils"* ]]
   [[ "$output" != *"plugin add khenrix-utils"* ]]
+  [[ "$output" != *"plugin install superpowers"* ]]
 }
 
 @test "a first install refuses to guess memory or Maka provider routes" {

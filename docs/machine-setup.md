@@ -11,7 +11,7 @@ re-created from reviewed commands on each machine.
 
 | Thing | Home | Syncs how |
 |---|---|---|
-| Canonical skills and base instructions | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`) | **git** + `mise run skills:apply` copies only the two managed skills and bounded instructions |
+| Canonical skills and base instructions | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`, `shared/superpowers/`) | **git** + `mise run skills:apply` copies the 17 managed skills and bounded instructions |
 | MCP servers and baseline settings | `khenrix-utils` (`capabilities.toml`) | **git** + the broader reconcile flow when deliberately enabled |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
@@ -195,7 +195,8 @@ Maka state uses the reviewed migration in [the Maka guide](maka.md).
 ## 3. Install the shared skills
 
 The canonical skills use a selective direct copy. No Khenrix marketplace or
-plugin install is required.
+plugin install is required. The two Khenrix-authored direct-copy skills live in
+`shared/skills/`; the 15 vendored Superpowers skills live in `shared/superpowers/`.
 
 ```bash
 cd ~/khenrix-utils
@@ -204,22 +205,30 @@ mise run skills:apply -- --expect sha256:PLAN_ID
 mise run skills:doctor
 ```
 
-This installs only `khenrix-quality` and `khenrix-writing` into the native skill
-roots for Claude, Codex/Maka, and agy. It also updates the bounded house-style
-block in all four instruction files. Existing sibling skills and text outside
-the markers stay unchanged.
+This installs `khenrix-quality`, `khenrix-writing`, and the 15-skill Superpowers
+bundle into the native skill roots for Claude, Codex/Maka, and agy. It also
+updates the bounded house-style block in all four instruction files. Existing
+sibling skills and text outside the markers stay unchanged.
 
 Other Claude plugins keep their normal install path. They are independent of the
-two Khenrix skills:
+17 Khenrix-managed direct-copy skills:
 
 ```bash
 claude plugin marketplace add anthropics/claude-plugins-official
 claude plugin marketplace add ~/git/obsidian-vault   # claude-obsidian lives in the vault repo
 # then install the enabled plugins you use:
 #   claude-obsidian, and from claude-plugins-official:
-#   skill-creator, superpowers, frontend-design, code-review, code-simplifier,
+#   skill-creator, frontend-design, code-review, code-simplifier,
 #   typescript-lsp, pyright-lsp, security-guidance, playwright, claude-md-management
 ```
+
+Do not install the upstream Superpowers plugin in parallel. Khenrix Utils already
+delivers its 15 skills verbatim to every CLI and records one reviewed upstream pin;
+installing the plugin would create duplicate names and a second update path.
+The central manifest, selected tree hash, license, and notice live under
+`shared/superpowers/using-superpowers/`. Update that bundle atomically from its reviewed
+`obra/superpowers` revision with `mise run skills:upstream-sync -- superpowers
+FULL_40_CHARACTER_COMMIT`, then run the delivery tests and Maka routing smoke.
 
 `scripts/bootstrap-machine.sh` is the broader authenticated bootstrap. It still
 handles marketplace plugins, MCP reconciliation, runtime installation, defaults,
@@ -315,7 +324,7 @@ cd ~/khenrix-utils && git pull        # then, after edits: git push
 cd ~/git/<project>      && git pull        # each project on its own remote
 ```
 
-After pulling changes to either canonical skill or `house-style.md`, review and
+After pulling changes to any canonical direct-copy skill or `house-style.md`, review and
 apply the new content-addressed plan:
 
 ```bash

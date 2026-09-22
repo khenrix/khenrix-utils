@@ -72,7 +72,7 @@ def tree_snapshot(root: Path) -> dict[str, tuple[str, int, bytes | None]]:
     return snapshot
 
 
-def test_plan_manages_only_two_exact_skills_and_four_instruction_blocks(tmp_path: Path) -> None:
+def test_plan_manages_only_declared_skills_and_four_instruction_blocks(tmp_path: Path) -> None:
     _, home, config = fixture(tmp_path)
     unrelated = home / ".agents" / "skills" / "leave-me" / "SKILL.md"
     unrelated.parent.mkdir(parents=True)
@@ -101,6 +101,137 @@ def test_plan_manages_only_two_exact_skills_and_four_instruction_blocks(tmp_path
     assert instruction_hashes["claude"] != instruction_hashes["codex"]
     assert instruction_hashes["codex"] == instruction_hashes["agy"] == instruction_hashes["maka"]
     assert unrelated.read_text() == "mine\n"
+
+
+def test_configuration_accepts_an_additional_valid_direct_copy_skill(tmp_path: Path) -> None:
+    repo, home, _ = fixture(tmp_path)
+    extra = repo / "shared" / "superpowers" / "using-superpowers"
+    extra.mkdir(parents=True)
+    (extra / "SKILL.md").write_text(
+        "---\nname: using-superpowers\ndescription: test\n---\nbody\n"
+    )
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'skills = ["khenrix-quality", "khenrix-writing"]',
+            'skills = ["khenrix-quality", "khenrix-writing", "using-superpowers"]',
+        ).replace(
+            'instruction_source = "house-style.md"',
+            'source_roots = ["shared/skills", "shared/superpowers"]\n'
+            'instruction_source = "house-style.md"',
+        )
+    )
+
+    config = skillctl.load_configuration(repo, home, None)
+    _, entries = skillctl.plan(config)
+
+    assert config.skills[-1] == "using-superpowers"
+    assert len([entry for entry in entries if entry.kind == "skill"]) == 9
+
+
+def test_configuration_rejects_a_skill_present_in_multiple_source_roots(
+    tmp_path: Path,
+) -> None:
+    repo, home, _ = fixture(tmp_path)
+    duplicate = repo / "shared" / "superpowers" / "khenrix-quality"
+    duplicate.mkdir(parents=True)
+    (duplicate / "SKILL.md").write_text(
+        "---\nname: khenrix-quality\ndescription: duplicate\n---\n"
+    )
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'instruction_source = "house-style.md"',
+            'source_roots = ["shared/skills", "shared/superpowers"]\n'
+            'instruction_source = "house-style.md"',
+        )
+    )
+
+    with pytest.raises(skillctl.DeliveryError, match="exactly one source root"):
+        skillctl.load_configuration(repo, home, None)
+
+
+def test_configuration_rejects_a_symlinked_source_root(tmp_path: Path) -> None:
+    repo, home, _ = fixture(tmp_path)
+    actual = repo / "actual-superpowers"
+    actual.mkdir()
+    (repo / "shared" / "superpowers").symlink_to(actual, target_is_directory=True)
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'instruction_source = "house-style.md"',
+            'source_roots = ["shared/skills", "shared/superpowers"]\n'
+            'instruction_source = "house-style.md"',
+        )
+    )
+
+    with pytest.raises(skillctl.DeliveryError, match="real directory|symlink"):
+        skillctl.load_configuration(repo, home, None)
+
+
+@pytest.mark.parametrize(
+    ("name", "frontmatter", "message"),
+    [
+        ("../escape", "../escape", "invalid delivered skill name"),
+        ("valid-name", "another-name", "frontmatter name must match"),
+    ],
+)
+def test_configuration_rejects_unsafe_or_mismatched_direct_copy_skill(
+    tmp_path: Path, name: str, frontmatter: str, message: str
+) -> None:
+    repo, home, _ = fixture(tmp_path)
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            'skills = ["khenrix-quality", "khenrix-writing"]',
+            f'skills = ["khenrix-quality", "khenrix-writing", "{name}"]',
+        )
+    )
+    if "/" not in name:
+        extra = repo / "shared" / "skills" / name
+        extra.mkdir(parents=True)
+        (extra / "SKILL.md").write_text(
+            f"---\nname: {frontmatter}\ndescription: test\n---\nbody\n"
+        )
+
+    with pytest.raises(skillctl.DeliveryError, match=message):
+        skillctl.load_configuration(repo, home, None)
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "---\nname: khenrix-quality\n---\n",
+        "---\nname: khenrix-quality\ndescription:\n---\n",
+        '---\nname: khenrix-quality\ndescription: ""\n---\n',
+        "---\nname: khenrix-quality\ndescription: >-\n---\n",
+    ],
+)
+def test_configuration_rejects_missing_or_empty_skill_description(
+    tmp_path: Path, frontmatter: str
+) -> None:
+    repo, home, _ = fixture(tmp_path)
+    (repo / "shared/skills/khenrix-quality/SKILL.md").write_text(frontmatter)
+
+    with pytest.raises(skillctl.DeliveryError, match="description must be non-empty"):
+        skillctl.load_configuration(repo, home, None)
+
+
+def test_configuration_accepts_a_non_empty_folded_skill_description(tmp_path: Path) -> None:
+    repo, home, _ = fixture(tmp_path)
+    (repo / "shared/skills/khenrix-quality/SKILL.md").write_text(
+        "---\n"
+        "name: khenrix-quality\n"
+        "description: >-\n"
+        "  First line of the description.\n"
+        "  Second line of the description.\n"
+        "license: MIT\n"
+        "---\n"
+    )
+
+    config = skillctl.load_configuration(repo, home, None)
+
+    assert config.sources["khenrix-quality"].name == "khenrix-quality"
 
 
 def test_instruction_blocks_match_the_broader_reconcile_controller(tmp_path: Path) -> None:

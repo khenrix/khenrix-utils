@@ -359,3 +359,7 @@ def test_upgrade_inventory_does_not_claim_native_skills_without_receipt(
     monkeypatch.setattr(inventory.reconcile, "find_upwards", lambda *_: caps)
 
     assert inventory.installed_skills("codex") == []
+
+# The bundle cases live in a non-test-named module so the repository's Makefile suite
+# manifest still has one provenance-suite entry while pytest collects these tests here.
+from skill_verbatim_cases import *  # noqa: F401,F403,E402

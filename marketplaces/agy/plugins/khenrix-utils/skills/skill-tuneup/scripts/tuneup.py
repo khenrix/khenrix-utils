@@ -48,12 +48,14 @@ def _git(repo: Path, *args: str) -> str:
                           capture_output=True, text=True, check=True).stdout
 
 
-# Where a skill's source can live. khenrix-utils layouts first (a khenrix skill must never
-# be matched by a generic layout), then the two conventions foreign repos use. This is the
-# ONLY place layout is encoded — baseline/stale-models resolve through it, so teaching it a
-# new layout teaches the whole engine.
+# Editable Khenrix sources, then its explicitly read-only vendor root, then foreign layouts.
 KHENRIX_LAYOUTS = ("shared/skills/{s}", "shared/skill-templates/{s}")
+VENDORED_LAYOUTS = ("shared/superpowers/{s}",)
 FOREIGN_LAYOUTS = (".claude/skills/{s}", "skills/{s}")
+SUPERPOWERS_UPDATE_COMMANDS = (
+    "mise run skills:upstream-diff -- superpowers",
+    "mise run skills:upstream-sync -- superpowers FULL_40_CHARACTER_COMMIT",
+)
 
 
 def skill_paths(repo: Path, skill: str) -> list[Path]:
@@ -65,7 +67,7 @@ def skill_paths(repo: Path, skill: str) -> list[Path]:
     source. A skill matching two layouts in the same tier is ambiguous — return both so the
     caller can refuse rather than silently pick one.
     """
-    pats = KHENRIX_LAYOUTS if is_khenrix_repo(repo) else FOREIGN_LAYOUTS
+    pats = (KHENRIX_LAYOUTS + VENDORED_LAYOUTS) if is_khenrix_repo(repo) else FOREIGN_LAYOUTS
     return [p for p in (repo / pat.format(s=skill) for pat in pats) if p.is_dir()]
 
 
@@ -75,7 +77,7 @@ def is_khenrix_repo(repo: Path) -> bool:
 
 
 def target_info(repo: Path, skill: str) -> dict:
-    """Resolve a target and say which gate tier applies — the two-tier contract in one place.
+    """Resolve a target and say which gate tier applies in one place.
 
     The tier follows the LAYOUT, not a probe for gate files: outside khenrix-utils the
     khenrix receipt gate is inapplicable by construction, since a receipt is only meaningful
@@ -89,6 +91,8 @@ def target_info(repo: Path, skill: str) -> dict:
     full_gate = bool(khenrix and any(
         str(p.relative_to(repo)).startswith(("shared/skills", "shared/skill-templates"))
         for p in paths))
+    vendored = bool(khenrix and len(paths) == 1 and
+                    str(paths[0].relative_to(repo)).startswith("shared/superpowers/"))
     # Two same-tier matches (e.g. .claude/skills/x AND skills/x) is ambiguous: baseline,
     # scanning and editing would each silently pick one. Refused at the resolver the run
     # consults FIRST — not centrally. ALL FOUR other callers of skill_paths() (baseline,
@@ -96,6 +100,14 @@ def target_info(repo: Path, skill: str) -> dict:
     # directly, so the guarantee is "the documented flow fails safe", not "the ambiguity
     # is unrepresentable".
     ambiguous = len(paths) > 1
+    tier = ("ambiguous" if ambiguous else "vendored-report-only" if vendored else
+            "full-gate" if full_gate else "council-only")
+    gate = (
+        "READ-ONLY: refuse tune-up/edit; use upstreamctl diff/sync for the whole bundle"
+        if vendored else "evals + receipt + make precommit" if full_gate else
+        "research + both council reviews + audit + convergence — NO khenrix receipt "
+        "(run any gate the target repo has of its own, and report it separately)"
+    )
     return {
         "ambiguous": ambiguous,
         "repo": str(repo),
@@ -104,12 +116,11 @@ def target_info(repo: Path, skill: str) -> dict:
         "paths": [str(p.relative_to(repo)) for p in paths],
         "found": bool(paths),
         "khenrix_repo": khenrix,
-        "tier": "full-gate" if full_gate else "council-only",
-        "gate": ("evals + receipt + make precommit"
-                 if full_gate else
-                 "research + both council reviews + audit + convergence — NO khenrix "
-                 "receipt (run any gate the target repo has of its own, and report it "
-                 "separately); say so plainly in the run's output"),
+        "tier": tier,
+        "gate": gate,
+        "read_only": vendored,
+        "tunable": bool(paths) and not ambiguous and not vendored,
+        "update_commands": list(SUPERPOWERS_UPDATE_COMMANDS) if vendored else [],
         "log_target": log_target_key(repo, skill),
     }
 
@@ -299,7 +310,15 @@ def triage_recommendation(rows: list[dict]) -> str:
     on the exact evidence that nothing needs work. Reachable as soon as the last scoring
     skill drops off the board.
     """
+    excluded = [row for row in rows if row.get("excluded")]
+    rows = [row for row in rows if not row.get("excluded")]
+    exclusion_note = (
+        f" {len(excluded)} vendored Superpowers skill(s) are report-only and excluded."
+        if excluded else ""
+    )
     if not rows:
+        if excluded:
+            return "no tunable skills found." + exclusion_note
         return "no skills found."
     # Missing AGE is not missing EVIDENCE. Most of the score (receipt state, stale model
     # ids, the line budget) never touches git, so a board whose ages all failed to resolve
@@ -316,16 +335,18 @@ def triage_recommendation(rows: list[dict]) -> str:
                     "age component of the ranking is missing; the rest of the score stands)")
         elif unknown:
             note = f"  (note: baseline age is unknown for {len(unknown)} of {len(rows)} skills)"
-        return f"recommend: deep tune-up of '{rows[0]['skill']}' first{note}"
+        return f"recommend: deep tune-up of '{rows[0]['skill']}' first{note}{exclusion_note}"
     if len(unknown) == len(rows):
         return ("baseline age is UNKNOWN for every skill — git failed or this is not a "
                 "checkout with history. No other signal fired either, but the ranking is "
-                "incomplete: fix that before concluding there is nothing to do.")
+                "incomplete: fix that before concluding there is nothing to do." +
+                exclusion_note)
     if unknown:
         # No signal fired, but some evidence never arrived — an all-clear would overclaim.
         return (f"no staleness signal fired, but baseline age is unknown for "
-                f"{len(unknown)} of {len(rows)} skills — the all-clear is INCOMPLETE.")
-    return "no skill shows a staleness signal — nothing to tune up."
+                f"{len(unknown)} of {len(rows)} skills — the all-clear is INCOMPLETE." +
+                exclusion_note)
+    return "no skill shows a staleness signal — nothing to tune up." + exclusion_note
 
 
 def triage(repo: Path) -> list[dict]:
@@ -361,6 +382,18 @@ def triage(repo: Path) -> list[dict]:
                      "receipt": receipt, "age_days": age, "stale_model_hits": stale,
                      "skill_md_lines": lines,
                      "baseline": (b or {}).get("sha", "")[:9] or None})
+    # Vendored skills are visible on the board but never scored or recommended. Their bytes
+    # are advanced as one reviewed bundle, not rewritten by a per-skill tune-up.
+    for p in sorted((repo / "shared" / "superpowers").glob("*/")):
+        if not p.is_dir() or p.name in names:
+            continue
+        md = p / "SKILL.md"
+        rows.append({"skill": p.name, "score": 0, "receipt": "report-only",
+                     "age_days": None, "stale_model_hits": 0,
+                     "skill_md_lines": len(md.read_text(errors="ignore").splitlines())
+                     if md.is_file() else 0,
+                     "baseline": None, "tier": "vendored-report-only",
+                     "excluded": "read-only; use upstreamctl diff/sync for superpowers"})
     rows.sort(key=lambda r: (-r["score"], r["skill"]))
     return rows
 
@@ -797,6 +830,10 @@ def _self_test() -> int:
     with tempfile.TemporaryDirectory() as td:
         r = Path(td)
         (r / "shared" / "skills" / "alpha").mkdir(parents=True)
+        (r / "shared" / "superpowers" / "brainstorming").mkdir(parents=True)
+        (r / "shared" / "superpowers" / "brainstorming" / "SKILL.md").write_text(
+            "---\nname: brainstorming\ndescription: test\n---\n"
+        )
         (r / "capabilities.toml").write_text("[models]\nclaude = []\n")
         (r / ".claude" / "skills" / "beta").mkdir(parents=True)
         ti_a = target_info(r, "alpha")
@@ -806,6 +843,25 @@ def _self_test() -> int:
         # chosen by repo kind, so the real source can never be shadowed by a generic one
         ok.append(("foreign layout is ignored inside a khenrix repo",
                    target_info(r, "beta")["found"] is False))
+        ti_v = target_info(r, "brainstorming")
+        ok.append(("vendored Khenrix skill resolves explicitly",
+                   ti_v["found"] and ti_v["paths"] ==
+                   ["shared/superpowers/brainstorming"]))
+        ok.append(("vendored Khenrix skill is read-only report-only",
+                   ti_v["tier"] == "vendored-report-only" and ti_v["read_only"]
+                   and not ti_v["tunable"]))
+        ok.append(("vendored target names the atomic upstream commands",
+                   any("upstream-diff" in cmd for cmd in ti_v["update_commands"])
+                   and any("upstream-sync" in cmd for cmd in ti_v["update_commands"])))
+        _vendor_buf = io.StringIO()
+        with contextlib.redirect_stdout(_vendor_buf):
+            _vendor_rc = main(["target-info", "--repo", str(r),
+                               "--skill", "brainstorming"])
+        ok.append(("target-info refuses the vendored tune-up flow", _vendor_rc == 2))
+        ok.append(("vendored refusal prints update guidance",
+                   "REFUSING tune-up" in _vendor_buf.getvalue()
+                   and "upstream-diff" in _vendor_buf.getvalue()
+                   and "upstream-sync" in _vendor_buf.getvalue()))
         # same basename, different roots — the collision an unhashed key would merge
         c1, c2 = Path(td) / "a" / "dup", Path(td) / "b" / "dup"
         (c1 / "skills" / "x").mkdir(parents=True)
@@ -1084,11 +1140,22 @@ def _self_test() -> int:
         _r = Path(_td)
         (_r / "shared" / "skills" / "dup").mkdir(parents=True)
         (_r / "shared" / "skill-templates" / "dup").mkdir(parents=True)
+        (_r / "shared" / "superpowers" / "vendor").mkdir(parents=True)
+        (_r / "shared" / "superpowers" / "vendor" / "SKILL.md").write_text(
+            "---\nname: vendor\ndescription: test\n---\n"
+        )
         (_r / "capabilities.toml").write_text("[models]\nclaude = []\n")
         try:
             _rows = triage(_r)
             ok.append(("triage: a name in BOTH source dirs yields ONE row",
                        [r["skill"] for r in _rows].count("dup") == 1))
+            _vendor = next((row for row in _rows if row["skill"] == "vendor"), None)
+            ok.append(("triage: vendored skill is visible as excluded report-only",
+                       bool(_vendor and _vendor.get("excluded")
+                            and _vendor["receipt"] == "report-only")))
+            ok.append(("triage: vendored skill is never recommended",
+                       "deep tune-up of 'vendor'" not in triage_recommendation(_rows)
+                       and "report-only" in triage_recommendation(_rows)))
         except Exception as _e:  # noqa: BLE001
             ok.append((f"triage: a name in BOTH source dirs yields ONE row ({_e})", False))
     ok.append(("triage: a signal-free board scores 0 for every row",
@@ -1593,7 +1660,16 @@ def main(argv=None) -> int:
                 print(f"paths:  {', '.join(info['paths'])}")
                 print(f"tier:   {info['tier']}")
                 print(f"gate:   {info['gate']}")
-                print(f"log:    docs/tuneups/log/{info['log_target']}.jsonl (in khenrix-utils)")
+                if info["read_only"]:
+                    print("update:")
+                    for command in info["update_commands"]:
+                        print(f"  {command}")
+                    print("  ✗ REFUSING tune-up: vendored skill bytes are read-only")
+                else:
+                    print(f"log:    docs/tuneups/log/{info['log_target']}.jsonl "
+                          "(in khenrix-utils)")
+        if info["read_only"]:
+            return 2
         return 0 if (info["found"] and not info["ambiguous"]) else 1
     elif args.cmd == "verify-final-receipt":
         problems = verify_final_receipt(repo, args.skill, args.panel.split(","))
@@ -1640,9 +1716,12 @@ def main(argv=None) -> int:
             print(f"{'score':>5}  {'skill':<16} {'receipt':<13} {'age(d)':>6} "
                   f"{'stale-ids':>9} {'md-lines':>8}")
             for r in rows:
-                print(f"{r['score']:>5}  {r['skill']:<16} {r['receipt']:<13} "
+                score = "-" if r.get("excluded") else r["score"]
+                print(f"{score:>5}  {r['skill']:<16} {r['receipt']:<13} "
                       f"{r['age_days'] if r['age_days'] is not None else '-':>6} "
                       f"{r['stale_model_hits']:>9} {r['skill_md_lines']:>8}")
+                if r.get("excluded"):
+                    print(f"       ↳ excluded: {r['excluded']}")
             print("\n" + triage_recommendation(rows))
     elif args.cmd == "log":
         if args.action == "append":

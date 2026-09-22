@@ -89,6 +89,30 @@ that CLI's own config, not here.
   workflow. Load `khenrix-writing` for humanization, voice matching, or a deeper rewrite.
   Never run both prose rewrite modes over the same artifact.
 
+## Superpowers workflow
+
+- At the start of each root session, load `using-superpowers` before the first substantive
+  response or action so its routing rules are available. A sub-agent dispatched with a
+  bounded task loads only the skills relevant to that task. Treat an upstream reference to
+  `superpowers:<name>` as the native direct-copy skill `<name>`; there is no plugin namespace.
+- Route by ownership in this order: an explicitly named user skill; a domain or end-to-end
+  workflow such as `fix-jira-ticket`, `agentic-setup`, Khenrix setup/upgrade, or `llm-forge`;
+  `mikado-graph` for dependency decomposition; then Superpowers for a generic development
+  process. `khenrix-quality` shapes code and prose within whichever workflow owns the task.
+- Use `brainstorming` for open-ended design. Do not use it to reopen an accepted plan or
+  re-gate work the user has already authorized. Do not recursively run Superpowers execution
+  or sub-agent workflows inside Forge.
+- Apply `test-driven-development` subject to the host's test policy: write tests that prove
+  material behavior, not low-impact or implementation-mirroring tests. Do not create a
+  worktree inside Forge, for global machine configuration, or when the task already has a
+  managed worktree. Review and branch-finishing skills do not override a domain owner or an
+  already authorized push or merge.
+- Native `skill-creator` or `skill-tuneup` owns skill authoring and tuning unless the user
+  explicitly asks for `writing-skills`. Khenrix model, effort, and mise defaults override
+  generic upstream setup advice.
+- The optional Superpowers visual companion must use its managed launcher, which always
+  sets `SUPERPOWERS_DISABLE_TELEMETRY=1`. Do not bypass or unset that local-data control.
+
 ## Sub-agents
 
 - Enforce delegation structurally, not by prose: a coordinator agent should have its write
@@ -143,8 +167,9 @@ that CLI's own config, not here.
 
 ## Tooling
 
-- `khenrix-quality`, `khenrix-writing`, and this bounded instruction block are copied
-  directly from `khenrix-utils` with `mise run skills:plan` and `skills:apply`.
+- Every skill declared in `[skill_delivery].skills`, including the reviewed Superpowers
+  bundle, and this bounded instruction block are copied directly from `khenrix-utils` with
+  `mise run skills:plan` and `skills:apply`.
 - Optional MCP servers, settings, and plugin content use the broader reconcile flow.
   Run `khenrix-setup` only in a CLI where that optional plugin was explicitly installed.
 - MCP servers and settings added outside `khenrix-utils` are intentionally preserved —

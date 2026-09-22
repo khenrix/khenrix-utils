@@ -68,6 +68,21 @@ def load_cases(path: Path) -> dict[str, Any]:
     cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         raise SmokeError("smoke manifest requires cases")
+    required_routes = data.get("required_routes")
+    if not isinstance(required_routes, dict) or not required_routes:
+        raise SmokeError("smoke manifest requires a non-empty required_routes object")
+    expected: set[tuple[str, str]] = set()
+    for skill, required in required_routes.items():
+        if not isinstance(skill, str) or not skillctl.SKILL_NAME.fullmatch(skill):
+            raise SmokeError(f"smoke manifest has invalid skill name {skill!r}")
+        if (
+            not isinstance(required, list)
+            or not required
+            or len(required) != len(set(required))
+            or any(route not in {"explicit", "natural"} for route in required)
+        ):
+            raise SmokeError(f"smoke manifest has invalid required routes for {skill}")
+        expected.update((skill, route) for route in required)
     ids: set[str] = set()
     routes: set[tuple[str, str]] = set()
     for case in cases:
@@ -81,7 +96,7 @@ def load_cases(path: Path) -> dict[str, Any]:
         ids.add(case["id"])
         if case["route"] not in {"explicit", "natural"}:
             raise SmokeError(f"case {case['id']} has invalid route")
-        if case["skill"] not in {"khenrix-quality", "khenrix-writing"}:
+        if case["skill"] not in required_routes:
             raise SmokeError(f"case {case['id']} has unmanaged skill")
         token = f"/skill:{case['skill']}"
         if case["route"] == "explicit" and token not in case["prompt"]:
@@ -93,14 +108,11 @@ def load_cases(path: Path) -> dict[str, Any]:
         if not isinstance(case["max_steps"], int) or not 1 <= case["max_steps"] <= 4:
             raise SmokeError(f"case {case['id']} max_steps must be 1..4")
         routes.add((case["skill"], case["route"]))
-    expected = {
-        ("khenrix-quality", "explicit"),
-        ("khenrix-quality", "natural"),
-        ("khenrix-writing", "explicit"),
-        ("khenrix-writing", "natural"),
-    }
     if routes != expected:
-        raise SmokeError(f"smoke manifest must cover each skill explicitly and naturally; found {routes}")
+        raise SmokeError(
+            "smoke manifest must cover every required skill route; "
+            f"expected {expected}, found {routes}"
+        )
     flows = data.get("flows")
     if not isinstance(flows, list) or len(flows) != 1:
         raise SmokeError("smoke manifest requires one bounded multi-turn ADHD flow")
@@ -141,6 +153,10 @@ def installed_closure(config: skillctl.Configuration, manifest: dict[str, Any]) 
     except json.JSONDecodeError as error:
         raise SmokeError(f"invalid install receipt: {error}") from error
     skillctl.validate_install_receipt_header(receipt)
+    requested = set(manifest["required_routes"])
+    missing = requested - set(config.skills)
+    if missing:
+        raise SmokeError("smoke manifest names skills outside direct delivery: " + ", ".join(sorted(missing)))
     skills: dict[str, str] = {}
     for name in config.skills:
         desired = next(

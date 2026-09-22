@@ -5,12 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 khenrix-utils is the source of truth for Claude Code, Codex, Antigravity/`agy`,
-and Maka. `components/skills/skillctl.py` directly copies `khenrix-quality` and
-`khenrix-writing` into their native skill roots and reconciles a bounded
-house-style block in all four instruction files. This selective path does not
-use a marketplace. The repository also owns shared MCP servers, portable
-settings, shell aliases, a status line, and optional per-CLI plugin bundles for
-the broader reconcile flow. See `README.md` for both paths.
+and Maka. `components/skills/skillctl.py` directly copies 17 skills into their
+native skill roots: the Khenrix-authored `khenrix-quality` and `khenrix-writing`
+from `shared/skills/`, plus 15 vendored Superpowers skills from
+`shared/superpowers/`. It also reconciles a bounded house-style block in all four
+instruction files. This selective path does not use a marketplace. The repository
+also owns shared MCP servers, portable settings, shell aliases, a status line, and
+optional per-CLI plugin bundles for the broader reconcile flow. See `README.md` for
+both paths.
 
 ## Edit the source of truth, never the generated copies
 
@@ -19,7 +21,8 @@ the broader reconcile flow. See `README.md` for both paths.
 - `marketplaces/<cli>/plugins/khenrix-utils/{capabilities.toml,house-style.md,statusline/}`
 - any `marketplaces/.../skills/*/scripts/{reconcile.py,inventory.py}`
 - `marketplaces/.../skills/<name>/` for plugin-delivered skills sourced from
-  `shared/skills/` (the native-only `khenrix-quality` and `khenrix-writing` are excluded)
+  `shared/skills/`. The two Khenrix direct-copy skills and all 15 skills from
+  `shared/superpowers/` are excluded.
 - `marketplaces/.../skills/{khenrix-setup,khenrix-upgrade,khenrix-audit}/SKILL.md` — generated from
   `shared/skill-templates/<skill>/SKILL.md.tmpl` + the per-CLI `[skill_facts.*]` tables
 
@@ -28,11 +31,18 @@ Edit the originals instead:
 - Capabilities (MCP servers, settings, aliases, instruction targets): `capabilities.toml`
 - Shared base instructions: `house-style.md` — keep it provider-agnostic; CLI-specific
   guidance belongs in that CLI's own config, not here.
-- Shared skills: `shared/skills/<name>/SKILL.md`
+- Shared Khenrix/plugin skills: `shared/skills/<name>/SKILL.md`. The two
+  Khenrix-authored direct-copy skills are `khenrix-quality` and `khenrix-writing`.
+- Vendored Superpowers skills: `shared/superpowers/<name>/`. Their bodies are
+  immutable reviewed upstream material; never edit one as a generic per-skill
+  change. Review the central bundle provenance at
+  `shared/superpowers/using-superpowers/upstreams.toml`, then update all 15 skills,
+  their pin, notice, license, and declared privacy overlay atomically with
+  `mise run skills:upstream-sync -- superpowers FULL_40_CHARACTER_COMMIT`.
 - Selective skill delivery, restore, provenance checks, and Maka smoke:
   `components/skills/`; its allowlist and targets live under `[skill_delivery]`
   in `capabilities.toml`.
-- Composed-skill provenance: `shared/skills/<name>/upstreams.toml` plus that
+- Composed Khenrix-skill provenance: `shared/skills/<name>/upstreams.toml` plus that
   skill's notices and exact license copies. `upstreamctl.py record` keeps the pin,
   notice revision, and declared license bytes in one rollback-safe update.
 - Reconcile/inventory engine: `scripts/lib/reconcile.py`, `scripts/lib/inventory.py`
@@ -46,8 +56,9 @@ Edit the originals instead:
 ## After editing any source-of-truth file
 
 Run `mise run verify` to validate manifests, skills, charts, and
-`capabilities.toml`. For either direct-copy skill, also run `mise run
-skills:test`, `mise run skills:upstream-status`, and `mise run skills:plan`.
+`capabilities.toml`. For either Khenrix direct-copy skill or an atomic Superpowers
+bundle update, also run `mise run skills:test`, `mise run
+skills:upstream-status`, and `mise run skills:plan`.
 Apply a reviewed plan with `mise run skills:apply -- --expect sha256:PLAN_ID`,
 then run `mise run skills:doctor` and `mise run skills:maka-smoke`.
 
@@ -57,7 +68,12 @@ Codex cache plugins by version, so plain edits are not picked up until refresh.
 
 ## Skill changes require evals (hard gate)
 
-Any change to a skill (shared, templated, or its facts) MUST be eval-tested and
+The vendored Superpowers bodies are the exception to generic per-skill authoring:
+their immutable bundle is verified by provenance, delivery, and routing tests and
+is updated only through the atomic bundle-sync command above. Do not tune, rewrite,
+or evaluate one copied Superpowers skill as an independent local skill.
+
+Any change to a Khenrix-authored skill (shared, templated, or its facts) MUST be eval-tested and
 blind-reviewed before commit — for every provider, not just Claude. The full process is
 `docs/skill-eval-process.md`; the loop runs through the portable harness
 (`scripts/eval_harness.py`). Pre-commit ritual for a skill change:
@@ -111,7 +127,8 @@ receipts.
 
 ## Skill flowcharts
 
-Every skill has a mermaid flowchart at `docs/skill-charts/<skill>.md` — maintainer docs,
+Every Khenrix-authored skill covered by the chart gate has a mermaid flowchart at
+`docs/skill-charts/<skill>.md` — maintainer docs,
 deliberately OUTSIDE the plugins and every receipt closure (a chart under
 `shared/skills/` would stale that skill's receipt on every edit). Each decision diamond
 (`G_*`) carries a Gate-evidence row: `code` gates cite a `path::label` reference that
@@ -120,8 +137,8 @@ checkpoint, a scope rule) that cite the eval assertion or audit item covering th
 test can prove a model will stop, and claiming one would be the defect class this repo
 keeps finding.
 
-If a change alters a skill's flow, update its chart in the same commit. A NEW skill owes
-a chart in the same commit that adds it, exactly as it owes an eval set — the lint
+If a change alters a Khenrix-authored skill's flow, update its chart in the same
+commit. A NEW Khenrix skill owes a chart in the same commit that adds it, exactly as it owes an eval set — the lint
 (`scripts/lib/charts.py`, wired through `checks.run_all`) fails `make verify` on a
 missing chart or a dangling evidence reference.
 
@@ -133,10 +150,11 @@ missing chart or a dangling evidence reference.
   `description` ≤1024 chars, body <500 lines (enforced by `render.py --check`).
 - Reconcile is non-destructive by design: it only adds missing entries or updates ones
   tagged `khenrix-managed`, and never removes machine-specific config. Preserve this invariant.
-- Selective delivery owns only `khenrix-quality`, `khenrix-writing`, its private
-  state directory, and the bounded house-style block. Preserve unrelated skills,
-  parent-directory modes, and instruction text outside the markers. Refuse
-  symlinked managed paths rather than following them.
+- Selective delivery owns only the 17 names declared in `[skill_delivery].skills`
+  (two Khenrix skills from `shared/skills/` and 15 vendored Superpowers skills from
+  `shared/superpowers/`), its private state directory, and the bounded house-style
+  block. Preserve unrelated skills, parent-directory modes, and instruction text
+  outside the markers. Refuse symlinked managed paths rather than following them.
 
 ## Etiquette
 

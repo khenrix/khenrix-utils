@@ -13,22 +13,23 @@ status line, and shell aliases supported by the three CLIs.
 ## How it works
 
 ```text
-capabilities.toml + house-style.md + shared/skills/
-                  │
+capabilities.toml + house-style.md
+                  ├─ shared/skills/       → 2 Khenrix direct-copy + plugin skills
+                  ├─ shared/superpowers/  → 15 vendored Superpowers skills
                   ├─ components/skills/skillctl.py
-                  │     ├─ khenrix-quality + khenrix-writing → native skill roots
+                  │     ├─ 17 declared direct-copy skills → native skill roots
                   │     └─ bounded house-style block → Claude, Codex, agy, Maka
-                  │
                   └─ scripts/render.py → optional per-CLI plugin bundles
 ```
 
-The normal skill path is a selective direct copy. It owns exactly
-`khenrix-quality` and `khenrix-writing`; it leaves every sibling skill and all
-instruction text outside the Khenrix markers untouched. It does not require the
-`khenrix-utils` marketplace, and the selective installer never installs or enables it.
-Generated plugin bundles exclude both native-only skills, so they have one copy and
-update path. The bundles carry other optional skills for the broader `khenrix-setup`
-reconcile flow for MCP servers and CLI-specific settings.
+The normal skill path is a selective direct copy. It owns the 17 names under
+`[skill_delivery].skills`: `khenrix-quality`, `khenrix-writing`, and the 15-skill
+Superpowers bundle. It leaves every sibling skill and all instruction text outside
+the Khenrix markers untouched. It does not require the `khenrix-utils` marketplace,
+and the selective installer never installs or enables it. Generated plugin bundles
+exclude these native-only skills, so they have one copy and update path. The bundles
+carry other optional skills for the broader `khenrix-setup` reconcile flow for MCP
+servers and CLI-specific settings.
 
 ## Usage
 
@@ -41,11 +42,19 @@ mise run skills:apply -- --expect sha256:PLAN_ID
 mise run skills:doctor
 ```
 
-The apply copies both skills to Claude, Codex/Maka, and agy, then reconciles the
+The apply copies all 17 skills to Claude, Codex/Maka, and agy, then reconciles the
 bounded house-style block in all four instruction files. It writes an install
 receipt under `~/.local/state/khenrix-utils/skills/`. See
 [`docs/skills.md`](docs/skills.md) for the skill overview, routing rules, restore
 command, and upstream update process.
+
+The 15 Superpowers directories are a pinned snapshot of
+[`obra/superpowers`](https://github.com/obra/superpowers). Their immutable commit,
+selected paths, tree hash, license, and notice are recorded with the canonical
+source under `shared/superpowers/using-superpowers/`, so an update starts with a reviewed
+upstream diff and ends with `mise run skills:upstream-sync -- superpowers
+FULL_40_CHARACTER_COMMIT` and a new reproducible pin. A single declared launcher
+overlay disables the optional visual companion's remote logo and telemetry path.
 
 The optional full plugin bundle is still available when a CLI needs the broader
 `khenrix-setup` flow:
@@ -107,7 +116,7 @@ mise run maka:auth-mode -- chatgpt-subscription
 mise run maka:install
 ```
 
-`scripts/bootstrap-machine.sh` installs the two native skills and verifies both runtimes,
+`scripts/bootstrap-machine.sh` installs the 17 native skills and verifies both runtimes,
 but does not enable or install a `khenrix-utils` marketplace/plugin bundle. The explicit
 `make setup-claude`, `setup-codex`, and `setup-agy` targets remain the opt-in path. A first run
 must set `KHENRIX_MEMORY_ROUTE` and `KHENRIX_MAKA_AUTH_MODE`; it fails instead of
@@ -130,7 +139,7 @@ Each plugin also ships a **`khenrix-upgrade`** skill. Run it inside a CLI to:
    / `skill-reviewer`; Codex `quick_validate.py`; agy `plugin validate`),
 4. apply repo improvements (SKILL.md / `capabilities.toml` / house-style) with
    diffs + confirmation, then deliver by changed surface: use the reviewed
-   selective plan/apply, doctor, and Maka smoke for the two direct-copy skills,
+   selective plan/apply, doctor, and Maka smoke for the direct-copy skills,
    their provenance, selective settings, or house style; use
    `make khenrix-refresh` for optional rendered plugin content; run both paths
    when both surfaces changed, and
@@ -168,8 +177,10 @@ mise exec -- make status  # full config diff for every CLI
 - **MCP servers / settings / shell aliases / instruction targets:** `capabilities.toml`
 - **Shared house style:** `house-style.md` (rendered into each CLI's memory file
   inside an idempotent `khenrix-managed` block)
-- **Canonical direct-copy skills:** `shared/skills/khenrix-quality/` and
+- **Khenrix-authored direct-copy skills:** `shared/skills/khenrix-quality/` and
   `shared/skills/khenrix-writing/`
+- **Vendored direct-copy skills:** the 15 Superpowers directories under
+  `shared/superpowers/`
 - **Selective delivery, receipts, restore, and Maka smoke:** `components/skills/`
 - **Other shared skills:** `shared/skills/<name>/SKILL.md` (rendered into every plugin)
 - **The `khenrix-setup` / `khenrix-upgrade` skills:** one shared body in
@@ -178,7 +189,7 @@ mise exec -- make status  # full config diff for every CLI
   `[skill_facts.<skill>.<cli>]` tables in `capabilities.toml`. `render.py` fills the
   template per CLI — never edit the generated `marketplaces/.../SKILL.md`.
 
-After editing either canonical direct-copy skill, run its evals, then apply the
+After editing a canonical direct-copy skill, run its evals, then apply the
 reviewed content-addressed plan:
 
 ```bash
@@ -200,7 +211,8 @@ Then run `khenrix-setup` in the CLI if the change affects live capabilities.
 |------|---------|
 | `capabilities.toml` | LLM-agnostic capability manifest (zero-dependency TOML) |
 | `house-style.md` | Bounded shared instructions → Claude, Codex, agy, and Maka instruction files |
-| `shared/skills/` | Canonical skill bodies; the two native-only skills are copied directly and excluded from plugins |
+| `shared/skills/` | Shared Khenrix/plugin skill bodies; contains the two Khenrix direct-copy skills |
+| `shared/superpowers/` | The 15 vendored Superpowers skill bodies; copied directly and excluded from plugins |
 | `components/skills/` | Selective delivery, restore, provenance checks, and Maka routing smoke |
 | `shared/skill-templates/` | Shared body templates for the per-CLI skills (filled from `[skill_facts.*]`) |
 | `statusline/khenrix-statusline` | Shared status line renderer (Claude + agy), installed by the reconcile engine |

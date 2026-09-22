@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deliver the two public Khenrix skills without installing a marketplace.
+"""Deliver the declared public Khenrix skills without installing a marketplace.
 
 The controller deliberately owns only the names declared in
 ``capabilities.toml [skill_delivery].skills``.  It copies those directories to
@@ -70,6 +70,7 @@ class Configuration:
     home: Path
     state_dir: Path
     skills: tuple[str, ...]
+    sources: dict[str, Path]
     targets: dict[str, Path]
     house_source: Path
     instruction_targets: dict[str, Path]
@@ -91,6 +92,59 @@ def canonical_json(value: Any) -> bytes:
 
 
 SHA256_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+SKILL_NAME = re.compile(r"^[a-z0-9-]{1,64}$")
+YAML_BLOCK_SCALARS = {">", ">-", ">+", "|", "|-", "|+"}
+YAML_EMPTY_SCALARS = {"", "~", "null"}
+
+
+def skill_frontmatter_identity(text: str) -> tuple[str | None, str | None]:
+    """Return the top-level name and non-empty description from skill frontmatter.
+
+    The repository intentionally has no YAML runtime dependency. Skill headers use
+    either ordinary scalar values or YAML folded/literal blocks, so parse only those
+    two shapes and fail closed for missing or empty values.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0] != "---":
+        return None, None
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        return None, None
+    header = lines[1:end]
+    name: str | None = None
+    description: str | None = None
+    for index, line in enumerate(header):
+        if line.startswith("name:"):
+            raw_name = line.split(":", 1)[1].strip()
+            if len(raw_name) >= 2 and raw_name[0] == raw_name[-1] and raw_name[0] in "\"'":
+                raw_name = raw_name[1:-1].strip()
+            name = raw_name or None
+        elif line.startswith("description:"):
+            raw_description = line.split(":", 1)[1].strip()
+            if raw_description in YAML_BLOCK_SCALARS:
+                content: list[str] = []
+                for continuation in header[index + 1 :]:
+                    if continuation and not continuation[0].isspace():
+                        break
+                    stripped = continuation.strip()
+                    if stripped and not stripped.startswith("#"):
+                        content.append(stripped)
+                description = " ".join(content) or None
+            else:
+                if (
+                    len(raw_description) >= 2
+                    and raw_description[0] == raw_description[-1]
+                    and raw_description[0] in "\"'"
+                ):
+                    raw_description = raw_description[1:-1].strip()
+                description = (
+                    None
+                    if raw_description.lower() in YAML_EMPTY_SCALARS
+                    or raw_description.startswith("#")
+                    else raw_description
+                )
+    return name, description
 
 
 def validate_install_receipt_header(receipt: Any) -> None:
@@ -184,12 +238,62 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
         raise DeliveryError("[skill_delivery].skills must be a non-empty string list")
     if len(skills) != len(set(skills)):
         raise DeliveryError("[skill_delivery].skills contains duplicates")
-    allowed = {"khenrix-quality", "khenrix-writing"}
-    if set(skills) != allowed:
+    source_roots_raw = raw.get("source_roots", ["shared/skills"])
+    if (
+        not isinstance(source_roots_raw, list)
+        or not source_roots_raw
+        or not all(isinstance(value, str) and value for value in source_roots_raw)
+        or len(source_roots_raw) != len(set(source_roots_raw))
+    ):
         raise DeliveryError(
-            "selective delivery must own exactly khenrix-quality and khenrix-writing; "
-            f"found {skills!r}"
+            "[skill_delivery].source_roots must be a non-empty unique string list"
         )
+    source_roots: list[Path] = []
+    for raw_root in source_roots_raw:
+        relative = Path(raw_root)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DeliveryError(f"skill delivery source root escapes repository: {raw_root}")
+        root = repo_root / relative
+        if root.is_symlink() or not root.is_dir():
+            raise DeliveryError(f"skill delivery source root must be a real directory: {root}")
+        assert_no_symlink_path(root, repo_root, allow_missing=False)
+        source_roots.append(root)
+    sources: dict[str, Path] = {}
+    for skill in skills:
+        if not SKILL_NAME.fullmatch(skill):
+            raise DeliveryError(f"invalid delivered skill name: {skill!r}")
+        matches = [root / skill for root in source_roots if (root / skill).exists()]
+        if len(matches) != 1:
+            raise DeliveryError(
+                f"delivered skill must resolve in exactly one source root: {skill!r}; "
+                f"found {[str(path) for path in matches]}"
+            )
+        source = matches[0]
+        if source.is_symlink() or not source.is_dir():
+            raise DeliveryError(f"delivered skill source must be a real directory: {source}")
+        entrypoint = source / "SKILL.md"
+        if entrypoint.is_symlink() or not entrypoint.is_file():
+            raise DeliveryError(f"delivered skill has no regular SKILL.md: {entrypoint}")
+        for item in source.rglob("*"):
+            if item.is_symlink():
+                raise DeliveryError(f"delivered skill source contains a symlink: {item}")
+            if not (item.is_file() or item.is_dir()):
+                raise DeliveryError(
+                    f"delivered skill source contains an unsupported entry: {item}"
+                )
+        frontmatter_name, frontmatter_description = skill_frontmatter_identity(
+            entrypoint.read_text()
+        )
+        if frontmatter_name != skill:
+            raise DeliveryError(
+                f"delivered skill frontmatter name must match directory {skill!r}: "
+                f"found {frontmatter_name!r}"
+            )
+        if not frontmatter_description:
+            raise DeliveryError(
+                f"delivered skill frontmatter description must be non-empty: {skill!r}"
+            )
+        sources[skill] = source
     target_data = raw.get("targets")
     if not isinstance(target_data, dict) or set(target_data) != {"claude", "codex_maka", "agy"}:
         raise DeliveryError(
@@ -221,7 +325,7 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
 
     # The legacy reconcile flow renders declared per-CLI overlays inside the same
     # house-style markers. Selective delivery must produce that identical block or
-    # the two controllers will alternate forever (most visibly for Claude).
+    # the controllers will alternate forever (most visibly for Claude).
     instruction_config = data.get("instructions") or {}
     overlay_data = instruction_config.get("overlays") or {}
     if not isinstance(overlay_data, dict):
@@ -251,6 +355,7 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
         home=home,
         state_dir=state_dir,
         skills=tuple(skills),
+        sources=sources,
         targets=targets,
         house_source=source,
         instruction_targets=instruction_targets,
@@ -456,7 +561,7 @@ def replace_managed_block(text: str, desired: str | None) -> str:
 def plan(config: Configuration) -> tuple[str, list[Entry]]:
     entries: list[Entry] = []
     for skill in config.skills:
-        source = config.repo_root / "shared" / "skills" / skill
+        source = config.sources[skill]
         desired_hash = tree_hash(source)
         for target_name, root in config.targets.items():
             assert_no_symlink_path(root, config.home)

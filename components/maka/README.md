@@ -9,9 +9,9 @@ The Apache license and notices are under `third_party/apache-maka/`.
 
 Agentic Setup remains the broader inventory and sync owner for the other shared
 skills and plugins used by Claude, Codex, agy, and Maka. Khenrix Utils owns and
-direct-delivers `khenrix-quality` and `khenrix-writing`. Installing this Maka
-component does not copy either skill; Maka discovers them from the shared native
-skill root on the machine.
+direct-delivers `khenrix-quality`, `khenrix-writing`, and the 15-skill
+Superpowers bundle. Installing this Maka component does not copy those skills;
+Maka discovers them from the shared native skill root on the machine.
 
 The managed runtime supports these routes:
 

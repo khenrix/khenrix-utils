@@ -1,0 +1,42 @@
+[[sources]]
+name = "superpowers"
+repository = "https://github.com/obra/superpowers.git"
+ref = "refs/tags/v6.4.1"
+commit = "5bf4e78011075bcfc0dc295f0724994cd123ee71"
+paths = ["LICENSE", "skills"]
+license = "MIT"
+upstream_license_path = "LICENSE"
+local_license_path = "licenses/superpowers.LICENSE"
+adaptation = "All declared skills retain upstream bytes and executable bits except for one manifest-declared privacy overlay: brainstorming/scripts/start-server.sh always exports SUPERPOWERS_DISABLE_TELEMETRY=1 before launching the optional visual server. Provenance files and the exact local license copy are added under using-superpowers."
+path_tree_hash = "sha256:45166aa03b6b9e87b32ab7ee2c560d0cb59d591683c05e4edfbd9f1af629c475"
+
+[sources.verbatim_bundle]
+upstream_root = "skills"
+members = [
+  "brainstorming",
+  "diagnosing-superpowers",
+  "dispatching-parallel-agents",
+  "executing-plans",
+  "finishing-a-development-branch",
+  "receiving-code-review",
+  "requesting-code-review",
+  "subagent-driven-development",
+  "systematic-debugging",
+  "test-driven-development",
+  "using-git-worktrees",
+  "using-superpowers",
+  "verification-before-completion",
+  "writing-plans",
+  "writing-skills",
+]
+control_paths = [
+  "using-superpowers/upstreams.toml",
+  "using-superpowers/THIRD_PARTY_NOTICES.md",
+  "using-superpowers/licenses/superpowers.LICENSE",
+]
+
+[[sources.verbatim_bundle.overlays]]
+path = "brainstorming/scripts/start-server.sh"
+after = "#!/usr/bin/env bash\n"
+insert = "export SUPERPOWERS_DISABLE_TELEMETRY=1\n"
+reason = "Disable the optional visual companion's remote logo request and telemetry path even when a GUI-launched CLI does not inherit shell startup files."

@@ -11,7 +11,7 @@ This refreshes already-installed optional plugin bundles in one step:
   3. best-effort refresh of each CLI's marketplace metadata
 
 An absent plugin remains absent; use the explicit `make setup-<cli>` target to opt in.
-Plugin files are copied additively; obsolete bundled copies of the two native-only
+Plugin files are copied additively; obsolete bundled copies of the declared native-only
 skills are removed from the plugin-owned skills directory. Nothing in live CLI *config*
 (MCP servers, settings) is touched — that is the khenrix-setup skill's job.
 """
@@ -20,12 +20,25 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HOME = Path.home()
 CLIS = ("claude", "codex", "agy")
-NATIVE_ONLY_SKILLS = ("khenrix-quality", "khenrix-writing")
+
+
+def declared_native_only_skills(root: Path = ROOT) -> tuple[str, ...]:
+    with (root / "capabilities.toml").open("rb") as handle:
+        raw = tomllib.load(handle).get("skill_delivery", {}).get("skills")
+    if not isinstance(raw, list) or not raw or not all(isinstance(x, str) for x in raw):
+        raise ValueError("[skill_delivery].skills must be a non-empty string list")
+    if len(raw) != len(set(raw)):
+        raise ValueError("[skill_delivery].skills contains duplicates")
+    return tuple(raw)
+
+
+NATIVE_ONLY_SKILLS = declared_native_only_skills()
 
 # Where each CLI keeps the installed plugin (globs, ~ already expanded).
 INSTALL_GLOBS = {

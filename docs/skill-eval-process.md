@@ -1,7 +1,7 @@
 # Skill-eval process (provider-agnostic)
 
-**Every change to a skill in this repo must be eval-tested and blind-reviewed before it
-is committed.** This is a hard gate, not a suggestion. The point is the same rigor the
+**Every change to a Khenrix-authored skill in this repo must be eval-tested and
+blind-reviewed before it is committed.** This is a hard gate, not a suggestion. The point is the same rigor the
 `llm-council` work proved out — with-skill vs baseline, judged against assertions, then a
 blind A/B — applied to *every* skill and *every* provider, not just Claude.
 
@@ -11,9 +11,17 @@ that loop for the three provider CLIs: Claude, Codex, and agy. Claude's
 (see below). Maka consumes the same installed skill bodies, but its invocation
 check is a separate smoke test rather than a fourth harness provider.
 
+The immutable `shared/superpowers/` snapshot has a different gate because Khenrix does
+not author or independently tune those 15 bodies. Review and advance it as one bundle
+with `skills:upstream-diff` and `skills:upstream-sync`; the provenance suite verifies
+every selected path, byte, executable bit, member, license, and declared privacy overlay,
+then selective-delivery tests and native routing smoke cover the local integration. Do
+not create a local per-skill receipt for one vendored member.
+
 ## The loop
 
-1. **Edit the skill.** For shared skills, edit `shared/skills/<name>/SKILL.md`. For the
+1. **Edit the skill.** For Khenrix-authored shared skills, edit
+   `shared/skills/<name>/SKILL.md`. For the
    templated per-CLI skills, edit `shared/skill-templates/<skill>/SKILL.md.tmpl` (shared
    prose) and/or the `[skill_facts.<skill>.<cli>]` facts in `capabilities.toml`. Then
    `python3 scripts/render.py` so the rendered bodies the harness runs are current.
@@ -185,7 +193,7 @@ mise exec -- make eval-arena SKILLS=khenrix-quality,khenrix-writing
 `eval-trigger` reads `evals/<skill>/triggers.json`
 (`{"should_trigger": [...], "near_miss": [...]}`) and scores correct fires plus correct
 abstains. It reads the selected provider's rendered `SKILL.md` when one exists, preserving
-provider-specific metadata for templated skills. A native-only skill intentionally excluded
+provider-specific metadata for templated skills. A Khenrix-authored native-only skill intentionally excluded
 from plugin bundles falls back to its canonical `shared/skills/<name>/SKILL.md`; raw
 `SKILL.md.tmpl` files are never evaluated. Near-misses should be prompts belonging to an
 *adjacent* skill:

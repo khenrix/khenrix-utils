@@ -183,24 +183,99 @@ def _names_from(parsed):
     return names
 
 
+def _installed_plugin_names(text: str | None):
+    """Normalize Claude/Codex JSON plugin output to unqualified installed names.
+
+    Claude emits a list with ``id=name@marketplace``. Codex emits an object whose
+    ``installed`` value is a list. Keep disabled-but-installed entries: an upstream
+    Superpowers installation is still a second update path even while disabled.
+    """
+    if text is None or not text.strip():
+        return PROBE_ERROR
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return PROBE_ERROR
+    if isinstance(data, dict):
+        entries = data.get("installed", data.get("plugins"))
+        if isinstance(entries, dict):
+            entries = list(entries)
+    else:
+        entries = data
+    if not isinstance(entries, list):
+        return PROBE_ERROR
+    names: set[str] = set()
+    for entry in entries:
+        raw = entry if isinstance(entry, str) else None
+        if isinstance(entry, dict):
+            raw = entry.get("id") or entry.get("name") or entry.get("plugin")
+        if isinstance(raw, str) and raw:
+            names.add(raw.split("@", 1)[0])
+    return names
+
+
+def _plugin_dir_names(root: Path) -> set[str]:
+    if not root.is_dir():
+        return set()
+    return {path.name for path in root.iterdir() if path.is_dir()}
+
+
+def _installed_skill_names(root: Path) -> set[str]:
+    """Return top-level skill names beneath an installed plugin root."""
+    if not root.is_dir():
+        return set()
+    return {
+        skill.parent.name
+        for skill in root.rglob("SKILL.md")
+        if skill.parent.parent.name == "skills"
+    }
+
+
+def _superpowers_skill_names() -> set[str]:
+    """Read the central bundle manifest so duplicate detection follows updates."""
+    manifest = ROOT / "shared/superpowers/using-superpowers/upstreams.toml"
+    try:
+        with open(manifest, "rb") as fh:
+            sources = tomllib.load(fh).get("sources", [])
+    except (OSError, tomllib.TOMLDecodeError):
+        return {"using-superpowers"}
+    for source in sources:
+        if source.get("name") == "superpowers":
+            members = source.get("verbatim_bundle", {}).get("members", [])
+            if isinstance(members, list) and all(isinstance(name, str) for name in members):
+                return set(members)
+    return {"using-superpowers"}
+
+
 def _read_config(path: Path):
     return _parse_json_list(path.read_text()) if path.exists() else PROBE_ERROR
 
 
 def probe_all() -> dict:
-    """Observe live MCP state per CLI (prefer config files / --json; never scrape text).
-    Live codex-plugin / ported-skill probing is a documented follow-up — those sets are
-    empty here, so the XOR live check only fires on data actually observed."""
+    """Observe live MCP and duplicate-prone plugin state without scraping text."""
     out: dict = {}
+    home = Path.home()
     claude_mcp = _read_config(Path.home() / ".claude.json")
-    out["claude"] = {"mcp": _names_from(claude_mcp)}
+    claude_plugins = _installed_plugin_names(_run(["claude", "plugin", "list", "--json"]))
+    out["claude"] = {"mcp": _names_from(claude_mcp), "plugins": claude_plugins,
+                     "ported_skills": set()}
     codex_json = _run(["codex", "mcp", "list", "--json"])
+    codex_plugins = _installed_plugin_names(_run(["codex", "plugin", "list", "--json"]))
     out["codex"] = {
         "mcp": _names_from(_parse_json_list(codex_json)) if codex_json is not None else PROBE_ERROR,
-        "native_plugins": set(), "ported_skills": set(),
+        "plugins": codex_plugins,
+        "native_plugins": set(),
+        "ported_skills": _installed_skill_names(
+            home / ".codex/plugins/cache/khenrix-ported-marketplace/khenrix-ported"
+        ),
     }
-    agy_mcp = _read_config(Path.home() / ".gemini/config/mcp_config.json")
-    out["agy"] = {"mcp": _names_from(agy_mcp)}
+    agy_plugin_root = home / ".gemini/config/plugins"
+    agy_mcp = _read_config(home / ".gemini/config/mcp_config.json")
+    out["agy"] = {
+        "mcp": _names_from(agy_mcp),
+        "plugins": _plugin_dir_names(agy_plugin_root),
+        "ported_skills": _installed_skill_names(agy_plugin_root / "khenrix-ported"),
+    }
     return out
 
 
@@ -244,7 +319,7 @@ def classify(desired: str, observed_present: bool, probe_ok: bool) -> str:
 
 def xor_violations(m: dict, observed: dict) -> list[str]:
     """No capability may be active as BOTH a native plugin and its paired MCP on one CLI,
-    and no ported skill body may duplicate a codex-native plugin's skills."""
+    and no upstream plugin/ported body may duplicate direct-delivered Superpowers skills."""
     out: list[str] = []
     codex = observed.get("codex", {})
     native = codex.get("native_plugins", set())
@@ -257,8 +332,22 @@ def xor_violations(m: dict, observed: dict) -> list[str]:
         equiv = s.get("native_equiv") or NATIVE_MCP_EQUIV.get(s["name"])
         if equiv and equiv in native and s["name"] in mcps:
             out.append(f"codex: '{s['name']}' active as both native plugin and shared MCP")
-    if "superpowers" in native and "superpowers" in codex.get("ported_skills", set()):
-        out.append("codex: superpowers ported skill bodies shadow the native plugin")
+    superpowers_skills = _superpowers_skill_names()
+    for cli in CLIS:
+        state = observed.get(cli, {})
+        plugins = state.get("plugins", set())
+        if plugins is not PROBE_ERROR and "superpowers" in plugins:
+            out.append(
+                f"{cli}: upstream Superpowers plugin duplicates the direct-delivered bundle"
+            )
+        ported = state.get("ported_skills", set())
+        if ported is not PROBE_ERROR:
+            overlap = sorted(superpowers_skills & ported)
+            if overlap:
+                out.append(
+                    f"{cli}: khenrix-ported duplicates direct-delivered Superpowers skills: "
+                    + ", ".join(overlap)
+                )
     return out
 
 
@@ -395,6 +484,12 @@ def _self_test() -> int:
                _parse_json_list((FIX / "malformed.json").read_text()) is PROBE_ERROR))
     ok.append(("empty input -> PROBE_ERROR", _parse_json_list("") is PROBE_ERROR))
     ok.append(("_names_from passes PROBE_ERROR through", _names_from(PROBE_ERROR) is PROBE_ERROR))
+    ok.append(("Claude plugin ids normalize to names",
+               _installed_plugin_names('[{"id":"superpowers@official","enabled":false}]')
+               == {"superpowers"}))
+    ok.append(("Codex installed plugin object normalizes to names",
+               _installed_plugin_names('{"installed":[{"name":"superpowers"}],"available":[]}')
+               == {"superpowers"}))
     ok.append(("report view carries no sentinel object",
                "PROBE_ERROR" == _report_view({"x": {"mcp": PROBE_ERROR}})["x"]["mcp"]))
     ok.append(("present+observed -> satisfied", classify("present", True, True) == "satisfied"))
@@ -409,6 +504,15 @@ def _self_test() -> int:
     viol2 = xor_violations({"mcp": [{"name": "github", "xor_exempt": True, "codex": "native"}]},
                            {"codex": {"native_plugins": {"github"}, "mcp": {"github"}}})
     ok.append(("XOR skips xor-exempt github", viol2 == []))
+    duplicate = xor_violations(
+        {"mcp": []},
+        {"claude": {"plugins": {"superpowers"}, "ported_skills": set()},
+         "agy": {"plugins": set(), "ported_skills": {"brainstorming"}}},
+    )
+    ok.append(("duplicate Superpowers plugin is caught",
+               any("claude" in item and "plugin" in item for item in duplicate)))
+    ok.append(("duplicate ported Superpowers skill is caught",
+               any("agy" in item and "brainstorming" in item for item in duplicate)))
     ok.append(("undocumented ref caught",
                secrets_doc_gaps(refs={"A", "B"}, documented={"A"}, allow=set())["undocumented"] == ["B"]))
     ok.append(("stale doc entry caught",

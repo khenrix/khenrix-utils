@@ -4,7 +4,7 @@
 # Edit this toml; never hand-edit inventory.md. Versions are best-effort references, not pins.
 
 [meta]
-snapshot_date = "2026-09-21"
+snapshot_date = "2026-09-22"
 # status enum: present | ported | native | not-applicable | claude-only
 
 [[plugins]]
@@ -19,13 +19,13 @@ portability = "already cross-CLI via reconcile"
 
 [[plugins]]
 name = "superpowers"
-source = "gh:anthropics/claude-plugins-official"
-version = "6.1.1"
-components = ["skills", "hooks"]
+source = "vendored:obra/superpowers"
+version = "v6.4.1@5bf4e78011075bcfc0dc295f0724994cd123ee71"
+components = ["skills"]
 claude = "present"
-codex = "native"
-agy = "ported"
-portability = "codex uses native plugin; skills ported to agy only; hooks claude-only"
+codex = "present"
+agy = "present"
+portability = "15 reviewed skill trees direct-delivered by skills:apply; upstream plugins are duplicates"
 
 [[plugins]]
 name = "claude-obsidian"

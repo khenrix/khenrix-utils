@@ -9,8 +9,9 @@ provenance, tests, and audit lab live in `components/maka`.
 The current pin is `maka-agent@0.2.0-dev.44.20260920`. Agentic Setup remains the
 broader inventory and sync owner for the other shared skills and plugins.
 Khenrix Utils owns and direct-delivers `khenrix-quality` and `khenrix-writing`
-to Claude, Codex, agy, and Maka. Installing the Maka runtime itself does not copy
-skills; Maka discovers the two Khenrix skills from the shared native skill root.
+plus the 15-skill Superpowers bundle to Claude, Codex, agy, and Maka. Installing
+the Maka runtime itself does not copy skills; Maka discovers all 17 from the shared
+native skill root after `mise run skills:apply`.
 
 ## Supported setups
 
@@ -155,6 +156,12 @@ Useful TUI commands include:
 - `/session` to open, import, or switch sessions;
 - `/graph on`, `/graph off`, or `/graph <task>` to control Graph Mode;
 - `/permissions auto` to restore approval prompts for privileged operations.
+
+Each root session loads `using-superpowers` before substantive work so Maka can
+select the relevant development workflow. Upstream names such as
+`superpowers:systematic-debugging` map to the plain native skill
+`systematic-debugging`; the direct-copy install does not use a plugin namespace.
+Khenrix domain workflows and an explicitly named user skill keep precedence.
 
 Run one headless turn with a prompt or stdin:
 

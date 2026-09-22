@@ -43,6 +43,11 @@ mise exec python@3.12 bun@1.4.2 -- \
 database and unrelated hooks. The hook installer backs up a changed JSON file
 once as `*.khenrix-backup`.
 
+The installed controller carries the reviewed `mise.toml` and `mise.lock`, resolves
+Bun through that pin, and records the absolute mise-pinned Python interpreter in
+each hook command. Desktop-launched hooks therefore work without a shell-activated
+mise environment or global `python3`/`bun` commands.
+
 Choose exactly one local route:
 
 ```sh

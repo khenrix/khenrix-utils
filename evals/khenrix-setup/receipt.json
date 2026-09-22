@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "khenrix-setup",
-  "source_hash": "72b6d5b1567286af14c6b51322731d13b8d1cdc5e5e23a52aaa4e1db8041ad73",
+  "source_hash": "b54c03a7d769e5ddaf3cd0d3dbb4ab7b8fc037c94e6ded6fc417d6a8b3bfe94d",
   "eval_set_hash": "208aa340ba018b1b9bfd9ff8c8646cc5347be586fb7e229f5a673d3e82ead105",
   "providers": [
     "claude",
@@ -10,7 +10,7 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.7407,
+  "delta_pass_rate": 0.6296,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
@@ -21,13 +21,13 @@
       "status": "ok"
     },
     "claude": {
-      "delta": 0.8889,
+      "delta": 0.7778,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.5555,
+      "delta": 0.3333,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"

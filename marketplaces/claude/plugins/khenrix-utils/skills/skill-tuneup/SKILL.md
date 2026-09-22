@@ -29,30 +29,28 @@ This skill is an orchestrator: the deterministic parts live in the bundled
 `scripts/tuneup.py`, multi-model judgment comes from llm-council's `fanout.py`, and the
 quality gate is the repo's own harness, whatever that is — don't reimplement any of them.
 
-Targets come in **two tiers**, and the tier decides the gate — resolve it first, never
+Targets come in **three tiers**, and the tier decides the gate — resolve it first, never
 assume:
 
 ```bash
 python3 "$TUNEUP" target-info --repo "$REPO" --skill <target>
 ```
 
-- **`full-gate`** — a khenrix-utils skill: any `shared/skills/<name>`, or the templated
-  `khenrix-setup` / `khenrix-upgrade` (source: `shared/skill-templates/<name>/SKILL.md.tmpl`
-  + `[skill_facts.<name>.<cli>]` in `capabilities.toml`). Gate = evals + receipt +
-  `make precommit`.
-- **`council-only`** — a skill in any OTHER repo (`.claude/skills/<name>` or
-  `skills/<name>`), e.g. a project's own skills. A khenrix receipt is meaningless there —
-  it attests to THIS repo's harness — **so the receipt gate does not apply.** That is a
-  claim about the khenrix gate, not about the repo: if the target has its own tests or
-  precommit hook, find and run them; they just cannot earn a receipt.
-  Everything else still applies: baseline, research, both council reviews, the audit, the
-  checkpoint, and convergence. **Say plainly in the run's output that it shipped without a
-  khenrix receipt** — never imply one was earned, and report any target-native gate you ran
-  as its own separate result. Run-log entries are keyed
-  `<repo-name>@<hash>:<skill>` (the hash disambiguates two repos sharing a basename), and
-  the log itself is written into khenrix-utils, which is also the approved-model registry
-  for `stale-models`. Pass `target-info`'s `log_target` verbatim as `--target`; an
-  unqualified key for a foreign repo is refused.
+- **`full-gate`** — a khenrix-utils `shared/skills/<name>` or templated skill. Gate =
+  evals + receipt + `make precommit`; templates combine
+  `shared/skill-templates/<name>/SKILL.md.tmpl` with `[skill_facts.<name>.<cli>]`.
+- **`vendored-report-only`** — an `obra/superpowers` skill under
+  `shared/superpowers/<name>`. It is read-only here: **stop the tune-up flow; do not edit,
+  evaluate, or create a run log.** Inspect with `mise run skills:upstream-diff --
+  superpowers`; update the complete reviewed bundle with `mise run skills:upstream-sync --
+  superpowers FULL_40_CHARACTER_COMMIT`. `target-info` exits 2 after printing both commands;
+  that is the expected refusal, not permission to continue manually.
+- **`council-only`** — a skill in another repo (`.claude/skills/<name>` or
+  `skills/<name>`). Run baseline, research, council reviews, audit, checkpoint,
+  convergence, and the target repo's own gates. It cannot earn a Khenrix receipt; say so
+  and report target-native gates separately. Its run-log key is
+  `<repo-name>@<hash>:<skill>` in khenrix-utils. Pass `target-info`'s `log_target` verbatim;
+  an unqualified foreign key is refused.
 
 ## Non-negotiables
 
@@ -481,7 +479,8 @@ Then ship. **Re-check `git status --porcelain` immediately before staging** — 
 
 | Situation | Do |
 |---|---|
-| Target doesn't exist | list valid targets FOR THE TIER — in khenrix-utils `shared/skills/*` + the templated pair; in any other repo `.claude/skills/*` and `skills/*` — then ask |
+| Vendored target | `target-info` names `shared/superpowers/<name>`, exits 2, and prints the bundle diff/sync commands — report that route and stop; never edit the skill |
+| Target doesn't exist | list valid targets FOR THE TIER — in khenrix-utils `shared/skills/*`, `shared/superpowers/*`, and templates; elsewhere `.claude/skills/*` and `skills/*` — then ask |
 | Target matches TWO layouts (`.claude/skills/x` AND `skills/x`) | `target-info` refuses with both paths — pick or remove one, never guess. `baseline`/`stale-models` would silently union them |
 | Council degraded (`summary.valid` < 3) | proceed with what's valid; quote `summary.header`, and for each failed seat give its `reason` + `hint`. `tool_permission` is our invocation defect — but CONFIRM it first — check the manifest `structured` flag, then the MATCHED-lines procedure in `references/council-failures.md`; a seat that merely read a file containing a sentinel still classifies, and "fixing" that invocation chases a phantom |
 | agy persistently timing out on fan-outs | pre-1.1.1 it reliably rode the whole window; fixed upstream, so treat a recurrence as new (see llm-council's failure table for the current contract). A `--providers claude,codex` panel is an acceptable degraded fallback for the two reviews — say so, don't treat it as a routine shortcut |
