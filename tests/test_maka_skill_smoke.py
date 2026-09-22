@@ -43,6 +43,12 @@ def initialize_runtime_db(path: Path) -> None:
                 session_id TEXT NOT NULL,
                 skill_invocation_json TEXT NOT NULL
             );
+            CREATE TABLE core_root_turn_admissions (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                admitted_at INTEGER NOT NULL,
+                record_json TEXT NOT NULL
+            );
             CREATE TABLE core_agent_run_events (
                 session_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
@@ -82,7 +88,9 @@ def fake_maka(tmp_path: Path) -> Path:
         "    skill = prompt.split('/skill:', 1)[1].split()[0]\n"
         "    receipt = {'invocation':'explicit','request':skill,'success':True,'ref':'user:agents:'+skill,'id':skill,'name':skill,'scope':'user','source':'agents','truncated':False}\n"
         "    invocation = {'loaded':[{'id':skill,'name':skill}],'failed':[],'receipts':[receipt]}\n"
-        "    db.execute('INSERT INTO message_admissions(session_id,skill_invocation_json) VALUES (?,?)', (session_id,json.dumps(invocation)))\n"
+        "    turn_id = str(uuid.uuid4())\n"
+        "    admission = {'skillInvocation':invocation}\n"
+        "    db.execute('INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)', (session_id,turn_id,int(time.time()*1000),json.dumps(admission)))\n"
         "elif '--continue' not in sys.argv:\n"
         "    skill = 'khenrix-writing' if 'Humanize' in prompt else 'khenrix-quality'\n"
         "    event_id = str(uuid.uuid4())\n"
@@ -146,6 +154,11 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
         ("khenrix-writing", "natural"),
     }
     assert all(case["event_evidence"]["evidence_hash"].startswith("sha256:") for case in receipt["cases"])
+    assert {
+        case["event_evidence"]["kind"]
+        for case in receipt["cases"]
+        if case["route"] == "explicit"
+    } == {"core_root_turn_admission"}
     natural_prompts = "\n".join(
         case["prompt"] for case in declared["cases"] if case["route"] == "natural"
     )
@@ -299,6 +312,39 @@ def test_explicit_case_rejects_wrong_source(tmp_path: Path) -> None:
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         with pytest.raises(maka_smoke.SmokeError, match="explicit admission"):
             maka_smoke.verify_explicit_event(connection, "session-1", "khenrix-quality")
+
+
+def test_explicit_case_reads_canonical_root_turn_admission(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    skill = "khenrix-quality"
+    receipt = {
+        "invocation": "explicit",
+        "request": skill,
+        "success": True,
+        "ref": f"user:agents:{skill}",
+        "id": skill,
+        "name": skill,
+        "scope": "user",
+        "source": "agents",
+        "truncated": False,
+    }
+    record = {
+        "skillInvocation": {
+            "loaded": [{"id": skill, "name": skill}],
+            "failed": [],
+            "receipts": [receipt],
+        }
+    }
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "turn-1", 1, json.dumps(record)),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        evidence = maka_smoke.verify_explicit_event(connection, "session-1", skill)
+    assert evidence["kind"] == "core_root_turn_admission"
+    assert evidence["turn_id"] == "turn-1"
 
 
 def test_explicit_case_rejects_truncated_skill_instructions(tmp_path: Path) -> None:

@@ -104,8 +104,9 @@ mise run skills:maka-smoke
 
 It never passes `--yolo`, caps steps and time, and writes a hash-bound receipt
 beside the install receipt. The runner reads Maka's SQLite event log in read-only
-mode: explicit cases require a successful `message_admissions` receipt from the
-`agents` source, while natural cases require a matching `skill_loaded` event with
+mode: explicit cases require a successful canonical root-Turn admission receipt
+from the `agents` source (with queued message admissions accepted for compatible
+clients), while natural cases require a matching `skill_loaded` event with
 `invocation=model_tool`. Both paths reject truncated instructions. When Maka
 records SkillSearch shadow candidates, the loaded skill must be the first-ranked
 candidate; malformed, missing, or lower-ranked shadow evidence fails closed. Raw

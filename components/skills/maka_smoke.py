@@ -180,11 +180,16 @@ def open_runtime_db(path: Path) -> sqlite3.Connection:
     try:
         connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
-        required = {"session_metadata", "message_admissions", "core_agent_run_events"}
+        required = {
+            "session_metadata",
+            "message_admissions",
+            "core_root_turn_admissions",
+            "core_agent_run_events",
+        }
         actual = {
             row[0]
             for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)",
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?)",
                 tuple(sorted(required)),
             )
         }
@@ -220,17 +225,50 @@ def locate_session(connection: sqlite3.Connection, cwd: Path, started_ms: int) -
 def verify_explicit_event(
     connection: sqlite3.Connection, session_id: str, skill: str
 ) -> dict[str, Any]:
-    rows = connection.execute(
-        "SELECT sequence, skill_invocation_json FROM message_admissions "
-        "WHERE session_id = ? ORDER BY sequence",
+    root_rows = connection.execute(
+        "SELECT turn_id, record_json FROM core_root_turn_admissions "
+        "WHERE session_id = ? ORDER BY admitted_at, turn_id",
         (session_id,),
     ).fetchall()
-    matches: list[tuple[int, dict[str, Any]]] = []
-    for row in rows:
+    invocations: list[tuple[str, str | int, dict[str, Any]]] = []
+    for row in root_rows:
         try:
-            invocation = json.loads(row["skill_invocation_json"])
+            record = json.loads(row["record_json"])
         except json.JSONDecodeError as error:
-            raise SmokeError(f"Maka admission {row['sequence']} has invalid skill JSON") from error
+            raise SmokeError(
+                f"Maka root admission {row['turn_id']} has invalid JSON"
+            ) from error
+        invocation = record.get("skillInvocation") if isinstance(record, dict) else None
+        if not isinstance(invocation, dict):
+            raise SmokeError(
+                f"Maka root admission {row['turn_id']} lacks a skill invocation"
+            )
+        invocations.append(("core_root_turn_admission", row["turn_id"], invocation))
+
+    # Maka v44 makes a direct `maka run` call a root Turn, whose durable
+    # admission is stored above. Keep the queued-message path for sessions
+    # admitted through older or asynchronous clients.
+    if not root_rows:
+        rows = connection.execute(
+            "SELECT sequence, skill_invocation_json FROM message_admissions "
+            "WHERE session_id = ? ORDER BY sequence",
+            (session_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                invocation = json.loads(row["skill_invocation_json"])
+            except json.JSONDecodeError as error:
+                raise SmokeError(
+                    f"Maka message admission {row['sequence']} has invalid skill JSON"
+                ) from error
+            if not isinstance(invocation, dict):
+                raise SmokeError(
+                    f"Maka message admission {row['sequence']} has invalid skill JSON"
+                )
+            invocations.append(("message_admission", row["sequence"], invocation))
+
+    matches: list[tuple[str, str | int, dict[str, Any]]] = []
+    for kind, identity, invocation in invocations:
         for receipt in invocation.get("receipts", []):
             if (
                 receipt.get("success") is True
@@ -245,15 +283,14 @@ def verify_explicit_event(
                     raise SmokeError(f"explicit {skill} admission also recorded failures")
                 if not any(item.get("id") == skill for item in invocation.get("loaded", [])):
                     raise SmokeError(f"explicit {skill} receipt lacks its loaded entry")
-                matches.append((row["sequence"], receipt))
+                matches.append((kind, identity, receipt))
     if len(matches) != 1:
         raise SmokeError(
             f"expected one successful explicit admission for {skill}, found {len(matches)}"
         )
-    sequence, receipt = matches[0]
-    return {
-        "kind": "message_admission",
-        "sequence": sequence,
+    kind, identity, receipt = matches[0]
+    evidence: dict[str, Any] = {
+        "kind": kind,
         "session_id": session_id,
         "invocation": "explicit",
         "skill_id": skill,
@@ -262,6 +299,11 @@ def verify_explicit_event(
         "truncated": False,
         "evidence_hash": digest(canonical(receipt)),
     }
+    if kind == "core_root_turn_admission":
+        evidence["turn_id"] = identity
+    else:
+        evidence["sequence"] = identity
+    return evidence
 
 
 def verify_natural_event(

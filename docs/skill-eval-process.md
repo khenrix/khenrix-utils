@@ -227,7 +227,7 @@ a three-turn ADHD flow that enables the mode, checks an action-first continuatio
 same session,
 and checks a bounded acknowledgement of the opt-out. The runner
 never passes `--yolo`, uses fresh temporary working directories, caps steps and
-time, and verifies Maka's `message_admissions` and `skill_loaded` records. A pass
+time, and verifies Maka's root-Turn admission and `skill_loaded` records. A pass
 writes `~/.local/state/khenrix-utils/skills/maka-smoke-receipt.json`, bound to the
 case manifest, installed skill hashes, install plan, and Maka version.
 
