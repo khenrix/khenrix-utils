@@ -34,6 +34,14 @@ class SmokeError(RuntimeError):
     """A smoke precondition or bounded invocation failed."""
 
 
+SESSION_BOOTSTRAP = {
+    "id": "session-bootstrap",
+    "prompt": "/skill:using-superpowers Load the session routing instructions. Reply ready.",
+    "timeout_seconds": 120,
+    "max_steps": 2,
+}
+
+
 def digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
@@ -256,9 +264,10 @@ def verify_explicit_event(
             ) from error
         invocation = record.get("skillInvocation") if isinstance(record, dict) else None
         if not isinstance(invocation, dict):
-            raise SmokeError(
-                f"Maka root admission {row['turn_id']} lacks a skill invocation"
-            )
+            # A continued natural turn has an ordinary root admission beside the
+            # explicit bootstrap admission. It is not evidence for or against the
+            # requested explicit skill, so leave it out of the candidate set.
+            continue
         invocations.append(("core_root_turn_admission", row["turn_id"], invocation))
 
     # Maka v44 makes a direct `maka run` call a root Turn, whose durable
@@ -434,6 +443,17 @@ def run_command(binary: str, item: dict[str, Any], cwd: Path, *, continued: bool
     return completed
 
 
+def needs_session_bootstrap(case: Mapping[str, Any]) -> bool:
+    """Natural target routing runs after the root-session routing skill is loaded.
+
+    This mirrors the shared house rule and prevents the bootstrap skill from
+    competing with the target for a two-step headless Maka turn. Keeping each
+    turn at two steps also prevents a routing smoke from expanding its sandbox
+    merely to inspect a skill's optional reference files.
+    """
+    return case.get("route") == "natural" and case.get("skill") != "using-superpowers"
+
+
 def verify_flow_output(step: dict[str, Any], stdout: str) -> dict[str, Any]:
     """Check session behavior without putting the expected answer in the prompt."""
     lines = [line.strip() for line in stdout.splitlines() if line.strip()]
@@ -441,19 +461,41 @@ def verify_flow_output(step: dict[str, Any], stdout: str) -> dict[str, Any]:
         raise SmokeError(f"flow step {step['id']} returned no non-empty lines")
     check = step.get("check")
     if check == "adhd_action_first":
-        first = lines[0].lower()
         task_terms = ("pull request", "pr", "email", "lunch")
-        action_verbs = ("open", "review", "read", "start", "pick", "choose", "reply", "prepare")
-        if not any(term in first for term in task_terms) or not re.search(
-            r"\b(" + "|".join(action_verbs) + r")\b", first
-        ):
+        action_verbs = (
+            "open",
+            "review",
+            "read",
+            "start",
+            "pick",
+            "choose",
+            "reply",
+            "prepare",
+            "set",
+            "make",
+        )
+        action_line = next(
+            (
+                (index, line)
+                for index, line in enumerate(lines[:2])
+                if any(term in line.casefold() for term in task_terms)
+                and re.search(
+                    r"\b(" + "|".join(action_verbs) + r")\b",
+                    line.casefold(),
+                )
+            ),
+            None,
+        )
+        if action_line is None:
             raise SmokeError(
-                "ADHD continuation did not lead with one concrete action from the neutral task"
+                "ADHD continuation opening did not include one concrete action from the neutral task"
             )
+        index, line = action_line
         return {
             "check": check,
-            "first_line_actionable": True,
-            "first_line_hash": digest(lines[0].encode()),
+            "opening_actionable": True,
+            "action_line": index + 1,
+            "action_line_hash": digest(line.encode()),
         }
     if check == "normal_mode_ack":
         normalized_output = " ".join(lines).casefold()
@@ -477,9 +519,21 @@ def run_case(binary: str, case: dict[str, Any], runtime_db: Path) -> dict[str, A
     with tempfile.TemporaryDirectory(prefix=f"khenrix-maka-{case['id']}-") as temporary:
         cwd = Path(temporary).resolve()
         started_ms = time.time_ns() // 1_000_000
-        completed = run_command(binary, case, cwd, continued=False)
+        bootstrap_completed: subprocess.CompletedProcess[str] | None = None
+        if needs_session_bootstrap(case):
+            bootstrap_completed = run_command(
+                binary, SESSION_BOOTSTRAP, cwd, continued=False
+            )
+        completed = run_command(
+            binary, case, cwd, continued=bootstrap_completed is not None
+        )
         with open_runtime_db(runtime_db) as connection:
             session_id = locate_session(connection, cwd, started_ms)
+            bootstrap_evidence = (
+                verify_explicit_event(connection, session_id, "using-superpowers")
+                if bootstrap_completed is not None
+                else None
+            )
             evidence = (
                 verify_explicit_event(connection, session_id, case["skill"])
                 if case["route"] == "explicit"
@@ -493,6 +547,17 @@ def run_case(binary: str, case: dict[str, Any], runtime_db: Path) -> dict[str, A
         "stdout_hash": digest(completed.stdout.encode()),
         "stdout_bytes": len(completed.stdout.encode()),
         "stderr_hash": digest(completed.stderr.encode()),
+        "session_bootstrap": (
+            {
+                "prompt_hash": digest(SESSION_BOOTSTRAP["prompt"].encode()),
+                "stdout_hash": digest(bootstrap_completed.stdout.encode()),
+                "stdout_bytes": len(bootstrap_completed.stdout.encode()),
+                "stderr_hash": digest(bootstrap_completed.stderr.encode()),
+                "event_evidence": bootstrap_evidence,
+            }
+            if bootstrap_completed is not None
+            else None
+        ),
         "event_evidence": evidence,
         "status": "pass",
     }
@@ -565,9 +630,16 @@ def main(argv: list[str] | None = None) -> int:
         version = maka_version(options.maka_bin)
         runtime_db = options.runtime_db or default_runtime_db(config.home)
         if options.dry_run:
-            total = len(manifest["cases"]) + sum(len(flow["steps"]) for flow in manifest["flows"])
+            bootstrap_turns = sum(needs_session_bootstrap(case) for case in manifest["cases"])
+            total = (
+                len(manifest["cases"])
+                + bootstrap_turns
+                + sum(len(flow["steps"]) for flow in manifest["flows"])
+            )
             print(f"Maka {version}; {total} bounded turns; --yolo absent")
             for case in manifest["cases"]:
+                if needs_session_bootstrap(case):
+                    print(f"PLAN {case['id']}-bootstrap explicit using-superpowers")
                 print(f"PLAN {case['id']} {case['route']} {case['skill']}")
             for flow in manifest["flows"]:
                 print(f"PLAN {flow['id']} multi-turn {flow['skill']}")
@@ -582,7 +654,11 @@ def main(argv: list[str] | None = None) -> int:
             **closure,
             "cases": results,
             "flows": flows,
-            "bounded": {"yolo": False, "temporary_cwd_per_case": True},
+            "bounded": {
+                "yolo": False,
+                "temporary_cwd_per_case": True,
+                "natural_session_bootstrap": True,
+            },
         }
         receipt_path = config.state_dir / "maka-smoke-receipt.json"
         write_receipt(receipt_path, receipt, config)

@@ -229,13 +229,14 @@ receipt is current, run:
 mise run skills:maka-smoke
 ```
 
-The smoke runner starts five bounded one-shot calls: one explicit route per composed
-skill and three grouped natural routes containing every former skill name. It also runs
-a three-turn ADHD flow that enables the mode, checks an action-first continuation in the
-same session,
-and checks a bounded acknowledgement of the opt-out. The runner
-never passes `--yolo`, uses fresh temporary working directories, caps steps and
-time, and verifies Maka's root-Turn admission and `skill_loaded` records. A pass
+The smoke runner covers nine bounded routing cases: explicit and natural routes for the
+four required skills, with two grouped natural quality cases covering every former skill
+name. A non-bootstrap natural case explicitly loads `using-superpowers` in a first turn,
+then continues the same session with the target request. It also runs a three-turn ADHD
+flow that enables the mode, checks an action-first continuation in the same session, and
+checks a bounded acknowledgement of the opt-out. The runner never passes `--yolo`, uses
+fresh temporary working directories, caps steps and time, and verifies Maka's root-Turn
+admission and `skill_loaded` records. A pass
 writes `~/.local/state/khenrix-utils/skills/maka-smoke-receipt.json`, bound to the
 case manifest, installed skill hashes, install plan, and Maka version.
 

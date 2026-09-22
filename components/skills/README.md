@@ -108,7 +108,11 @@ rows, each encoded exactly as `<mode> <type> <object>\t<path>\n`.
 ## Maka smoke
 
 After apply, this opt-in command covers the declared direct-copy skills with explicit
-and natural routing cases. It also runs a three-turn
+and natural routing cases. Every natural target other than `using-superpowers` first
+loads that root-session router explicitly, then continues the same session with the
+natural request. This mirrors the shared house rule, prevents two applicable skills from
+competing for one headless tool step, and keeps each turn inside the workspace sandbox.
+It also runs a three-turn
 ADHD-mode activation, action-first continuation, and bounded normal-mode
 acknowledgement. Every new session starts in a fresh temporary directory.
 

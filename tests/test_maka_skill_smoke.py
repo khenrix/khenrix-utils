@@ -113,17 +113,19 @@ def fake_maka(tmp_path: Path) -> Path:
         "    turn_id = str(uuid.uuid4())\n"
         "    admission = {'skillInvocation':invocation}\n"
         "    db.execute('INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)', (session_id,turn_id,int(time.time()*1000),json.dumps(admission)))\n"
-        "elif '--continue' not in sys.argv:\n"
+        "else:\n"
         "    lower = prompt.lower()\n"
         "    if 'react todo list' in lower: skill = 'brainstorming'\n"
         "    elif 'supported tools and skills' in lower: skill = 'using-superpowers'\n"
         "    elif 'humanize' in lower: skill = 'khenrix-writing'\n"
-        "    else: skill = 'khenrix-quality'\n"
-        "    event_id = str(uuid.uuid4())\n"
-        "    data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+skill,'skillId':skill,'skillName':skill,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
-        "    record = {'type':'skill_loaded','data':data}\n"
-        "    sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
-        "    db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'skill_loaded',json.dumps(record)))\n"
+        "    elif 'former ' in lower or 'show concise help' in lower: skill = 'khenrix-quality'\n"
+        "    else: skill = None\n"
+        "    if skill is not None:\n"
+        "        event_id = str(uuid.uuid4())\n"
+        "        data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+skill,'skillId':skill,'skillName':skill,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
+        "        record = {'type':'skill_loaded','data':data}\n"
+        "        sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "        db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'skill_loaded',json.dumps(record)))\n"
         "db.commit(); db.close()\n"
         "if 'three things on my plate' in prompt: print('Open the pull request and read the description.')\n"
         "elif 'Stop ADHD mode' in prompt: print('ADHD mode is now off.')\n"
@@ -164,7 +166,10 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     assert result == 0
     invocations = log.read_text().splitlines()
     declared = json.loads(manifest.read_text())
-    assert len(invocations) == len(declared["cases"]) + sum(
+    bootstrap_turns = sum(
+        maka_smoke.needs_session_bootstrap(case) for case in declared["cases"]
+    )
+    assert len(invocations) == len(declared["cases"]) + bootstrap_turns + sum(
         len(flow["steps"]) for flow in declared["flows"]
     )
     assert all("--yolo" not in line for line in invocations)
@@ -172,7 +177,11 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     receipt = json.loads((config.state_dir / "maka-smoke-receipt.json").read_text())
     assert receipt["input_hash"].startswith("sha256:")
     assert receipt["runner_hash"].startswith("sha256:")
-    assert receipt["bounded"] == {"temporary_cwd_per_case": True, "yolo": False}
+    assert receipt["bounded"] == {
+        "natural_session_bootstrap": True,
+        "temporary_cwd_per_case": True,
+        "yolo": False,
+    }
     assert {(case["skill"], case["route"]) for case in receipt["cases"]} == {
         ("khenrix-quality", "explicit"),
         ("khenrix-quality", "natural"),
@@ -184,6 +193,22 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
         ("brainstorming", "natural"),
     }
     assert all(case["event_evidence"]["evidence_hash"].startswith("sha256:") for case in receipt["cases"])
+    bootstrapped = [
+        case
+        for case in receipt["cases"]
+        if case["route"] == "natural" and case["skill"] != "using-superpowers"
+    ]
+    assert len(bootstrapped) == bootstrap_turns
+    assert all(
+        case["session_bootstrap"]["event_evidence"]["skill_id"]
+        == "using-superpowers"
+        for case in bootstrapped
+    )
+    assert all(
+        case["session_bootstrap"] is None
+        for case in receipt["cases"]
+        if case not in bootstrapped
+    )
     assert {
         case["event_evidence"]["kind"]
         for case in receipt["cases"]
@@ -206,7 +231,8 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     flow = receipt["flows"][0]
     assert [step["continued"] for step in flow["steps"]] == [False, True, True]
     assert flow["activation_evidence"]["invocation"] == "explicit"
-    assert flow["steps"][1]["behavior_evidence"]["first_line_actionable"] is True
+    assert flow["steps"][1]["behavior_evidence"]["opening_actionable"] is True
+    assert flow["steps"][1]["behavior_evidence"]["action_line"] in {1, 2}
     assert flow["steps"][2]["behavior_evidence"] == {
         "check": "normal_mode_ack",
         "line_count": 1,
@@ -223,7 +249,15 @@ def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> Non
     evidence = maka_smoke.verify_flow_output(
         action, "Open the pull request and read the description.\nThen decide whether to review it."
     )
-    assert evidence["first_line_actionable"] is True
+    assert evidence["opening_actionable"] is True
+    assert evidence["action_line"] == 1
+    second_line = maka_smoke.verify_flow_output(
+        action,
+        "Order: lunch, then the pull request, then email.\n"
+        "Now: set a 10-minute timer and make lunch.",
+    )
+    assert second_line["opening_actionable"] is True
+    assert second_line["action_line"] == 2
     with pytest.raises(maka_smoke.SmokeError, match="concrete action"):
         maka_smoke.verify_flow_output(action, "Those tasks sound difficult. Here are some options.")
 
@@ -373,6 +407,10 @@ def test_explicit_case_reads_canonical_root_turn_admission(tmp_path: Path) -> No
         connection.execute(
             "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
             ("session-1", "turn-1", 1, json.dumps(record)),
+        )
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "turn-2", 2, json.dumps({"kind": "natural-continuation"})),
         )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         evidence = maka_smoke.verify_explicit_event(connection, "session-1", skill)

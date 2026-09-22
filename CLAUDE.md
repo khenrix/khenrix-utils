@@ -121,9 +121,11 @@ to neither variable is a suite nothing runs, and `test_forge_packaging.py` fails
 The provider harness covers Claude, Codex, and agy. Maka consumes the same
 installed skill body, but it is not a fourth `make eval` provider. Run `mise run
 skills:maka-smoke` after applying the skills. It verifies explicit and natural
-loading from Maka's recorded events, plus bounded ADHD activation, action-first
-continuation, and opt-out acknowledgement. This smoke check does not replace behavior evals or earn their
-receipts.
+loading from Maka's recorded events. Non-bootstrap natural cases first load the
+root-session router and continue in the same bounded session, matching the shared house
+rule without widening Maka's sandbox. The smoke also checks bounded ADHD activation,
+action-first continuation, and opt-out acknowledgement. It does not replace behavior
+evals or earn their receipts.
 
 ## Skill flowcharts
 
