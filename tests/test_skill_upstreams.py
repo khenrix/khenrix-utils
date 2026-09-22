@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -245,10 +246,10 @@ def test_git_is_noninteractive_timed_and_output_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     install_fake_git(tmp_path, monkeypatch)
-    assert upstreamctl.run_git(["environment"], cwd=tmp_path).strip() == "0||Never"
+    assert upstreamctl.run_git_bounded(["environment"], cwd=tmp_path).strip() == "0||Never"
     monkeypatch.setattr(upstreamctl, "MAX_GIT_OUTPUT_BYTES", 128)
     with pytest.raises(upstreamctl.UpstreamError, match="output exceeded"):
-        upstreamctl.run_git(["large"], cwd=tmp_path)
+        upstreamctl.run_git_bounded(["large"], cwd=tmp_path)
 
 
 def test_git_timeout_becomes_a_bounded_upstream_error(
@@ -257,7 +258,37 @@ def test_git_timeout_becomes_a_bounded_upstream_error(
     install_fake_git(tmp_path, monkeypatch)
     monkeypatch.setattr(upstreamctl, "GIT_TIMEOUT_SECONDS", 0.05)
     with pytest.raises(upstreamctl.UpstreamError, match="timed out"):
-        upstreamctl.run_git(["slow"], cwd=tmp_path)
+        upstreamctl.run_git_bounded(["slow"], cwd=tmp_path)
+
+
+def test_legacy_git_runner_is_unchanged_while_report_runner_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+    inspected = upstreamctl.inspect_source(source)
+    install_fake_git(tmp_path, monkeypatch)
+    for name in ("GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "GCM_INTERACTIVE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(upstreamctl, "MAX_GIT_OUTPUT_BYTES", 128)
+
+    assert upstreamctl.run_git(["environment"], cwd=tmp_path).strip() == "||"
+    assert len(upstreamctl.run_git(["large"], cwd=tmp_path)) > 128
+    assert upstreamctl.run_git_bounded(["environment"], cwd=tmp_path).strip() == "0||Never"
+    with pytest.raises(upstreamctl.UpstreamError, match="output exceeded"):
+        upstreamctl.run_git_bounded(["large"], cwd=tmp_path)
+
+    bounded_requests: list[bool] = []
+
+    def record_inspection(
+        _source: upstreamctl.Source, *, bounded: bool = False
+    ) -> dict[str, object]:
+        bounded_requests.append(bounded)
+        return inspected
+
+    monkeypatch.setattr(upstreamctl, "inspect_source", record_inspection)
+    assert upstreamctl.owner_source_record(source)["status"] == "CURRENT"
+    assert bounded_requests == [True]
 
 
 def test_consumer_report_has_v2_contract_and_generic_affected_capabilities(
@@ -454,6 +485,44 @@ def test_report_validation_rejects_a_noncanonical_source_digest() -> None:
         upstreamctl.emit_owner_report(report)
 
 
+def test_report_validation_closes_and_validates_complete_source_records(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+    assert (
+        upstreamctl.status(
+            [source],
+            as_json=True,
+            consumer="agentic-setup",
+            owner_revision="a" * 40,
+        )
+        == 0
+    )
+    report = json.loads(capsys.readouterr().out)
+    report.pop("report_digest")
+
+    with_unknown = copy.deepcopy(report)
+    with_unknown["sources"][0]["surprise"] = "not in v2"
+    with pytest.raises(upstreamctl.UpstreamError, match="unknown.*surprise"):
+        upstreamctl.validate_owner_report(with_unknown)
+
+    malformed = [
+        ("pinned_selector", 42),
+        ("relationship", "copied-ish"),
+        ("update_mode", "automatic"),
+        ("review_commands", []),
+        ("candidate_commit", "not-a-commit"),
+        ("pinned_license_digest", "not-a-digest"),
+        ("verbatim_bundle_mismatches", "none"),
+    ]
+    for field, value in malformed:
+        changed = copy.deepcopy(report)
+        changed["sources"][0][field] = value
+        with pytest.raises(upstreamctl.UpstreamError, match=field):
+            upstreamctl.validate_owner_report(changed)
+
+
 def test_manifest_rejects_a_fetch_url_containing_credentials(tmp_path: Path) -> None:
     repo, _, _ = fixture(tmp_path)
     manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
@@ -463,6 +532,47 @@ def test_manifest_rejects_a_fetch_url_containing_credentials(tmp_path: Path) -> 
 
     with pytest.raises(upstreamctl.UpstreamError, match="fetch_url.*credentials"):
         upstreamctl.load_sources(repo)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fetch_url", "ftp://example.invalid/repo.git"),
+        ("web_url", "ftp://example.invalid/repo"),
+        ("web_url", "https://user:password@example.invalid/repo"),
+    ],
+)
+def test_manifest_rejects_unsafe_or_credential_bearing_urls(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(manifest.read_text() + f'{field} = "{value}"\n')
+
+    with pytest.raises(upstreamctl.UpstreamError, match=field):
+        upstreamctl.load_sources(repo)
+
+
+def test_consumer_report_redacts_secret_like_check_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+    token = "ghp_" + "a" * 36
+
+    def fail_check(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise upstreamctl.UpstreamError(
+            f"git failed for https://user:hunter2@example.invalid/repo?token={token} "
+            f"Authorization: Bearer {token}"
+        )
+
+    monkeypatch.setattr(upstreamctl, "inspect_source", fail_check)
+    record = upstreamctl.owner_source_record(source)
+
+    assert record["status"] == "CHECK_INCOMPLETE"
+    assert token not in record["error"]
+    assert "hunter2" not in record["error"]
+    assert "[REDACTED]" in record["error"]
 
 
 def test_remote_checks_use_fetch_url_instead_of_the_display_repository(
