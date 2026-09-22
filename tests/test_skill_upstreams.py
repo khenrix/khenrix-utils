@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,25 @@ def selected_hash(repo: Path, commit: str, paths: list[str]) -> str:
     output = git(repo, "ls-tree", "-r", commit, "--", *paths)
     payload = "".join(line + "\n" for line in sorted(output.splitlines()) if line).encode()
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def install_fake_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    executable = tmp_path / "bin" / "git"
+    executable.parent.mkdir()
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys, time\n"
+        "command = sys.argv[1]\n"
+        "if command == 'environment':\n"
+        "    print('|'.join([os.environ.get('GIT_TERMINAL_PROMPT', ''), "
+        "os.environ.get('GIT_ASKPASS', ''), os.environ.get('GCM_INTERACTIVE', '')]))\n"
+        "elif command == 'large':\n"
+        "    print('x' * 1024)\n"
+        "elif command == 'slow':\n"
+        "    time.sleep(1)\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(executable.parent) + os.pathsep + os.environ["PATH"])
 
 
 def fixture(tmp_path: Path) -> tuple[Path, Path, str]:
@@ -218,6 +239,278 @@ def test_declared_hash_mismatch_fails_status(tmp_path: Path) -> None:
     )
     source = upstreamctl.load_sources(repo)[0]
     assert upstreamctl.inspect_source(source)["status"] == "PIN_HASH_MISMATCH"
+
+
+def test_git_is_noninteractive_timed_and_output_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_fake_git(tmp_path, monkeypatch)
+    assert upstreamctl.run_git(["environment"], cwd=tmp_path).strip() == "0||Never"
+    monkeypatch.setattr(upstreamctl, "MAX_GIT_OUTPUT_BYTES", 128)
+    with pytest.raises(upstreamctl.UpstreamError, match="output exceeded"):
+        upstreamctl.run_git(["large"], cwd=tmp_path)
+
+
+def test_git_timeout_becomes_a_bounded_upstream_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install_fake_git(tmp_path, monkeypatch)
+    monkeypatch.setattr(upstreamctl, "GIT_TIMEOUT_SECONDS", 0.05)
+    with pytest.raises(upstreamctl.UpstreamError, match="timed out"):
+        upstreamctl.run_git(["slow"], cwd=tmp_path)
+
+
+def test_consumer_report_has_v2_contract_and_generic_affected_capabilities(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+
+    result = upstreamctl.status(
+        [source],
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="a" * 40,
+    )
+
+    assert result == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["schema"] == "khenrix-upstreams/v2"
+    assert report["consumer"] == "agentic-setup"
+    assert report["owner_revision"] == "a" * 40
+    assert report["integrity_ok"] is True
+    assert report["check_complete"] is True
+    assert report["current"] is True
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", report["report_digest"])
+    record = report["sources"][0]
+    assert record["source_id"] == "sample"
+    assert record["affected_capability_ids"] == ["composite"]
+    assert record["canonical_digest"] == source.path_tree_hash
+    assert record["fetch_url"] == str(repo.parent / "upstream")
+    assert record["web_url"] == str(repo.parent / "upstream")
+    assert record["pinned_selector"] == "refs/heads/main"
+    assert record["relationship"] == "adapted"
+
+    unsigned = dict(report)
+    unsigned.pop("report_digest")
+    assert report["report_digest"] == upstreamctl.canonical_json_digest(unsigned)
+
+    unsigned["current"] = False
+    with pytest.raises(upstreamctl.UpstreamError, match="state booleans"):
+        upstreamctl.validate_owner_report(unsigned)
+
+
+def test_consumer_report_filters_sources_declared_for_other_consumers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(manifest.read_text() + 'consumers = ["another-consumer"]\n')
+    sources = upstreamctl.load_sources(repo)
+
+    result = upstreamctl.status(
+        sources,
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="b" * 40,
+    )
+
+    assert result == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["sources"] == []
+    assert report["current"] is True
+
+
+def test_consumer_report_keeps_other_results_when_one_remote_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+    unreachable = replace(
+        source,
+        name="unreachable",
+        repository=str(tmp_path / "missing-upstream"),
+        fetch_url=str(tmp_path / "missing-upstream"),
+    )
+
+    result = upstreamctl.status(
+        [source, unreachable],
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="c" * 40,
+    )
+
+    assert result == 3
+    report = json.loads(capsys.readouterr().out)
+    assert report["integrity_ok"] is True
+    assert report["check_complete"] is False
+    assert report["current"] is False
+    records = {record["source_id"]: record for record in report["sources"]}
+    assert records["sample"]["status"] == "CURRENT"
+    assert records["unreachable"]["status"] == "CHECK_INCOMPLETE"
+    assert "error" in records["unreachable"]
+
+
+def test_consumer_report_exit_precedence_prefers_integrity_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    source = upstreamctl.load_sources(repo)[0]
+    corrupt = replace(source, path_tree_hash="sha256:" + "0" * 64)
+    unreachable = replace(
+        source,
+        name="unreachable",
+        repository=str(tmp_path / "missing-upstream"),
+        fetch_url=str(tmp_path / "missing-upstream"),
+    )
+
+    result = upstreamctl.status(
+        [corrupt, unreachable],
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="d" * 40,
+    )
+
+    assert result == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["integrity_ok"] is False
+    assert report["check_complete"] is False
+    assert report["current"] is False
+
+
+def test_consumer_report_exit_precedence_prefers_incomplete_over_update(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, upstream, _ = fixture(tmp_path)
+    (upstream / "skill" / "SKILL.md").write_text("v2\n")
+    git(upstream, "add", "skill/SKILL.md")
+    git(upstream, "commit", "-m", "relevant")
+    source = upstreamctl.load_sources(repo)[0]
+    unreachable = replace(
+        source,
+        name="unreachable",
+        repository=str(tmp_path / "missing-upstream"),
+        fetch_url=str(tmp_path / "missing-upstream"),
+    )
+
+    result = upstreamctl.status(
+        [source, unreachable],
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="e" * 40,
+    )
+
+    assert result == 3
+    report = json.loads(capsys.readouterr().out)
+    assert report["integrity_ok"] is True
+    assert report["check_complete"] is False
+    assert report["current"] is False
+    assert any(record["status"] == "UPDATE" for record in report["sources"])
+
+
+def test_consumer_report_returns_one_for_a_relevant_update(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, upstream, _ = fixture(tmp_path)
+    (upstream / "skill" / "SKILL.md").write_text("v2\n")
+    git(upstream, "add", "skill/SKILL.md")
+    git(upstream, "commit", "-m", "relevant")
+    source = upstreamctl.load_sources(repo)[0]
+
+    result = upstreamctl.status(
+        [source],
+        as_json=True,
+        consumer="agentic-setup",
+        owner_revision="f" * 40,
+    )
+
+    assert result == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["integrity_ok"] is True
+    assert report["check_complete"] is True
+    assert report["current"] is False
+    assert report["sources"][0]["status"] == "UPDATE"
+
+
+def test_report_validation_rejects_a_noncanonical_source_digest() -> None:
+    report = {
+        "schema": "khenrix-upstreams/v2",
+        "consumer": "agentic-setup",
+        "owner_revision": "a" * 40,
+        "integrity_ok": True,
+        "check_complete": True,
+        "current": True,
+        "sources": [
+            {
+                "source_id": "sample",
+                "affected_capability_ids": ["sample-runtime"],
+                "canonical_digest": "not-a-digest",
+            }
+        ],
+        "errors": [],
+    }
+
+    with pytest.raises(upstreamctl.UpstreamError, match="canonical_digest"):
+        upstreamctl.emit_owner_report(report)
+
+
+def test_manifest_rejects_a_fetch_url_containing_credentials(tmp_path: Path) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(
+        manifest.read_text() + 'fetch_url = "https://secret@example.invalid/repo.git"\n'
+    )
+
+    with pytest.raises(upstreamctl.UpstreamError, match="fetch_url.*credentials"):
+        upstreamctl.load_sources(repo)
+
+
+def test_remote_checks_use_fetch_url_instead_of_the_display_repository(
+    tmp_path: Path,
+) -> None:
+    repo, upstream, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(
+        manifest.read_text().replace(
+            f'repository = "{upstream}"',
+            f'repository = "{tmp_path / "missing-display-repository"}"\n'
+            f'fetch_url = "{upstream}"\n'
+            'web_url = "https://example.invalid/upstream"',
+        )
+    )
+
+    source = upstreamctl.load_sources(repo)[0]
+    assert upstreamctl.inspect_source(source)["status"] == "CURRENT"
+
+
+def test_malformed_manifest_emits_contract_failure_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(manifest.read_text().replace('commit = "', 'commit = "not-a-commit'))
+
+    result = upstreamctl.main(
+        [
+            "--repo-root",
+            str(repo),
+            "status",
+            "--json",
+            "--consumer",
+            "agentic-setup",
+        ]
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert captured.err == ""
+    assert report["schema"] == "khenrix-upstreams/v2"
+    assert report["integrity_ok"] is False
+    assert report["check_complete"] is False
+    assert report["current"] is False
+    assert report["sources"] == []
+    assert report["errors"]
 
 
 def test_status_and_record_reject_a_stale_local_license_copy(tmp_path: Path) -> None:

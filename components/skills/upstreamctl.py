@@ -15,15 +15,26 @@ import hashlib
 import json
 import os
 import re
+import selectors
+import signal
 import shutil
 import stat as stat_module
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+
+GIT_TIMEOUT_SECONDS = 30
+MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_REPORT_BYTES = 1024 * 1024
+REPORT_SCHEMA = "khenrix-upstreams/v2"
+DEFAULT_CONSUMER = "agentic-setup"
 
 
 class UpstreamError(RuntimeError):
@@ -65,6 +76,15 @@ class Source:
     local_license_path: str
     adaptation: str
     verbatim_bundle: VerbatimBundle | None
+    consumers: tuple[str, ...] = (DEFAULT_CONSUMER,)
+    content_owner: str = "khenrix"
+    delivery_owner: str = "khenrix"
+    fetch_url: str = ""
+    web_url: str = ""
+    relationship: str = "adapted"
+    affected_capability_ids: tuple[str, ...] = ()
+    update_mode: str = "manual"
+    review_commands: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -124,31 +144,118 @@ def validated_notice(source: Source) -> tuple[Path, str]:
     return path, text
 
 
-def run_git(arguments: list[str], *, cwd: Path | None = None) -> str:
-    completed = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+def git_environment() -> dict[str, str]:
+    """Return a credential-safe, noninteractive environment for bounded Git calls."""
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": "",
+            "SSH_ASKPASS": "",
+            "GCM_INTERACTIVE": "Never",
+            "LC_ALL": "C",
+        }
     )
-    if completed.returncode:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        raise UpstreamError(f"git {' '.join(arguments[:3])} failed: {detail}")
-    return completed.stdout
+    return environment
+
+
+def checked_git_output(
+    returncode: int, stdout: bytes, stderr: bytes, arguments: list[str]
+) -> bytes:
+    operation = arguments[0] if arguments else "command"
+    if returncode:
+        detail = (stderr or stdout).decode("utf-8", "replace").strip()
+        raise UpstreamError(f"git {operation} failed: {detail[:4096]}")
+    return stdout
+
+
+def kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def bounded_git_process(
+    arguments: list[str], *, cwd: Path | None = None
+) -> tuple[int, bytes, bytes]:
+    operation = arguments[0] if arguments else "command"
+    try:
+        process = subprocess.Popen(
+            ["git", *arguments],
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=git_environment(),
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise UpstreamError(f"cannot start git {operation}: {error}") from error
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    total = 0
+    deadline = time.monotonic() + GIT_TIMEOUT_SECONDS
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                kill_process_group(process)
+                raise UpstreamError(
+                    f"git {operation} timed out after {GIT_TIMEOUT_SECONDS} seconds"
+                )
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _ in events:
+                chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                total += len(chunk)
+                if total > MAX_GIT_OUTPUT_BYTES:
+                    kill_process_group(process)
+                    raise UpstreamError(
+                        f"git {operation} output exceeded the "
+                        f"{MAX_GIT_OUTPUT_BYTES}-byte limit"
+                    )
+                chunks[key.data].append(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            kill_process_group(process)
+            raise UpstreamError(
+                f"git {operation} timed out after {GIT_TIMEOUT_SECONDS} seconds"
+            )
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            kill_process_group(process)
+            raise UpstreamError(
+                f"git {operation} timed out after {GIT_TIMEOUT_SECONDS} seconds"
+            ) from error
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+    return returncode, b"".join(chunks["stdout"]), b"".join(chunks["stderr"])
+
+
+def run_git(arguments: list[str], *, cwd: Path | None = None) -> str:
+    returncode, stdout, stderr = bounded_git_process(arguments, cwd=cwd)
+    return checked_git_output(returncode, stdout, stderr, arguments).decode(
+        "utf-8", "replace"
+    )
 
 
 def run_git_bytes(arguments: list[str], *, cwd: Path | None = None) -> bytes:
-    completed = subprocess.run(
-        ["git", *arguments],
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if completed.returncode:
-        detail = (completed.stderr or completed.stdout).decode("utf-8", "replace").strip()
-        raise UpstreamError(f"git {' '.join(arguments[:3])} failed: {detail}")
-    return completed.stdout
+    returncode, stdout, stderr = bounded_git_process(arguments, cwd=cwd)
+    return checked_git_output(returncode, stdout, stderr, arguments)
 
 
 def safe_relative_path(raw: object, *, label: str) -> str:
@@ -320,6 +427,68 @@ def parse_verbatim_bundle(
     )
 
 
+def identifier_list(
+    raw: object,
+    *,
+    label: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    if raw is None:
+        return default
+    if not isinstance(raw, list) or not raw:
+        raise UpstreamError(f"{label} must be a non-empty list")
+    values: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._:/-]*", value
+        ):
+            raise UpstreamError(f"{label} contains invalid identifier {value!r}")
+        values.append(value)
+    if len(set(values)) != len(values):
+        raise UpstreamError(f"{label} contains duplicate identifiers")
+    return tuple(values)
+
+
+def string_list(
+    raw: object,
+    *,
+    label: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    if raw is None:
+        return default
+    if not isinstance(raw, list) or not raw or not all(
+        isinstance(value, str) and value for value in raw
+    ):
+        raise UpstreamError(f"{label} must be a non-empty list of strings")
+    if len(set(raw)) != len(raw):
+        raise UpstreamError(f"{label} contains duplicate values")
+    return tuple(raw)
+
+
+def default_web_url(repository: str) -> str:
+    if repository.startswith("git@") and ":" in repository:
+        host, path = repository[4:].split(":", 1)
+        return f"https://{host}/{path.removesuffix('.git')}"
+    if repository.startswith(("http://", "https://")):
+        return repository.removesuffix(".git")
+    return repository
+
+
+def validate_fetch_url(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise UpstreamError(f"{label} must be a non-empty string")
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme in {"http", "https"}:
+        if parsed.username is not None or parsed.password is not None:
+            raise UpstreamError(f"{label} may not contain credentials")
+        if not parsed.hostname or parsed.query or parsed.fragment:
+            raise UpstreamError(f"{label} must be a credential-safe repository URL")
+    elif parsed.scheme == "ssh" and parsed.password is not None:
+        raise UpstreamError(f"{label} may not contain credentials")
+    return value
+
+
 def load_sources(repo_root: Path) -> list[Source]:
     sources: list[Source] = []
     seen: set[str] = set()
@@ -421,6 +590,54 @@ def load_sources(repo_root: Path) -> list[Source]:
                 selected_paths=normalized_paths,
                 local_license_path=local_license_path,
             )
+            consumers = identifier_list(
+                raw.get("consumers"),
+                label=f"{manifest} source {name} consumers",
+                default=(DEFAULT_CONSUMER,),
+            )
+            affected_capability_ids = identifier_list(
+                raw.get("affected_capability_ids"),
+                label=f"{manifest} source {name} affected_capability_ids",
+                default=verbatim_bundle.members if verbatim_bundle else (manifest.parent.name,),
+            )
+            relationship = raw.get(
+                "relationship", "verbatim" if verbatim_bundle else "adapted"
+            )
+            if relationship not in {"adapted", "verbatim", "tracks_product", "adapter"}:
+                raise UpstreamError(
+                    f"{manifest} source {name} has invalid relationship {relationship!r}"
+                )
+            owners = {
+                field: raw.get(field, "khenrix")
+                for field in ("content_owner", "delivery_owner")
+            }
+            if not all(
+                isinstance(value, str)
+                and re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value)
+                for value in owners.values()
+            ):
+                raise UpstreamError(f"{manifest} source {name} has an invalid owner")
+            fetch_url = raw.get("fetch_url", raw["repository"])
+            web_url = raw.get("web_url", default_web_url(raw["repository"]))
+            if not all(isinstance(value, str) and value for value in (fetch_url, web_url)):
+                raise UpstreamError(f"{manifest} source {name} has an invalid URL field")
+            fetch_url = validate_fetch_url(
+                fetch_url, label=f"{manifest} source {name} fetch_url"
+            )
+            update_mode = raw.get(
+                "update_mode", "verbatim_sync" if verbatim_bundle else "manual_adaptation"
+            )
+            if not isinstance(update_mode, str) or not re.fullmatch(
+                r"[a-z0-9][a-z0-9_-]*", update_mode
+            ):
+                raise UpstreamError(
+                    f"{manifest} source {name} has invalid update_mode {update_mode!r}"
+                )
+            review_commands = string_list(
+                raw.get("review_commands"),
+                label=f"{manifest} source {name} review_commands",
+                default=(f"mise run skills:upstream-diff -- {name}",),
+            )
             sources.append(
                 Source(
                     skill=manifest.parent.name,
@@ -436,6 +653,15 @@ def load_sources(repo_root: Path) -> list[Source]:
                     local_license_path=local_license_path,
                     adaptation=raw["adaptation"],
                     verbatim_bundle=verbatim_bundle,
+                    consumers=consumers,
+                    content_owner=owners["content_owner"],
+                    delivery_owner=owners["delivery_owner"],
+                    fetch_url=fetch_url,
+                    web_url=web_url,
+                    relationship=relationship,
+                    affected_capability_ids=affected_capability_ids,
+                    update_mode=update_mode,
+                    review_commands=review_commands,
                 )
             )
     if not sources:
@@ -452,7 +678,7 @@ def resolve_remote(source: Source) -> str:
     refs = [source.ref]
     if source.ref.startswith("refs/tags/"):
         refs.append(source.ref + "^{}")
-    output = run_git(["ls-remote", source.repository, *refs])
+    output = run_git(["ls-remote", source.fetch_url or source.repository, *refs])
     rows = []
     for line in output.splitlines():
         fields = line.split("\t", 1)
@@ -485,7 +711,14 @@ class Checkout:
         if commit in self._fetched:
             return
         run_git(
-            ["fetch", "--quiet", "--no-tags", "--depth=1", self.source.repository, commit],
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth=1",
+                self.source.fetch_url or self.source.repository,
+                commit,
+            ],
             cwd=self.path,
         )
         actual = run_git(["rev-parse", "FETCH_HEAD^{commit}"], cwd=self.path).strip()
@@ -773,7 +1006,332 @@ def inspect_source(source: Source) -> dict[str, Any]:
     }
 
 
-def status(sources: list[Source], *, as_json: bool) -> int:
+def canonical_json_digest(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def owner_source_record(source: Source) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "source_id": source.name,
+        "content_owner": source.content_owner,
+        "delivery_owner": source.delivery_owner,
+        "fetch_url": source.fetch_url,
+        "web_url": source.web_url,
+        "pinned_selector": source.ref,
+        "pinned_commit": source.commit,
+        "selected_paths": list(source.paths),
+        "canonical_digest": source.path_tree_hash,
+        "relationship": source.relationship,
+        "affected_capability_ids": list(source.affected_capability_ids),
+        "update_mode": source.update_mode,
+        "review_commands": list(source.review_commands),
+    }
+    try:
+        inspected = inspect_source(source)
+    except UpstreamError as error:
+        record.update(
+            {
+                "status": "CHECK_INCOMPLETE",
+                "error": str(error)[:4096],
+            }
+        )
+        return record
+    record.update(
+        {
+            "status": inspected["status"],
+            "candidate_commit": inspected["remote_commit"],
+            "pinned_digest": inspected["pinned_path_tree_hash"],
+            "candidate_digest": inspected["remote_path_tree_hash"],
+            "pinned_license_digest": inspected["pinned_license_hash"],
+            "local_license_digest": inspected["local_license_hash"],
+            "verbatim_bundle_mismatches": inspected["verbatim_bundle_mismatches"],
+        }
+    )
+    return record
+
+
+def validate_owner_report(report: dict[str, Any]) -> None:
+    required = {
+        "schema",
+        "consumer",
+        "owner_revision",
+        "integrity_ok",
+        "check_complete",
+        "current",
+        "sources",
+        "errors",
+    }
+    missing = sorted(required - set(report))
+    unknown = sorted(set(report) - required - {"report_digest"})
+    if missing or unknown:
+        raise UpstreamError(
+            f"invalid owner report fields (missing={missing}, unknown={unknown})"
+        )
+    if report["schema"] != REPORT_SCHEMA:
+        raise UpstreamError(f"invalid owner report schema {report['schema']!r}")
+    if not isinstance(report["consumer"], str) or not re.fullmatch(
+        r"[a-z0-9][a-z0-9._-]*", report["consumer"]
+    ):
+        raise UpstreamError("invalid owner report consumer")
+    revision = report["owner_revision"]
+    if revision is not None and not (
+        isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision)
+    ):
+        raise UpstreamError("invalid owner report owner_revision")
+    if revision is None and report["integrity_ok"] is not False:
+        raise UpstreamError("a successful owner report requires owner_revision")
+    for field in ("integrity_ok", "check_complete", "current"):
+        if not isinstance(report[field], bool):
+            raise UpstreamError(f"owner report {field} must be boolean")
+    errors = report["errors"]
+    if not isinstance(errors, list) or not all(
+        isinstance(error, str) and error for error in errors
+    ):
+        raise UpstreamError("owner report errors must be a list of non-empty strings")
+    sources = report["sources"]
+    if not isinstance(sources, list):
+        raise UpstreamError("owner report sources must be a list")
+    seen: set[str] = set()
+    digest_pattern = r"sha256:[0-9a-f]{64}"
+    base_fields = {
+        "source_id",
+        "content_owner",
+        "delivery_owner",
+        "fetch_url",
+        "web_url",
+        "pinned_selector",
+        "pinned_commit",
+        "selected_paths",
+        "canonical_digest",
+        "relationship",
+        "affected_capability_ids",
+        "update_mode",
+        "review_commands",
+        "status",
+    }
+    allowed_statuses = {
+        "CURRENT",
+        "REPO_AHEAD",
+        "UPDATE",
+        "PIN_HASH_MISMATCH",
+        "LICENSE_COPY_MISMATCH",
+        "VERBATIM_BUNDLE_MISMATCH",
+        "CHECK_INCOMPLETE",
+    }
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict):
+            raise UpstreamError(f"owner report sources[{index}] must be an object")
+        canonical_digest = source.get("canonical_digest")
+        if not isinstance(canonical_digest, str) or not re.fullmatch(
+            digest_pattern, canonical_digest
+        ):
+            raise UpstreamError(
+                f"owner report sources[{index}].canonical_digest is invalid"
+            )
+        missing_source = sorted(base_fields - set(source))
+        if missing_source:
+            raise UpstreamError(
+                f"owner report sources[{index}] is missing {missing_source}"
+            )
+        source_id = source["source_id"]
+        if not isinstance(source_id, str) or not re.fullmatch(
+            r"[a-z0-9][a-z0-9._:/-]*", source_id
+        ):
+            raise UpstreamError(f"owner report sources[{index}].source_id is invalid")
+        if source_id in seen:
+            raise UpstreamError(f"owner report has duplicate source_id {source_id!r}")
+        seen.add(source_id)
+        capabilities = source["affected_capability_ids"]
+        identifier_list(
+            capabilities,
+            label=f"owner report sources[{index}].affected_capability_ids",
+            default=(),
+        )
+        selected_paths = source["selected_paths"]
+        if not isinstance(selected_paths, list) or not selected_paths:
+            raise UpstreamError(
+                f"owner report sources[{index}].selected_paths must be non-empty"
+            )
+        for path in selected_paths:
+            safe_relative_path(
+                path, label=f"owner report sources[{index}].selected_paths"
+            )
+        if source["status"] not in allowed_statuses:
+            raise UpstreamError(
+                f"owner report sources[{index}] has invalid status {source['status']!r}"
+            )
+        if not isinstance(source["pinned_commit"], str) or not re.fullmatch(
+            r"[0-9a-f]{40}", source["pinned_commit"]
+        ):
+            raise UpstreamError(
+                f"owner report sources[{index}].pinned_commit is invalid"
+            )
+        for field in ("content_owner", "delivery_owner", "web_url"):
+            if not isinstance(source[field], str) or not source[field]:
+                raise UpstreamError(
+                    f"owner report sources[{index}].{field} must be non-empty"
+                )
+        validate_fetch_url(
+            source["fetch_url"],
+            label=f"owner report sources[{index}].fetch_url",
+        )
+        if source["status"] != "CHECK_INCOMPLETE":
+            for field in ("pinned_digest", "candidate_digest"):
+                if not isinstance(source.get(field), str) or not re.fullmatch(
+                    digest_pattern, source[field]
+                ):
+                    raise UpstreamError(
+                        f"owner report sources[{index}].{field} is invalid"
+                    )
+        elif not isinstance(source.get("error"), str) or not source["error"]:
+            raise UpstreamError(
+                f"owner report sources[{index}] incomplete result lacks an error"
+            )
+    if report["current"] and not (
+        report["integrity_ok"] and report["check_complete"]
+    ):
+        raise UpstreamError("owner report current state contradicts its gate booleans")
+    if errors and (
+        report["integrity_ok"] or report["check_complete"] or report["current"]
+    ):
+        raise UpstreamError("owner report errors contradict its gate booleans")
+    if not errors:
+        statuses = [source["status"] for source in sources]
+        expected_integrity = not any(
+            status
+            in {
+                "PIN_HASH_MISMATCH",
+                "LICENSE_COPY_MISMATCH",
+                "VERBATIM_BUNDLE_MISMATCH",
+            }
+            for status in statuses
+        )
+        expected_complete = "CHECK_INCOMPLETE" not in statuses
+        expected_current = (
+            expected_integrity
+            and expected_complete
+            and "UPDATE" not in statuses
+        )
+        observed = (
+            report["integrity_ok"],
+            report["check_complete"],
+            report["current"],
+        )
+        expected = (expected_integrity, expected_complete, expected_current)
+        if observed != expected:
+            raise UpstreamError(
+                "owner report state booleans do not match its source statuses"
+            )
+    report_digest = report.get("report_digest")
+    if report_digest is not None:
+        if not isinstance(report_digest, str) or not re.fullmatch(
+            digest_pattern, report_digest
+        ):
+            raise UpstreamError("owner report report_digest is invalid")
+        unsigned = dict(report)
+        unsigned.pop("report_digest")
+        if report_digest != canonical_json_digest(unsigned):
+            raise UpstreamError("owner report report_digest does not match its content")
+
+
+def emit_owner_report(report: dict[str, Any]) -> None:
+    validate_owner_report(report)
+    unsigned = dict(report)
+    unsigned.pop("report_digest", None)
+    report["report_digest"] = canonical_json_digest(unsigned)
+    validate_owner_report(report)
+    encoded = json.dumps(report, indent=2, sort_keys=True)
+    if len(encoded.encode()) > MAX_REPORT_BYTES:
+        raise UpstreamError(f"owner report exceeds the {MAX_REPORT_BYTES}-byte limit")
+    print(encoded)
+
+
+def owner_report_status(
+    sources: list[Source], *, consumer: str, owner_revision: str
+) -> int:
+    if not re.fullmatch(r"[0-9a-f]{40}", owner_revision):
+        raise UpstreamError("owner revision must be a 40-character lowercase commit")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", consumer):
+        raise UpstreamError(f"invalid consumer {consumer!r}")
+    records = [
+        owner_source_record(source)
+        for source in sources
+        if consumer in source.consumers
+    ]
+    records.sort(key=lambda record: record["source_id"])
+    integrity_failures = {
+        "PIN_HASH_MISMATCH",
+        "LICENSE_COPY_MISMATCH",
+        "VERBATIM_BUNDLE_MISMATCH",
+    }
+    integrity_ok = not any(
+        record["status"] in integrity_failures for record in records
+    )
+    check_complete = not any(
+        record["status"] == "CHECK_INCOMPLETE" for record in records
+    )
+    current = (
+        integrity_ok
+        and check_complete
+        and not any(record["status"] == "UPDATE" for record in records)
+    )
+    report = {
+        "schema": REPORT_SCHEMA,
+        "consumer": consumer,
+        "owner_revision": owner_revision,
+        "integrity_ok": integrity_ok,
+        "check_complete": check_complete,
+        "current": current,
+        "sources": records,
+        "errors": [],
+    }
+    emit_owner_report(report)
+    if not integrity_ok:
+        return 2
+    if not check_complete:
+        return 3
+    if not current:
+        return 1
+    return 0
+
+
+def contract_failure_report(
+    *, consumer: str, owner_revision: str | None, error: UpstreamError
+) -> None:
+    report = {
+        "schema": REPORT_SCHEMA,
+        "consumer": consumer,
+        "owner_revision": owner_revision,
+        "integrity_ok": False,
+        "check_complete": False,
+        "current": False,
+        "sources": [],
+        "errors": [str(error)[:4096]],
+    }
+    emit_owner_report(report)
+
+
+def status(
+    sources: list[Source],
+    *,
+    as_json: bool,
+    consumer: str | None = None,
+    owner_revision: str | None = None,
+) -> int:
+    if consumer is not None:
+        if not as_json:
+            raise UpstreamError("--consumer requires --json")
+        if owner_revision is None:
+            raise UpstreamError("consumer reports require an owner revision")
+        return owner_report_status(
+            sources, consumer=consumer, owner_revision=owner_revision
+        )
     records = [inspect_source(source) for source in sources]
     if as_json:
         print(json.dumps({"schema_version": 1, "sources": records}, indent=2, sort_keys=True))
@@ -1160,6 +1718,7 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     status_parser = commands.add_parser("status")
     status_parser.add_argument("--json", action="store_true")
+    status_parser.add_argument("--consumer")
     diff_parser = commands.add_parser("diff")
     diff_parser.add_argument("source")
     record_parser = commands.add_parser("record")
@@ -1183,10 +1742,21 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     options = parser().parse_args(argv)
+    owner_revision: str | None = None
     try:
-        sources = load_sources(options.repo_root.resolve())
+        repo_root = options.repo_root.resolve()
+        sources = load_sources(repo_root)
         if options.command == "status":
-            return status(sources, as_json=options.json)
+            if options.consumer is not None:
+                if not options.json:
+                    raise UpstreamError("--consumer requires --json")
+                owner_revision = run_git(["rev-parse", "HEAD"], cwd=repo_root).strip()
+            return status(
+                sources,
+                as_json=options.json,
+                consumer=options.consumer,
+                owner_revision=owner_revision,
+            )
         source = find_source(sources, options.source)
         if options.command == "diff":
             return show_diff(source)
@@ -1202,6 +1772,17 @@ def main(argv: list[str] | None = None) -> int:
             accept_license_change=options.accept_license_change,
         )
     except UpstreamError as error:
+        if (
+            options.command == "status"
+            and options.json
+            and options.consumer is not None
+        ):
+            contract_failure_report(
+                consumer=options.consumer,
+                owner_revision=owner_revision,
+                error=error,
+            )
+            return 2
         print(f"error: {error}", file=sys.stderr)
         return 2
 
