@@ -1,0 +1,6 @@
+interface:
+  display_name: "Mikado Graph"
+  short_description: "Split large changes into mergeable steps"
+  default_prompt: "Use $mikado-graph to split this change into dependency-ordered steps."
+policy:
+  allow_implicit_invocation: true

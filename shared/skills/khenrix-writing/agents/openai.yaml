@@ -2,3 +2,5 @@ interface:
   display_name: "Khenrix Writing"
   short_description: "Humanize prose while preserving voice and facts"
   default_prompt: "Use $khenrix-writing in humanize mode on this text."
+policy:
+  allow_implicit_invocation: true

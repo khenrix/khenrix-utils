@@ -1,0 +1,6 @@
+interface:
+  display_name: "Requesting Code Review"
+  short_description: "Request a structured implementation review"
+  default_prompt: "Use $requesting-code-review to review this completed implementation."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dispatching Parallel Agents"
+  short_description: "Delegate independent work in parallel"
+  default_prompt: "Use $dispatching-parallel-agents to delegate these independent tasks."
+policy:
+  allow_implicit_invocation: true

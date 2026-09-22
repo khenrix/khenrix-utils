@@ -9,6 +9,11 @@ upstream_license_path = "LICENSE"
 local_license_path = "licenses/superpowers.LICENSE"
 adaptation = "All declared skills retain upstream bytes and executable bits except for one manifest-declared privacy overlay: brainstorming/scripts/start-server.sh always exports SUPERPOWERS_DISABLE_TELEMETRY=1 before launching the optional visual server. Provenance files and the exact local license copy are added under using-superpowers."
 path_tree_hash = "sha256:45166aa03b6b9e87b32ab7ee2c560d0cb59d591683c05e4edfbd9f1af629c475"
+relationship = "verbatim"
+affected_capability_ids = ["brainstorming", "diagnosing-superpowers", "dispatching-parallel-agents", "executing-plans", "finishing-a-development-branch", "receiving-code-review", "requesting-code-review", "subagent-driven-development", "systematic-debugging", "test-driven-development", "using-git-worktrees", "using-superpowers", "verification-before-completion", "writing-plans", "writing-skills"]
+watch = "stable_tags"
+tag_pattern = "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$"
+update_mode = "verbatim_sync"
 
 [sources.verbatim_bundle]
 upstream_root = "skills"
@@ -33,6 +38,23 @@ control_paths = [
   "using-superpowers/upstreams.toml",
   "using-superpowers/THIRD_PARTY_NOTICES.md",
   "using-superpowers/licenses/superpowers.LICENSE",
+]
+additive_files = [
+  "brainstorming/agents/openai.yaml",
+  "diagnosing-superpowers/agents/openai.yaml",
+  "dispatching-parallel-agents/agents/openai.yaml",
+  "executing-plans/agents/openai.yaml",
+  "finishing-a-development-branch/agents/openai.yaml",
+  "receiving-code-review/agents/openai.yaml",
+  "requesting-code-review/agents/openai.yaml",
+  "subagent-driven-development/agents/openai.yaml",
+  "systematic-debugging/agents/openai.yaml",
+  "test-driven-development/agents/openai.yaml",
+  "using-git-worktrees/agents/openai.yaml",
+  "using-superpowers/agents/openai.yaml",
+  "verification-before-completion/agents/openai.yaml",
+  "writing-plans/agents/openai.yaml",
+  "writing-skills/agents/openai.yaml",
 ]
 
 [[sources.verbatim_bundle.overlays]]

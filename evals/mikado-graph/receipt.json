@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "mikado-graph",
-  "source_hash": "1a8066e1cf5069b996e95f7d6438da91fa4531bf1fae461909a8ef597c327718",
+  "source_hash": "c9fdfdbd9648bddebe9b1f3d6ebeafdff920c5285ef6489acc4c426c17aba023",
   "eval_set_hash": "8d370ee3a400828463b4b3072f67f372a95641d296f68d1af7965cd3b50b338a",
   "providers": [
     "claude",
@@ -10,24 +10,24 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.125,
+  "delta_pass_rate": 0.2083,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.1666,
+      "delta": 0.25,
       "quantum": 0.05,
       "n_evals": 6,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.1667,
+      "delta": 0.2083,
       "quantum": 0.05,
       "n_evals": 6,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.0416,
+      "delta": 0.1667,
       "quantum": 0.05,
       "n_evals": 6,
       "status": "ok"

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chunk Map"
+  short_description: "Map large codebases into reviewable chunks"
+  default_prompt: "Use $chunk-map to map this codebase into reviewable chunks."
+policy:
+  allow_implicit_invocation: true

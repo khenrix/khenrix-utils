@@ -1,0 +1,6 @@
+interface:
+  display_name: "LLM Council"
+  short_description: "Ask three agentic CLIs for a synthesized answer"
+  default_prompt: "Use $llm-council to ask all three CLIs and synthesize their answers."
+policy:
+  allow_implicit_invocation: true

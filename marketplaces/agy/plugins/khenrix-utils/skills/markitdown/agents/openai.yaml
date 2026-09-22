@@ -1,0 +1,6 @@
+interface:
+  display_name: "MarkItDown"
+  short_description: "Convert documents and media to Markdown"
+  default_prompt: "Use $markitdown to convert this input to Markdown."
+policy:
+  allow_implicit_invocation: true

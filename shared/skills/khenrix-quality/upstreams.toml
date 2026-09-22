@@ -9,6 +9,8 @@ upstream_license_path = "LICENSE"
 local_license_path = "licenses/i-have-adhd.LICENSE"
 adaptation = "Condensed into the response-structure mode; preserves action-first output, bounded steps, session enable/disable, visible state, evidence-based errors, an under-two-minute remaining action, at most five visible items per group, literal wording, and the explanation/safety/debug/ambiguity/options/harness exceptions."
 path_tree_hash = "sha256:e1486f7a757ad8c95037325d4faa7b0e4016222b3467a86a2d3ce83d554b1b54"
+relationship = "adapted"
+affected_capability_ids = ["khenrix-quality"]
 
 [[sources]]
 name = "no-ai-slop"
@@ -21,6 +23,8 @@ upstream_license_path = "LICENSE"
 local_license_path = "licenses/no-ai-slop.LICENSE"
 adaptation = "Latest prose edit/detect instructions and checklist are retained as progressive references; routing is narrowed so deeper humanization and voice matching belong to khenrix-writing."
 path_tree_hash = "sha256:0f8d625656b8cf756d43c83ae7fc6ad2248da14852a5c6ee0d90fbd4ab403689"
+relationship = "adapted"
+affected_capability_ids = ["khenrix-quality"]
 
 [[sources]]
 name = "ponytail"
@@ -33,3 +37,5 @@ upstream_license_path = "LICENSE"
 local_license_path = "licenses/ponytail.LICENSE"
 adaptation = "Folds six skills into code and code-workflow modes. Preserves lite/full/ultra scope, review/audit/debt/help contracts, the corrected agentic benchmark methodology and figures, local debt/audit handoffs, and scope-safe test-aware behavior; removes forced terse replies, arbitrary test caps, branded comments, and marketplace lifecycle instructions."
 path_tree_hash = "sha256:a61efcabe3503fb68e4dd0641ec98910c1a06c1b37d63e3aba4a041925c21c00"
+relationship = "adapted"
+affected_capability_ids = ["khenrix-quality"]

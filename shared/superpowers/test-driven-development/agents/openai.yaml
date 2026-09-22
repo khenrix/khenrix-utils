@@ -1,0 +1,6 @@
+interface:
+  display_name: "Test Driven Development"
+  short_description: "Drive changes through red and green tests"
+  default_prompt: "Use $test-driven-development to implement this change test first."
+policy:
+  allow_implicit_invocation: true

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -509,6 +510,7 @@ def test_report_validation_closes_and_validates_complete_source_records(
 
     malformed = [
         ("pinned_selector", 42),
+        ("candidate_selector", 42),
         ("relationship", "copied-ish"),
         ("update_mode", "automatic"),
         ("review_commands", []),
@@ -521,6 +523,58 @@ def test_report_validation_closes_and_validates_complete_source_records(
         changed["sources"][0][field] = value
         with pytest.raises(upstreamctl.UpstreamError, match=field):
             upstreamctl.validate_owner_report(changed)
+
+    unsafe_version = copy.deepcopy(report)
+    unsafe_version["sources"][0].update(
+        pinned_package_version="1.0.0",
+        candidate_package_version="unsafe\nversion",
+        pinned_package_integrity="sha512-" + base64.b64encode(b"p" * 64).decode(),
+        candidate_package_integrity="sha512-" + base64.b64encode(b"c" * 64).decode(),
+    )
+    with pytest.raises(upstreamctl.UpstreamError, match="candidate_package_version"):
+        upstreamctl.validate_owner_report(unsafe_version)
+
+
+def test_npm_owner_record_exposes_actionable_release_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release"
+    )
+    candidate_integrity = "sha512-" + base64.b64encode(b"c" * 64).decode()
+    monkeypatch.setattr(
+        upstreamctl,
+        "inspect_source",
+        lambda _source, bounded=False: {
+            "status": "UPDATE",
+            "remote_commit": "b" * 40,
+            "candidate_selector": "npm:maka-agent@0.2.0-dev.46.20260922",
+            "candidate_package_version": "0.2.0-dev.46.20260922",
+            "candidate_package_integrity": candidate_integrity,
+            "pinned_path_tree_hash": upstreamctl.canonical_source_digest(source),
+            "remote_path_tree_hash": "sha256:" + "c" * 64,
+            "pinned_license_hash": "sha256:" + "d" * 64,
+            "local_license_hash": "sha256:" + "d" * 64,
+            "verbatim_bundle_mismatches": [],
+        },
+    )
+
+    record = upstreamctl.owner_source_record(source)
+
+    assert record["candidate_selector"] == "npm:maka-agent@0.2.0-dev.46.20260922"
+    assert record["pinned_package_version"] == source.package_version
+    assert record["candidate_package_version"] == "0.2.0-dev.46.20260922"
+    assert record["pinned_package_integrity"] == source.package_integrity
+    assert record["candidate_package_integrity"] == candidate_integrity
+
+
+def test_manifest_rejects_unknown_source_keys(tmp_path: Path) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    manifest.write_text(manifest.read_text() + 'packge_version = "typo"\n')
+
+    with pytest.raises(upstreamctl.UpstreamError, match="unknown.*packge_version"):
+        upstreamctl.load_sources(repo)
 
 
 def test_manifest_rejects_a_fetch_url_containing_credentials(tmp_path: Path) -> None:
@@ -649,6 +703,342 @@ def test_manifest_rejects_path_traversal(tmp_path: Path) -> None:
     manifest.write_text(manifest.read_text().replace('["LICENSE", "skill"]', '["../secret"]'))
     with pytest.raises(upstreamctl.UpstreamError, match="traverse"):
         upstreamctl.load_sources(repo)
+
+
+def test_tracks_product_selects_newest_stable_numeric_tag_and_ignores_prereleases(
+    tmp_path: Path,
+) -> None:
+    """A lexicographic tag sort would choose v1.9.0 or the v2 prerelease."""
+
+    repo, upstream, initial = fixture(tmp_path)
+    git(upstream, "tag", "-a", "v1.9.0", "-m", "old stable", initial)
+    git(upstream, "tag", "-a", "v1.10.0", "-m", "new stable", initial)
+    (upstream / "README.md").write_text("prerelease only\n")
+    git(upstream, "add", "README.md")
+    git(upstream, "commit", "-m", "future prerelease")
+    prerelease = git(upstream, "rev-parse", "HEAD")
+    git(upstream, "tag", "-a", "v2.0.0-beta.1", "-m", "prerelease", prerelease)
+
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    text = manifest.read_text().replace(
+        'ref = "refs/heads/main"',
+        'ref = "refs/tags/v1.9.0"\n'
+        'watch = "stable_tags"\n'
+        'tag_pattern = "^v([0-9]+)\\\\.([0-9]+)\\\\.([0-9]+)$"',
+    )
+    text = text.replace('adaptation = "test adaptation"', 'adaptation = "test adaptation"\nrelationship = "tracks_product"')
+    manifest.write_text(text)
+
+    source = upstreamctl.load_sources(repo)[0]
+    record = upstreamctl.inspect_source(source)
+
+    assert record["status"] == "UPDATE"
+    assert record["remote_commit"] == initial
+    assert record["candidate_selector"] == "refs/tags/v1.10.0"
+
+
+def test_optional_license_requires_an_explicit_validated_declaration(tmp_path: Path) -> None:
+    repo, _, _ = fixture(tmp_path)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    text = manifest.read_text()
+    text = re.sub(r'^upstream_license_path = .*\n', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^local_license_path = .*\n', '', text, flags=re.MULTILINE)
+    text = text.replace('license = "MIT"', 'license = "MIT"\nlicense_optional = true')
+    manifest.write_text(text)
+    notice = manifest.parent / "THIRD_PARTY_NOTICES.md"
+    notice.write_text(
+        re.sub(
+            r" with local license `licenses/sample.LICENSE`",
+            "; license copy intentionally omitted (`license_optional = true`)",
+            notice.read_text(),
+        )
+    )
+    (manifest.parent / "licenses" / "sample.LICENSE").unlink()
+
+    source = upstreamctl.load_sources(repo)[0]
+    assert source.license_optional is True
+    assert upstreamctl.inspect_source(source)["pinned_license_hash"] == (
+        "sha256:" + hashlib.sha256(b"").hexdigest()
+    )
+
+    manifest.write_text(manifest.read_text().replace("license_optional = true\n", ""))
+    with pytest.raises(upstreamctl.UpstreamError, match="license"):
+        upstreamctl.load_sources(repo)
+
+
+def test_record_advances_a_stable_product_watch_without_a_vendored_license(
+    tmp_path: Path,
+) -> None:
+    repo, upstream, initial = fixture(tmp_path)
+    git(upstream, "tag", "-a", "v1.9.0", "-m", "old stable", initial)
+    (upstream / "skill" / "SKILL.md").write_text("v2\n")
+    git(upstream, "add", "skill/SKILL.md")
+    git(upstream, "commit", "-m", "new product")
+    candidate = git(upstream, "rev-parse", "HEAD")
+    git(upstream, "tag", "-a", "v1.10.0", "-m", "new stable", candidate)
+    manifest = next(repo.glob("shared/skills/*/upstreams.toml"))
+    text = manifest.read_text().replace(
+        'ref = "refs/heads/main"',
+        'ref = "refs/tags/v1.9.0"\nwatch = "stable_tags"\n'
+        'tag_pattern = "^v([0-9]+)\\\\.([0-9]+)\\\\.([0-9]+)$"',
+    )
+    text = re.sub(r'^upstream_license_path = .*\n', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^local_license_path = .*\n', '', text, flags=re.MULTILINE)
+    text = text.replace('license = "MIT"', 'license = "MIT"\nlicense_optional = true')
+    manifest.write_text(text)
+    notice = manifest.parent / "THIRD_PARTY_NOTICES.md"
+    notice.write_text(
+        f"sample release v1.9.0 at `{initial}`; license copy intentionally omitted "
+        "(`license_optional = true`).\n"
+    )
+    (manifest.parent / "licenses" / "sample.LICENSE").unlink()
+
+    source = upstreamctl.load_sources(repo)[0]
+    upstreamctl.record(source, candidate)
+
+    parsed = tomllib.loads(manifest.read_text())["sources"][0]
+    assert parsed["ref"] == "refs/tags/v1.10.0"
+    assert parsed["commit"] == candidate
+    assert "v1.10.0" in notice.read_text()
+    assert candidate in notice.read_text()
+
+
+def test_real_owner_report_sources_cover_complete_transitive_capability_sets() -> None:
+    sources = {source.name: source for source in upstreamctl.load_sources(ROOT)}
+    superpowers = {
+        "brainstorming",
+        "diagnosing-superpowers",
+        "dispatching-parallel-agents",
+        "executing-plans",
+        "finishing-a-development-branch",
+        "receiving-code-review",
+        "requesting-code-review",
+        "subagent-driven-development",
+        "systematic-debugging",
+        "test-driven-development",
+        "using-git-worktrees",
+        "using-superpowers",
+        "verification-before-completion",
+        "writing-plans",
+        "writing-skills",
+    }
+    assert sources["superpowers"].affected_capability_ids == tuple(sorted(superpowers))
+    assert sources["markitdown-product"].relationship == "tracks_product"
+    assert sources["markitdown-product"].affected_capability_ids == ("markitdown",)
+    assert sources["i-have-adhd"].affected_capability_ids == ("khenrix-quality",)
+    assert sources["no-ai-slop"].affected_capability_ids == ("khenrix-quality",)
+    assert sources["ponytail"].affected_capability_ids == ("khenrix-quality",)
+    assert sources["humanizer"].affected_capability_ids == ("khenrix-writing",)
+    assert sources["maka-release"].affected_capability_ids == (
+        "maka-auth-mode",
+        "maka-connection-catalog",
+        "maka-mcp",
+        "maka-runtime-policy",
+        "maka-wrapper",
+    )
+    assert sources["claude-mem-release"].affected_capability_ids == (
+        "agy-memory-hooks",
+        "codex-memory-hooks",
+        "mem-search",
+        "memory-runtime-controller",
+    )
+
+
+def test_all_khenrix_owned_skills_have_valid_codex_metadata() -> None:
+    managed_shared = {"chunk-map", "llm-council", "llm-forge", "markitdown", "mikado-graph"}
+    direct = {"khenrix-quality", "khenrix-writing"}
+    superpowers = {
+        path.name for path in (ROOT / "shared" / "superpowers").iterdir() if path.is_dir()
+    }
+    expected = managed_shared | direct | superpowers
+    observed: set[str] = set()
+    explicit_only: set[str] = set()
+
+    for skill in sorted(expected):
+        base = ROOT / "shared" / ("superpowers" if skill in superpowers else "skills") / skill
+        metadata = base / "agents" / "openai.yaml"
+        assert metadata.is_file(), skill
+        text = metadata.read_text()
+        assert re.search(r'^\s*display_name:\s*"[^"\n]+"$', text, re.MULTILINE), skill
+        assert re.search(r'^\s*short_description:\s*"[^"\n]+"$', text, re.MULTILINE), skill
+        prompt = re.search(r'^\s*default_prompt:\s*"([^"\n]+)"$', text, re.MULTILINE)
+        assert prompt and f"${skill}" in prompt.group(1), skill
+        implicit = re.search(
+            r'^\s*allow_implicit_invocation:\s*(true|false)$', text, re.MULTILINE
+        )
+        assert implicit, skill
+        if implicit.group(1) == "false":
+            explicit_only.add(skill)
+        observed.add(skill)
+
+    assert observed == expected
+    assert len(observed) == 22
+    assert explicit_only == {"llm-forge"}
+
+
+def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces() -> None:
+    source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release")
+
+    assert source.watch == "npm_releases"
+    assert source.package_name == "maka-agent"
+    assert source.package_version == "0.2.0-dev.44.20260920"
+    assert source.package_integrity.startswith("sha512-")
+    assert upstreamctl.canonical_source_digest(source) != source.path_tree_hash
+    assert source.tag_pattern == r"^v0\.2\.0-dev\.([0-9]+)\.([0-9]{8})$"
+    assert {
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/aube-lock.yaml",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/package.json",
+        "components/maka/mise.toml",
+        "components/maka/mise.lock",
+        "components/maka/scripts/install_component.py",
+        "components/maka/scripts/component_doctor.py",
+        "components/maka/controller/entrypoint.sh",
+        "components/maka/scripts/controller-build.sh",
+        "components/maka/controller/apply_maka_compat.py",
+        "components/maka/controller/apply_maka_hosted_onboarding_compat.py",
+        "components/maka/controller/assert-eval-runtime-path.mjs",
+        "components/maka/interactive/maka_profile.py",
+        "components/maka/interactive/maka_openai_relay.py",
+        "components/maka/interactive/configure_maka_subscription.mjs",
+        "components/maka/provenance.json",
+        "components/maka/controller/provider-request-contract.mjs",
+        "components/maka/controller/egress-overlay/egress_filter.py",
+        "components/maka/scripts/test.sh",
+    }.issubset(source.local_contract_paths)
+    upstreamctl.validate_local_contract(source)
+
+    corrupt = replace(source, local_contract_hash="sha256:" + "0" * 64)
+    with pytest.raises(upstreamctl.UpstreamError, match="local contract hash"):
+        upstreamctl.validate_local_contract(corrupt)
+    mismatched_sri = replace(source, package_integrity="sha512-" + "A" * 86 + "==")
+    with pytest.raises(upstreamctl.UpstreamError, match="package pin"):
+        upstreamctl.validate_local_contract(mismatched_sri)
+
+
+def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards() -> None:
+    source = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "claude-mem-release"
+    )
+
+    assert source.watch == "npm_releases"
+    assert source.package_name == "claude-mem"
+    assert source.package_version == "13.25.1"
+    assert source.package_integrity.startswith("sha512-")
+    assert upstreamctl.canonical_source_digest(source) != source.path_tree_hash
+    assert source.upstream_license_path == "LICENSE"
+    assert {
+        "components/memory/provenance.json",
+        "components/memory/memoryctl.py",
+        "components/memory/provider_relay.py",
+        "components/memory/README.md",
+    }.issubset(source.local_contract_paths)
+    protected = {text for _, text in source.required_text}
+    assert {
+        "Nothing syncs history to Khenrix or claude-mem cloud\nservices.",
+        "Chroma, cloud sync, telemetry, hosted memory fallback, Telegram,\ntranscript watching, and semantic prompt injection are disabled.",
+        '"CLAUDE_MEM_CHROMA_ENABLED": "false"',
+        '"CLAUDE_MEM_CLOUD_SYNC_WS": "false"',
+        '{"enabled": False, "installId": "disabled-by-khenrix-utils", "decidedAt": "managed-by-khenrix-utils"}',
+        'web_search="disabled"',
+        'install_hooks(["claude", "codex", "agy"])',
+    }.issubset(protected)
+    upstreamctl.validate_local_contract(source)
+
+    missing_guard = replace(
+        source,
+        required_text=source.required_text
+        + (("components/memory/README.md", "privacy guard that is not present"),),
+    )
+    with pytest.raises(upstreamctl.UpstreamError, match="required privacy/review text"):
+        upstreamctl.validate_local_contract(missing_guard)
+
+    no_guards = replace(source, required_text=())
+    with pytest.raises(upstreamctl.UpstreamError, match="required_text.*non-empty"):
+        upstreamctl.validate_local_contract(no_guards)
+
+
+@pytest.mark.parametrize(
+    ("source_name", "versions", "expected_version"),
+    [
+        (
+            "maka-release",
+            ["0.2.0-dev.9.20260831", "0.2.0-dev.44.20260920", "0.2.0-dev.46.20260922"],
+            "0.2.0-dev.46.20260922",
+        ),
+        (
+            "claude-mem-release",
+            ["13.9.0", "13.25.1", "13.25.3", "14.0.0-beta.1"],
+            "13.25.3",
+        ),
+    ],
+)
+def test_npm_release_watch_orders_numeric_versions_and_checks_pinned_sri(
+    monkeypatch: pytest.MonkeyPatch,
+    source_name: str,
+    versions: list[str],
+    expected_version: str,
+) -> None:
+    source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == source_name)
+    records: dict[str, object] = {}
+    for index, version in enumerate(versions):
+        records[version] = {
+            "gitHead": source.commit if version == source.package_version else f"{index + 1:040x}",
+            "dist": {
+                "integrity": source.package_integrity
+                if version == source.package_version
+                else "sha512-" + base64.b64encode(b"candidate".ljust(64, b"!")).decode()
+            },
+        }
+    monkeypatch.setattr(
+        upstreamctl,
+        "fetch_npm_metadata",
+        lambda package: {"versions": records},
+    )
+
+    candidate, selector, integrity, pin_changed = upstreamctl.npm_release_candidate(source)
+
+    assert selector == f"npm:{source.package_name}@{expected_version}"
+    assert candidate == records[expected_version]["gitHead"]
+    assert integrity == records[expected_version]["dist"]["integrity"]
+    assert pin_changed is False
+
+    records[source.package_version]["dist"]["integrity"] = (
+        "sha512-" + base64.b64encode(b"changed".ljust(64, b"!")).decode()
+    )
+    assert upstreamctl.npm_release_candidate(source)[3] is True
+
+
+def test_npm_sri_must_be_canonical_sha512_and_malformed_candidate_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "claude-mem-release"
+    )
+    malformed = "sha512-" + base64.b64encode(b"too short").decode()
+
+    with pytest.raises(upstreamctl.UpstreamError, match="SHA-512 integrity"):
+        upstreamctl.validate_sha512_sri(malformed, label="test integrity")
+
+    monkeypatch.setattr(
+        upstreamctl,
+        "fetch_npm_metadata",
+        lambda package: {
+            "versions": {
+                source.package_version: {
+                    "gitHead": source.commit,
+                    "dist": {"integrity": source.package_integrity},
+                },
+                "13.25.3": {
+                    "gitHead": "b" * 40,
+                    "dist": {"integrity": malformed},
+                },
+            }
+        },
+    )
+
+    record = upstreamctl.owner_source_record(source)
+    assert record["status"] == "CHECK_INCOMPLETE"
+    assert "SHA-512 integrity" in record["error"]
 
 
 @pytest.mark.parametrize(

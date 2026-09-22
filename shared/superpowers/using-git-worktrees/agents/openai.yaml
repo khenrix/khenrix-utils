@@ -1,0 +1,6 @@
+interface:
+  display_name: "Using Git Worktrees"
+  short_description: "Create an isolated workspace for feature work"
+  default_prompt: "Use $using-git-worktrees to prepare an isolated workspace."
+policy:
+  allow_implicit_invocation: true

@@ -253,6 +253,49 @@ def test_bundle_manifest_requires_all_local_control_paths(tmp_path: Path) -> Non
         upstreamctl.load_sources(repo)
 
 
+def test_declared_additive_metadata_is_outside_payload_fidelity_and_survives_sync(
+    tmp_path: Path,
+) -> None:
+    repo, upstream, _ = bundle_fixture(tmp_path)
+    metadata = repo / "shared" / "superpowers" / "other-skill" / "agents" / "openai.yaml"
+    metadata.parent.mkdir()
+    metadata.write_text(
+        'interface:\n  display_name: "Other"\n  default_prompt: "Use $other-skill."\n'
+    )
+    manifest = next(repo.glob("shared/superpowers/*/upstreams.toml"))
+    manifest.write_text(
+        manifest.read_text().replace(
+            "control_paths = [\n",
+            'additive_files = ["other-skill/agents/openai.yaml"]\ncontrol_paths = [\n',
+        )
+    )
+
+    source = upstreamctl.load_sources(repo)[0]
+    assert upstreamctl.inspect_source(source)["status"] == "CURRENT"
+
+    commit = commit_bundle_change(upstream)
+    upstreamctl.sync(source, commit)
+
+    assert metadata.read_text() == (
+        'interface:\n  display_name: "Other"\n  default_prompt: "Use $other-skill."\n'
+    )
+    refreshed = upstreamctl.load_sources(repo)[0]
+    assert upstreamctl.inspect_source(refreshed)["status"] == "CURRENT"
+
+
+def test_undeclared_additive_metadata_is_a_verbatim_bundle_mismatch(tmp_path: Path) -> None:
+    repo, _, _ = bundle_fixture(tmp_path)
+    metadata = repo / "shared" / "superpowers" / "other-skill" / "agents" / "openai.yaml"
+    metadata.parent.mkdir()
+    metadata.write_text('interface:\n  display_name: "Other"\n')
+
+    source = upstreamctl.load_sources(repo)[0]
+    record = upstreamctl.inspect_source(source)
+
+    assert record["status"] == "VERBATIM_BUNDLE_MISMATCH"
+    assert "unexpected other-skill/agents/openai.yaml" in record["verbatim_bundle_mismatches"]
+
+
 def test_real_bundle_members_exactly_match_top_level_directories() -> None:
     root = ROOT / "shared" / "superpowers"
     manifest = root / "using-superpowers" / "upstreams.toml"

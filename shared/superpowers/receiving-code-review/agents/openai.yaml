@@ -1,0 +1,6 @@
+interface:
+  display_name: "Receiving Code Review"
+  short_description: "Evaluate review feedback with technical rigor"
+  default_prompt: "Use $receiving-code-review to evaluate and address this feedback."
+policy:
+  allow_implicit_invocation: true

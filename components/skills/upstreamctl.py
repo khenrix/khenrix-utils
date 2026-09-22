@@ -11,6 +11,8 @@ vendored copy.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -25,6 +27,7 @@ import tempfile
 import time
 import tomllib
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -35,6 +38,38 @@ MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
 REPORT_SCHEMA = "khenrix-upstreams/v2"
 DEFAULT_CONSUMER = "agentic-setup"
+
+
+SOURCE_FIELDS = {
+    "name",
+    "repository",
+    "ref",
+    "commit",
+    "paths",
+    "path_tree_hash",
+    "license",
+    "upstream_license_path",
+    "local_license_path",
+    "license_path_policy",
+    "license_optional",
+    "adaptation",
+    "verbatim_bundle",
+    "consumers",
+    "content_owner",
+    "delivery_owner",
+    "fetch_url",
+    "web_url",
+    "relationship",
+    "affected_capability_ids",
+    "update_mode",
+    "review_commands",
+    "watch",
+    "tag_pattern",
+    "package_name",
+    "package_version",
+    "package_integrity",
+    "local_contract",
+}
 
 
 class UpstreamError(RuntimeError):
@@ -58,6 +93,7 @@ class VerbatimBundle:
     upstream_root: str
     members: tuple[str, ...]
     control_paths: tuple[str, ...]
+    additive_files: tuple[str, ...]
     overlays: tuple[VerbatimOverlay, ...]
 
 
@@ -85,6 +121,16 @@ class Source:
     affected_capability_ids: tuple[str, ...] = ()
     update_mode: str = "manual"
     review_commands: tuple[str, ...] = ()
+    repo_root: Path = Path(".")
+    license_optional: bool = False
+    watch: str = "ref"
+    tag_pattern: str = ""
+    package_name: str = ""
+    package_version: str = ""
+    package_integrity: str = ""
+    local_contract_paths: tuple[str, ...] = ()
+    local_contract_hash: str = ""
+    required_text: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,12 +145,16 @@ def notice_path(source: Source) -> Path:
 
 
 def license_copy_path(source: Source) -> Path:
+    if source.license_optional:
+        raise UpstreamError(f"{source.name}: optional license has no local copy")
     return source.manifest.parent / source.local_license_path
 
 
-def validated_license_copy(source: Source) -> tuple[Path, bytes]:
+def validated_license_copy(source: Source) -> tuple[Path | None, bytes]:
     """Read the exact vendored license copy without following a repository symlink."""
 
+    if source.license_optional:
+        return None, b""
     path = license_copy_path(source)
     current = source.manifest.parent
     for part in PurePosixPath(source.local_license_path).parts:
@@ -135,12 +185,19 @@ def validated_notice(source: Source) -> tuple[Path, str]:
             f"{path} must mention {source.name}'s pinned commit {source.commit} exactly once; "
             f"found {occurrences}"
         )
-    license_occurrences = text.count(source.local_license_path)
-    if license_occurrences != 1:
-        raise UpstreamError(
-            f"{path} must mention {source.name}'s local license "
-            f"{source.local_license_path} exactly once; found {license_occurrences}"
-        )
+    if source.license_optional:
+        marker = "license_optional = true"
+        if text.count(marker) != 1:
+            raise UpstreamError(
+                f"{path} must mention {source.name}'s explicit {marker!r} exactly once"
+            )
+    else:
+        license_occurrences = text.count(source.local_license_path)
+        if license_occurrences != 1:
+            raise UpstreamError(
+                f"{path} must mention {source.name}'s local license "
+                f"{source.local_license_path} exactly once; found {license_occurrences}"
+            )
     return path, text
 
 
@@ -324,7 +381,7 @@ def parse_verbatim_bundle(
             f"{manifest} source {source_name} verbatim_bundle must be a table"
         )
     required = {"upstream_root", "members", "control_paths"}
-    allowed = required | {"overlays"}
+    allowed = required | {"additive_files", "overlays"}
     missing = sorted(required - set(raw))
     extra = sorted(set(raw) - allowed)
     if missing or extra:
@@ -402,6 +459,33 @@ def parse_verbatim_bundle(
             f"{manifest} source {source_name} verbatim control_paths must include "
             f"{sorted(required_controls)}"
         )
+    raw_additive = raw.get("additive_files", [])
+    if not isinstance(raw_additive, list):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim_bundle.additive_files must be a list"
+        )
+    additive_files = tuple(
+        safe_relative_path(
+            item,
+            label=f"{manifest} source {source_name} verbatim additive file",
+        )
+        for item in raw_additive
+    )
+    if len(set(additive_files)) != len(additive_files):
+        raise UpstreamError(
+            f"{manifest} source {source_name} has duplicate additive files"
+        )
+    if any(PurePosixPath(path).parts[0] not in members for path in additive_files):
+        raise UpstreamError(
+            f"{manifest} source {source_name} verbatim additive files must live under "
+            "declared members"
+        )
+    overlap = set(additive_files).intersection(controls)
+    if overlap:
+        raise UpstreamError(
+            f"{manifest} source {source_name} additive files overlap control paths: "
+            f"{sorted(overlap)}"
+        )
     raw_overlays = raw.get("overlays", [])
     if not isinstance(raw_overlays, list):
         raise UpstreamError(
@@ -434,6 +518,11 @@ def parse_verbatim_bundle(
                 f"{manifest} source {source_name} verbatim overlay {path!r} may not be "
                 "a control path"
             )
+        if path in additive_files:
+            raise UpstreamError(
+                f"{manifest} source {source_name} verbatim overlay {path!r} may not be "
+                "an additive file"
+            )
         if path in overlay_paths:
             raise UpstreamError(
                 f"{manifest} source {source_name} has duplicate overlay path {path!r}"
@@ -456,6 +545,7 @@ def parse_verbatim_bundle(
         upstream_root=upstream_root,
         members=tuple(members),
         control_paths=controls,
+        additive_files=additive_files,
         overlays=tuple(overlays),
     )
 
@@ -497,6 +587,123 @@ def string_list(
     if len(set(raw)) != len(raw):
         raise UpstreamError(f"{label} contains duplicate values")
     return tuple(raw)
+
+
+def validate_sha512_sri(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or not value.startswith("sha512-"):
+        raise UpstreamError(f"{label} must be a canonical SHA-512 integrity")
+    encoded = value.removeprefix("sha512-")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise UpstreamError(f"{label} must be a canonical SHA-512 integrity") from error
+    if len(decoded) != 64 or base64.b64encode(decoded).decode("ascii") != encoded:
+        raise UpstreamError(f"{label} must be a canonical SHA-512 integrity")
+    return value
+
+
+def parse_local_contract(
+    raw: object, *, repo_root: Path, manifest: Path, source_name: str
+) -> tuple[tuple[str, ...], str, tuple[tuple[str, str], ...]]:
+    if raw is None:
+        return (), "", ()
+    if not isinstance(raw, dict) or set(raw) != {"paths", "hash", "required_text"}:
+        raise UpstreamError(
+            f"{manifest} source {source_name} local_contract must contain exactly "
+            "paths, hash, and required_text"
+        )
+    paths = tuple(
+        safe_relative_path(
+            value, label=f"{manifest} source {source_name} local contract path"
+        )
+        for value in raw["paths"]
+    ) if isinstance(raw["paths"], list) else ()
+    if not paths or len(set(paths)) != len(paths):
+        raise UpstreamError(
+            f"{manifest} source {source_name} local_contract.paths must be unique and non-empty"
+        )
+    digest = raw["hash"]
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise UpstreamError(
+            f"{manifest} source {source_name} local_contract.hash is invalid"
+        )
+    raw_requirements = raw["required_text"]
+    if not isinstance(raw_requirements, list):
+        raise UpstreamError(
+            f"{manifest} source {source_name} local_contract.required_text must be a list"
+        )
+    requirements: list[tuple[str, str]] = []
+    for index, item in enumerate(raw_requirements):
+        if not isinstance(item, dict) or set(item) != {"path", "text"}:
+            raise UpstreamError(
+                f"{manifest} source {source_name} local_contract.required_text[{index}] "
+                "must contain exactly path and text"
+            )
+        path = safe_relative_path(
+            item["path"],
+            label=f"{manifest} source {source_name} required text path",
+        )
+        text = item["text"]
+        if path not in paths or not isinstance(text, str) or not text:
+            raise UpstreamError(
+                f"{manifest} source {source_name} has invalid required privacy/review text"
+            )
+        requirements.append((path, text))
+    return paths, digest, tuple(requirements)
+
+
+def local_contract_digest(repo_root: Path, paths: tuple[str, ...]) -> str:
+    digest = hashlib.sha256()
+    for relative in sorted(paths):
+        path = repo_root / relative
+        try:
+            mode = path.lstat().st_mode
+        except OSError as error:
+            raise UpstreamError(f"cannot inspect local contract path {path}: {error}") from error
+        if path.is_symlink() or not stat_module.S_ISREG(mode):
+            raise UpstreamError(f"local contract path must be a real file: {path}")
+        content = path.read_bytes()
+        digest.update(relative.encode() + b"\0" + hashlib.sha256(content).hexdigest().encode() + b"\n")
+    return "sha256:" + digest.hexdigest()
+
+
+def validate_local_contract(source: Source) -> None:
+    if not source.local_contract_paths:
+        if source.watch == "npm_releases":
+            raise UpstreamError(
+                f"{source.name}: runtime watch requires non-empty local contract paths"
+            )
+        return
+    if source.watch == "npm_releases" and not source.required_text:
+        raise UpstreamError(
+            f"{source.name}: runtime watch requires required_text to be non-empty"
+        )
+    actual = local_contract_digest(source.repo_root, source.local_contract_paths)
+    if actual != source.local_contract_hash:
+        raise UpstreamError(
+            f"{source.name}: local contract hash {source.local_contract_hash} does not "
+            f"match protected surfaces {actual}"
+        )
+    texts: dict[str, str] = {}
+    for relative in source.local_contract_paths:
+        path = source.repo_root / relative
+        try:
+            texts[relative] = path.read_text()
+        except (OSError, UnicodeDecodeError) as error:
+            raise UpstreamError(f"cannot read local contract path {path}: {error}") from error
+    for relative, required in source.required_text:
+        if required not in texts[relative]:
+            raise UpstreamError(
+                f"{source.name}: required privacy/review text is missing from {relative}"
+            )
+    if source.watch == "npm_releases":
+        combined = "\n".join(texts.values())
+        pins = (source.package_version, source.package_integrity, source.commit)
+        if any(pin not in combined for pin in pins):
+            raise UpstreamError(
+                f"{source.name}: package pin version, SRI, and source commit must all "
+                "appear in the protected local contract"
+            )
 
 
 def default_web_url(repository: str) -> str:
@@ -587,14 +794,12 @@ def load_sources(repo_root: Path) -> list[Source]:
     sources: list[Source] = []
     seen: set[str] = set()
     seen_license_copies: set[Path] = set()
-    manifest_roots = (
-        repo_root / "shared" / "skills",
-        repo_root / "shared" / "superpowers",
-    )
+    manifest_roots = (repo_root / "shared" / "skills", repo_root / "shared" / "superpowers")
     manifests = sorted(
-        manifest
-        for root in manifest_roots
-        for manifest in root.glob("*/upstreams.toml")
+        {
+            *(manifest for root in manifest_roots for manifest in root.glob("*/upstreams.toml")),
+            *(repo_root / "components").glob("*/upstreams.toml"),
+        }
     )
     for manifest in manifests:
         try:
@@ -602,12 +807,25 @@ def load_sources(repo_root: Path) -> list[Source]:
                 data = tomllib.load(handle)
         except (OSError, tomllib.TOMLDecodeError) as error:
             raise UpstreamError(f"cannot parse {manifest}: {error}") from error
+        unknown_manifest = sorted(set(data) - {"sources"})
+        if unknown_manifest:
+            raise UpstreamError(f"{manifest} has unknown fields {unknown_manifest}")
         raw_sources = data.get("sources")
         if not isinstance(raw_sources, list) or not raw_sources:
             raise UpstreamError(f"{manifest} must contain at least one [[sources]] table")
         for index, raw in enumerate(raw_sources):
             if not isinstance(raw, dict):
                 raise UpstreamError(f"{manifest} sources[{index}] is not a table")
+            unknown_source = sorted(set(raw) - SOURCE_FIELDS)
+            if unknown_source:
+                raise UpstreamError(
+                    f"{manifest} sources[{index}] has unknown fields {unknown_source}"
+                )
+            license_optional = raw.get("license_optional", False)
+            if not isinstance(license_optional, bool):
+                raise UpstreamError(
+                    f"{manifest} source {raw.get('name', index)} license_optional must be boolean"
+                )
             required = {
                 "name",
                 "repository",
@@ -616,10 +834,10 @@ def load_sources(repo_root: Path) -> list[Source]:
                 "paths",
                 "path_tree_hash",
                 "license",
-                "upstream_license_path",
-                "local_license_path",
                 "adaptation",
             }
+            if not license_optional:
+                required.update({"upstream_license_path", "local_license_path"})
             missing = sorted(required - set(raw))
             if missing:
                 raise UpstreamError(f"{manifest} sources[{index}] is missing {missing}")
@@ -644,30 +862,49 @@ def load_sources(repo_root: Path) -> list[Source]:
                 raise UpstreamError(f"{manifest} source {name} has invalid paths")
             if any(".." in Path(path).parts for path in paths):
                 raise UpstreamError(f"{manifest} source {name} paths may not traverse upward")
-            upstream_license_path = safe_relative_path(
-                raw["upstream_license_path"],
-                label=f"{manifest} source {name} upstream_license_path",
-            )
-            local_license_path = safe_relative_path(
-                raw["local_license_path"],
-                label=f"{manifest} source {name} local_license_path",
-            )
-            if PurePosixPath(local_license_path).parts[0] != "licenses":
-                raise UpstreamError(
-                    f"{manifest} source {name} local_license_path must live under licenses/"
+            upstream_license_path = ""
+            local_license_path = ""
+            if license_optional:
+                if "upstream_license_path" in raw or "local_license_path" in raw:
+                    raise UpstreamError(
+                        f"{manifest} source {name} optional license may not declare license paths"
+                    )
+            else:
+                upstream_license_path = safe_relative_path(
+                    raw["upstream_license_path"],
+                    label=f"{manifest} source {name} upstream_license_path",
                 )
+                local_license_path = safe_relative_path(
+                    raw["local_license_path"],
+                    label=f"{manifest} source {name} local_license_path",
+                )
+                license_path_policy = raw.get("license_path_policy", "licenses")
+                if license_path_policy not in {"licenses", "component"}:
+                    raise UpstreamError(
+                        f"{manifest} source {name} has invalid license_path_policy"
+                    )
+                if license_path_policy == "component" and "components" not in manifest.parts:
+                    raise UpstreamError(
+                        f"{manifest} source {name} component license policy is only valid "
+                        "for component manifests"
+                    )
+                if license_path_policy == "licenses" and PurePosixPath(local_license_path).parts[0] != "licenses":
+                    raise UpstreamError(
+                        f"{manifest} source {name} local_license_path must live under licenses/"
+                    )
             normalized_paths = tuple(PurePosixPath(path).as_posix() for path in paths)
-            if not selected_paths_cover(normalized_paths, upstream_license_path):
+            if not license_optional and not selected_paths_cover(normalized_paths, upstream_license_path):
                 raise UpstreamError(
                     f"{manifest} source {name} upstream license {upstream_license_path!r} "
                     "is outside its reviewed paths"
                 )
-            local_license = manifest.parent / local_license_path
-            if local_license in seen_license_copies:
-                raise UpstreamError(
-                    f"local license copy is shared by more than one source: {local_license}"
-                )
-            seen_license_copies.add(local_license)
+            if not license_optional:
+                local_license = manifest.parent / local_license_path
+                if local_license in seen_license_copies:
+                    raise UpstreamError(
+                        f"local license copy is shared by more than one source: {local_license}"
+                    )
+                seen_license_copies.add(local_license)
             tree_hash = raw["path_tree_hash"]
             if not isinstance(tree_hash, str) or not re.fullmatch(
                 r"sha256:[0-9a-f]{64}", tree_hash
@@ -735,6 +972,64 @@ def load_sources(repo_root: Path) -> list[Source]:
                 label=f"{manifest} source {name} review_commands",
                 default=(f"mise run skills:upstream-diff -- {name}",),
             )
+            watch = raw.get("watch", "ref")
+            if watch not in {"ref", "stable_tags", "npm_releases"}:
+                raise UpstreamError(f"{manifest} source {name} has invalid watch {watch!r}")
+            tag_pattern = raw.get("tag_pattern", "")
+            if watch != "ref":
+                if not isinstance(tag_pattern, str) or not (
+                    tag_pattern.startswith("^") and tag_pattern.endswith("$")
+                ):
+                    raise UpstreamError(
+                        f"{manifest} source {name} tag_pattern must be anchored"
+                    )
+                try:
+                    compiled_tag = re.compile(tag_pattern)
+                except re.error as error:
+                    raise UpstreamError(
+                        f"{manifest} source {name} tag_pattern is invalid: {error}"
+                    ) from error
+                if compiled_tag.groups < 1:
+                    raise UpstreamError(
+                        f"{manifest} source {name} tag_pattern must capture numeric ordering fields"
+                    )
+            elif tag_pattern:
+                raise UpstreamError(
+                    f"{manifest} source {name} tag_pattern requires a release watch"
+                )
+            package_name = raw.get("package_name", "")
+            package_version = raw.get("package_version", "")
+            package_integrity = raw.get("package_integrity", "")
+            if watch == "npm_releases":
+                if not isinstance(package_name, str) or not re.fullmatch(
+                    r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+", package_name
+                ):
+                    raise UpstreamError(f"{manifest} source {name} package_name is invalid")
+                if not isinstance(package_version, str) or not re.fullmatch(
+                    tag_pattern.removeprefix("^v").removesuffix("$"), package_version
+                ):
+                    raise UpstreamError(
+                        f"{manifest} source {name} package_version does not match tag_pattern"
+                    )
+                validate_sha512_sri(
+                    package_integrity,
+                    label=f"{manifest} source {name} package_integrity",
+                )
+            elif any((package_name, package_version, package_integrity)):
+                raise UpstreamError(
+                    f"{manifest} source {name} package fields require npm_releases"
+                )
+            local_paths, local_hash, required_text = parse_local_contract(
+                raw.get("local_contract"),
+                repo_root=repo_root,
+                manifest=manifest,
+                source_name=name,
+            )
+            if watch == "npm_releases" and (not local_paths or not required_text):
+                raise UpstreamError(
+                    f"{manifest} source {name} runtime watch requires non-empty "
+                    "local_contract.paths and required_text guards"
+                )
             sources.append(
                 Source(
                     skill=manifest.parent.name,
@@ -759,6 +1054,16 @@ def load_sources(repo_root: Path) -> list[Source]:
                     affected_capability_ids=affected_capability_ids,
                     update_mode=update_mode,
                     review_commands=review_commands,
+                    repo_root=repo_root,
+                    license_optional=license_optional,
+                    watch=watch,
+                    tag_pattern=tag_pattern,
+                    package_name=package_name,
+                    package_version=package_version,
+                    package_integrity=package_integrity,
+                    local_contract_paths=local_paths,
+                    local_contract_hash=local_hash,
+                    required_text=required_text,
                 )
             )
     if not sources:
@@ -768,6 +1073,7 @@ def load_sources(repo_root: Path) -> list[Source]:
     for source in sources:
         validated_notice(source)
         validated_license_copy(source)
+        validate_local_contract(source)
     return sources
 
 
@@ -786,6 +1092,123 @@ def resolve_remote(source: Source, *, bounded: bool = False) -> str:
         raise UpstreamError(f"{source.name}: tracking ref {source.ref!r} does not exist")
     peeled = [commit for commit, ref in rows if ref.endswith("^{}")]
     return peeled[0] if peeled else rows[0][0]
+
+
+def numeric_release_rows(source: Source, output: str) -> list[tuple[tuple[int, ...], str, str]]:
+    pattern = re.compile(source.tag_pattern)
+    direct: dict[str, str] = {}
+    peeled: dict[str, str] = {}
+    for line in output.splitlines():
+        fields = line.split("\t", 1)
+        if len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+            continue
+        ref = fields[1]
+        if ref.endswith("^{}"):
+            peeled[ref[:-3]] = fields[0]
+        else:
+            direct[ref] = fields[0]
+    rows: list[tuple[tuple[int, ...], str, str]] = []
+    for ref, commit in direct.items():
+        if not ref.startswith("refs/tags/"):
+            continue
+        match = pattern.fullmatch(ref.removeprefix("refs/tags/"))
+        if match is None or not all(part.isdigit() for part in match.groups()):
+            continue
+        rows.append((tuple(int(part) for part in match.groups()), ref, peeled.get(ref, commit)))
+    return rows
+
+
+def resolve_stable_tag(source: Source, *, bounded: bool = False) -> tuple[str, str, bool]:
+    runner = run_git_bounded if bounded else run_git
+    output = runner(["ls-remote", "--tags", source.fetch_url or source.repository, "refs/tags/*"])
+    rows = numeric_release_rows(source, output)
+    if not rows:
+        raise UpstreamError(f"{source.name}: no tag matches {source.tag_pattern!r}")
+    _, candidate_ref, candidate_commit = max(rows, key=lambda row: row[0])
+    pinned = [commit for _, ref, commit in rows if ref == source.ref]
+    if len(pinned) != 1:
+        raise UpstreamError(f"{source.name}: pinned release selector {source.ref!r} is missing")
+    return candidate_commit, candidate_ref, pinned[0] != source.commit
+
+
+def fetch_npm_metadata(package: str) -> dict[str, Any]:
+    url = "https://registry.npmjs.org/" + urllib.parse.quote(package, safe="@/")
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=GIT_TIMEOUT_SECONDS) as response:
+            payload = response.read(MAX_GIT_OUTPUT_BYTES + 1)
+    except (OSError, TimeoutError) as error:
+        raise UpstreamError(f"npm metadata check failed for {package}: {error}") from error
+    if len(payload) > MAX_GIT_OUTPUT_BYTES:
+        raise UpstreamError(f"npm metadata for {package} exceeded output limit")
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise UpstreamError(f"npm metadata for {package} is malformed") from error
+    if not isinstance(value, dict) or not isinstance(value.get("versions"), dict):
+        raise UpstreamError(f"npm metadata for {package} lacks versions")
+    return value
+
+
+def npm_release_candidate(
+    source: Source, *, bounded: bool = False
+) -> tuple[str, str, str, bool]:
+    metadata = fetch_npm_metadata(source.package_name)
+    pattern = re.compile(source.tag_pattern)
+    candidates: list[tuple[tuple[int, ...], str, dict[str, Any]]] = []
+    for version, raw in metadata["versions"].items():
+        match = pattern.fullmatch("v" + version)
+        if match is None or not all(part.isdigit() for part in match.groups()):
+            continue
+        if isinstance(raw, dict):
+            candidates.append((tuple(int(part) for part in match.groups()), version, raw))
+    if not candidates:
+        raise UpstreamError(
+            f"{source.name}: npm has no version matching {source.tag_pattern!r}"
+        )
+    _, version, candidate = max(candidates, key=lambda row: row[0])
+    pinned = metadata["versions"].get(source.package_version)
+    if not isinstance(pinned, dict):
+        raise UpstreamError(
+            f"{source.name}: pinned npm version {source.package_version!r} is missing"
+        )
+    pinned_integrity = pinned.get("dist", {}).get("integrity")
+    candidate_integrity = candidate.get("dist", {}).get("integrity")
+    pinned_integrity = validate_sha512_sri(
+        pinned_integrity,
+        label=f"{source.name}: pinned npm release SHA-512 integrity",
+    )
+    candidate_integrity = validate_sha512_sri(
+        candidate_integrity,
+        label=f"{source.name}: candidate npm release SHA-512 integrity",
+    )
+
+    def source_commit(release: dict[str, Any], release_version: str) -> str:
+        commit = release.get("gitHead")
+        if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit):
+            return commit
+        runner = run_git_bounded if bounded else run_git
+        ref = f"refs/tags/v{release_version}"
+        output = runner(["ls-remote", source.fetch_url or source.repository, ref, ref + "^{}"])
+        rows = [
+            (fields[0], fields[1])
+            for line in output.splitlines()
+            if len(fields := line.split("\t", 1)) == 2
+            and re.fullmatch(r"[0-9a-f]{40}", fields[0])
+        ]
+        peeled = [value for value, found in rows if found.endswith("^{}")]
+        direct = [value for value, found in rows if found == ref]
+        commits = peeled or direct
+        if len(commits) != 1:
+            raise UpstreamError(f"{source.name}: source tag {ref!r} is missing")
+        return commits[0]
+
+    candidate_commit = source_commit(candidate, version)
+    pinned_commit = source_commit(pinned, source.package_version)
+    moved_or_integrity_changed = (
+        pinned_commit != source.commit or pinned_integrity != source.package_integrity
+    )
+    return candidate_commit, f"npm:{source.package_name}@{version}", candidate_integrity, moved_or_integrity_changed
 
 
 class Checkout:
@@ -1022,6 +1445,7 @@ def verbatim_bundle_mismatches(
         return []
     expected = checkout.bundle_files(commit, bundle)
     controls = set(bundle.control_paths)
+    additive = set(bundle.additive_files)
     overlap = controls.intersection(expected)
     if overlap:
         raise UpstreamError(
@@ -1033,7 +1457,21 @@ def verbatim_bundle_mismatches(
         raise UpstreamError(
             f"{source.name}: missing local verbatim control paths: {missing_controls}"
         )
-    actual = {path: file for path, file in actual_paths.items() if path not in controls}
+    missing_additive = sorted(additive - set(actual_paths))
+    if missing_additive:
+        raise UpstreamError(
+            f"{source.name}: missing declared additive files: {missing_additive}"
+        )
+    if additive.intersection(expected):
+        raise UpstreamError(
+            f"{source.name}: additive files overlap pinned upstream payload: "
+            f"{sorted(additive.intersection(expected))}"
+        )
+    actual = {
+        path: file
+        for path, file in actual_paths.items()
+        if path not in controls and path not in additive
+    }
     messages = [f"missing {path}" for path in sorted(set(expected) - set(actual))]
     messages.extend(f"unexpected {path}" for path in sorted(set(actual) - set(expected)))
     for path in sorted(set(expected).intersection(actual)):
@@ -1076,21 +1514,55 @@ def require_verbatim_bundle_match(
 
 
 def inspect_source(source: Source, *, bounded: bool = False) -> dict[str, Any]:
-    remote = resolve_remote(source, bounded=bounded)
+    candidate_selector = source.ref
+    candidate_integrity = ""
+    candidate_package_version = ""
+    pin_integrity_failure = False
+    if source.watch == "stable_tags":
+        remote, candidate_selector, pin_integrity_failure = resolve_stable_tag(
+            source, bounded=bounded
+        )
+    elif source.watch == "npm_releases":
+        (
+            remote,
+            candidate_selector,
+            candidate_integrity,
+            pin_integrity_failure,
+        ) = npm_release_candidate(source, bounded=bounded)
+        candidate_package_version = candidate_selector.rsplit("@", 1)[1]
+    else:
+        remote = resolve_remote(source, bounded=bounded)
     _, local_license = validated_license_copy(source)
     with Checkout(source, bounded=bounded) as checkout:
         pinned_hash = checkout.path_hash(source.commit)
         remote_hash = checkout.path_hash(remote)
-        pinned_license = checkout.file_bytes(source.commit, source.upstream_license_path)
+        pinned_license = (
+            b""
+            if source.license_optional
+            else checkout.file_bytes(source.commit, source.upstream_license_path)
+        )
         bundle_mismatches = verbatim_bundle_mismatches(source, checkout, source.commit)
-    if pinned_hash != source.path_tree_hash:
+    report_pinned_hash = pinned_hash
+    report_remote_hash = remote_hash
+    if source.watch == "npm_releases":
+        report_pinned_hash = canonical_json_digest(
+            {"package_integrity": source.package_integrity, "source_tree": pinned_hash}
+        )
+        report_remote_hash = canonical_json_digest(
+            {"package_integrity": candidate_integrity, "source_tree": remote_hash}
+        )
+    if pin_integrity_failure or pinned_hash != source.path_tree_hash:
         status = "PIN_HASH_MISMATCH"
     elif local_license != pinned_license:
         status = "LICENSE_COPY_MISMATCH"
     elif bundle_mismatches:
         status = "VERBATIM_BUNDLE_MISMATCH"
-    elif remote == source.commit:
+    elif candidate_selector == source.ref and remote == source.commit:
         status = "CURRENT"
+    elif source.relationship == "tracks_product":
+        status = "UPDATE"
+    elif source.watch == "npm_releases":
+        status = "UPDATE"
     elif remote_hash == source.path_tree_hash:
         status = "REPO_AHEAD"
     else:
@@ -1101,9 +1573,12 @@ def inspect_source(source: Source, *, bounded: bool = False) -> dict[str, Any]:
         "status": status,
         "pinned_commit": source.commit,
         "remote_commit": remote,
+        "candidate_selector": candidate_selector,
+        "candidate_package_version": candidate_package_version,
+        "candidate_package_integrity": candidate_integrity,
         "declared_path_tree_hash": source.path_tree_hash,
-        "pinned_path_tree_hash": pinned_hash,
-        "remote_path_tree_hash": remote_hash,
+        "pinned_path_tree_hash": report_pinned_hash,
+        "remote_path_tree_hash": report_remote_hash,
         "upstream_license_path": source.upstream_license_path,
         "local_license_path": source.local_license_path,
         "pinned_license_hash": "sha256:" + hashlib.sha256(pinned_license).hexdigest(),
@@ -1124,6 +1599,17 @@ def canonical_json_digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def canonical_source_digest(source: Source) -> str:
+    if source.watch != "npm_releases":
+        return source.path_tree_hash
+    return canonical_json_digest(
+        {
+            "package_integrity": source.package_integrity,
+            "source_tree": source.path_tree_hash,
+        }
+    )
+
+
 def owner_source_record(source: Source) -> dict[str, Any]:
     record: dict[str, Any] = {
         "source_id": source.name,
@@ -1134,7 +1620,7 @@ def owner_source_record(source: Source) -> dict[str, Any]:
         "pinned_selector": source.ref,
         "pinned_commit": source.commit,
         "selected_paths": list(source.paths),
-        "canonical_digest": source.path_tree_hash,
+        "canonical_digest": canonical_source_digest(source),
         "relationship": source.relationship,
         "affected_capability_ids": list(source.affected_capability_ids),
         "update_mode": source.update_mode,
@@ -1153,7 +1639,12 @@ def owner_source_record(source: Source) -> dict[str, Any]:
     record.update(
         {
             "status": inspected["status"],
+            "candidate_selector": inspected["candidate_selector"],
             "candidate_commit": inspected["remote_commit"],
+            "pinned_package_version": source.package_version or None,
+            "candidate_package_version": inspected["candidate_package_version"] or None,
+            "pinned_package_integrity": source.package_integrity or None,
+            "candidate_package_integrity": inspected["candidate_package_integrity"] or None,
             "pinned_digest": inspected["pinned_path_tree_hash"],
             "candidate_digest": inspected["remote_path_tree_hash"],
             "pinned_license_digest": inspected["pinned_license_hash"],
@@ -1224,7 +1715,12 @@ def validate_owner_report(report: dict[str, Any]) -> None:
         "status",
     }
     complete_fields = base_fields | {
+        "candidate_selector",
         "candidate_commit",
+        "pinned_package_version",
+        "candidate_package_version",
+        "pinned_package_integrity",
+        "candidate_package_integrity",
         "pinned_digest",
         "candidate_digest",
         "pinned_license_digest",
@@ -1349,12 +1845,38 @@ def validate_owner_report(report: dict[str, Any]) -> None:
                 f"owner report sources[{index}].review_commands contains control characters"
             )
         if source["status"] != "CHECK_INCOMPLETE":
+            if not isinstance(source["candidate_selector"], str) or not source[
+                "candidate_selector"
+            ] or re.search(r"[\x00-\x20]", source["candidate_selector"]):
+                raise UpstreamError(
+                    f"owner report sources[{index}].candidate_selector is invalid"
+                )
             if not isinstance(source["candidate_commit"], str) or not re.fullmatch(
                 r"[0-9a-f]{40}", source["candidate_commit"]
             ):
                 raise UpstreamError(
                     f"owner report sources[{index}].candidate_commit is invalid"
                 )
+            package_values = (
+                source["pinned_package_version"],
+                source["candidate_package_version"],
+                source["pinned_package_integrity"],
+                source["candidate_package_integrity"],
+            )
+            if any(value is not None for value in package_values):
+                if not all(isinstance(value, str) and value for value in package_values):
+                    raise UpstreamError(
+                        f"owner report sources[{index}] has incomplete package metadata"
+                    )
+                for field in ("pinned_package_version", "candidate_package_version"):
+                    if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", source[field]):
+                        raise UpstreamError(
+                            f"owner report sources[{index}].{field} is invalid"
+                        )
+                for field in ("pinned_package_integrity", "candidate_package_integrity"):
+                    validate_sha512_sri(
+                        source[field], label=f"owner report sources[{index}].{field}"
+                    )
             for field in (
                 "pinned_digest",
                 "candidate_digest",
@@ -1545,7 +2067,16 @@ def find_source(sources: list[Source], name: str) -> Source:
 
 
 def show_diff(source: Source) -> int:
-    remote = resolve_remote(source)
+    if source.watch == "stable_tags":
+        remote, _, pin_moved = resolve_stable_tag(source)
+        if pin_moved:
+            raise UpstreamError(f"{source.name}: pinned release tag moved")
+    elif source.watch == "npm_releases":
+        remote, _, _, pin_moved = npm_release_candidate(source)
+        if pin_moved:
+            raise UpstreamError(f"{source.name}: pinned npm source or integrity changed")
+    else:
+        remote = resolve_remote(source)
     _, local_license = validated_license_copy(source)
     with Checkout(source) as checkout:
         pinned_hash = checkout.path_hash(source.commit)
@@ -1554,7 +2085,11 @@ def show_diff(source: Source) -> int:
                 f"{source.name}: manifest hash {source.path_tree_hash} does not match pinned "
                 f"tree {pinned_hash}; repair provenance before reviewing a newer commit"
             )
-        pinned_license = checkout.file_bytes(source.commit, source.upstream_license_path)
+        pinned_license = (
+            b""
+            if source.license_optional
+            else checkout.file_bytes(source.commit, source.upstream_license_path)
+        )
         if local_license != pinned_license:
             raise UpstreamError(
                 f"{source.name}: local license copy {source.local_license_path} does not "
@@ -1579,7 +2114,9 @@ def show_diff(source: Source) -> int:
     return 0
 
 
-def updated_manifest_text(source: Source, commit: str, tree_hash: str) -> str:
+def updated_manifest_text(
+    source: Source, commit: str, tree_hash: str, *, selector: str | None = None
+) -> str:
     text = source.manifest.read_text()
     lines = text.splitlines(keepends=True)
     starts = [index for index, line in enumerate(lines) if line.strip() == "[[sources]]"]
@@ -1603,6 +2140,7 @@ def updated_manifest_text(source: Source, commit: str, tree_hash: str) -> str:
     start, end = selected
     replaced_commit = False
     replaced_hash = False
+    replaced_selector = selector is None
     for index in range(start, end):
         if re.match(r"^\s*commit\s*=", lines[index]):
             newline = "\n" if lines[index].endswith("\n") else ""
@@ -1612,7 +2150,11 @@ def updated_manifest_text(source: Source, commit: str, tree_hash: str) -> str:
             newline = "\n" if lines[index].endswith("\n") else ""
             lines[index] = f'path_tree_hash = "{tree_hash}"{newline}'
             replaced_hash = True
-    if not replaced_commit or not replaced_hash:
+        elif selector is not None and re.match(r"^\s*ref\s*=", lines[index]):
+            newline = "\n" if lines[index].endswith("\n") else ""
+            lines[index] = f'ref = "{selector}"{newline}'
+            replaced_selector = True
+    if not replaced_commit or not replaced_hash or not replaced_selector:
         raise UpstreamError(f"source {source.name!r} lacks replaceable commit/hash fields")
     result = "".join(lines)
     try:
@@ -1623,24 +2165,35 @@ def updated_manifest_text(source: Source, commit: str, tree_hash: str) -> str:
 
 
 def write_provenance(
-    source: Source, commit: str, tree_hash: str, upstream_license: bytes
+    source: Source,
+    commit: str,
+    tree_hash: str,
+    upstream_license: bytes,
+    *,
+    selector: str | None = None,
 ) -> None:
     """Update the pin, notice, and exact license copy as one reviewed operation."""
 
     notice, old_notice = validated_notice(source)
     local_license, _ = validated_license_copy(source)
-    manifest_text = updated_manifest_text(source, commit, tree_hash)
+    manifest_text = updated_manifest_text(source, commit, tree_hash, selector=selector)
     notice_text = old_notice.replace(source.commit, commit, 1)
+    if selector is not None:
+        old_tag = source.ref.removeprefix("refs/tags/")
+        new_tag = selector.removeprefix("refs/tags/")
+        if old_tag != new_tag and notice_text.count(old_tag) == 1:
+            notice_text = notice_text.replace(old_tag, new_tag, 1)
     if notice_text.count(commit) != 1:
         raise UpstreamError(
             f"updating {notice} would not leave exactly one reference to {commit}"
         )
 
-    paths_and_bytes = (
+    paths_and_bytes: tuple[tuple[Path, bytes], ...] = (
         (source.manifest, manifest_text.encode()),
         (notice, notice_text.encode()),
-        (local_license, upstream_license),
     )
+    if local_license is not None:
+        paths_and_bytes += ((local_license, upstream_license),)
     originals = {
         path: (path.read_bytes(), path.stat().st_mode & 0o777)
         for path, _ in paths_and_bytes
@@ -1686,6 +2239,20 @@ def write_provenance(
 def record(source: Source, commit: str, *, accept_license_change: bool = False) -> int:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise UpstreamError("record requires an immutable 40-character lowercase commit")
+    if source.watch == "npm_releases":
+        raise UpstreamError(
+            f"{source.name}: npm release updates must revise the package, source, SRI, "
+            "local contract, and runtime together before recording"
+        )
+    selector: str | None = None
+    if source.watch == "stable_tags":
+        candidate, selector, pin_moved = resolve_stable_tag(source)
+        if pin_moved:
+            raise UpstreamError(f"{source.name}: pinned release tag moved")
+        if candidate != commit:
+            raise UpstreamError(
+                f"{source.name}: record commit {commit} is not newest stable release {candidate}"
+            )
     _, local_license = validated_license_copy(source)
     with Checkout(source) as checkout:
         pinned_hash = checkout.path_hash(source.commit)
@@ -1694,7 +2261,11 @@ def record(source: Source, commit: str, *, accept_license_change: bool = False) 
                 f"{source.name}: manifest hash {source.path_tree_hash} does not match pinned "
                 f"tree {pinned_hash}; repair provenance before recording a newer commit"
             )
-        pinned_license = checkout.file_bytes(source.commit, source.upstream_license_path)
+        pinned_license = (
+            b""
+            if source.license_optional
+            else checkout.file_bytes(source.commit, source.upstream_license_path)
+        )
         if local_license != pinned_license:
             raise UpstreamError(
                 f"{source.name}: local license copy {source.local_license_path} does not "
@@ -1702,7 +2273,11 @@ def record(source: Source, commit: str, *, accept_license_change: bool = False) 
             )
         require_verbatim_bundle_match(source, checkout, source.commit, purpose="recording")
         tree_hash = checkout.path_hash(commit)
-        upstream_license = checkout.file_bytes(commit, source.upstream_license_path)
+        upstream_license = (
+            b""
+            if source.license_optional
+            else checkout.file_bytes(commit, source.upstream_license_path)
+        )
         if upstream_license != pinned_license and not accept_license_change:
             raise UpstreamError(
                 f"{source.name}: upstream license bytes changed at {commit}; review the "
@@ -1718,18 +2293,28 @@ def record(source: Source, commit: str, *, accept_license_change: bool = False) 
                 f"{source.name}: record would pin a commit that does not match the local "
                 f"verbatim bundle: {preview}; use the sync command for reviewed bundle updates"
             )
-    write_provenance(source, commit, tree_hash, upstream_license)
+    write_provenance(
+        source, commit, tree_hash, upstream_license, selector=selector
+    )
     print(f"recorded {source.name} at {commit}")
     print(f"path_tree_hash = {tree_hash}")
     print(f"updated {notice_path(source)}")
-    print(f"updated {license_copy_path(source)} from {source.upstream_license_path}")
+    if not source.license_optional:
+        print(f"updated {license_copy_path(source)} from {source.upstream_license_path}")
     print("composed skill content was not changed; review and update it separately, then run evals")
     return 0
 
 
-def updated_notice_text(source: Source, commit: str) -> str:
+def updated_notice_text(
+    source: Source, commit: str, *, selector: str | None = None
+) -> str:
     notice, old_notice = validated_notice(source)
     text = old_notice.replace(source.commit, commit, 1)
+    if selector is not None:
+        old_tag = source.ref.removeprefix("refs/tags/")
+        new_tag = selector.removeprefix("refs/tags/")
+        if old_tag != new_tag and text.count(old_tag) == 1:
+            text = text.replace(old_tag, new_tag, 1)
     if text.count(commit) != 1:
         raise UpstreamError(
             f"updating {notice} would not leave exactly one reference to {commit}"
@@ -1773,6 +2358,21 @@ def materialize_bundle(
             ) from error
         if old_path.is_symlink() or not stat_module.S_ISREG(old_mode):
             raise UpstreamError(f"{source.name}: unsafe control path {old_path}")
+        new_path.write_bytes(old_path.read_bytes())
+        os.chmod(new_path, old_mode & 0o777)
+
+    for additive in bundle.additive_files:
+        old_path = current_root / additive
+        new_path = destination / additive
+        new_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        try:
+            old_mode = old_path.lstat().st_mode
+        except OSError as error:
+            raise UpstreamError(
+                f"{source.name}: cannot stage additive file {old_path}: {error}"
+            ) from error
+        if old_path.is_symlink() or not stat_module.S_ISREG(old_mode):
+            raise UpstreamError(f"{source.name}: unsafe additive file {old_path}")
         new_path.write_bytes(old_path.read_bytes())
         os.chmod(new_path, old_mode & 0o777)
 
@@ -1832,6 +2432,15 @@ def sync(source: Source, commit: str, *, accept_license_change: bool = False) ->
         raise UpstreamError(f"{source.name}: source does not declare a verbatim bundle")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise UpstreamError("sync requires an immutable 40-character lowercase commit")
+    selector: str | None = None
+    if source.watch == "stable_tags":
+        candidate, selector, pin_moved = resolve_stable_tag(source)
+        if pin_moved:
+            raise UpstreamError(f"{source.name}: pinned release tag moved")
+        if candidate != commit:
+            raise UpstreamError(
+                f"{source.name}: sync commit {commit} is not newest stable release {candidate}"
+            )
     _, local_license = validated_license_copy(source)
     with Checkout(source) as checkout:
         pinned_hash = checkout.path_hash(source.commit)
@@ -1857,8 +2466,10 @@ def sync(source: Source, commit: str, *, accept_license_change: bool = False) ->
             )
         files = checkout.bundle_files(commit, source.verbatim_bundle)
 
-    manifest_text = updated_manifest_text(source, commit, tree_hash)
-    notice_text = updated_notice_text(source, commit)
+    manifest_text = updated_manifest_text(
+        source, commit, tree_hash, selector=selector
+    )
+    notice_text = updated_notice_text(source, commit, selector=selector)
     local_root = bundle_root(source)
     transaction = Path(
         tempfile.mkdtemp(prefix=".khenrix-upstream-sync-", dir=local_root)

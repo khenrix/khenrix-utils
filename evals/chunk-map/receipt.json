@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "chunk-map",
-  "source_hash": "a3dc1780d30500a73ff8cc8d242f315afc2c7737cda3bb51d7dd24290c94b1a7",
+  "source_hash": "0c234278392c9f8673be96364c12f62c4a5d35887c9fd4f609731c543f8c908c",
   "eval_set_hash": "cf2852ace66aa7c807950580095188965c194c2c38e57c7c24ddb7e6c1005b0c",
   "providers": [
     "claude",
@@ -10,24 +10,24 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.1666,
+  "delta_pass_rate": 0.25,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.1875,
+      "delta": 0.25,
       "quantum": 0.0625,
       "n_evals": 4,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.1875,
+      "delta": 0.25,
       "quantum": 0.0625,
       "n_evals": 4,
       "status": "ok"
     },
     "codex": {
-      "delta": 0.125,
+      "delta": 0.25,
       "quantum": 0.0625,
       "n_evals": 4,
       "status": "ok"

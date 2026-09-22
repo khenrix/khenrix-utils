@@ -1,0 +1,6 @@
+interface:
+  display_name: "Finishing a Development Branch"
+  short_description: "Verify and integrate completed branch work"
+  default_prompt: "Use $finishing-a-development-branch to finish and integrate this branch."
+policy:
+  allow_implicit_invocation: true

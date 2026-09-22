@@ -1,19 +1,31 @@
 {
   "schema_version": 2,
   "skill": "llm-forge",
-  "source_hash": "e73e15398fbdbf6c9ec72b8cd48ff235076af4c030f2e5308bf285d46b986651",
+  "source_hash": "8a256a412dee4b5d74ee91e134abbe81a222d4374d312a8885cf925593ac7ad8",
   "eval_set_hash": "73875dfae42320a71ba49ec4eb436cb463badc4ae412a2917e64e2873b32a551",
   "providers": [
     "claude"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": null,
-  "blind_winner": null,
-  "provenance": "seeded: blessed current committed state",
+  "delta_pass_rate": 0.7083,
+  "blind_winner": "n/a-deterministic",
+  "provenance": "eval",
+  "per_provider": {
+    "claude": {
+      "delta": 0.7083,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5",
+    "judge": "claude-opus-5"
+  },
+  "certified_by": "forge-suite-all",
   "deterministic_gate": "forge-suite-all",
   "self_test": true,
-  "certified_by": "forge-suite-all",
   "gate_command": [
     "uvx",
     "--with",

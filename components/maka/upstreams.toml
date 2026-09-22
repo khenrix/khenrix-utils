@@ -1,0 +1,51 @@
+[[sources]]
+name = "maka-release"
+repository = "https://github.com/apache/maka.git"
+ref = "refs/tags/v0.2.0-dev.44.20260920"
+commit = "feb9cf22fa216ce499860ad7cbcd59c32d28aa97"
+paths = ["LICENSE", "packages/cli", "packages/runtime", "packages/runtime-host", "packages/eval"]
+path_tree_hash = "sha256:99e1cd3e1bf6072cea6f23d867d9c5e5734b967bfe82ed1eb1020d47e3707eb8"
+license = "Apache-2.0"
+upstream_license_path = "LICENSE"
+local_license_path = "third_party/apache-maka/LICENSE"
+license_path_policy = "component"
+adaptation = "Pins the npm CLI and Apache source release while protecting Khenrix provider routing, subscription and API relay policy, runtime-host integration, compatibility overlays, and evaluation lab."
+relationship = "adapter"
+affected_capability_ids = ["maka-auth-mode", "maka-connection-catalog", "maka-mcp", "maka-runtime-policy", "maka-wrapper"]
+watch = "npm_releases"
+tag_pattern = "^v0\\.2\\.0-dev\\.([0-9]+)\\.([0-9]{8})$"
+package_name = "maka-agent"
+package_version = "0.2.0-dev.44.20260920"
+package_integrity = "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog=="
+update_mode = "manual_adaptation"
+review_commands = ["mise -C components/maka run maka:test", "mise -C components/maka run maka:component-doctor"]
+
+[sources.local_contract]
+paths = [
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/aube-lock.yaml",
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/package.json",
+  "components/maka/mise.toml",
+  "components/maka/mise.lock",
+  "components/maka/scripts/install_component.py",
+  "components/maka/scripts/component_doctor.py",
+  "components/maka/controller/entrypoint.sh",
+  "components/maka/scripts/controller-build.sh",
+  "components/maka/controller/apply_maka_compat.py",
+  "components/maka/controller/apply_maka_hosted_onboarding_compat.py",
+  "components/maka/controller/assert-eval-runtime-path.mjs",
+  "components/maka/interactive/maka_profile.py",
+  "components/maka/interactive/maka_openai_relay.py",
+  "components/maka/interactive/configure_maka_subscription.mjs",
+  "components/maka/provenance.json",
+  "components/maka/controller/provider-request-contract.mjs",
+  "components/maka/controller/egress-overlay/egress_filter.py",
+  "components/maka/scripts/test.sh",
+  "components/maka/install-files.txt",
+]
+hash = "sha256:81faf3dee8a96868265d8193b06e1237a11c5d4ca7cce265cf81fa4726abef4f"
+required_text = [
+  { path = "components/maka/provenance.json", text = "0.2.0-dev.44.20260920" },
+  { path = "components/maka/provenance.json", text = "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog==" },
+  { path = "components/maka/provenance.json", text = "relay-root-virtiofs-v2" },
+  { path = "components/maka/provenance.json", text = "eval-openai-onboarding-v2" },
+]

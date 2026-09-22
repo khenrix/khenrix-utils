@@ -1,0 +1,6 @@
+interface:
+  display_name: "Writing Skills"
+  short_description: "Create and verify reusable agent skills"
+  default_prompt: "Use $writing-skills to create or update this skill."
+policy:
+  allow_implicit_invocation: true

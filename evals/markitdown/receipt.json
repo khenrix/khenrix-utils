@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "skill": "markitdown",
-  "source_hash": "a7046ec9550b20724b24826d433ec7b543931d5eb43725f0cb2e405ed4f9b8e9",
+  "source_hash": "94ee03a795f961dee405a8b158dbdb7b01d4212268c18a818c277bea9318abdc",
   "eval_set_hash": "74a41331526562e266f09e268ef77d3085ae39c7c3eb94a18eb022a153cda965",
   "providers": [
     "claude",
@@ -10,18 +10,18 @@
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.4888,
+  "delta_pass_rate": 0.4722,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.55,
+      "delta": 0.4833,
       "quantum": 0.0667,
       "n_evals": 5,
       "status": "ok"
     },
     "claude": {
-      "delta": 0.3833,
+      "delta": 0.4,
       "quantum": 0.0667,
       "n_evals": 5,
       "status": "ok"

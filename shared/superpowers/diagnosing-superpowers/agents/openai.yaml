@@ -1,0 +1,6 @@
+interface:
+  display_name: "Diagnosing Superpowers"
+  short_description: "Diagnose a failed Superpowers session"
+  default_prompt: "Use $diagnosing-superpowers to explain what went wrong in this session."
+policy:
+  allow_implicit_invocation: true
