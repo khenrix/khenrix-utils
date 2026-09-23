@@ -10,12 +10,12 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow forge-host-smoke forge-proc-host-smoke tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-apply clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow forge-host-smoke forge-proc-host-smoke tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
-RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py
+RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py
 MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py
 MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py
 SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
@@ -259,6 +259,9 @@ status: ## Show what each CLI currently has vs the source of truth (read-only)
 
 defaults-status: ## Show model/effort drift only; reads no MCP/plugin/skill state
 	$(PY) scripts/lib/reconcile.py --status --all --defaults-only
+
+defaults-status-json: ## Machine-readable model/effort drift without observed values
+	$(PY) scripts/lib/reconcile.py --defaults-status-json
 
 defaults-apply: ## Align only declared model/effort leaves; preserve all other config
 	$(PY) scripts/lib/reconcile.py --apply --update-drift --all --defaults-only

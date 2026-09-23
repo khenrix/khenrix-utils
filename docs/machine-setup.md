@@ -250,13 +250,16 @@ The narrow defaults controller aligns only the declared model and effort leaves:
 
 ```bash
 mise run defaults:status
+mise run defaults:status-json
 mise run defaults:apply
 mise exec -- python3 scripts/doctor.py --only cli-model-defaults
 ```
 
-The portable defaults are Claude provider-neutral `best`, `effortLevel=xhigh`,
-and `ultracode=true`; Codex `gpt-5.6-sol`, execution/subagents `xhigh`, and
-planning `ultra`; and agy `Gemini 3.8 Flash (High)`. Apply creates numbered
+The portable defaults are Claude provider-neutral `best`, Opus 5.5 `xhigh`
+under `modelSettings`, and `ultracode=false` (use `claude --effort ultracode`
+for a planning session); Codex `gpt-6-sol`, execution/subagents `xhigh`,
+planning `ultra`, and preferred `service_tier=default`; and agy
+`Gemini 3.8 Flash (High)`. Apply creates numbered
 `*.khenrix-backup` files and preserves every unrelated field.
 
 The broader `khenrix-setup` flow remains available for declared MCP servers,

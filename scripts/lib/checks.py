@@ -55,7 +55,7 @@ def _load_caps(root: Path) -> dict:
 
 
 def model_crosscheck(root: Path) -> list[str]:
-    """Every model in fanout.py MODES must be registered in capabilities [models]."""
+    """Council seats and portable defaults must use registered provider models."""
     sys.path.insert(0, str(root / "shared" / "skills" / "llm-council" / "scripts"))
     try:
         import fanout
@@ -82,17 +82,26 @@ def model_crosscheck(root: Path) -> list[str]:
                 extra = f" — it is registered under '{where}'" if where else ""
                 problems.append(f"model-crosscheck: fanout MODES[{mode!r}] model '{m}' not "
                                 f"in capabilities [models].{provider}{extra}")
+    defaults = caps.get("settings", {}).get("defaults", {})
+    for provider, setting in defaults.items():
+        if not isinstance(setting, dict) or "model" not in setting:
+            continue
+        m = setting["model"]
+        if provider == "claude" and m == "best":
+            continue  # documented dynamic alias; the selected ID is probed live
+        reg = models.get(provider)
+        if not isinstance(reg, list) or m not in reg:
+            problems.append(f"model-crosscheck: settings.defaults.{provider}.model "
+                            f"'{m}' not in capabilities [models].{provider}")
     return sorted(set(problems))
 
 
 def pricing_coverage(root: Path) -> list[str]:
     """Every registered Claude model must have a scripts/pricing.toml entry.
 
-    claude_session_stats.price() matches the longest pricing key that PREFIXES the model
-    id and returns 0.0 when none does — and ids do not nest ("claude-opus-4-8" is not a
-    prefix of "claude-opus-5"), so a missing entry silently reports $0 rather than an
-    approximation or an error. That is invisible until someone reads a cost of zero and
-    believes it, so make it a lint failure at the moment the model is registered.
+    Runtime pricing allows dated variants by longest-prefix matching, but registry
+    IDs must match exactly: claude-opus-5 is a prefix of claude-opus-5-5 and has
+    different rates. A missing exact entry must fail rather than inherit old prices.
     """
     caps = _load_caps(root)
     pricing_path = root / "scripts" / "pricing.toml"
@@ -106,14 +115,13 @@ def pricing_coverage(root: Path) -> list[str]:
     need = ("input", "output", "cache_read", "cache_write")
     out = []
     for mid in caps.get("models", {}).get("claude", []):
-        matches = sorted((k for k in keys if mid.startswith(k)), key=len, reverse=True)
-        if not matches:
+        if mid not in keys:
             out.append(f"pricing-coverage: '{mid}' is in capabilities [models].claude but "
-                       f"has no scripts/pricing.toml entry — it would price at $0")
+                       f"has no exact scripts/pricing.toml entry")
             continue
         # Presence isn't enough: price() indexes all four rates, so a half-filled table
         # trades a silent $0 for a KeyError on the statusline path — strictly worse.
-        entry = table.get(matches[0])
+        entry = table[mid]
         missing = [f for f in need if not isinstance(entry, dict) or f not in entry]
         # Presence is not enough. This lint exists because a MISSING key silently reported
         # $0; a negative, non-numeric or NaN rate reaches the statusline by the same route
@@ -129,7 +137,7 @@ def pricing_coverage(root: Path) -> list[str]:
                 elif v < 0:
                     out.append(f"pricing-coverage: {mid}.{f} is negative ({v!r})")
         if missing:
-            out.append(f"pricing-coverage: '{matches[0]}' is missing {missing} — "
+            out.append(f"pricing-coverage: '{mid}' is missing {missing} — "
                        f"price() would raise rather than price '{mid}'")
     return out
 

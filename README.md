@@ -78,18 +78,21 @@ only those declared leaves:
 ```bash
 mise trust && mise install
 mise run defaults:status   # read-only; does not inspect MCPs, skills or plugins
+mise run defaults:status-json # bounded JSON for machine-readable parity checks
 mise run defaults:apply    # backs up config, then aligns only declared leaves
 ```
 
 | CLI | Portable defaults |
 |---|---|
-| Claude | provider-neutral `best`, `effortLevel=xhigh`, `ultracode=true` |
-| Codex | `gpt-5.6-sol`, execution/subagents `xhigh`, planning `ultra` |
+| Claude | provider-neutral `best`, Opus 5.5 `xhigh` per-model, `ultracode=false` by default; use `claude --effort ultracode` for a planning session |
+| Codex | `gpt-6-sol`, execution/subagents `xhigh`, planning `ultra`, preferred `service_tier=default` |
 | agy | `Gemini 3.8 Flash (High)` |
 
 Existing auth, MCP, plugin, skill and machine-specific settings remain intact.
-The doctor check `cli-model-defaults` verifies the same fields without printing
-observed values.
+The doctor check `cli-model-defaults` and the bounded JSON report verify the
+same fields without printing observed values. Codex's `service_tier=default`
+is a preference; routes that require Standard processing must verify the
+effective tier independently.
 
 ### Portable memory and Maka
 

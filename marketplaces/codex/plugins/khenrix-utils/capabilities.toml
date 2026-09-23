@@ -103,9 +103,9 @@ url = "https://developers.openai.com/mcp"
 # — the lint never re-probes them, so being listed here is not a liveness claim.
 # ---------------------------------------------------------------------------
 [models]
-last_reviewed = "2026-09-18"
-claude = ["claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
-codex  = ["gpt-5.6-sol", "gpt-5.5"]
+last_reviewed = "2026-09-23"
+claude = ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
+codex  = ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.8 Flash (High)", "Gemini 3.7 Flash (High)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"]  # rollback is manual — FALLBACK_MODELS in engine.py has no agy key, so older Flash labels are explicit rollback candidates, not automatic runtime fallbacks.
 
 # ---------------------------------------------------------------------------
@@ -215,10 +215,18 @@ trusted_paths = ["${HOME}", "${HOME}/git"]
 [settings.defaults.claude]
 model = "best"
 effortLevel = "xhigh"
-ultracode = true
+ultracode = false
+
+# Claude Code 2.1.280 does not apply a top-level user effortLevel to Opus 5.5.
+# Keep planning-only ultracode session-scoped: claude --effort ultracode.
+[settings.defaults.claude.modelSettings.claude-opus-5-5]
+effortLevel = "xhigh"
 
 [settings.defaults.codex]
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
+# Preferred API tier. Codex may omit the field on wire; observe effective tier
+# separately for routes that require a Standard residency or project contract.
+service_tier = "default"
 model_reasoning_effort = "xhigh"
 plan_mode_reasoning_effort = "ultra"
 

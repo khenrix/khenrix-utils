@@ -11,7 +11,7 @@ externalized tool-result payloads.
   claude_session_stats.py --self-test     # hermetic, no real data
 """
 from __future__ import annotations
-import argparse, json, sys, tomllib
+import argparse, json, re, sys, tomllib
 from collections import defaultdict
 from pathlib import Path
 
@@ -66,12 +66,13 @@ def dedupe(events):
 
 
 def price(e: dict, pricing: dict) -> float:
-    # Live logs carry date-suffixed model ids (claude-haiku-4-5-20251001); match the
-    # longest pricing key that is a prefix. Unknown models price 0 (add them to pricing.toml).
+    # Live logs carry date-suffixed model ids (claude-haiku-4-5-20251001).
+    # Match only that suffix, never a new minor version such as opus-5-5 under opus-5.
     model = e["model"]
     p = pricing.get(model)
     if p is None:
-        keys = sorted((k for k in pricing if model.startswith(k)), key=len, reverse=True)
+        keys = sorted((k for k in pricing if re.fullmatch(
+            re.escape(k) + r"(?:-|@)20\d{6}", model)), key=len, reverse=True)
         p = pricing[keys[0]] if keys else None
     if not p:
         return 0.0
@@ -156,6 +157,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(out, indent=2))
     else:
+        print("Anthropic list-price estimate; provider charges may differ.")
         total = sum(v["cost_usd"] for v in out.values())
         for k, v in out.items():
             print(f"{k:24} ${v['cost_usd']:>9.4f}  {v['msgs']:>5} msgs  "

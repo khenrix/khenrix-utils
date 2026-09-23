@@ -24,6 +24,10 @@ run = "make precommit"
 description = "Report portable model and effort drift without inspecting other surfaces"
 run = "make defaults-status"
 
+[tasks."defaults:status-json"]
+description = "Emit bounded machine-readable model and effort status"
+run = "make defaults-status-json"
+
 [tasks."defaults:apply"]
 description = "Align only the declared model and effort leaves"
 run = "make defaults-apply"

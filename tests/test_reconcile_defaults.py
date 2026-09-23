@@ -28,10 +28,12 @@ def caps():
                 "claude": {
                     "model": "best",
                     "effortLevel": "xhigh",
-                    "ultracode": True,
+                    "ultracode": False,
+                    "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
                 },
                 "codex": {
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-6-sol",
+                    "service_tier": "default",
                     "model_reasoning_effort": "xhigh",
                     "plan_mode_reasoning_effort": "ultra",
                     "agents": {"default_subagent_reasoning_effort": "xhigh"},
@@ -50,6 +52,7 @@ def test_claude_adds_missing_defaults_and_preserves_unrelated_config(tmp_path, m
         "permissions": {"allow": ["Read"]},
         "hooks": {"Stop": [{"secretSentinel": "keep-me"}]},
         "plugins": {"private-plugin": True},
+        "modelSettings": {"claude-opus-5": {"effortLevel": "low"}},
     }
     path.write_text(json.dumps(original))
 
@@ -60,9 +63,11 @@ def test_claude_adds_missing_defaults_and_preserves_unrelated_config(tmp_path, m
     live = json.loads(path.read_text())
     assert live["model"] == "best"
     assert live["effortLevel"] == "xhigh"
-    assert live["ultracode"] is True
-    for key, value in original.items():
-        assert live[key] == value
+    assert live["ultracode"] is False
+    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "xhigh"
+    assert live["modelSettings"]["claude-opus-5"] == original["modelSettings"]["claude-opus-5"]
+    for key in ("permissions", "hooks", "plugins"):
+        assert live[key] == original[key]
     backups = list(path.parent.glob("settings.json.khenrix-backup*"))
     assert len(backups) == 1
     assert json.loads(backups[0].read_text()) == original
@@ -75,7 +80,8 @@ def test_claude_drift_requires_update_drift(tmp_path, monkeypatch):
     path.write_text(json.dumps({
         "model": "custom",
         "effortLevel": "low",
-        "ultracode": False,
+        "ultracode": True,
+        "modelSettings": {"claude-opus-5-5": {"effortLevel": "low"}},
         "unrelated": "keep",
     }))
 
@@ -91,7 +97,8 @@ def test_claude_drift_requires_update_drift(tmp_path, monkeypatch):
     assert live == {
         "model": "best",
         "effortLevel": "xhigh",
-        "ultracode": True,
+        "ultracode": False,
+        "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
         "unrelated": "keep",
     }
 
@@ -114,7 +121,8 @@ def test_codex_updates_root_and_nested_defaults_without_touching_other_tables(
     apply(True)
     live = tomllib.loads(path.read_text())
 
-    assert live["model"] == "gpt-5.6-sol"
+    assert live["model"] == "gpt-6-sol"
+    assert live["service_tier"] == "default"
     assert live["model_reasoning_effort"] == "xhigh"
     assert live["plan_mode_reasoning_effort"] == "ultra"
     assert live["agents"]["default_subagent_reasoning_effort"] == "xhigh"
@@ -198,10 +206,60 @@ def test_full_settings_apply_keeps_baseline_and_defaults_from_the_same_file(
     assert live["theme"] == "dark-ansi"
     assert live["model"] == "best"
     assert live["effortLevel"] == "xhigh"
-    assert live["ultracode"] is True
+    assert live["ultracode"] is False
+    assert live["modelSettings"]["claude-opus-5-5"]["effortLevel"] == "xhigh"
 
 
 def test_repository_declares_the_approved_defaults():
     with (ROOT / "capabilities.toml").open("rb") as f:
         defaults = tomllib.load(f)["settings"]["defaults"]
     assert defaults == caps()["settings"]["defaults"]
+
+
+def test_bounded_default_status_reports_fields_without_observed_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manifest = caps()
+    for cli in ("claude", "codex", "agy"):
+        _, apply = reconcile.portable_defaults_report(cli, manifest)
+        apply(True)
+
+    claude = tmp_path / ".claude" / "settings.json"
+    live = json.loads(claude.read_text())
+    live["model"] = "private-model-never-print"
+    live["privateCredential"] = "private-token-never-print"
+    claude.write_text(json.dumps(live))
+
+    report = reconcile.portable_defaults_status(manifest)
+    assert report["schema"] == 1
+    assert report["owner"] == "khenrix-utils"
+    assert report["status"] == "drift"
+    assert {f["status"] for f in report["fields"]} <= {"MATCH", "ADD", "UPDATE", "REFUSED", "ERROR"}
+    assert {"cli": "claude", "key": "model", "status": "UPDATE"} in report["fields"]
+    assert len(report["fields"]) == 10
+    serialized = json.dumps(report)
+    assert "private-model-never-print" not in serialized
+    assert "private-token-never-print" not in serialized
+
+
+def test_bounded_default_status_fails_closed_on_bad_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manifest = caps()
+    for cli in ("claude", "codex", "agy"):
+        _, apply = reconcile.portable_defaults_report(cli, manifest)
+        apply(True)
+    (tmp_path / ".claude" / "settings.json").write_text('{"secret":"never-print",broken')
+    report = reconcile.portable_defaults_status(manifest)
+    assert report["status"] == "error"
+    assert {"cli": "claude", "key": "config", "status": "ERROR"} in report["fields"]
+    assert "never-print" not in json.dumps(report)
+
+
+def test_bounded_default_status_cli_emits_one_json_object(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for cli in ("claude", "codex", "agy"):
+        _, apply = reconcile.portable_defaults_report(cli, caps())
+        apply(True)
+    assert reconcile.main(["--defaults-status-json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "match"
+    assert len(report["fields"]) == 10

@@ -152,7 +152,8 @@ def cost_segment(payload: dict) -> str | None:
         return None
     if value <= 0:
         return None
-    return f"${value:.2f}"
+    # Claude Code reports an estimated USD amount; Vertex/provider invoices can differ.
+    return f"est ${value:.2f}"
 
 
 def rate_limit_segments(payload: dict) -> list[str]:

@@ -210,11 +210,12 @@ def approved_models(repo: Path, extra_csv: str = "") -> set[str]:
 
 def tag_model(mid: str, approved: set[str]) -> str:
     """current if the id equals an approved id or is a dated variant of one
-    (claude-haiku-4-5-20251001 startswith claude-haiku-4-5 + '-')."""
+    (claude-haiku-4-5-20251001). A new version like opus-5-5 is distinct."""
     if not approved:
         return "found"
     low = mid.lower()
-    if low in approved or any(low.startswith(a + "-") for a in approved):
+    if low in approved or any(re.fullmatch(re.escape(a) + r"-20\d{6}", low)
+                              for a in approved):
         return "current"
     return "stale-candidate"
 

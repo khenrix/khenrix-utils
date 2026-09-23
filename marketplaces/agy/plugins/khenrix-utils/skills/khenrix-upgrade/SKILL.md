@@ -38,10 +38,10 @@ get better results.
   refuses a model that any engine names but the manifest does not, so introducing
   one means registering it there in the same change, not just editing prose.
 - **Registering it is still not enough: price it, or the cost tooling reports $0.**
-  `scripts/pricing.toml` is matched by LONGEST KEY THAT PREFIXES the id, and
-  `claude-opus-4-8` does not prefix `claude-opus-5` — so a missing entry does not
-  error, it silently values that model at zero. A `pricing-coverage` check catches
-  it at `make verify`; bump `last_reviewed` in both files when the lineup moves.
+  Every registered Claude ID needs an exact `scripts/pricing.toml` row.
+  Session pricing accepts only exact IDs and date-suffixed variants, so a new
+  minor version cannot inherit an older version's rate. `pricing-coverage`
+  catches missing rows at `make verify`; bump `last_reviewed` in both files.
 - **Every run ends with the dated report** at `docs/upgrades/agy-<YYYY-MM-DD>.md` —
   even a single-question run records its recommendation and commands there.
 

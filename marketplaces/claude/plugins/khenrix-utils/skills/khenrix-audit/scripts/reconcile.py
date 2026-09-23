@@ -39,6 +39,15 @@ import tomllib
 from pathlib import Path
 
 CLIS = ("claude", "codex", "agy")
+# Only these declared leaves may appear in the machine-readable model report.
+# Fail closed when the source adds a new key until its status contract is reviewed.
+DEFAULT_STATUS_KEYS = {
+    "claude": {"model", "effortLevel", "ultracode",
+               "modelSettings.claude-opus-5-5.effortLevel"},
+    "codex": {"model", "service_tier", "model_reasoning_effort",
+              "plan_mode_reasoning_effort", "agents.default_subagent_reasoning_effort"},
+    "agy": {"model"},
+}
 MANAGED_BEGIN = "<!-- khenrix-managed:begin house-style -->"
 MANAGED_END = "<!-- khenrix-managed:end house-style -->"
 ALIASES_BEGIN = "# khenrix-managed:begin shell-aliases"
@@ -596,6 +605,42 @@ def portable_defaults_report(cli: str, caps: dict):
         return actions
 
     return rows, apply
+
+
+def portable_defaults_status(caps: dict) -> dict:
+    """Bounded, read-only model status for external observers.
+
+    Emit CLI/key/status only. In particular, never serialize observed values,
+    exception messages, paths, or unrelated settings from user config.
+    """
+    fields = []
+    defaults = caps.get("settings", {}).get("defaults", {})
+    for cli in CLIS:
+        declared = defaults.get(cli) if isinstance(defaults, dict) else None
+        if not isinstance(declared, dict):
+            fields.append({"cli": cli, "key": "declaration", "status": "ERROR"})
+            continue
+        try:
+            names = {".".join(path) for path, _ in _flatten_defaults(declared, ())}
+            if names != DEFAULT_STATUS_KEYS[cli]:
+                fields.append({"cli": cli, "key": "declaration", "status": "ERROR"})
+                continue
+            rows, _ = portable_defaults_report(cli, caps)
+        except Exception:  # config may contain arbitrary private text; no detail escapes
+            fields.append({"cli": cli, "key": "config", "status": "ERROR"})
+            continue
+        for name, status, _detail in rows:
+            key = name.removeprefix("defaults.")
+            if key not in DEFAULT_STATUS_KEYS[cli] or status not in (
+                    "MATCH", "ADD", "UPDATE", "REFUSED"):
+                fields.append({"cli": cli, "key": "config", "status": "ERROR"})
+                break
+            fields.append({"cli": cli, "key": key, "status": status})
+    state = ("error" if any(f["status"] == "ERROR" for f in fields)
+             else "match" if all(f["status"] == "MATCH" for f in fields)
+             else "drift")
+    return {"schema": 1, "owner": "khenrix-utils", "status": state,
+            "fields": fields}
 
 
 def settings_report(cli: str, caps: dict, defaults_only: bool = False):
@@ -1243,7 +1288,20 @@ def main(argv=None):
         "--defaults-only", action="store_true",
         help="inspect/apply only settings.defaults model and effort leaves; "
              "does not read or touch MCPs, skills, plugins, aliases or instructions")
+    ap.add_argument("--defaults-status-json", action="store_true",
+                    help="emit bounded model/default status JSON without observed values")
     args = ap.parse_args(argv)
+
+    if args.defaults_status_json:
+        if args.apply or args.update_drift:
+            ap.error("--defaults-status-json is read-only")
+        try:
+            report = portable_defaults_status(load_caps())
+        except (Exception, SystemExit):
+            report = {"schema": 1, "owner": "khenrix-utils", "status": "error",
+                      "fields": [{"cli": "owner", "key": "capabilities", "status": "ERROR"}]}
+        print(json.dumps(report, separators=(",", ":")))
+        return 0 if report["status"] == "match" else 1
 
     caps = load_caps()
     if args.all or not args.cli:

@@ -1906,14 +1906,16 @@ def write_default_configs(home, *, claude_model="best"):
     claude.write_text(json.dumps({
         "model": claude_model,
         "effortLevel": "xhigh",
-        "ultracode": True,
+        "ultracode": False,
+        "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
         "unrelatedSecretSentinel": "never-print-this-value",
     }))
 
     codex = home / ".codex" / "config.toml"
     codex.parent.mkdir(parents=True, exist_ok=True)
     codex.write_text(
-        'model = "gpt-5.6-sol"\n'
+        'model = "gpt-6-sol"\n'
+        'service_tier = "default"\n'
         'model_reasoning_effort = "xhigh"\n'
         'plan_mode_reasoning_effort = "ultra"\n\n'
         '[agents]\n'
@@ -1936,7 +1938,7 @@ def test_cli_model_defaults_passes_for_matching_configs(tmp_path):
     check = checks_of(r)["cli-model-defaults"]
     assert r.returncode == 0
     assert check["status"] == "PASS", check
-    assert "8 portable" in check["detail"]
+    assert "10 portable" in check["detail"]
 
 
 def test_cli_model_defaults_reports_field_but_never_observed_values(tmp_path):
