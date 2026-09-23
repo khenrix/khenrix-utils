@@ -9,7 +9,7 @@ export DOCKER_HOST
 DOCKER_HOST=$(docker_host_for_lab)
 export DOCKER_HOST
 record_run_inputs "$evidence_dir" config/pier-preflight.json
-controller_image_id=$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{.Id}}')
+controller_image_id=$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{.Id}}')
 egress_image_id=$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{.Id}}')
 docker image inspect "$controller_image_id" > "$evidence_dir/controller-image.json"
 docker image inspect "$egress_image_id" > "$evidence_dir/egress-image.json"

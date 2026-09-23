@@ -39,7 +39,7 @@ def _private_json(path: pathlib.Path, value: object) -> None:
 
 def _fixture_artifact() -> bytes:
     files = {
-        "package/package.json": json.dumps({"name": "claude-mem", "version": "13.25.1"}).encode(),
+        "package/package.json": json.dumps({"name": "claude-mem", "version": "13.25.3"}).encode(),
         "package/plugin/scripts/worker-service.cjs": b"console.log('fixture')\n",
         "package/plugin/ui/viewer.html": b"fixture\n",
     }
@@ -57,7 +57,7 @@ def test_pin_and_public_source_are_exact() -> None:
     provenance = json.loads((MEMORY_ROOT / "provenance.json").read_text())
     assert provenance == {
         "package": "claude-mem",
-        "version": "13.25.1",
+        "version": "13.25.3",
         "registry_url": memoryctl.ARTIFACT_URL,
         "integrity": memoryctl.ARTIFACT_INTEGRITY,
         "source_repository": "https://github.com/thedotmack/claude-mem.git",
@@ -66,6 +66,11 @@ def test_pin_and_public_source_are_exact() -> None:
         "license_file": "LICENSE.claude-mem.txt",
         "bun_version": "1.4.2",
     }
+    assert memoryctl.SOURCE_COMMIT == "4520de9e0f8d6cdc20597520e383d8b51d93137f"
+    assert (
+        memoryctl.ARTIFACT_INTEGRITY
+        == "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
+    )
     tracked = "\n".join(path.read_text(errors="ignore") for path in MEMORY_ROOT.iterdir() if path.is_file())
     assert "smp-rc-engineering" not in tracked
     assert "m10s" not in tracked.lower()

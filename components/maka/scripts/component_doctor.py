@@ -22,13 +22,13 @@ from install_component import (
     supported_platform,
 )
 
-EXPECTED_INTEGRITY = "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog=="
-EXPECTED_COMMIT = "feb9cf22fa216ce499860ad7cbcd59c32d28aa97"
+EXPECTED_INTEGRITY = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
+EXPECTED_COMMIT = "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
 EXCLUDED_DIRECTORY_NAMES = {"__pycache__", "evidence", "runtime", "trials"}
 EXPECTED_ATTRIBUTION_HASHES = {
     "third_party/apache-maka/LICENSE": "ebd45d2cb43f6d451345b872b944b937e6b444fa34edb81b743b2330f4dfa927",
     "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
-    "third_party/apache-maka/DISCLAIMER-WIP": "15f95f76e19f077133795ceb07b026003a29e4b80bfbe850dc5f4c32f9705c70",
+    "third_party/apache-maka/DISCLAIMER-WIP": "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c",
 }
 
 

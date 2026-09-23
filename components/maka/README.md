@@ -3,7 +3,7 @@
 Khenrix Utils owns the portable Maka runtime, its model and permission policy,
 the managed launcher, authentication helpers, and the complete audit and
 evaluation lab in this directory. It pins `maka-agent` to
-`0.2.0-dev.44.20260920`; the npm integrity, Apache tag and commit, dependency
+`0.2.0-dev.47.20260922`; the npm integrity, Apache tag and commit, dependency
 versions, and compatibility-overlay hashes are recorded in `provenance.json`.
 The Apache license and notices are under `third_party/apache-maka/`.
 

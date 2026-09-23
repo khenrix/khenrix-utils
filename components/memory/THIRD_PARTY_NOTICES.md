@@ -3,8 +3,8 @@
 ## claude-mem
 
 - Project: <https://github.com/thedotmack/claude-mem>
-- Version: 13.25.1
-- Reviewed source commit: `dcfc44221deabc228b0698a0012f87ed2fe6bbe7`
+- Version: 13.25.3
+- Reviewed source commit: `4520de9e0f8d6cdc20597520e383d8b51d93137f`
 - License: Apache License 2.0
 - License text: [local copy](LICENSE.claude-mem.txt)
 

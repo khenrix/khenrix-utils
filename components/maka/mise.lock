@@ -59,10 +59,10 @@ checksum = "sha256:39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5
 url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-darwin-arm64.tar.gz"
 
 [[tools."npm:maka-agent"]]
-version = "0.2.0-dev.44.20260920"
-aube = { path = ".mise/locks/npm-maka-agent/0.2.0-dev.44.20260920", digest = "sha256:79dff181eb41d02a32d7de602d684156f3529b1ceab18f6cb165d59e4a88b101" }
+version = "0.2.0-dev.47.20260922"
+aube = { path = ".mise/locks/npm-maka-agent/0.2.0-dev.47.20260922", digest = "sha256:fe05c5102770632b46b5757942f13da0f023b1a1bbd5523189c81758ae79e052" }
 backend = "npm:maka-agent"
-specifiers = ["0.2.0-dev.44.20260920"]
+specifiers = ["0.2.0-dev.47.20260922"]
 
 [[tools.python]]
 version = "3.12.14"

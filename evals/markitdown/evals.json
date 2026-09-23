@@ -1,6 +1,6 @@
 {
   "skill_name": "markitdown",
-  "notes": "Grade the conversion DECISIONS the skill encodes that a no-skill baseline gets wrong: the trap is bare `uvx markitdown` (base package, fails on real office files) vs the required `--from 'markitdown[all]'` form; preflighting `uv`/`uvx` presence; sensible default output filename; routing scanned PDFs through the az-doc-intel extra; and that wrapping via uvx adds NO repo dependency. Each prompt is an INLINE Q&A that forbids plan-mode/tools — the harness runs executors read-only, so the discriminating signal is the inline answer. A naive answer tends to suggest bare `uvx markitdown` or `pip install markitdown`; the skill's guidance does not.",
+  "notes": "Grade the conversion decisions the skill encodes: require the quoted, reviewed `--from 'markitdown[all]==0.1.8'` form instead of the bare base package; preflight uv; choose a deterministic output; keep Azure converters explicit and endpoint-gated; require consent before the built-in audio/video transcription uploads audio to Google; use the 0.1.8 resolver behavior without the obsolete prerelease workaround; and add no repo dependency. Each prompt is inline and read-only.",
   "evals": [
     {
       "id": 0,
@@ -8,7 +8,7 @@
       "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have a Word file at /tmp/contract.docx and I want it as Markdown using the markitdown tool via uvx. Give the exact one-line command, and explain what goes wrong if I just run `uvx markitdown /tmp/contract.docx`.",
       "files": [],
       "assertions": [
-        "Uses `uvx --from 'markitdown[all]' markitdown` — the [all] extra form, with the spec quoted",
+        "Uses `uvx --from 'markitdown[all]==0.1.8' markitdown` — the reviewed [all] extra form, with the spec quoted",
         "Explains bare `uvx markitdown` installs the BASE package only (no docx/pdf/office extras) and fails or returns empty/garbled output on real office files",
         "Writes the output with `-o` to a sensible path such as /tmp/contract.md (input stem + .md, same directory)",
         "Does NOT tell the user to `pip install markitdown` or otherwise add a dependency"
@@ -23,7 +23,7 @@
         "Preflights that `uv` / `uvx` is available (e.g. `command -v uv`) before attempting the conversion",
         "If missing, points to installing uv via the astral.sh installer (curl -LsSf https://astral.sh/uv/install.sh | sh)",
         "Notes uvx runs markitdown in an ephemeral/cached environment so nothing is installed into the repo (no dependency added)",
-        "Mentions the conversion command still uses the `--from 'markitdown[all]'` form, not bare `uvx markitdown`"
+        "Mentions the conversion command still uses the reviewed `--from 'markitdown[all]==0.1.8'` form, not bare `uvx markitdown`"
       ]
     },
     {
@@ -33,8 +33,8 @@
       "files": [],
       "assertions": [
         "Explains the default local extraction can't read image-only / scanned PDFs (no embedded text → empty output)",
-        "Recommends the Azure Document Intelligence path — the `markitdown[all,az-doc-intel]` extra with `-d` and `-e $AZURE_DOC_INTEL_ENDPOINT`",
-        "Notes this is gated / opt-in (requires the endpoint env var set; a paid external service), not the default",
+        "Recommends the reviewed `markitdown[all]==0.1.8` command with `-d`; `MARKITDOWN_DOCINTEL_ENDPOINT` supplies the endpoint while explicit `-e` is an alternative, and Azure auth must be ready through `AZURE_API_KEY` or a working `DefaultAzureCredential`",
+        "Notes this is gated / opt-in (requires an endpoint and uses a paid external service), not the default",
         "Does NOT claim the standard `[all]` local path will OCR a scanned/image-only PDF"
       ]
     },
@@ -45,20 +45,46 @@
       "files": [],
       "assertions": [
         "Confirms it adds NO repo dependency — markitdown is run via `uvx` (ephemeral, cached env), nothing pip-installed or added to requirements/venv",
-        "States the conversion command is `uvx --from 'markitdown[all]' markitdown <input> -o <output.md>` (the [all] extra form)",
+        "States the conversion command is `uvx --from 'markitdown[all]==0.1.8' markitdown <input> -o <output.md>` (the reviewed [all] extra form)",
         "Default output is the input's stem with a .md suffix next to the source (e.g. report.pdf → report.md); without -o it goes to stdout",
         "Does NOT recommend `pip install markitdown` or adding it as a project dependency"
       ]
     },
     {
       "id": 4,
-      "name": "prerelease-pin-for-latest",
-      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I want the newest markitdown (0.1.6) for its PDF fixes, but `uvx --from 'markitdown[all]' markitdown --version` keeps giving me 0.1.5 with no error at all. Why does this happen, what exact command gets me 0.1.6, and should that become my default invocation?",
+      "name": "content-understanding-is-explicit",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I heard `markitdown[all]` used to backtrack unless uv allowed prereleases. With uv 0.12.15 and MarkItDown 0.1.8, what command should I use now? Will it send my local document to Azure, and how would I deliberately select Azure Content Understanding?",
       "files": [],
       "assertions": [
-        "Explains the silent backtrack: markitdown 0.1.6's [all] extra pulls a PRE-RELEASE dependency (azure-ai-contentunderstanding>=1.2.0b1, via the Content Understanding converter) and uv disallows pre-releases by default, so the resolver quietly falls back to 0.1.5",
-        "Preferred fix: pin 0.1.6 with the standard non-Azure-CU extras so NO pre-release override is needed — e.g. `uvx --from 'markitdown[pdf,docx,xlsx,xls,pptx,outlook,audio-transcription,youtube-transcription]==0.1.6' markitdown ...`",
-        "Mentions `--prerelease=allow` with the pinned `[all]==0.1.6` only for when the Azure Content Understanding path itself is wanted, kept scoped to that invocation and NOT made the default (it broadens pre-release acceptance to every transitive dependency)"
+        "Uses `uvx --from 'markitdown[all]==0.1.8' markitdown <input> -o <output.md>` without a prerelease flag and states uv 0.12.15 resolves MarkItDown 0.1.8 directly",
+        "Explains that installing Azure client extras does not activate Azure; ordinary document and image converters stay on their default paths, with separate audio/video and ZIP consent gates for Google transcription",
+        "For an explicit Content Understanding run, requires `--use-cu` plus either `MARKITDOWN_CU_ENDPOINT` or `--cu-endpoint <endpoint>`, and Azure auth through `AZURE_API_KEY` or a working `DefaultAzureCredential`",
+        "Does not reintroduce the obsolete 0.1.5 backtrack or recommend a global prerelease setting"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "audio-transcription-requires-network-consent",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have /tmp/interview.m4a and an archive.zip that may contain recordings. I want Markdown but have not approved sending contents to an external service. Is the ordinary MarkItDown 0.1.8 [all] command local, and what must happen before you run it? Cover the other supported audio/video extensions, nested ZIP members, and the explicit Content Understanding alternative.",
+      "files": [],
+      "assertions": [
+        "Explains that MarkItDown 0.1.8 uses SpeechRecognition's `recognize_google` for WAV, MP3, M4A, and MP4 inputs and uploads the audio to Google's speech-recognition service",
+        "Requires explicit approval before running an audio/video conversion and does not run it when approval has not been given",
+        "Explains that the standard CLI has no local-only transcription switch, while explicit `--use-cu` routes supported audio/video to Azure Content Understanding instead and requires separate Azure consent, endpoint, and authentication",
+        "Explains that ZIP conversion recursively dispatches nested members, requires a local recursive member inspection first, and applies the same consent gate to contained audio/video or an archive that cannot be fully inspected",
+        "May offer a user-approved local transcription tool instead, while avoiding any claim that the ordinary `[all]` audio path is local"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "standard-image-path-is-metadata-only",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I have a PNG photo of a handwritten shipping label and want its text as Markdown. I have not requested a paid cloud service. Will the ordinary MarkItDown 0.1.8 [all] CLI command OCR it, and what supported paths could actually inspect the image pixels?",
+      "files": [],
+      "assertions": [
+        "Explains that the standard MarkItDown CLI image path can emit ExifTool metadata for JPEG/PNG when ExifTool is available, may emit no useful content without it, and does not OCR image pixels or extract the handwritten text",
+        "Explains that Python ImageConverter pixel description requires both `llm_client` and `llm_model`, while the CLI exposes no flags for those arguments",
+        "Offers explicit Azure Content Understanding with `--use-cu`, an endpoint, and Azure authentication as a paid external option that requires user approval",
+        "Does not claim that installing `[all]` alone provides local image OCR"
       ]
     }
   ]

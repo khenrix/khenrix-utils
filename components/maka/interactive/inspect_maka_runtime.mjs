@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-const EXPECTED_VERSION = '0.2.0-dev.44.20260920';
+const EXPECTED_VERSION = '0.2.0-dev.47.20260922';
 const MODEL_ID = 'gpt-5.6-sol';
 const RELAY_SLUG = 'keychain-openai';
 const RELAY_NAME = 'OpenAI via local Keychain relay';

@@ -130,8 +130,8 @@ an empty denylist.
 
 ## Upgrade contract
 
-The package is pinned to version 13.25.1, source commit
-`dcfc44221deabc228b0698a0012f87ed2fe6bbe7`, and the SHA-512 integrity in
+The package is pinned to version 13.25.3, source commit
+`4520de9e0f8d6cdc20597520e383d8b51d93137f`, and the SHA-512 integrity in
 `provenance.json`. An upgrade must update all three together, stage into a new
 version directory, back up SQLite, verify package identity and search, then
 change the declared pin. Never replace the active runtime with an unverified

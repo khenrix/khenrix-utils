@@ -19,7 +19,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
-PACKAGE_VERSION = "0.2.0-dev.44.20260920"
+PACKAGE_VERSION = "0.2.0-dev.47.20260922"
 MANIFEST_NAME = "install-files.txt"
 INSTALL_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka")
 WRAPPER_RELATIVE = pathlib.Path(".local/bin/maka")

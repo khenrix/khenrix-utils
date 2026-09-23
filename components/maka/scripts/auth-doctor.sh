@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-expected_maka=0.2.0-dev.44.20260920
+expected_maka=0.2.0-dev.47.20260922
 expected_node=v24.16.0
 expected_python='Python 3.12.14'
 expected_uv=0.12.15

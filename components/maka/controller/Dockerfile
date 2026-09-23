@@ -38,11 +38,11 @@ RUN mise exec -- python controller/test_secret_broker.py \
     && rm /tmp/provider-request.json
 
 LABEL org.opencontainers.image.title="Maka audit lab controller" \
-      org.opencontainers.image.version="0.2.0-dev.44.20260920" \
-      org.opencontainers.image.revision="feb9cf22fa216ce499860ad7cbcd59c32d28aa97" \
+      org.opencontainers.image.version="0.2.0-dev.47.20260922" \
+      org.opencontainers.image.revision="6cb8c58084d043f9b87421807fbee1d1ad3bdc03" \
       io.maka.eval.compatibility-overlay="relay-root-virtiofs-v2-eval-openai-onboarding-v2" \
       io.maka.eval.relay-agent-sha256="8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0" \
-      io.maka.eval.model-fetcher-sha256="82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c" \
+      io.maka.eval.model-fetcher-sha256="69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01" \
       io.maka.eval.maka-subject-sha256="2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3" \
       io.maka.eval.terminal-bench-revision="d49e28f1e4ddd13d289e85a5f312a66750951932"
 

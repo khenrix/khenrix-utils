@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -55,6 +56,78 @@ def git(repo: Path, *arguments: str) -> str:
         ["git", *arguments], cwd=repo, text=True, capture_output=True, check=True
     )
     return completed.stdout.strip()
+
+
+class RacyTemporaryDirectory:
+    def __init__(self, failures: list[OSError]):
+        self.failures = list(failures)
+        self.calls = 0
+
+    def cleanup(self) -> None:
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+
+
+def checkout_with_cleanup(cleanup: RacyTemporaryDirectory) -> upstreamctl.Checkout:
+    checkout = object.__new__(upstreamctl.Checkout)
+    checkout._temporary = cleanup
+    return checkout
+
+
+def test_checkout_cleanup_retries_transient_git_pack_directory_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup = RacyTemporaryDirectory(
+        [
+            OSError(errno.ENOTEMPTY, "Directory not empty", ".git/objects/pack"),
+            OSError(errno.ENOTEMPTY, "Directory not empty", ".git/objects/pack"),
+        ]
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(upstreamctl.time, "sleep", sleeps.append)
+
+    checkout_with_cleanup(cleanup).close()
+
+    assert cleanup.calls == 3
+    assert sleeps == list(upstreamctl.CHECKOUT_CLEANUP_RETRY_DELAYS[:2])
+
+
+def test_checkout_cleanup_race_is_bounded_and_permanent_errors_fail_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(upstreamctl.time, "sleep", sleeps.append)
+    exhausted = RacyTemporaryDirectory(
+        [OSError(errno.ENOTEMPTY, "Directory not empty", ".git/objects/pack")]
+        * (len(upstreamctl.CHECKOUT_CLEANUP_RETRY_DELAYS) + 1)
+    )
+    with pytest.raises(OSError, match="Directory not empty"):
+        checkout_with_cleanup(exhausted).close()
+    assert exhausted.calls == len(upstreamctl.CHECKOUT_CLEANUP_RETRY_DELAYS) + 1
+    assert sleeps == list(upstreamctl.CHECKOUT_CLEANUP_RETRY_DELAYS)
+
+    permanent = RacyTemporaryDirectory(
+        [OSError(errno.EACCES, "Permission denied", ".git/objects/pack")]
+    )
+    with pytest.raises(OSError, match="Permission denied"):
+        checkout_with_cleanup(permanent).close()
+    assert permanent.calls == 1
+
+
+def test_checkout_cleanup_failure_does_not_mask_source_check_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(upstreamctl.time, "sleep", lambda _seconds: None)
+    cleanup = RacyTemporaryDirectory(
+        [OSError(errno.ENOTEMPTY, "Directory not empty", ".git/objects/pack")]
+        * (len(upstreamctl.CHECKOUT_CLEANUP_RETRY_DELAYS) + 1)
+    )
+    checkout = checkout_with_cleanup(cleanup)
+    source_error = upstreamctl.UpstreamError("source tree check failed")
+
+    assert checkout.__exit__(type(source_error), source_error, None) is False
+    assert any("checkout cleanup also failed" in note for note in source_error.__notes__)
 
 
 def selected_hash(repo: Path, commit: str, paths: list[str]) -> str:
@@ -909,13 +982,22 @@ def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces()
 
     assert source.watch == "npm_releases"
     assert source.package_name == "maka-agent"
-    assert source.package_version == "0.2.0-dev.44.20260920"
-    assert source.package_integrity.startswith("sha512-")
-    assert upstreamctl.canonical_source_digest(source) != source.path_tree_hash
+    assert source.package_version == "0.2.0-dev.47.20260922"
+    assert source.commit == "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
+    assert source.package_integrity == (
+        "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
+    )
+    assert source.paths[:3] == ("LICENSE", "NOTICE", "DISCLAIMER-WIP")
+    assert source.path_tree_hash == (
+        "sha256:5704db44b419db7496b11a02d77ad2d9ecceedaabeede4b161ddbe20ae6e2b1e"
+    )
+    assert upstreamctl.canonical_source_digest(source) == (
+        "sha256:ef323443b91eaaa9cb2409a62f5dd4f6a606c6d31a8503dcdd8403c8a98d5377"
+    )
     assert source.tag_pattern == r"^v0\.2\.0-dev\.([0-9]+)\.([0-9]{8})$"
     assert {
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/aube-lock.yaml",
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/package.json",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/aube-lock.yaml",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/package.json",
         "components/maka/mise.toml",
         "components/maka/mise.lock",
         "components/maka/scripts/install_component.py",
@@ -943,6 +1025,30 @@ def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces()
         upstreamctl.validate_local_contract(mismatched_sri)
 
 
+def test_maka_attribution_fixture_is_bound_to_pinned_source() -> None:
+    source = next(item for item in upstreamctl.load_sources(ROOT) if item.name == "maka-release")
+    pin = (source.package_version, source.commit)
+    fixture = {
+        (
+            "0.2.0-dev.47.20260922",
+            "6cb8c58084d043f9b87421807fbee1d1ad3bdc03",
+        ): {
+            "third_party/apache-maka/NOTICE": (
+                "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0"
+            ),
+            "third_party/apache-maka/DISCLAIMER-WIP": (
+                "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c"
+            ),
+        }
+    }[pin]
+    provenance = json.loads((ROOT / "components/maka/provenance.json").read_text())
+    recorded = provenance["thirdParty"]["apacheMaka"]["files"]
+
+    for relative, expected in fixture.items():
+        assert hashlib.sha256((ROOT / "components/maka" / relative).read_bytes()).hexdigest() == expected
+        assert recorded[relative] == expected
+
+
 def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards() -> None:
     source = next(
         item for item in upstreamctl.load_sources(ROOT) if item.name == "claude-mem-release"
@@ -950,9 +1056,17 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
 
     assert source.watch == "npm_releases"
     assert source.package_name == "claude-mem"
-    assert source.package_version == "13.25.1"
-    assert source.package_integrity.startswith("sha512-")
-    assert upstreamctl.canonical_source_digest(source) != source.path_tree_hash
+    assert source.package_version == "13.25.3"
+    assert source.commit == "4520de9e0f8d6cdc20597520e383d8b51d93137f"
+    assert source.package_integrity == (
+        "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
+    )
+    assert source.path_tree_hash == (
+        "sha256:0438ee47d021028aa36258651679acb0e1efcd83fff527f7ddd5b42ffcc28180"
+    )
+    assert upstreamctl.canonical_source_digest(source) == (
+        "sha256:d8c4d138c63b47e00b59f5ef590397c809b4cf66f6924c7b7f82b9467331b4c3"
+    )
     assert source.upstream_license_path == "LICENSE"
     assert {
         "components/memory/provenance.json",
@@ -983,6 +1097,115 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
     no_guards = replace(source, required_text=())
     with pytest.raises(upstreamctl.UpstreamError, match="required_text.*non-empty"):
         upstreamctl.validate_local_contract(no_guards)
+
+
+def test_markitdown_018_contract_removes_obsolete_prerelease_workaround() -> None:
+    source = next(
+        item for item in upstreamctl.load_sources(ROOT) if item.name == "markitdown-product"
+    )
+    skill = (ROOT / "shared/skills/markitdown/SKILL.md").read_text()
+    notice = (ROOT / "shared/skills/markitdown/THIRD_PARTY_NOTICES.md").read_text()
+    chart = (ROOT / "docs/skill-charts/markitdown.md").read_text()
+    evals = json.loads((ROOT / "evals/markitdown/evals.json").read_text())
+
+    assert source.ref == "refs/tags/v0.1.8"
+    assert source.commit == "b8f79c57ebc0044be41323d89b2a45d3fda8460e"
+    assert source.path_tree_hash == (
+        "sha256:8d2e4aa22c9fe90310bca7c3b0baaa3242e796fd2237f314515773356e5c2d56"
+    )
+    assert "--prerelease=allow" not in skill
+    assert "Python 3.10 through 3.14" in skill
+    assert "MARKITDOWN_DOCINTEL_ENDPOINT" in skill
+    assert "MARKITDOWN_CU_ENDPOINT" in skill
+    assert "AZURE_API_KEY" in skill
+    assert "DefaultAzureCredential" in skill
+    assert chart.count("endpoint and Azure auth") >= 2
+    assert "when the user asks and an endpoint plus Azure auth are available" in " ".join(skill.split())
+    assert 'G_DOC_ENDPOINT -- "not ready"' in chart
+    assert 'G_DOC_ENDPOINT -- "ready"' in chart
+    assert 'G_CU_ENDPOINT -- "not ready"' in chart
+    assert 'G_CU_ENDPOINT -- "ready"' in chart
+    assert "result.markdown" in skill
+    assert "uvx --from 'markitdown[all]==0.1.8' markitdown" in skill
+    assert "uvx --from 'markitdown[all]' markitdown" not in skill
+    assert "Quote `'markitdown[all]'`" not in skill
+    assert "sha256:de7375a50578a39bcbbf13b48c67d99033d988e0ae8ad25af46ed432dbe4cbab" in notice
+    assert "sha256:17188ad827ea79fc264c7b1ca8cf5a242a16278d84cc32f2edc475dbe92812ed" in notice
+    assert all(item["name"] != "prerelease-pin-for-latest" for item in evals["evals"])
+    assert any(item["name"] == "content-understanding-is-explicit" for item in evals["evals"])
+    eval_text = json.dumps(evals)
+    explicit = next(
+        item for item in evals["evals"] if item["name"] == "content-understanding-is-explicit"
+    )
+    explicit_text = json.dumps(explicit)
+    assert "local-file conversion stays local unless" not in explicit_text
+    assert "document and image converters" in explicit_text
+    assert "audio/video and ZIP" in explicit_text
+    assert "AZURE_API_KEY" in explicit_text
+    assert "DefaultAzureCredential" in explicit_text
+    scanned = next(item for item in evals["evals"] if item["name"] == "scanned-pdf-az-doc-intel")
+    scanned_text = json.dumps(scanned)
+    assert "MARKITDOWN_DOCINTEL_ENDPOINT" in scanned_text
+    assert "`-d`" in scanned_text
+    assert "explicit `-e`" in scanned_text
+    assert "AZURE_API_KEY" in scanned_text
+    assert "DefaultAzureCredential" in scanned_text
+    assert "AZURE_DOC_INTEL_ENDPOINT" not in eval_text
+    assert "[all,az-doc-intel]" not in eval_text
+    assert "--from 'markitdown[all]' markitdown" not in eval_text
+
+
+def test_markitdown_audio_transcription_requires_network_consent() -> None:
+    skill = (ROOT / "shared/skills/markitdown/SKILL.md").read_text()
+    chart = (ROOT / "docs/skill-charts/markitdown.md").read_text()
+    evals = json.loads((ROOT / "evals/markitdown/evals.json").read_text())
+    skill_prose = " ".join(skill.split())
+
+    assert "local-file conversion stays local unless" not in skill
+    assert "recognize_google" in skill_prose
+    assert "WAV, MP3, M4A, or MP4" in skill_prose
+    assert "explicit approval" in skill_prose
+    assert "uploads the audio to Google's speech-recognition service" in skill_prose
+    assert "Azure flags are unrelated" not in skill_prose
+    assert "`--use-cu` routes supported audio/video to Azure Content Understanding instead" in skill_prose
+    assert "ZIP archives recursively dispatch members" in skill_prose
+    assert "inspect archive members locally" in skill_prose
+    assert "G_AUDIO" in chart
+    assert "Google speech recognition" in chart
+    audio_eval = next(
+        item
+        for item in evals["evals"]
+        if item["name"] == "audio-transcription-requires-network-consent"
+    )
+    audio_text = json.dumps(audio_eval)
+    assert "explicit approval" in audio_text
+    assert "Google" in audio_text
+    assert "WAV" in audio_text
+    assert "MP4" in audio_text
+    assert "nested ZIP" in audio_text
+    assert "Azure Content Understanding" in audio_text
+
+
+def test_markitdown_standard_image_path_does_not_claim_ocr() -> None:
+    skill = (ROOT / "shared/skills/markitdown/SKILL.md").read_text()
+    evals = json.loads((ROOT / "evals/markitdown/evals.json").read_text())
+    skill_prose = " ".join(skill.split())
+
+    assert "OCR + EXIF" not in skill
+    assert "[all] extracts EXIF and any embedded text" not in skill
+    assert "can emit ExifTool metadata for JPEG and PNG when ExifTool is available" in skill_prose
+    assert "may emit no useful content" in skill_prose
+    assert "does not OCR image pixels" in skill_prose
+    assert "`llm_client` and `llm_model`" in skill_prose
+    assert "CLI has no flags for those Python API arguments" in skill_prose
+    image_eval = next(
+        item for item in evals["evals"] if item["name"] == "standard-image-path-is-metadata-only"
+    )
+    image_text = json.dumps(image_eval)
+    assert "does not OCR" in image_text
+    assert "metadata" in image_text
+    assert "when ExifTool is available" in image_text
+    assert "Content Understanding" in image_text
 
 
 @pytest.mark.parametrize("guard", CLAUDE_MEM_DIRECT_PRIVACY_GUARDS)
@@ -1017,8 +1240,8 @@ def test_claude_mem_each_direct_privacy_guard_detects_removal(
     [
         (
             "maka-release",
-            ["0.2.0-dev.9.20260831", "0.2.0-dev.44.20260920", "0.2.0-dev.46.20260922"],
-            "0.2.0-dev.46.20260922",
+            ["0.2.0-dev.9.20260831", "0.2.0-dev.47.20260922", "0.2.0-dev.48.20260923"],
+            "0.2.0-dev.48.20260923",
         ),
         (
             "claude-mem-release",

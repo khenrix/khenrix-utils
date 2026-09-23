@@ -169,7 +169,7 @@ benchmark_bundle_sha256=$(shasum -a 256 "$benchmark_bundle" | awk '{print $1}')
 printf '%s  %s\n' "$benchmark_bundle_sha256" fix-git.bundle \
   > "$evidence_dir/benchmark-bundle-SHA256SUM"
 assert_maka_daemon_core_limits > "$evidence_dir/daemon-core-limits-before.txt"
-controller_image_id=$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{.Id}}')
+controller_image_id=$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{.Id}}')
 egress_image_id=$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{.Id}}')
 docker run --rm --ulimit core=0 --entrypoint cat "$controller_image_id" /proc/sys/kernel/core_pattern \
   > "$evidence_dir/core-pattern.txt"

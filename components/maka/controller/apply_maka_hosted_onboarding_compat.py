@@ -12,10 +12,10 @@ from pathlib import Path
 OVERLAY_ID = "eval-openai-onboarding-v2"
 MODEL_FETCHER_PATH = Path("node_modules/@maka/runtime/dist/model-fetcher.js")
 MODEL_FETCHER_BASE_SHA256 = (
-    "2df217533e6aa47524fa4027493bfba721fa744b36612b34df0ea4015efe2af5"
+    "8183ddf4e68d2edf1d61764184c21bc315223c9ef9d95b68692043fba09bedc3"
 )
 MODEL_FETCHER_PATCHED_SHA256 = (
-    "82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c"
+    "69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01"
 )
 MAKA_SUBJECT_PATH = Path("node_modules/@maka/eval/dist/maka-subject.js")
 MAKA_SUBJECT_BASE_SHA256 = (

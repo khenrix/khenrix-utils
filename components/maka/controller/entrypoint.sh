@@ -13,7 +13,7 @@ esac
 
 runtime_parent="$MAKA_LAB_ROOT/runtime/linux-amd64"
 compatibility_overlay_bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2
-version_root="$runtime_parent/maka-0.2.0-dev.44.20260920-node-24.16.0-$compatibility_overlay_bundle"
+version_root="$runtime_parent/maka-0.2.0-dev.47.20260922-node-24.16.0-$compatibility_overlay_bundle"
 manifest_name=RUNTIME_SHA256SUMS
 symlink_manifest_name=RUNTIME_SYMLINKS
 staging=
@@ -58,7 +58,7 @@ if test ! -f "$version_root/.complete"; then
   cp -a --no-preserve=ownership "$node_root/." "$staging/node/"
   cp -a --no-preserve=ownership "$package_root/." "$staging/maka-agent/"
   test "$("$staging/node/bin/node" --version)" = v24.16.0
-  test "$(jq -r .version "$staging/maka-agent/package.json")" = 0.2.0-dev.44.20260920
+  test "$(jq -r .version "$staging/maka-agent/package.json")" = 0.2.0-dev.47.20260922
   /opt/venvs/harbor-0.20.0/bin/python \
     /opt/maka-lab/controller/apply_maka_compat.py "$staging/maka-agent"
   /opt/venvs/harbor-0.20.0/bin/python \
@@ -66,16 +66,16 @@ if test ! -f "$version_root/.complete"; then
   test "$(sha256sum "$staging/maka-agent/node_modules/@maka/eval/harbor/relay_agent.py" | awk '{print $1}')" \
     = 8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0
   test "$(sha256sum "$staging/maka-agent/node_modules/@maka/runtime/dist/model-fetcher.js" | awk '{print $1}')" \
-    = 82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c
+    = 69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01
   test "$(sha256sum "$staging/maka-agent/node_modules/@maka/eval/dist/maka-subject.js" | awk '{print $1}')" \
     = 2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3
   printf '%s\n' \
-    'maka=0.2.0-dev.44.20260920' \
+    'maka=0.2.0-dev.47.20260922' \
     'node=24.16.0' \
     'compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2' \
     'compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2' \
     'relay-agent-sha256=8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0' \
-    'model-fetcher-sha256=82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c' \
+    'model-fetcher-sha256=69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01' \
     'maka-subject-sha256=2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3' \
     > "$staging/.complete"
   (
@@ -107,17 +107,17 @@ cmp -s "$version_root/$symlink_manifest_name" "$verification_symlinks" || {
   echo "Immutable Maka runtime failed symlink verification: $version_root" >&2
   exit 70
 }
-test "$(cat "$version_root/.complete")" = 'maka=0.2.0-dev.44.20260920
+test "$(cat "$version_root/.complete")" = 'maka=0.2.0-dev.47.20260922
 node=24.16.0
 compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2
 compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2
 relay-agent-sha256=8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0
-model-fetcher-sha256=82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c
+model-fetcher-sha256=69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01
 maka-subject-sha256=2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3'
 test "$(sha256sum "$version_root/maka-agent/node_modules/@maka/eval/harbor/relay_agent.py" | awk '{print $1}')" \
   = 8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0
 test "$(sha256sum "$version_root/maka-agent/node_modules/@maka/runtime/dist/model-fetcher.js" | awk '{print $1}')" \
-  = 82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c
+  = 69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01
 test "$(sha256sum "$version_root/maka-agent/node_modules/@maka/eval/dist/maka-subject.js" | awk '{print $1}')" \
   = 2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3
 rm -f "$verification_manifest" "$verification_symlinks"

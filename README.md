@@ -101,7 +101,7 @@ do not install or move shared skills or plugins:
   Codex, and agy. Maka can search the same loopback-only data without capturing
   a second copy. Choose `claude-subscription`, `codex-subscription`,
   `openai-keychain`, or an owner-only `local-claude` descriptor explicitly.
-- `components/maka` installs the pinned Maka v44 runtime, launcher, auth policy,
+- `components/maka` installs the pinned Maka v47 runtime, launcher, auth policy,
   provenance, and audit lab. It supports ChatGPT subscription login on macOS and
   Linux/WSL, plus a Keychain-backed API route on macOS.
 

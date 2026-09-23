@@ -33,10 +33,10 @@ from typing import Any
 import tomllib
 
 PACKAGE = "claude-mem"
-PACKAGE_VERSION = "13.25.1"
-SOURCE_COMMIT = "dcfc44221deabc228b0698a0012f87ed2fe6bbe7"
-ARTIFACT_URL = "https://registry.npmjs.org/claude-mem/-/claude-mem-13.25.1.tgz"
-ARTIFACT_INTEGRITY = "sha512-zhqFluHfYWo5Xi8CoP6aNTZVCCdXwwsklUrWQyOMDG6MsO+4DPekdGB2COpQpt3i6oE++O0FUFjQxr2P3utX0w=="
+PACKAGE_VERSION = "13.25.3"
+SOURCE_COMMIT = "4520de9e0f8d6cdc20597520e383d8b51d93137f"
+ARTIFACT_URL = "https://registry.npmjs.org/claude-mem/-/claude-mem-13.25.3.tgz"
+ARTIFACT_INTEGRITY = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
 BUN_VERSION = "1.4.2"
 OPENAI_MODEL = "gpt-5.6-sol"
 RELAY_PORT = 48174

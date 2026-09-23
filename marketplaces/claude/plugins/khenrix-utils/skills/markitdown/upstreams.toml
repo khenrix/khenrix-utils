@@ -1,10 +1,10 @@
 [[sources]]
 name = "markitdown-product"
 repository = "https://github.com/microsoft/markitdown.git"
-ref = "refs/tags/v0.1.7"
-commit = "fd239d5d2be43d9b68329730206b9312c7d5a388"
+ref = "refs/tags/v0.1.8"
+commit = "b8f79c57ebc0044be41323d89b2a45d3fda8460e"
 paths = ["README.md", "packages/markitdown"]
-path_tree_hash = "sha256:1e4e6f654f3d47fdf29de49671ed92f52ee856bb7439929789012d607a7cb5a4"
+path_tree_hash = "sha256:8d2e4aa22c9fe90310bca7c3b0baaa3242e796fd2237f314515773356e5c2d56"
 license = "MIT"
 license_optional = true
 adaptation = "Tracks the Microsoft MarkItDown product release whose CLI behavior, extras, conversion formats, and privacy-sensitive cloud options are documented by the Khenrix-authored wrapper skill. No upstream payload or license file is redistributed in the skill."

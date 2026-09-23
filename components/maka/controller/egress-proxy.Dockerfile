@@ -13,7 +13,7 @@ COPY test_egress_integration.py /opt/maka-eval/test_egress_integration.py
 COPY test_egress_undici_h2.py /opt/maka-eval/test_egress_undici_h2.py
 COPY test_egress_undici_h2_client.mjs /opt/maka-eval/test_egress_undici_h2_client.mjs
 
-LABEL io.maka.lab.source-revision="feb9cf22fa216ce499860ad7cbcd59c32d28aa97" \
+LABEL io.maka.lab.source-revision="6cb8c58084d043f9b87421807fbee1d1ad3bdc03" \
       io.maka.lab.python-base="python:3.12-slim@sha256:2fe5997d249a808b8eeea52c58a1dbffbba28754dc11699ef5c029f2d818ce79"
 
 ENTRYPOINT ["/opt/maka-eval/entrypoint.sh"]

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import errno
 import hashlib
 import json
 import os
@@ -36,6 +37,7 @@ from typing import Any
 GIT_TIMEOUT_SECONDS = 30
 MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_REPORT_BYTES = 1024 * 1024
+CHECKOUT_CLEANUP_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
 REPORT_SCHEMA = "khenrix-upstreams/v2"
 DEFAULT_CONSUMER = "agentic-setup"
 
@@ -1228,13 +1230,36 @@ class Checkout:
         self._fetched: set[str] = set()
 
     def close(self) -> None:
-        self._temporary.cleanup()
+        for attempt in range(len(CHECKOUT_CLEANUP_RETRY_DELAYS) + 1):
+            try:
+                self._temporary.cleanup()
+                return
+            except OSError as error:
+                if error.errno != errno.ENOTEMPTY or attempt == len(
+                    CHECKOUT_CLEANUP_RETRY_DELAYS
+                ):
+                    raise
+                time.sleep(CHECKOUT_CLEANUP_RETRY_DELAYS[attempt])
 
     def __enter__(self) -> "Checkout":
         return self
 
-    def __exit__(self, *_: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exception_type: type[BaseException] | None,
+        exception: BaseException | None,
+        _traceback: object,
+    ) -> bool:
+        try:
+            self.close()
+        except OSError as cleanup_error:
+            if exception is None:
+                raise
+            detail = redact_report_error(str(cleanup_error))[:4096]
+            exception.add_note(
+                "checkout cleanup also failed after bounded retries: " + detail
+            )
+        return False
 
     def fetch(self, commit: str) -> None:
         if commit in self._fetched:

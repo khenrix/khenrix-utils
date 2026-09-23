@@ -6,7 +6,7 @@ portable Maka runtime and policy used on managed machines: the exact package
 pin, launcher, authentication helpers, model and permission defaults,
 provenance, tests, and audit lab live in `components/maka`.
 
-The current pin is `maka-agent@0.2.0-dev.44.20260920`. Agentic Setup remains the
+The current pin is `maka-agent@0.2.0-dev.47.20260922`. Agentic Setup remains the
 broader inventory and sync owner for the other shared skills and plugins.
 Khenrix Utils owns and direct-delivers `khenrix-quality` and `khenrix-writing`
 plus the 15-skill Superpowers bundle to Claude, Codex, agy, and Maka. Installing

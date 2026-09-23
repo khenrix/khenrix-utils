@@ -63,7 +63,7 @@ test -f "$maka_runtime_cli"
 
 test -n "${MAKA_EGRESS_IMAGE_ID:-}" || { echo 'MAKA_EGRESS_IMAGE_ID is required' >&2; exit 64; }
 test "$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{.Id}}')" = "$MAKA_EGRESS_IMAGE_ID"
-test "$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{index .Config.Labels "io.maka.lab.source-revision"}}')" = feb9cf22fa216ce499860ad7cbcd59c32d28aa97
+test "$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{index .Config.Labels "io.maka.lab.source-revision"}}')" = 6cb8c58084d043f9b87421807fbee1d1ad3bdc03
 docker image inspect alexgshaw/fix-git@sha256:389b9c8247610c2c5be080b1ac00429007c2c69bf57f7f26c79f0f75ba2d5c74 > "$MAKA_EVIDENCE_DIR/task-image.json"
 
 set +e

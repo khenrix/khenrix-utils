@@ -1,10 +1,10 @@
 [[sources]]
 name = "maka-release"
 repository = "https://github.com/apache/maka.git"
-ref = "npm:maka-agent@0.2.0-dev.44.20260920"
-commit = "feb9cf22fa216ce499860ad7cbcd59c32d28aa97"
-paths = ["LICENSE", "packages/cli", "packages/runtime", "packages/runtime-host", "packages/eval"]
-path_tree_hash = "sha256:99e1cd3e1bf6072cea6f23d867d9c5e5734b967bfe82ed1eb1020d47e3707eb8"
+ref = "npm:maka-agent@0.2.0-dev.47.20260922"
+commit = "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
+paths = ["LICENSE", "NOTICE", "DISCLAIMER-WIP", "packages/cli", "packages/runtime", "packages/runtime-host", "packages/eval"]
+path_tree_hash = "sha256:5704db44b419db7496b11a02d77ad2d9ecceedaabeede4b161ddbe20ae6e2b1e"
 license = "Apache-2.0"
 upstream_license_path = "LICENSE"
 local_license_path = "third_party/apache-maka/LICENSE"
@@ -15,15 +15,15 @@ affected_capability_ids = ["maka-auth-mode", "maka-connection-catalog", "maka-mc
 watch = "npm_releases"
 tag_pattern = "^v0\\.2\\.0-dev\\.([0-9]+)\\.([0-9]{8})$"
 package_name = "maka-agent"
-package_version = "0.2.0-dev.44.20260920"
-package_integrity = "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog=="
+package_version = "0.2.0-dev.47.20260922"
+package_integrity = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
 update_mode = "manual_adaptation"
 review_commands = ["mise -C components/maka run maka:test", "mise -C components/maka run maka:component-doctor"]
 
 [sources.local_contract]
 paths = [
-  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/aube-lock.yaml",
-  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.44.20260920/package.json",
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/aube-lock.yaml",
+  "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/package.json",
   "components/maka/mise.toml",
   "components/maka/mise.lock",
   "components/maka/scripts/install_component.py",
@@ -42,10 +42,10 @@ paths = [
   "components/maka/scripts/test.sh",
   "components/maka/install-files.txt",
 ]
-hash = "sha256:81faf3dee8a96868265d8193b06e1237a11c5d4ca7cce265cf81fa4726abef4f"
+hash = "sha256:0ab3d352d5d37fd25523632cf9f8cc4371ea507fa214e8ed1108d451426b4e46"
 required_text = [
-  { path = "components/maka/provenance.json", text = "0.2.0-dev.44.20260920" },
-  { path = "components/maka/provenance.json", text = "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog==" },
+  { path = "components/maka/provenance.json", text = "0.2.0-dev.47.20260922" },
+  { path = "components/maka/provenance.json", text = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew==" },
   { path = "components/maka/provenance.json", text = "relay-root-virtiofs-v2" },
   { path = "components/maka/provenance.json", text = "eval-openai-onboarding-v2" },
 ]

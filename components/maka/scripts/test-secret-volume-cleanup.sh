@@ -26,7 +26,7 @@ trap fallback_cleanup EXIT
 docker volume create "$secret_volume" >/dev/null
 docker run -d --name "$container" --ulimit core=0 \
   --mount "type=volume,source=$secret_volume,target=/run/maka-secret" \
-  --entrypoint sh maka-lab-controller:0.2.0-dev.44.20260920 \
+  --entrypoint sh maka-lab-controller:0.2.0-dev.47.20260922 \
   -c 'sleep 300' >/dev/null
 
 # Model an unavailable evidence location. Cleanup must not read or write it.

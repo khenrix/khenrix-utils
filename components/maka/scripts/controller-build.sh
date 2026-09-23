@@ -7,11 +7,11 @@ export DOCKER_HOST
 DOCKER_HOST=$(docker_host_for_lab)
 export DOCKER_HOST
 docker build --platform linux/amd64 -f "$LAB_ROOT/controller/Dockerfile" \
-  -t maka-lab-controller:0.2.0-dev.44.20260920 "$LAB_ROOT"
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = feb9cf22fa216ce499860ad7cbcd59c32d28aa97
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{index .Config.Labels "io.maka.eval.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{index .Config.Labels "io.maka.eval.model-fetcher-sha256"}}')" = 82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.44.20260920 --format '{{index .Config.Labels "io.maka.eval.maka-subject-sha256"}}')" = 2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3
+  -t maka-lab-controller:0.2.0-dev.47.20260922 "$LAB_ROOT"
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = 6cb8c58084d043f9b87421807fbee1d1ad3bdc03
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{index .Config.Labels "io.maka.eval.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{index .Config.Labels "io.maka.eval.model-fetcher-sha256"}}')" = 69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.47.20260922 --format '{{index .Config.Labels "io.maka.eval.maka-subject-sha256"}}')" = 2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3
 stage_probe="$LAB_ROOT/runtime/linux-amd64/.staging-Zz09Yx"
 cleanup_stage_probe() {
   if test -d "$stage_probe"; then
@@ -26,14 +26,14 @@ test "$(docker run --rm --ulimit core=0 \
   --mount "type=bind,source=$LAB_ROOT,target=$LAB_ROOT" \
   --workdir "$LAB_ROOT" \
   --env "MAKA_LAB_ROOT=$LAB_ROOT" \
-  maka-lab-controller:0.2.0-dev.44.20260920 pwd)" = "$LAB_ROOT"
+  maka-lab-controller:0.2.0-dev.47.20260922 pwd)" = "$LAB_ROOT"
 test ! -e "$stage_probe"
-runtime_root="$LAB_ROOT/runtime/linux-amd64/maka-0.2.0-dev.44.20260920-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2"
+runtime_root="$LAB_ROOT/runtime/linux-amd64/maka-0.2.0-dev.47.20260922-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2"
 runtime_path_proof=$(docker run --rm --network none --ulimit core=0 \
   --entrypoint "$runtime_root/node/bin/node" \
   --mount "type=bind,source=$LAB_ROOT,target=$LAB_ROOT,readonly" \
   --workdir "$LAB_ROOT" \
-  maka-lab-controller:0.2.0-dev.44.20260920 \
+  maka-lab-controller:0.2.0-dev.47.20260922 \
   controller/assert-eval-runtime-path.mjs \
   "$runtime_root" "$runtime_root/maka-agent")
 jq -e '
@@ -44,7 +44,7 @@ jq -e '
   and .relayAgent == "maka-agent/node_modules/@maka/eval/harbor/relay_agent.py"
   and .relayAgentSha256 == "8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0"
   and .modelFetcher == "maka-agent/node_modules/@maka/runtime/dist/model-fetcher.js"
-  and .modelFetcherSha256 == "82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c"
+  and .modelFetcherSha256 == "69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01"
   and .makaSubject == "maka-agent/node_modules/@maka/eval/dist/maka-subject.js"
   and .makaSubjectSha256 == "2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3"
   and .stagedRuntime == true
@@ -53,7 +53,7 @@ trap - EXIT
 docker run --rm --entrypoint /opt/venvs/harbor-0.20.0/bin/python \
   --mount "type=bind,source=$LAB_ROOT,target=$LAB_ROOT,readonly" \
   --workdir "$LAB_ROOT" \
-  maka-lab-controller:0.2.0-dev.44.20260920 controller/assert-secret-mounts.py >/dev/null
+  maka-lab-controller:0.2.0-dev.47.20260922 controller/assert-secret-mounts.py >/dev/null
 install -d -m 0700 "$LAB_ROOT/controller/.build"
 bundle_probe_dir=$(mktemp -d "$LAB_ROOT/controller/.build/benchmark-bundle-XXXXXX")
 cleanup_bundle_probe() {
@@ -79,7 +79,7 @@ test "$(docker run --rm --network none --entrypoint bash \
   --env "MAKA_LAB_ROOT=$LAB_ROOT" \
   --env "MAKA_BENCHMARK_BUNDLE_PATH=$bundle_probe" \
   --env "MAKA_BENCHMARK_BUNDLE_SHA256=$bundle_probe_sha256" \
-  maka-lab-controller:0.2.0-dev.44.20260920 -c \
+  maka-lab-controller:0.2.0-dev.47.20260922 -c \
   'set -euo pipefail
    source controller/configure-benchmark-git.sh
    test "$benchmark_repository" = "$benchmark_native_root/fix-git-repo"
@@ -116,7 +116,7 @@ cp "$LAB_ROOT/controller/egress-overlay/test_egress_undici_h2.py" "$egress_root/
 cp "$LAB_ROOT/controller/egress-overlay/test_egress_undici_h2_client.mjs" "$egress_root/test_egress_undici_h2_client.mjs"
 docker build --pull --platform linux/amd64 -f "$LAB_ROOT/controller/egress-proxy.Dockerfile" \
   -t maka-eval-egress-proxy:12.2.3 "$egress_root"
-test "$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{index .Config.Labels "io.maka.lab.source-revision"}}')" = feb9cf22fa216ce499860ad7cbcd59c32d28aa97
+test "$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{index .Config.Labels "io.maka.lab.source-revision"}}')" = 6cb8c58084d043f9b87421807fbee1d1ad3bdc03
 expected_filter_hash=$(shasum -a 256 "$LAB_ROOT/controller/egress-overlay/egress_filter.py" | awk '{print $1}')
 actual_filter_hash=$(docker run --rm --entrypoint sha256sum maka-eval-egress-proxy:12.2.3 /opt/maka-eval/egress_filter.py | awk '{print $1}')
 test "$expected_filter_hash" = "$actual_filter_hash"

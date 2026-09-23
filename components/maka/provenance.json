@@ -2,12 +2,12 @@
   "schema": "maka-lab-provenance-v1",
   "maka": {
     "package": "maka-agent",
-    "version": "0.2.0-dev.44.20260920",
-    "integrity": "sha512-qAopTJ3cjacJzqayStz2hQ62AdOj6b4iP0lD8ddqlpb516qZY4lZNExZnezfNbP7GR8xXZY5pfPMkKJ1l2LQog==",
+    "version": "0.2.0-dev.47.20260922",
+    "integrity": "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew==",
     "sourceRepository": "https://github.com/apache/maka",
-    "releaseTag": "v0.2.0-dev.44.20260920",
-    "publishedAt": "2026-09-20T18:42:17.298Z",
-    "apacheCommit": "feb9cf22fa216ce499860ad7cbcd59c32d28aa97",
+    "releaseTag": "v0.2.0-dev.47.20260922",
+    "publishedAt": "2026-09-22T18:51:20.090Z",
+    "apacheCommit": "6cb8c58084d043f9b87421807fbee1d1ad3bdc03",
     "compatibilityOverlays": [
       {
         "id": "relay-root-virtiofs-v2",
@@ -20,8 +20,8 @@
         "targets": [
           {
             "target": "node_modules/@maka/runtime/dist/model-fetcher.js",
-            "baseSha256": "2df217533e6aa47524fa4027493bfba721fa744b36612b34df0ea4015efe2af5",
-            "patchedSha256": "82d4fdb90a8c3794a745f2e39410f19970c7a8afc679e14589244992ac50e56c"
+            "baseSha256": "8183ddf4e68d2edf1d61764184c21bc315223c9ef9d95b68692043fba09bedc3",
+            "patchedSha256": "69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01"
           },
           {
             "target": "node_modules/@maka/eval/dist/maka-subject.js",
@@ -34,11 +34,11 @@
   },
   "thirdParty": {
     "apacheMaka": {
-      "source": "maka-agent@0.2.0-dev.44.20260920",
+      "source": "maka-agent@0.2.0-dev.47.20260922",
       "files": {
         "third_party/apache-maka/LICENSE": "ebd45d2cb43f6d451345b872b944b937e6b444fa34edb81b743b2330f4dfa927",
         "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
-        "third_party/apache-maka/DISCLAIMER-WIP": "15f95f76e19f077133795ceb07b026003a29e4b80bfbe850dc5f4c32f9705c70"
+        "third_party/apache-maka/DISCLAIMER-WIP": "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c"
       }
     }
   },

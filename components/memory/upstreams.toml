@@ -1,10 +1,10 @@
 [[sources]]
 name = "claude-mem-release"
 repository = "https://github.com/thedotmack/claude-mem.git"
-ref = "npm:claude-mem@13.25.1"
-commit = "dcfc44221deabc228b0698a0012f87ed2fe6bbe7"
+ref = "npm:claude-mem@13.25.3"
+commit = "4520de9e0f8d6cdc20597520e383d8b51d93137f"
 paths = ["LICENSE", "package.json", "plugin", "src"]
-path_tree_hash = "sha256:d0e143422f7766a3a2ffc15da9a9fecedd6dbd778e40817711a6413635ff5375"
+path_tree_hash = "sha256:0438ee47d021028aa36258651679acb0e1efcd83fff527f7ddd5b42ffcc28180"
 license = "Apache-2.0"
 upstream_license_path = "LICENSE"
 local_license_path = "LICENSE.claude-mem.txt"
@@ -15,8 +15,8 @@ affected_capability_ids = ["agy-memory-hooks", "codex-memory-hooks", "mem-search
 watch = "npm_releases"
 tag_pattern = "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$"
 package_name = "claude-mem"
-package_version = "13.25.1"
-package_integrity = "sha512-zhqFluHfYWo5Xi8CoP6aNTZVCCdXwwsklUrWQyOMDG6MsO+4DPekdGB2COpQpt3i6oE++O0FUFjQxr2P3utX0w=="
+package_version = "13.25.3"
+package_integrity = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
 update_mode = "manual_adaptation"
 review_commands = ["mise exec -- make memory-runtime-test"]
 
@@ -28,10 +28,10 @@ paths = [
   "components/memory/README.md",
   "components/memory/LICENSE.claude-mem.txt",
 ]
-hash = "sha256:8d11f9aef537ff263b741bce4b70175f68858d7832a4804a5ec3680a4f4c9e52"
+hash = "sha256:fd1c1d0c8f02c104fcf2b077fd85d50312e94ffd2c1a838703bb65d7dd9acfc2"
 required_text = [
-  { path = "components/memory/provenance.json", text = "sha512-zhqFluHfYWo5Xi8CoP6aNTZVCCdXwwsklUrWQyOMDG6MsO+4DPekdGB2COpQpt3i6oE++O0FUFjQxr2P3utX0w==" },
-  { path = "components/memory/provenance.json", text = "dcfc44221deabc228b0698a0012f87ed2fe6bbe7" },
+  { path = "components/memory/provenance.json", text = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g==" },
+  { path = "components/memory/provenance.json", text = "4520de9e0f8d6cdc20597520e383d8b51d93137f" },
   { path = "components/memory/README.md", text = "Nothing syncs history to Khenrix or claude-mem cloud\nservices." },
   { path = "components/memory/README.md", text = "Chroma, cloud sync, telemetry, hosted memory fallback, Telegram,\ntranscript watching, and semantic prompt injection are disabled." },
   { path = "components/memory/memoryctl.py", text = '"CLAUDE_MEM_SEMANTIC_INJECT": "false"' },
