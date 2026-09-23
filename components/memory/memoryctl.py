@@ -7,6 +7,7 @@ import argparse
 import base64
 import copy
 import datetime as dt
+import errno
 import hashlib
 import io
 import json
@@ -846,6 +847,42 @@ def worker_health(timeout: float = 0.35) -> bool:
         return False
 
 
+def _worker_port_is_bound(timeout: float = 0.35) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", worker_port()), timeout=timeout):
+            return True
+    except OSError as error:
+        return error.errno != errno.ECONNREFUSED
+
+
+def stop_worker_for_upgrade(timeout: float = 15.0) -> int:
+    """Stop the active worker without resolving the newly pinned runtime."""
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{worker_port()}/api/admin/shutdown",
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=min(2.0, timeout)) as response:
+            if response.status < 200 or response.status >= 300:
+                return 1
+    except (OSError, urllib.error.URLError):
+        if _worker_port_is_bound():
+            return 1
+        stop_gateway()
+        stop_relay()
+        return 0
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if not _worker_port_is_bound(timeout=max(0.05, min(0.35, remaining))):
+            stop_gateway()
+            stop_relay()
+            return 0
+        time.sleep(min(0.1, remaining))
+    return 1
+
+
 def _controller_command(*arguments: str) -> str:
     """Build a hook command that does not depend on a GUI process's PATH.
 
@@ -1064,12 +1101,12 @@ def restore_database(backup: pathlib.Path) -> pathlib.Path:
 
 
 def upgrade_runtime() -> dict[str, Any]:
-    was_running = worker_health()
-    if was_running and stop_worker() != 0:
+    was_running = _worker_port_is_bound()
+    if was_running and stop_worker_for_upgrade() != 0:
         raise MemoryConfigurationError("memory worker did not stop for upgrade")
     backup = backup_database()
-    controller = install_controller()
     runtime = stage_runtime()
+    controller = install_controller()
     hooks = install_hooks(["claude", "codex", "agy"])
     if route_path().exists():
         route = read_route()

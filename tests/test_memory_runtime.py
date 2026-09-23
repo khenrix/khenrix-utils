@@ -7,6 +7,7 @@ import stat
 import sys
 import tarfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from types import SimpleNamespace
@@ -423,3 +424,251 @@ def test_database_backup_is_consistent_and_retention_is_report_only(private_home
     report = memoryctl.storage_document()
     assert report["backup_count"] == 1
     assert report["automatic_deletion"] is False
+
+
+def test_upgrade_stops_running_old_worker_before_backup_and_staging_new_pin(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memoryctl.data_dir().mkdir(parents=True, mode=0o700)
+    database = memoryctl.data_dir() / "claude-mem.db"
+    with memoryctl.sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE observations (value TEXT)")
+        connection.execute("INSERT INTO observations VALUES ('survives upgrade')")
+    database.chmod(0o600)
+
+    old_runtime = memoryctl.install_root() / "runtime" / memoryctl.PACKAGE / "13.25.1"
+    old_script = old_runtime / "package" / "plugin" / "scripts" / "worker-service.cjs"
+    old_script.parent.mkdir(parents=True, mode=0o700)
+    old_script.write_text("// old worker fixture\n")
+    old_script.chmod(0o600)
+    assert not memoryctl.runtime_root().exists()
+
+    events: list[str] = []
+    state = {"running": True, "shutdown_accepted": False, "port_checks": 0}
+
+    class OldWorker(memory_gateway.http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            if self.path != "/api/health" or not state["running"]:
+                self.send_error(503)
+                return
+            payload = json.dumps({"status": "ok", "version": "13.25.1"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_POST(self):
+            assert self.path == "/api/admin/shutdown"
+            assert not memoryctl.runtime_root().exists()
+            state["shutdown_accepted"] = True
+            state["running"] = False
+            payload = b'{"status":"shutting_down"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+            def finish_shutdown() -> None:
+                time.sleep(0.15)
+                events.append("stop-old-worker")
+                server.shutdown()
+                server.server_close()
+
+            threading.Thread(target=finish_shutdown, daemon=True).start()
+
+    server = memory_gateway.http.server.ThreadingHTTPServer(("127.0.0.1", 0), OldWorker)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(memoryctl, "worker_port", lambda: server.server_address[1])
+    original_port_check = memoryctl._worker_port_is_bound
+
+    def observed_port_check(timeout: float = 0.35) -> bool:
+        if state["shutdown_accepted"]:
+            state["port_checks"] += 1
+        return original_port_check(timeout)
+
+    monkeypatch.setattr(memoryctl, "_worker_port_is_bound", observed_port_check)
+
+    artifact = _fixture_artifact()
+    monkeypatch.setattr(memoryctl, "ARTIFACT_INTEGRITY", memoryctl._artifact_digest(artifact))
+    original_stage_runtime = memoryctl.stage_runtime
+
+    def stage_after_backup() -> pathlib.Path:
+        assert events == ["stop-old-worker"]
+        assert len(list((memoryctl.data_dir() / "backups").glob("claude-mem-*.db"))) == 1
+        assert not memoryctl.installed_controller_root().exists()
+        events.append("stage-new-runtime")
+        return original_stage_runtime(artifact=artifact)
+
+    def run_new_worker(arguments: list[str]) -> int:
+        if arguments == ["stop"]:
+            memoryctl._worker_script()
+            raise AssertionError("the upgrade must not stop an old worker through the new runtime")
+        assert arguments == ["start"]
+        assert memoryctl._runtime_is_valid(memoryctl.runtime_root())
+        assert memoryctl.read_route()["route"] == "claude-subscription"
+        events.append("restart-new-worker")
+        return 0
+
+    monkeypatch.setattr(memoryctl, "stage_runtime", stage_after_backup)
+    monkeypatch.setattr(memoryctl, "run_worker", run_new_worker)
+    _private_json(
+        memoryctl.route_path(),
+        {"schema_version": 2, "route": "claude-subscription"},
+    )
+
+    try:
+        result = memoryctl.upgrade_runtime()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert events == ["stop-old-worker", "stage-new-runtime", "restart-new-worker"]
+    assert state["port_checks"] >= 1
+    assert result["worker_restarted"] is True
+    backup = pathlib.Path(result["backup"])
+    with memoryctl.sqlite3.connect(backup) as connection:
+        assert connection.execute("SELECT value FROM observations").fetchone() == (
+            "survives upgrade",
+        )
+
+
+def test_upgrade_staging_failure_preserves_installed_controller_and_skips_hooks_and_restart(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memoryctl.data_dir().mkdir(parents=True, mode=0o700)
+    database = memoryctl.data_dir() / "claude-mem.db"
+    with memoryctl.sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE observations (value TEXT)")
+    database.chmod(0o600)
+
+    controller = memoryctl.installed_controller_root()
+    controller.mkdir(parents=True, mode=0o700)
+    sentinel = controller / "memoryctl.py"
+    sentinel.write_bytes(b"old installed controller\n")
+    sentinel.chmod(0o600)
+    events: list[str] = []
+
+    monkeypatch.setattr(memoryctl, "_worker_port_is_bound", lambda: True)
+    monkeypatch.setattr(
+        memoryctl,
+        "stop_worker_for_upgrade",
+        lambda: events.append("stop-old-worker") or 0,
+    )
+
+    def fail_staging() -> pathlib.Path:
+        assert len(list((memoryctl.data_dir() / "backups").glob("claude-mem-*.db"))) == 1
+        assert sentinel.read_bytes() == b"old installed controller\n"
+        events.append("stage-new-runtime")
+        raise memoryctl.MemoryConfigurationError("artifact staging failed")
+
+    monkeypatch.setattr(memoryctl, "stage_runtime", fail_staging)
+    monkeypatch.setattr(
+        memoryctl,
+        "install_hooks",
+        lambda _targets: pytest.fail("hooks must not change after staging fails"),
+    )
+    monkeypatch.setattr(
+        memoryctl,
+        "run_worker",
+        lambda _arguments: pytest.fail("the new worker must not start after staging fails"),
+    )
+
+    with pytest.raises(memoryctl.MemoryConfigurationError, match="^artifact staging failed$"):
+        memoryctl.upgrade_runtime()
+
+    assert events == ["stop-old-worker", "stage-new-runtime"]
+    assert sentinel.read_bytes() == b"old installed controller\n"
+
+
+def test_upgrade_preserves_stop_failure_error_without_staging(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shutdown_posts = 0
+
+    class UnstoppableWorker(memory_gateway.http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            self.send_error(503)
+
+        def do_POST(self):
+            nonlocal shutdown_posts
+            shutdown_posts += 1
+            self.send_error(503)
+
+    server = memory_gateway.http.server.ThreadingHTTPServer(("127.0.0.1", 0), UnstoppableWorker)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(memoryctl, "worker_port", lambda: server.server_address[1])
+    _private_json(
+        memoryctl.route_path(),
+        {"schema_version": 2, "route": "claude-subscription"},
+    )
+    monkeypatch.setattr(
+        memoryctl,
+        "stage_runtime",
+        lambda: pytest.fail("a failed stop must not stage the new runtime"),
+    )
+
+    try:
+        with pytest.raises(
+            memoryctl.MemoryConfigurationError,
+            match="memory worker did not stop for upgrade",
+        ):
+            memoryctl.upgrade_runtime()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert not memoryctl.installed_controller_root().exists()
+    assert not memoryctl.runtime_root().exists()
+    assert shutdown_posts == 1
+
+
+def test_upgrade_stop_accepts_worker_exit_between_health_probe_and_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleaned: list[str] = []
+
+    def worker_already_gone(*_args: object, **_kwargs: object) -> None:
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(memoryctl.urllib.request, "urlopen", worker_already_gone)
+    monkeypatch.setattr(memoryctl, "_worker_port_is_bound", lambda **_kwargs: False)
+    monkeypatch.setattr(memoryctl, "stop_gateway", lambda: cleaned.append("gateway"))
+    monkeypatch.setattr(memoryctl, "stop_relay", lambda: cleaned.append("relay"))
+
+    assert memoryctl.stop_worker_for_upgrade() == 0
+    assert cleaned == ["gateway", "relay"]
+
+
+def test_upgrade_stop_timeout_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Accepted:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    ticks = iter([0.0, 0.0, 0.0, 2.0])
+    cleaned: list[str] = []
+    monkeypatch.setattr(memoryctl.urllib.request, "urlopen", lambda *_args, **_kwargs: Accepted())
+    monkeypatch.setattr(memoryctl, "_worker_port_is_bound", lambda **_kwargs: True)
+    monkeypatch.setattr(memoryctl.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(memoryctl.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(memoryctl, "stop_gateway", lambda: cleaned.append("gateway"))
+    monkeypatch.setattr(memoryctl, "stop_relay", lambda: cleaned.append("relay"))
+
+    assert memoryctl.stop_worker_for_upgrade(timeout=1.0) == 1
+    assert cleaned == []

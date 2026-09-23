@@ -28,7 +28,7 @@ paths = [
   "components/memory/README.md",
   "components/memory/LICENSE.claude-mem.txt",
 ]
-hash = "sha256:fd1c1d0c8f02c104fcf2b077fd85d50312e94ffd2c1a838703bb65d7dd9acfc2"
+hash = "sha256:5f23322ddcff1bbdd59d6fa18f415512a9f049f56a395c7a10f2348456f23206"
 required_text = [
   { path = "components/memory/provenance.json", text = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g==" },
   { path = "components/memory/provenance.json", text = "4520de9e0f8d6cdc20597520e383d8b51d93137f" },
