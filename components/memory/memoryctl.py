@@ -973,8 +973,11 @@ def canonical_hooks(cli: str) -> dict[str, Any]:
     if cli in {"claude", "codex"}:
         platform = "claude-code" if cli == "claude" else "codex"
         async_ = cli == "claude"
+        context = _handler(platform, "context", 60 if cli == "claude" else 30)
         hooks: dict[str, Any] = {
-            "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [start, _handler(platform, "context", 60 if cli == "claude" else 30)]}],
+            # Codex rejects SessionStart output from `start`; the context hook
+            # starts the worker itself without emitting the extra status field.
+            "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [start, context] if cli == "claude" else [context]}],
             "UserPromptSubmit": [{"hooks": [_handler(platform, "session-init", 60 if cli == "claude" else 30)]}],
             "PreToolUse": [{"matcher": "Read" if cli == "claude" else "^Bash$|^mcp__.+__(read|view|cat)(_file|_files)?$", "hooks": [_handler(platform, "file-context", 60 if cli == "claude" else 30, async_=async_)]}],
             "PostToolUse": [{"matcher": "*" if cli == "claude" else ".*", "hooks": [_handler(platform, "observation", 120, async_=async_)]}],

@@ -410,6 +410,16 @@ def test_subscription_adapter_requires_chatgpt_and_is_isolated(
         relay.call_codex_subscription({"messages": [{"role": "user", "content": "x"}]})
 
 
+def test_codex_session_start_runs_only_the_context_hook(private_home: pathlib.Path) -> None:
+    def arguments(cli: str) -> list[list[str]]:
+        groups = memoryctl.canonical_hooks(cli)["hooks"]["SessionStart"]
+        return [memoryctl.shlex.split(handler["command"])[2:]
+                for group in groups for handler in group["hooks"]]
+
+    assert arguments("codex") == [["hook", "codex", "context"]]
+    assert ["start"] in arguments("claude")
+
+
 def test_openai_memory_route_requests_standard_and_rejects_policy_drift() -> None:
     request = {"model": "gpt-6-sol", "messages": [{"role": "user", "content": "summary"}]}
     payload = relay.chat_to_responses(request)
