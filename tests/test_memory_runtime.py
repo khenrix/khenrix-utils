@@ -91,7 +91,7 @@ def test_routes_are_explicit_private_and_have_no_fallback(
     settings = json.loads(memoryctl.settings_path().read_text())
     assert settings["CLAUDE_MEM_PROVIDER"] == "openrouter"
     assert settings["CLAUDE_MEM_OPENROUTER_BASE_URL"] == "http://127.0.0.1:48174/v1"
-    assert settings["CLAUDE_MEM_OPENROUTER_MODEL"] == "gpt-5.6-sol"
+    assert settings["CLAUDE_MEM_OPENROUTER_MODEL"] == "gpt-6-sol"
     assert settings["CLAUDE_MEM_CHROMA_ENABLED"] == "false"
     assert settings["CLAUDE_MEM_CLOUD_SYNC_HUB_URL"] == ""
     assert settings["CLAUDE_MEM_PRO_MEMORY_BASE_URL"] == ""
@@ -386,7 +386,9 @@ def test_subscription_adapter_requires_chatgpt_and_is_isolated(
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
     config_values = [command[index + 1] for index, value in enumerate(command) if value == "--config"]
-    assert 'cli_auth_credentials_store="keyring"' in config_values
+    assert command[command.index("--model") + 1] == "gpt-6-sol"
+    assert 'model_reasoning_effort="xhigh"' in config_values
+    assert 'cli_auth_credentials_store="auto"' in config_values
     assert [command[index + 1] for index, value in enumerate(command) if value == "--disable"] == [
         "apps",
         "browser_use",
@@ -406,6 +408,32 @@ def test_subscription_adapter_requires_chatgpt_and_is_isolated(
     monkeypatch.setattr(relay, "codex_account", lambda _codex: {"type": "apiKey"})
     with pytest.raises(relay.RelayError, match="logged in with ChatGPT"):
         relay.call_codex_subscription({"messages": [{"role": "user", "content": "x"}]})
+
+
+def test_openai_memory_route_requests_standard_and_rejects_policy_drift() -> None:
+    request = {"model": "gpt-6-sol", "messages": [{"role": "user", "content": "summary"}]}
+    payload = relay.chat_to_responses(request)
+    assert payload == {
+        "model": "gpt-6-sol",
+        "input": [{"role": "user", "content": "summary"}],
+        "reasoning": {"effort": "xhigh"},
+        "store": False,
+        "service_tier": "default",
+    }
+    with pytest.raises(relay.RelayError, match="model"):
+        relay.chat_to_responses({**request, "model": "gpt-5.6-sol"})
+    with pytest.raises(relay.RelayError, match="service_tier"):
+        relay.chat_to_responses({**request, "service_tier": "priority"})
+    response = relay.responses_to_chat({
+        "id": "resp_test", "model": "gpt-6-sol", "service_tier": "default",
+        "output_text": "summary",
+    })
+    assert response["model"] == "gpt-6-sol"
+    with pytest.raises(relay.RelayError, match="processing tier"):
+        relay.responses_to_chat({
+            "id": "resp_test", "model": "gpt-6-sol", "service_tier": "priority",
+            "output_text": "summary",
+        })
 
 
 @pytest.mark.parametrize("sentinel", ["KHENRIX_NESTED_AGENT", "KHENRIX_MEMORY_ADAPTER"])

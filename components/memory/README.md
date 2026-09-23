@@ -73,7 +73,13 @@ python ~/.local/share/agentic-memory/controller/memoryctl.py route openai-keycha
 The ChatGPT route never reads or copies OAuth tokens. Its authenticated relay
 checks `account/read` through Codex app-server, then invokes an ephemeral,
 read-only `codex exec` with rules, hooks, plugins, apps, agents, browsing, and
-shell tools disabled. Adapter sessions are not persisted or captured.
+shell tools disabled. Adapter sessions are not persisted or captured. Both
+OpenAI routes request `gpt-6-sol` with `xhigh` effort and `store: false`. The
+Keychain API route explicitly requests Standard processing and rejects a
+response that reports another model or processing tier. The ChatGPT subscription
+route has no API project-tier guarantee; its processing tier is unverified.
+Neither route falls back to an older model. The local Claude route stays selected
+on machines already using it until the user changes the route explicitly.
 
 An organization-specific Anthropic or Vertex route lives in an owner-only local
 descriptor rather than this public repository:

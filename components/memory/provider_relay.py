@@ -23,7 +23,7 @@ from typing import Any
 
 OPENAI_HOST = "api.openai.com"
 OPENAI_PATH = "/v1/responses"
-MODEL = "gpt-5.6-sol"
+MODEL = "gpt-6-sol"
 EFFORT = "xhigh"
 MAX_BODY = 16 * 1024 * 1024
 MAX_MESSAGES = 256
@@ -151,11 +151,16 @@ def validated_messages(document: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def chat_to_responses(document: Mapping[str, Any]) -> dict[str, Any]:
+    if document.get("model", MODEL) != MODEL:
+        raise RelayError("memory request model differs from selected route")
+    if "service_tier" in document:
+        raise RelayError("memory request service_tier is managed by the relay")
     return {
         "model": MODEL,
         "input": validated_messages(document),
         "reasoning": {"effort": EFFORT},
         "store": False,
+        "service_tier": "default",
     }
 
 
@@ -194,6 +199,10 @@ def chat_response(text: str, *, identifier: str = "resp_khenrix_memory") -> dict
 
 
 def responses_to_chat(document: Mapping[str, Any]) -> dict[str, Any]:
+    if document.get("model") != MODEL:
+        raise RelayError("provider response model differs from selected route")
+    if document.get("service_tier") != "default":
+        raise RelayError("provider response processing tier is not Standard")
     result = chat_response(responses_text(document), identifier=str(document.get("id") or "resp_khenrix_memory"))
     usage = document.get("usage") if isinstance(document.get("usage"), dict) else {}
     result["usage"] = {
@@ -397,7 +406,7 @@ def call_codex_subscription(
             "--config",
             'approval_policy="never"',
             "--config",
-            'cli_auth_credentials_store="keyring"',
+            'cli_auth_credentials_store="auto"',
             "--config",
             'web_search="disabled"',
             "--disable",
