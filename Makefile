@@ -23,6 +23,7 @@ SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.
 AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py \
+                 tests/test_council_model_policy.py \
                  tests/test_checks_secrets.py tests/test_mutate.py \
                  tests/test_eval_harness_receipt.py tests/test_render_packaging.py
 # The forge suite, split by weight. The fast subset — schema, state machine,

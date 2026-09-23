@@ -1954,7 +1954,8 @@ def open_run(report, confirmation: Confirmation, run_id: str, *, quote_) -> Path
         synthesis_fix_cap=confirmation.synthesis_fix_cap,
         concurrency=confirmation.concurrency,
         claude_model=confirmation.claude_model,
-        agy_model=confirmation.agy_model))
+        agy_model=confirmation.agy_model,
+        model_profile=runstate.CURRENT_MODEL_PROFILE))
     log.record(journal.done("confirm"), operation_id=run_id,
                on_calibration_failure=confirmation.on_calibration_failure,
                strategy=confirmation.strategy,

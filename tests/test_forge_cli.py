@@ -44,6 +44,32 @@ _FORGE_TIMEOUT = 3600
 # reason no test here is about.
 ANSWER = "the retry already backs off; adding one would double-sleep"
 
+
+def test_model_profile_freezes_builder_and_reviewer_effort():
+    builder = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)",
+                             profile="gpt6-opus55-v1", phase="builder")
+    reviewer = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)",
+                              profile="gpt6-opus55-v1", phase="reviewer")
+    assert builder["claude"] == {"model": "claude-opus-5-5", "thinking": "xhigh"}
+    assert builder["codex"] == {"model": "gpt-6-sol", "thinking": "xhigh"}
+    assert reviewer["claude"] == {"model": "claude-opus-5-5", "thinking": "max"}
+    assert reviewer["codex"] == {"model": "gpt-6-sol", "thinking": "max"}
+    assert builder["agy"] == reviewer["agy"]
+
+    legacy = cli._model_cfg("claude-opus-5", "Gemini 3.7 Flash (High)",
+                            profile="legacy-unpinned", phase="reviewer")
+    assert legacy == {"claude": {"model": "claude-opus-5"},
+                      "agy": {"model": "Gemini 3.7 Flash (High)"}}
+
+
+def test_model_profile_freezes_the_deep_review_panel():
+    cfg = deepreview._profile_cfg(
+        "deep", claude_model="claude-opus-5-5",
+        agy_model="Gemini 3.8 Flash (High)", profile="gpt6-opus55-v1")
+    assert cfg["claude"] == {"model": "claude-opus-5-5", "thinking": "ultracode"}
+    assert cfg["codex"] == {"model": "gpt-6-sol", "thinking": "ultra"}
+    assert cfg["agy"] == {"model": "Gemini 3.8 Flash (High)", "thinking": "high"}
+
 # Which seat the fake provider answers as a seat that cannot be classified. Module state
 # rather than a closure variable because `_a_fake_make_launcher` is `_drive_a_start`'s
 # DEFAULT argument and is bound at import; `monkeypatch.setitem` is what sets it per test and
@@ -464,11 +490,13 @@ def test_start_records_the_task_bundle_and_hands_the_launcher_its_hash(tmp_path,
     assert seen["timeout"] == _FORGE_TIMEOUT, \
         "§19's window comes off the engine's own table and from nowhere else"
     assert seen["cfg"] == {
-        "claude": {"model": "claude-opus-5"},
+        "claude": {"model": "claude-opus-5-5", "thinking": "xhigh"},
+        "codex": {"model": "gpt-6-sol", "thinking": "xhigh"},
         "agy": {"model": "Gemini 3.8 Flash (High)"},
     }
-    assert runstate.read_manifest(run_dir).claude_model == "claude-opus-5"
+    assert runstate.read_manifest(run_dir).claude_model == "claude-opus-5-5"
     assert runstate.read_manifest(run_dir).agy_model == "Gemini 3.8 Flash (High)"
+    assert runstate.read_manifest(run_dir).model_profile == "gpt6-opus55-v1"
 
 
 def test_start_model_override_wins_and_is_persisted(tmp_path, monkeypatch):
@@ -481,7 +509,8 @@ def test_start_model_override_wins_and_is_persisted(tmp_path, monkeypatch):
     run_dir = _drive_a_start(tmp_path, monkeypatch, model_claude="claude-sonnet-5",
                              model_agy="Gemini 3.7 Flash (High)", make_launcher=spy)
     assert seen["cfg"] == {
-        "claude": {"model": "claude-sonnet-5"},
+        "claude": {"model": "claude-sonnet-5", "thinking": "xhigh"},
+        "codex": {"model": "gpt-6-sol", "thinking": "xhigh"},
         "agy": {"model": "Gemini 3.7 Flash (High)"},
     }
     assert runstate.read_manifest(run_dir).claude_model == "claude-sonnet-5"
@@ -1436,7 +1465,8 @@ def test_review_convenes_a_round_in_a_clone_and_never_in_the_worktree(tmp_path, 
     assert rc == 0, out.getvalue()
     assert seen["round"] == 1
     assert seen["cfg"] == {
-        "claude": {"model": "claude-opus-5"},
+        "claude": {"model": "claude-opus-5-5", "thinking": "max"},
+        "codex": {"model": "gpt-6-sol", "thinking": "max"},
         "agy": {"model": "Gemini 3.8 Flash (High)"},
     }
     assert seen["checkout"] != run_dir / "synthesis", "the panel sat in the worktree"

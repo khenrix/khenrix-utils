@@ -79,7 +79,7 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 
 ### Prompt shape (matters most for the codex seat)
 
-- **Open with the request-type verb.** GPT-5.6 dispatches on it: "Review …" / "Diagnose …
+- **Open with the request-type verb.** GPT-6 Sol dispatches on it: "Review …" / "Diagnose …
   — do not modify anything" lands in a bucket that natively forbids writes and stops short
   of implementing fixes; "fix"/"implement" authorizes edits. Match the verb to intent.
 - **Review asks need an explicit output contract** (5.6 dropped its built-in one):
@@ -104,9 +104,9 @@ fine for most runs.
 The council is a fixed panel of three models. The two modes differ in **both** the claude
 seat's reasoning tier and how hard the others think:
 
-- **`normal`** (default) — Opus 5 at `max`, GPT-5.6 Sol at `high`, Gemini 3.8 Flash
+- **`normal`** (default) — Opus 5.5 at `max`, GPT-6 Sol at `xhigh`, Gemini 3.8 Flash
   (High). Use for most council runs.
-- **`deep`** — Opus 5 at **`ultracode`**, Sol at **`ultra`**, Flash unchanged (no tier
+- **`deep`** — Opus 5.5 at **`ultracode`**, GPT-6 Sol at **`ultra`**, Flash unchanged (no tier
   above High exists) + a longer timeout. Use for genuinely high-stakes /
   maximum-confidence asks (architecture, risky changes), or when the user says "deep",
   "think hard", or "maximum confidence". **Deep is not bounded by the ~3x figure above.**
@@ -116,28 +116,18 @@ seat's reasoning tier and how hard the others think:
   turn. Whether `ultra` delegates *proactively* is UNMEASURED here — the honest statement
   is that deep's ceiling is not known to be 3x, not that it is.
 
-`ultracode` and `ultra` are real but **undocumented** tiers (probed 2026-08-05, each with
-a garbage-value control): claude's `--help` lists only `low…max` yet accepts `ultracode`
-silently — and *warn-and-ignores* an unknown value, so if a future CLI drops the tier the
-seat downgrades to default effort with only a stderr line; codex accepts `ultra` and fails
-**closed** with an API 400 on garbage; agy receives no separate `--effort` because Flash
-encodes the tier in its model label. All five values were refused on Gemini 3.7 Flash
-(re-probed 2026-08-14 on agy 1.1.13); `agy models` confirmed the 3.8 High label and no Max
-variant on 2026-09-18.
+Claude documents `ultracode` as a coding workflow that sends `xhigh` effort, while
+`max` is its deepest single-model effort. Codex's `ultra` is a CLI tier; the GPT-6 Sol
+API's highest effort value is `max`. agy receives no separate `--effort` because Flash
+encodes High in its model label.
 
-**Automatic model fallback — currently INERT.** The claude seat is pinned to
-`claude-opus-5` because Fable 5 is credit-walled on this account (2026-08-12: a fable-5
-seat fails "You're out of usage credits" before it reasons at all — see the FALLBACK
-comment above `MODES` in `engine.py`), so Opus 5 now holds the claude seat in both
-`normal` and `deep`. `FALLBACK_MODELS["claude"]` is also `claude-opus-5`
-(`engine.py:169`), so there is nothing left to fall back FROM: the `spec.model != fb`
-guard (`engine.py:1617`) correctly refuses to swap a seat that is already on the
-fallback model, because doing so would record a phantom `opus-5 → opus-5` entry. The
-mechanism — retry on a **model-attributable** failure (`auth_or_quota`, a structured
-claude error; never a timeout, parse failure, or tool-permission denial), disclosure via
-`model_fallback {from,to,reason}` on the provider record, and the `summary.header`
-`Model fallback:` clause — stays wired for when Fable's credits return and the seat is
-repinned; until then, expect it never to fire.
+The Claude seat may fall back from Opus 5.5 to Opus 5 only for a model-specific
+availability or usage failure. Generic authentication, tool, parsing, and timeout
+failures do not trigger a model swap. The provider record discloses
+`model_fallback {from,to,reason}`. It also records the requested model and the model
+IDs reported by Claude's `modelUsage`; a requested ID alone is not proof of the model
+that ran. A per-run model override retains the same source-model-specific fallback
+policy.
 
 The panel and tiers live in **one place** — the `MODES` table at the top of
 `engine.py` (repo: `shared/lib/council/engine.py`; rendered plugin:

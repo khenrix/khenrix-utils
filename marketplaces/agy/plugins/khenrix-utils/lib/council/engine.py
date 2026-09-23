@@ -47,16 +47,10 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # Council models + thinking modes — the runtime source for who sits on the council and
 # how hard they think. A tier change is this cell alone; a NEW model id must also be
 # registered in capabilities.toml [models], which scripts/lib/checks.py enforces.
-#   normal — the default; all members at high thinking.
-#   deep   — same models, maximum reasoning (and a longer default timeout) for
-#            high-stakes / maximum-confidence questions.
-# The claude seat is claude-opus-5 (2026-07-25). The plain id is deliberate: typical
-# council prompts (a diff, a findings list) sit far inside the standard window, so the
-# claude-opus-5[1m] long-context variant would price headroom these runs don't use.
-# Prompt size is caller-controlled, though — for an unusually large one, override per run
-# with `--model-claude "claude-opus-5[1m]"` rather than repinning the seat.
-# `thinking` is an ABSTRACT tier — high|max for `normal`, plus the undocumented
-# `ultracode`/`ultra` that `deep` uses and CLAUDE_EFFORT/CODEX_EFFORT pass through
+#   normal — Opus 5.5 max, GPT-6 Sol xhigh, agy Flash High.
+#   deep   — same models with the CLIs' deepest coding/reasoning modes and a longer timeout.
+# `thinking` is an ABSTRACT tier — max/xhigh for `normal`, plus
+# `ultracode`/`ultra` for `deep`; CLAUDE_EFFORT/CODEX_EFFORT pass these through
 # verbatim via `.get(t, t)`; build_real_spec maps it to each
 # CLI's own flag. agy (since 1.1.1) accepts a per-run `--model`; its thinking tier is
 # encoded in the model string itself (e.g. "(High)"), so the agy cell's model IS
@@ -74,22 +68,18 @@ RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on dis
 # build_real_spec derives the recorded tier by regexing the label — a second knob
 # could disagree with the provenance it reports.
 # --------------------------------------------------------------------------- #
-# FALLBACK (2026-08-12, owner's call): the claude seat is pinned to claude-opus-5 because
-# Fable 5 is CREDIT-WALLED on this account — a fable-5 seat fails with "You're out of usage
-# credits" before it reasons at all, which reads as a dead seat rather than a quota wall.
-# Restore "claude-fable-5" here (both modes) when credits return.
+# Opus 5.5 is available on this machine's Vertex EU route. The interactive
+# `best` alias remains account-dependent; Council pins the exact tested ID.
 MODES = {
     "normal": {
-        "claude": {"model": "claude-opus-5",           "thinking": "max"},
-        "codex":  {"model": "gpt-5.6-sol",            "thinking": "high"},
+        "claude": {"model": "claude-opus-5-5",         "thinking": "max"},
+        "codex":  {"model": "gpt-6-sol",             "thinking": "xhigh"},
         "agy":    {"model": "Gemini 3.8 Flash (High)", "thinking": "high"},
     },
     "deep": {
-        # `ultracode` and `ultra` are REAL BUT UNDOCUMENTED tiers, probed 2026-08-05 with a
-        # garbage control on each: claude's help enumerates only low..max yet accepts
-        # `ultracode` and warn-and-IGNORES an unknown value; codex accepts `ultra` and fails
-        # CLOSED on garbage with an API 400; agy receives no separate `--effort`. The last
-        # full negative probe was Gemini 3.7 Flash — all five values were refused (see below).
+        # Claude now documents `ultracode` as a coding workflow that sends xhigh effort.
+        # Codex `ultra` is a CLI tier; the GPT-6 API's highest effort is `max`.
+        # agy receives no separate `--effort`.
         #
         # A DROPPED TIER WOULD SILENTLY DOWNGRADE THE CLAUDE SEAT, AND NOTHING AT RUNTIME
         # DETECTS IT. This comment used to claim "the smoke asserts the warning's absence".
@@ -102,8 +92,8 @@ MODES = {
         # ultracode` for claude, `model_reasoning_effort="ultra"` for codex, and NO `--effort`
         # for agy under MODES["deep"]. That catches the typo class; upstream REMOVAL of a tier
         # still needs a live probe.
-        "claude": {"model": "claude-opus-5",           "thinking": "ultracode"},
-        "codex":  {"model": "gpt-5.6-sol",            "thinking": "ultra"},
+        "claude": {"model": "claude-opus-5-5",         "thinking": "ultracode"},
+        "codex":  {"model": "gpt-6-sol",             "thinking": "ultra"},
         # Flash tops out at "(High)": no Max tier exists in any form (no `-max` slug), and
         # on Flash `--effort` is not accepted AT ALL. RE-PROBED 2026-09-18 on agy 1.2.0;
         # `agy models` lists Gemini 3.8 Flash (High) and no Max variant. The prior 2026-08-14
@@ -152,11 +142,8 @@ DEFAULT_MODE = "normal"
 # the one whose --print-timeout tracks this value directly.
 # `--mode` offers only the keys of MODES, so this entry is not reachable from this CLI: the
 # forge front end reads it by name, and that is the only reader.
-# NORMAL RAISED 300 -> 900 (2026-08-05) BECAUSE THE PANEL MOVED, NOT BECAUSE RUNS GOT
-# SLOWER. Normal mode now carries Fable 5 at `max`, whose only substantive measurement is
-# 649s — more than double the old window. Leaving 300 would have manufactured timeouts on
-# routine councils and failed the gate CLOSED, which is the agy print-timeout lesson
-# exactly: a fixed sub-engine cap turns slow success into reported failure.
+# The 900s normal window predates this model change; remeasure on representative GPT-6
+# and Opus 5.5 prompts before reducing it.
 # Per-attempt seconds. RECALIBRATED 2026-08-13 from six real deep councils: the codex seat's
 # SUCCESSFUL runs measured 753/928/983/1133/1138/1238s, so a 1200s window sat in the middle of
 # its own distribution and timed out on four attempts out of ten. A timeout is the most
@@ -206,18 +193,30 @@ CLAUDE_EFFORT = {"high": "high", "max": "max"}   # claude --effort: low,medium,h
 # it would not guard codex-internal sub-agents.
 CODEX_EFFORT = {"high": "high", "max": "max"}
 
-# A seat whose MODEL is the plausible cause of its failure retries on this model instead
-# of burning the attempt on one that cannot answer. Fable sits behind the narrowest weekly
-# sub-cap on this machine, and it now holds the claude seat in BOTH modes, so the wall is
-# an expected event rather than a surprise.
-FALLBACK_MODELS = {"claude": "claude-opus-5"}
-# DELIBERATELY NARROW. `auth_or_quota` is the wall (and the codex version-gate wording);
-# a structured unknown-model rejection lands in the *_error family. Everything else —
-# timeout, parse_failure, tool_permission, non_substantive, did_not_read_input — has a
-# cause the model is not, and swapping there would MASK the real defect behind a silent
-# panel change: a window that needs resizing, a parser that needs fixing, an invocation
-# flag that is ours to correct.
+# Visible Claude-only fallback candidates. The error must also identify a
+# model-specific availability or usage wall; generic auth/quota errors do not
+# justify changing models. `model_fallback` records every actual swap.
+FALLBACK_MODELS = {
+    "claude-opus-5-5": "claude-opus-5",
+    "claude-fable-5-1": "claude-opus-5-5",
+    "claude-fable-5": "claude-opus-5",
+}
 FALLBACK_REASONS = {"auth_or_quota", "claude_error"}
+
+
+def fallback_target(name: str, model: str | None, reason: str,
+                    message: str, *, structured: bool) -> str | None:
+    """Choose a reported Claude fallback only for evidence tied to this model."""
+    if name != "claude" or model not in FALLBACK_MODELS or reason not in FALLBACK_REASONS:
+        return None
+    low = (message or "").lower()
+    model_wall = (re.search(r"\bmodel\b.{0,100}\b(?:not available|unavailable|unsupported|"
+                            r"not supported|not found|unknown)\b", low) is not None)
+    usage_wall = (re.search(r"\b(?:usage credits|quota|rate limit)\b.{0,100}"
+                            r"\b(?:this model|for model)\b", low) is not None)
+    if (structured and model_wall) or usage_wall:
+        return FALLBACK_MODELS[model]
+    return None
 
 # Substrings that mark a provider's output as a failure rather than an answer.
 # Scanned in stderr and the provider's log file always, and in the result text ONLY
@@ -573,6 +572,11 @@ def council_header(manifest: dict) -> str:
                f"({p['model_fallback']['reason']})"
                for p in manifest["providers"] if p.get("model_fallback")]
     tail = ("  Model fallback: " + "; ".join(swapped) + ".") if swapped else ""
+    mismatched = [f"{p['name']} requested {p.get('model')} but reported "
+                  f"{', '.join(p.get('observed_models') or [])}"
+                  for p in manifest["providers"] if p.get("model_match") is False]
+    if mismatched:
+        tail += "  Model mismatch: " + "; ".join(mismatched) + "."
     if ok == total:
         return head + ".**" + tail
     lost = []
@@ -620,6 +624,30 @@ def extract_claude_json(stdout: str) -> tuple[str, Optional[str]]:
     if res is None:
         return "", None
     return json.dumps(res), None
+
+
+def observed_model_ids(name: str, stdout: str) -> list[str]:
+    """Claude's result envelope reports actual model IDs under modelUsage.
+
+    Other CLIs' current envelopes do not provide the same reliable field, so
+    an empty list means unverified rather than an inferred match.
+    """
+    if name != "claude":
+        return []
+    source = (stdout or "").strip()
+    try:
+        row = json.loads(source)
+    except (ValueError, TypeError):
+        lo, hi = source.find("{"), source.rfind("}")
+        try:
+            row = json.loads(source[lo:hi + 1]) if lo >= 0 and hi > lo else None
+        except (ValueError, TypeError):
+            return []
+    usage = row.get("modelUsage") if isinstance(row, dict) else None
+    if not isinstance(usage, dict):
+        return []
+    return sorted(k for k in usage if isinstance(k, str) and
+                  re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}", k))
 
 
 def extract_agy_json(stdout: str) -> tuple[str, Optional[str]]:
@@ -1562,6 +1590,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
     own depth guard is applied to it; `None` keeps the previous behaviour exactly
     (`os.environ` plus the guard). Keyword-only and defaulted, so no existing caller changes.
     """
+    requested_model = spec.model
     attempt_log: list = []
     final = {"stdout": "", "stderr": "", "exit_code": None,
              "reason": "unknown", "result_text": "", "valid": False, "structured": False,
@@ -1641,6 +1670,7 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
             _write_attempt(workdir, spec.name, n, stdout, stderr)
             attempt_log.append({"attempt": n, "reason": reason,
                                 "usage": extract_usage(spec.name, stdout),
+                                "observed_models": observed_model_ids(spec.name, stdout),
                                 "exit_code": exit_code, "duration_sec": dur})
             final.update(stdout=stdout, stderr=stderr, exit_code=exit_code,
                          reason=reason, result_text=result_text, valid=valid,
@@ -1669,8 +1699,10 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                 # spends an attempt to learn what the last one already proved. Only for a
                 # model-attributable reason (FALLBACK_REASONS) — see that constant for
                 # why masking any other cause here would be worse than the wall.
-                fb = FALLBACK_MODELS.get(spec.name)
-                if fb and reason in FALLBACK_REASONS and not final.get("model_fallback") \
+                fb = fallback_target(
+                    spec.name, spec.model, reason,
+                    final["result_text"] or final["stderr"], structured=structured)
+                if fb and not final.get("model_fallback") \
                         and spec.model != fb:
                     swapped = swap_model(spec.argv, spec.name, spec.model, fb)
                     if swapped is not None:
@@ -1721,11 +1753,14 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
         "result_sha256": hashlib.sha256(result_blob).hexdigest(),
         "raw_stdout_file": str(stdout_file),
         "raw_stderr_file": str(stderr_file),
-        # `spec` is rebound on a model fallback, so this is the model that ACTUALLY
-        # answered — never the one originally requested. `model_fallback` is what makes
-        # the difference visible; without it a substituted seat is indistinguishable from
-        # one that ran the configured panel.
+        # Legacy `model` is the final argv request (which may be a visible
+        # fallback), not proof of which model answered. Use observed_models for
+        # Claude's modelUsage witness; empty means the provider did not report one.
         "model": spec.model,
+        "requested_model": requested_model,
+        "observed_models": attempt_log[-1].get("observed_models", []) if attempt_log else [],
+        "model_match": (spec.model in attempt_log[-1]["observed_models"]
+                        if attempt_log and attempt_log[-1].get("observed_models") else None),
         "model_fallback": final.get("model_fallback"),
         "thinking": spec.thinking,
         "isolated_cwd": spec.cwd,

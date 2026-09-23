@@ -97,11 +97,13 @@ python3 "$FORGE" --start \
   --seats 3 --attempts 3 --review-rounds 2
 ```
 
-Forge resolves Claude's and agy's models once at `--start`, defaulting to council normal mode,
-and records both in the immutable run manifest. Builders, resume, `--review`, and deep review
-reuse those values. Use `--model-claude "<id>"` or `--model-agy "<label>"` only with `--start`
-for an explicit per-run override; later verbs refuse either flag rather than silently changing
-the model mid-run. Codex keeps its existing stage default.
+Forge records its model profile and Claude/agy overrides in the run manifest at `--start`.
+The `gpt6-opus55-v1` profile pins builders to Opus 5.5 and GPT-6 Sol at `xhigh`, regular
+reviewers to `max`, and deep review to Claude `ultracode` and Codex `ultra`. A resumed
+run keeps its recorded profile; old manifests without one are labelled
+`legacy-unpinned` rather than retroactively claiming the new pins. Use
+`--model-claude "<id>"` or `--model-agy "<label>"` only with `--start`; later verbs refuse
+either flag rather than silently changing a model mid-run.
 
 `--start` runs the static preflight, prints the quote, opens the run, builds the baseline
 **B1**, launches the fleet, verifies each candidate — and **stops at `comparing`**. It

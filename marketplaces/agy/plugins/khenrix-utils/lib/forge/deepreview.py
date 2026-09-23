@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import gitcmd, review
+from . import gitcmd, review, runstate
 
 try:                                    # the bundled plugin layout puts council beside forge
     from council import engine
@@ -419,9 +419,31 @@ def _parse_findings(answer: str, seat: str, checkpoint_round: int) -> tuple:
     return tuple(out), True
 
 
+def _profile_cfg(mode: str, *, claude_model: str | None,
+                 agy_model: str | None, profile: str) -> dict:
+    if profile == runstate.CURRENT_MODEL_PROFILE and mode == "deep":
+        return {
+            "claude": {"model": claude_model or "claude-opus-5-5",
+                       "thinking": "ultracode"},
+            "codex": {"model": "gpt-6-sol", "thinking": "ultra"},
+            "agy": {"model": agy_model or "Gemini 3.8 Flash (High)",
+                    "thinking": "high"},
+        }
+    if profile != runstate.LEGACY_MODEL_PROFILE:
+        raise DeepReviewError("unsupported deep-review model profile or mode")
+    cfg = {name: dict(values) for name, values in engine.MODES[mode].items()}
+    for seat, model in (("claude", claude_model), ("agy", agy_model)):
+        if model is not None:
+            if not isinstance(model, str) or not model.strip():
+                raise DeepReviewError(f"{seat}_model must be a non-empty model name, not {model!r}")
+            cfg[seat]["model"] = model
+    return cfg
+
+
 def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=SEATS,
              claude_model: str | None = None,
-             agy_model: str | None = None):
+             agy_model: str | None = None,
+             model_profile: str = runstate.LEGACY_MODEL_PROFILE):
     """One read-only council fan-out. Returns the engine's manifest.
 
     READ-ONLY IS MECHANICAL, NOT ASKED FOR. `make_readonly` swaps each provider's bypass
@@ -430,12 +452,8 @@ def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=
     different repository when Forge is launched through a development script. A reviewer
     that can write is a reviewer that can "fix" the diff it was asked to judge.
     """
-    cfg = {name: dict(values) for name, values in engine.MODES[mode].items()}
-    for seat, model in (("claude", claude_model), ("agy", agy_model)):
-        if model is not None:
-            if not isinstance(model, str) or not model.strip():
-                raise DeepReviewError(f"{seat}_model must be a non-empty model name, not {model!r}")
-            cfg[seat]["model"] = model
+    cfg = _profile_cfg(mode, claude_model=claude_model, agy_model=agy_model,
+                       profile=model_profile)
     timeout = engine.MODE_TIMEOUT[mode]
     workdir.mkdir(parents=True, exist_ok=True)
     specs, worktrees = [], []
@@ -457,7 +475,8 @@ def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=
 def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
                     enabled: bool = True, mode: str = "deep", council=None,
                     claude_model: str | None = None,
-                    agy_model: str | None = None) -> DeepReview:
+                    agy_model: str | None = None,
+                    model_profile: str = runstate.LEGACY_MODEL_PROFILE) -> DeepReview:
     """The post-fusion pass, from the synthesis checkout, after the council loop terminated.
 
     ORDER: the local pre-flight first, so a diff definitely over the prompt cap costs
@@ -497,7 +516,8 @@ def run_deep_review(run_dir, *, checkout, base: str, head: str, round_: int,
     workdir.mkdir(parents=True, exist_ok=True)
     if council is None:
         manifest = _council(PROMPT + body, workdir, checkout=checkout, mode=mode,
-                            claude_model=claude_model, agy_model=agy_model)
+                            claude_model=claude_model, agy_model=agy_model,
+                            model_profile=model_profile)
     else:
         manifest = council(PROMPT + body, workdir, mode=mode)
     valid = [p for p in manifest.get("providers", []) if p.get("valid")]

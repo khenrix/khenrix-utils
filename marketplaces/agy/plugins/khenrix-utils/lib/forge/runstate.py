@@ -259,6 +259,8 @@ class TransitionError(RuntimeError):
 #
 # Prefixes rather than a substring test: a user's `refs/heads/forgery-experiments` is theirs.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
+CURRENT_MODEL_PROFILE = "gpt6-opus55-v1"
+LEGACY_MODEL_PROFILE = "legacy-unpinned"
 
 
 @dataclass(frozen=True)
@@ -354,6 +356,10 @@ class Manifest:
     # to be installed then, so one run can be built and judged by different models.
     claude_model: str
     agy_model: str
+    # New runs freeze model and effort policy. Old manifests did not record the
+    # full profile; decode them explicitly as legacy-unpinned rather than claiming
+    # they ran this version's defaults.
+    model_profile: str = LEGACY_MODEL_PROFILE
 
 
 def write_manifest(run_dir, manifest: Manifest) -> None:
@@ -803,6 +809,12 @@ def _nonempty_text(name, value, source):
     return value
 
 
+def _model_profile(name, value, source):
+    if value not in {CURRENT_MODEL_PROFILE, LEGACY_MODEL_PROFILE}:
+        raise ManifestError(f"{source}: {name} is not a supported model profile")
+    return value
+
+
 def count(name, value, source, *, floor=1):
     """A whole count of at least `floor` — the shape a run's own numbers have to survive in.
 
@@ -999,12 +1011,15 @@ _DECODERS = {
     "concurrency": count,
     "claude_model": _nonempty_text,
     "agy_model": _nonempty_text,
+    "model_profile": _model_profile,
 }
 
 
 def _decode(row, source) -> Manifest:
     if not isinstance(row, dict):
         raise ManifestError(f"{source}: a manifest is an object, not {type(row).__name__}")
+    if "model_profile" not in row:
+        row = {**row, "model_profile": LEGACY_MODEL_PROFILE}
     names = [f.name for f in dataclasses.fields(Manifest)]
     missing = [n for n in names if n not in row]
     if missing:

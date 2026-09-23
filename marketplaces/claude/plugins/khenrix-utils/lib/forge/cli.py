@@ -105,8 +105,19 @@ def _resolve_model(seat: str, override=None) -> str:
     return model
 
 
-def _model_cfg(claude_model: str, agy_model: str) -> dict:
-    return {"claude": {"model": claude_model}, "agy": {"model": agy_model}}
+def _model_cfg(claude_model: str, agy_model: str, *,
+               profile: str = runstate.CURRENT_MODEL_PROFILE,
+               phase: str = "builder") -> dict:
+    """Resolve one run's frozen profile, or preserve an old unpinned run honestly."""
+    base = {"claude": {"model": claude_model}, "agy": {"model": agy_model}}
+    if profile == runstate.LEGACY_MODEL_PROFILE:
+        return base  # old manifests recorded neither Codex model nor effort
+    if profile != runstate.CURRENT_MODEL_PROFILE or phase not in {"builder", "reviewer"}:
+        raise CliError("unsupported Forge model profile or phase")
+    effort = "xhigh" if phase == "builder" else "max"
+    base["claude"]["thinking"] = effort
+    base["codex"] = {"model": "gpt-6-sol", "thinking": effort}
+    return base
 
 
 def _closures() -> dict:
@@ -322,7 +333,9 @@ def start(args, *, out, make_launcher=None) -> int:
     # `--collect` read, so hashing the same bytes they will is what makes §11's `bundle_sha256`
     # a statement about the run rather than about this process's memory.
     launcher = mk(prompt=instruction, timeout=timeout,
-                  cfg=_model_cfg(claude_model, agy_model),
+                  cfg=_model_cfg(claude_model, agy_model,
+                                 profile=runstate.CURRENT_MODEL_PROFILE,
+                                 phase="builder"),
                   bundle_sha256=taskbundle.bundle_hash(taskbundle.read_task_bundle(run_dir)))
     results = runnermod.run(run_dir, repo, identity=confirmation.author, launch=launcher)
 
@@ -401,7 +414,8 @@ def _resume(args, *, out, make_launcher=None) -> int:
                         "the task entrypoint this run recorded")
     mk = _launcher_factory(make_launcher)
     launcher = mk(prompt=instruction, timeout=_resolve_seat_timeout(),
-                  cfg=_model_cfg(manifest.claude_model, manifest.agy_model),
+                  cfg=_model_cfg(manifest.claude_model, manifest.agy_model,
+                                 profile=manifest.model_profile, phase="builder"),
                   bundle_sha256=taskbundle.bundle_hash(b))
     results = runnermod.run(run_dir, repo, identity=identity, launch=launcher, resume=True)
     return _finish_the_fleet(run_dir, repo, run_id, results, out=out)
@@ -1182,7 +1196,8 @@ def collect(args, *, out) -> int:
         u = deepreview.run_deep_review(run_dir, checkout=synth, base=manifest.baseline_commit,
                                        head=head, round_=max(1, rounds), enabled=enabled,
                                        claude_model=manifest.claude_model,
-                                       agy_model=manifest.agy_model)
+                                       agy_model=manifest.agy_model,
+                                       model_profile=manifest.model_profile)
         # `findings` IS A TUPLE OF `review.Finding`, NOT A COUNT — a first draft wrote `int(u.bugs)`
         # and `handover` then called `len()` on it. `None` and `()` are DIFFERENT here and the
         # round-trip must keep them apart: `deepreview.DeepReview` refuses `findings=None` on a `ran` status
@@ -1386,7 +1401,8 @@ def _review(args, *, out) -> int:
         baseline_commit=manifest.base_commit, baseline_tree=manifest.tracked_tree_oid,
         artifact_manifest=None, log=log,
         other_clones=tuple(others) + (Path(synth),),
-        cfg=_model_cfg(manifest.claude_model, manifest.agy_model))
+        cfg=_model_cfg(manifest.claude_model, manifest.agy_model,
+                       profile=manifest.model_profile, phase="reviewer"))
     after_digest, after = reviewmod.worktree_identity(tree_dir, quota)
     reviewmod.record_worktree_after(log, round_=round_, digest=after_digest,
                                     entries=len(after),

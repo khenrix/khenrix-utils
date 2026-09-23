@@ -46,6 +46,19 @@ def _run_dir(tmp_path):
     return d
 
 
+def test_model_profile_is_recorded_and_legacy_manifests_remain_readable(tmp_path):
+    repo = make_repo(tmp_path)
+    current = _manifest(repo, model_profile="gpt6-opus55-v1")
+    run = _run_dir(tmp_path)
+    runstate.write_manifest(run, current)
+    assert runstate.read_manifest(run).model_profile == "gpt6-opus55-v1"
+
+    row = json.loads(json.dumps(dataclasses.asdict(current)))
+    row.pop("model_profile")
+    legacy = runstate._decode(row, "legacy fixture")
+    assert legacy.model_profile == "legacy-unpinned"
+
+
 # --------------------------------------------------------------------------- written once
 
 def test_a_manifest_is_written_once_and_never_rewritten(tmp_path):
