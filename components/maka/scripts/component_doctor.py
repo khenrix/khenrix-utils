@@ -125,6 +125,7 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
         "backup",
         "source_digest",
         "overlay_hashes",
+        "runtime_package_digest",
     }
     require(set(receipt) == allowed, "install receipt fields are invalid")
     require(receipt.get("schema") == "khenrix-maka-install-v2", "install receipt schema mismatch")
@@ -135,6 +136,10 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
     digest = receipt.get("source_digest")
     require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
             "install receipt source digest is invalid")
+    package_digest = receipt.get("runtime_package_digest")
+    require(isinstance(package_digest, str) and
+            re.fullmatch(r"[0-9a-f]{64}", package_digest) is not None,
+            "install receipt runtime package digest is invalid")
     overlays = receipt.get("overlay_hashes")
     require(isinstance(overlays, dict) and set(overlays) == set(PATCHES),
             "install receipt overlay set is invalid")
@@ -219,6 +224,8 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
                 "installed component source digest mismatch")
         require(receipt["overlay_hashes"] == staged["overlay_hashes"],
                 "installed component overlay receipt mismatch")
+        require(receipt["runtime_package_digest"] == staged["runtime_package_digest"],
+                "installed runtime package receipt mismatch")
         install_receipt = "current"
     elif (layout.state / "install-receipt.json").exists() or (layout.state / "install-receipt.json").is_symlink():
         raise DoctorError("install receipt exists without an installed component")

@@ -69,6 +69,37 @@ def test_fallback_requires_a_model_specific_failure():
         "Quota for this model", structured=True) is None
 
 
+def test_structured_model_quota_retries_once_on_declared_fallback(tmp_path, monkeypatch):
+    calls = []
+    responses = iter((
+        json.dumps({"type": "result", "is_error": True,
+                    "result": "Quota exceeded for this model"}),
+        json.dumps({"type": "result", "subtype": "success", "result": "Recovered",
+                    "modelUsage": {"claude-opus-5": {"inputTokens": 1}}}),
+    ))
+
+    def run_member(argv, **_kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(stdout=next(responses), stderr="", returncode=0,
+                               slot_wait_sec=0)
+
+    monkeypatch.setattr(council, "run_member", run_member)
+    spec = council.ProviderSpec(
+        "claude", ["claude", "--model", "claude-opus-5-5"], None,
+        council.extract_claude_json, model="claude-opus-5-5", min_chars=0)
+    record = council.run_provider(spec, retries=1, timeout=5, backoff=0,
+                                  workdir=tmp_path)
+    assert record["valid"]
+    assert record["attempts"] == 2
+    assert record["model_fallback"] == {
+        "from": "claude-opus-5-5", "to": "claude-opus-5",
+        "reason": "auth_or_quota", "attempt": 1,
+    }
+    assert [argv[2] for argv in calls] == ["claude-opus-5-5", "claude-opus-5"]
+    assert record["requested_model"] == "claude-opus-5-5"
+    assert record["observed_models"] == ["claude-opus-5"]
+
+
 def test_header_discloses_a_reported_model_mismatch():
     manifest = {"summary": {"valid": 1, "requested": 1}, "providers": [{
         "name": "claude", "valid": True, "model": "claude-opus-5-5",

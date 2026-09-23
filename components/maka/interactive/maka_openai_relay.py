@@ -411,9 +411,10 @@ class RelayDependencies:
 
 
 class TierObserver:
-    """Keep only bounded response metadata while passing SSE through unchanged."""
+    """Keep bounded SSE metadata for the initial policy gate and receipt."""
 
     MAX_LINE = 16 * 1024
+    MAX_PREFIX = 64 * 1024
     TIERS = frozenset({"default", "flex", "priority", "scale", "auto"})
 
     def __init__(self) -> None:
@@ -421,6 +422,11 @@ class TierObserver:
         self.dropping = False
         self.tier: str | None = None
         self.model: str | None = None
+        self.first_data_seen = False
+        self.created_model: str | None = None
+        self.created_tier: str | None = None
+        self.reported_model: str | None = None
+        self.reported_tier: str | None = None
 
     def feed(self, chunk: bytes) -> None:
         for byte in chunk:
@@ -439,6 +445,8 @@ class TierObserver:
     def _line(self, line: bytes) -> None:
         if not line.startswith(b"data: "):
             return
+        first_data = not self.first_data_seen
+        self.first_data_seen = True
         try:
             event = json.loads(line[6:])
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
@@ -452,10 +460,13 @@ class TierObserver:
             return
         tier = response.get("service_tier")
         model = response.get("model")
-        if isinstance(tier, str) and tier in self.TIERS:
-            self.tier = tier
-        if isinstance(model, str) and model in MODEL_IDS:
-            self.model = model
+        if first_data and event["type"] == "response.created":
+            self.created_tier = tier if isinstance(tier, str) else None
+            self.created_model = model if isinstance(model, str) else None
+        self.reported_tier = tier if isinstance(tier, str) else None
+        self.reported_model = model if isinstance(model, str) else None
+        self.tier = tier if isinstance(tier, str) and tier in self.TIERS else None
+        self.model = model if isinstance(model, str) and model in MODEL_IDS else None
 
 
 class LoopbackThreadingHTTPServer(http.server.ThreadingHTTPServer):
@@ -682,13 +693,41 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                 self._reject(502, "provider_response_invalid")
                 return
             forwarded_headers.append((name, value))
+        observer = TierObserver()
+        prefix = bytearray()
+        if status < 300:
+            while not observer.first_data_seen:
+                try:
+                    chunk = response.read1(64 * 1024)
+                except (OSError, http.client.HTTPException):
+                    self._reject(502, "provider_response_invalid")
+                    return
+                if not chunk or len(prefix) + len(chunk) > observer.MAX_PREFIX:
+                    self._reject(502, "provider_policy_mismatch")
+                    self._record_tier_status(requested_model, observer, 502)
+                    return
+                prefix.extend(chunk)
+                observer.feed(chunk)
+            if (observer.created_model != requested_model or
+                    observer.created_tier != "default" or
+                    observer.reported_model != requested_model or
+                    observer.reported_tier != "default"):
+                self._reject(502, "provider_policy_mismatch")
+                self._record_tier_status(requested_model, observer, 502)
+                return
         self.send_response(status)
         for name, value in forwarded_headers:
             self.send_header(name, value)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
-        observer = TierObserver()
+        if prefix:
+            try:
+                self.wfile.write(prefix)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                self._record_tier_status(requested_model, observer, status)
+                return
         while True:
             # HTTPResponse.read(amount) may buffer a chunked SSE response until
             # `amount` bytes or EOF. read1 returns currently available bytes so
@@ -697,11 +736,18 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             if not chunk:
                 break
             observer.feed(chunk)
+            if (observer.reported_model != requested_model or
+                    observer.reported_tier != "default"):
+                break
             try:
                 self.wfile.write(chunk)
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 break
+        self._record_tier_status(requested_model, observer, status)
+
+    def _record_tier_status(self, requested_model: str,
+                            observer: TierObserver, status: int) -> None:
         path = self.dependencies.telemetry_path
         if path is not None:
             receipt = {
@@ -805,7 +851,7 @@ def responses_body_rejection(raw: bytes) -> str | None:
             if reasoning["effort"] in known_efforts
             else "reasoning_effort_unknown"
         )
-    if reasoning["summary"] != "auto":
+    if reasoning["summary"] not in {"auto", "detailed"}:
         return "reasoning_summary"
     if "prompt_cache_key" in body:
         prompt_cache_key = body["prompt_cache_key"]
@@ -830,7 +876,7 @@ def responses_body_rejection(raw: bytes) -> str | None:
 
 
 def enforce_outbound_policy(raw: bytes) -> bytes:
-    """Elevate Maka's medium fallback and force Standard API processing.
+    """Narrow Maka's SDK defaults and force Standard API processing.
 
     The pinned headless and TUI clients do not apply Runtime Policy's
     chatDefaults.thinkingLevel when a Session omits an explicit level. The
@@ -846,6 +892,9 @@ def enforce_outbound_policy(raw: bytes) -> bytes:
     )
     if body["reasoning"]["effort"] == "medium":
         body["reasoning"]["effort"] = "xhigh"
+    # The pinned AI SDK defaults an omitted reasoningSummary to 'detailed'.
+    # Keep the reviewed wire contract at 'auto' even on that client path.
+    body["reasoning"]["summary"] = "auto"
     # service_tier is deliberately absent from the admitted inbound schema:
     # only this relay can choose a paid API processing tier.
     body["service_tier"] = "default"

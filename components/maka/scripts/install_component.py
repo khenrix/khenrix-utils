@@ -324,6 +324,37 @@ def source_digest(source: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def runtime_package_digest(package: pathlib.Path) -> str:
+    """Bind every copied runtime file, including the executable, to its receipt."""
+    if package.is_symlink() or not package.is_dir():
+        raise ComponentInstallError("Maka runtime package is unavailable")
+    digest = hashlib.sha256()
+    files = 0
+    for path in sorted(package.rglob("*"), key=lambda child: child.relative_to(package).as_posix()):
+        relative = path.relative_to(package).as_posix().encode("utf-8")
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ComponentInstallError("Maka runtime package contains a symlink")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISDIR(metadata.st_mode):
+            digest.update(b"D\0" + relative + b"\0" + str(mode).encode("ascii") + b"\n")
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ComponentInstallError("Maka runtime package contains a special file")
+        files += 1
+        digest.update(
+            b"F\0" + relative + b"\0" + str(mode).encode("ascii") + b"\0"
+            + str(metadata.st_size).encode("ascii") + b"\0"
+        )
+        with path.open("rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\n")
+    if files == 0 or not (package / "dist/cli.js").is_file():
+        raise ComponentInstallError("Maka runtime package executable is unavailable")
+    return digest.hexdigest()
+
+
 def candidate_path(source: pathlib.Path, layout: InstallLayout) -> pathlib.Path:
     return layout.home / CANDIDATES_RELATIVE / source_digest(source)
 
@@ -337,7 +368,8 @@ def candidate_receipt(candidate: pathlib.Path, source: pathlib.Path) -> dict[str
     except (OSError, json.JSONDecodeError) as error:
         raise ComponentInstallError("Maka candidate receipt is unavailable") from error
     if not isinstance(receipt, dict) or set(receipt) != {
-        "schema", "version", "source_digest", "package", "overlay_hashes"
+        "schema", "version", "source_digest", "package", "overlay_hashes",
+        "runtime_package_digest",
     }:
         raise ComponentInstallError("Maka candidate receipt is invalid")
     if (
@@ -354,6 +386,8 @@ def candidate_receipt(candidate: pathlib.Path, source: pathlib.Path) -> dict[str
         if (candidate / relative).read_bytes() != (source / relative).read_bytes():
             raise ComponentInstallError("Maka candidate source differs")
     package = candidate / "runtime/package"
+    if receipt["runtime_package_digest"] != runtime_package_digest(package):
+        raise ComponentInstallError("Maka runtime package differs from its candidate receipt")
     for relative, hashes in overlays.items():
         path = package / relative
         if (not isinstance(hashes, dict) or hashes != {
@@ -403,6 +437,7 @@ def stage_candidate(source: pathlib.Path, *, layout: InstallLayout,
             "source_digest": source_digest(source),
             "package": reviewed_package_identity(source),
             "overlay_hashes": hashes,
+            "runtime_package_digest": runtime_package_digest(package),
         }
         atomic_write(staging / "candidate-receipt.json",
                      (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8"), 0o600)
@@ -575,6 +610,7 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
                 **package_identity,
                 "source_digest": candidate_info["source_digest"],
                 "overlay_hashes": candidate_info["overlay_hashes"],
+                "runtime_package_digest": candidate_info["runtime_package_digest"],
                 "platform": supported_platform(),
                 "component": str(layout.component),
                 "wrapper": str(layout.wrapper),

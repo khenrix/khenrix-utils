@@ -1,43 +1,27 @@
 {
   "schema_version": 2,
   "skill": "chunk-map",
-  "source_hash": "0c234278392c9f8673be96364c12f62c4a5d35887c9fd4f609731c543f8c908c",
+  "source_hash": "95eace6799febf70576671f1686af9e67585ca8e31a35c6823bed67ad7dfd6f7",
   "eval_set_hash": "cf2852ace66aa7c807950580095188965c194c2c38e57c7c24ddb7e6c1005b0c",
   "providers": [
-    "claude",
-    "codex",
-    "agy"
+    "codex"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.25,
+  "delta_pass_rate": 0.375,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
-    "agy": {
-      "delta": 0.25,
-      "quantum": 0.0625,
-      "n_evals": 4,
-      "status": "ok"
-    },
-    "claude": {
-      "delta": 0.25,
-      "quantum": 0.0625,
-      "n_evals": 4,
-      "status": "ok"
-    },
     "codex": {
-      "delta": 0.25,
+      "delta": 0.375,
       "quantum": 0.0625,
       "n_evals": 4,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
-    "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-opus-5"
+    "codex": "gpt-6-sol",
+    "judge": "claude-opus-5-5"
   },
   "certified_by": "delta-gate"
 }

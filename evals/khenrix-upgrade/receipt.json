@@ -1,43 +1,27 @@
 {
   "schema_version": 2,
   "skill": "khenrix-upgrade",
-  "source_hash": "bd43f4392cfc0a7c82a9d821a77d02b0e037096a7d178953b7c828310521a7c2",
+  "source_hash": "519e88f06ca7c9e21449877c01b58febd5a7bea6b2591d035871f1e7228bc25c",
   "eval_set_hash": "c5e268f7f0ff36e4a1bba7212c0daf40a970a1f759b838913b7159c804c2b204",
   "providers": [
-    "claude",
-    "codex",
     "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.6296,
+  "delta_pass_rate": 0.5445,
   "blind_winner": "with_skill",
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.6944,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    },
-    "claude": {
-      "delta": 0.6944,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    },
-    "codex": {
-      "delta": 0.5,
+      "delta": 0.5445,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
     "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-opus-5"
+    "judge": "claude-opus-5-5"
   },
   "certified_by": "delta-gate"
 }

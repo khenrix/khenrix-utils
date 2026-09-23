@@ -34,6 +34,13 @@ DUMMY_PROVIDER_KEY = "dummy-provider-key-for-offline-test"
 KEYCHAIN_ACCOUNT = "cli|offline-test-account"
 
 
+def created_stream(*, model: str = relay.MODEL_ID,
+                   tier: str = "default", suffix: bytes = b"data: offline\n\n") -> bytes:
+    event = {"type": "response.created", "response": {"model": model,
+             "service_tier": tier}}
+    return ("data: " + json.dumps(event) + "\n\n").encode() + suffix
+
+
 def valid_body(*, tools: bool = False, effort: str = "xhigh") -> bytes:
     document: dict[str, object] = {
         "model": relay.MODEL_ID,
@@ -62,7 +69,9 @@ def valid_body(*, tools: bool = False, effort: str = "xhigh") -> bytes:
 class FakeResponse:
     status = 200
 
-    def __init__(self, body: bytes = b"data: offline\n\n") -> None:
+    def __init__(self, body: bytes | None = None) -> None:
+        if body is None:
+            body = created_stream()
         midpoint = max(1, len(body) // 2)
         self._chunks = [body[:midpoint], body[midpoint:]]
         self._headers = {
@@ -94,10 +103,11 @@ class RecordingForwarder:
     def __init__(self) -> None:
         self.calls: list[tuple[bytes, str]] = []
         self.exchanges: list[FakeExchange] = []
+        self.response_body: bytes | None = None
 
     def forward(self, body: bytes, provider_key: str) -> FakeExchange:
         self.calls.append((body, provider_key))
-        exchange = FakeExchange(FakeResponse())
+        exchange = FakeExchange(FakeResponse(self.response_body))
         self.exchanges.append(exchange)
         return exchange
 
@@ -220,7 +230,7 @@ class RelayIntegrationTests(unittest.TestCase):
             "POST", "/v1/responses", request_body
         )
         self.assertEqual(status, 200)
-        self.assertEqual(body, b"data: offline\n\n")
+        self.assertEqual(body, created_stream())
         self.assertEqual(headers["content-type"], "text/event-stream")
         self.assertNotIn("set-cookie", {name.lower() for name in headers})
         self.assertEqual(self.fixture.key_loads, 1)
@@ -247,9 +257,21 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(forwarded["reasoning"], {"effort": "max", "summary": "auto"})
         self.assertEqual(self.fixture.key_loads, 1)
 
+    def test_sdk_detailed_summary_is_narrowed_to_auto_before_forwarding(self) -> None:
+        document = json.loads(valid_body())
+        document["reasoning"]["summary"] = "detailed"
+        status, _, _ = self.fixture.request(
+            "POST", "/v1/responses", json.dumps(document).encode()
+        )
+        self.assertEqual(status, 200)
+        forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+        self.assertEqual(forwarded["reasoning"],
+                         {"effort": "xhigh", "summary": "auto"})
+
     def test_legacy_model_is_still_accepted_and_inbound_tier_is_rejected(self) -> None:
         document = json.loads(valid_body())
         document["model"] = relay.LEGACY_MODEL_ID
+        self.fixture.forwarder.response_body = created_stream(model=relay.LEGACY_MODEL_ID)
         status, _, _ = self.fixture.request(
             "POST", "/v1/responses", json.dumps(document).encode()
         )
@@ -286,6 +308,53 @@ class RelayIntegrationTests(unittest.TestCase):
             self.assertEqual(saved["observed_model"], relay.MODEL_ID)
             self.assertNotIn("private prompt", path.read_text())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_stream_rejects_observed_tier_or_model_before_output(self) -> None:
+        for payload in (
+            created_stream(tier="priority", suffix=b"data: secret-delta\n\n"),
+            created_stream(model=relay.LEGACY_MODEL_ID,
+                           suffix=b"data: secret-delta\n\n"),
+            b"data: offline\n\n",
+        ):
+            with self.subTest(payload=payload[:100]):
+                self.fixture.forwarder.forward = (
+                    lambda _body, _key, payload=payload:
+                    FakeExchange(FakeResponse(payload))
+                )
+                status, _, body = self.fixture.request(
+                    "POST", "/v1/responses", valid_body()
+                )
+                self.assertEqual(status, 502)
+                self.assertEqual(
+                    json.loads(body)["error"]["code"], "provider_policy_mismatch"
+                )
+                self.assertNotIn(b"secret-delta", body)
+
+    def test_stream_attestation_handles_one_byte_reads(self) -> None:
+        payload = created_stream(suffix=b"data: later-output\n\n")
+
+        def forward(_body: bytes, _key: str) -> FakeExchange:
+            response = FakeResponse(payload)
+            response._chunks = [bytes([byte]) for byte in payload]
+            return FakeExchange(response)
+
+        self.fixture.forwarder.forward = forward
+        status, _, body = self.fixture.request("POST", "/v1/responses", valid_body())
+        self.assertEqual(status, 200)
+        self.assertEqual(body, payload)
+
+    def test_later_unknown_metadata_clears_earlier_attestation(self) -> None:
+        observer = relay.TierObserver()
+        observer.feed(created_stream())
+        self.assertEqual(observer.model, relay.MODEL_ID)
+        self.assertEqual(observer.tier, "default")
+        event = {"type": "response.completed", "response": {
+            "model": "unrecognized-model", "service_tier": "unrecognized-tier"}}
+        observer.feed(("data: " + json.dumps(event) + "\n\n").encode())
+        self.assertEqual(observer.reported_model, "unrecognized-model")
+        self.assertEqual(observer.reported_tier, "unrecognized-tier")
+        self.assertIsNone(observer.model)
+        self.assertIsNone(observer.tier)
 
     def test_invalid_shapes_never_load_key(self) -> None:
         fixtures = []
@@ -342,7 +411,7 @@ class RelayIntegrationTests(unittest.TestCase):
             "extra": {"effort": "xhigh", "summary": "auto", "extra": True},
             "wrong_effort": {"effort": "high", "summary": "auto"},
             "wrong_effort_type": {"effort": ["xhigh"], "summary": "auto"},
-            "wrong_summary": {"effort": "xhigh", "summary": "detailed"},
+            "wrong_summary": {"effort": "xhigh", "summary": "all"},
         }
         for name, reasoning in mutations.items():
             document = json.loads(valid_body())

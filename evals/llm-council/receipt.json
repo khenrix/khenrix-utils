@@ -1,27 +1,27 @@
 {
   "schema_version": 2,
   "skill": "llm-council",
-  "source_hash": "ba84f1a180c97ca0486ea413341a1a29297337297940a2569b1b13c798b33f2c",
+  "source_hash": "e451989376d4b819ed7c40f56fc4ce0aa0966c7b4263db3a464eba46b6e9c9f8",
   "eval_set_hash": "39702054ac7ea0162aba403714fa7d5e73a4f85eaf263a5e58cb9edda8a4857b",
   "providers": [
-    "claude"
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.3,
+  "delta_pass_rate": -0.1,
   "blind_winner": "n/a-orchestrator",
   "provenance": "eval",
   "per_provider": {
-    "claude": {
-      "delta": 0.3,
+    "agy": {
+      "delta": -0.1,
       "quantum": 0.05,
       "n_evals": 5,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-opus-5",
-    "judge": "claude-opus-5"
+    "agy": "Gemini 3.8 Flash (High)",
+    "judge": "claude-opus-5-5"
   },
   "certified_by": "fanout --self-test",
   "self_test": true,

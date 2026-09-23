@@ -25,7 +25,9 @@ boundary.
    existing `Codex Auth` Keychain item.
 5. The relay replaces the decoy authorization header and connects directly to
    the hard-coded `api.openai.com:443/v1/responses` TLS origin.
-6. It streams the response back and never writes the provider key to disk.
+6. It buffers only the bounded first SSE event, requires the provider to report
+   the requested model and `default` tier, then streams the response. It never
+   writes the provider key to disk.
 
 `GET /v1/models` is answered locally with `gpt-6-sol` and `gpt-5.6-sol`. The pinned
 adapter's WebSocket probe receives a local 403 and falls back to HTTP.
@@ -35,15 +37,20 @@ consume this provider capability.
 The reserved `openai-responses-compatible` connection exposes
 both models with `xhigh` and `max`, defaulting to `xhigh`. An explicit
 `--thinking max` remains `max`; the relay normalizes only the pinned client's
-known derived `medium` fallback to `xhigh`. It rejects inbound `service_tier`
+known derived `medium` fallback to `xhigh`. The pinned SDK can also derive a
+`detailed` reasoning summary; the relay narrows that value to the reviewed
+`auto` summary before forwarding. Other summary values are rejected. It rejects inbound `service_tier`
 and adds `service_tier: "default"` to every admitted API request. The managed launcher supplies
 `--thinking xhigh` for a headless run that has no explicit value.
+The relay rejects a successful response before sending it to Maka if its
+initial `response.created` event omits or changes the requested model or
+`default` tier. It also stops forwarding if later response metadata changes.
 After each response, the relay writes only requested/observed model and
 processing tier, HTTP status, and time to the owner-only
 `~/.local/state/khenrix-utils/maka/relay-last-tier.json`. It reads those
 fields from bounded SSE metadata in memory and never saves the response
-stream. A missing observed tier means the provider did not report one in the
-bounded event; it is not evidence of Standard processing.
+stream. A missing observed tier on a rejected response is not evidence of
+Standard processing.
 Run `mise run maka:relay-tier` to see the last receipt as `standard`,
 `unverified`, `unobserved`, or `drift`. The command reads no response text.
 

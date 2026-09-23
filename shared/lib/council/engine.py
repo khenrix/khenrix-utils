@@ -1684,9 +1684,22 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                          duration_sec=dur, status="ok" if valid else "failed")
             if valid:
                 break
-            if structured and reason in STRUCTURED_TERMINAL_REASONS:
+            swapped = None
+            if attempt < retries and not final.get("model_fallback"):
+                # A structured model-specific wall is terminal for that model,
+                # but the one declared fallback may still answer this seat.
+                fb = fallback_target(
+                    spec.name, spec.model, reason,
+                    final["result_text"] or final["stderr"], structured=structured)
+                if fb and spec.model != fb:
+                    swapped = swap_model(spec.argv, spec.name, spec.model, fb)
+                    if swapped is not None:
+                        final["model_fallback"] = {"from": spec.model, "to": fb,
+                                                   "reason": reason, "attempt": n}
+                        spec = replace(spec, argv=swapped, model=fb)
+            if structured and reason in STRUCTURED_TERMINAL_REASONS and swapped is None:
                 # The provider said so itself, in its own error field — retrying cannot
-                # change it, and unlike a scanned phrase this cannot be a file it read.
+                # change it unless this seat has a model-specific fallback.
                 break
             if reason in NONRETRYABLE_REASONS:
                 # Currently unreachable: the sole member, `not_installed`, short-circuits
@@ -1695,20 +1708,6 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
                 # attaches to — not as a claim that it fires today.
                 break
             if attempt < retries:
-                # MODEL FALLBACK, once per seat: retrying the SAME model against a wall
-                # spends an attempt to learn what the last one already proved. Only for a
-                # model-attributable reason (FALLBACK_REASONS) — see that constant for
-                # why masking any other cause here would be worse than the wall.
-                fb = fallback_target(
-                    spec.name, spec.model, reason,
-                    final["result_text"] or final["stderr"], structured=structured)
-                if fb and not final.get("model_fallback") \
-                        and spec.model != fb:
-                    swapped = swap_model(spec.argv, spec.name, spec.model, fb)
-                    if swapped is not None:
-                        final["model_fallback"] = {"from": spec.model, "to": fb,
-                                                   "reason": reason, "attempt": n}
-                        spec = replace(spec, argv=swapped, model=fb)
                 time.sleep(backoff * (2 ** attempt))
 
     # Persist final raw + extracted text and reference the files in the record.

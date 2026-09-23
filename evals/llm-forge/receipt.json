@@ -1,27 +1,27 @@
 {
   "schema_version": 2,
   "skill": "llm-forge",
-  "source_hash": "8a256a412dee4b5d74ee91e134abbe81a222d4374d312a8885cf925593ac7ad8",
+  "source_hash": "bf39ec6be391c359410271523b82fbc23a9aa1f6a2446f2c996dba9169ce5fe9",
   "eval_set_hash": "73875dfae42320a71ba49ec4eb436cb463badc4ae412a2917e64e2873b32a551",
   "providers": [
-    "claude"
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.7083,
+  "delta_pass_rate": 0.625,
   "blind_winner": "n/a-deterministic",
   "provenance": "eval",
   "per_provider": {
-    "claude": {
-      "delta": 0.7083,
+    "agy": {
+      "delta": 0.625,
       "quantum": 0.05,
       "n_evals": 6,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-opus-5",
-    "judge": "claude-opus-5"
+    "agy": "Gemini 3.8 Flash (High)",
+    "judge": "claude-opus-5-5"
   },
   "certified_by": "forge-suite-all",
   "deterministic_gate": "forge-suite-all",
@@ -69,7 +69,7 @@
     "tests/test_forge_verify.py"
   ],
   "gate_counts": {
-    "tests_run": 1813,
+    "tests_run": 1816,
     "skipped": 0,
     "failed": 0
   }

@@ -137,8 +137,9 @@ mise -C components/maka exec -- \
 
 The final receipt is `~/.local/state/khenrix-utils/maka/install-receipt.json`.
 It is published atomically only after component cutover succeeds and records the
-reviewed package, version, npm integrity, Apache source commit, and exact
-source/patched hashes of the GPT-6 compatibility overlay. The component
+reviewed package, version, npm integrity, Apache source commit, source/patched
+hashes of the GPT-6 compatibility overlay, and a digest of every installed
+runtime package file. The component
 doctor rejects a missing, stale, non-private, or malformed receipt, component
 drift, and managed-wrapper drift. `maka:stage` builds a separate candidate
 with a private candidate receipt and does not touch the active component,
@@ -178,7 +179,9 @@ local decoys, and admits narrowly validated Responses requests to OpenAI. Its
 LaunchAgent is `dev.khenrix.maka-openai-relay`.
 The relay rejects inbound processing-tier settings and adds
 `service_tier: "default"` after validating each request. This explicitly
-requests OpenAI Standard processing on the API route. The subscription route
+requests OpenAI Standard processing on the API route. It checks the provider's
+reported model and tier before releasing a successful response stream, and
+rejects missing or differing initial metadata. The subscription route
 has no API project-tier guarantee.
 The API relay keeps an owner-only, metadata-only last-response receipt so its
 observed tier can be checked with `mise run maka:relay-tier` without logging

@@ -1,11 +1,9 @@
 {
   "schema_version": 2,
   "skill": "khenrix-audit",
-  "source_hash": "754ccd79c93cf748e377a885cf75bfe3cfd5e9fa4314bfa50c26fb9da6460905",
+  "source_hash": "f3f57d5845940a52f35cadb511366eb480d2f4865d8465bf70d8bc413173ca02",
   "eval_set_hash": "adc7fadfae229a06016de37b5b04a51bf707aaa8c8cd42784aeb1331105c8d85",
   "providers": [
-    "claude",
-    "codex",
     "agy"
   ],
   "mode": "normal",
@@ -15,29 +13,15 @@
   "provenance": "eval",
   "per_provider": {
     "agy": {
-      "delta": 0.5834,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    },
-    "claude": {
-      "delta": 0.9167,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    },
-    "codex": {
-      "delta": 0.5,
+      "delta": 0.6667,
       "quantum": 0.1111,
       "n_evals": 3,
       "status": "ok"
     }
   },
   "models": {
-    "claude": "claude-opus-5",
-    "codex": "gpt-5.6-sol",
     "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-opus-5"
+    "judge": "claude-opus-5-5"
   },
   "certified_by": "delta-gate"
 }

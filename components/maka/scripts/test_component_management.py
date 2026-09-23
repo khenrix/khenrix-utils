@@ -38,6 +38,9 @@ class ComponentInstallerTests(unittest.TestCase):
         package = candidate / "runtime/package"
         package.mkdir(mode=0o700, parents=True)
         shutil.copy2(self.upstream_package / "package.json", package / "package.json")
+        executable = package / "dist/cli.js"
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_bytes(b"reviewed fake Maka executable\n")
         for relative in compat.PATCHES:
             target = package / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +52,7 @@ class ComponentInstallerTests(unittest.TestCase):
             "source_digest": component.source_digest(source),
             "package": component.reviewed_package_identity(source),
             "overlay_hashes": hashes,
+            "runtime_package_digest": component.runtime_package_digest(package),
         }
         receipt_path = candidate / "candidate-receipt.json"
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -269,6 +273,19 @@ class ComponentInstallerTests(unittest.TestCase):
             receipt_path.chmod(0o600)
             with self.assertRaisesRegex(component_doctor.DoctorError, "integrity mismatch"):
                 component_doctor.inspect_install_receipt(layout)
+
+    def test_candidate_and_doctor_reject_unpatched_executable_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory)
+            source = pathlib.Path(__file__).resolve().parent.parent
+            self._install_with_fakes(home)
+            layout = component.canonical_layout(home)
+            executable = layout.component / "runtime/package/dist/cli.js"
+            executable.write_bytes(b"modified fake Maka executable\n")
+            with self.assertRaisesRegex(component.ComponentInstallError, "runtime package"):
+                component.candidate_receipt(layout.component, source)
+            with self.assertRaisesRegex(component.ComponentInstallError, "runtime package"):
+                self._inspect_with_fakes(home)
 
     def test_component_doctor_rejects_receipt_platform_backup_and_duplicate_keys(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
