@@ -171,6 +171,142 @@ def test_explicit_setup_replaces_legacy_route_without_guessing(
     }
 
 
+def test_successful_setup_publishes_private_reviewed_install_receipt_last(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(memoryctl, "install_controller", lambda: events.append("controller") or private_home)
+    monkeypatch.setattr(memoryctl, "stage_runtime", lambda: events.append("runtime") or private_home)
+    monkeypatch.setattr(
+        memoryctl,
+        "select_route",
+        lambda *_args, **_kwargs: events.append("route") or {"schema_version": 2, "route": "codex-subscription"},
+    )
+    monkeypatch.setattr(
+        memoryctl,
+        "install_hooks",
+        lambda _targets: events.append("hooks") or {"claude": "ok", "codex": "ok", "agy": "ok"},
+    )
+
+    def start(arguments: list[str]) -> int:
+        assert arguments == ["start"]
+        assert not memoryctl.install_receipt_path().exists()
+        events.append("restart")
+        return 0
+
+    monkeypatch.setattr(memoryctl, "run_worker", start)
+    result = memoryctl.apply_setup(
+        "codex-subscription",
+        keychain_account=None,
+        provider_file=None,
+        start=True,
+    )
+
+    receipt_path = memoryctl.install_receipt_path()
+    assert events == ["controller", "runtime", "route", "hooks", "restart"]
+    assert result["started"] is True
+    assert json.loads(receipt_path.read_text()) == {
+        "schema": "khenrix-memory-install-v1",
+        "package": "claude-mem",
+        "version": memoryctl.PACKAGE_VERSION,
+        "integrity": memoryctl.ARTIFACT_INTEGRITY,
+        "source_commit": memoryctl.SOURCE_COMMIT,
+    }
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(memoryctl.state_dir().stat().st_mode) == 0o700
+    assert memoryctl.install_receipt_problem() is None
+
+
+@pytest.mark.parametrize("with_previous", [False, True])
+def test_setup_hook_failure_never_publishes_partial_install_receipt(
+    private_home: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_previous: bool,
+) -> None:
+    previous = b'{"schema":"previous-install"}\n'
+    if with_previous:
+        memoryctl.state_dir().mkdir(mode=0o700, parents=True)
+        memoryctl.install_receipt_path().write_bytes(previous)
+        memoryctl.install_receipt_path().chmod(0o600)
+    monkeypatch.setattr(memoryctl, "install_controller", lambda: private_home)
+    monkeypatch.setattr(memoryctl, "stage_runtime", lambda: private_home)
+    monkeypatch.setattr(
+        memoryctl,
+        "select_route",
+        lambda *_args, **_kwargs: {"schema_version": 2, "route": "codex-subscription"},
+    )
+    monkeypatch.setattr(
+        memoryctl,
+        "install_hooks",
+        lambda _targets: (_ for _ in ()).throw(memoryctl.MemoryConfigurationError("hook merge failed")),
+    )
+
+    with pytest.raises(memoryctl.MemoryConfigurationError, match="hook merge failed"):
+        memoryctl.apply_setup(
+            "codex-subscription",
+            keychain_account=None,
+            provider_file=None,
+            start=False,
+        )
+
+    if with_previous:
+        assert memoryctl.install_receipt_path().read_bytes() == previous
+    else:
+        assert not memoryctl.install_receipt_path().exists()
+
+
+def test_setup_receipt_publish_failure_preserves_previous_receipt_byte_for_byte(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memoryctl.state_dir().mkdir(mode=0o700, parents=True)
+    receipt_path = memoryctl.install_receipt_path()
+    previous = b'{"schema":"previous-install","version":"13.25.1"}\n'
+    receipt_path.write_bytes(previous)
+    receipt_path.chmod(0o600)
+    monkeypatch.setattr(memoryctl, "install_controller", lambda: private_home)
+    monkeypatch.setattr(memoryctl, "stage_runtime", lambda: private_home)
+    monkeypatch.setattr(
+        memoryctl,
+        "select_route",
+        lambda *_args, **_kwargs: {"schema_version": 2, "route": "codex-subscription"},
+    )
+    monkeypatch.setattr(memoryctl, "install_hooks", lambda _targets: {})
+    original_replace = memoryctl.os.replace
+
+    def replace(source: pathlib.Path | str, destination: pathlib.Path | str) -> None:
+        if pathlib.Path(destination) == receipt_path:
+            raise OSError("receipt publish failed")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(memoryctl.os, "replace", replace)
+    with pytest.raises(OSError, match="receipt publish failed"):
+        memoryctl.apply_setup(
+            "codex-subscription",
+            keychain_account=None,
+            provider_file=None,
+            start=False,
+        )
+    assert receipt_path.read_bytes() == previous
+
+
+def test_atomic_private_write_has_no_fallible_chmod_after_replace(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = private_home / ".local" / "state" / "khenrix-utils" / "memory" / "receipt.json"
+    memoryctl._atomic_private_write(path, b"old\n")
+    original_chmod = memoryctl.os.chmod
+
+    def chmod(candidate: pathlib.Path | str, mode: int) -> None:
+        if pathlib.Path(candidate) == path:
+            raise OSError("post-replace chmod called")
+        original_chmod(candidate, mode)
+
+    monkeypatch.setattr(memoryctl.os, "chmod", chmod)
+    memoryctl._atomic_private_write(path, b"new\n")
+    assert path.read_bytes() == b"new\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_project_exclusions_are_local_validated_and_deterministic(private_home: pathlib.Path) -> None:
     assert memoryctl.update_excluded_project("/work/private-b", remove=False) == ["/work/private-b"]
     assert memoryctl.update_excluded_project("/work/private-a", remove=False) == [
@@ -532,6 +668,8 @@ def test_upgrade_stops_running_old_worker_before_backup_and_staging_new_pin(
     assert events == ["stop-old-worker", "stage-new-runtime", "restart-new-worker"]
     assert state["port_checks"] >= 1
     assert result["worker_restarted"] is True
+    receipt = json.loads(memoryctl.install_receipt_path().read_text())
+    assert receipt == memoryctl.expected_install_receipt()
     backup = pathlib.Path(result["backup"])
     with memoryctl.sqlite3.connect(backup) as connection:
         assert connection.execute("SELECT value FROM observations").fetchone() == (
@@ -585,6 +723,87 @@ def test_upgrade_staging_failure_preserves_installed_controller_and_skips_hooks_
 
     assert events == ["stop-old-worker", "stage-new-runtime"]
     assert sentinel.read_bytes() == b"old installed controller\n"
+    assert not memoryctl.install_receipt_path().exists()
+
+
+def test_upgrade_restart_failure_preserves_previous_receipt_byte_for_byte(
+    private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    memoryctl.state_dir().mkdir(mode=0o700, parents=True)
+    receipt_path = memoryctl.install_receipt_path()
+    previous = b'{"schema":"previous-install","version":"13.25.1"}\n'
+    receipt_path.write_bytes(previous)
+    receipt_path.chmod(0o600)
+    events: list[str] = []
+
+    monkeypatch.setattr(memoryctl, "_worker_port_is_bound", lambda: True)
+    monkeypatch.setattr(
+        memoryctl,
+        "stop_worker_for_upgrade",
+        lambda: events.append("stop") or 0,
+    )
+    monkeypatch.setattr(memoryctl, "backup_database", lambda: events.append("backup") or None)
+    monkeypatch.setattr(memoryctl, "stage_runtime", lambda: events.append("stage") or private_home)
+    monkeypatch.setattr(memoryctl, "install_controller", lambda: events.append("controller") or private_home)
+    monkeypatch.setattr(
+        memoryctl,
+        "install_hooks",
+        lambda _targets: events.append("hooks") or {},
+    )
+    monkeypatch.setattr(
+        memoryctl,
+        "run_worker",
+        lambda arguments: events.append("restart") or (1 if arguments == ["start"] else 0),
+    )
+
+    with pytest.raises(
+        memoryctl.MemoryConfigurationError,
+        match="memory upgrade completed but worker did not restart",
+    ):
+        memoryctl.upgrade_runtime()
+
+    assert events == ["stop", "backup", "stage", "controller", "hooks", "restart"]
+    assert receipt_path.read_bytes() == previous
+
+
+def test_memory_doctor_rejects_missing_or_mismatched_install_receipt(
+    private_home: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert memoryctl.install_receipt_problem() == "memory install receipt is unavailable"
+    monkeypatch.setattr(memoryctl, "_bun_path", lambda: "/fixture/bun")
+    monkeypatch.setattr(memoryctl, "worker_health", lambda: False)
+    monkeypatch.setattr(memoryctl, "_relay_health", lambda: False)
+    monkeypatch.setattr(memoryctl, "_gateway_health", lambda: False)
+    assert "memory install receipt is unavailable" in memoryctl.health_document(
+        require_running=False
+    )["problems"]
+    memoryctl._atomic_private_json(
+        memoryctl.install_receipt_path(),
+        memoryctl.expected_install_receipt(),
+    )
+    assert memoryctl.install_receipt_problem() is None
+
+    mismatched = memoryctl.expected_install_receipt()
+    mismatched["source_commit"] = "0" * 40
+    memoryctl._atomic_private_json(memoryctl.install_receipt_path(), mismatched)
+    assert memoryctl.install_receipt_problem() == "memory install receipt does not match the reviewed pin"
+    assert "memory install receipt does not match the reviewed pin" in memoryctl.health_document(
+        require_running=False
+    )["problems"]
+
+    receipt = memoryctl.expected_install_receipt()
+    encoded = json.dumps(receipt)
+    needle = f'"version": "{memoryctl.PACKAGE_VERSION}"'
+    memoryctl.install_receipt_path().write_text(
+        encoded.replace(needle, f'{needle}, {needle}', 1),
+        encoding="utf-8",
+    )
+    memoryctl.install_receipt_path().chmod(0o600)
+    assert (
+        memoryctl.install_receipt_problem()
+        == "memory install receipt contains a duplicate field: version"
+    )
 
 
 def test_upgrade_preserves_stop_failure_error_without_staging(

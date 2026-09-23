@@ -132,7 +132,11 @@ mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:relay-install -- restor
 
 Installed component backups are kept owner-only beneath
 `~/.local/state/khenrix-utils/maka/backups`. See the component README for the
-backup-ID rollback command.
+backup-ID rollback command. The sibling `install-receipt.json` is written only
+after a successful cutover and binds the installed package to its reviewed
+version, npm integrity, and Apache source commit. Staging leaves the current
+final receipt untouched; rollback restores the matching previous receipt or
+removes it when the restored installation had none.
 
 ## Use Maka
 
@@ -194,7 +198,7 @@ Managed Khenrix state is split by purpose:
 - `~/.config/khenrix-utils/maka/` stores the auth route, non-secret API account
   selector, readiness marker, migration receipt, and relay-local state;
 - `~/.local/share/khenrix-utils/maka/` stores the portable component;
-- `~/.local/state/khenrix-utils/maka/` stores install receipts and backups;
+- `~/.local/state/khenrix-utils/maka/` stores the final provenance receipt and backups;
 - Maka's native profile stores its local vault, workspace, and sessions.
 
 The subscription launcher enforces one enabled canonical `openai-codex`

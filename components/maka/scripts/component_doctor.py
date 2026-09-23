@@ -9,21 +9,27 @@ import json
 import os
 import pathlib
 import pwd
+import re
 import sys
 
 from install_component import (
+    PACKAGE_INTEGRITY,
+    PACKAGE_NAME,
     PACKAGE_VERSION,
+    SOURCE_COMMIT,
+    InstallLayout,
     ComponentInstallError,
     canonical_layout,
     clean_environment,
     discover_package_root,
     read_manifest,
+    render_wrapper,
     resolve_mise,
     supported_platform,
 )
 
-EXPECTED_INTEGRITY = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
-EXPECTED_COMMIT = "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
+EXPECTED_INTEGRITY = PACKAGE_INTEGRITY
+EXPECTED_COMMIT = SOURCE_COMMIT
 EXCLUDED_DIRECTORY_NAMES = {"__pycache__", "evidence", "runtime", "trials"}
 EXPECTED_ATTRIBUTION_HASHES = {
     "third_party/apache-maka/LICENSE": "ebd45d2cb43f6d451345b872b944b937e6b444fa34edb81b743b2330f4dfa927",
@@ -62,6 +68,79 @@ def sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
+    state = layout.state
+    receipt_path = state / "install-receipt.json"
+    try:
+        state_metadata = state.lstat()
+        receipt_metadata = receipt_path.lstat()
+    except OSError as error:
+        raise DoctorError("installed component lacks its final install receipt") from error
+    require(
+        state_metadata.st_uid == os.getuid()
+        and state_metadata.st_mode & 0o777 == 0o700
+        and state.is_dir()
+        and not state.is_symlink(),
+        "install receipt directory is not owner-only",
+    )
+    require(
+        receipt_metadata.st_uid == os.getuid()
+        and receipt_metadata.st_mode & 0o777 == 0o600
+        and receipt_path.is_file()
+        and not receipt_path.is_symlink(),
+        "install receipt is not an owner-only regular file",
+    )
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DoctorError(f"install receipt contains a duplicate field: {key}")
+            result[key] = value
+        return result
+
+    try:
+        receipt = json.loads(
+            receipt_path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DoctorError("install receipt is invalid JSON") from error
+    require(isinstance(receipt, dict), "install receipt must be an object")
+    allowed = {
+        "schema",
+        "package",
+        "version",
+        "integrity",
+        "source_commit",
+        "platform",
+        "component",
+        "wrapper",
+        "backup",
+    }
+    require(set(receipt) == allowed, "install receipt fields are invalid")
+    require(receipt.get("schema") == "khenrix-maka-install-v1", "install receipt schema mismatch")
+    require(receipt.get("package") == PACKAGE_NAME, "install receipt package mismatch")
+    require(receipt.get("version") == PACKAGE_VERSION, "install receipt version mismatch")
+    require(receipt.get("integrity") == EXPECTED_INTEGRITY, "install receipt integrity mismatch")
+    require(receipt.get("source_commit") == EXPECTED_COMMIT, "install receipt source commit mismatch")
+    require(receipt.get("platform") == supported_platform(), "install receipt platform mismatch")
+    require(receipt.get("component") == str(layout.component), "install receipt component path mismatch")
+    require(
+        receipt.get("wrapper") == str(layout.wrapper),
+        "install receipt wrapper path mismatch",
+    )
+    backup = receipt.get("backup")
+    require(
+        backup is None
+        or (
+            isinstance(backup, str)
+            and re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-[0-9]+", backup) is not None
+        ),
+        "install receipt backup id is invalid",
+    )
+    return receipt
 
 
 def inspect_component(source: pathlib.Path) -> dict[str, object]:
@@ -108,6 +187,7 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
     environment = clean_environment(layout, mise, account.pw_name)
     package = discover_package_root(mise, source, environment)
     installed_matches: bool | None = None
+    install_receipt = "absent"
     if layout.component.exists():
         require(layout.component.is_dir() and not layout.component.is_symlink(), "installed component path is unsafe")
         installed_matches = all(
@@ -115,15 +195,32 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
             and (layout.component / relative).read_bytes() == (source / relative).read_bytes()
             for relative in files
         )
+        require(installed_matches, "installed component drift detected")
+        inspect_install_receipt(layout)
+        install_receipt = "current"
+    elif (layout.state / "install-receipt.json").exists() or (layout.state / "install-receipt.json").is_symlink():
+        raise DoctorError("install receipt exists without an installed component")
     wrapper_status = "absent"
     if layout.wrapper.exists():
         require(layout.wrapper.is_file() and not layout.wrapper.is_symlink(), "installed wrapper path is unsafe")
         wrapper = layout.wrapper.read_text(encoding="utf-8")
         require("@@" not in wrapper, "installed wrapper has unresolved placeholders")
-        if str(layout.component) in wrapper and PACKAGE_VERSION in wrapper:
+        if install_receipt == "current":
+            expected_wrapper = render_wrapper(
+                template,
+                layout=layout,
+                account_name=account.pw_name,
+                mise=mise,
+                package=package,
+            )
+            require(wrapper == expected_wrapper, "managed wrapper drift detected")
             wrapper_status = "khenrix-managed"
+        elif str(layout.component) in wrapper and PACKAGE_VERSION in wrapper:
+            wrapper_status = "khenrix-managed-unattested"
         else:
             wrapper_status = "other-owner"
+    elif install_receipt == "current":
+        raise DoctorError("managed wrapper drift detected: wrapper is missing")
     return {
         "schema": "khenrix-maka-component-doctor-v1",
         "ok": True,
@@ -133,6 +230,7 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
         "packageRoot": str(package),
         "installedComponent": str(layout.component),
         "installedMatchesSource": installed_matches,
+        "installReceipt": install_receipt,
         "wrapper": wrapper_status,
         "authChecked": False,
         "liveServiceChecked": False,

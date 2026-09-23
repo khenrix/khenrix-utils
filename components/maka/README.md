@@ -137,6 +137,14 @@ mise -C components/maka exec -- \
   python ./scripts/install_component.py rollback --backup-id <backup-id>
 ```
 
+The final receipt is `~/.local/state/khenrix-utils/maka/install-receipt.json`.
+It is published atomically only after component cutover succeeds and records the
+reviewed package, version, npm integrity, and Apache source commit. The component
+doctor rejects a missing, stale, non-private, or malformed receipt, component
+drift, and managed-wrapper drift. `maka:stage` does not publish or replace this
+receipt. A backup rollback restores the receipt that belonged to the restored
+runtime, or removes it when that runtime had no final receipt.
+
 ## Managed policy
 
 Both routes use `gpt-5.6-sol`, `ask` permissions, and `xhigh` by default for
@@ -187,8 +195,8 @@ mise -C components/maka run maka:test
 ```
 
 Run the read-only portable doctor to check the package pin, provenance,
-third-party attribution, both supported platform locks, wrapper template, and
-installed-component drift:
+third-party attribution, both supported platform locks, wrapper template, final
+receipt, and installed-component drift:
 
 ```sh
 mise -C components/maka run maka:component-doctor

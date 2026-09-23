@@ -43,6 +43,13 @@ mise exec python@3.12 bun@1.4.2 -- \
 database and unrelated hooks. The hook installer backs up a changed JSON file
 once as `*.khenrix-backup`.
 
+A successful apply publishes the owner-only final receipt at
+`~/.local/state/khenrix-utils/memory/install-receipt.json` after the runtime,
+route, all three CLI hooks, and any requested start finish. It records only the
+reviewed package, version, artifact integrity, and source commit. A failed apply
+leaves an older receipt byte-for-byte unchanged or creates no receipt on a first
+install.
+
 The installed controller carries the reviewed `mise.toml` and `mise.lock`, resolves
 Bun through that pin, and records the absolute mise-pinned Python interpreter in
 each hook command. Desktop-launched hooks therefore work without a shell-activated
@@ -110,7 +117,8 @@ python ~/.local/share/agentic-memory/controller/memoryctl.py exclude list
 
 `doctor` requires the worker, authenticated gateway, and any selected relay to
 be running. `status` reports the same state without treating stopped services as
-an error. Codex requires one interactive trust decision after its hook file is
+an error. Both validate the final install receipt against the reviewed pin.
+Codex requires one interactive trust decision after its hook file is
 installed or changes; the report distinguishes missing or untrusted hooks.
 
 Search without opening the viewer:
@@ -138,5 +146,6 @@ change the declared pin. Never replace the active runtime with an unverified
 download and never commit runtime archives or local state.
 
 After reviewing a new pin, `memoryctl.py upgrade` backs up SQLite, stages the
-pinned package, refreshes the controller and merges hooks. Restore a reviewed
+pinned package, refreshes the controller, merges hooks, completes any required
+worker restart, and only then replaces the final receipt. Restore a reviewed
 backup with `memoryctl.py rollback --backup /absolute/path/to/backup.db`.

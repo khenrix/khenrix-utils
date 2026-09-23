@@ -19,7 +19,10 @@ import sys
 import tempfile
 from dataclasses import dataclass
 
+PACKAGE_NAME = "maka-agent"
 PACKAGE_VERSION = "0.2.0-dev.47.20260922"
+PACKAGE_INTEGRITY = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
+SOURCE_COMMIT = "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
 MANIFEST_NAME = "install-files.txt"
 INSTALL_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka")
 WRAPPER_RELATIVE = pathlib.Path(".local/bin/maka")
@@ -165,8 +168,40 @@ def discover_package_root(mise: pathlib.Path, component: pathlib.Path, environme
         descriptor = json.loads((package / "package.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ComponentInstallError("pinned Maka package is invalid") from error
-    if descriptor.get("name") != "maka-agent" or descriptor.get("version") != PACKAGE_VERSION:
+    if descriptor.get("name") != PACKAGE_NAME or descriptor.get("version") != PACKAGE_VERSION:
         raise ComponentInstallError("pinned Maka package version is invalid")
+    lock_path = (
+        component
+        / ".mise/locks/npm-maka-agent"
+        / PACKAGE_VERSION
+        / "aube-lock.yaml"
+    )
+    try:
+        lock_lines = lock_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as error:
+        raise ComponentInstallError("pinned Maka integrity lock is unavailable") from error
+    heading = f"  {PACKAGE_NAME}@{PACKAGE_VERSION}:"
+    resolution = f"    resolution: {{integrity: {PACKAGE_INTEGRITY}}}"
+    package_sections = [index for index, line in enumerate(lock_lines) if line == "packages:"]
+    if len(package_sections) != 1:
+        raise ComponentInstallError("pinned Maka integrity lock has an invalid packages section")
+    section_start = package_sections[0] + 1
+    section_end = next(
+        (
+            index
+            for index in range(section_start, len(lock_lines))
+            if lock_lines[index] and not lock_lines[index].startswith(" ")
+        ),
+        len(lock_lines),
+    )
+    package_lines = lock_lines[section_start:section_end]
+    indexes = [index for index, line in enumerate(package_lines) if line == heading]
+    if (
+        len(indexes) != 1
+        or indexes[0] + 1 >= len(package_lines)
+        or package_lines[indexes[0] + 1] != resolution
+    ):
+        raise ComponentInstallError("pinned Maka integrity lock does not match the reviewed package")
     return package
 
 
@@ -208,10 +243,63 @@ def atomic_write(path: pathlib.Path, payload: bytes, mode: int) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
-        path.chmod(mode)
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+def ensure_private_state_directory(path: pathlib.Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise ComponentInstallError("Maka install state is unavailable") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise ComponentInstallError("Maka install state path is unsafe")
+    path.chmod(0o700)
+
+
+def backup_install_receipt(layout: InstallLayout, backup: pathlib.Path) -> None:
+    receipt = layout.state / "install-receipt.json"
+    if not receipt.exists() and not receipt.is_symlink():
+        return
+    try:
+        metadata = receipt.lstat()
+    except OSError as error:
+        raise ComponentInstallError("previous Maka install receipt is unavailable") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.getuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise ComponentInstallError("previous Maka install receipt is unsafe")
+    destination = backup / "install-receipt.json"
+    shutil.copy2(receipt, destination, follow_symlinks=False)
+    destination.chmod(0o600)
+
+
+def reviewed_package_identity(component_root: pathlib.Path) -> dict[str, str]:
+    try:
+        provenance = json.loads((component_root / "provenance.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ComponentInstallError("Maka provenance is unavailable") from error
+    maka = provenance.get("maka") if isinstance(provenance, dict) else None
+    expected = {
+        "package": PACKAGE_NAME,
+        "version": PACKAGE_VERSION,
+        "integrity": PACKAGE_INTEGRITY,
+        "source_commit": SOURCE_COMMIT,
+    }
+    observed = {
+        "package": maka.get("package") if isinstance(maka, dict) else None,
+        "version": maka.get("version") if isinstance(maka, dict) else None,
+        "integrity": maka.get("integrity") if isinstance(maka, dict) else None,
+        "source_commit": maka.get("apacheCommit") if isinstance(maka, dict) else None,
+    }
+    if observed != expected:
+        raise ComponentInstallError("Maka provenance does not match the reviewed package pin")
+    return expected
 
 
 def clean_environment(layout: InstallLayout, mise: pathlib.Path, account_name: str) -> dict[str, str]:
@@ -277,6 +365,7 @@ def backup_id() -> str:
 def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
     supported_platform()
     source = source.resolve(strict=True)
+    package_identity = reviewed_package_identity(source)
     layout = canonical_layout()
     account = pwd.getpwuid(os.getuid())
     mise = resolve_mise(layout.home)
@@ -319,7 +408,9 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
         if layout.component.exists() or layout.component.is_symlink():
             if layout.component.is_symlink() or not layout.component.is_dir():
                 raise ComponentInstallError("managed Maka component path is unsafe")
+            ensure_private_state_directory(layout.state)
             backup.mkdir(mode=0o700, parents=True, exist_ok=False)
+            backup_install_receipt(layout, backup)
             os.replace(layout.component, prior_component)
             moved_previous = True
             if layout.wrapper.exists():
@@ -349,7 +440,9 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
         if activate:
             assert_cutover_safe(layout)
             if layout.wrapper.exists() and not backup.exists():
+                ensure_private_state_directory(layout.state)
                 backup.mkdir(mode=0o700, parents=True, exist_ok=False)
+                backup_install_receipt(layout, backup)
             if layout.wrapper.exists() and not had_previous_wrapper:
                 if layout.wrapper.is_symlink() or not layout.wrapper.is_file():
                     raise ComponentInstallError("managed Maka wrapper path is unsafe")
@@ -366,20 +459,21 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
             )
             atomic_write(layout.wrapper, wrapper.encode("utf-8"), 0o755)
             activated_wrapper = True
-        layout.state.mkdir(mode=0o700, parents=True, exist_ok=True)
-        receipt = {
-            "schema": "khenrix-maka-install-v1",
-            "version": PACKAGE_VERSION,
-            "platform": supported_platform(),
-            "component": str(layout.component),
-            "wrapper": str(layout.wrapper) if activate else None,
-            "backup": backup.name if backup.exists() else None,
-        }
-        atomic_write(
-            layout.state / "install-receipt.json",
-            (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-            0o600,
-        )
+        if activate:
+            ensure_private_state_directory(layout.state)
+            receipt = {
+                "schema": "khenrix-maka-install-v1",
+                **package_identity,
+                "platform": supported_platform(),
+                "component": str(layout.component),
+                "wrapper": str(layout.wrapper),
+                "backup": backup.name if backup.exists() else None,
+            }
+            atomic_write(
+                layout.state / "install-receipt.json",
+                (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                0o600,
+            )
     except Exception:
         if staging.exists():
             shutil.rmtree(staging)
@@ -404,27 +498,77 @@ def rollback(identifier: str) -> None:
     backup = layout.state / "backups" / identifier
     previous_component = backup / "component"
     previous_wrapper = backup / "maka"
+    previous_receipt = backup / "install-receipt.json"
+    current_receipt = layout.state / "install-receipt.json"
     if not backup.is_dir() or backup.is_symlink():
         raise ComponentInstallError("backup is unavailable")
-    if previous_component.exists():
-        if previous_component.is_symlink() or not previous_component.is_dir():
-            raise ComponentInstallError("backup component is unsafe")
-        displaced = backup / "replaced-component"
-        if displaced.exists():
-            raise ComponentInstallError("backup was already used")
-        if layout.component.exists():
-            if layout.component.is_symlink() or not layout.component.is_dir():
-                raise ComponentInstallError("managed Maka component path is unsafe")
+
+    previous_component_present = previous_component.exists() or previous_component.is_symlink()
+    current_component_present = layout.component.exists() or layout.component.is_symlink()
+    previous_wrapper_present = previous_wrapper.exists() or previous_wrapper.is_symlink()
+    current_wrapper_present = layout.wrapper.exists() or layout.wrapper.is_symlink()
+    previous_receipt_present = previous_receipt.exists() or previous_receipt.is_symlink()
+    current_receipt_present = current_receipt.exists() or current_receipt.is_symlink()
+    displaced = backup / "replaced-component"
+
+    if previous_component_present and (previous_component.is_symlink() or not previous_component.is_dir()):
+        raise ComponentInstallError("backup component is unsafe")
+    if previous_component_present and (displaced.exists() or displaced.is_symlink()):
+        raise ComponentInstallError("backup was already used")
+    if current_component_present and (
+        layout.component.is_symlink() or not layout.component.is_dir()
+    ):
+        raise ComponentInstallError("managed Maka component path is unsafe")
+    if previous_wrapper_present and (previous_wrapper.is_symlink() or not previous_wrapper.is_file()):
+        raise ComponentInstallError("backup wrapper is unsafe")
+    if current_wrapper_present and (
+        layout.wrapper.is_symlink() or not layout.wrapper.is_file()
+    ):
+        raise ComponentInstallError("managed Maka wrapper path is unsafe")
+
+    previous_receipt_payload: bytes | None = None
+    if previous_receipt_present:
+        try:
+            metadata = previous_receipt.lstat()
+        except OSError as error:
+            raise ComponentInstallError("backup install receipt is unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise ComponentInstallError("backup install receipt is unsafe")
+        previous_receipt_payload = previous_receipt.read_bytes()
+    if current_receipt_present:
+        try:
+            current_metadata = current_receipt.lstat()
+        except OSError as error:
+            raise ComponentInstallError("managed Maka install receipt is unavailable") from error
+        if (
+            not stat.S_ISREG(current_metadata.st_mode)
+            or stat.S_ISLNK(current_metadata.st_mode)
+            or current_metadata.st_uid != os.getuid()
+            or stat.S_IMODE(current_metadata.st_mode) != 0o600
+        ):
+            raise ComponentInstallError("managed Maka install receipt is unsafe")
+
+    # Remove current evidence before changing the runtime. If any later rollback
+    # step fails, the machine is visibly incomplete rather than falsely attested.
+    if current_receipt_present:
+        current_receipt.unlink()
+    if previous_component_present:
+        if current_component_present:
             os.replace(layout.component, displaced)
         os.replace(previous_component, layout.component)
-    if previous_wrapper.exists():
-        if previous_wrapper.is_symlink() or not previous_wrapper.is_file():
-            raise ComponentInstallError("backup wrapper is unsafe")
+    elif current_component_present:
+        shutil.rmtree(layout.component)
+    if previous_wrapper_present:
         atomic_write(layout.wrapper, previous_wrapper.read_bytes(), 0o755)
-    elif layout.wrapper.exists():
-        if layout.wrapper.is_symlink() or not layout.wrapper.is_file():
-            raise ComponentInstallError("managed Maka wrapper path is unsafe")
+    elif current_wrapper_present:
         layout.wrapper.unlink()
+    if previous_receipt_payload is not None:
+        atomic_write(current_receipt, previous_receipt_payload, 0o600)
     print(f"Restored Maka backup {identifier}")
 
 

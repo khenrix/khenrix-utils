@@ -79,6 +79,14 @@ def install_root() -> pathlib.Path:
     return account_home() / ".local" / "share" / "agentic-memory"
 
 
+def state_dir() -> pathlib.Path:
+    return account_home() / ".local" / "state" / "khenrix-utils" / "memory"
+
+
+def install_receipt_path() -> pathlib.Path:
+    return state_dir() / "install-receipt.json"
+
+
 def data_dir() -> pathlib.Path:
     return install_root() / "data"
 
@@ -169,7 +177,6 @@ def _atomic_private_write(path: pathlib.Path, payload: bytes, *, executable: boo
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
-        os.chmod(path, mode)
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -187,6 +194,61 @@ def _load_private_json(path: pathlib.Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MemoryConfigurationError(f"private JSON must be an object: {path}")
     return value
+
+
+def expected_install_receipt() -> dict[str, str]:
+    return {
+        "schema": "khenrix-memory-install-v1",
+        "package": PACKAGE,
+        "version": PACKAGE_VERSION,
+        "integrity": ARTIFACT_INTEGRITY,
+        "source_commit": SOURCE_COMMIT,
+    }
+
+
+def _publish_install_receipt() -> pathlib.Path:
+    path = install_receipt_path()
+    _atomic_private_json(path, expected_install_receipt())
+    return path
+
+
+def _load_install_receipt(path: pathlib.Path) -> dict[str, Any]:
+    _assert_private_file(path)
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise MemoryConfigurationError(
+                    f"memory install receipt contains a duplicate field: {key}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=unique_object,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MemoryConfigurationError(f"invalid private JSON: {path}") from error
+    if not isinstance(value, dict):
+        raise MemoryConfigurationError(f"private JSON must be an object: {path}")
+    return value
+
+
+def install_receipt_problem() -> str | None:
+    path = install_receipt_path()
+    if not path.exists() and not path.is_symlink():
+        return "memory install receipt is unavailable"
+    try:
+        _assert_private_directory(state_dir(), create=False)
+        observed = _load_install_receipt(path)
+    except MemoryConfigurationError as error:
+        return str(error)
+    if observed != expected_install_receipt():
+        return "memory install receipt does not match the reviewed pin"
+    return None
 
 
 def _relay_token(*, create: bool = False) -> str:
@@ -1113,12 +1175,14 @@ def upgrade_runtime() -> dict[str, Any]:
         _atomic_private_json(settings_path(), settings_for_route(route))
     if was_running and run_worker(["start"]) != 0:
         raise MemoryConfigurationError("memory upgrade completed but worker did not restart")
+    receipt = _publish_install_receipt()
     return {
         "controller": str(controller),
         "runtime": str(runtime),
         "backup": str(backup) if backup else None,
         "hooks": hooks,
         "worker_restarted": was_running,
+        "receipt": str(receipt),
     }
 
 
@@ -1187,6 +1251,7 @@ def apply_setup(
     hooks = install_hooks(["claude", "codex", "agy"])
     if start and run_worker(["start"]) != 0:
         raise MemoryConfigurationError("memory worker failed to start during setup")
+    receipt = _publish_install_receipt()
     return {
         "mode": "apply",
         "route": selected,
@@ -1194,6 +1259,7 @@ def apply_setup(
         "runtime": str(runtime_root()),
         "hooks": hooks,
         "started": start,
+        "receipt": str(receipt),
     }
 
 
@@ -1254,6 +1320,9 @@ def health_document(*, require_running: bool) -> dict[str, Any]:
     database_problem = _database_problem()
     if database_problem:
         problems.append(database_problem)
+    receipt_problem = install_receipt_problem()
+    if receipt_problem:
+        problems.append(receipt_problem)
     hooks = hook_status()
     for cli, state in hooks.items():
         if not state["installed"]:
