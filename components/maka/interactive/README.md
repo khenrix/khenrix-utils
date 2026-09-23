@@ -27,22 +27,32 @@ boundary.
    the hard-coded `api.openai.com:443/v1/responses` TLS origin.
 6. It streams the response back and never writes the provider key to disk.
 
-`GET /v1/models` is answered locally with only `gpt-5.6-sol`. The pinned
+`GET /v1/models` is answered locally with `gpt-6-sol` and `gpt-5.6-sol`. The pinned
 adapter's WebSocket probe receives a local 403 and falls back to HTTP.
 Non-streaming title and recap calls are rejected, so auxiliary prompts cannot
 consume this provider capability.
 
 The reserved `openai-responses-compatible` connection exposes
-`gpt-5.6-sol` with `xhigh` and `max`, defaulting to `xhigh`. An explicit
+both models with `xhigh` and `max`, defaulting to `xhigh`. An explicit
 `--thinking max` remains `max`; the relay normalizes only the pinned client's
-known derived `medium` fallback to `xhigh`. The managed launcher supplies
+known derived `medium` fallback to `xhigh`. It rejects inbound `service_tier`
+and adds `service_tier: "default"` to every admitted API request. The managed launcher supplies
 `--thinking xhigh` for a headless run that has no explicit value.
+After each response, the relay writes only requested/observed model and
+processing tier, HTTP status, and time to the owner-only
+`~/.local/state/khenrix-utils/maka/relay-last-tier.json`. It reads those
+fields from bounded SSE metadata in memory and never saves the response
+stream. A missing observed tier means the provider did not report one in the
+bounded event; it is not evidence of Standard processing.
+Run `mise run maka:relay-tier` to see the last receipt as `standard`,
+`unverified`, `unobserved`, or `drift`. The command reads no response text.
 
 The listener is also Maka's authenticated global HTTP proxy. It rejects every
 CONNECT and absolute-form request, so an imported connection cannot use the
 proxy to reach another provider. Only `127.0.0.1` and `localhost` bypass it.
 The reconciler enables only the reserved `keychain-openai` connection, selects
-`gpt-5.6-sol`, and sets `ask` permissions with `xhigh` as the normal default.
+`gpt-6-sol`, keeps `gpt-5.6-sol` selectable, and sets `ask` permissions with
+`xhigh` as the normal default.
 
 These checks cover traffic sent through Maka's configured model connection and
 Runtime Host proxy. They are not an operating-system firewall for another

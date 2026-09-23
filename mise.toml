@@ -168,6 +168,10 @@ run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:harden-pytho
 description = "Run the explicit Maka API relay installer"
 run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:relay-install"
 
+[tasks."maka:relay-tier"]
+description = "Report the last observed Maka API model and processing tier"
+run = "mise -C \"${HOME}/.local/share/khenrix-utils/maka\" run maka:relay-tier"
+
 [tasks."maka:test"]
 description = "Run the credential-free portable Maka regression suite"
 run = "mise -C components/maka run maka:test"

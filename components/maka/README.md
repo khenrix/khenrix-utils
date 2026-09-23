@@ -20,9 +20,10 @@ The managed runtime supports these routes:
 | macOS arm64 | Yes | Yes | Yes, with Colima |
 | Linux x86-64, including WSL | Yes | No | No |
 
-The installer requires `mise`. It copies only paths listed in
-`install-files.txt` to `~/.local/share/khenrix-utils/maka`, installs the exact
-lock for the current supported platform, and renders `~/.local/bin/maka`
+The installer requires `mise`. It stages only paths listed in
+`install-files.txt` plus an isolated copy of the exact lock-pinned npm package,
+applies the source-hash-guarded GPT-6 patch, then copies that verified candidate
+to `~/.local/share/khenrix-utils/maka` and renders `~/.local/bin/maka`
 atomically. It does not copy credentials or alter Maka's native profile. The
 native profile remains `~/Library/Application Support/Maka` on macOS and
 `~/.config/Maka` on Linux.
@@ -70,8 +71,10 @@ Use stage-only installation when preparing an existing machine for migration:
 mise -C components/maka run maka:stage
 ```
 
-This updates `~/.local/share/khenrix-utils/maka` without replacing the current
-`~/.local/bin/maka` launcher.
+This builds a complete candidate under
+`~/.local/share/khenrix-utils/maka-candidates/` and verifies the pinned
+package overlay. It leaves the active component and `~/.local/bin/maka`
+unchanged.
 
 ## Migrate an existing Agentic Setup installation
 
@@ -81,8 +84,9 @@ component, inspect the migration plan, and copy the reviewed state:
 
 ```sh
 mise -C components/maka run maka:stage
-mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:migrate-plan
-mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:migrate-apply
+mise -C components/maka run maka:migrate-plan
+mise -C components/maka run maka:migrate-apply
+mise -C components/maka run maka:install-apply
 ```
 
 The migration copies only the auth-mode selector. In API mode it also copies
@@ -92,7 +96,7 @@ OAuth data, Maka's native profile, sessions, history, or databases. The old
 files remain in place.
 
 For a migrated API route, replace the former Agentic Setup LaunchAgent only
-after reviewing the staged component:
+after activating the verified component:
 
 ```sh
 mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:harden-python
@@ -107,12 +111,6 @@ mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:relay-install -- instal
 previous service if it was loaded. `--preserve-profile-credentials` is only for
 this reviewed migration; a fresh API installation deliberately removes other
 provider credentials while establishing its single-provider profile.
-
-After the staged route passes its checks, activate the Khenrix launcher:
-
-```sh
-mise -C components/maka run maka:install-apply
-```
 
 The migration can be rolled back while the copied Khenrix state remains
 unchanged:
@@ -139,21 +137,25 @@ mise -C components/maka exec -- \
 
 The final receipt is `~/.local/state/khenrix-utils/maka/install-receipt.json`.
 It is published atomically only after component cutover succeeds and records the
-reviewed package, version, npm integrity, and Apache source commit. The component
+reviewed package, version, npm integrity, Apache source commit, and exact
+source/patched hashes of the GPT-6 compatibility overlay. The component
 doctor rejects a missing, stale, non-private, or malformed receipt, component
-drift, and managed-wrapper drift. `maka:stage` does not publish or replace this
-receipt. A backup rollback restores the receipt that belonged to the restored
+drift, and managed-wrapper drift. `maka:stage` builds a separate candidate
+with a private candidate receipt and does not touch the active component,
+wrapper, or final receipt. A backup rollback restores the receipt that belonged to the restored
 runtime, or removes it when that runtime had no final receipt.
 
 ## Managed policy
 
-Both routes use `gpt-5.6-sol`, `ask` permissions, and `xhigh` by default for
+Both routes use `gpt-6-sol`, `ask` permissions, and `xhigh` by default for
 interactive and headless work. The launcher adds `--thinking xhigh` to
-`maka run` when no explicit value is present.
+`maka run` when no explicit value is present. `gpt-5.6-sol` remains selectable
+so existing sessions can resume.
 
 The API relay declares exactly `xhigh` and `max`; an explicit
 `maka run --thinking max ...` is the highest supported planning setting. The
-ChatGPT subscription route exposes only `xhigh` in this pinned Maka build, so
+ChatGPT subscription route exposes only up to `xhigh` for GPT-6 Sol until a
+live `max` probe proves that entitlement. Therefore
 `max` and `ultra` are unavailable there. Its closest honest planning setting is
 therefore `xhigh`. Ordinary execution uses `xhigh` on both routes.
 
@@ -163,7 +165,8 @@ selects the pinned package, keeps the caller's working directory, and blocks
 `maka update`; upgrades must change the reviewed Khenrix component and lock.
 
 Subscription startup enforces one enabled canonical `openai-codex` connection,
-`gpt-5.6-sol` as its default model, and no enabled proxy, custom base URL,
+`gpt-6-sol` as its default model, while retaining `gpt-5.6-sol` for old sessions,
+and no enabled proxy, custom base URL,
 request body, arbitrary model override, or other provider. It never reads,
 exports, clears, or replaces OAuth data. These Runtime Host checks run at
 launch; they are not an operating-system egress boundary, and a user can change
@@ -173,6 +176,13 @@ The API route uses the authenticated loopback design documented in
 `interactive/README.md`. It keeps the real key in Keychain, gives Maka only
 local decoys, and admits narrowly validated Responses requests to OpenAI. Its
 LaunchAgent is `dev.khenrix.maka-openai-relay`.
+The relay rejects inbound processing-tier settings and adds
+`service_tier: "default"` after validating each request. This explicitly
+requests OpenAI Standard processing on the API route. The subscription route
+has no API project-tier guarantee.
+The API relay keeps an owner-only, metadata-only last-response receipt so its
+observed tier can be checked with `mise run maka:relay-tier` without logging
+response content.
 
 Managed component state lives beneath:
 

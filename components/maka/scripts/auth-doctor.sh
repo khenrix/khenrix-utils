@@ -11,7 +11,7 @@ test "$(node --version)" = "$expected_node"
 test "$(python --version)" = "$expected_python"
 test "$(uv --version | awk '{print $2}')" = "$expected_uv"
 
-package_root=$(maka_install_root)
+package_root="$HOME/.local/share/khenrix-utils/maka/runtime/package"
 test "$(jq -r .version "$package_root/package.json")" = "$expected_maka"
 wrapper="$HOME/.local/bin/maka"
 test -x "$wrapper"
@@ -23,7 +23,7 @@ grep -F 'caller_working_directory=$PWD' "$wrapper" >/dev/null
 grep -F 'unset XDG_CONFIG_HOME XDG_DATA_HOME' "$wrapper" >/dev/null
 grep -F 'export HOME="$account_root" USER="$account_name" LOGNAME="$account_name"' "$wrapper" >/dev/null
 grep -F 'exec "$mise_bin" -C "$maka_lab_root" exec' "$wrapper" >/dev/null
-grep -F 'cd "$1" && shift && exec maka "$@"' "$wrapper" >/dev/null
+grep -F 'cd "$1" && shift && package=$1 && shift && exec node "$package/dist/cli.js" "$@"' "$wrapper" >/dev/null
 if grep -F -- '--purge-credentials' "$wrapper" >/dev/null; then
   echo 'Ordinary Maka wrapper unexpectedly requests credential purge' >&2
   exit 1

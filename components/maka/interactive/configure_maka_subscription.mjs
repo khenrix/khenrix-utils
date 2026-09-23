@@ -6,7 +6,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-export const MODEL_ID = 'gpt-5.6-sol';
+export const MODEL_ID = 'gpt-6-sol';
+export const LEGACY_MODEL_ID = 'gpt-5.6-sol';
+export const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
 const DEFAULT_THINKING_LEVEL = 'xhigh';
 const LEGACY_OPENCODE_BOOTSTRAP = {
   enabledModelIds: [
@@ -75,15 +77,15 @@ function isExactBootstrapSeed(catalog, seed) {
 }
 
 function desiredModelOverrides() {
-  return { [MODEL_ID]: { defaultThinkingLevel: DEFAULT_THINKING_LEVEL } };
+  return Object.fromEntries(MODEL_IDS.map((model) =>
+    [model, { defaultThinkingLevel: DEFAULT_THINKING_LEVEL }]));
 }
 
-function hasDesiredModelOverrides(value) {
+function isManagedOverride(value, modelIds) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);
-  if (entries.length !== 1 || entries[0][0] !== MODEL_ID) return false;
-  const override = entries[0][1];
-  return (
+  if (!sameStrings(entries.map(([model]) => model), modelIds)) return false;
+  return entries.every(([, override]) =>
     override !== null &&
     typeof override === 'object' &&
     !Array.isArray(override) &&
@@ -92,12 +94,18 @@ function hasDesiredModelOverrides(value) {
   );
 }
 
+function hasDesiredModelOverrides(value) {
+  return isManagedOverride(value, MODEL_IDS);
+}
+
 function isSafeCodexConnection(candidate) {
   return (
     candidate.providerType === 'openai-codex' &&
     candidate.baseUrl === undefined &&
     candidate.requestBodyOverlay === undefined &&
-    (candidate.modelOverrides === undefined || hasDesiredModelOverrides(candidate.modelOverrides))
+    (candidate.modelOverrides === undefined ||
+      isManagedOverride(candidate.modelOverrides, [LEGACY_MODEL_ID]) ||
+      hasDesiredModelOverrides(candidate.modelOverrides))
   );
 }
 
@@ -149,12 +157,39 @@ async function prepareSubscriptionCatalog(connection, readCatalog, bootstrapSeed
     selected[0].enabled !== true ||
     !isSafeCodexConnection(selected[0]) ||
     !Array.isArray(selected[0].enabledModelIds) ||
-    !selected[0].enabledModelIds.includes(MODEL_ID)
+    selected[0].enabledModelIds.length === 0 ||
+    !selected[0].enabledModelIds.every((model) => MODEL_IDS.includes(model))
   ) {
     throw new SafeConfigurationError('subscription_default_invalid');
   }
   if (enabled.length !== 1 || enabled[0].connectionId !== selected[0].connectionId) {
     throw new SafeConfigurationError('subscription_other_provider_enabled');
+  }
+  if (!sameStrings(selected[0].enabledModelIds, MODEL_IDS) ||
+      !hasDesiredModelOverrides(selected[0].modelOverrides)) {
+    expectCommitted(
+      await connection.request('connection.catalog.update', {
+        expected: {
+          connectionId: selected[0].connectionId,
+          revision: selected[0].revision,
+        },
+        changes: {
+          enabledModelIds: MODEL_IDS,
+          modelOverrides: desiredModelOverrides(),
+        },
+      }),
+    );
+    catalog = await readCatalog(connection);
+    selected = catalog.connections.filter(
+      (candidate) => candidate.connectionId === target.connectionId,
+    );
+    if (
+      selected.length !== 1 ||
+      !sameStrings(selected[0].enabledModelIds, MODEL_IDS) ||
+      !hasDesiredModelOverrides(selected[0].modelOverrides)
+    ) {
+      throw new SafeConfigurationError('subscription_model_default_update_failed');
+    }
   }
   if (target.modelId !== MODEL_ID) {
     expectCommitted(
@@ -164,32 +199,9 @@ async function prepareSubscriptionCatalog(connection, readCatalog, bootstrapSeed
       }),
     );
     catalog = await readCatalog(connection);
-    selected = catalog.connections.filter(
-      (candidate) => candidate.connectionId === target.connectionId,
-    );
-    if (
-      catalog.defaultTarget?.connectionId !== selected[0]?.connectionId ||
-      catalog.defaultTarget?.modelId !== MODEL_ID
-    ) {
+    if (catalog.defaultTarget?.connectionId !== selected[0].connectionId ||
+        catalog.defaultTarget?.modelId !== MODEL_ID) {
       throw new SafeConfigurationError('subscription_default_update_failed');
-    }
-  }
-  if (!hasDesiredModelOverrides(selected[0].modelOverrides)) {
-    expectCommitted(
-      await connection.request('connection.catalog.update', {
-        expected: {
-          connectionId: selected[0].connectionId,
-          revision: selected[0].revision,
-        },
-        changes: { modelOverrides: desiredModelOverrides() },
-      }),
-    );
-    catalog = await readCatalog(connection);
-    selected = catalog.connections.filter(
-      (candidate) => candidate.connectionId === target.connectionId,
-    );
-    if (selected.length !== 1 || !hasDesiredModelOverrides(selected[0].modelOverrides)) {
-      throw new SafeConfigurationError('subscription_model_default_update_failed');
     }
   }
 }

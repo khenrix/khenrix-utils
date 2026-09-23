@@ -63,6 +63,7 @@ requirements/harbor.lock
 requirements/pier.in
 requirements/pier.lock
 scripts/audit-smoke.sh
+scripts/apply_gpt6_compat.py
 scripts/auth-doctor.sh
 scripts/broker-boundary-smoke.py
 scripts/broker-boundary-smoke.sh
@@ -79,11 +80,15 @@ scripts/lib.sh
 scripts/migrate_legacy_state.py
 scripts/pier-preflight.sh
 scripts/relay-artifact-setup-smoke.sh
+scripts/relay_tier_status.py
 scripts/run_hardened_python.py
 scripts/synthetic-import.mjs
 scripts/test-secret-volume-cleanup.sh
 scripts/test.sh
 scripts/test_component_management.py
+scripts/test_maka_gpt6_compat.py
+scripts/test_relay_tier_status.py
+scripts/verify_gpt6_candidate.mjs
 third_party/README.md
 third_party/apache-maka/DISCLAIMER-WIP
 third_party/apache-maka/LICENSE

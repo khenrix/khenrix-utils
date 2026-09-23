@@ -40,7 +40,7 @@ from maka_openai_relay import (
     HEALTH_CHALLENGE_HEADER,
     KeychainOpenAIKey,
     LOOPBACK_HOST,
-    MODEL_ID,
+    MODEL_IDS,
     ProviderCredentialError,
     RelayConfigurationError,
     health_challenge_proof,
@@ -448,7 +448,7 @@ def wait_until_ready(
             if (
                 status == 200
                 and isinstance(document, dict)
-                and document.get("data", [{}])[0].get("id") == MODEL_ID
+                and [row.get("id") for row in document.get("data", [])] == list(MODEL_IDS)
             ):
                 return
         except (OSError, http.client.HTTPException, json.JSONDecodeError, IndexError, TypeError):

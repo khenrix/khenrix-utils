@@ -23,7 +23,7 @@ if test "${1:-}" = update; then
   exit 64
 fi
 
-# v44 applies xhigh from the per-model catalog default in interactive sessions.
+# The managed model catalog applies xhigh by default in interactive sessions.
 # Keep the command boundary explicit for headless sessions while respecting an
 # intentional --thinking value (API-key planning may select max explicitly).
 case "${1:-}" in
@@ -125,5 +125,5 @@ esac
 
 caller_working_directory=$PWD
 exec "$mise_bin" -C "$maka_lab_root" exec -- \
-  /bin/sh -c 'cd "$1" && shift && exec maka "$@"' maka \
-  "$caller_working_directory" "$@"
+  /bin/sh -c 'cd "$1" && shift && package=$1 && shift && exec node "$package/dist/cli.js" "$@"' maka \
+  "$caller_working_directory" "$maka_package_root" "$@"

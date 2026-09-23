@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import datetime as dt
 import hashlib
 import hmac
 import http.client
@@ -44,7 +45,9 @@ with contextlib.suppress(ValueError):
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 48173
-MODEL_ID = "gpt-5.6-sol"
+MODEL_ID = "gpt-6-sol"
+LEGACY_MODEL_ID = "gpt-5.6-sol"
+MODEL_IDS = (MODEL_ID, LEGACY_MODEL_ID)
 PROXY_USERNAME = "maka-local"
 OPENAI_HOST = "api.openai.com"
 OPENAI_PORT = 443
@@ -404,6 +407,55 @@ class RelayDependencies:
     attestation: str
     key_loader: Callable[[], str]
     forwarder: Forwarder
+    telemetry_path: pathlib.Path | None = None
+
+
+class TierObserver:
+    """Keep only bounded response metadata while passing SSE through unchanged."""
+
+    MAX_LINE = 16 * 1024
+    TIERS = frozenset({"default", "flex", "priority", "scale", "auto"})
+
+    def __init__(self) -> None:
+        self.line = bytearray()
+        self.dropping = False
+        self.tier: str | None = None
+        self.model: str | None = None
+
+    def feed(self, chunk: bytes) -> None:
+        for byte in chunk:
+            if byte == 10:
+                if not self.dropping:
+                    self._line(bytes(self.line).rstrip(b"\r"))
+                self.line.clear()
+                self.dropping = False
+            elif not self.dropping:
+                if len(self.line) < self.MAX_LINE:
+                    self.line.append(byte)
+                else:
+                    self.line.clear()
+                    self.dropping = True
+
+    def _line(self, line: bytes) -> None:
+        if not line.startswith(b"data: "):
+            return
+        try:
+            event = json.loads(line[6:])
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(event, dict) or event.get("type") not in {
+            "response.created", "response.completed"
+        }:
+            return
+        response = event.get("response")
+        if not isinstance(response, dict):
+            return
+        tier = response.get("service_tier")
+        model = response.get("model")
+        if isinstance(tier, str) and tier in self.TIERS:
+            self.tier = tier
+        if isinstance(model, str) and model in MODEL_IDS:
+            self.model = model
 
 
 class LoopbackThreadingHTTPServer(http.server.ThreadingHTTPServer):
@@ -479,12 +531,9 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                 {
                     "object": "list",
                     "data": [
-                        {
-                            "id": MODEL_ID,
-                            "object": "model",
-                            "created": 0,
-                            "owned_by": "maka-local-relay",
-                        }
+                        {"id": model, "object": "model", "created": 0,
+                         "owned_by": "maka-local-relay"}
+                        for model in MODEL_IDS
                     ],
                 },
             )
@@ -515,7 +564,8 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             # content. It keeps fail-closed compatibility failures diagnosable.
             self._reject(403, f"request_shape_denied_{rejection}")
             return
-        body = enforce_configured_reasoning(body)
+        body = enforce_outbound_policy(body)
+        requested_model = json.loads(body)["model"]
         try:
             provider_key = self.dependencies.key_loader()
         except Exception:
@@ -529,7 +579,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
         finally:
             provider_key = ""
         try:
-            self._relay_upstream(exchange.response)
+            self._relay_upstream(exchange.response, requested_model)
         finally:
             exchange.close()
 
@@ -613,7 +663,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             return None
         return body
 
-    def _relay_upstream(self, response: UpstreamResponse) -> None:
+    def _relay_upstream(self, response: UpstreamResponse, requested_model: str) -> None:
         status = response.status
         if not isinstance(status, int) or status < 200 or status > 599:
             self._reject(502, "provider_response_invalid")
@@ -638,6 +688,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Connection", "close")
         self.end_headers()
+        observer = TierObserver()
         while True:
             # HTTPResponse.read(amount) may buffer a chunked SSE response until
             # `amount` bytes or EOF. read1 returns currently available bytes so
@@ -645,11 +696,25 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             chunk = response.read1(64 * 1024)
             if not chunk:
                 break
+            observer.feed(chunk)
             try:
                 self.wfile.write(chunk)
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 break
+        path = self.dependencies.telemetry_path
+        if path is not None:
+            receipt = {
+                "schema": "khenrix-maka-relay-tier-v1",
+                "time_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "requested_model": requested_model,
+                "observed_model": observer.model,
+                "requested_service_tier": "default",
+                "observed_service_tier": observer.tier,
+                "http_status": status,
+            }
+            with contextlib.suppress(OSError, RelayConfigurationError):
+                _write_private_value(path, json.dumps(receipt, sort_keys=True))
 
     def _send_json(self, status: int, document: Mapping[str, object]) -> None:
         encoded = json.dumps(document, separators=(",", ":")).encode("utf-8")
@@ -714,7 +779,7 @@ def responses_body_rejection(raw: bytes) -> str | None:
                 return f"missing_{required}"
     if not keys.issubset(_REQUIRED_BODY_KEYS | _OPTIONAL_BODY_KEYS):
         return "unexpected_keys"
-    if body.get("model") != MODEL_ID:
+    if body.get("model") not in MODEL_IDS:
         return "model"
     if body.get("stream") is not True or body.get("store") is not False:
         return "stream_store"
@@ -764,8 +829,8 @@ def responses_body_rejection(raw: bytes) -> str | None:
     return None
 
 
-def enforce_configured_reasoning(raw: bytes) -> bytes:
-    """Elevate Maka's model-derived medium fallback and preserve explicit levels.
+def enforce_outbound_policy(raw: bytes) -> bytes:
+    """Elevate Maka's medium fallback and force Standard API processing.
 
     The pinned headless and TUI clients do not apply Runtime Policy's
     chatDefaults.thinkingLevel when a Session omits an explicit level. The
@@ -779,9 +844,11 @@ def enforce_configured_reasoning(raw: bytes) -> bytes:
         parse_constant=_reject_json_constant,
         parse_float=_strict_json_float,
     )
-    if body["reasoning"]["effort"] in {"xhigh", "max"}:
-        return raw
-    body["reasoning"]["effort"] = "xhigh"
+    if body["reasoning"]["effort"] == "medium":
+        body["reasoning"]["effort"] = "xhigh"
+    # service_tier is deliberately absent from the admitted inbound schema:
+    # only this relay can choose a paid API processing tier.
+    body["service_tier"] = "default"
     return json.dumps(
         body,
         separators=(",", ":"),
@@ -881,6 +948,7 @@ def serve(
             relay_ready_file,
         ),
         forwarder=OpenAIForwarder(),
+        telemetry_path=pathlib.Path.home() / ".local/state/khenrix-utils/maka/relay-last-tier.json",
     )
     server = create_server(LOOPBACK_HOST, port, dependencies)
     _write_private_value(attestation_file, attestation)

@@ -20,13 +20,16 @@ from install_component import (
     InstallLayout,
     ComponentInstallError,
     canonical_layout,
+    candidate_receipt,
     clean_environment,
     discover_package_root,
     read_manifest,
     render_wrapper,
     resolve_mise,
     supported_platform,
+    source_digest,
 )
+from apply_gpt6_compat import PATCHES, PATCHED_HASHES
 
 EXPECTED_INTEGRITY = PACKAGE_INTEGRITY
 EXPECTED_COMMIT = SOURCE_COMMIT
@@ -51,6 +54,8 @@ def portable_files(source: pathlib.Path) -> set[pathlib.Path]:
     result: set[pathlib.Path] = set()
     for candidate in source.rglob("*"):
         relative = candidate.relative_to(source)
+        if relative == pathlib.Path("candidate-receipt.json"):
+            continue
         if any(part in EXCLUDED_DIRECTORY_NAMES for part in relative.parts):
             continue
         if relative.parts[:2] == ("controller", ".build"):
@@ -118,13 +123,25 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
         "component",
         "wrapper",
         "backup",
+        "source_digest",
+        "overlay_hashes",
     }
     require(set(receipt) == allowed, "install receipt fields are invalid")
-    require(receipt.get("schema") == "khenrix-maka-install-v1", "install receipt schema mismatch")
+    require(receipt.get("schema") == "khenrix-maka-install-v2", "install receipt schema mismatch")
     require(receipt.get("package") == PACKAGE_NAME, "install receipt package mismatch")
     require(receipt.get("version") == PACKAGE_VERSION, "install receipt version mismatch")
     require(receipt.get("integrity") == EXPECTED_INTEGRITY, "install receipt integrity mismatch")
     require(receipt.get("source_commit") == EXPECTED_COMMIT, "install receipt source commit mismatch")
+    digest = receipt.get("source_digest")
+    require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
+            "install receipt source digest is invalid")
+    overlays = receipt.get("overlay_hashes")
+    require(isinstance(overlays, dict) and set(overlays) == set(PATCHES),
+            "install receipt overlay set is invalid")
+    for relative, hashes in overlays.items():
+        require(hashes == {"source": PATCHES[relative][0],
+                           "patched": PATCHED_HASHES[relative]},
+                "install receipt overlay hashes are invalid")
     require(receipt.get("platform") == supported_platform(), "install receipt platform mismatch")
     require(receipt.get("component") == str(layout.component), "install receipt component path mismatch")
     require(
@@ -196,7 +213,12 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
             for relative in files
         )
         require(installed_matches, "installed component drift detected")
-        inspect_install_receipt(layout)
+        receipt = inspect_install_receipt(layout)
+        staged = candidate_receipt(layout.component, source)
+        require(receipt["source_digest"] == source_digest(source),
+                "installed component source digest mismatch")
+        require(receipt["overlay_hashes"] == staged["overlay_hashes"],
+                "installed component overlay receipt mismatch")
         install_receipt = "current"
     elif (layout.state / "install-receipt.json").exists() or (layout.state / "install-receipt.json").is_symlink():
         raise DoctorError("install receipt exists without an installed component")
@@ -211,7 +233,7 @@ def inspect_component(source: pathlib.Path) -> dict[str, object]:
                 layout=layout,
                 account_name=account.pw_name,
                 mise=mise,
-                package=package,
+                package=layout.component / "runtime/package",
             )
             require(wrapper == expected_wrapper, "managed wrapper drift detected")
             wrapper_status = "khenrix-managed"

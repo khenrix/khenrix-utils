@@ -10,7 +10,9 @@ import process from 'node:process';
 
 export const LOOPBACK_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 48173;
-export const MODEL_ID = 'gpt-5.6-sol';
+export const MODEL_ID = 'gpt-6-sol';
+export const LEGACY_MODEL_ID = 'gpt-5.6-sol';
+export const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
 export const CONNECTION_SLUG = 'keychain-openai';
 export const CONNECTION_NAME = 'OpenAI via local Keychain relay';
 export const RELAY_PROVIDER_TYPE = 'openai-responses-compatible';
@@ -127,20 +129,16 @@ function sameProxy(left, right) {
 }
 
 function desiredModelOverrides() {
-  return {
-    [MODEL_ID]: {
-      thinkingLevels: ['xhigh', 'max'],
-      defaultThinkingLevel: 'xhigh',
-    },
-  };
+  return Object.fromEntries(MODEL_IDS.map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+  }]));
 }
 
 function hasDesiredModelOverrides(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);
-  if (entries.length !== 1 || entries[0][0] !== MODEL_ID) return false;
-  const profile = entries[0][1];
-  return (
+  if (!sameStrings(entries.map(([model]) => model), MODEL_IDS)) return false;
+  return entries.every(([, profile]) =>
     profile !== null &&
     typeof profile === 'object' &&
     !Array.isArray(profile) &&
@@ -262,7 +260,7 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
           providerType: RELAY_PROVIDER_TYPE,
           baseUrl,
           enabled: true,
-          enabledModelIds: [MODEL_ID],
+          enabledModelIds: MODEL_IDS,
           modelOverrides: desiredModelOverrides(),
         },
       }),
@@ -278,7 +276,7 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
     relay.name !== CONNECTION_NAME ||
     relay.baseUrl !== baseUrl ||
     relay.enabled !== true ||
-    !sameStrings(relay.enabledModelIds, [MODEL_ID]) ||
+    !sameStrings(relay.enabledModelIds, MODEL_IDS) ||
     !hasDesiredModelOverrides(relay.modelOverrides) ||
     relay.requestBodyOverlay !== undefined;
   if (needsUpdate) {
@@ -290,7 +288,7 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
           name: CONNECTION_NAME,
           baseUrl,
           enabled: true,
-          enabledModelIds: [MODEL_ID],
+          enabledModelIds: MODEL_IDS,
           modelOverrides: desiredModelOverrides(),
           requestBodyOverlay: null,
         },
@@ -628,7 +626,7 @@ export async function assertAttestedRelayReady({
     path: '/v1/models',
     authorization: `Bearer ${token}`,
   });
-  if (document?.data?.length !== 1 || document.data[0]?.id !== MODEL_ID) {
+  if (!sameStrings(document?.data?.map((model) => model?.id), MODEL_IDS)) {
     throw new SafeConfigurationError('relay_model_mismatch');
   }
 }

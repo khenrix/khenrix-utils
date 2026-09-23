@@ -103,7 +103,7 @@ class RecordingForwarder:
 
 
 class RelayServerFixture:
-    def __init__(self) -> None:
+    def __init__(self, telemetry_path: pathlib.Path | None = None) -> None:
         self.key_loads = 0
         self.forwarder = RecordingForwarder()
 
@@ -116,6 +116,7 @@ class RelayServerFixture:
             attestation="C" * 64,
             key_loader=load_key,
             forwarder=self.forwarder,
+            telemetry_path=telemetry_path,
         )
         self.server = relay.create_server(relay.LOOPBACK_HOST, 0, dependencies)
         self.port = self.server.server_address[1]
@@ -178,7 +179,8 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 401)
         status, _, body = self.fixture.request("GET", "/v1/models")
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["data"][0]["id"], relay.MODEL_ID)
+        self.assertEqual([model["id"] for model in json.loads(body)["data"]],
+                         list(relay.MODEL_IDS))
         self.assertEqual(self.fixture.key_loads, 0)
 
     def test_health_proves_attestation_without_disclosing_it(self) -> None:
@@ -222,9 +224,11 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(headers["content-type"], "text/event-stream")
         self.assertNotIn("set-cookie", {name.lower() for name in headers})
         self.assertEqual(self.fixture.key_loads, 1)
-        self.assertEqual(
-            self.fixture.forwarder.calls, [(request_body, DUMMY_PROVIDER_KEY)]
-        )
+        self.assertEqual(len(self.fixture.forwarder.calls), 1)
+        forwarded, key = self.fixture.forwarder.calls[0]
+        self.assertEqual(key, DUMMY_PROVIDER_KEY)
+        self.assertEqual(json.loads(forwarded)["service_tier"], "default")
+        self.assertEqual(json.loads(forwarded)["model"], relay.MODEL_ID)
         self.assertTrue(self.fixture.forwarder.exchanges[0].closed)
 
     def test_model_default_medium_is_elevated_before_openai_forwarding(self) -> None:
@@ -242,6 +246,46 @@ class RelayIntegrationTests(unittest.TestCase):
         forwarded = json.loads(self.fixture.forwarder.calls[0][0])
         self.assertEqual(forwarded["reasoning"], {"effort": "max", "summary": "auto"})
         self.assertEqual(self.fixture.key_loads, 1)
+
+    def test_legacy_model_is_still_accepted_and_inbound_tier_is_rejected(self) -> None:
+        document = json.loads(valid_body())
+        document["model"] = relay.LEGACY_MODEL_ID
+        status, _, _ = self.fixture.request(
+            "POST", "/v1/responses", json.dumps(document).encode()
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(self.fixture.forwarder.calls[0][0])["model"],
+                         relay.LEGACY_MODEL_ID)
+        document["service_tier"] = "priority"
+        status, _, _ = self.fixture.request(
+            "POST", "/v1/responses", json.dumps(document).encode()
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(len(self.fixture.forwarder.calls), 1)
+
+    def test_tier_receipt_contains_only_bounded_response_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            path = parent / "last-tier.json"
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=path)
+            event = {
+                "type": "response.created",
+                "response": {"model": relay.MODEL_ID, "service_tier": "default",
+                             "output": [{"text": "private prompt must not persist"}]},
+            }
+            payload = ("data: " + json.dumps(event) + "\n\n").encode()
+            self.fixture.forwarder.forward = lambda _body, _key: FakeExchange(FakeResponse(payload))
+            status, _, body = self.fixture.request("POST", "/v1/responses", valid_body())
+            self.assertEqual(status, 200)
+            self.assertEqual(body, payload)
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["requested_service_tier"], "default")
+            self.assertEqual(saved["observed_service_tier"], "default")
+            self.assertEqual(saved["observed_model"], relay.MODEL_ID)
+            self.assertNotIn("private prompt", path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_shapes_never_load_key(self) -> None:
         fixtures = []
@@ -493,7 +537,7 @@ class RelayUnitTests(unittest.TestCase):
                     "status": "ready",
                     "proof": relay.health_challenge_proof("C" * 64, challenge),
                 }
-            return 200, {"data": [{"id": relay.MODEL_ID}]}
+            return 200, {"data": [{"id": model} for model in relay.MODEL_IDS]}
 
         with mock.patch.object(installer, "_read_attestation", return_value="C" * 64), mock.patch.object(
             installer, "_get_local_json", side_effect=matching_listener

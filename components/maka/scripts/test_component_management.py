@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -16,9 +17,44 @@ from unittest import mock
 import component_doctor
 import install_component as component
 import migrate_legacy_state as migration
+import apply_gpt6_compat as compat
 
 
 class ComponentInstallerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        source = pathlib.Path(__file__).resolve().parent.parent
+        layout = component.canonical_layout()
+        mise = component.resolve_mise(layout.home)
+        account = component.pwd.getpwuid(component.os.getuid())
+        cls.upstream_package = component.discover_package_root(
+            mise, source, component.clean_environment(layout, mise, account.pw_name)
+        )
+
+    def _fake_candidate(self, source: pathlib.Path, layout: component.InstallLayout) -> pathlib.Path:
+        candidate = component.candidate_path(source, layout)
+        candidate.mkdir(mode=0o700, parents=True)
+        component.copy_manifest(source, candidate)
+        package = candidate / "runtime/package"
+        package.mkdir(mode=0o700, parents=True)
+        shutil.copy2(self.upstream_package / "package.json", package / "package.json")
+        for relative in compat.PATCHES:
+            target = package / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self.upstream_package / relative, target)
+        hashes = compat.apply_overlay(package)
+        receipt = {
+            "schema": "khenrix-maka-candidate-v1",
+            "version": component.PACKAGE_VERSION,
+            "source_digest": component.source_digest(source),
+            "package": component.reviewed_package_identity(source),
+            "overlay_hashes": hashes,
+        }
+        receipt_path = candidate / "candidate-receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        receipt_path.chmod(0o600)
+        return candidate
+
     def _install_with_fakes(
         self,
         home: pathlib.Path,
@@ -29,6 +65,7 @@ class ComponentInstallerTests(unittest.TestCase):
     ) -> pathlib.Path:
         source = pathlib.Path(__file__).resolve().parent.parent
         layout = component.canonical_layout(home)
+        candidate = self._fake_candidate(source, layout)
         package = (
             home
             / ".local/share/mise/installs/npm-maka-agent"
@@ -57,6 +94,7 @@ class ComponentInstallerTests(unittest.TestCase):
             ),
             mock.patch.object(component.subprocess, "run", return_value=SimpleNamespace(returncode=0)),
             mock.patch.object(component, "discover_package_root", return_value=package),
+            mock.patch.object(component, "stage_candidate", return_value=candidate),
             mock.patch.object(component, "ensure_private_state_directory", private_state),
             mock.patch.object(component.os, "replace", side_effect=replace),
             contextlib.redirect_stdout(io.StringIO()),
@@ -215,7 +253,7 @@ class ComponentInstallerTests(unittest.TestCase):
             receipt_path = layout.state / "install-receipt.json"
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
 
-            self.assertEqual(receipt["schema"], "khenrix-maka-install-v1")
+            self.assertEqual(receipt["schema"], "khenrix-maka-install-v2")
             self.assertEqual(receipt["package"], "maka-agent")
             self.assertEqual(receipt["version"], component.PACKAGE_VERSION)
             self.assertEqual(receipt["integrity"], component.PACKAGE_INTEGRITY)
@@ -280,9 +318,10 @@ class ComponentInstallerTests(unittest.TestCase):
     def test_stage_only_first_install_does_not_publish_final_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             home = pathlib.Path(directory)
-            self._install_with_fakes(home, activate=False)
+            candidate = self._install_with_fakes(home, activate=False)
             layout = component.canonical_layout(home)
-            self.assertTrue(layout.component.is_dir())
+            self.assertTrue(candidate.is_dir())
+            self.assertFalse(layout.component.exists())
             self.assertFalse(layout.wrapper.exists())
             self.assertFalse((layout.state / "install-receipt.json").exists())
 
@@ -304,6 +343,7 @@ class ComponentInstallerTests(unittest.TestCase):
             self._install_with_fakes(home, activate=False)
 
             self.assertEqual(receipt_path.read_bytes(), previous)
+            self.assertEqual((layout.component / "old").read_bytes(), b"old component\n")
             self.assertEqual(layout.wrapper.read_bytes(), b"#!/bin/sh\nold-wrapper\n")
 
     def test_failed_upgrade_preserves_previous_receipt_byte_for_byte(self) -> None:

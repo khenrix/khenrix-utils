@@ -7,7 +7,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
 const EXPECTED_VERSION = '0.2.0-dev.47.20260922';
-const MODEL_ID = 'gpt-5.6-sol';
+const MODEL_ID = 'gpt-6-sol';
+const LEGACY_MODEL_ID = 'gpt-5.6-sol';
+const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
 const RELAY_SLUG = 'keychain-openai';
 const RELAY_NAME = 'OpenAI via local Keychain relay';
 const RELAY_PROVIDER = 'openai-responses-compatible';
@@ -54,22 +56,26 @@ function exactKeys(value, names) {
 }
 
 function hasExactApiOverride(value) {
-  if (!exactKeys(value, [MODEL_ID])) return false;
-  const model = value[MODEL_ID];
-  return (
+  if (!exactKeys(value, MODEL_IDS)) return false;
+  return MODEL_IDS.every((id) => {
+    const model = value[id];
+    return (
     exactKeys(model, ['thinkingLevels', 'defaultThinkingLevel']) &&
     sameStrings(model.thinkingLevels, ['xhigh', 'max']) &&
     model.defaultThinkingLevel === 'xhigh'
-  );
+    );
+  });
 }
 
 function hasExactSubscriptionOverride(value) {
-  if (!exactKeys(value, [MODEL_ID])) return false;
-  const model = value[MODEL_ID];
-  return (
+  if (!exactKeys(value, MODEL_IDS)) return false;
+  return MODEL_IDS.every((id) => {
+    const model = value[id];
+    return (
     exactKeys(model, ['defaultThinkingLevel']) &&
     model.defaultThinkingLevel === 'xhigh'
-  );
+    );
+  });
 }
 
 function hasExactRelayProxy(value) {
@@ -108,7 +114,7 @@ export function validateMakaRuntimeSnapshot(mode, { policySnapshot, catalog, enr
     fail('other_connection_enabled');
   }
   const connection = selected[0];
-  if (!sameStrings(connection.enabledModelIds, [MODEL_ID])) fail('enabled_models_invalid');
+  if (!sameStrings(connection.enabledModelIds, MODEL_IDS)) fail('enabled_models_invalid');
 
   if (mode === 'api-key-relay') {
     if (
@@ -212,7 +218,7 @@ async function selfTest() {
   const base = {
     connectionId: '00000000-0000-4000-8000-000000000001',
     enabled: true,
-    enabledModelIds: [MODEL_ID],
+    enabledModelIds: MODEL_IDS,
   };
   const api = {
     ...base,
@@ -222,6 +228,7 @@ async function selfTest() {
     baseUrl: RELAY_BASE_URL,
     modelOverrides: {
       [MODEL_ID]: { thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh' },
+      [LEGACY_MODEL_ID]: { thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh' },
     },
   };
   validateMakaRuntimeSnapshot('api-key-relay', {
@@ -234,7 +241,10 @@ async function selfTest() {
   const subscription = {
     ...base,
     providerType: 'openai-codex',
-    modelOverrides: { [MODEL_ID]: { defaultThinkingLevel: 'xhigh' } },
+    modelOverrides: {
+      [MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
+      [LEGACY_MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
+    },
   };
   validateMakaRuntimeSnapshot('chatgpt-subscription', {
     policySnapshot: {

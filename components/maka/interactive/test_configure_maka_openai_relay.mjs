@@ -19,6 +19,7 @@ import {
   HEALTH_CHALLENGE_HEADER,
   LOOPBACK_HOST,
   MODEL_ID,
+  MODEL_IDS,
   PROXY_USERNAME,
   RELAY_PROVIDER_TYPE,
   assertAttestedRelayReady,
@@ -355,13 +356,10 @@ test('fresh reconciliation installs only decoys and fails other providers closed
   assert.equal(relay.name, CONNECTION_NAME);
   assert.equal(relay.providerType, RELAY_PROVIDER_TYPE);
   assert.equal(relay.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
-  assert.deepEqual(relay.enabledModelIds, [MODEL_ID]);
-  assert.deepEqual(relay.modelOverrides, {
-    [MODEL_ID]: {
-      thinkingLevels: ['xhigh', 'max'],
-      defaultThinkingLevel: 'xhigh',
-    },
-  });
+  assert.deepEqual(relay.enabledModelIds, MODEL_IDS);
+  assert.deepEqual(relay.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+  }])));
   assert.equal(relay.enabled, true);
   assert.equal(host.connections.find((entry) => entry.slug === 'opencode-free').enabled, false);
   assert.deepEqual(host.defaultTarget, {
@@ -439,7 +437,7 @@ test('readiness uses fresh HMAC challenges before sending the bearer', async () 
       document = { status: 'ready', proof: returnValidProof ? proof : '0'.repeat(64) };
     } else if (request.url === '/v1/models') {
       modelAuthorizations.push(request.headers.authorization);
-      document = { data: [{ id: MODEL_ID }] };
+      document = { data: MODEL_IDS.map((id) => ({ id })) };
     } else {
       response.writeHead(404, { Connection: 'close' });
       response.end();
@@ -629,13 +627,10 @@ test('legacy OpenAI relay is replaced by a narrow Responses relay', async () => 
   const configured = host.connections[0];
   assert.equal(configured.providerType, RELAY_PROVIDER_TYPE);
   assert.equal(configured.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
-  assert.deepEqual(configured.enabledModelIds, [MODEL_ID]);
-  assert.deepEqual(configured.modelOverrides, {
-    [MODEL_ID]: {
-      thinkingLevels: ['xhigh', 'max'],
-      defaultThinkingLevel: 'xhigh',
-    },
-  });
+  assert.deepEqual(configured.enabledModelIds, MODEL_IDS);
+  assert.deepEqual(configured.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+  }])));
   assert(!Object.hasOwn(configured, 'requestBodyOverlay'));
   assert.equal(
     host.operations.filter(({ operation }) => operation === 'connection.catalog.remove').length,

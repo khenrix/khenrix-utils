@@ -20,11 +20,12 @@ native skill root after `mise run skills:apply`.
 | macOS arm64 | Yes | Yes | Yes, with Colima |
 | Linux x86-64, including WSL | Yes | No | No |
 
-Both authentication routes use `gpt-5.6-sol`, `ask` permissions, and `xhigh`
+Both authentication routes use `gpt-6-sol`, `ask` permissions, and `xhigh`
 for normal interactive and headless work. The API route also supports an
 explicit `max` setting for planning. The ChatGPT subscription route in this
-pinned release does not expose `max` or `ultra`, so `xhigh` is its highest
-honest planning setting.
+pinned release has no live proof of GPT-6 Sol `max`, so `xhigh` is its highest
+verified planning setting. Both routes keep `gpt-5.6-sol` selectable for
+resuming old sessions. The frozen evaluation controller remains on 5.6.
 
 Maka keeps its native workspace data under
 `~/Library/Application Support/Maka` on macOS and `~/.config/Maka` on Linux.
@@ -89,8 +90,9 @@ launcher, then inspect and apply the safe migration:
 ```sh
 cd ~/khenrix-utils
 mise -C components/maka run maka:stage
-mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:migrate-plan
-mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:migrate-apply
+mise -C components/maka run maka:migrate-plan
+mise -C components/maka run maka:migrate-apply
+mise -C components/maka run maka:install-apply
 ```
 
 The migration always copies the auth-mode selector. For the API route it also
@@ -99,8 +101,8 @@ token, and readiness attestation. It never reads or copies an API key, OAuth
 credential, native Maka profile, session, history, or database. It leaves the
 old files in place.
 
-For an API installation, replace the former LaunchAgent after reviewing the
-staged files:
+For an API installation, replace the former LaunchAgent after activating the
+verified component:
 
 ```sh
 mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:harden-python
@@ -110,12 +112,7 @@ mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:relay-install -- instal
   --preserve-profile-credentials
 ```
 
-The old service is restored automatically if this cutover fails. Once the
-staged route passes its checks, activate the new launcher:
-
-```sh
-mise -C components/maka run maka:install-apply
-```
+The old service is restored automatically if this cutover fails.
 
 If the copied state has not changed, undo the state migration with:
 
@@ -198,11 +195,13 @@ Managed Khenrix state is split by purpose:
 - `~/.config/khenrix-utils/maka/` stores the auth route, non-secret API account
   selector, readiness marker, migration receipt, and relay-local state;
 - `~/.local/share/khenrix-utils/maka/` stores the portable component;
+- `~/.local/share/khenrix-utils/maka-candidates/` stores isolated, verified
+  compatibility candidates before an active cutover;
 - `~/.local/state/khenrix-utils/maka/` stores the final provenance receipt and backups;
 - Maka's native profile stores its local vault, workspace, and sessions.
 
 The subscription launcher enforces one enabled canonical `openai-codex`
-connection, `gpt-5.6-sol` as the default, and no enabled proxy, custom endpoint,
+connection, `gpt-6-sol` as the default with `gpt-5.6-sol` still enabled, and no enabled proxy, custom endpoint,
 custom request body, arbitrary model overlay, or second provider. It does not
 read, export, clear, or replace OAuth data. This is a launch-time Runtime Host
 check, not an operating-system firewall; a user can change connections later
@@ -276,8 +275,9 @@ as one reviewed unit:
 3. Update the exact version and both supported platform locks.
 4. Rebase each named compatibility overlay and verify its base and patched
    hashes rather than assuming it still applies.
-5. Run `maka:test` and `maka:component-doctor`.
+5. Run `maka:stage`, `maka:test`, and `maka:component-doctor` after activation.
 6. Run the full macOS doctor when the change touches the audit lab, then review
-   `maka:install-plan` before applying the upgrade.
+   `maka:plan` before applying the upgrade.
 7. Verify the selected auth route, `ask` permission default,
-   `gpt-5.6-sol`, and reasoning policy on the installed runtime.
+   `gpt-6-sol` as default, `gpt-5.6-sol` resumability, and reasoning policy on
+   the installed runtime.

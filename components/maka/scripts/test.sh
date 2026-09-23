@@ -13,7 +13,7 @@ node "$LAB_ROOT/interactive/inspect_maka_runtime.mjs" --self-test
 )
 (
   cd "$LAB_ROOT/scripts"
-  python -m unittest test_component_management.py
+  python -m unittest test_component_management.py test_maka_gpt6_compat.py test_relay_tier_status.py
 )
 python "$LAB_ROOT/controller/test_secret_broker.py"
 python "$LAB_ROOT/controller/test_maka_hosted_onboarding_compat.py" "$package_root"

@@ -37,6 +37,10 @@ umask 077
 description = "Run the explicit API relay installer with the verified hardened Python"
 run = "/usr/bin/env -i PATH=/usr/bin:/bin LANG=C LC_ALL=C /usr/bin/python3 -I -S -B ./scripts/run_hardened_python.py relay-installer"
 
+[tasks."maka:relay-tier"]
+description = "Report the last observed Maka API model and processing tier without response content"
+run = "python ./scripts/relay_tier_status.py"
+
 [tasks."maka:auth-mode"]
 description = "Make this machine's write-once Maka auth choice"
 run = "python ./interactive/maka_auth_mode.py"

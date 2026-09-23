@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import pathlib
@@ -27,6 +28,7 @@ MANIFEST_NAME = "install-files.txt"
 INSTALL_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka")
 WRAPPER_RELATIVE = pathlib.Path(".local/bin/maka")
 STATE_RELATIVE = pathlib.Path(".local/state/khenrix-utils/maka")
+CANDIDATES_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka-candidates")
 NEW_MODE_RELATIVE = pathlib.Path(".config/khenrix-utils/maka/maka-auth-mode")
 LEGACY_MODE_RELATIVE = pathlib.Path(".config/agentic-setup/maka-auth-mode")
 PLACEHOLDERS = (
@@ -313,6 +315,104 @@ def clean_environment(layout: InstallLayout, mise: pathlib.Path, account_name: s
     }
 
 
+def source_digest(source: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    for relative in read_manifest(source):
+        digest.update(str(relative).encode("utf-8") + b"\0")
+        digest.update((source / relative).read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def candidate_path(source: pathlib.Path, layout: InstallLayout) -> pathlib.Path:
+    return layout.home / CANDIDATES_RELATIVE / source_digest(source)
+
+
+def candidate_receipt(candidate: pathlib.Path, source: pathlib.Path) -> dict[str, object]:
+    from apply_gpt6_compat import PATCHES, PATCHED_HASHES
+
+    receipt_path = candidate / "candidate-receipt.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ComponentInstallError("Maka candidate receipt is unavailable") from error
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema", "version", "source_digest", "package", "overlay_hashes"
+    }:
+        raise ComponentInstallError("Maka candidate receipt is invalid")
+    if (
+        receipt["schema"] != "khenrix-maka-candidate-v1"
+        or receipt["version"] != PACKAGE_VERSION
+        or receipt["source_digest"] != source_digest(source)
+        or receipt["package"] != reviewed_package_identity(source)
+    ):
+        raise ComponentInstallError("Maka candidate identity differs")
+    overlays = receipt["overlay_hashes"]
+    if not isinstance(overlays, dict) or set(overlays) != set(PATCHES):
+        raise ComponentInstallError("Maka candidate overlay set differs")
+    for relative in read_manifest(source):
+        if (candidate / relative).read_bytes() != (source / relative).read_bytes():
+            raise ComponentInstallError("Maka candidate source differs")
+    package = candidate / "runtime/package"
+    for relative, hashes in overlays.items():
+        path = package / relative
+        if (not isinstance(hashes, dict) or hashes != {
+            "source": PATCHES[relative][0], "patched": PATCHED_HASHES[relative]
+        } or path.is_symlink() or not path.is_file() or
+                hashlib.sha256(path.read_bytes()).hexdigest() != PATCHED_HASHES[relative]):
+            raise ComponentInstallError("Maka candidate overlay differs")
+    return receipt
+
+
+def stage_candidate(source: pathlib.Path, *, layout: InstallLayout,
+                    mise: pathlib.Path, environment: dict[str, str]) -> pathlib.Path:
+    """Build a complete patched runtime outside the active component path."""
+    from apply_gpt6_compat import PATCHES, apply_overlay
+
+    candidate = candidate_path(source, layout)
+    if candidate.exists() or candidate.is_symlink():
+        if candidate.is_symlink() or not candidate.is_dir():
+            raise ComponentInstallError("Maka candidate path is unsafe")
+        receipt = candidate_receipt(candidate, source)
+        if set(receipt["overlay_hashes"]) != set(PATCHES):
+            raise ComponentInstallError("Maka candidate overlay set differs")
+        return candidate
+    candidate.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=".candidate-", dir=candidate.parent))
+    try:
+        copy_manifest(source, staging)
+        subprocess.run([str(mise), "trust", str(staging / "mise.toml")],
+                       env=environment, check=True, close_fds=True, timeout=30)
+        subprocess.run([str(mise), "-C", str(staging), "install", "--locked", "--yes"],
+                       env=environment, check=True, close_fds=True, timeout=900)
+        upstream_package = discover_package_root(mise, staging, environment)
+        if any(path.is_symlink() for path in upstream_package.rglob("*")):
+            raise ComponentInstallError("pinned Maka package contains a symlink")
+        package = staging / "runtime/package"
+        package.parent.mkdir(mode=0o700)
+        shutil.copytree(upstream_package, package)
+        hashes = apply_overlay(package)
+        subprocess.run(
+            [str(mise), "-C", str(staging), "exec", "--", "node",
+             str(staging / "scripts/verify_gpt6_candidate.mjs"), str(staging)],
+            env=environment, check=True, close_fds=True, timeout=30,
+        )
+        receipt = {
+            "schema": "khenrix-maka-candidate-v1",
+            "version": PACKAGE_VERSION,
+            "source_digest": source_digest(source),
+            "package": reviewed_package_identity(source),
+            "overlay_hashes": hashes,
+        }
+        atomic_write(staging / "candidate-receipt.json",
+                     (json.dumps(receipt, sort_keys=True) + "\n").encode("utf-8"), 0o600)
+        os.replace(staging, candidate)
+        return candidate
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
 def assert_cutover_safe(layout: InstallLayout) -> None:
     legacy = layout.home / LEGACY_MODE_RELATIVE
     managed = layout.home / NEW_MODE_RELATIVE
@@ -335,11 +435,12 @@ def installation_plan(source: pathlib.Path, *, activate: bool) -> dict[str, obje
         and not (managed.exists() or managed.is_symlink())
     )
     return {
-        "schema": "khenrix-maka-install-plan-v1",
+        "schema": "khenrix-maka-install-plan-v2",
         "version": PACKAGE_VERSION,
         "platform": supported_platform(),
         "source": str(source),
         "component": str(layout.component),
+        "candidate": str(candidate_path(source, layout)),
         "wrapper": str(layout.wrapper) if activate else None,
         "mise": str(mise),
         "account": account.pw_name,
@@ -350,9 +451,9 @@ def installation_plan(source: pathlib.Path, *, activate: bool) -> dict[str, obje
         "changesNativeMakaProfile": False,
         "actions": [
             "install exact mise lock",
-            "copy only install-files.txt entries to the stable component path",
-            "verify maka-agent package identity and version",
-            *( ["atomically render ~/.local/bin/maka"] if activate else [] ),
+            "stage an isolated package copy with the source-hash-guarded GPT-6 overlay",
+            *( ["copy the verified candidate into the stable component path",
+                "atomically render ~/.local/bin/maka and publish its final receipt"] if activate else [] ),
         ],
     }
 
@@ -384,6 +485,11 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
         close_fds=True,
         timeout=900,
     )
+    candidate = stage_candidate(source, layout=layout, mise=mise, environment=environment)
+    candidate_info = candidate_receipt(candidate, source)
+    if not activate:
+        print(f"Staged Maka {PACKAGE_VERSION} at {candidate}")
+        return candidate
 
     layout.component.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     staging = pathlib.Path(
@@ -397,7 +503,7 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
     activated_wrapper = False
     had_previous_wrapper = False
     try:
-        copy_manifest(source, staging)
+        shutil.copytree(candidate, staging, dirs_exist_ok=True)
         subprocess.run(
             [str(mise), "trust", str(staging / "mise.toml")],
             env=environment,
@@ -436,7 +542,10 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
             close_fds=True,
             timeout=900,
         )
-        package = discover_package_root(mise, layout.component, environment)
+        package = layout.component / "runtime/package"
+        if not (package / "package.json").is_file():
+            raise ComponentInstallError("Maka candidate runtime is unavailable")
+        candidate_receipt(layout.component, source)
         if activate:
             assert_cutover_safe(layout)
             if layout.wrapper.exists() and not backup.exists():
@@ -462,8 +571,10 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
         if activate:
             ensure_private_state_directory(layout.state)
             receipt = {
-                "schema": "khenrix-maka-install-v1",
+                "schema": "khenrix-maka-install-v2",
                 **package_identity,
+                "source_digest": candidate_info["source_digest"],
+                "overlay_hashes": candidate_info["overlay_hashes"],
                 "platform": supported_platform(),
                 "component": str(layout.component),
                 "wrapper": str(layout.wrapper),

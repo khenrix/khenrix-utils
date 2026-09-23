@@ -10,14 +10,13 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { reconcileMakaSubscriptionDefaults } from './configure_maka_subscription.mjs';
+import { MODEL_ID, LEGACY_MODEL_ID, MODEL_IDS, reconcileMakaSubscriptionDefaults } from './configure_maka_subscription.mjs';
 
 const CODEX_ID = '00000000-0000-4000-8000-000000000001';
 const OTHER_ID = '00000000-0000-4000-8000-000000000002';
 const BOOTSTRAP_ID = '00000000-0000-4000-8000-000000000003';
-const MANAGED_OVERRIDE = {
-  'gpt-5.6-sol': { defaultThinkingLevel: 'xhigh' },
-};
+const MANAGED_OVERRIDE = Object.fromEntries(MODEL_IDS.map((model) =>
+  [model, { defaultThinkingLevel: 'xhigh' }]));
 const BOOTSTRAP_SEED = {
   enabledModelIds: [
     'nemotron-3-ultra-free',
@@ -123,7 +122,7 @@ function codexConnection(overrides = {}) {
     name: 'OpenAI OAuth',
     providerType: 'openai-codex',
     enabled: true,
-    enabledModelIds: ['gpt-5.6-sol'],
+    enabledModelIds: [...MODEL_IDS],
     modelOverrides: structuredClone(MANAGED_OVERRIDE),
     ...overrides,
   };
@@ -132,7 +131,7 @@ function codexConnection(overrides = {}) {
 function safeCatalog(overrides = {}) {
   return {
     revision: 1,
-    defaultTarget: { connectionId: CODEX_ID, modelId: 'gpt-5.6-sol' },
+    defaultTarget: { connectionId: CODEX_ID, modelId: MODEL_ID },
     connections: [codexConnection()],
     ...overrides,
   };
@@ -179,6 +178,27 @@ test('an already-safe subscription profile is read-only and idempotent', async (
       'oauth.enrollment.query',
       'runtime.policy.query',
     ],
+  );
+});
+
+test('a GPT-5.6 subscription profile gains GPT-6 as default and keeps old sessions selectable', async () => {
+  const host = fakeConnection(policy(), {
+    catalog: safeCatalog({
+      defaultTarget: { connectionId: CODEX_ID, modelId: LEGACY_MODEL_ID },
+      connections: [codexConnection({
+        enabledModelIds: [LEGACY_MODEL_ID],
+        modelOverrides: { [LEGACY_MODEL_ID]: { defaultThinkingLevel: 'xhigh' } },
+      })],
+    }),
+  });
+  await reconcile(host);
+  const catalog = await host.readCatalog();
+  assert.deepEqual(catalog.connections[0].enabledModelIds, MODEL_IDS);
+  assert.equal(catalog.defaultTarget.modelId, MODEL_ID);
+  assert.deepEqual(
+    host.calls.filter((call) => call.operation.startsWith('connection.catalog'))
+      .map((call) => call.operation),
+    ['connection.catalog.update', 'connection.catalog.set-default-target'],
   );
 });
 
