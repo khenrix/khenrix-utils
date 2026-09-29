@@ -1,299 +1,327 @@
 #!/usr/bin/env python3
-"""Shared khenrix statusline renderer for Claude Code and Antigravity CLI."""
+"""One-row status line for Claude Code and Antigravity CLI."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
+import math
 import os
-import shutil
+from pathlib import Path
+import re
 import subprocess
 import sys
-from pathlib import Path
+import unicodedata
 
 
 RESET = "\033[0m"
-COLORS = {
-    "dim": "\033[90m",
-    "green": "\033[32m",
-    "yellow": "\033[33m",
-    "red": "\033[31m",
-    "cyan": "\033[36m",
-    "magenta": "\033[35m",
-    "white": "\033[37m",
-}
+COLORS = {"yellow": "\033[33m", "red": "\033[31m"}
+ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)")
 
 
-def use_color() -> bool:
-    return os.environ.get("NO_COLOR") is None
+@dataclass(frozen=True)
+class Segment:
+    order: int
+    priority: int
+    text: str
+    tone: str | None = None
 
 
-def color(name: str, text: str) -> str:
-    if not text or not use_color():
-        return text
-    return COLORS.get(name, "") + text + RESET
+def clean_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = ANSI_ESCAPE.sub("", value)
+    chars = []
+    for char in value:
+        if char.isspace():
+            chars.append(" ")
+        elif not unicodedata.category(char).startswith("C"):
+            chars.append(char)
+    return " ".join("".join(chars).split()) or None
 
 
-def short_model(name: str) -> str:
-    # Strip the vendor prefix so any version renders compactly (e.g.
-    # "Claude Opus 4.8" -> "Opus 4.8", "Gemini 3 Pro" -> "3 Pro").
+def cell_width(value: str) -> int:
+    width = 0
+    for char in value:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+    return width
+
+
+def clip_text(value: str, limit: int) -> str:
+    if cell_width(value) <= limit:
+        return value
+    out = []
+    remaining = max(0, limit - 1)
+    for char in value:
+        cells = cell_width(char)
+        if cells > remaining:
+            break
+        out.append(char)
+        remaining -= cells
+    return "".join(out) + "…"
+
+
+def number(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def percentage(value: object) -> float | None:
+    parsed = number(value)
+    return max(0.0, min(100.0, parsed)) if parsed is not None else None
+
+
+def remaining_label(label: str, remaining: float) -> str:
+    return f"{label} {remaining:.0f}% left"
+
+
+def warning_tone(remaining: float) -> str | None:
+    if remaining <= 15:
+        return "red"
+    if remaining <= 35:
+        return "yellow"
+    return None
+
+
+def model_name(payload: dict) -> str | None:
+    model = payload.get("model")
+    if isinstance(model, dict):
+        raw = model.get("display_name") or model.get("name") or model.get("id")
+    else:
+        raw = model
+    name = clean_text(raw)
+    if name is None:
+        return None
     for prefix in ("Claude ", "Gemini "):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
-    return name.strip() or "model"
-
-
-def model_name(payload: dict) -> str:
-    model = payload.get("model")
-    if isinstance(model, dict):
-        return short_model(str(model.get("display_name") or model.get("name") or model.get("id") or "model"))
-    if isinstance(model, str):
-        return short_model(model)
-    return "model"
+    return clip_text(name, 18)
 
 
 def workspace_path(payload: dict) -> str | None:
-    for key in ("cwd", "current_dir"):
-        val = payload.get(key)
-        if isinstance(val, str) and val:
-            return val
     workspace = payload.get("workspace")
     if isinstance(workspace, dict):
         for key in ("current_dir", "cwd", "project_dir"):
-            val = workspace.get(key)
-            if not isinstance(val, str) or not val:
-                continue
-            if val.startswith("file://"):
-                val = val.removeprefix("file://")
-            return val
+            path = workspace.get(key)
+            if isinstance(path, str) and path:
+                return path.removeprefix("file://")
+    for key in ("cwd", "current_dir"):
+        path = payload.get(key)
+        if isinstance(path, str) and path:
+            return path
     return None
 
 
-def project_name(payload: dict) -> str:
+def project_name(payload: dict) -> str | None:
+    path = workspace_path(payload)
+    return clip_text(name, 16) if path and (name := clean_text(Path(path).name)) else None
+
+
+def context_remaining(payload: dict, cli: str) -> float | None:
+    for key in ("context_window", "context", "contextWindow"):
+        context = payload.get(key)
+        if not isinstance(context, dict):
+            continue
+        remaining = percentage(context.get("remaining_percentage"))
+        if remaining is not None:
+            return remaining
+        used = percentage(context.get("used_percentage"))
+        if used is not None:
+            return 100 - used
+        size = number(context.get("context_window_size"))
+        input_tokens = number(context.get("total_input_tokens"))
+        if size is not None and size > 0 and input_tokens is not None and input_tokens >= 0:
+            total = input_tokens
+            if cli == "agy":
+                output_tokens = number(context.get("total_output_tokens"))
+                if output_tokens is None or output_tokens < 0:
+                    continue
+                total += output_tokens
+            return max(0.0, 100 - total * 100 / size)
+    return None
+
+
+def git_segment(payload: dict, cli: str) -> str | None:
+    if cli == "agy":
+        vcs = payload.get("vcs")
+        if not isinstance(vcs, dict):
+            return None
+        branch = clean_text(vcs.get("branch"))
+        if not branch:
+            return None
+        vcs_type = clean_text(vcs.get("type")) or "git"
+        return f"{vcs_type} {clip_text(branch, 18)}{'*' if vcs.get('dirty') is True else ''}"
+    worktree = payload.get("worktree")
+    supplied_branch = clean_text(worktree.get("branch")) if isinstance(worktree, dict) else None
+    supplied = f"git {clip_text(supplied_branch, 18)}" if supplied_branch else None
     cwd = workspace_path(payload)
-    if not cwd:
-        return "workspace"
-    return Path(cwd).name or cwd
-
-
-def run_git(cwd: str, *args: str) -> str | None:
+    if not cwd or not Path(cwd).is_dir():
+        return supplied
     try:
-        res = subprocess.run(
-            ["git", "-C", cwd, *args],
-            capture_output=True,
-            text=True,
-            timeout=0.25,
-            check=False,
+        result = subprocess.run(
+            ["git", "-C", cwd, "status", "--porcelain=v1", "--branch"],
+            capture_output=True, text=True, timeout=0.25, check=False,
+            env={**os.environ, "LC_ALL": "C"},
         )
-    except Exception:
-        return None
-    if res.returncode != 0:
-        return None
-    return res.stdout.strip()
-
-
-def git_segment(payload: dict) -> str | None:
-    cwd = workspace_path(payload)
-    if not cwd or not Path(cwd).exists():
-        return None
-    if run_git(cwd, "rev-parse", "--is-inside-work-tree") != "true":
-        return None
-    branch = run_git(cwd, "branch", "--show-current") or run_git(cwd, "rev-parse", "--short", "HEAD")
+    except (OSError, subprocess.TimeoutExpired):
+        return supplied
+    if result.returncode or not result.stdout.startswith("## "):
+        return supplied
+    lines = result.stdout.splitlines()
+    branch = lines[0][3:].split("...", 1)[0]
+    for prefix in ("No commits yet on ", "Initial commit on "):
+        if branch.startswith(prefix):
+            branch = branch.removeprefix(prefix)
+            break
+    if branch.startswith("HEAD "):
+        branch = "HEAD"
+    branch = supplied_branch or clean_text(branch)
     if not branch:
         return None
-    dirty = bool(run_git(cwd, "status", "--porcelain"))
-    return color("yellow" if dirty else "cyan", f"git {branch}{'*' if dirty else ''}")
+    return f"git {clip_text(branch, 18)}{'*' if len(lines) > 1 else ''}"
 
 
-def pct_color(value: float) -> str:
-    if value >= 85:
-        return "red"
-    if value >= 65:
-        return "yellow"
-    return "green"
-
-
-def context_segment(payload: dict) -> str | None:
-    candidates = []
-    for key in ("context_window", "context", "contextWindow"):
-        val = payload.get(key)
-        if isinstance(val, dict):
-            candidates.append(val)
-    for ctx in candidates:
-        used = ctx.get("used_percentage")
-        if used is None and "remaining_percentage" in ctx:
-            try:
-                used = 100 - float(ctx["remaining_percentage"])
-            except (TypeError, ValueError):
-                used = None
-        if used is None and ctx.get("context_window_size"):
-            try:
-                total = float(ctx["context_window_size"])
-                current = float(ctx.get("total_input_tokens", 0)) + float(ctx.get("total_output_tokens", 0))
-                used = current * 100 / total if total else None
-            except (TypeError, ValueError):
-                used = None
-        if used is not None:
-            try:
-                value = float(used)
-            except (TypeError, ValueError):
-                continue
-            return "ctx " + color(pct_color(value), f"{value:.1f}%")
-    return None
-
-
-def cost_segment(payload: dict) -> str | None:
-    cost = payload.get("cost")
-    if not isinstance(cost, dict):
-        return None
-    total = cost.get("total_cost_usd")
-    try:
-        value = float(total)
-    except (TypeError, ValueError):
-        return None
-    if value <= 0:
-        return None
-    # Claude Code reports an estimated USD amount; Vertex/provider invoices can differ.
-    return f"est ${value:.2f}"
-
-
-def rate_limit_segments(payload: dict) -> list[str]:
+def claude_quotas(payload: dict) -> list[tuple[str, float | None]]:
     limits = payload.get("rate_limits")
     if not isinstance(limits, dict):
         return []
-    out = []
-    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
+    quotas = []
+    for key, label in (("five_hour", "5h"), ("seven_day", "7d"), ("spend_limit", "spend")):
         window = limits.get(key)
-        if not isinstance(window, dict) or window.get("used_percentage") is None:
+        if not isinstance(window, dict):
             continue
-        try:
-            used = float(window["used_percentage"])
-        except (TypeError, ValueError):
+        used = number(window.get("used_percentage"))
+        if used is None or used < 0:
             continue
-        out.append(f"{label} " + color(pct_color(used), f"{used:.0f}%"))
-    return out
+        quotas.append((label, None if key == "spend_limit" and used > 100 else max(0.0, 100 - used)))
+    return quotas
 
 
-def reliable_mode(payload: dict) -> str | None:
-    for key in ("planning_mode", "planningMode", "mode", "current_mode", "agent_mode"):
-        val = payload.get(key)
-        if isinstance(val, dict):
-            val = val.get("value") or val.get("name")
-        if isinstance(val, bool):
-            return "PLAN" if val else "FAST"
-        if not isinstance(val, str):
+def agy_quotas(payload: dict) -> list[tuple[str, float]]:
+    raw = payload.get("quota")
+    if not isinstance(raw, dict):
+        return []
+    quotas = []
+    for bucket, info in raw.items():
+        label = clean_text(bucket)
+        if not label or not isinstance(info, dict):
             continue
-        normalized = val.lower()
-        if "planning" in normalized or normalized in {"plan", "planning_mode_on"}:
-            return "PLAN"
-        if "fast" in normalized or normalized in {"planning_mode_off"}:
-            return "FAST"
-    return None
+        fraction = number(info.get("remaining_fraction"))
+        if fraction is not None and 0 <= fraction <= 1:
+            quotas.append((label, fraction * 100))
+    return sorted(quotas, key=lambda item: (item[1], item[0]))
 
 
-def permission_segment(payload: dict) -> str | None:
-    for key in ("permission_mode", "permissionMode"):
-        val = payload.get(key)
-        if isinstance(val, str) and val:
-            return val.replace("_", "-")
-    sandbox = payload.get("sandbox")
-    if isinstance(sandbox, dict) and "enabled" in sandbox:
-        return "SANDBOX" if sandbox.get("enabled") else color("yellow", "LOCAL")
-    return None
-
-
-def agent_state_segment(payload: dict) -> str | None:
-    val = payload.get("agent_state")
-    if isinstance(val, str) and val:
-        return val.upper()
-    return None
-
-
-def truncate(line: str, width: int) -> str:
-    plain_padding = 1
-    if width <= 0 or len(strip_ansi(line)) <= width - plain_padding:
-        return line
-    target = max(20, width - plain_padding - 1)
-    out = []
-    visible = 0
-    in_escape = False
-    for ch in line:
-        out.append(ch)
-        if ch == "\033":
-            in_escape = True
-        elif in_escape and ch == "m":
-            in_escape = False
-        elif not in_escape:
-            visible += 1
-            if visible >= target:
-                break
-    if use_color():
-        out.append(RESET)
-    out.append("...")
-    return "".join(out)
-
-
-def strip_ansi(text: str) -> str:
-    out = []
-    in_escape = False
-    for ch in text:
-        if ch == "\033":
-            in_escape = True
-            continue
-        if in_escape:
-            if ch == "m":
-                in_escape = False
-            continue
-        out.append(ch)
-    return "".join(out)
-
-
-def terminal_width(payload: dict) -> int:
+def terminal_width(cli: str, payload: dict) -> int:
+    raw = payload.get("terminal_width") if cli == "agy" else None
+    if raw is None:
+        raw = os.environ.get("COLUMNS")
     try:
-        return int(payload.get("terminal_width") or 0)
+        width = int(raw)
     except (TypeError, ValueError):
-        return shutil.get_terminal_size((120, 20)).columns
+        width = 80
+    return width if width > 0 else 80
+
+
+def fitted_line(segments: list[Segment], width: int) -> str:
+    budget = max(1, width - 2)
+    chosen: list[Segment] = []
+    occupied = 0
+    for segment in sorted(segments, key=lambda item: (item.priority, item.order)):
+        cells = cell_width(segment.text) + (3 if chosen else 0)
+        if occupied + cells <= budget:
+            chosen.append(segment)
+            occupied += cells
+    if not chosen:
+        return clip_text("status unavailable", budget)
+    parts = []
+    for segment in sorted(chosen, key=lambda item: item.order):
+        if segment.tone and os.environ.get("NO_COLOR") is None:
+            parts.append(COLORS[segment.tone] + segment.text + RESET)
+        else:
+            parts.append(segment.text)
+    return " | ".join(parts)
 
 
 def render(cli: str, payload: dict) -> str:
-    mode = reliable_mode(payload)
-    segments = []
-    if mode:
-        segments.append(color("magenta" if mode == "PLAN" else "yellow", mode))
-    segments.extend([
-        color("white", model_name(payload)),
-        color("cyan", project_name(payload)),
-    ])
-    git = git_segment(payload)
-    if git:
-        segments.append(git)
-    ctx = context_segment(payload)
-    if ctx:
-        segments.append(ctx)
+    segments: list[Segment] = []
+
+    def add(order: int, priority: int, value: str | None, tone: str | None = None) -> None:
+        if value:
+            segments.append(Segment(order, priority, value, tone))
+
+    add(0, 0, model_name(payload))
     if cli == "claude":
-        cost = cost_segment(payload)
-        if cost:
-            segments.append(cost)
-        segments.extend(rate_limit_segments(payload))
-    state = agent_state_segment(payload)
-    if state:
-        segments.append(state)
-    perm = permission_segment(payload)
-    if perm:
-        segments.append(perm)
-    line = " | ".join(str(s) for s in segments if s)
-    return truncate(" " + line + " ", terminal_width(payload))
+        effort = payload.get("effort")
+        if isinstance(effort, dict):
+            level = clean_text(effort.get("level"))
+            add(1, 2, level if level in {"low", "medium", "high", "xhigh", "max"} else None)
+        if payload.get("fast_mode") is True:
+            add(2, 2, "FAST")
+    elif cli == "agy":
+        mode = clean_text(payload.get("execution_mode"))
+        if mode in {"planning", "fast"}:
+            add(1, 2, "PLAN" if mode == "planning" else "FAST")
+        if payload.get("tool_confirmation_pending") is True:
+            add(2, 1, "CONFIRM", "yellow")
+    context = context_remaining(payload, cli)
+    if context is not None:
+        add(3, 3, remaining_label("ctx", context), warning_tone(context))
+    add(4, 4, project_name(payload))
+    quotas = claude_quotas(payload) if cli == "claude" else agy_quotas(payload) if cli == "agy" else []
+    for index, (label, remaining) in enumerate(quotas):
+        urgent = remaining is None or remaining <= 15
+        add(5 if index == 0 else 9 + index, 1 if urgent else 5 + index,
+            f"{label} over" if remaining is None else remaining_label(label, remaining),
+            "red" if remaining is None else warning_tone(remaining))
+    add(7, 6, git_segment(payload, cli))
+    if cli == "claude":
+        workspace = payload.get("workspace")
+        worktree = payload.get("worktree")
+        name = (workspace.get("git_worktree") if isinstance(workspace, dict) else None)
+        if not name and isinstance(worktree, dict):
+            name = worktree.get("name")
+        if name := clean_text(name):
+            add(8, 7, "wt " + clip_text(name, 18))
+        pr = payload.get("pr")
+        if isinstance(pr, dict) and isinstance(pr.get("number"), int) and pr["number"] > 0:
+            add(13, 13, f"PR #{pr['number']}")
+        cost = payload.get("cost")
+        amount = number(cost.get("total_cost_usd")) if isinstance(cost, dict) else None
+        if amount is not None and amount > 0:
+            add(99, 99, f"est ${amount:.2f}")
+    elif cli == "agy":
+        state = clean_text(payload.get("agent_state"))
+        if state and state != "idle":
+            add(10, 8, clip_text(state.upper(), 12))
+        tasks = payload.get("task_count")
+        if isinstance(tasks, int) and not isinstance(tasks, bool) and tasks > 0:
+            add(11, 9, f"tasks {tasks}")
+        sandbox = payload.get("sandbox")
+        if isinstance(sandbox, dict) and sandbox.get("enabled") is False:
+            add(12, 10, "sandbox off", "yellow")
+        queued = payload.get("pending_input_count")
+        if isinstance(queued, int) and not isinstance(queued, bool) and queued > 0:
+            add(13, 11, f"queued {queued}")
+    return fitted_line(segments, terminal_width(cli, payload))
 
 
 def main(argv: list[str]) -> int:
-    cli = argv[1] if len(argv) > 1 else "auto"
     try:
-        raw = sys.stdin.read()
-        payload = json.loads(raw) if raw.strip() else {}
+        payload = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
-            payload = {}
-        sys.stdout.write(render(cli, payload) + "\n")
-    except Exception as exc:
-        sys.stdout.write(color("red", f" statusline error: {exc} ") + "\n")
+            raise ValueError("status payload must be an object")
+        line = render(argv[1] if len(argv) > 1 else "", payload)
+    except Exception:
+        line = "status unavailable"
+    sys.stdout.write(line + "\n")
     return 0
 
 

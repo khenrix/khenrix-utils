@@ -15,7 +15,8 @@ PY   := python3
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
-RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py
+RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py \
+                            tests/test_statusline.py tests/test_statusline_reconcile.py
 MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py
 MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py
 SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
@@ -157,7 +158,7 @@ tier0-host-smoke: ## Optional WSL/Windows PowerShell-to-Chrome integration witne
 doctor-test: ## Behavioural tests for scripts/doctor.py (no token cost)
 	$(call RUN_PYTEST,$(DOCTOR_TESTS))
 
-reconcile-defaults-test: ## Portable default reconciliation tests (no token cost)
+reconcile-defaults-test: ## Portable default and status-line reconciliation tests (no token cost)
 	$(call RUN_PYTEST,$(RECONCILE_DEFAULTS_TESTS))
 
 memory-runtime-test: ## Hermetic portable-memory tests (no network, credentials, or live writes)

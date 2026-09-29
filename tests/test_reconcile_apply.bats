@@ -23,8 +23,10 @@ sys.path.insert(0, '$BATS_TEST_DIRNAME/../scripts/lib')
 import reconcile
 
 calls = []
-def fake_reconcile(cli, caps, apply, update_drift, defaults_only=False):
+statusline_flags = []
+def fake_reconcile(cli, caps, apply, update_drift, defaults_only=False, statusline_only=False):
     calls.append((cli, apply, update_drift))
+    statusline_flags.append(statusline_only)
 reconcile.reconcile = fake_reconcile
 
 def invoke(argv):
@@ -45,6 +47,9 @@ assert all(a is False for _, a, _ in r), ('--status must force apply=False even 
 
 r = invoke(['--all', '--apply', '--update-drift'])
 assert all(u is True for _, _, u in r), ('--update-drift must propagate too', r)
+
+r = invoke(['--all', '--statusline-only'])
+assert all(statusline_flags[-len(r):]), ('--statusline-only must reach every CLI', statusline_flags)
 
 print('OK')
 "

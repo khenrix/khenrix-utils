@@ -440,7 +440,8 @@ def set_toml_table_key(text: str, table: str, key: str, value) -> str:
         return text + sep + f"[{table}]\n{rendered}"
 
     start, end = bounds
-    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    spellings = (key, f'"{key}"', f"'{key}'")
+    key_re = re.compile(r"^\s*(?:" + "|".join(map(re.escape, spellings)) + r")\s*=")
     for i in range(start + 1, end):
         if key_re.match(lines[i]):
             lines[i] = rendered
@@ -451,6 +452,16 @@ def set_toml_table_key(text: str, table: str, key: str, value) -> str:
         insert_at -= 1
     lines.insert(insert_at, rendered)
     return "".join(lines)
+
+
+def codex_candidate_valid(text: str, tui_updates: list[tuple[str, object]]) -> bool:
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    tui = parsed.get("tui")
+    return not tui_updates or (isinstance(tui, dict) and all(
+        tui.get(key) == value for key, value in tui_updates))
 
 
 def set_toml_root_key(text: str, key: str, value) -> str:
@@ -788,8 +799,6 @@ def codex_settings(want: dict):
         if not pending:
             return []
         p = codex_config_path()
-        backup(p)
-        p.parent.mkdir(parents=True, exist_ok=True)
         chunks = []
         tui_updates = []
         skipped_tui_updates = []
@@ -815,6 +824,10 @@ def codex_settings(want: dict):
         text = text + tables
         for key, val in tui_updates:
             text = set_toml_table_key(text, "tui", key, val)
+        if not codex_candidate_valid(text, tui_updates):
+            return ["codex settings: refused unsupported TOML syntax; left untouched"]
+        backup(p)
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
         actions = [f"codex settings: wrote {len(pending)} key(s) to {p}"]
         if skipped_tui_updates:
@@ -840,11 +853,27 @@ def statusline_config_rows(data: dict, want: dict | None):
     if not want:
         return [], None
     have = data.get("statusLine")
-    if have == want:
+    if "statusLine" in data and not isinstance(have, dict):
+        return [["statusLine", "REFUSED", "existing value is not an object"]], None
+    have = have or {}
+    todo = [("ADD" if key not in have else "UPDATE", key, value)
+            for key, value in want.items() if key not in have or have[key] != value]
+    if not todo:
         return [["statusLine", "MATCH", want.get("command", "")]], None
-    if have is None:
-        return [["statusLine", "ADD", want.get("command", "")]], ("ADD", want)
-    return [["statusLine", "UPDATE", f"{have!r} → {want!r}"]], ("UPDATE", want)
+    status = "UPDATE" if any(action == "UPDATE" for action, _, _ in todo) else "ADD"
+    detail = "managed key(s): " + ", ".join(key for _, key, _ in todo)
+    return [["statusLine", status, detail]], todo
+
+
+def apply_statusline_config(data: dict, todo: list | None, update_drift: bool):
+    changed, skipped = False, []
+    for status, key, value in todo or []:
+        if status == "ADD" or update_drift:
+            data.setdefault("statusLine", {})[key] = value
+            changed = True
+        else:
+            skipped.append(key)
+    return changed, skipped
 
 
 def agy_settings(want: dict):
@@ -893,13 +922,9 @@ def agy_settings(want: dict):
             data.setdefault("trustedWorkspaces", [])
             data["trustedWorkspaces"].extend(m for m in missing if m not in data["trustedWorkspaces"])
             settings_changed = True
-        if status_todo:
-            status, val = status_todo
-            if status == "ADD" or update_drift:
-                data["statusLine"] = val
-                settings_changed = True
-            else:
-                skipped.append("statusLine")
+        status_changed, status_skipped = apply_statusline_config(data, status_todo, update_drift)
+        settings_changed |= status_changed
+        skipped.extend("statusLine." + key for key in status_skipped)
         if settings_changed:
             backup(p)
             write_json_object(p, data)
@@ -988,13 +1013,13 @@ def claude_settings(want: dict):
 
     def apply(update_drift):
         actions, changed = [], False
-        if status_todo:
-            status, val = status_todo
-            if status == "UPDATE" and not update_drift:
-                actions.append(f"claude settings: {p} statusLine drifted (skipped; use --update-drift)")
-            else:
-                data["statusLine"] = val; changed = True
-                actions.append("claude settings: set statusLine")
+        status_changed, status_skipped = apply_statusline_config(data, status_todo, update_drift)
+        if status_changed:
+            changed = True
+            actions.append("claude settings: set statusLine managed keys")
+        if status_skipped:
+            actions.append(f"claude settings: {p} statusLine keys drifted "
+                           "(skipped; use --update-drift): " + ", ".join(status_skipped))
         for key, val in key_todo:
             data[key] = val; changed = True
         if key_todo:
@@ -1199,6 +1224,80 @@ def apply_mcp(cli: str, name: str, spec: dict) -> str:
 
 
 # ----- reporting -------------------------------------------------------------
+def statusline_settings_report(cli: str, caps: dict):
+    """Only the footer leaves owned by Khenrix; no other config surfaces."""
+    want = caps.get("settings", {})
+    if cli == "codex":
+        path = codex_config_path()
+        data = codex_load()
+        text = path.read_text() if path.exists() else ""
+        unsupported_tui = "tui" in data and toml_table_bounds(
+            text.splitlines(keepends=True), "tui") is None
+        declared = want.get("codex", {}).get("tui", {})
+        keys = ("status_line", "status_line_use_colors")
+        rows, todo = [], []
+        for key in keys:
+            if key not in declared:
+                continue
+            name = "tui." + key
+            if unsupported_tui:
+                rows.append([name, "REFUSED", "tui has no [tui] table; left untouched"])
+                continue
+            if _non_mapping_parent(data, ("tui", key)):
+                rows.append([name, "REFUSED", "tui is not a table"])
+                continue
+            have = _get_path(data, ("tui", key))
+            value = declared[key]
+            if have == value:
+                rows.append([name, "MATCH", toml_value(value)])
+            else:
+                status = "ADD" if have is _MISSING else "UPDATE"
+                rows.append([name, status, "declared footer value"])
+                todo.append((status, key, value))
+
+        def apply(update_drift):
+            pending = [(key, value) for status, key, value in todo
+                       if status == "ADD" or update_drift]
+            skipped = [key for status, key, _ in todo
+                       if status == "UPDATE" and not update_drift]
+            actions = []
+            if pending:
+                text = path.read_text() if path.exists() else ""
+                for key, value in pending:
+                    text = set_toml_table_key(text, "tui", key, value)
+                if not codex_candidate_valid(text, pending):
+                    actions.append("codex status line: refused unsupported tui syntax; left untouched")
+                else:
+                    backup(path)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text)
+                    actions.append(f"codex status line: wrote {len(pending)} key(s) to {path}")
+            if skipped:
+                actions.append("codex status line: skipped drifted key(s) "
+                               + ", ".join(skipped) + " (use --update-drift)")
+            return actions
+
+        return rows, apply
+
+    path = claude_settings_path() if cli == "claude" else agy_settings_path()
+    data = read_json_object(path)
+    rows, todo = statusline_config_rows(data, desired_statusline(want, cli))
+
+    def apply(update_drift):
+        changed, skipped = apply_statusline_config(data, todo, update_drift)
+        actions = []
+        if changed:
+            backup(path)
+            write_json_object(path, data)
+            actions.append(f"{cli} status line: updated {path}")
+        if skipped:
+            actions.append(f"{cli} status line: skipped drifted key(s) "
+                           + ", ".join(skipped) + " (use --update-drift)")
+        return actions
+
+    return rows, apply
+
+
 def print_rows(title: str, rows, extras=None):
     print(f"\n{title}")
     if not rows:
@@ -1210,8 +1309,22 @@ def print_rows(title: str, rows, extras=None):
 
 
 def reconcile(cli: str, caps: dict, apply: bool, update_drift: bool,
-              defaults_only: bool = False):
+              defaults_only: bool = False, statusline_only: bool = False):
     print(f"\n=== khenrix-setup · {cli} ===")
+    if statusline_only:
+        config_rows, config_apply = statusline_settings_report(cli, caps)
+        asset_rows, asset_apply = statusline_asset_report(cli, caps)
+        print_rows("Status line settings:", config_rows)
+        print_rows("Status line asset:", asset_rows)
+        if apply:
+            actions = config_apply(update_drift) + asset_apply(update_drift)
+            for action in actions or ["nothing to do — already in sync"]:
+                print(f"  • {action}")
+        else:
+            adds = sum(row[1] == "ADD" for row in config_rows + asset_rows)
+            drift = sum(row[1] == "UPDATE" for row in config_rows + asset_rows)
+            print(f"\nReview only. {adds} to add, {drift} drifted.")
+        return
     if defaults_only:
         set_rows, set_apply = settings_report(cli, caps, defaults_only=True)
         print_rows("Portable model/effort defaults:", set_rows)
@@ -1288,9 +1401,15 @@ def main(argv=None):
         "--defaults-only", action="store_true",
         help="inspect/apply only settings.defaults model and effort leaves; "
              "does not read or touch MCPs, skills, plugins, aliases or instructions")
+    ap.add_argument(
+        "--statusline-only", action="store_true",
+        help="inspect/apply only the shared renderer and managed status-line settings")
     ap.add_argument("--defaults-status-json", action="store_true",
                     help="emit bounded model/default status JSON without observed values")
     args = ap.parse_args(argv)
+
+    if args.statusline_only and (args.defaults_only or args.defaults_status_json):
+        ap.error("--statusline-only cannot be combined with defaults-only modes")
 
     if args.defaults_status_json:
         if args.apply or args.update_drift:
@@ -1310,10 +1429,11 @@ def main(argv=None):
         eff_apply = args.apply and not args.status
         for c in CLIS:
             reconcile(c, caps, apply=eff_apply, update_drift=args.update_drift,
-                      defaults_only=args.defaults_only)
+                      defaults_only=args.defaults_only, statusline_only=args.statusline_only)
         return 0
     reconcile(args.cli, caps, apply=args.apply and not args.status,
-              update_drift=args.update_drift, defaults_only=args.defaults_only)
+              update_drift=args.update_drift, defaults_only=args.defaults_only,
+              statusline_only=args.statusline_only)
     return 0
 
 

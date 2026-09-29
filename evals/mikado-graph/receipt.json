@@ -1,27 +1,16 @@
 {
   "schema_version": 2,
   "skill": "mikado-graph",
-  "source_hash": "e8b0889ed47b04540bd13ff2d47cb742f7d02bac58d854798f702026de971372",
+  "source_hash": "d86b587a939ab4a9760e29622628d524e506091b4fd610a323670de06c457b63",
   "eval_set_hash": "8d370ee3a400828463b4b3072f67f372a95641d296f68d1af7965cd3b50b338a",
   "providers": [
-    "codex"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.0,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "per_provider": {
-    "codex": {
-      "delta": 0.0,
-      "quantum": 0.05,
-      "n_evals": 6,
-      "status": "ok"
-    }
-  },
-  "models": {
-    "codex": "gpt-6-sol",
-    "judge": "claude-opus-5-5"
-  },
-  "certified_by": "delta-gate"
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }

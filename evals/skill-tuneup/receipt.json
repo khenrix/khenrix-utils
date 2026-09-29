@@ -1,27 +1,16 @@
 {
   "schema_version": 2,
   "skill": "skill-tuneup",
-  "source_hash": "32b06cc0a80fc074ba6326526ce4b08c1dce83e6391f23c2691aeeb69dec5424",
+  "source_hash": "898ead86f45c441de15224b14d43945c406b58ac1728d14a387da189a93c08b2",
   "eval_set_hash": "b39293e06b9b2753d894a67703fcbae4d15ed2df17bbf1d4d3397c04ce30f700",
   "providers": [
+    "claude",
+    "codex",
     "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.8095,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "per_provider": {
-    "agy": {
-      "delta": 0.8095,
-      "quantum": 0.05,
-      "n_evals": 7,
-      "status": "ok"
-    }
-  },
-  "models": {
-    "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-opus-5-5"
-  },
-  "certified_by": "delta-gate"
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }

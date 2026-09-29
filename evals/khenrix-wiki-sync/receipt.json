@@ -1,31 +1,21 @@
 {
   "schema_version": 2,
   "skill": "khenrix-wiki-sync",
-  "source_hash": "9e679fd1a8cd6bfd77e64dd685c4d17dcec701decf6db3b623f563598c7853fa",
+  "source_hash": "e31f535a67439112278fbc76c0e3bdff60025eb23cc21dcb04e22ec7ef4e22b1",
   "eval_set_hash": "292adee2b9186d4b0fcd99d2fc4b6bcd5c4b633cdad29773a71e65365dcf447d",
   "providers": [
+    "claude",
+    "codex",
     "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.2223,
-  "blind_winner": "n/a-deterministic",
-  "provenance": "eval",
-  "per_provider": {
-    "agy": {
-      "delta": 0.2223,
-      "quantum": 0.1111,
-      "n_evals": 3,
-      "status": "ok"
-    }
-  },
-  "models": {
-    "agy": "Gemini 3.8 Flash (High)",
-    "judge": "claude-opus-5-5"
-  },
-  "certified_by": "wikisync-unittests",
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state",
   "deterministic_gate": "wikisync-unittests",
   "self_test": true,
+  "certified_by": "wikisync-unittests",
   "gate_command": [
     "python3",
     "-m",

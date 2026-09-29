@@ -241,18 +241,19 @@ model = "Gemini 3.8 Flash (High)"
 [settings.codex.tui]
 status_line = [
   "model-with-reasoning",
-  "run-state",
   "fast-mode",
-  "project-name",
-  "git-branch",
-  "branch-changes",
-  "pull-request-number",
-  "permissions",
-  "approval-mode",
   "context-remaining",
+  "project-name",
   "five-hour-limit",
   "weekly-limit",
+  "permissions",
+  "approval-mode",
+  "run-state",
+  "git-branch",
   "task-progress",
+  "pull-request-number",
+  "branch-changes",
+  "estimated-thread-cost",
 ]
 status_line_use_colors = true
 

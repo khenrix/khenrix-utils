@@ -240,25 +240,30 @@ workspaces or externally sandboxed environments.
 
 ## Managed status line
 
-A single zero-dependency Python renderer (`statusline/khenrix-statusline`,
-stdlib-only) drives the status line for both **Claude Code** and **agy**. It reads
-the CLI's JSON status payload on stdin and prints one compact line:
+A single stdlib-only Python renderer (`statusline/khenrix-statusline`) drives
+the status line for both **Claude Code** and **agy**. It reads the CLI's JSON
+status payload on stdin and prints one width-aware line:
 
 ```
-Opus 4.8 | khenrix-utils | git main* | ctx 42.7% | $1.23 | 5h 12% | 7d 63% | acceptEdits
+Opus 5.5 | xhigh | ctx 28% left | khenrix-utils | 5h 77% left | git main* | est $1.23
 ```
 
-Segments are emitted only when the data is present, so the same script adapts to
-each CLI's payload (cost and rate-limit segments are Claude-only). Colour follows
-context/limit thresholds and respects `NO_COLOR`; any error degrades to a single
-non-fatal line so the CLI never breaks.
+The renderer keeps model, active controls, context, project and the most relevant
+quota ahead of Git, activity and estimated cost. It omits unknown values and
+drops whole lower-priority segments as the terminal narrows. agy quota labels
+use the supplied bucket IDs. Warning colours appear at 35% and 15% remaining;
+`NO_COLOR` disables them. Invalid input produces a neutral one-line fallback.
 
-`khenrix-setup --apply` installs the renderer to
+`python3 scripts/lib/reconcile.py --all --statusline-only --status` reviews only
+the renderer and footer settings. Re-run with `--apply --update-drift` to align
+them without touching MCPs, hooks, aliases or other CLI settings. The installer
+places the renderer at
 `~/.local/share/khenrix-utils/statusline/khenrix-statusline` (a stable path, not the
 version-pinned plugin cache) and points each CLI's `statusLine` setting at it. Codex
-instead uses its native TUI status line, configured via `[settings.codex.tui]`. The
-install obeys the same non-destructive rules — an existing renderer is only
-overwritten on `--update-drift`, and a hand-set `statusLine` is left untouched.
+instead uses its native TUI status line, configured via `[settings.codex.tui]`.
+Maka keeps its native terminal UI status line. The install obeys the same drift
+rules: existing renderer and managed footer values
+change only with `--update-drift`; extra local footer options are preserved.
 
 ## Why TOML, not YAML
 

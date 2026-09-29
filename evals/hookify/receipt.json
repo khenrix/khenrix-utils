@@ -1,27 +1,16 @@
 {
   "schema_version": 2,
   "skill": "hookify",
-  "source_hash": "c7dd73202d4ec4c026a5a474c703d3dd5b87dd112d8ae6dd44c750e501799485",
+  "source_hash": "86faee9286fa7e69760b1d753a50186e33b4d7c300fdfa4f411856590846c3a2",
   "eval_set_hash": "b7ae260500cdd9772b98bb4cd1c594d1a2a33b995b160e6a290a83240933dc08",
   "providers": [
-    "codex"
+    "claude",
+    "codex",
+    "agy"
   ],
   "mode": "normal",
   "judge": "claude",
-  "delta_pass_rate": 0.25,
-  "blind_winner": "with_skill",
-  "provenance": "eval",
-  "per_provider": {
-    "codex": {
-      "delta": 0.25,
-      "quantum": 0.0833,
-      "n_evals": 4,
-      "status": "ok"
-    }
-  },
-  "models": {
-    "codex": "gpt-6-sol",
-    "judge": "claude-opus-5-5"
-  },
-  "certified_by": "delta-gate"
+  "delta_pass_rate": null,
+  "blind_winner": null,
+  "provenance": "seeded: blessed current committed state"
 }
