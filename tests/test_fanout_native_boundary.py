@@ -397,14 +397,18 @@ def test_descriptor_grants_only_controller_admitted_staged_skill_read(seat):
     assert observed.returncode == 0
 
 
-def test_descriptor_rejects_staged_skill_without_plan_bundle_digest(seat):
+@pytest.mark.parametrize(("digest", "message"), (
+    ("", "staged skill bundle digest is required"),
+    ("0" * 64, "staged skill bundle digest changed"),
+))
+def test_descriptor_rejects_staged_skill_without_plan_bundle_digest(seat, digest, message):
     controller, verification, _, _, other, owner = seat
     _, admitted, command = _staged_skill_request(seat)
-    with pytest.raises(fanout.ProviderRequestError, match="skill bundle"):
+    with pytest.raises(fanout.ProviderRequestError, match=message):
         fanout.issue_native_boundary(
             controller, verification, run_id="run-1", task_id="task-1",
             target_id="target-1", inputs_digest="a" * 64,
-            request=replace(admitted, skill_bundle_sha256=""), command=command,
+            request=replace(admitted, skill_bundle_sha256=digest), command=command,
             other_target_roots=(other,), denied_owner_roots=(owner,),
         )
 
