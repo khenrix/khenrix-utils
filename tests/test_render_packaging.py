@@ -89,6 +89,57 @@ def test_native_only_skills_are_absent_from_every_plugin_bundle():
     assert named == [], f"native-only declarations rejected by structure checks: {named}"
 
 
+def test_native_only_names_come_from_declared_existing_shared_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared/skills"
+    (shared / "direct-copy").mkdir(parents=True)
+    (shared / "ordinary-plugin").mkdir()
+    external = tmp_path / "shared/superpowers/external"
+    external.mkdir(parents=True)
+    (shared / "linked").symlink_to(external, target_is_directory=True)
+    monkeypatch.setattr(render_module, "ROOT", tmp_path)
+
+    names = render_module.native_only_skills(
+        {"skill_delivery": {"skills": ["direct-copy", "external", "linked", "../superpowers"]}}
+    )
+
+    assert names == frozenset({"direct-copy"})
+
+
+def test_render_removes_newly_declared_native_copy_but_keeps_ordinary_shared_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared/skills"
+    for name in ("direct-copy", "ordinary-plugin"):
+        source = shared / name
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\nbody\n"
+        )
+    (tmp_path / "capabilities.toml").write_text(
+        '[skill_delivery]\nskills = ["direct-copy", "external"]\n'
+    )
+    plugin = tmp_path / "marketplaces/claude/plugins/khenrix-utils"
+    stale = plugin / "skills/direct-copy"
+    stale.mkdir(parents=True)
+    (stale / "SKILL.md").write_text("stale\n")
+    monkeypatch.setattr(render_module, "ROOT", tmp_path)
+    monkeypatch.setattr(render_module, "CLIS", ("claude",))
+    monkeypatch.setattr(render_module, "TEMPLATED_SKILLS", ())
+    monkeypatch.setattr(render_module, "BUNDLED", ())
+    monkeypatch.setattr(render_module, "BUNDLED_DIRS", ())
+    monkeypatch.setattr(render_module, "LIB_SCRIPTS", ())
+    monkeypatch.setattr(render_module, "SHARED_LIB_FILES", ())
+    monkeypatch.setattr(render_module, "SHARED_LIBS", ())
+
+    render_module.render()
+
+    assert not stale.exists()
+    assert (plugin / "skills/ordinary-plugin/SKILL.md").is_file()
+    assert render_module.checks.structure_checks(tmp_path, render_module.load_caps()) == []
+
+
 @pytest.mark.parametrize(
     ("skill", "body", "expected"),
     [
@@ -119,11 +170,13 @@ def test_check_validates_native_only_skill_metadata_and_body(
 ) -> None:
     (tmp_path / "shared" / "skills" / "khenrix-quality").mkdir(parents=True)
     (tmp_path / "shared" / "skills" / "khenrix-writing").mkdir(parents=True)
-    for name in render_module.NATIVE_ONLY_SKILLS:
+    for name in ("khenrix-quality", "khenrix-writing"):
         content = f"---\nname: {name}\ndescription: test\n---\nbody\n"
         (tmp_path / "shared" / "skills" / name / "SKILL.md").write_text(content)
     (tmp_path / "shared" / "skills" / skill / "SKILL.md").write_text(body)
-    (tmp_path / "capabilities.toml").write_text("")
+    (tmp_path / "capabilities.toml").write_text(
+        '[skill_delivery]\nskills = ["khenrix-quality", "khenrix-writing"]\n'
+    )
 
     monkeypatch.setattr(render_module, "ROOT", tmp_path)
     monkeypatch.setattr(render_module, "CLIS", ())
@@ -138,7 +191,7 @@ def test_check_rejects_stale_native_only_marketplace_copy(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    for name in render_module.NATIVE_ONLY_SKILLS:
+    for name in ("khenrix-quality", "khenrix-writing"):
         source = tmp_path / "shared" / "skills" / name
         source.mkdir(parents=True)
         (source / "SKILL.md").write_text(
@@ -157,7 +210,9 @@ def test_check_rejects_stale_native_only_marketplace_copy(
     (stale / "SKILL.md").write_text(
         "---\nname: khenrix-quality\ndescription: stale\n---\nbody\n"
     )
-    (tmp_path / "capabilities.toml").write_text("")
+    (tmp_path / "capabilities.toml").write_text(
+        '[skill_delivery]\nskills = ["khenrix-quality", "khenrix-writing"]\n'
+    )
 
     monkeypatch.setattr(render_module, "ROOT", tmp_path)
     monkeypatch.setattr(render_module, "CLIS", ("claude",))

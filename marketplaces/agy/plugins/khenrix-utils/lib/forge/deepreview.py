@@ -446,11 +446,11 @@ def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=
              model_profile: str = runstate.LEGACY_MODEL_PROFILE):
     """One read-only council fan-out. Returns the engine's manifest.
 
-    READ-ONLY IS MECHANICAL, NOT ASKED FOR. `make_readonly` swaps each provider's bypass
-    flag for a plan-only posture, and agy additionally gets a throwaway worktree cwd rooted
-    in the checkout being reviewed. Using the process cwd here can silently isolate a
-    different repository when Forge is launched through a development script. A reviewer
-    that can write is a reviewer that can "fix" the diff it was asked to judge.
+    Council preflights agy's private native deny rules and path-confined hook before
+    spending any seat. `make_readonly` removes the permission bypass; its plan flag is
+    posture only. agy also gets a throwaway worktree rooted in the checkout being
+    reviewed. Using the process cwd here can isolate a different repository when
+    Forge is launched through a development script.
     """
     cfg = _profile_cfg(mode, claude_model=claude_model, agy_model=agy_model,
                        profile=model_profile)
@@ -461,6 +461,7 @@ def _council(prompt: str, workdir: Path, *, checkout, mode: str = "deep", seats=
         spec = engine.build_real_spec(name, prompt, timeout, cfg, workdir)
         engine.make_readonly(spec)
         if spec.name == "agy":
+            spec.cwd = str(Path(checkout).resolve(strict=True))
             worktrees.append(engine.isolate_agy_worktree(
                 spec, workdir, repo_dir=str(checkout)))
         specs.append(spec)

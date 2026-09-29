@@ -24,11 +24,12 @@ review_commands = ["mise exec -- make memory-runtime-test"]
 paths = [
   "components/memory/provenance.json",
   "components/memory/memoryctl.py",
+  "components/memory/memory_exchange.py",
   "components/memory/provider_relay.py",
   "components/memory/README.md",
   "components/memory/LICENSE.claude-mem.txt",
 ]
-hash = "sha256:d1bc8b756111344c2d25eefaa595731373c5857e1151cade95155b08c32063ae"
+hash = "sha256:03fcfc0bbed2ea80e29157102378443216608a8b5cc950d0dc1efe883499cfb8"
 required_text = [
   { path = "components/memory/provenance.json", text = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g==" },
   { path = "components/memory/provenance.json", text = "4520de9e0f8d6cdc20597520e383d8b51d93137f" },
@@ -61,4 +62,6 @@ required_text = [
   { path = "components/memory/memoryctl.py", text = '{"enabled": False, "installId": "disabled-by-khenrix-utils", "decidedAt": "managed-by-khenrix-utils"}' },
   { path = "components/memory/provider_relay.py", text = 'web_search="disabled"' },
   { path = "components/memory/memoryctl.py", text = "install_hooks([\"claude\", \"codex\", \"agy\"])" },
+  { path = "components/memory/memory_exchange.py", text = "memoryctl.install_receipt_problem()" },
+  { path = "components/memory/memory_exchange.py", text = "/api/observations/batch" },
 ]

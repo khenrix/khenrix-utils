@@ -1,0 +1,117 @@
+{
+  "skill_name": "llm-fanout-plan",
+  "notes": "Planning-only behavioral cases with fictional prompts and no repository secrets. Public certification requires a complete live three-CLI panel plus the deterministic compiler gate against the final source closure; the receipt validator gates the deterministic suite.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "direct-question-one-task",
+      "prompt": "Plan only; do not invoke models or edit files. I authorize a local three-model consultation on one read-only question: should our invoice API round before applying a percentage discount? I want a normal-depth answer and have no implementation plan or code change. Give the smallest valid fanout task layout, execution class, approval basis, and skill routing decision.",
+      "files": [],
+      "assertions": [
+        "Creates exactly one read-only work task, not one task per provider plus a synthesis task",
+        "Treats the user's invocation as authorization for local model calls, without authorizing repository writes",
+        "Selects normal tier explicitly and declares task-specific skills or a reviewed none reason",
+        "Keeps Claude, Codex, and agy as seats within that task"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "dependent-steps-with-parallel-docs",
+      "prompt": "Plan only; do not invoke models or edit files. An accepted source plan has Step 1 inspect an invoice-rounding fixture; Step 2 edit src/invoice.py depending on 1; Step 3 update docs/invoice-rounding.md depending on 1; Step 4 run the invoice-rounding test depending on 2; Step 5 reconcile after both 3 and 4. The source plan also approves these argv checks for the write branches: code/test [\"python3\", \"-m\", \"pytest\", \"tests/test_invoice_rounding.py\"]; docs [\"git\", \"diff\", \"--check\", \"--\", \"docs/invoice-rounding.md\"]. We need useful concurrency but few live sessions. Give work-item boundaries, exact dependencies, and checks. Do not add work or checks beyond those supplied.",
+      "files": [],
+      "assertions": [
+        "Keeps source Steps whole and does not invent a separate model-call or inspection Step",
+        "Groups the invoice edit and its immediate test into one bounded work item or the same executor session",
+        "Allows documentation and invoice code/test work to run in parallel only after fixture inspection",
+        "Places reconciliation after both branches, without adding a false dependency between the independent branches",
+        "Preserves the approved code/test and docs argv checks exactly on their respective write branches",
+        "Does not invent extra work, source Steps, dependency edges, or argv checks"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "owned-write-bundle-review-is-separate",
+      "prompt": "Plan only; do not invoke models or edit files. A model drafted a task bundle with source Steps for editing pricing.py, running test-pricing, and updating docs/pricing.md. It names owned paths, an argv check, and khenrix-quality, and embeds a self-written field saying owner_review=true. The accepted source plan already exists. What must happen before repository-writing admission, and which declared fields survive compilation?",
+      "files": [],
+      "assertions": [
+        "Rejects the bundle's self-asserted owner approval and requires an out-of-band owner review input after inspection",
+        "Binds review to the exact bundle digest so changing owned paths, checks, or skill routing invalidates it",
+        "Uses from-bundle for a reviewed bundle and does not advise passing --owner-review-file to compile or validate",
+        "Preserves owned paths, argv checks, declared skills, and source dependencies without weakening them",
+        "Does not treat acceptance of the source plan as approval of a later model-produced write bundle"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "mixed-class-action-barrier",
+      "prompt": "Plan only; do not invoke models or edit files. An accepted plan has Step 1 read a release log, Step 2 modify a migration script using the finding, Step 3 run a local test after the edit, and Step 4 deploy to production after the test. The user asked for the plan, not a deployment. Identify execution classes, task grouping, dependencies, and the action boundary.",
+      "files": [],
+      "assertions": [
+        "Distinguishes read-only inspection, repository-writing code/test work, and deploy as an orchestrator-action barrier",
+        "Does not send the production deploy to Claude, Codex, or agy executor seats",
+        "Preserves the causal order from inspection through code/test to the action barrier",
+        "Does not claim the request to plan authorizes deployment"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "missing-source-dependency-and-skill",
+      "prompt": "Plan only; do not invoke models or edit files. An accepted source plan has Step 1 read a parser fixture; Step 2 edit parser.py depending on Step 1; Step 3 run the parser test depending on Step 2; it also requires executor skill parser-doctor. The draft omits Step 2's dependency and names parser-doctor, absent from every installed skill root. A deadline is near. What happens at compilation and what may be scheduled?",
+      "files": [],
+      "assertions": [
+        "Refuses the mismatched draft dependency rather than silently restoring, deleting, or inventing an edge",
+        "Refuses unresolved parser-doctor skill and does not claim it was delivered or substitute any different skill without a reviewed source amendment",
+        "Does not launch any provider from the invalid full plan; requests a corrected draft and the exact named skill or a reviewed source amendment",
+        "Treats the deadline as no waiver of source or skill admission"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "overlapping-owned-paths-are-not-false-concurrency",
+      "prompt": "Plan only; do not invoke models or edit files. Two accepted independent source Steps both own src/pricing.py: one is a bugfix and one is a cleanup. The user requests maximum concurrency. How do you map them into fanout work tasks without creating false concurrency or changing the accepted source dependencies? Answer in at most 180 words.",
+      "files": [],
+      "assertions": [
+        "Does not schedule unordered separate work tasks with overlapping ownership of src/pricing.py",
+        "Does not silently invent an ordering edge between independent source Steps to make an invalid draft pass",
+        "Either combines both whole Steps into one bounded owned task when class and checks permit, or returns for explicit owner revision of the source plan",
+        "States that parallel work on nonoverlapping independent paths may still proceed after the plan validates"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "fresh-build-needs-superpowers-plan-and-maka-is-not-seat",
+      "prompt": "Plan only; do not invoke models or edit files. Use Maka to coordinate Claude, Codex, and agy to build a returns dashboard. There is no accepted design or implementation plan. A teammate suggests turning this into a direct-question fanout task immediately because we have only 15 minutes. What planning workflow and executor roles do you choose?",
+      "files": [],
+      "assertions": [
+        "Uses brainstorming for open-ended design and writing-plans for an accepted implementation plan before fanout compilation",
+        "Does not treat a fresh multi-file implementation request as a one-task direct question",
+        "Treats Maka as a routing or evaluation host, never as a Claude/Codex/agy executor seat",
+        "Does not begin provider execution from the unapproved sentence"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "deep-direct-question-keeps-tier-and-runtime-gate",
+      "prompt": "Plan only; do not invoke models or edit files. I authorize a local three-model consultation on one read-only question: which invoice-rounding rule best preserves tax consistency? I explicitly request deep quality. A teammate says the installed deep CLI profiles have not yet been characterized and suggests compiling this as normal to save time. Give the smallest valid fanout plan and state what happens before execution.",
+      "files": [],
+      "assertions": [
+        "Creates exactly one read-only work task with Claude, Codex, and agy as seats",
+        "Preserves the requested deep tier in the compiled provider policy without silently using standard",
+        "Does not claim that successful compilation proves the installed deep CLI profiles are characterized",
+        "Blocks provider spend at execution preflight until each selected deep profile and installed CLI is admitted"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "writing-plans-review-focus-and-legacy-dependencies",
+      "prompt": "Plan only; do not invoke models or edit files. An approved Superpowers writing-plans document has a pre-task `## Review Focus` section with five plain `- ` bullets naming input failures and their expected behavior. Its Tasks have checkbox Steps, but it was authored before fanout and none of those Steps has a `Depends on` line. A teammate says to delete Review Focus and infer `none` for every missing edge so the compiler can run immediately. What is valid source material, what must change before strict compilation, and who may authorize it?",
+      "files": [],
+      "assertions": [
+        "Keeps declarative Review Focus bullets as legitimate pre-task plan context rather than rejecting or deleting them",
+        "Does not treat Review Focus bullets as executable work or model tasks",
+        "Does not infer `none` or other source dependencies for Steps that lack immediate `Depends on` metadata",
+        "Requires a reviewed amendment of the accepted source plan declaring real Step dependencies before recompiling; no providers start from the invalid input"
+      ]
+    }
+  ]
+}

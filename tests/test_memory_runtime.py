@@ -211,6 +211,7 @@ def test_successful_setup_publishes_private_reviewed_install_receipt_last(
         "version": memoryctl.PACKAGE_VERSION,
         "integrity": memoryctl.ARTIFACT_INTEGRITY,
         "source_commit": memoryctl.SOURCE_COMMIT,
+        "controller_sha256": memoryctl.expected_install_receipt()["controller_sha256"],
     }
     assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(memoryctl.state_dir().stat().st_mode) == 0o700
@@ -841,6 +842,22 @@ def test_memory_doctor_rejects_missing_or_mismatched_install_receipt(
     assert (
         memoryctl.install_receipt_problem()
         == "memory install receipt contains a duplicate field: version"
+    )
+
+
+def test_install_receipt_detects_changed_installed_exchange_controller(
+    private_home: pathlib.Path,
+) -> None:
+    controller = memoryctl.install_controller()
+    memoryctl._atomic_private_json(
+        memoryctl.install_receipt_path(), memoryctl.expected_install_receipt()
+    )
+    assert memoryctl.install_receipt_problem() is None
+
+    exchange = controller / "memory_exchange.py"
+    exchange.write_bytes(exchange.read_bytes() + b"\n# altered\n")
+    assert memoryctl.install_receipt_problem() == (
+        "installed memory controller does not match the reviewed pin"
     )
 
 

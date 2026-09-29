@@ -50,6 +50,7 @@ PROJECT_RE = re.compile(r"^[^\x00-\x1f,]{1,512}$")
 ROUTES = {"claude-subscription", "codex-subscription", "openai-keychain", "local-claude"}
 CONTROLLER_FILES = (
     "memoryctl.py",
+    "memory_exchange.py",
     "memory_search.py",
     "memory_gateway.py",
     "provider_relay.py",
@@ -203,6 +204,9 @@ def expected_install_receipt() -> dict[str, str]:
         "version": PACKAGE_VERSION,
         "integrity": ARTIFACT_INTEGRITY,
         "source_commit": SOURCE_COMMIT,
+        "controller_sha256": hashlib.sha256(
+            (pathlib.Path(__file__).resolve().parent / "memory_exchange.py").read_bytes()
+        ).hexdigest(),
     }
 
 
@@ -248,6 +252,16 @@ def install_receipt_problem() -> str | None:
         return str(error)
     if observed != expected_install_receipt():
         return "memory install receipt does not match the reviewed pin"
+    installed = installed_controller_root()
+    if installed.exists() or installed.is_symlink():
+        inventory = controller_inventory()
+        if not inventory["complete"]:
+            return "installed memory controller is incomplete or unsafe"
+        exchange = next(
+            item for item in inventory["files"] if item["name"] == "memory_exchange.py"
+        )
+        if exchange["sha256"] != observed["controller_sha256"]:
+            return "installed memory controller does not match the reviewed pin"
     return None
 
 
@@ -628,6 +642,73 @@ def install_controller() -> pathlib.Path:
             raise MemoryConfigurationError(f"controller source is missing: {name}")
         _atomic_private_write(target / name, candidate.read_bytes(), executable=name.endswith(".py"))
     return target
+
+
+def controller_inventory() -> dict[str, Any]:
+    """Return a bounded inventory of the expected installed controller files."""
+    root = installed_controller_root()
+    files: list[dict[str, Any]] = []
+    complete = True
+    try:
+        _assert_private_directory(root, create=False)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened_root = os.fstat(root_fd)
+        named_root = root.lstat()
+        if (
+            (opened_root.st_dev, opened_root.st_ino) != (named_root.st_dev, named_root.st_ino)
+            or not stat.S_ISDIR(opened_root.st_mode)
+            or opened_root.st_uid != os.getuid()
+            or stat.S_IMODE(opened_root.st_mode) != 0o700
+        ):
+            os.close(root_fd)
+            root_fd = None
+            complete = False
+    except (MemoryConfigurationError, OSError):
+        root_fd = None
+        complete = False
+    try:
+        for name in CONTROLLER_FILES:
+            expected_mode = 0o700 if name.endswith(".py") else 0o600
+            entry: dict[str, Any] = {
+                "name": name,
+                "present": False,
+                "mode": None,
+                "bytes": None,
+                "sha256": None,
+            }
+            if root_fd is not None:
+                try:
+                    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+                    try:
+                        metadata = os.fstat(descriptor)
+                        safe = (
+                            stat.S_ISREG(metadata.st_mode)
+                            and metadata.st_uid == os.getuid()
+                            and stat.S_IMODE(metadata.st_mode) == expected_mode
+                            and metadata.st_nlink == 1
+                        )
+                        if safe:
+                            digest = hashlib.sha256()
+                            while chunk := os.read(descriptor, 64 * 1024):
+                                digest.update(chunk)
+                            entry.update(
+                                {
+                                    "present": True,
+                                    "mode": f"{expected_mode:04o}",
+                                    "bytes": metadata.st_size,
+                                    "sha256": digest.hexdigest(),
+                                }
+                            )
+                    finally:
+                        os.close(descriptor)
+                except OSError:
+                    pass
+            complete = complete and bool(entry["present"])
+            files.append(entry)
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+    return {"complete": complete, "files": files}
 
 
 def _bun_version(candidate: str) -> str | None:
@@ -1293,6 +1374,9 @@ def _database_problem() -> str | None:
 def health_document(*, require_running: bool) -> dict[str, Any]:
     problems: list[str] = []
     warnings: list[str] = []
+    controller = controller_inventory()
+    if not controller["complete"]:
+        problems.append("installed memory controller is incomplete or unsafe")
     route: dict[str, Any] | None = None
     try:
         _assert_private_directory(config_dir(), create=False)
@@ -1338,6 +1422,7 @@ def health_document(*, require_running: bool) -> dict[str, Any]:
         "worker": "running" if worker_up else "stopped",
         "relay": "running" if relay_up else ("stopped" if relay_required else "not-required"),
         "gateway": "running" if gateway_up else "stopped",
+        "controller": controller,
         "hooks": hooks,
         "storage": storage_document(),
         "problems": problems,

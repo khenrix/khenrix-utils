@@ -76,6 +76,7 @@ def test_deep_review_overlays_only_the_recorded_provider_models(monkeypatch, tmp
     monkeypatch.setattr(deepreview.engine, "run_council", lambda specs, **kw: {"providers": []})
 
     checkout = tmp_path / "repository-being-reviewed"
+    checkout.mkdir()
     deepreview._council("review", tmp_path, checkout=checkout,
                         claude_model="claude-sonnet-5",
                         agy_model="Gemini 3.7 Flash (High)")
@@ -86,6 +87,24 @@ def test_deep_review_overlays_only_the_recorded_provider_models(monkeypatch, tmp
     assert cfg["claude"] == {**original["claude"], "model": "claude-sonnet-5"}
     assert cfg["codex"] == original["codex"]
     assert isolated["repo_dir"] == str(checkout)
+
+
+def test_deep_review_binds_agy_to_checkout_when_worktree_is_unavailable(monkeypatch, tmp_path):
+    """A failed mirror must not move the guarded reviewer to Forge's launcher cwd."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    seen = {}
+    monkeypatch.setattr(deepreview.engine, "isolate_agy_worktree", lambda *a, **kw: None)
+
+    def capture(specs, **options):
+        seen["cwd"] = specs[0].cwd
+        seen["read_only"] = options["read_only"]
+        return {"providers": []}
+
+    monkeypatch.setattr(deepreview.engine, "run_council", capture)
+    deepreview._council("review", tmp_path / "review", checkout=checkout, seats=("agy",))
+
+    assert seen == {"cwd": str(checkout), "read_only": True}
 
 
 # --------------------------------------------------------------------------- #

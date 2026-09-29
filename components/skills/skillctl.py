@@ -21,6 +21,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,11 +48,12 @@ class Entry:
     desired_hash: str
     current_hash: str | None
     action: str
+    current_observed_hash: str | None = None
     skill: str | None = None
     target_name: str | None = None
 
     def plan_record(self) -> dict[str, Any]:
-        return {
+        record = {
             "key": self.key,
             "kind": self.kind,
             "skill": self.skill,
@@ -62,6 +64,9 @@ class Entry:
             "current_hash": self.current_hash,
             "action": self.action,
         }
+        if self.kind == "skill":
+            record["current_observed_hash"] = self.current_observed_hash
+        return record
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,7 @@ class Configuration:
     state_dir: Path
     skills: tuple[str, ...]
     sources: dict[str, Path]
+    skill_bundles: dict[str, dict[Path, Path]]
     targets: dict[str, Path]
     house_source: Path
     instruction_targets: dict[str, Path]
@@ -294,6 +300,39 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
                 f"delivered skill frontmatter description must be non-empty: {skill!r}"
             )
         sources[skill] = source
+    bundle_data = raw.get("skill_bundles", {})
+    if not isinstance(bundle_data, dict):
+        raise DeliveryError("[skill_delivery.skill_bundles] must be a table")
+    skill_bundles: dict[str, dict[Path, Path]] = {}
+    for skill, mappings in bundle_data.items():
+        if skill not in sources:
+            raise DeliveryError(f"skill bundle names an undeclared delivered skill: {skill!r}")
+        if not isinstance(mappings, dict) or not mappings:
+            raise DeliveryError(f"skill bundle for {skill!r} must map destinations to sources")
+        destinations: dict[Path, Path] = {}
+        for raw_target, raw_source in mappings.items():
+            if not isinstance(raw_target, str) or not isinstance(raw_source, str):
+                raise DeliveryError(f"skill bundle paths must be strings for {skill!r}")
+            destination = Path(raw_target)
+            if not raw_target or destination == Path(".") or destination.is_absolute() or ".." in destination.parts:
+                raise DeliveryError(f"skill bundle destination escapes skill root: {raw_target}")
+            for ancestor in (destination, *destination.parents):
+                if ancestor == Path("."):
+                    break
+                existing = sources[skill] / ancestor
+                if existing.exists() or existing.is_symlink():
+                    if ancestor == destination or not existing.is_dir():
+                        raise DeliveryError(f"skill bundle destination collides with canonical skill: {destination}")
+            if any(
+                destination == previous
+                or destination in previous.parents
+                or previous in destination.parents
+                for previous in destinations
+            ):
+                raise DeliveryError(f"skill bundle destination collides with another bundle: {destination}")
+            source = repo_source_directory(repo_root, raw_source, "skill bundle source")
+            destinations[destination] = source
+        skill_bundles[skill] = destinations
     target_data = raw.get("targets")
     if not isinstance(target_data, dict) or set(target_data) != {"claude", "codex_maka", "agy"}:
         raise DeliveryError(
@@ -356,6 +395,7 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
         state_dir=state_dir,
         skills=tuple(skills),
         sources=sources,
+        skill_bundles=skill_bundles,
         targets=targets,
         house_source=source,
         instruction_targets=instruction_targets,
@@ -393,6 +433,18 @@ def repo_source_path(repo_root: Path, raw: str, label: str) -> Path:
     return path
 
 
+def repo_source_directory(repo_root: Path, raw: str, label: str) -> Path:
+    relative = Path(raw)
+    if not raw or relative == Path(".") or relative.is_absolute() or ".." in relative.parts:
+        raise DeliveryError(f"{label} escapes the repository: {raw}")
+    path = repo_root / relative
+    assert_no_symlink_path(path, repo_root, allow_missing=False)
+    if not path.is_dir():
+        raise DeliveryError(f"{label} must be a real directory: {path}")
+    tree_hash(path, ignore_bytecode=True)
+    return path
+
+
 def assert_no_symlink_path(path: Path, home: Path, *, allow_missing: bool = True) -> None:
     """Reject a symlink in the HOME-relative chain, including the leaf."""
     assert_inside_home(path, home, "managed path")
@@ -418,15 +470,22 @@ def canonical_tree_mode(path: Path) -> int:
     return 0o755 if path.stat().st_mode & 0o111 else 0o644
 
 
-def tree_hash(root: Path) -> str:
+def tree_hash(root: Path, *, ignore_bytecode: bool = False) -> str:
     if root.is_symlink() or not root.is_dir():
         raise DeliveryError(f"skill tree must be a real directory: {root}")
     digest = hashlib.sha256()
     seen = False
     for item in sorted(root.rglob("*"), key=lambda p: p.relative_to(root).as_posix()):
-        relative = item.relative_to(root).as_posix().encode()
+        relative_path = item.relative_to(root)
         if item.is_symlink():
             raise DeliveryError(f"skill tree contains a symlink: {item}")
+        if not (item.is_dir() or item.is_file()):
+            raise DeliveryError(f"skill tree contains an unsupported filesystem entry: {item}")
+        if ignore_bytecode and (
+            "__pycache__" in relative_path.parts or relative_path.name.endswith(".pyc")
+        ):
+            continue
+        relative = relative_path.as_posix().encode()
         mode = canonical_tree_mode(item)
         if item.is_dir():
             digest.update(b"D\0" + relative + b"\0" + oct(mode).encode() + b"\n")
@@ -444,8 +503,6 @@ def tree_hash(root: Path) -> str:
                 + b"\n"
             )
             seen = True
-        else:
-            raise DeliveryError(f"skill tree contains an unsupported filesystem entry: {item}")
     if not seen:
         raise DeliveryError(f"skill tree contains no files: {root}")
     return "sha256:" + digest.hexdigest()
@@ -558,19 +615,62 @@ def replace_managed_block(text: str, desired: str | None) -> str:
     return text[:start] + desired + text[end:]
 
 
+@contextlib.contextmanager
+def staged_skill_sources(config: Configuration):
+    """Build each bundled skill once, then use the normal whole-tree delivery path."""
+    if not config.skill_bundles:
+        yield config.sources
+        return
+    with tempfile.TemporaryDirectory(prefix="khenrix-skill-bundles-") as temporary:
+        sources = dict(config.sources)
+        for skill, bundles in config.skill_bundles.items():
+            canonical = config.sources[skill]
+            assert_no_symlink_path(canonical, config.repo_root, allow_missing=False)
+            tree_hash(canonical, ignore_bytecode=True)
+            staged = Path(temporary) / skill
+            shutil.copytree(
+                canonical, staged, symlinks=True, copy_function=shutil.copy2,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            for destination, source in bundles.items():
+                assert_no_symlink_path(source, config.repo_root, allow_missing=False)
+                tree_hash(source, ignore_bytecode=True)
+                target = staged / destination
+                if target.exists() or target.is_symlink() or any(
+                    (staged / parent).is_file() or (staged / parent).is_symlink()
+                    for parent in destination.parents if parent != Path(".")
+                ):
+                    raise DeliveryError(f"skill bundle destination collides in staged tree: {destination}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(
+                    source, target, symlinks=True, copy_function=shutil.copy2,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+            tree_hash(staged)
+            sources[skill] = staged
+        yield sources
+
+
 def plan(config: Configuration) -> tuple[str, list[Entry]]:
+    with staged_skill_sources(config) as sources:
+        return _plan(config, sources)
+
+
+def _plan(config: Configuration, desired_sources: dict[str, Path]) -> tuple[str, list[Entry]]:
     entries: list[Entry] = []
     for skill in config.skills:
         source = config.sources[skill]
-        desired_hash = tree_hash(source)
+        desired_hash = tree_hash(desired_sources[skill])
         for target_name, root in config.targets.items():
             assert_no_symlink_path(root, config.home)
             target = root / skill
             assert_no_symlink_path(target, config.home)
             current_hash: str | None = None
+            current_observed_hash: str | None = None
             current_modes_match = False
             if target.exists():
                 current_hash = tree_hash(target)
+                current_observed_hash = observed_tree_hash(target)
                 current_modes_match = tree_modes_are_canonical(target)
             action = (
                 "MATCH"
@@ -587,6 +687,7 @@ def plan(config: Configuration) -> tuple[str, list[Entry]]:
                     target=target,
                     desired_hash=desired_hash,
                     current_hash=current_hash,
+                    current_observed_hash=current_observed_hash,
                     action=action,
                 )
             )
@@ -762,7 +863,9 @@ def write_instructions_atomic(target: Path, desired_block: str, config: Configur
             temporary.unlink()
 
 
-def create_backup(config: Configuration, plan_id: str, changed: list[Entry]) -> tuple[str, Path, dict[str, Any]]:
+def create_backup(
+    config: Configuration, plan_id: str, changed: list[Entry], desired_sources: dict[str, Path]
+) -> tuple[str, Path, dict[str, Any]]:
     backup_id = next_backup_id(config.state_dir, plan_id)
     backup_root = config.state_dir / "backups" / backup_id
     ensure_private_directory(backup_root, config)
@@ -782,7 +885,7 @@ def create_backup(config: Configuration, plan_id: str, changed: list[Entry]) -> 
                 observed_tree_hash(entry.target) if entry.target.exists() else None
             )
             record["post_apply_observed_hash"] = observed_tree_hash(
-                entry.source, canonical_modes=True
+                desired_sources[entry.skill], canonical_modes=True
             )
         if entry.kind == "skill" and entry.target.exists():
             relative = Path("entries") / f"{index:02d}-{entry.skill}"
@@ -864,7 +967,28 @@ def apply(config: Configuration, *, expect: str | None, as_json: bool) -> None:
 
 
 def _apply_locked(config: Configuration, *, expect: str | None, as_json: bool) -> None:
-    plan_id, entries = plan(config)
+    with staged_skill_sources(config) as desired_sources:
+        _apply_staged(config, desired_sources, expect=expect, as_json=as_json)
+
+
+def assert_target_unchanged(entry: Entry, config: Configuration) -> None:
+    assert_no_symlink_path(entry.target, config.home)
+    if entry.kind == "instructions" and entry.target.exists() and not entry.target.is_file():
+        raise DeliveryError(f"{entry.key} changed during apply: target is not a regular file")
+    current = hash_managed_target(entry.kind, entry.target)
+    expected = entry.current_observed_hash if entry.kind == "skill" else entry.current_hash
+    if current != expected:
+        raise DeliveryError(f"{entry.key} changed during apply ({current!r} != {expected!r})")
+
+
+def _apply_staged(
+    config: Configuration,
+    desired_sources: dict[str, Path],
+    *,
+    expect: str | None,
+    as_json: bool,
+) -> None:
+    plan_id, entries = _plan(config, desired_sources)
     if expect and expect != plan_id:
         raise DeliveryError(f"plan changed: expected {expect}, current plan is {plan_id}")
     changed = [entry for entry in entries if entry.action != "MATCH"]
@@ -872,14 +996,27 @@ def _apply_locked(config: Configuration, *, expect: str | None, as_json: bool) -
     backup_root: Path | None = None
     manifest: dict[str, Any] | None = None
     if changed:
+        for entry in entries:
+            assert_target_unchanged(entry, config)
         ensure_private_directory(config.state_dir, config)
-        backup_id, backup_root, manifest = create_backup(config, plan_id, changed)
+        backup_id, backup_root, manifest = create_backup(config, plan_id, changed, desired_sources)
+        try:
+            for entry in entries:
+                assert_target_unchanged(entry, config)
+        except Exception:
+            shutil.rmtree(backup_root)
+            raise
+    attempted: set[str] = set()
     try:
         if changed:
             for entry in changed:
-                assert_no_symlink_path(entry.target, config.home)
+                # An external writer can still race after this comparison; the
+                # operation lock only excludes other cooperative controllers.
+                assert_target_unchanged(entry, config)
+                attempted.add(entry.key)
                 if entry.kind == "skill":
-                    copy_skill_atomic(entry.source, entry.target, config)
+                    assert entry.skill is not None
+                    copy_skill_atomic(desired_sources[entry.skill], entry.target, config)
                 else:
                     assert entry.target_name is not None
                     write_instructions_atomic(
@@ -887,7 +1024,7 @@ def _apply_locked(config: Configuration, *, expect: str | None, as_json: bool) -
                         desired_instruction_block(config, entry.target_name),
                         config,
                     )
-        final_plan_id, final_entries = plan(config)
+        final_plan_id, final_entries = _plan(config, desired_sources)
         if any(entry.action != "MATCH" for entry in final_entries):
             raise DeliveryError("post-apply verification found delivery drift")
         # The final plan differs because actions and current hashes changed; receipt retains
@@ -896,7 +1033,15 @@ def _apply_locked(config: Configuration, *, expect: str | None, as_json: bool) -
         write_private_json(config.state_dir / RECEIPT_NAME, receipt, config)
     except Exception:
         if backup_root is not None and manifest is not None:
-            restore_manifest(config, backup_root, manifest, require_post_hash=False)
+            if attempted:
+                attempted_manifest = {
+                    **manifest,
+                    "entries": [
+                        record for record in manifest["entries"] if record["key"] in attempted
+                    ],
+                }
+                restore_manifest(config, backup_root, attempted_manifest, require_post_hash=False)
+            shutil.rmtree(backup_root)
         raise
     result = {
         "plan_id": plan_id,
@@ -1039,11 +1184,11 @@ def restore_manifest(
         assert_inside_home(target, config.home, "backup target")
         assert_no_symlink_path(target, config.home)
         if record["kind"] == "skill":
-            if target.exists():
-                shutil.rmtree(target)
             if record.get("existed"):
                 source = backup_root / record["backup"]
                 restore_skill_atomic(source, target, config)
+            elif target.exists():
+                shutil.rmtree(target)
         else:
             current_bytes, current_text = read_utf8_bytes(target) if target.exists() else (b"", "")
             unchanged_since_apply = (

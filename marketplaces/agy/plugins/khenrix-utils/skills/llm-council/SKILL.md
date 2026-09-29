@@ -24,21 +24,15 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
 > not routine tasks.
 >
-> **Read-only by default.** All three members are now **mechanically constrained**:
-> Claude (plan mode, plan-file writes suppressed), Codex (read-only sandbox), and agy
-> (`--mode plan`, accepted since agy 1.1.1, but the mechanical block is VERIFIED only on
-> 1.1.13+ — probed 2026-08-14: a requested write was blocked and the run's own log
-> confirms plan mode engaged. Older builds are unproven; treat them as resting on the
-> posture line and worktree isolation alone). agy keeps `--dangerously-skip-permissions`
-> *alongside* `--mode plan`: the two are orthogonal per `agy --help` (auto-approve is a
-> prompting policy, plan mode is the write barrier), and dropping it left agy unable to
-> approve its own reads headlessly. Two soft layers remain on top: a read-only
-> posture line prepended to every member's prompt (identical conditions preserved) and a
-> throwaway git-worktree cwd for agy — both added after the 2026-07-11 breakout incident,
-> kept as defense in depth. This suits the council's job (a second opinion / synthesis,
-> not edits) and makes it low-risk to convene even
-> mid-task. Pass `--allow-writes` only when you explicitly want the members
-> to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
+> **Read-only by default.** Codex uses its read-only sandbox. The agy seat
+> removes `--dangerously-skip-permissions` and receives a private native deny
+> policy plus a path-confined pre-tool hook. `--mode plan` alone is **not** a
+> write barrier. Claude uses plan mode with `ExitPlanMode` disabled, but this is
+> not a filesystem sandbox; use a
+> stronger isolated seat if strict no-write enforcement is required. The
+> read-only posture line and agy's throwaway worktree remain additional layers.
+> Pass `--allow-writes` only when you explicitly want members to edit or execute
+> in a trusted workspace.
 
 ## 1. Locate the engine
 

@@ -39,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import agy_guard
+
 MANIFEST_SCHEMA = 1
 DEFAULT_PROVIDERS = ["claude", "codex", "agy"]
 RESULT_TRUNCATE = 4000  # chars kept in the stdout manifest; full text is on disk
@@ -896,6 +898,10 @@ class ProviderSpec:
     # (length floor, sentinel) is not a property of running a provider (spec §8.1).
     # Signature: (exit_code, stdout, stderr, spec) -> (valid, reason, result_text, structured)
     validator: Optional[Callable] = None
+    # A guarded agy seat needs its own complete child environment. The panel-level
+    # `env` remains the default for every other seat and for the eval harness.
+    environment: Optional[dict] = None
+    agy_guard: Optional[agy_guard.AgyGuard] = None
 
 
 def agy_configured_model() -> Optional[str]:
@@ -1023,36 +1029,19 @@ READONLY_REVIEWER_NOTE = (
 
 
 def make_readonly(spec: ProviderSpec) -> ProviderSpec:
-    """Swap a provider's "bypass everything" flag for a read-and-plan-only posture, in
-    place. Unlike sandboxing HOME, this keeps the real HOME (so auth still resolves) but
-    forbids writes — the executor can read/plan but cannot mutate config. Shared by the
-    eval harness (executor runs) and reused by any read-only council mode.
+    """Apply the provider's read-only invocation posture in place.
 
-    agy's read-only flag is `--mode plan` (accepted since 1.1.1). `--sandbox` (the earlier
-    candidate) BROKE agy non-interactively: agy locates/reads files via terminal commands
-    (find/grep) that the sandbox's terminal restrictions block, so it stalls on
-    "searching…" and hangs the full engine window with EMPTY output — verified 2026-06-26
-    (--sandbox, even WITH --dangerously-skip-permissions, never completes a file read;
-    plain --dangerously-skip-permissions reads + answers in seconds). So agy stays
-    headless and the bypass flag is swapped for `--mode plan` instead, mirroring claude's
-    plan mode.
+    The agy branch is only a posture. `run_council(read_only=True)` installs and
+    validates its native deny rules and path-confined hook before launching any seat.
 
-    WHAT IS VERIFIED, AND ON WHAT: on 1.1.13 (probed 2026-08-14) the flag reaches the run
-    — agy logs `printmode.go: Print mode: applying agent mode plan` and `manager.go:
-    SetCycleMode called: plan`, and a requested file creation produced a plan and NO file.
-    FOR 1.1.11 AND EARLIER THIS IS UNPROVEN AND PROBABLY FALSE: agy 1.1.12's changelog
-    says `--mode` was ignored in headless `-p` runs, and no archived read-only harness log
-    from the 1.1.8-1.1.11 era carries either line. The 2026-07-11 probe once cited here
-    could not settle it: isolate_agy_worktree landed 2026-07-11 11:58 and the plan-mode
-    claim was recorded 2026-07-11 23:01, so a cwd-relative write already had a second
-    sufficient explanation, and a model narrating a write it never attempted looks
-    identical. Treat the pre-1.1.13 period as posture-line + worktree only. Plan mode is a
-    CLI execution-mode guard, NOT OS filesystem containment.
+    A live 2026-09-24 probe on agy 1.2.10 showed `--mode plan` plus
+    `--dangerously-skip-permissions` creating a file. Removing the bypass alone
+    soft-denied a harmless read. The private native policy supplies the read
+    allowance and denies writes; the hook confines reads to this seat's workspace.
+    `--mode plan` and the prompt line express intent, not a write barrier.
 
-    Two soft layers remain on top: the READONLY_POSTURE prompt line and
-    isolate_agy_worktree (cwd-relative mutations land in a throwaway git worktree).
-    HISTORY: `--sandbox` (the pre-1.1.1 candidate) hung agy headless — verified
-    2026-06-26; do not resurrect it without re-probing."""
+    `--sandbox` previously prevented agy's headless file reads and hung the run
+    (2026-06-26 probe), so it is not used here."""
     if spec.name == "claude":
         # Plan mode is the read-only mechanism, but its harness invites writing a plan
         # FILE (the one write plan mode allows) — suppress that side effect mechanically
@@ -1065,16 +1054,8 @@ def make_readonly(spec: ProviderSpec) -> ProviderSpec:
         spec.argv = _replace_flag(spec.argv, "--dangerously-bypass-approvals-and-sandbox",
                                   ["--sandbox", "read-only"])
     elif spec.name == "agy":
-        # Plan mode is ADDED to the auto-approve flag, not swapped for it. Per
-        # `agy --help` the two are orthogonal: --dangerously-skip-permissions is
-        # "auto-approve all tool permission requests without prompting" (a prompting
-        # policy) while --mode sets the execution mode (accept-edits|plan). Swapping
-        # one for the other left agy headless with no way to approve its OWN reads:
-        # it soft-denied its ReadFile at tool_confirmation_manager.go:183 and answered
-        # from an empty context, which the engine then scored ok. Plan mode remains the
-        # write barrier; auto-approve only removes a prompt no one can answer.
         spec.argv = _replace_flag(spec.argv, "--dangerously-skip-permissions",
-                                  ["--dangerously-skip-permissions", "--mode", "plan"])
+                                  ["--mode", "plan"])
     return spec
 
 
@@ -1347,6 +1328,7 @@ def _run_member_locked(argv, *, stdin, timeout, env, cwd):
 
 
 _LIVE_WORKTREES: set = set()   # (repo, wt) handles; registered the moment `worktree add` succeeds
+_LIVE_AGY_GUARDS: set[Path] = set()  # exact run-owned homes; signal cleanup never glob-deletes
 _STATE = {"handler_fired": False}   # mutable container: a facade re-export of a
                                     # rebindable bool would go permanently stale (spec §17)
 
@@ -1365,6 +1347,10 @@ def _signal_cleanup(signum, frame):
                 pass
         for handle in list(_LIVE_WORKTREES):
             remove_agy_worktree(handle)
+        for home in list(_LIVE_AGY_GUARDS):
+            agy_guard.cleanup_home(home)
+            if not home.exists() and not home.is_symlink():
+                _LIVE_AGY_GUARDS.discard(home)
     os._exit(128 + signum)
 
 
@@ -1391,7 +1377,7 @@ def install_cleanup_handler(force: bool = False) -> bool:
 
 def _warn_isolation(detail: str) -> None:
     sys.stderr.write(f"WARNING: agy worktree isolation degraded — {detail}; "
-                     "agy runs in the real cwd (plan mode + posture line still apply).\n")
+                     "agy runs in the real cwd (native tool guard still applies).\n")
 
 
 def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
@@ -1400,9 +1386,9 @@ def isolate_agy_worktree(spec: ProviderSpec, workdir: Path,
                          register: bool = True) -> Optional[tuple]:
     """Point agy's cwd at a throwaway git worktree so cwd-relative mutations — the
     observed breakout class (2026-07-11: editing files, re-seeding receipts, `git add`)
-    — land in a discarded copy instead of the real checkout. Since agy 1.1.1 the primary
-    write barrier is `--mode plan` (see make_readonly); this worktree is defense in depth
-    for the day plan mode fails or regresses. Identical conditions beat containment: the worktree mirrors the working
+    — land in a discarded copy instead of the real checkout. The native deny rules and
+    path-confined hook control tools; this worktree is defense in depth. Identical
+    conditions beat containment: the worktree mirrors the working
     tree (uncommitted tracked changes incl. binary; untracked files are absent), the
     caller's position inside the repo is preserved so relative paths resolve the same
     for every member, and if the mirror cannot be reproduced faithfully the isolation
@@ -1583,7 +1569,8 @@ def _coerce_text(v) -> str:
 
 
 def run_provider(spec: ProviderSpec, retries: int, timeout: int,
-                 backoff: float, workdir: Path, *, env=None) -> dict:
+                 backoff: float, workdir: Path, *, env=None,
+                 _allow_unguarded_agy: bool = False) -> dict:
     """Run one provider through its bounded attempt loop and return its record.
 
     `env` is the environment the provider's child process runs under, BEFORE this function's
@@ -1596,13 +1583,26 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
              "reason": "unknown", "result_text": "", "valid": False, "structured": False,
              "duration_sec": 0.0, "status": "failed"}
 
+    # The public worker cannot turn make_readonly(agy) into an unguarded launch.
+    # Council's unclaimed eval-harness path and explicit write-capable Forge path
+    # opt out at their panel boundary, where they own different isolation rules.
+    flags = spec.argv[:spec.argv.index("-p")] if "-p" in spec.argv else spec.argv
+    plan_mode = ("--mode=plan" in flags or any(
+        arg == "--mode" and flags[index + 1:index + 2] == ["plan"]
+        for index, arg in enumerate(flags)))
+    if spec.name == "agy" and plan_mode and spec.agy_guard is None and not _allow_unguarded_agy:
+        raise agy_guard.AgyGuardError("agy read-only seat has no guard")
+
     for attempt in range(retries + 1):
+        if spec.agy_guard is not None:
+            _validate_agy_spec(spec, timeout)
         n = attempt + 1
         t0 = time.monotonic()
         _queued = 0.0            # seconds spent waiting for a run slot, never charged as latency
         try:
             cp = run_member(spec.argv, stdin=spec.stdin, timeout=timeout,
-                            env=child_env(env), cwd=spec.cwd)
+                            env=child_env(spec.environment if spec.environment is not None else env),
+                            cwd=spec.cwd)
             # `timeout` bounds the SUBPROCESS, not the queue ahead of it, so a member that
             # waited must not have that wait charged to its latency — otherwise duration_sec
             # exceeds the timeout it supposedly obeyed (measured: a codex seat reported 2455s
@@ -1767,6 +1767,36 @@ def run_provider(spec: ProviderSpec, retries: int, timeout: int,
     }
 
 
+def _validate_agy_spec(spec: ProviderSpec, timeout: int) -> None:
+    guard = spec.agy_guard
+    if guard is None:
+        raise agy_guard.AgyGuardError("agy read-only seat has no guard")
+    agy_guard.validate(guard)
+    argv = spec.argv
+    # Only the known initial-session flags may run under the private policy.
+    # In particular, a second --log-file or a resumed/project session must not
+    # redirect CLI writes or load project configuration outside this guard.
+    expected = [str(guard.binary), "--new-project", "--mode", "plan", "--print-timeout",
+                f"{max(5, int(timeout) - 5)}s", "--output-format", "json",
+                "--log-file", spec.log_file]
+    flags = argv[:-2]
+    known_flags = (flags == expected or
+                   (len(flags) == len(expected) + 2 and flags[:len(expected)] == expected
+                    and flags[-2] == "--model" and isinstance(flags[-1], str)
+                    and bool(flags[-1])))
+    try:
+        log_file = Path(spec.log_file).resolve(strict=False)
+    except (OSError, RuntimeError, TypeError):
+        log_file = None
+    if (not known_flags or len(argv) < 2 or argv[-2] != "-p"
+            or not isinstance(argv[-1], str)
+            or tuple(argv) != guard.argv or spec.model != guard.model
+            or log_file != guard.home.parent.parent / "agy.cli.log"
+            or spec.cwd != str(guard.workspace)
+            or spec.environment != guard.environment):
+        raise agy_guard.AgyGuardError("agy read-only seat changed its guarded invocation")
+
+
 def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
                 backoff: float, workdir: Path,
                 prompt: Optional[str] = None,
@@ -1793,12 +1823,49 @@ def run_council(specs: list[ProviderSpec], *, retries: int, timeout: int,
     # at all: abort, and three detached members keep editing for up to timeout x attempts.
     if install_signal_handler:
         install_cleanup_handler()
-    started = _now_iso()
-    with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
-        futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir, env=env)
-                   for s in specs]
-        providers = [f.result() for f in futures]
-    finished = _now_iso()
+    guards = []
+    try:
+        # Preflight the whole panel before the first worker starts. A missing agy
+        # policy must not spend the Claude/Codex seats in the same review.
+        if read_only is True:
+            for spec in specs:
+                if spec.name != "agy":
+                    continue
+                if spec.agy_guard is None:
+                    if spec.argv[1:3] != ["--mode", "plan"]:
+                        raise agy_guard.AgyGuardError("agy read-only seat lacks plan posture")
+                    # With an isolated HOME, agy 1.2.10 otherwise selects HOME as
+                    # its project and resolves relative reads against that HOME.
+                    spec.argv.insert(1, "--new-project")
+                    guard = agy_guard.issue(workdir, spec.cwd or Path.cwd(), env,
+                                            argv=spec.argv, model=spec.model,
+                                            register_home=_LIVE_AGY_GUARDS.add,
+                                            unregister_home=_LIVE_AGY_GUARDS.discard)
+                    guards.append(guard)
+                    spec.agy_guard = guard
+                    spec.cwd = str(guard.workspace)
+                    spec.argv = list(guard.argv)
+                    spec.environment = dict(guard.environment)
+                else:
+                    guard = spec.agy_guard
+                    if not isinstance(guard, agy_guard.AgyGuard):
+                        raise agy_guard.AgyGuardError("agy read-only seat has no valid guard")
+                    if guard.home in _LIVE_AGY_GUARDS:
+                        raise agy_guard.AgyGuardError("agy guard HOME is already in use")
+                    _LIVE_AGY_GUARDS.add(guard.home)
+                    guards.append(guard)
+                _validate_agy_spec(spec, timeout)
+        started = _now_iso()
+        with ThreadPoolExecutor(max_workers=max(1, len(specs))) as ex:
+            futures = [ex.submit(run_provider, s, retries, timeout, backoff, workdir,
+                                 env=env, _allow_unguarded_agy=read_only is not True)
+                       for s in specs]
+            providers = [f.result() for f in futures]
+        finished = _now_iso()
+    finally:
+        for guard in guards:
+            agy_guard.cleanup(guard)
+            _LIVE_AGY_GUARDS.discard(guard.home)
 
     valid = sum(1 for p in providers if p["valid"])
     requested = requested if requested is not None else [s.name for s in specs]
@@ -1869,9 +1936,8 @@ def _render_text(manifest: dict) -> str:
 
 
 # Prepended to the prompt (identically for every member) when the council runs
-# read-only. Defense in depth: every member is now mechanically constrained (claude
-# plan mode, codex sandbox, agy --mode plan verified on 1.1.13 — see make_readonly) —
-# this line and the agy worktree are the soft layers on top, added after agy executed
+# read-only. Council preflights agy's private native policy and path-confined hook;
+# this line and the agy worktree are additional layers, added after agy executed
 # a review-framed
 # prompt (editing files, re-seeding receipts, staging) on 2026-07-11. claude also gets
 # the plan-mode-specific READONLY_REVIEWER_NOTE via make_readonly — keep both in mind
@@ -2279,20 +2345,17 @@ def self_test() -> int:
     check("readonly: codex sandboxed read-only", "--sandbox" in cx14.argv and "read-only" in cx14.argv)
     ag14 = build_real_spec("agy", "q", 30, {}, wd("ro"))
     make_readonly(ag14)
-    check("readonly: agy gets plan mode (the write barrier)",
+    check("readonly: agy gets plan posture",
           "--mode" in ag14.argv and "plan" in ag14.argv)
-    # REGRESSION: plan mode used to REPLACE the auto-approve flag, which left agy
-    # unable to approve its own reads headlessly — it denied its ReadFile at
-    # tool_confirmation_manager.go:183 and answered from an empty context.
-    check("readonly: agy KEEPS auto-approve alongside plan mode (can read its input)",
-          "--dangerously-skip-permissions" in ag14.argv)
+    check("readonly: agy removes the dangerous permission bypass",
+          "--dangerously-skip-permissions" not in ag14.argv)
     # Index lookups are guarded: a missing flag must report FAIL, not raise and abort
     # the whole suite (a crashing check hides every check after it).
     def _before_prompt(argv: list, *flags: str) -> bool:
         return ("-p" in argv
                 and all(f in argv and argv.index(f) < argv.index("-p") for f in flags))
     check("readonly: agy flags still precede the positional prompt (Go flag parsing)",
-          _before_prompt(ag14.argv, "plan", "--dangerously-skip-permissions"))
+          _before_prompt(ag14.argv, "--mode", "plan"))
     ag14m = build_real_spec("agy", "q", 30,
                             {"agy": {"model": "Gemini 3.5 Flash (High)", "thinking": "high"}},
                             wd("ro"))
@@ -2319,7 +2382,7 @@ def self_test() -> int:
     check("agy: cross-tier override records the LABEL's tier, not the mode's",
           ag14x.thinking == "medium")
 
-    # S15 — read-only posture line (agy's defense-in-depth atop plan mode): prepended intact,
+    # S15 — read-only posture line: prepended intact,
     # original prompt preserved, and identical for every member by construction.
     aug = apply_readonly_posture("original question")
     check("posture: line prepended", aug.startswith(READONLY_POSTURE))
@@ -3077,10 +3140,8 @@ def main(argv=None) -> int:
         if name in by_name and tokens:
             by_name[name].argv = tokens + by_name[name].argv[1:]
 
-    # Read-only is the default council posture: claude/codex are mechanically
-    # constrained (claude: plan mode + plan-file suppression; codex: read-only sandbox;
-    # agy: --mode plan, verified on 1.1.13 — see make_readonly) — agy additionally gets a
-    # throwaway-worktree cwd so cwd-relative mutations are discarded (defense in depth).
+    # Read-only is the default council posture. agy's native policy and hook are
+    # prepared at run_council's preflight; its throwaway worktree remains another layer.
     # --allow-writes opts out. Applied after
     # overrides so a test override's binary is preserved (overrides replace argv[0]
     # only, so the bypass flag make_readonly swaps is always present).

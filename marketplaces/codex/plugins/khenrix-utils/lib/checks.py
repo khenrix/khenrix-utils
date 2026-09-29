@@ -6,7 +6,7 @@ them; render.check() prints + fails on any. Self-test (`--self-test`) covers the
 logic with no repo/network dependency.
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, tempfile, tomllib
+import hashlib, importlib.util, json, re, subprocess, sys, tempfile, tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -56,9 +56,15 @@ def _load_caps(root: Path) -> dict:
 
 def model_crosscheck(root: Path) -> list[str]:
     """Council seats and portable defaults must use registered provider models."""
-    sys.path.insert(0, str(root / "shared" / "skills" / "llm-council" / "scripts"))
     try:
-        import fanout
+        source = root / "shared" / "skills" / "llm-council" / "scripts" / "fanout.py"
+        spec = importlib.util.spec_from_file_location("_llm_council_fanout", source)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {source}")
+        fanout = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = fanout
+        spec.loader.exec_module(fanout)
+        fanout = sys.modules.pop(spec.name)
     except Exception as e:  # noqa: BLE001
         return [f"model-crosscheck: cannot import fanout.py: {e}"]
     caps = _load_caps(root)
@@ -332,6 +338,7 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
                  "scripts/eval_harness.py",  # decides what the gate RUNS
+                 "scripts/lib/portability.py",  # checks rendered vs native skill script delivery
                  # eval_harness imports this engine to build/run the readonly council that
                  # certifies every ordinary behavior eval. A certifier change must stale
                  # those receipts even when the evaluated skill does not bundle council.
@@ -349,6 +356,10 @@ SKILL_EXTRA = {
     # affecting by this closure's own definition, and reachable from no other entry here
     # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
     "llm-forge":       ["scripts/lib/checks.py"],
+    # The planner's native bundle mapping chooses the runtime and memory files delivered
+    # with the skill; a mapping edit must stale its certification even if both trees stay put.
+    "llm-fanout-plan": ["capabilities.toml"],
+    "llm-fanout-execute": ["capabilities.toml"],
     # tuneup.py's `approved_models()` reads capabilities [models] AT RUNTIME and
     # `tag_model()` returns "current" vs "stale-candidate" from it — so registering a new
     # model changes what skill-tuneup REPORTS while nothing staled its receipt. That is the
@@ -369,6 +380,8 @@ SKILL_EXTRA_DIRS = {
     # skill itself arrives in a later plan — the entry is inert until evals/llm-forge
     # exists, because receipt_gate only walks skills that have an evals.json.
     "llm-forge":         ["shared/lib/forge", "shared/lib/council"],
+    "llm-fanout-plan":   ["shared/lib/fanout", "components/memory"],
+    "llm-fanout-execute": ["shared/lib/fanout", "components/memory"],
 }
 
 

@@ -1,0 +1,3 @@
+{"event":"init","conversation_id":"agy-conversation-1","init":{"cwd":"/tmp/work","tools":[],"permission_mode":"always-proceed","model":"gemini-3.8-flash-high"}}
+{"event":"step_update","step_update":{"conversation_id":"agy-conversation-1","step_index":0,"state":"DONE","step_type":"agent_response","text_delta":"agy answer"}}
+{"event":"result","result":{"conversation_id":"agy-conversation-1","status":"SUCCESS","response":"agy answer","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":17,"output_tokens":9,"thinking_tokens":2,"cache_read_tokens":4,"total_tokens":32}}}

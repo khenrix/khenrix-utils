@@ -4,6 +4,7 @@ import json
 import importlib.util
 import fcntl
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -59,6 +60,39 @@ def fixture(tmp_path: Path) -> tuple[Path, Path, skillctl.Configuration]:
         (skill / "references" / "mode.md").write_text(f"{name} v1\n")
     config = skillctl.load_configuration(repo, home, None)
     return repo, home, config
+
+
+def bundle_fixture(
+    tmp_path: Path, mapping: dict[str, dict[str, str]] | None = None
+) -> tuple[Path, Path, skillctl.Configuration]:
+    repo, home, _ = fixture(tmp_path)
+    runtime = repo / "shared" / "lib" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "__init__.py").write_bytes(b"VERSION = 1\n")
+    tool = runtime / "run.sh"
+    tool.write_bytes(b"#!/bin/sh\nexit 0\n")
+    tool.chmod(0o700)
+    mapping = mapping or {"khenrix-quality": {"lib/runtime": "shared/lib/runtime"}}
+    tables = "".join(
+        f"[skill_delivery.skill_bundles.{skill}]\n"
+        + "".join(f'"{target}" = "{source}"\n' for target, source in bundles.items())
+        for skill, bundles in mapping.items()
+    )
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace("[skill_delivery.targets]", tables + "\n[skill_delivery.targets]")
+    )
+    return repo, home, skillctl.load_configuration(repo, home, None)
+
+
+def plant_unsafe_ignored_bundle_entry(repo: Path, kind: str) -> None:
+    source = repo / "shared/lib/runtime"
+    if kind == "symlink-cache":
+        outside = repo / "outside-cache"
+        outside.mkdir()
+        (source / "__pycache__").symlink_to(outside, target_is_directory=True)
+    else:
+        os.mkfifo(source / "runtime.pyc")
 
 
 def tree_snapshot(root: Path) -> dict[str, tuple[str, int, bytes | None]]:
@@ -127,6 +161,394 @@ def test_configuration_accepts_an_additional_valid_direct_copy_skill(tmp_path: P
 
     assert config.skills[-1] == "using-superpowers"
     assert len([entry for entry in entries if entry.kind == "skill"]) == 9
+
+
+def test_bundle_bytes_and_modes_are_part_of_plan_install_receipt_and_doctor(
+    tmp_path: Path,
+) -> None:
+    repo, home, plain = fixture(tmp_path)
+    plain_id, _ = skillctl.plan(plain)
+    runtime = repo / "shared/lib/runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "__init__.py").write_bytes(b"VERSION = 1\n")
+    executable = runtime / "run.sh"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "[skill_delivery.targets]",
+            '[skill_delivery.skill_bundles.khenrix-quality]\n'
+            '"lib/runtime" = "shared/lib/runtime"\n\n'
+            '[skill_delivery.skill_bundles.khenrix-writing]\n'
+            '"lib/writing-runtime" = "shared/lib/runtime"\n\n'
+            "[skill_delivery.targets]",
+        )
+    )
+    config = skillctl.load_configuration(repo, home, None)
+    plan_id, entries = skillctl.plan(config)
+    quality = next(entry for entry in entries if entry.key == "skill:khenrix-quality:claude")
+    assert plan_id != plain_id
+    assert quality.desired_hash != skillctl.tree_hash(config.sources["khenrix-quality"])
+    writing = next(entry for entry in entries if entry.key == "skill:khenrix-writing:claude")
+    assert writing.desired_hash != skillctl.tree_hash(config.sources["khenrix-writing"])
+
+    skillctl.apply(config, expect=plan_id, as_json=False)
+    for root in config.targets.values():
+        installed = root / "khenrix-quality" / "lib/runtime"
+        assert (installed / "__init__.py").read_bytes() == b"VERSION = 1\n"
+        assert stat.S_IMODE((installed / "run.sh").stat().st_mode) == 0o755
+        assert (root / "khenrix-writing/lib/writing-runtime/__init__.py").read_bytes() == b"VERSION = 1\n"
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
+    assert receipt["skills"]["khenrix-quality"]["source_hash"] == quality.desired_hash
+    assert receipt["skills"]["khenrix-writing"]["source_hash"] == writing.desired_hash
+    skillctl.doctor(config, as_json=False)
+
+    installed_file = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    installed_file.write_bytes(b"local edit\n")
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=False)
+    installed_file.write_bytes(b"VERSION = 1\n")
+    skillctl.doctor(config, as_json=False)
+
+    (runtime / "__init__.py").write_bytes(b"VERSION = 2\n")
+    changed_id, changed = skillctl.plan(config)
+    assert changed_id != plan_id
+    assert {entry.action for entry in changed if entry.skill == "khenrix-quality"} == {"UPDATE"}
+    with pytest.raises(skillctl.DeliveryError, match="plan changed"):
+        skillctl.apply(config, expect=plan_id, as_json=False)
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=False)
+
+
+def test_bundle_tree_is_backed_up_and_restored_with_exact_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    target = home / ".agents/skills/khenrix-quality"
+    bundled = target / "lib/runtime/run.sh"
+    bundled.chmod(0o700)
+    before = tree_snapshot(target)
+    (repo / "shared/lib/runtime/run.sh").write_bytes(b"#!/bin/sh\nexit 9\n")
+
+    original_writer = skillctl.write_private_json
+
+    def fail_receipt(path: Path, value: object, cfg: skillctl.Configuration) -> None:
+        if path.name == skillctl.RECEIPT_NAME:
+            raise OSError("simulated receipt failure")
+        original_writer(path, value, cfg)
+
+    monkeypatch.setattr(skillctl, "write_private_json", fail_receipt)
+    with pytest.raises(OSError, match="simulated receipt failure"):
+        skillctl.apply(config, expect=None, as_json=False)
+    assert tree_snapshot(target) == before
+    monkeypatch.setattr(skillctl, "write_private_json", original_writer)
+
+    skillctl.apply(config, expect=None, as_json=False)
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
+    assert bundled.read_bytes() == b"#!/bin/sh\nexit 9\n"
+    skillctl.restore(config, receipt["backup_id"])
+
+    assert tree_snapshot(target) == before
+    assert not (config.state_dir / skillctl.RECEIPT_NAME).exists()
+
+
+def test_bundle_edit_after_apply_refuses_restore(tmp_path: Path) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    (repo / "shared/lib/runtime/__init__.py").write_bytes(b"VERSION = 2\n")
+    skillctl.apply(config, expect=None, as_json=False)
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
+    bundled = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    bundled.write_bytes(b"local edit\n")
+
+    with pytest.raises(skillctl.DeliveryError, match="changed after apply"):
+        skillctl.restore(config, receipt["backup_id"])
+    assert bundled.read_bytes() == b"local edit\n"
+
+
+@pytest.mark.parametrize("failure", ["copy", "verify"])
+def test_bundled_restore_keeps_installed_tree_if_backup_stage_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    (repo / "shared/lib/runtime/__init__.py").write_bytes(b"VERSION = 2\n")
+    skillctl.apply(config, expect=None, as_json=False)
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
+    installed = home / ".gemini/config/skills/khenrix-quality"
+    before = tree_snapshot(installed)
+    if failure == "copy":
+        original_copy = skillctl.shutil.copytree
+
+        def fail_copy(source: Path, target: Path, **kwargs: object) -> Path:
+            if str(source).startswith(str(config.state_dir / "backups")):
+                raise OSError("simulated backup copy failure")
+            return original_copy(source, target, **kwargs)
+
+        monkeypatch.setattr(skillctl.shutil, "copytree", fail_copy)
+        expected = "simulated backup copy failure"
+    else:
+        original_hash = skillctl.observed_tree_hash
+
+        def fail_verification(root: Path, *, canonical_modes: bool = False) -> str:
+            if ".khenrix-new-" in root.name:
+                return "sha256:" + "0" * 64
+            return original_hash(root, canonical_modes=canonical_modes)
+
+        monkeypatch.setattr(skillctl, "observed_tree_hash", fail_verification)
+        expected = "copied skill tree does not preserve"
+
+    with pytest.raises((OSError, skillctl.DeliveryError), match=expected):
+        skillctl.restore(config, receipt["backup_id"])
+
+    assert tree_snapshot(installed) == before
+    assert (config.state_dir / skillctl.RECEIPT_NAME).is_file()
+
+
+def test_fanout_runtime_bundle_ignores_bytecode_but_tracks_source_changes(tmp_path: Path) -> None:
+    repo, home, _ = fixture(tmp_path)
+    skill_cache = repo / "shared/skills/khenrix-quality/__pycache__"
+    skill_cache.mkdir()
+    (skill_cache / "skill.cpython-312.pyc").write_bytes(b"ignored v1")
+    source = repo / "shared/lib/fanout"
+    source.parent.mkdir(parents=True)
+    shutil.copytree(
+        ROOT / "shared/lib/fanout", source,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    cache = source / "__pycache__"
+    cache.mkdir()
+    (cache / "runtime.cpython-312.pyc").write_bytes(b"ignored v1")
+    (source / "stray.pyc").write_bytes(b"ignored v1")
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "[skill_delivery.targets]",
+            '[skill_delivery.skill_bundles.khenrix-quality]\n'
+            '"lib/fanout" = "shared/lib/fanout"\n\n'
+            "[skill_delivery.targets]",
+        )
+    )
+    config = skillctl.load_configuration(repo, home, None)
+    skillctl.apply(config, expect=None, as_json=False)
+    installed = home / ".agents/skills/khenrix-quality/lib/fanout"
+    assert (installed / "__init__.py").is_file()
+    assert not (installed.parent.parent / "__pycache__").exists()
+    assert not (installed / "__pycache__").exists()
+    assert not (installed / "stray.pyc").exists()
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
+    assert receipt["skills"]["khenrix-quality"]["source_hash"] == skillctl.tree_hash(
+        installed.parent.parent
+    )
+    before_id, _ = skillctl.plan(config)
+
+    (cache / "runtime.cpython-312.pyc").write_bytes(b"ignored v2")
+    (skill_cache / "skill.cpython-312.pyc").write_bytes(b"ignored v2")
+    (source / "stray.pyc").write_bytes(b"ignored v2")
+    after_cache_id, _ = skillctl.plan(config)
+    assert after_cache_id == before_id
+    skillctl.doctor(config, as_json=False)
+
+    (source / "__init__.py").write_bytes((source / "__init__.py").read_bytes() + b"\nCHANGED = True\n")
+    after_source_id, _ = skillctl.plan(config)
+    assert after_source_id != before_id
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=False)
+
+
+@pytest.mark.parametrize("kind", ["symlink-cache", "fifo-pyc"])
+def test_bundle_source_rejects_unsafe_ignored_entries_at_admission(
+    tmp_path: Path, kind: str
+) -> None:
+    repo, home, _ = bundle_fixture(tmp_path)
+    plant_unsafe_ignored_bundle_entry(repo, kind)
+
+    with pytest.raises(skillctl.DeliveryError, match="symlink|unsupported"):
+        skillctl.load_configuration(repo, home, None)
+
+
+@pytest.mark.parametrize("kind", ["symlink-cache", "fifo-pyc"])
+def test_bundle_plan_rejects_unsafe_ignored_entries_added_after_admission(
+    tmp_path: Path, kind: str
+) -> None:
+    repo, _, config = bundle_fixture(tmp_path)
+    plant_unsafe_ignored_bundle_entry(repo, kind)
+
+    with pytest.raises(skillctl.DeliveryError, match="symlink|unsupported"):
+        skillctl.plan(config)
+
+
+@pytest.mark.parametrize("mutation", ["bytes", "mode"])
+def test_bundle_apply_refuses_target_changed_during_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    (repo / "shared/lib/runtime/__init__.py").write_bytes(b"VERSION = 2\n")
+    plan_id, _ = skillctl.plan(config)
+    target = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    original_backup = skillctl.create_backup
+
+    def mutate_after_backup(
+        cfg: skillctl.Configuration,
+        current_plan: str,
+        changed: list[skillctl.Entry],
+        desired_sources: dict[str, Path],
+    ) -> tuple[str, Path, dict[str, object]]:
+        result = original_backup(cfg, current_plan, changed, desired_sources)
+        if mutation == "bytes":
+            target.write_bytes(b"user edit\n")
+        else:
+            target.chmod(0o600)
+        return result
+
+    monkeypatch.setattr(skillctl, "create_backup", mutate_after_backup)
+    with pytest.raises(skillctl.DeliveryError, match="changed during apply"):
+        skillctl.apply(config, expect=plan_id, as_json=False)
+
+    if mutation == "bytes":
+        assert target.read_bytes() == b"user edit\n"
+    else:
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_bundle_apply_refuses_later_target_edit_without_rolling_it_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    (repo / "shared/lib/runtime/__init__.py").write_bytes(b"VERSION = 2\n")
+    plan_id, _ = skillctl.plan(config)
+    first = home / ".claude/skills/khenrix-quality"
+    later = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    before_first = tree_snapshot(first)
+    original_copy = skillctl.copy_skill_atomic
+    calls = 0
+
+    def mutate_later(source: Path, target: Path, cfg: skillctl.Configuration) -> None:
+        nonlocal calls
+        original_copy(source, target, cfg)
+        calls += 1
+        if calls == 1:
+            later.write_bytes(b"user edit\n")
+
+    monkeypatch.setattr(skillctl, "copy_skill_atomic", mutate_later)
+    with pytest.raises(skillctl.DeliveryError, match="changed during apply"):
+        skillctl.apply(config, expect=plan_id, as_json=False)
+
+    assert tree_snapshot(first) == before_first
+    assert later.read_bytes() == b"user edit\n"
+
+
+def test_apply_refuses_symlink_swap_before_backup_without_reading_through_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _, config = bundle_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    (repo / "house-style.md").write_text(
+        f"{skillctl.MANAGED_BEGIN}\n# managed v2\n{skillctl.MANAGED_END}\n"
+    )
+    plan_id, _ = skillctl.plan(config)
+    target = config.instruction_targets["maka"]
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside stays untouched\n")
+    original_plan = skillctl._plan
+
+    def swap_after_plan(
+        cfg: skillctl.Configuration, sources: dict[str, Path]
+    ) -> tuple[str, list[skillctl.Entry]]:
+        result = original_plan(cfg, sources)
+        target.unlink()
+        target.symlink_to(outside)
+        return result
+
+    original_read = skillctl.read_utf8_bytes
+
+    def reject_symlink_read(path: Path) -> tuple[bytes, str]:
+        if path == target and target.is_symlink():
+            raise AssertionError("followed a swapped instruction symlink")
+        return original_read(path)
+
+    monkeypatch.setattr(skillctl, "_plan", swap_after_plan)
+    monkeypatch.setattr(skillctl, "read_utf8_bytes", reject_symlink_read)
+    with pytest.raises(skillctl.DeliveryError, match="symlink"):
+        skillctl.apply(config, expect=plan_id, as_json=False)
+
+    assert outside.read_text() == "outside stays untouched\n"
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        ({"not-delivered": {"lib/runtime": "shared/lib/runtime"}}, "undeclared"),
+        ({"khenrix-quality": {"../escape": "shared/lib/runtime"}}, "destination.*escapes"),
+        ({"khenrix-quality": {"/absolute": "shared/lib/runtime"}}, "destination.*escapes"),
+        ({"khenrix-quality": {".": "shared/lib/runtime"}}, "destination.*escapes"),
+        ({"khenrix-quality": {"SKILL.md": "shared/lib/runtime"}}, "collides"),
+        ({"khenrix-quality": {"references": "shared/lib/runtime"}}, "collides"),
+        ({"khenrix-quality": {"references/mode.md/sub": "shared/lib/runtime"}}, "collides"),
+        ({"khenrix-quality": {"lib/runtime": "../outside"}}, "source.*escapes"),
+        ({"khenrix-quality": {"lib/runtime": "/absolute"}}, "source.*escapes"),
+        (
+            {"khenrix-quality": {"lib": "shared/lib/runtime", "lib/nested": "shared/lib/runtime"}},
+            "collides",
+        ),
+    ],
+)
+def test_bundle_configuration_rejects_undeclared_unsafe_or_colliding_mapping(
+    tmp_path: Path, mapping: dict[str, dict[str, str]], message: str
+) -> None:
+    repo, home, _ = fixture(tmp_path)
+    runtime = repo / "shared/lib/runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "__init__.py").write_text("safe\n")
+    tables = "".join(
+        f"[skill_delivery.skill_bundles.{skill}]\n"
+        + "".join(f'"{target}" = "{source}"\n' for target, source in bundles.items())
+        for skill, bundles in mapping.items()
+    )
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(
+        manifest.read_text().replace("[skill_delivery.targets]", tables + "\n[skill_delivery.targets]")
+    )
+
+    with pytest.raises(skillctl.DeliveryError, match=message):
+        skillctl.load_configuration(repo, home, None)
+
+
+@pytest.mark.parametrize("entry_kind", ["source-link", "nested-link", "fifo"])
+def test_bundle_source_rejects_symlinks_and_nonregular_entries(
+    tmp_path: Path, entry_kind: str
+) -> None:
+    repo, home, config = bundle_fixture(tmp_path)
+    runtime = repo / "shared/lib/runtime"
+    if entry_kind == "source-link":
+        link = repo / "shared/lib/runtime-link"
+        link.symlink_to(runtime, target_is_directory=True)
+        source = "shared/lib/runtime-link"
+    else:
+        source = "shared/lib/runtime"
+        if entry_kind == "nested-link":
+            (runtime / "escape").symlink_to(repo / "house-style.md")
+        else:
+            os.mkfifo(runtime / "pipe")
+    manifest = repo / "capabilities.toml"
+    manifest.write_text(manifest.read_text().replace("shared/lib/runtime\"", f"{source}\""))
+
+    with pytest.raises(skillctl.DeliveryError, match="symlink|unsupported|real directory"):
+        skillctl.load_configuration(repo, home, None)
+
+
+def test_bundle_plan_rejects_source_ancestor_replaced_by_symlink(tmp_path: Path) -> None:
+    repo, _, config = bundle_fixture(tmp_path)
+    source_parent = repo / "shared/lib"
+    source_parent.rename(repo / "shared/lib-original")
+    source_parent.symlink_to(repo / "shared/lib-original", target_is_directory=True)
+
+    with pytest.raises(skillctl.DeliveryError, match="symlink"):
+        skillctl.plan(config)
 
 
 def test_configuration_rejects_a_skill_present_in_multiple_source_roots(

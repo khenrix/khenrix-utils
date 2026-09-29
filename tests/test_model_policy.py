@@ -37,15 +37,23 @@ def test_price_coverage_requires_exact_registered_model(tmp_path):
 
 
 def test_crosscheck_includes_portable_defaults(tmp_path, monkeypatch):
+    council_scripts = tmp_path / "shared" / "skills" / "llm-council" / "scripts"
+    council_scripts.mkdir(parents=True)
+    (council_scripts / "fanout.py").write_text(
+        'MODES = {"normal": {"codex": {"model": "seat-unknown"}}}\n'
+    )
     (tmp_path / "capabilities.toml").write_text(
         '[models]\nclaude = ["claude-opus-5-5"]\n'
         'codex = ["gpt-6-sol"]\nagy = ["Gemini 3.8 Flash (High)"]\n'
         '[settings.defaults.claude]\nmodel = "best"\n'
         '[settings.defaults.codex]\nmodel = "unknown-model"\n'
         '[settings.defaults.agy]\nmodel = "Gemini 3.8 Flash (High)"\n')
-    monkeypatch.setitem(sys.modules, "fanout", types.SimpleNamespace(MODES={}))
+    monkeypatch.setitem(sys.modules, "fanout", types.SimpleNamespace(
+        MODES={"normal": {"codex": {"model": "decoy"}}}))
     issues = checks.model_crosscheck(tmp_path)
     assert any("unknown-model" in issue and "codex" in issue for issue in issues)
+    assert any("seat-unknown" in issue and "codex" in issue for issue in issues)
+    assert not any("decoy" in issue for issue in issues)
     assert not any("best" in issue for issue in issues)
 
 

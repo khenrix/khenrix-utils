@@ -181,7 +181,7 @@ description = "Preview selective skill and house-style delivery without changing
 run = "python components/skills/skillctl.py plan"
 
 [tasks."skills:status"]
-description = "Report drift for the 17 managed skills and four bounded instruction targets"
+description = "Report drift for the 19 managed skills and four bounded instruction targets"
 run = "python components/skills/skillctl.py status"
 
 [tasks."skills:apply"]
