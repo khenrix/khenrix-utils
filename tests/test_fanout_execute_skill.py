@@ -21,6 +21,7 @@ CLI = ROOT / "shared/skills/llm-fanout-execute/scripts/execute.py"
 PLANNER = ROOT / "shared/skills/llm-fanout-plan/scripts/plan.py"
 sys.path.insert(0, str(ROOT / "shared/lib"))
 import fanout  # noqa: E402
+from fanout.native_boundary import _staged_skill_grant  # noqa: E402
 
 
 @pytest.fixture
@@ -364,6 +365,41 @@ def test_question_admission_recompiles_exact_source_draft_and_skills(execute, tm
     packet["draft"]["tasks"][0]["objective"] = "Changed after compilation"
     with pytest.raises(ValueError, match="compiled|source|draft"):
         execute.verify_admission(packet, fanout, resolver)
+
+
+def test_planner_bundle_digest_is_accepted_by_native_skill_grant(execute, tmp_path):
+    packet, resolver = _question_packet(tmp_path, executors=("codex", "claude"))
+    compiled = execute.verify_admission(packet, fanout, resolver)
+    task_id = compiled.plan.tasks[0].id
+    bundle = execute._task_skill_bundle(fanout, resolver, compiled.plan, task_id)
+    admission = resolver.admit_plan(
+        compiled.plan, task_id, seat_id="seat-1", provider="codex",
+        session_id="admission-1",
+    )
+    admission = resolver.stage(admission, tmp_path / "stage")
+    admission = resolver.verify_engine_delivery(admission, ())
+    assignment = fanout.SeatAssignment.from_admission(
+        admission, skill_bundle=bundle,
+        artifacts=fanout.ArtifactStore(tmp_path / "artifacts"),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    controller = tmp_path / "controller"
+    controller.mkdir(mode=0o700)
+    denied = tmp_path / "denied"
+    denied.mkdir(mode=0o700)
+    request = fanout.ProviderRequest(
+        "codex", "bounded task", cwd=workspace,
+        task_id=task_id, seat_id=assignment.seat_id,
+        staged_skill_root=assignment.staged_root,
+        staged_skill_admission=assignment.admission,
+        skill_bundle_sha256=assignment.skill_bundle_sha256,
+        skill_delivery_sha256=assignment.delivery_evidence_sha256,
+    )
+
+    grant = _staged_skill_grant(request, (denied,), workspace, controller)
+    assert grant is not None
+    assert grant["skill_bundle_sha256"] == assignment.skill_bundle_sha256
 
 
 def test_oversized_valid_admission_fails_before_startup_escrow(execute, tmp_path):
