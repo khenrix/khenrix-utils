@@ -367,8 +367,8 @@ def test_question_admission_recompiles_exact_source_draft_and_skills(execute, tm
         execute.verify_admission(packet, fanout, resolver)
 
 
-def test_planner_bundle_digest_is_accepted_by_native_skill_grant(execute, tmp_path):
-    packet, resolver = _question_packet(tmp_path, executors=("codex", "claude"))
+def test_planner_bundle_digest_matches_native_skill_grant_encoding(execute, tmp_path):
+    packet, resolver = _write_packet(tmp_path)
     compiled = execute.verify_admission(packet, fanout, resolver)
     task_id = compiled.plan.tasks[0].id
     bundle = execute._task_skill_bundle(fanout, resolver, compiled.plan, task_id)
@@ -377,11 +377,15 @@ def test_planner_bundle_digest_is_accepted_by_native_skill_grant(execute, tmp_pa
         session_id="admission-1",
     )
     admission = resolver.stage(admission, tmp_path / "stage")
-    admission = resolver.verify_engine_delivery(admission, ())
+    admission = resolver.verify_engine_delivery(admission, tuple(
+        fanout.SkillLoadEvidence.engine(skill, admission) for skill in admission.skills
+    ))
     assignment = fanout.SeatAssignment.from_admission(
         admission, skill_bundle=bundle,
         artifacts=fanout.ArtifactStore(tmp_path / "artifacts"),
     )
+    assert len(json.loads(bundle)["skills"]) == 1
+    assert assignment.skill_bundle_sha256 == hashlib.sha256(bundle).hexdigest()
     workspace = tmp_path / "workspace"
     workspace.mkdir(mode=0o700)
     controller = tmp_path / "controller"

@@ -612,12 +612,12 @@ def _staged_skill_grant(request: object, denied_roots: Sequence[Path],
     delivery_digest = hashlib.sha256(delivery).hexdigest()
     if delivery_digest != request.skill_delivery_sha256:
         raise ProviderRequestError("staged skill delivery digest changed")
+    if not request.skill_bundle_sha256:
+        raise ProviderRequestError("staged skill bundle digest is required")
     bundle = canonical_json({
         "schema_version": "fanout-seat-skill-bundle-v1",
         "skills": admission.manifest_dict()["skills"],
     })
-    if not request.skill_bundle_sha256:
-        raise ProviderRequestError("staged skill bundle digest is required")
     if hashlib.sha256(bundle).hexdigest() != request.skill_bundle_sha256:
         raise ProviderRequestError("staged skill bundle digest changed")
     info = root.lstat()
