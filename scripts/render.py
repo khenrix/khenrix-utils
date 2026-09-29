@@ -53,10 +53,9 @@ NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 # capabilities.toml; render.py generates each plugin's SKILL.md from them.
 TEMPLATED_SKILLS = ("khenrix-setup", "khenrix-upgrade", "khenrix-audit")
 TMPL_ROOT = ROOT / "shared" / "skill-templates"
-# These two skills have one update path: components/skills/skillctl.py copies their
-# canonical directories directly into each native skill root. Bundling them in any plugin
-# creates a second installed copy with independent precedence and stale-update behavior.
-NATIVE_ONLY_SKILLS = frozenset({"khenrix-quality", "khenrix-writing"})
+# Direct-copy skills under shared/skills have one update path through skillctl.
+# Other declared direct-copy skills live under shared/superpowers and are absent
+# from this plugin glob, so only existing shared/skills directories need filtering.
 
 
 def plugin_dir(cli: str) -> Path:
@@ -160,9 +159,24 @@ def iter_skills():
             yield from sk.glob("*/SKILL.md")
 
 
-def native_only_skill_paths():
+def native_only_skills(caps: dict) -> frozenset[str]:
+    delivery = caps.get("skill_delivery", {})
+    if not isinstance(delivery, dict):
+        return frozenset()
+    declared = delivery.get("skills", [])
+    if not isinstance(declared, list):
+        return frozenset()
+    root = ROOT / "shared" / "skills"
+    return frozenset(
+        name for name in declared
+        if isinstance(name, str) and NAME_RE.fullmatch(name)
+        and (root / name).is_dir() and not (root / name).is_symlink()
+    )
+
+
+def native_only_skill_paths(caps: dict):
     """Yield canonical native-only entrypoints that are deliberately not bundled."""
-    for name in sorted(NATIVE_ONLY_SKILLS):
+    for name in sorted(native_only_skills(caps)):
         yield name, ROOT / "shared" / "skills" / name / "SKILL.md"
 
 
@@ -197,10 +211,11 @@ def render_templated_skill(skill: str, cli: str, caps: dict, problems: list):
 
 def render():
     caps = load_caps()
+    native_only = native_only_skills(caps)
     problems: list[str] = []
     shared_skills = sorted(
         p for p in (ROOT / "shared" / "skills").glob("*/")
-        if p.name not in NATIVE_ONLY_SKILLS
+        if p.name not in native_only
     )
     for cli in CLIS:
         pdir = plugin_dir(cli)
@@ -242,7 +257,7 @@ def render():
         # rendered tree depend on which interpreters had happened to run — this machine
         # carried both cpython-313 and cpython-314 copies. Same patterns as the other four
         # calls, and the same exclusion `checks.py` already applies to the receipt closure.
-        for name in NATIVE_ONLY_SKILLS:
+        for name in native_only:
             # Remove copies emitted by older renders; filtering future copytree calls alone
             # would leave the stale bundle present forever.
             shutil.rmtree(pdir / "skills" / name, ignore_errors=True)
@@ -302,7 +317,7 @@ def render():
         raise SystemExit(1)
     libs = ", ".join(p.name for p in LIB_SCRIPTS)
     print(f"rendered: bundled {BUNDLED} + {BUNDLED_DIRS} + [{libs}] into {len(CLIS)} plugins; "
-          f"{len(shared_skills)} plugin shared skill(s); {len(NATIVE_ONLY_SKILLS)} native-only "
+          f"{len(shared_skills)} plugin shared skill(s); {len(native_only)} native-only "
           f"skill(s); {len(TEMPLATED_SKILLS)} templated skill(s)")
 
 
@@ -334,7 +349,12 @@ def check() -> int:
     skills = list(iter_skills())
     for s in skills:
         validate_skill(s, problems)
-    for name, skill_md in native_only_skill_paths():
+    try:
+        caps = load_caps()
+    except Exception as e:  # noqa: BLE001
+        caps = None
+        problems.append(f"capabilities.toml: {e}")
+    for name, skill_md in native_only_skill_paths(caps or {}):
         if not skill_md.is_file() or skill_md.is_symlink():
             problems.append(
                 f"{skill_md.relative_to(ROOT)}: native-only SKILL.md is missing or unsafe"
@@ -348,14 +368,8 @@ def check() -> int:
                 problems.append(
                     f"{bundled.relative_to(ROOT)}: native-only skill must not be bundled"
                 )
-    # capabilities.toml must parse
-    try:
-        with open(ROOT / "capabilities.toml", "rb") as f:
-            tomllib.load(f)
-    except Exception as e:  # noqa: BLE001
-        problems.append(f"capabilities.toml: {e}")
     # deterministic source-of-truth checks — skip if capabilities.toml itself failed to parse
-    if not any("capabilities.toml" in p for p in problems):
+    if caps is not None:
         problems.extend(checks.run_all(ROOT))
     if problems:
         print("VALIDATION FAILED:")

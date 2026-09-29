@@ -125,6 +125,19 @@ DETERMINISTIC_GATED = {
     # "certified" means, and it was already wrong.
     "llm-forge": ["uvx", "--with", "pytest", "pytest", "-q"] + [
         str(p) for p in sorted((ROOT / "tests").glob("test_forge_*.py"))],
+    "llm-fanout-plan": ["uvx", "--with", "pytest", "pytest", "-q"] + [
+        str(ROOT / "tests" / name) for name in (
+            "test_fanout_plan_skill.py", "test_fanout_compiler.py",
+            "test_fanout_plan_schema.py", "test_fanout_skills.py",
+            "test_skill_delivery.py", "test_render_packaging.py",
+        )],
+    "llm-fanout-execute": ["uvx", "--with", "pytest", "pytest", "-q"] + [
+        str(ROOT / "tests" / name) for name in (
+            "test_fanout_execute_skill.py", "test_fanout_execute.py",
+            "test_fanout_cold_recovery.py", "test_fanout_storage.py",
+            "test_fanout_memory.py", "test_fanout_repo.py",
+            "test_fanout_verification.py", "test_skill_delivery.py",
+        )],
 }
 
 
@@ -219,6 +232,8 @@ DETERMINISTIC_GATE_NAMES = {
     # about what earned the receipt that stopped being true the moment the gate widened. A
     # receipt exists to say what ran; being wrong about that is worse than saying less.
     "llm-forge":         "forge-suite-all",
+    "llm-fanout-plan":   "fanout-plan-contracts",
+    "llm-fanout-execute": "fanout-execute-contracts",
 }
 
 
@@ -1964,7 +1979,7 @@ def parse_args(argv=None):
     ap.add_argument("--timeout", type=int, default=None, help="per-attempt seconds (per-mode default)")
     sb = ap.add_mutually_exclusive_group()
     sb.add_argument("--readonly", dest="readonly", action="store_true", default=True,
-                    help="run executors read-only / plan-only (all three mechanically: claude plan mode, codex sandbox, agy --mode plan) so an eval can't mutate config (default: on)")
+                    help="run executors behind isolated no-tools boundaries; agy plan mode alone is not a write barrier (default: on)")
     sb.add_argument("--no-readonly", dest="readonly", action="store_false",
                     help="run executors with full permissions (only for skills that must write)")
     ap.add_argument("--self-test", action="store_true", help="hermetic logic tests, no tokens")

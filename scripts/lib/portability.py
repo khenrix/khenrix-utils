@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -21,6 +22,24 @@ def _shared_skills(root: Path):
     return sorted((root / "shared" / "skills").glob("*/"))
 
 
+def _native_only_skills(root: Path) -> frozenset[str]:
+    manifest = root / "capabilities.toml"
+    if not manifest.is_file():
+        return frozenset()
+    with manifest.open("rb") as file:
+        capabilities = tomllib.load(file)
+    delivery = capabilities.get("skill_delivery", {})
+    declared = delivery.get("skills", []) if isinstance(delivery, dict) else []
+    if not isinstance(declared, list):
+        return frozenset()
+    source = root / "shared" / "skills"
+    return frozenset(
+        name for name in declared
+        if isinstance(name, str) and (source / name).is_dir()
+        and not (source / name).is_symlink()
+    )
+
+
 def _rendered(root: Path, cli: str, skill: str) -> Path:
     return root / "marketplaces" / cli / "plugins" / "khenrix-utils" / "skills" / skill
 
@@ -33,7 +52,10 @@ def script_tree_parity(root: Path) -> list[str]:
     delta and breaks the moment a real agy session runs the skill.
     """
     problems = []
+    native_only = _native_only_skills(root)
     for skill_dir in _shared_skills(root):
+        if skill_dir.name in native_only:
+            continue
         src = skill_dir / "scripts"
         if not src.is_dir():
             continue

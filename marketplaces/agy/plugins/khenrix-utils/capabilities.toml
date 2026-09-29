@@ -155,6 +155,12 @@ name = "khenrix-wiki-sync"
 name = "llm-forge"
 
 [[skills]]
+name = "llm-fanout-plan"
+
+[[skills]]
+name = "llm-fanout-execute"
+
+[[skills]]
 name = "khenrix-quality"
 
 [[skills]]
@@ -167,6 +173,8 @@ name = "khenrix-writing"
 skills = [
   "khenrix-quality",
   "khenrix-writing",
+  "llm-fanout-plan",
+  "llm-fanout-execute",
   "brainstorming",
   "diagnosing-superpowers",
   "dispatching-parallel-agents",
@@ -186,6 +194,19 @@ skills = [
 source_roots = ["shared/skills", "shared/superpowers"]
 state_dir = "${HOME}/.local/state/khenrix-utils/skills"
 instruction_source = "house-style.md"
+
+# Optional per-skill tables map an installed-skill relative directory to one
+# repository relative source directory. The composite tree is delivered and
+# verified as one skill.
+[skill_delivery.skill_bundles]
+
+[skill_delivery.skill_bundles.llm-fanout-plan]
+"lib/fanout" = "shared/lib/fanout"
+"memory" = "components/memory"
+
+[skill_delivery.skill_bundles.llm-fanout-execute]
+"lib/fanout" = "shared/lib/fanout"
+"memory" = "components/memory"
 
 [skill_delivery.targets]
 claude = "${HOME}/.claude/skills"

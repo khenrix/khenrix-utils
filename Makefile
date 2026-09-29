@@ -10,13 +10,13 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test forge-test-slow forge-host-smoke forge-proc-host-smoke tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test fanout-test forge-test-slow forge-host-smoke forge-proc-host-smoke tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
 DOCTOR_TESTS := tests/test_doctor.py
 RECONCILE_DEFAULTS_TESTS := tests/test_reconcile_defaults.py tests/test_model_policy.py
-MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py
+MEMORY_RUNTIME_TESTS := tests/test_memory_runtime.py tests/test_memory_exchange.py
 MAKA_COMPONENT_TESTS := tests/test_maka_skill_smoke.py
 SKILL_DELIVERY_TESTS := tests/test_skill_delivery.py tests/test_skill_upstreams.py \
                         tests/test_refresh.py
@@ -24,8 +24,25 @@ AUDIT_TESTS := tests/test_setup_audit.py
 COUNCIL_TESTS := tests/test_council_seat_validity.py tests/test_council_characterization.py \
                  tests/test_council_seams.py tests/test_council_facade.py \
                  tests/test_council_model_policy.py \
+                 tests/test_council_agy_guard.py \
                  tests/test_checks_secrets.py tests/test_mutate.py \
                  tests/test_eval_harness_receipt.py tests/test_render_packaging.py
+FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
+                tests/test_fanout_native_boundary.py tests/test_fanout_process.py \
+                tests/test_fanout_providers.py tests/test_fanout_profiles.py \
+                tests/test_fanout_agy_guard.py tests/test_fanout_claude_restricted.py \
+                tests/test_fanout_plan_schema.py tests/test_fanout_skills.py \
+                tests/test_fanout_compiler.py tests/test_fanout_runstate.py \
+                tests/test_fanout_local_authority.py tests/test_fanout_storage.py \
+                tests/test_fanout_plan_skill.py tests/test_fanout_execute_skill.py \
+                tests/test_fanout_scheduler.py tests/test_fanout_multirepo_integration.py \
+                tests/test_fanout_memory.py \
+                tests/test_fanout_collaboration.py tests/test_fanout_repo.py \
+                tests/test_fanout_targets.py tests/test_fanout_verification.py \
+                tests/test_fanout_lifecycle.py tests/test_fanout_branch_handover.py \
+                tests/test_fanout_execute.py tests/test_fanout_cold_recovery.py \
+                tests/test_fanout_maka_transport.py tests/test_fanout_smoke.py \
+                tests/test_fanout_benchmark.py tests/test_fanout_public_fixture.py
 # The forge suite, split by weight. The fast subset — schema, state machine,
 # classification, journal parsing — is in `verify` and therefore in `precommit`. The clone-
 # and process-heavy subset is NOT, because `make verify` is the obvious confirmed verify
@@ -107,7 +124,7 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 # collision guard -- i.e. a change that silently overwrites the user's existing
 # MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
 # suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test eval-test ## Validate manifests and skills without touching any CLI
+verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test fanout-test eval-test ## Validate manifests and skills without touching any CLI
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -123,12 +140,15 @@ precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + ever
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
 	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
 
-test: council-test forge-test-slow ## Run the deterministic llm-council engine self-test + slow suites (no token cost)
+test: council-test fanout-test forge-test-slow ## Run the deterministic llm-council engine self-test + slow suites (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
 	$(call RUN_PYTEST,-m slow tests/test_council_characterization.py tests/test_council_facade.py)
 
 council-test: ## Council engine (seat/characterization/seam/facade) + fast forge suites, sans slow (no token cost)
 	$(call RUN_PYTEST,-m "not slow" $(COUNCIL_TESTS) $(FORGE_TESTS))
+
+fanout-test: ## Hermetic public fanout engine, skill, and synthetic fixture tests
+	$(call RUN_PYTEST,$(FANOUT_TESTS))
 
 # A HEAVY SUITE WITH NO TARGET IS A SUITE THAT ROTS, which is the failure `bats-test`'s own
 # comment is about one gate over: the `-m slow` line in `test` names only the two council

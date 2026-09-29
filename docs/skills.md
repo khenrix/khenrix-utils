@@ -1,6 +1,6 @@
 # Shared skills
 
-Khenrix Utils manages 17 skills for Claude Code, Codex, agy, and Maka. The two
+Khenrix Utils manages 19 skills for Claude Code, Codex, agy, and Maka. The four
 Khenrix-authored skills live under `shared/skills/`; the 15 vendored Superpowers
 skills live under `shared/superpowers/`. They are copied directly from this
 repository. This selective install never installs or
@@ -12,6 +12,8 @@ native-only skills.
 |---|---|
 | `khenrix-quality` | Easier-to-follow replies, minimal AI-prose cleanup, and code-quality work. Modes: `adhd`, `prose-edit`, `prose-detect`, `code`, and `code-workflow`. |
 | `khenrix-writing` | Humanizing prose, matching a voice sample, or a deeper rewrite. Mode: `humanize`. |
+| `llm-fanout-plan` | Turn an approved plan, direct question, or reviewed task bundle into a validated skill-aware fanout DAG. |
+| `llm-fanout-execute` | Execute an admitted fanout plan through isolated CLI seats, shared memory, reconciliation, and owner-reviewed handover. |
 | `using-superpowers` | Load the relevant development-process skill before acting in a root session. |
 | `brainstorming` | Turn an open-ended idea into an agreed design before implementation. |
 | `writing-plans` | Turn an agreed design into a concrete implementation plan. |
@@ -81,7 +83,7 @@ mise run skills:doctor
 mise run skills:status
 ```
 
-The controller owns only the 17 declared skill directories and the bounded
+The controller owns only the 19 declared skill directories and the bounded
 `khenrix-managed` instruction block. All sibling skills and text outside that
 block are preserved.
 
