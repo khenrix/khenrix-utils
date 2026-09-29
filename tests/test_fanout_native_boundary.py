@@ -366,6 +366,10 @@ def _staged_skill_request(seat):
     admitted = replace(
         request, staged_skill_root=admission.staged_root,
         staged_skill_admission=admission,
+        skill_bundle_sha256=hashlib.sha256(fanout.canonical_json({
+            "schema_version": "fanout-seat-skill-bundle-v1",
+            "skills": admission.manifest_dict()["skills"],
+        })).hexdigest(),
         skill_delivery_sha256=hashlib.sha256(fanout.canonical_json([])).hexdigest(),
     )
     command = fanout.ProcessCommand(
@@ -391,6 +395,18 @@ def test_descriptor_grants_only_controller_admitted_staged_skill_read(seat):
         verification=verification,
     ))
     assert observed.returncode == 0
+
+
+def test_descriptor_rejects_staged_skill_without_plan_bundle_digest(seat):
+    controller, verification, _, _, other, owner = seat
+    _, admitted, command = _staged_skill_request(seat)
+    with pytest.raises(fanout.ProviderRequestError, match="skill bundle"):
+        fanout.issue_native_boundary(
+            controller, verification, run_id="run-1", task_id="task-1",
+            target_id="target-1", inputs_digest="a" * 64,
+            request=replace(admitted, skill_bundle_sha256=""), command=command,
+            other_target_roots=(other,), denied_owner_roots=(owner,),
+        )
 
 
 def test_descriptor_refuses_missing_changed_or_tampered_skill_grant(seat):
