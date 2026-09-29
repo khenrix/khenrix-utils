@@ -306,7 +306,7 @@ class _Registry:
 _READ_ONLY_FIXTURES: dict[Path, tuple[Path, object, object, dict[str, object]]] = {}
 
 
-def _read_only_fixture(tmp_path: Path):
+def _read_only_fixture(tmp_path: Path, *, required_file: bool = False):
     existing = _READ_ONLY_FIXTURES.get(tmp_path)
     if existing is not None:
         return existing
@@ -333,7 +333,9 @@ def _read_only_fixture(tmp_path: Path):
         )
         assert completed.returncode == 0, completed.stderr
     (repository / "source.txt").write_text("immutable caller input\n")
-    for args in (("add", "source.txt"), ("commit", "-qm", "baseline")):
+    if required_file:
+        (repository / "required.txt").write_text("must be visible to checks\n")
+    for args in (("add", "."), ("commit", "-qm", "baseline")):
         completed = subprocess.run(
             ("git", "-C", os.fspath(repository), *args),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -441,7 +443,10 @@ def _packet(
     return TaskPacket(**values)
 
 
-def _target_packet_fixture(tmp_path: Path, *, baseline_sha256: str | None = None):
+def _target_packet_fixture(
+    tmp_path: Path, *, baseline_sha256: str | None = None,
+    execution_class: str = "read-only", checks: list[dict] | None = None,
+):
     """A v3 input and v2 task whose identity is independent of local Git probes."""
     source = b"# Target-bound work\n"
     target = fanout.TargetSpec(
@@ -452,9 +457,10 @@ def _target_packet_fixture(tmp_path: Path, *, baseline_sha256: str | None = None
         "id": "booking-work", "kind": "work", "parent_id": None,
         "title": "Booking", "objective": "Finish booking.",
         "source_step_ids": ["Task 1/Step 1"], "depends_on": [],
-        "execution_class": "read-only", "required_skills": [],
-        "none_reason": "No specialist skill is needed.", "owned_paths": [],
-        "acceptance": ["Booking is complete."], "checks": [],
+        "execution_class": execution_class, "required_skills": [],
+        "none_reason": "No specialist skill is needed.",
+        "owned_paths": ["source.txt"] if execution_class == "repo-write" else [],
+        "acceptance": ["Booking is complete."], "checks": checks or [],
         "provider_policy": None, "target_id": "booking", "dependency_modes": {},
     }
     policy = {
@@ -493,7 +499,7 @@ def _target_packet_fixture(tmp_path: Path, *, baseline_sha256: str | None = None
         source_markdown=source, task=task_bytes, task_sha256=_digest(task_bytes),
         skill_bundle=canonical_json({"schema_version": "fanout-seat-skill-bundle-v1", "skills": []}),
         skill_manifest_sha256="8" * 64, dependency_artifacts=(),
-        execution_class="read-only", cwd=tmp_path,
+        execution_class=execution_class, cwd=tmp_path,
         target_binding=dataclasses.replace(
             binding, baseline_sha256=baseline_sha256 or binding.baseline_sha256,
         ),
@@ -509,7 +515,7 @@ def test_v2_packet_rejects_target_baseline_spoof_before_dependency_read(tmp_path
 
 
 def test_v2_packet_round_trip_preserves_target_identity(tmp_path):
-    values, _plan, inputs = _target_packet_fixture(tmp_path)
+    values, plan, inputs = _target_packet_fixture(tmp_path)
     packet = TaskPacket(**values)
     with ArtifactStore(tmp_path / "packet-artifacts") as store:
         restored = TaskPacket.from_dict(packet.to_dict(), store=store, run_inputs=inputs)
@@ -534,6 +540,360 @@ def test_v2_provider_round_stays_closed_without_native_boundary(tmp_path):
         coordinator.preflight_round(
             packet, (), RoundPolicy.from_provider_policy(packet.provider_policy),
         )
+
+
+def _v2_hermetic_round(
+    tmp_path, monkeypatch, *, execution_class="read-only", checks=None,
+    required_file=False,
+):
+    monkeypatch.delenv("AGY_ADC_AUTH", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    repository, baseline, controller, _ = _read_only_fixture(
+        tmp_path, required_file=required_file,
+    )
+    values, plan, inputs = _target_packet_fixture(
+        tmp_path, execution_class=execution_class, checks=checks,
+    )
+    common = repository / ".git"
+    common_info = common.stat()
+    binding = dataclasses.replace(
+        inputs.targets["booking"], root=repository, common_dir=common,
+        common_device=common_info.st_dev, common_inode=common_info.st_ino,
+        base_oid=baseline.head, baseline_sha256=baseline.digest,
+    )
+    registry = fanout.ProviderRegistry.default(version_probe=lambda name: {
+        "claude": "2.1.281", "codex": "0.157.1", "agy": "1.2.12",
+    }[name])
+    inputs = dataclasses.replace(
+        inputs, targets={"booking": binding},
+        provider_profiles=dict(registry.profile_digests),
+    )
+    values.update(cwd=repository, target_binding=binding, run_inputs=inputs)
+    store = ArtifactStore(tmp_path / "artifacts")
+    stage = tmp_path / "staged-skills"
+    stage.mkdir(mode=0o700)
+    source = tmp_path / "skill-source"
+    source.mkdir(mode=0o700)
+    resolver = fanout.SkillResolver((fanout.SkillRoot("test", source, 0),))
+    seats = []
+    for executor in plan.defaults.executor_ids:
+        seat_id = f"seat-{executor}"
+        admission = resolver.admit(
+            (), task_id="booking-work", seat_id=seat_id,
+            provider=executor, session_id=f"admission-{executor}",
+        )
+        admission = resolver.stage(admission, stage / seat_id)
+        admission = resolver.verify_engine_delivery(admission, ())
+        seats.append(SeatAssignment.from_admission(
+            admission, skill_bundle=values["skill_bundle"], artifacts=store,
+            workspace_verification=_read_only_verification(tmp_path, seat_id),
+        ))
+    packet = (
+        TaskPacket.for_repo_write(
+            workspace_verifications=tuple(seat.workspace_verification for seat in seats),
+            lifecycle_controller=controller, **values,
+        ) if execution_class == "repo-write" else TaskPacket(**values)
+    )
+    authority = runstate._test_anchor_authority(_MemoryAnchor())
+    journal, owner = RawRunJournal._create_for_test(
+        tmp_path / "journal", inputs, anchor_store=authority,
+    )
+    class HealthyMemory(_ExactMemory):
+        def preflight(self):
+            return True
+
+    memory = HealthyMemory()
+    memory.artifacts = store
+    provider = _Provider()
+    scheduler_module = importlib.import_module(f"{SPEC.name}.scheduler_authority")
+
+    class Backend:
+        record = None
+
+        def identity(self):
+            return "v2-hermetic-round"
+
+        def key(self):
+            return "scheduler/run-target"
+
+        def read(self):
+            return self.record
+
+        def compare_and_set(self, expected_revision, snapshot, *, owner):
+            actual = 0 if self.record is None else self.record.revision
+            assert actual == expected_revision
+            self.record = scheduler_module.BackendRecord(actual + 1, snapshot)
+            return self.record
+
+    scheduler = scheduler_module.Scheduler._create_for_test(
+        plan, inputs, Backend(), store, owner=owner,
+        anchor_store=runstate._test_anchor_authority(_MemoryAnchor()),
+    )
+    coordinator = CollaborationCoordinator(
+        artifacts=store, journal=journal, owner=owner, memory=memory,
+        registry=registry, provider_runner=provider,
+        lifecycle_controller=controller,
+        repository_baselines={"booking": baseline},
+        slot_root=tmp_path / "slots",
+        dependency_scheduler=scheduler,
+    )
+    return packet, tuple(seats), coordinator, journal, provider, store
+
+
+def test_v2_hermetic_round_binds_every_native_request_and_skill_grant(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(tmp_path, monkeypatch)
+    try:
+        result = coordinator.execute_round(
+            packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy), round=1,
+        )
+        assert result.status == "round-complete"
+        assert len(provider.requests) == len(seats)
+        for request in provider.requests:
+            assert (request.run_id, request.task_id, request.target_id,
+                    request.inputs_digest, request.seat_id) == (
+                packet.run_id, packet.task_id, "booking", journal.inputs.digest,
+                f"seat-{request.executor_id}",
+            )
+            assert request.staged_skill_admission is not None
+            assert request.native_boundary.staged_skill_grant_digest is not None
+            command = coordinator.registry.require(request.executor_id).build_command(request)
+            fanout.validate_native_boundary(
+                request.native_boundary, request, command,
+                request.native_controller, request.native_verification,
+            )
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_final_repo_write_barrier_freezes_target_candidates(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch, execution_class="repo-write",
+    )
+    try:
+        barrier = coordinator.execute_round(
+            packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy), round=1,
+        )
+        assert barrier.status == "round-complete"
+        assert {seat_id for seat_id, _ in barrier.candidate_sources} == {
+            seat.seat_id for seat in seats
+        }
+        baseline = coordinator.repository_baselines["booking"]
+        for _, ref in barrier.candidate_sources:
+            candidate = fanout.CandidateBundle.from_manifest(store.read_bytes(ref))
+            assert candidate.baseline_digest == baseline.digest
+        assert coordinator.restore_barrier(barrier.barrier_ref, packet=packet).candidate_sources == barrier.candidate_sources
+        assert coordinator.discover_barrier(packet, round=1).candidate_sources == barrier.candidate_sources
+        assert len(provider.requests) == len(seats)
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_hermetic_round_rejects_wrong_target_and_tampered_skill_before_spend(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(tmp_path, monkeypatch)
+    policy = RoundPolicy.from_provider_policy(packet.provider_policy)
+    try:
+        coordinator.repository_baselines = {"other": coordinator.repository_baselines["booking"]}
+        with pytest.raises(CollaborationValidationError, match="target"):
+            coordinator.execute_round(packet, seats, policy, round=1)
+        assert provider.requests == []
+        coordinator.repository_baselines = {"booking": coordinator.repository_baselines["other"]}
+        manifest = seats[0].staged_root / "manifest.json"
+        manifest.chmod(0o600)
+        manifest.write_bytes(b"tampered")
+        manifest.chmod(0o400)
+        with pytest.raises(CollaborationValidationError, match="staged skill"):
+            coordinator.execute_round(packet, seats, policy, round=1)
+        assert provider.requests == []
+        assert not journal.state.seat_phases
+    finally:
+        journal.close()
+        store.close()
+
+
+def _v2_hermetic_service(packet, seats, coordinator, journal, store):
+    owner = coordinator.owner
+    scheduler = coordinator.dependency_scheduler
+
+    class Backend:
+        record = None
+
+        def identity(self):
+            return "v2-hermetic-execution"
+
+        def key(self):
+            return "execution/run-target"
+
+        def max_record_bytes(self):
+            return 8 * 1024 * 1024
+
+        def read(self):
+            return self.record
+
+        def compare_and_set(self, expected_revision, snapshot, *, owner):
+            assert owner is coordinator.owner
+            actual = 0 if self.record is None else self.record.revision
+            assert actual == expected_revision
+            self.record = fanout.ExecutionRecord(actual + 1, snapshot)
+            return self.record
+
+    preparation = fanout.TaskPreparation(
+        packet, seats, RoundPolicy.from_provider_policy(packet.provider_policy),
+        journal.inputs, 1, registry=coordinator.registry,
+    )
+    return fanout.ExecutionService(
+        plan=scheduler.plan, inputs=journal.inputs,
+        preparations={packet.task_id: preparation},
+        provider_profile_digests=dict(journal.inputs.provider_profiles),
+        budget=fanout.ExecutionBudget(max_provider_turns=8),
+        scheduler=scheduler, journal=journal, coordinator=coordinator,
+        artifacts=store, backend=Backend(),
+        memory_preflight=coordinator.memory.preflight,
+        repository_baselines=coordinator.repository_baselines,
+        lifecycle_controller=coordinator.lifecycle_controller,
+    )
+
+
+def test_v2_hermetic_service_transitions_only_with_target_baseline(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, provider, store = _v2_hermetic_round(tmp_path, monkeypatch)
+    owner = coordinator.owner
+    try:
+        service = _v2_hermetic_service(packet, seats, coordinator, journal, store)
+        started = service.start(owner=owner)
+        assert started.tasks[0].phase == "scheduled"
+        assert provider.requests == []
+        resumed = service.resume(owner=owner)
+        assert resumed.tasks[0].phase == "reconciliation-pending"
+        assert len(provider.requests) == 2
+        state = service._execution_state(packet.task_id)
+        barrier = service._restore_barrier(state.barriers[-1], packet)
+        selected = barrier.valid_terminals[0].answer_ref
+        receipt = service.submit(packet.task_id, selected, owner=owner)
+        assert service.status().tasks[0].phase == "completed"
+        assert service.submit(packet.task_id, selected, owner=owner) == receipt
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_checked_answers_see_the_target_baseline(tmp_path, monkeypatch):
+    checks = [{
+        "argv": ["/bin/test", "!", "-e", "required.txt"], "cwd": "",
+        "env_allowlist": [], "timeout": 10, "accepted_exit_codes": [0],
+        "expected_artifacts": [],
+    }]
+    packet, seats, coordinator, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch, checks=checks, required_file=True,
+    )
+    try:
+        service = _v2_hermetic_service(packet, seats, coordinator, journal, store)
+        service.start(owner=coordinator.owner)
+        service.resume(owner=coordinator.owner)
+        selected = service.verify_read_only_selection(
+            packet.task_id, seats[0].seat_id, owner=coordinator.owner,
+        )
+        assert not selected.valid
+        assert selected.outcomes[0].status == "exit", selected.failure
+        assert selected.outcomes[0].returncode == 1
+        assert selected.baseline_digest == coordinator.repository_baselines["booking"].digest
+        synthesized = service.verify_read_only_synthesis(
+            packet.task_id, source_seat_ids=tuple(seat.seat_id for seat in seats),
+            synthesizer_id="owner", answer=b"New answer\n", owner=coordinator.owner,
+        )
+        assert not synthesized.valid
+        assert synthesized.outcomes[0].status == "exit"
+        assert synthesized.outcomes[0].returncode == 1
+        assert synthesized.baseline_digest == coordinator.repository_baselines["booking"].digest
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_checked_answer_receipts_bind_exact_target_baseline(tmp_path, monkeypatch):
+    checks = [{
+        "argv": ["/bin/test", "-e", "required.txt"], "cwd": "",
+        "env_allowlist": [], "timeout": 10, "accepted_exit_codes": [0],
+        "expected_artifacts": [],
+    }]
+    packet, seats, coordinator, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch, checks=checks, required_file=True,
+    )
+    try:
+        service = _v2_hermetic_service(packet, seats, coordinator, journal, store)
+        service.start(owner=coordinator.owner)
+        service.resume(owner=coordinator.owner)
+        task = service._task(packet.task_id)
+        selected = service.verify_read_only_selection(
+            packet.task_id, seats[0].seat_id, owner=coordinator.owner,
+        )
+        assert selected.valid
+        service._validate_selection_binding(task, selected)
+        with pytest.raises(fanout.ExecutionPendingError, match="exact fresh"):
+            service._validate_selection_binding(
+                task, dataclasses.replace(selected, baseline_digest="0" * 64),
+            )
+        synthesized = service.verify_read_only_synthesis(
+            packet.task_id, source_seat_ids=tuple(seat.seat_id for seat in seats),
+            synthesizer_id="owner", answer=b"New answer\n", owner=coordinator.owner,
+        )
+        assert synthesized.valid
+        service._validate_answer_binding(
+            task, synthesized, synthesized.plan_revision, synthesized.plan_sha256,
+        )
+        with pytest.raises(fanout.ExecutionPendingError, match="exact run"):
+            service._validate_answer_binding(
+                task, dataclasses.replace(synthesized, baseline_digest="0" * 64),
+                synthesized.plan_revision, synthesized.plan_sha256,
+            )
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_unchecked_synthesis_still_binds_target_baseline(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch,
+    )
+    try:
+        service = _v2_hermetic_service(packet, seats, coordinator, journal, store)
+        service.start(owner=coordinator.owner)
+        service.resume(owner=coordinator.owner)
+        receipt = service.verify_read_only_synthesis(
+            packet.task_id, source_seat_ids=tuple(seat.seat_id for seat in seats),
+            synthesizer_id="owner", answer=b"New answer\n", owner=coordinator.owner,
+        )
+        assert receipt.valid
+        assert receipt.baseline_digest == coordinator.repository_baselines["booking"].digest
+        task = service._task(packet.task_id)
+        service._validate_answer_binding(
+            task, receipt, receipt.plan_revision, receipt.plan_sha256,
+        )
+        for digest in (None, "0" * 64):
+            with pytest.raises(fanout.ExecutionPendingError, match="exact run"):
+                service._validate_answer_binding(
+                    task, dataclasses.replace(receipt, baseline_digest=digest),
+                    receipt.plan_revision, receipt.plan_sha256,
+                )
+    finally:
+        journal.close()
+        store.close()
+
+
+def test_v2_amendment_preflight_keeps_target_baseline_authority(tmp_path, monkeypatch):
+    packet, seats, coordinator, journal, _provider, store = _v2_hermetic_round(
+        tmp_path, monkeypatch,
+    )
+    try:
+        service = _v2_hermetic_service(packet, seats, coordinator, journal, store)
+        replacement = service._replacement(
+            service.plan, service.inputs, service.preparations,
+            service.provider_profile_digests,
+        )
+        assert replacement.repository_baselines == service.repository_baselines
+    finally:
+        journal.close()
+        store.close()
 
 
 def test_dependency_context_rejects_oversized_ref_before_read(tmp_path):
@@ -760,6 +1120,25 @@ def _cross_target_packet(tmp_path: Path, record, scheduler):
         run_inputs=scheduler.inputs, dependency_records=(record,),
     )
     return TaskPacket(**values)
+
+
+def test_v2_dependent_packet_restores_authenticated_dependency_records(tmp_path):
+    with ArtifactStore(tmp_path / "artifacts") as store:
+        record, scheduler = _verified_cross_target_dependency(
+            tmp_path, store, b"address evidence",
+        )
+        packet = _cross_target_packet(tmp_path, record, scheduler)
+        service = object.__new__(fanout.ExecutionService)
+        service.scheduler = scheduler
+        service.preparations = {
+            packet.task_id: type("Preparation", (), {"packet": packet})(),
+        }
+        task = next(task for task in scheduler.plan.tasks if task.id == packet.task_id)
+        restored = service._packet_for(task)
+        assert restored.dependency_records == (scheduler.dependency_record_for(
+            task.id, "address-work",
+        ),)
+        assert restored.dependency_artifacts == ()
 
 
 def test_v2_round_one_prompt_contains_verified_dependency_without_peer_memory(tmp_path, monkeypatch):

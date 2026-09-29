@@ -35,6 +35,7 @@ from .process import (
     build_child_environment, default_claude_adc_path, default_claude_vertex_route,
     run_command,
 )
+from .skills import SkillAdmission
 
 
 _READ_ONLY = "read-only"
@@ -230,6 +231,7 @@ class ProviderRequest:
     context_sha256: str = ""
     skill_bundle_sha256: str = ""
     staged_skill_root: Path | str | None = None
+    staged_skill_admission: SkillAdmission | None = field(default=None, repr=False, compare=False)
     skill_delivery_sha256: str = ""
     skill_delivery_ref: ArtifactRef | None = None
     agy_guard: AgyReadOnlyGuard | None = field(default=None, repr=False, compare=False)
@@ -295,6 +297,10 @@ class ProviderRequest:
             if not staged_root.is_absolute() or not staged_root.is_dir():
                 raise ProviderRequestError("staged_skill_root must name an existing absolute directory")
             object.__setattr__(self, "staged_skill_root", staged_root)
+        if self.staged_skill_admission is not None and not isinstance(
+            self.staged_skill_admission, SkillAdmission
+        ):
+            raise ProviderRequestError("staged skill admission is invalid")
         if self.skill_delivery_ref is not None:
             if (
                 not isinstance(self.skill_delivery_ref, ArtifactRef)

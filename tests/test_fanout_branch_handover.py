@@ -104,6 +104,7 @@ def test_index_only_drift_pre_intent_is_read_only(tmp_path):
     assert _loose_object_count(binding.root) == before
     assert "address" not in journal.state.branch_handovers
     assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
+    assert cases._git(binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref) == ""
 
 
 def test_index_only_drift_before_cas_does_not_publish_ref_or_tree(tmp_path, monkeypatch):
@@ -128,6 +129,8 @@ def test_index_only_drift_before_cas_does_not_publish_ref_or_tree(tmp_path, monk
     )
     assert isinstance(blocked, handover.BlockedHandover)
     assert observed and _loose_object_count(binding.root) == observed[0]
+    assert blocked.reason == "delivery-failed"
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "delivery-failed")
     assert (binding.root / "README.md").read_text() == "initial\n"
     assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
     assert cases._git(binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref) == ""
@@ -161,9 +164,13 @@ def test_index_only_drift_post_cas_recovery_never_switches_head(tmp_path, monkey
         journal=journal, owner=owner,
     )
     assert isinstance(blocked, handover.BlockedHandover)
+    assert blocked.reason == "git-proof-invalid"
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "git-proof-invalid")
     assert _loose_object_count(binding.root) == before
     assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
-    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) != binding.base_oid
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == handover._prepared_commit_receipt(
+        prepared.intent, journal, controller,
+    )["commit_oid"]
 
 
 def test_index_only_drift_cold_proof_is_read_only(tmp_path):
@@ -196,6 +203,7 @@ def test_index_only_drift_cold_proof_is_read_only(tmp_path):
         )
     assert _loose_object_count(binding.root) == before
     assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.spec.branch_ref
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == terminal.commit_oid
     cold_journal.close()
 
 
@@ -1485,6 +1493,11 @@ def _prepared_mode_artifact_path(journal, controller, artifacts):
     return artifacts.root / record["mode_evidence"]["path"]
 
 
+def _prepared_commit_receipt_path(journal, controller):
+    name, _digest = journal.branch_record_for("address", "prepared-commit")
+    return controller.root / "receipts" / name
+
+
 @pytest.mark.parametrize("damage", ("tamper", "delete"))
 def test_mode_artifact_damage_fails_cold_proof_closed(tmp_path, damage):
     scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
@@ -1506,6 +1519,8 @@ def test_mode_artifact_damage_fails_cold_proof_closed(tmp_path, damage):
         artifact.write_bytes(b"tampered mode evidence\n")
     else:
         artifact.unlink()
+    with pytest.raises(fanout.SchedulerStateError, match="proof|evidence"):
+        scheduler.dependency_record_for("booking", "address")
     anchor = journal._anchor_store
     journal.close()
     cold_journal = fanout.RunJournal._resume_for_test(
@@ -1555,8 +1570,170 @@ def test_mode_artifact_damage_after_ref_cas_blocks_recovery_as_invalid_proof(tmp
     )
     assert blocked == handover.BlockedHandover(prepared.intent.sha256, "git-proof-invalid")
     assert journal.state.branch_blocked["address"][1] == "git-proof-invalid"
+    assert scheduler.handover_terminal_for("address") is None
+    with pytest.raises(fanout.SchedulerStateError, match="terminal|handover"):
+        scheduler.dependency_record_for("booking", "address")
     assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
     assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == committed
+
+
+@pytest.mark.parametrize("phase", ("before-cas", "after-cas"))
+@pytest.mark.parametrize("damage", ("delete", "tamper"))
+def test_unreadable_prepared_commit_receipt_classifies_exact_ref_state(tmp_path, monkeypatch, phase, damage):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    prepared = handover.prepare_branch_handover(
+        binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner, task_id="address",
+    )
+    def crash(at):
+        if at == ("after-prepared-commit" if phase == "before-cas" else "after-ref-cas"):
+            raise SimulatedCrash()
+    monkeypatch.setattr(handover, "_checkpoint", crash)
+    with pytest.raises(SimulatedCrash):
+        handover.deliver_branch_candidate(
+            prepared, plan=scheduler.plan, inputs=scheduler.inputs,
+            artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+            journal=journal, owner=owner,
+        )
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    receipt_path = _prepared_commit_receipt_path(journal, controller)
+    if damage == "delete":
+        receipt_path.unlink()
+    else:
+        receipt_path.write_bytes(b"tampered prepared commit receipt\n")
+    ref_before = cases._git(
+        binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref,
+    )
+    assert (ref_before == "") == (phase == "before-cas")
+    blocked = handover.recover_branch_handover(
+        prepared.intent, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    reason = "pre-cas-interrupted" if phase == "before-cas" else "ref-changed"
+    assert blocked == handover.BlockedHandover(prepared.intent.sha256, reason)
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, reason)
+    assert scheduler.handover_terminal_for("address") is None
+    with pytest.raises(fanout.SchedulerStateError, match="terminal|handover"):
+        scheduler.dependency_record_for("booking", "address")
+    assert cases._git(
+        binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref,
+    ) == ref_before
+    assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
+
+
+def test_unreadable_prepared_receipt_and_symbolic_ticket_ref_never_claims_pre_cas(tmp_path, monkeypatch):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    prepared = handover.prepare_branch_handover(
+        binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner, task_id="address",
+    )
+    def crash(at):
+        if at == "after-ref-cas":
+            raise SimulatedCrash()
+    monkeypatch.setattr(handover, "_checkpoint", crash)
+    with pytest.raises(SimulatedCrash):
+        handover.deliver_branch_candidate(
+            prepared, plan=scheduler.plan, inputs=scheduler.inputs,
+            artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+            journal=journal, owner=owner,
+        )
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    _prepared_commit_receipt_path(journal, controller).unlink()
+    cases._git(binding.root, "symbolic-ref", binding.spec.branch_ref, "refs/heads/main")
+    assert cases._git(binding.root, "symbolic-ref", "--no-recurse", binding.spec.branch_ref) == "refs/heads/main"
+
+    blocked = handover.recover_branch_handover(
+        prepared.intent, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    assert blocked == handover.BlockedHandover(prepared.intent.sha256, "ref-changed")
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "ref-changed")
+    assert scheduler.handover_terminal_for("address") is None
+    assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
+
+
+@pytest.mark.parametrize("damage", ("receipt", "mode-artifact"))
+def test_existing_branch_exact_old_ref_with_damaged_prepared_evidence_is_pre_cas(tmp_path, monkeypatch, damage):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
+        tmp_path, existing_branch=True,
+    )
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    prepared = handover.prepare_branch_handover(
+        binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner, task_id="address",
+    )
+    def crash(at):
+        if at == "after-prepared-commit":
+            raise SimulatedCrash()
+    monkeypatch.setattr(handover, "_checkpoint", crash)
+    with pytest.raises(SimulatedCrash):
+        handover.deliver_branch_candidate(
+            prepared, plan=scheduler.plan, inputs=scheduler.inputs,
+            artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+            journal=journal, owner=owner,
+        )
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    if damage == "receipt":
+        _prepared_commit_receipt_path(journal, controller).unlink()
+    else:
+        _prepared_mode_artifact_path(journal, controller, backend.artifacts).unlink()
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == prepared.intent.old_ref_oid
+
+    blocked = handover.recover_branch_handover(
+        prepared.intent, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    assert blocked == handover.BlockedHandover(prepared.intent.sha256, "pre-cas-interrupted")
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "pre-cas-interrupted")
+    assert scheduler.handover_terminal_for("address") is None
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == prepared.intent.old_ref_oid
+
+
+def test_intact_prepared_commit_with_external_direct_ref_is_not_pre_cas(tmp_path, monkeypatch):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    prepared = handover.prepare_branch_handover(
+        binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner, task_id="address",
+    )
+    def crash(at):
+        if at == "after-prepared-commit":
+            raise SimulatedCrash()
+    monkeypatch.setattr(handover, "_checkpoint", crash)
+    with pytest.raises(SimulatedCrash):
+        handover.deliver_branch_candidate(
+            prepared, plan=scheduler.plan, inputs=scheduler.inputs,
+            artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+            journal=journal, owner=owner,
+        )
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    assert handover._prepared_commit_receipt(prepared.intent, journal, controller)["commit_oid"] != binding.base_oid
+    cases._git(binding.root, "update-ref", binding.spec.branch_ref, binding.base_oid)
+    assert prepared.intent.old_ref_oid == "0" * 40
+
+    blocked = handover.recover_branch_handover(
+        prepared.intent, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    assert blocked == handover.BlockedHandover(prepared.intent.sha256, "ref-changed")
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "ref-changed")
+    assert scheduler.handover_terminal_for("address") is None
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == binding.base_oid
+    assert cases._git(binding.root, "symbolic-ref", "--no-recurse", "HEAD") == binding.head_ref
 
 
 @pytest.mark.parametrize("damage", ("tamper", "delete"))
@@ -1596,6 +1773,47 @@ def test_post_cas_delivery_error_with_damaged_modes_requires_exact_recovery(tmp_
     )
     assert blocked == handover.BlockedHandover(prepared.intent.sha256, "git-proof-invalid")
     assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == committed
+
+
+@pytest.mark.parametrize("damage", ("tamper", "delete"))
+def test_post_cas_delivery_error_with_damaged_prepared_receipt_blocks_ref_changed(tmp_path, monkeypatch, damage):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    prepared = handover.prepare_branch_handover(
+        binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner, task_id="address",
+    )
+    def damage_at_cas(at):
+        if at == "after-ref-cas":
+            receipt_path = _prepared_commit_receipt_path(journal, controller)
+            if damage == "tamper":
+                receipt_path.write_bytes(b"tampered prepared commit receipt\n")
+            else:
+                receipt_path.unlink()
+            raise RuntimeError("injected post-CAS receipt damage")
+    monkeypatch.setattr(handover, "_checkpoint", damage_at_cas)
+    blocked = handover.deliver_branch_candidate(
+        prepared, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    assert blocked == handover.BlockedHandover(prepared.intent.sha256, "ref-changed")
+    assert journal.state.branch_blocked["address"] == (prepared.intent.sha256, "ref-changed")
+    published = cases._git(binding.root, "rev-parse", binding.spec.branch_ref)
+    assert published != binding.base_oid
+    assert scheduler.handover_terminal_for("address") is None
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    recovered = handover.recover_branch_handover(
+        prepared.intent, plan=scheduler.plan, inputs=scheduler.inputs,
+        artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
+        journal=journal, owner=owner,
+    )
+    assert recovered == blocked
+    assert cases._git(binding.root, "rev-parse", binding.spec.branch_ref) == published
+    with pytest.raises(fanout.SchedulerStateError, match="terminal|handover"):
+        scheduler.dependency_record_for("booking", "address")
 
 
 @pytest.mark.parametrize("phase", ("before-cas", "after-cas"))

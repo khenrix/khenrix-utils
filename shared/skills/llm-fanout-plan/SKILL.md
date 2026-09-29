@@ -7,6 +7,10 @@ description: Use when an approved implementation plan, a direct cross-model ques
 
 Produce one validated DAG. Planning never starts providers or approves amendments.
 
+For a v2 plan, map each source Task's `**Target:**` to one exact repository target; distinct repositories may share a ticket key and relative path names. Keep each work task and source Step on its declared target. A repository writer owns only one target, with at most one repo-write work task per target. Compare owned paths by `(target_id, relative_path)`, and declare `artifact` or `handover` mode on each cross-target dependency.
+
+Current public v2 execution is no-spend: admission and a dormant `start`/read-only `status` are supported, but public `resume` refuses provider turns for both read-only and repo-write work. Green compilation, profile preflight, or a test-injected transport does not lift that temporary gate. Do not promise v2 model work as the next step.
+
 ## Choose the ingress
 
 | Input | Plan shape | Admission |
@@ -34,7 +38,7 @@ Admit a reviewed bundle with `from-bundle --bundle ... --owner-review-file ...`.
 
 1. Load the entire accepted plan. Keep each `Task N/Step M` whole. Combine dependent code and immediate test Steps in one bounded session; split only for ownership, class, or a useful dependency boundary. A source Task that declares `Create`/`Modify` paths must have one repo-write owner; if those paths genuinely need separate owners, amend the accepted source plan into separate Tasks before compiling. Read-only source Steps may join distinct writers when their write paths come from other source Tasks.
 2. Declare every work item's class (`read-only`, `repo-write`, `orchestrator-action`), Steps, dependencies, paths, acceptance, and executor skills or reviewed `none_reason`. A repo-write task must own at least one source-listed path; all source `Create`/`Modify` paths need write ownership, while `Test` paths are optional. Each write task needs argv checks. Read-only answers are artifacts: do not invent a workspace file check. Groups express hierarchy and inherited skills, not work. Approvals, pushes, deploys, and deletions are invoking-CLI action barriers.
-3. Preserve source dependencies. Parallel tasks need independent results and nonoverlapping owned paths. If independent Steps overlap, combine them when safe or seek a reviewed source amendment; never invent an ordering edge. Other independent, nonoverlapping tasks may still run in parallel after the whole plan validates.
+3. Preserve source dependencies. Parallel tasks need independent results and nonoverlapping owned paths within each target. If independent Steps overlap on the same target, combine them when safe or seek a reviewed source amendment; never invent an ordering edge. Other independent, nonoverlapping tasks may still run in parallel after the whole plan validates.
 4. Resolve executor skills across ordered repeated `--skill-root` roots; divergent shadows fail. For an unresolved required skill, require that exact named skill to be installed in an admitted root or obtain a reviewed source amendment that changes the requirement. A different or supposedly equivalent skill is a source change, never an unreviewed substitute; do not drop the requirement to meet a deadline. Planning, authorization, reconciliation, and Superpowers control stay with the invoking CLI. Seats later receive the whole plan, their task, and verified peer context.
 5. Compile and validate before execution. Refuse missing write checks, skills, source edges, or review bindings; correct the input and recompile rather than deleting evidence.
 

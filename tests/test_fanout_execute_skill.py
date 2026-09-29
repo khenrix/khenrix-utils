@@ -186,7 +186,7 @@ def _v2_write_packet(tmp_path: Path) -> tuple[dict[str, object], fanout.SkillRes
     return json.loads(result.stdout), resolver
 
 
-def _v2_two_repo_packet(tmp_path: Path) -> dict[str, object]:
+def _v2_two_repo_packet(tmp_path: Path, *, writer_check=None) -> dict[str, object]:
     original, _ = _v2_write_packet(tmp_path)
     source = original["source_markdown"] + "\n".join([
         "### Task 2: Inspect booking", "", "**Target:** booking", "", "**Files:**", "",
@@ -195,6 +195,8 @@ def _v2_two_repo_packet(tmp_path: Path) -> dict[str, object]:
     ])
     draft = original["draft"]
     draft["source_sha256"] = hashlib.sha256(source.encode()).hexdigest()
+    if writer_check is not None:
+        draft["tasks"][0]["checks"] = [writer_check]
     draft["targets"].append({
         "id": "booking", "repository": "github.com/example/booking-service",
         "ticket_key": "TASK-123", "branch_ref": "refs/heads/feat/TASK-123-booking",
@@ -593,6 +595,13 @@ def _git(repository: Path, *arguments: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
+def _git_output(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(["git", "-C", str(repository), *arguments],
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
 def _repository(tmp_path: Path) -> Path:
     repository = tmp_path / "repo"
     repository.mkdir(mode=0o700)
@@ -706,6 +715,19 @@ def test_v2_dirty_write_target_is_refused(execute, tmp_path):
         )
 
 
+def test_v2_write_target_rejects_recursive_head_alias_before_start(execute, tmp_path):
+    packet, _ = _v2_write_packet(tmp_path)
+    root = _v2_target_root(tmp_path)
+    _git(root, "branch", "feat/TASK-123-address")
+    _git(root, "symbolic-ref", "refs/heads/alias", "refs/heads/feat/TASK-123-address")
+    _git(root, "symbolic-ref", "HEAD", "refs/heads/alias")
+    with pytest.raises(ValueError, match="existing ticket branch must be current HEAD"):
+        execute.prepare_v2_run(
+            packet, target_roots={"address": root}, skill_roots=(tmp_path / "skills",),
+            provider_runner=lambda _: pytest.fail("provider launched"),
+        )
+
+
 def test_v3_baseline_artifacts_are_target_prefixed_even_for_equal_bytes(execute, tmp_path):
     root = _v2_target_root(tmp_path)
     baseline = fanout.capture_repository_baseline(root)
@@ -777,6 +799,849 @@ def test_v3_storage_roots_are_disjoint_from_every_target(execute, tmp_path):
             {"address": address, "booking": address / "nested"},
             tmp_path / "run", tmp_path / "authority", tmp_path / "private",
         )
+
+
+def test_v2_cli_start_requires_exact_target_root_flags(execute, tmp_path, capsys):
+    packet = _v2_two_repo_packet(tmp_path)
+    admission = tmp_path / "admission.json"
+    admission.write_bytes(fanout.canonical_json(packet))
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    common = ["start", "--admission-file", str(admission),
+              "--private-root", str(private), "--run-root", str(tmp_path / "run"),
+              "--authority-root", str(tmp_path / "authority"),
+              "--skill-root", str(tmp_path / "skills"), "--max-turns", "12"]
+    for extra, message in (
+        (["--repo-root", str(tmp_path)], "repo-root"),
+        (["--target-root", f"address={tmp_path}"], "booking"),
+        (["--target-root", f"address={tmp_path}",
+          "--target-root", f"booking={tmp_path}",
+          "--repo-root", str(tmp_path)], "repo-root"),
+        (["--target-root", f"address={tmp_path}",
+          "--target-root", f"address={tmp_path}"], "duplicate"),
+        (["--target-root", "address=relative/path",
+          "--target-root", f"booking={tmp_path}"], "absolute"),
+    ):
+        assert execute.main(common + extra, runtime=fanout, registry=_registry()) == 2
+        assert message in capsys.readouterr().err
+    assert not (private / "startup.json").exists()
+    assert not (tmp_path / "run").exists()
+
+
+def test_v1_cli_start_rejects_target_root_without_upgrading(execute, tmp_path, capsys):
+    packet, _ = _question_packet(tmp_path, executors=("claude", "codex"))
+    admission = tmp_path / "admission.json"
+    admission.write_bytes(fanout.canonical_json(packet))
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    args = ["start", "--admission-file", str(admission),
+            "--private-root", str(private), "--run-root", str(tmp_path / "run"),
+            "--authority-root", str(tmp_path / "authority"),
+            "--skill-root", str(tmp_path / "skills"), "--max-turns", "30"]
+    assert execute.main(args + ["--target-root", f"address={tmp_path}"],
+                        runtime=fanout, registry=_registry()) == 2
+    assert "requires --repo-root and rejects --target-root" in capsys.readouterr().err
+    assert not (private / "startup.json").exists()
+
+
+def test_v2_public_cli_start_is_dormant_and_resume_refuses_spend(execute, tmp_path, capsys):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    admission = tmp_path / "admission.json"
+    admission.write_bytes(fanout.canonical_json(packet))
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    calls = []
+    def no_provider(*args, **kwargs):
+        calls.append((args, kwargs))
+        pytest.fail("provider launched")
+
+    result = execute.main(
+        ["start", "--admission-file", str(admission),
+         "--private-root", str(private), "--run-root", str(tmp_path / "run"),
+         "--authority-root", str(tmp_path / "authority"),
+         "--skill-root", str(tmp_path / "skills"), "--max-turns", "6",
+         "--target-root", f"address={address}"],
+        runtime=fanout, registry=_registry(), provider_runner=no_provider,
+    )
+    captured = capsys.readouterr()
+    assert result == 0, captured.err
+    assert json.loads(captured.out)["provider_turns"] == 0
+    assert execute.load_private_descriptor(private)["schema_version"] == "fanout-execute-private-v2"
+    assert execute.main(["resume", "--private-root", str(private)],
+                        runtime=fanout, registry=_registry(), provider_runner=no_provider) == 2
+    assert "native seat boundary" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="native seat boundary"):
+        execute.resume_run(
+            private, runtime=fanout, registry=_registry(), provider_runner=no_provider,
+        )
+    assert calls == []
+
+
+def test_v2_start_escrows_targets_and_dormant_backends_without_spend(execute, tmp_path):
+    packet = _v2_two_repo_packet(tmp_path)
+    address_dir, booking_dir = tmp_path / "address-work", tmp_path / "booking-work"
+    address_dir.mkdir()
+    booking_dir.mkdir()
+    address = _v2_target_root(address_dir)
+    booking = _v2_target_root(booking_dir, origin="booking-service")
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+
+    result = execute.start_v2_run(
+        packet, target_roots={"address": address, "booking": booking},
+        run_root=run, authority_root=authority, private_root=private,
+        skill_roots=(tmp_path / "skills",), budget=12,
+        runtime=fanout, registry=_registry(),
+        provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+    )
+    assert result["provider_turns"] == 0
+    assert result["run_id"].startswith("fanout-")
+    startup = execute.load_private_descriptor(private, name="startup.json")
+    descriptor = execute.load_private_descriptor(private)
+    assert startup["schema_version"] == "fanout-execute-startup-v2"
+    assert descriptor["schema_version"] == "fanout-execute-private-v2"
+    assert startup["run_id"] == descriptor["run_id"] == result["run_id"]
+    assert set(startup["baseline_manifest_refs"]) == {"address", "booking"}
+    assert set(descriptor["baseline_manifest_refs"]) == {"address", "booking"}
+    assert startup["writable_target_ids"] == ["address"]
+    assert descriptor["writable_target_ids"] == ["address"]
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    with (fanout.FileSchedulerBackend.resume(run, run_id=result["run_id"], owner=owner) as scheduler,
+          fanout.FileExecutionBackend.resume(run, run_id=result["run_id"], owner=owner) as execution):
+        assert scheduler.read() is None
+        assert execution.read() is None
+    assert not (run / "slots").exists()
+
+
+def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None):
+    packet = _v2_two_repo_packet(tmp_path, writer_check=writer_check)
+    address_dir, booking_dir = tmp_path / "address-work", tmp_path / "booking-work"
+    address_dir.mkdir()
+    booking_dir.mkdir()
+    address = _v2_target_root(address_dir)
+    booking = _v2_target_root(booking_dir, origin="booking-service")
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    execute.start_v2_run(
+        packet, target_roots={"address": address, "booking": booking},
+        run_root=run, authority_root=authority, private_root=private,
+        skill_roots=(tmp_path / "skills",), budget=12,
+        runtime=fanout, registry=_registry(),
+        provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+    )
+    return private, run, authority, address, booking
+
+
+def test_v2_cli_cold_status_reads_two_dormant_targets_without_repair(execute, tmp_path, capsys):
+    private, run, authority, _address, _booking = _v2_cold_status_fixture(execute, tmp_path)
+    before = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (private, run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    result = execute.main(
+        ["status", "--private-root", str(private)], runtime=fanout,
+        registry=_registry(), provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+    )
+    captured = capsys.readouterr()
+    assert result == 0, captured.err
+    assert json.loads(captured.out)["target_states"] == {
+        "address": "pending", "booking": "pending",
+    }
+    after = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (private, run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    assert after == before
+
+
+def test_v2_cli_cold_status_refuses_tampered_target_manifest(execute, tmp_path, capsys):
+    private, run, _authority, _address, _booking = _v2_cold_status_fixture(execute, tmp_path)
+    manifest = run / "artifacts" / "baseline" / "address" / "manifest.json"
+    manifest.write_bytes(b"tampered")
+    assert execute.main(
+        ["status", "--private-root", str(private)], runtime=fanout, registry=_registry(),
+    ) == 2
+    assert "artifact digest mismatch" in capsys.readouterr().err
+
+
+def test_v2_cli_cold_status_refuses_resigned_target_registry(execute, tmp_path, capsys):
+    private, _run, _authority, _address, _booking = _v2_cold_status_fixture(execute, tmp_path)
+    descriptor = execute.load_private_descriptor(private)
+    descriptor["writable_target_ids"] = []
+    envelope = {"schema_version": "fanout-private-envelope-v1",
+                "sha256": execute._sha256(execute._canonical(descriptor)),
+                "document": descriptor}
+    (private / "run.json").write_bytes(execute._canonical(envelope))
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    assert "exact startup escrow" in capsys.readouterr().err
+
+
+def test_v2_cli_cold_status_checks_journal_before_live_targets(execute, tmp_path, capsys):
+    private, run, _authority, _address, booking = _v2_cold_status_fixture(execute, tmp_path)
+    _git(booking, "switch", "-q", "-c", "other", _git_output(booking, "rev-parse", "HEAD"))
+    (run / "inputs.json").write_bytes(b"{}\n")
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    error = capsys.readouterr().err.lower()
+    assert "inputs" in error and "original baseline changed" not in error
+
+
+def test_v2_cli_cold_status_survives_runtime_and_profile_drift_only(execute, tmp_path,
+                                                                     monkeypatch, capsys):
+    private, _run, _authority, _address, _booking = _v2_cold_status_fixture(execute, tmp_path)
+    monkeypatch.setattr(execute, "_runtime_digest", lambda _runtime: "0" * 64)
+    drifted = fanout.ProviderRegistry.default(version_probe=lambda _executor: "0.0.0")
+    assert execute.main(
+        ["status", "--private-root", str(private)], runtime=fanout, registry=drifted,
+    ) == 0, capsys.readouterr().err
+    assert execute.main(
+        ["resume", "--private-root", str(private)], runtime=fanout, registry=drifted,
+    ) == 2
+    assert "native seat boundary" in capsys.readouterr().err
+
+
+def _v2_cold_delivered_fixture(execute, tmp_path):
+    check = {"argv": ["/bin/test", "-e", "source.txt"], "cwd": "",
+             "env_allowlist": [], "timeout": 10, "accepted_exit_codes": [0],
+             "expected_artifacts": []}
+    private, run, authority, address, booking = _v2_cold_status_fixture(
+        execute, tmp_path, writer_check=check,
+    )
+    descriptor = execute.load_private_descriptor(private)
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    plan = fanout.plan.FanoutPlanV2.from_dict(descriptor["admission_packet"]["compiled"]["plan"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    journal = fanout.RunJournal.resume(run, inputs, owner, anchor_store=anchor)
+    controller = fanout.resume_lifecycle_controller(
+        run / "lifecycle", fanout.LifecycleCapability(descriptor["controller_token"]),
+    )
+    handover = importlib.import_module("fanout.branch_handover")
+    try:
+        with (fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+              fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
+            scheduler = fanout.Scheduler.create(
+                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+            )
+            scheduler.schedule_ready(owner=owner)
+            scheduler.mark_active("change", owner=owner)
+            scheduler.begin_reconciliation("change", owner=owner)
+            baseline = execute._load_baseline(
+                fanout, artifacts, descriptor["baseline_manifest_refs"]["address"],
+                address, target_id="address",
+            )
+            candidate = fanout.CandidateBundle(baseline.digest, (), ())
+            issued = fanout.issue_target_candidate(
+                candidate, task_id="change", plan=plan, inputs=inputs,
+                store=artifacts, controller=controller,
+            )
+            verified, verification = fanout.verify_target_candidate(
+                issued, baseline=baseline, plan=plan, inputs=inputs,
+                store=artifacts, controller=controller,
+            )
+            assert verification.valid
+            result = artifacts.write_bytes("results/change/candidate.json", candidate.manifest_bytes)
+            scheduler.complete_reconciliation(
+                "change", scheduler.result_receipt("change", result), owner=owner,
+            )
+            prepared = handover.prepare_branch_handover(
+                inputs.targets["address"], issued, verified,
+                plan=plan, inputs=inputs, artifacts=artifacts, scheduler=scheduler,
+                controller=controller, journal=journal, owner=owner, task_id="change",
+            )
+            terminal = handover.deliver_branch_candidate(
+                prepared, plan=plan, inputs=inputs, artifacts=artifacts,
+                scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+            )
+            assert isinstance(terminal, fanout.HandoverTerminalV2)
+    finally:
+        journal.close()
+    return private, run, authority, address, booking
+
+
+def test_v2_cli_cold_status_authenticates_delivered_and_original_targets(execute, tmp_path,
+                                                                          capsys):
+    private, run, authority, address, booking = _v2_cold_delivered_fixture(execute, tmp_path)
+    original_booking = _git_output(booking, "rev-parse", "HEAD")
+    delivered_address = _git_output(address, "rev-parse", "HEAD")
+    assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == (
+        "refs/heads/feat/TASK-123-address"
+    )
+    before = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (private, run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    result = execute.main(
+        ["status", "--private-root", str(private)], runtime=fanout,
+        registry=_registry(), provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+    )
+    captured = capsys.readouterr()
+    assert result == 0, captured.err
+    assert json.loads(captured.out)["target_states"] == {
+        "address": "delivered", "booking": "pending",
+    }
+    assert _git_output(address, "rev-parse", "HEAD") == delivered_address
+    assert _git_output(booking, "rev-parse", "HEAD") == original_booking
+    after = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (private, run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    assert after == before
+
+
+def test_v2_cli_cold_status_refuses_changed_delivered_ref(execute, tmp_path, capsys):
+    private, _run, _authority, address, _booking = _v2_cold_delivered_fixture(execute, tmp_path)
+    _git(address, "update-ref", "refs/heads/feat/TASK-123-address",
+         _git_output(address, "rev-parse", "main"))
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    assert "handover" in capsys.readouterr().err.lower()
+
+
+def test_v2_cli_cold_status_refuses_changed_undelivered_baseline(execute, tmp_path,
+                                                                   capsys):
+    private, _run, _authority, _address, booking = _v2_cold_delivered_fixture(execute, tmp_path)
+    _git(booking, "switch", "-q", "-c", "other", _git_output(booking, "rev-parse", "HEAD"))
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    assert "target booking: original baseline changed" in capsys.readouterr().err
+
+
+def _v2_cold_task_state_fixture(execute, tmp_path, *, task_id: str, complete: bool):
+    private, run, authority, address, booking = _v2_cold_status_fixture(execute, tmp_path)
+    descriptor = execute.load_private_descriptor(private)
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    plan = fanout.plan.FanoutPlanV2.from_dict(descriptor["admission_packet"]["compiled"]["plan"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    journal = fanout.RunJournal.resume(run, inputs, owner, anchor_store=anchor)
+    controller = fanout.resume_lifecycle_controller(
+        run / "lifecycle", fanout.LifecycleCapability(descriptor["controller_token"]),
+    )
+    try:
+        with (fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+              fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
+            scheduler = fanout.Scheduler.create(
+                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+            )
+            scheduler.schedule_ready(owner=owner)
+            scheduler.mark_active(task_id, owner=owner)
+            if complete:
+                scheduler.begin_reconciliation(task_id, owner=owner)
+                result = artifacts.write_bytes(f"results/{task_id}/cold-status.json", b"{}\n")
+                scheduler.complete_reconciliation(
+                    task_id, scheduler.result_receipt(task_id, result), owner=owner,
+                )
+            else:
+                scheduler.fail_task(task_id, "test failure", owner=owner)
+    finally:
+        journal.close()
+    return private, address, booking
+
+
+def test_v2_cli_cold_status_checks_blocked_undelivered_target_baseline(execute, tmp_path,
+                                                                         capsys):
+    private, address, _booking = _v2_cold_task_state_fixture(
+        execute, tmp_path, task_id="change", complete=False,
+    )
+    (address / "source.txt").write_text("changed after failure\n", encoding="utf-8")
+    _git(address, "add", "source.txt")
+    _git(address, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "changed baseline")
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    assert "target address: original baseline changed" in capsys.readouterr().err
+
+
+def test_v2_cli_cold_status_checks_read_only_complete_target_baseline(execute, tmp_path,
+                                                                        capsys):
+    private, _address, booking = _v2_cold_task_state_fixture(
+        execute, tmp_path, task_id="inspect-booking", complete=True,
+    )
+    (booking / "source.txt").write_text("changed after read-only work\n", encoding="utf-8")
+    _git(booking, "add", "source.txt")
+    _git(booking, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "changed baseline")
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 2
+    assert "target booking: original baseline changed" in capsys.readouterr().err
+
+
+def _v2_cli_handover_fixture(execute, tmp_path):
+    check = {"argv": ["/bin/test", "-e", "source.txt"], "cwd": "",
+             "env_allowlist": [], "timeout": 10, "accepted_exit_codes": [0],
+             "expected_artifacts": []}
+    private, run, authority, address, _booking = _v2_cold_status_fixture(
+        execute, tmp_path, writer_check=check,
+    )
+    descriptor = execute.load_private_descriptor(private)
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    plan = fanout.plan.FanoutPlanV2.from_dict(descriptor["admission_packet"]["compiled"]["plan"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    journal = fanout.RunJournal.resume(run, inputs, owner, anchor_store=anchor)
+    controller = fanout.resume_lifecycle_controller(
+        run / "lifecycle", fanout.LifecycleCapability(descriptor["controller_token"]),
+    )
+    try:
+        with (fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+              fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
+            scheduler = fanout.Scheduler.create(
+                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+            )
+            scheduler.schedule_ready(owner=owner)
+            scheduler.mark_active("change", owner=owner)
+            scheduler.begin_reconciliation("change", owner=owner)
+            baseline = execute._load_baseline(
+                fanout, artifacts, descriptor["baseline_manifest_refs"]["address"],
+                address, target_id="address",
+            )
+            candidate = fanout.CandidateBundle(baseline.digest, (), ())
+            issued = fanout.issue_target_candidate(
+                candidate, task_id="change", plan=plan, inputs=inputs,
+                store=artifacts, controller=controller,
+            )
+            verified, receipt = fanout.verify_target_candidate(
+                issued, baseline=baseline, plan=plan, inputs=inputs,
+                store=artifacts, controller=controller,
+            )
+            assert receipt.valid
+            result = artifacts.write_bytes("results/change/owner-candidate.json",
+                                           candidate.manifest_bytes)
+            scheduler.complete_reconciliation(
+                "change", scheduler.result_receipt("change", result), owner=owner,
+            )
+            source = scheduler.handover_source_for("change")
+    finally:
+        journal.close()
+    candidate_ref = tmp_path / "candidate-ref.json"
+    verification_ref = tmp_path / "verification-ref.json"
+    for path, ref in ((candidate_ref, issued.payload), (verification_ref, verified.payload)):
+        path.write_bytes(fanout.canonical_json({"path": ref.path, "digest": ref.digest,
+                                                "size": ref.size}))
+    evidence = {
+        "target_id": "address",
+        "candidate": {"path": issued.payload.path, "digest": issued.payload.digest,
+                      "size": issued.payload.size},
+        "verification": {"path": verified.payload.path, "digest": verified.payload.digest,
+                         "size": verified.payload.size},
+        "target_binding": inputs.targets["address"].to_dict(),
+        "settled_source": {
+            "run_id": source.run_id, "task_id": source.task_id,
+            "plan_revision": source.plan_revision, "plan_sha256": source.plan_sha256,
+            "inputs_digest": source.inputs_digest,
+            "artifact": {"path": source.artifact.path, "digest": source.artifact.digest,
+                         "size": source.artifact.size},
+        },
+    }
+    return private, run, authority, address, candidate_ref, verification_ref, evidence
+
+
+def _v2_owner_approval(tmp_path, *, action, run_id, task_id, evidence):
+    approval = tmp_path / f"{action}-approval.json"
+    approval.write_bytes(fanout.canonical_json({
+        "schema_version": "fanout-owner-action-v1", "action": action,
+        "run_id": run_id, "task_id": task_id, "reviewer": "repository-owner",
+        "evidence_sha256": hashlib.sha256(fanout.canonical_json(evidence)).hexdigest(),
+    }))
+    return approval
+
+
+def test_v2_cli_handover_delivers_with_exact_same_process_owner_approval(execute, tmp_path,
+                                                                           capsys):
+    private, _run, _authority, address, candidate_ref, verification_ref, evidence = (
+        _v2_cli_handover_fixture(execute, tmp_path)
+    )
+    run_id = execute.load_private_descriptor(private)["run_id"]
+    approval = _v2_owner_approval(
+        tmp_path, action="handover", run_id=run_id, task_id="change", evidence=evidence,
+    )
+    result = execute.main([
+        "handover", "--private-root", str(private), "--task-id", "change",
+        "--candidate-ref-file", str(candidate_ref),
+        "--verification-ref-file", str(verification_ref),
+        "--owner-approval-file", str(approval),
+    ], runtime=fanout, registry=_registry(),
+       provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
+    output = capsys.readouterr()
+    assert result == 0, output.err
+    assert json.loads(output.out)["status"] == "committed"
+    assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == (
+        "refs/heads/feat/TASK-123-address"
+    )
+
+
+def test_v2_cli_handover_rejects_changed_approval_before_intent(execute, tmp_path, capsys):
+    private, run, authority, address, candidate_ref, verification_ref, evidence = (
+        _v2_cli_handover_fixture(execute, tmp_path)
+    )
+    run_id = execute.load_private_descriptor(private)["run_id"]
+    changed_evidence = (
+        {**evidence, "target_id": "booking"},
+        {**evidence, "candidate": {**evidence["candidate"], "digest": "0" * 64}},
+        {**evidence, "verification": {**evidence["verification"], "digest": "0" * 64}},
+        {**evidence, "target_binding": {**evidence["target_binding"], "base_oid": "0" * 40}},
+        {**evidence, "settled_source": {**evidence["settled_source"],
+                                         "inputs_digest": "0" * 64}},
+    )
+    for changed in changed_evidence:
+        approval = _v2_owner_approval(
+            tmp_path, action="handover", run_id=run_id, task_id="change", evidence=changed,
+        )
+        assert execute.main([
+            "handover", "--private-root", str(private), "--task-id", "change",
+            "--candidate-ref-file", str(candidate_ref),
+            "--verification-ref-file", str(verification_ref),
+            "--owner-approval-file", str(approval),
+        ], runtime=fanout, registry=_registry()) == 2
+        assert "owner action approval differs" in capsys.readouterr().err
+    descriptor = execute.load_private_descriptor(private)
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    inspection = fanout.RunJournal.inspect(run, inputs, owner, anchor_store=anchor)
+    assert not inspection.state.branch_handovers
+    assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == "refs/heads/main"
+
+
+@pytest.mark.parametrize("checkpoint", ("after-ref-cas", "after-journal-terminal"))
+def test_v2_cli_recover_handover_uses_only_authenticated_intent(execute, tmp_path,
+                                                                  monkeypatch, capsys,
+                                                                  checkpoint):
+    private, run, authority, address, candidate_ref, verification_ref, evidence = (
+        _v2_cli_handover_fixture(execute, tmp_path)
+    )
+    descriptor = execute.load_private_descriptor(private)
+    approval = _v2_owner_approval(
+        tmp_path, action="handover", run_id=descriptor["run_id"],
+        task_id="change", evidence=evidence,
+    )
+    handover = importlib.import_module("fanout.branch_handover")
+
+    def interrupt(phase):
+        if phase == checkpoint:
+            raise RuntimeError("interrupted handover")
+
+    monkeypatch.setattr(handover, "_checkpoint", interrupt)
+    assert execute.main([
+        "handover", "--private-root", str(private), "--task-id", "change",
+        "--candidate-ref-file", str(candidate_ref),
+        "--verification-ref-file", str(verification_ref),
+        "--owner-approval-file", str(approval),
+    ], runtime=fanout, registry=_registry()) == 2
+    assert "exact recovery" in capsys.readouterr().err
+    if checkpoint == "after-ref-cas":
+        assert execute.main(["status", "--private-root", str(private)],
+                            runtime=fanout, registry=_registry()) == 2
+        assert "original baseline changed" in capsys.readouterr().err
+    monkeypatch.setattr(handover, "_checkpoint", lambda _phase: None)
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority.inspect(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    inspected = fanout.RunJournal.inspect(run, inputs, owner, anchor_store=anchor)
+    intent, terminal = inspected.state.branch_handovers["change"]
+    assert (terminal is not None) == (checkpoint == "after-journal-terminal")
+    association = inspected.state.branch_records["change"]["association"]
+    recovery_evidence = {
+        "intent": intent.to_dict(),
+        "association": {"name": association[0], "digest": association[1]},
+    }
+    recovery_approval = _v2_owner_approval(
+        tmp_path, action="recover-handover", run_id=inputs.run_id,
+        task_id="change", evidence=recovery_evidence,
+    )
+    result = execute.main([
+        "recover-handover", "--private-root", str(private),
+        "--task-id", "change", "--owner-approval-file", str(recovery_approval),
+    ], runtime=fanout, registry=_registry(),
+       provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
+    output = capsys.readouterr()
+    assert result == 0, output.err
+    assert json.loads(output.out)["status"] == "committed"
+    assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == (
+        "refs/heads/feat/TASK-123-address"
+    )
+    assert execute.main([
+        "recover-handover", "--private-root", str(private), "--task-id", "change",
+        "--candidate-ref-file", str(candidate_ref),
+        "--transaction-root", str(run / "caller-transaction"),
+        "--owner-approval-file", str(recovery_approval),
+    ], runtime=fanout, registry=_registry()) == 2
+    assert "forbid" in capsys.readouterr().err.lower()
+
+
+def test_v2_cli_recover_handover_refuses_pending_scheduler_without_repair(
+    execute, tmp_path, monkeypatch, capsys,
+):
+    private, run, authority, address, candidate_ref, verification_ref, evidence = (
+        _v2_cli_handover_fixture(execute, tmp_path)
+    )
+    descriptor = execute.load_private_descriptor(private)
+    approval = _v2_owner_approval(
+        tmp_path, action="handover", run_id=descriptor["run_id"],
+        task_id="change", evidence=evidence,
+    )
+    handover = importlib.import_module("fanout.branch_handover")
+    with monkeypatch.context() as injected:
+        def interrupt(phase):
+            if phase == "after-association":
+                raise RuntimeError("interrupted after handover association")
+        injected.setattr(handover, "_checkpoint", interrupt)
+        assert execute.main([
+            "handover", "--private-root", str(private), "--task-id", "change",
+            "--candidate-ref-file", str(candidate_ref),
+            "--verification-ref-file", str(verification_ref),
+            "--owner-approval-file", str(approval),
+        ], runtime=fanout, registry=_registry()) == 2
+        assert "interrupted after handover association" in capsys.readouterr().err
+    inputs = fanout.RunInputs.from_dict(descriptor["inputs"])
+    plan = fanout.plan.FanoutPlanV2.from_dict(descriptor["admission_packet"]["compiled"]["plan"])
+    owner = fanout.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = fanout.LocalAnchorAuthority(
+        authority, run_root=run, repo_root=address, target_bindings=inputs.targets,
+    )
+    controller = fanout.resume_lifecycle_controller(
+        run / "lifecycle", fanout.LifecycleCapability(descriptor["controller_token"]),
+    )
+    scheduler_module = importlib.import_module("fanout.scheduler_authority")
+    with (fanout.RunJournal.resume(run, inputs, owner, anchor_store=anchor) as journal,
+          fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+          fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
+        scheduler = fanout.Scheduler.resume(
+            plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+            journal=journal, lifecycle_controller=controller,
+        )
+        with monkeypatch.context() as injected:
+            def interrupt(*_args, **_kwargs):
+                raise RuntimeError("interrupted after pending scheduler authority")
+            injected.setattr(scheduler_module, "_commit_backend", interrupt)
+            with pytest.raises(RuntimeError, match="pending scheduler authority"):
+                scheduler.mark_active("inspect-booking", owner=owner)
+    before = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    approval = _v2_owner_approval(
+        tmp_path, action="recover-handover", run_id=inputs.run_id,
+        task_id="change", evidence={},
+    )
+    assert execute.main([
+        "recover-handover", "--private-root", str(private),
+        "--task-id", "change", "--owner-approval-file", str(approval),
+    ], runtime=fanout, registry=_registry()) == 2
+    assert "committed authority binding" in capsys.readouterr().err.lower()
+    after = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for root in (run, authority) for path in root.rglob("*") if path.is_file()
+    ))
+    assert after == before
+    with (fanout.RunJournal.resume(run, inputs, owner, anchor_store=anchor) as journal,
+          fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+          fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
+        with pytest.raises(fanout.SchedulerStateError, match="pending"):
+            fanout.Scheduler.resume_exact_v2(
+                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+            )
+
+
+def test_v2_recover_start_authenticates_exact_escrow_without_restarting(execute, tmp_path,
+                                                                         monkeypatch):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    save = execute.save_private_descriptor
+
+    def interrupt_final(root, document, *, name="run.json"):
+        if name == "run.json":
+            raise RuntimeError("interrupted before final descriptor")
+        return save(root, document, name=name)
+
+    monkeypatch.setattr(execute, "save_private_descriptor", interrupt_final)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=run,
+            authority_root=authority, private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+            provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"),
+        )
+    monkeypatch.setattr(execute, "save_private_descriptor", save)
+    assert (private / "startup.json").is_file()
+    assert not (private / "run.json").exists()
+    recovered = execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert recovered["provider_turns"] == 0
+    descriptor = execute.load_private_descriptor(private)
+    assert descriptor["run_id"] == recovered["run_id"]
+    assert descriptor["budget"] == 6
+    with pytest.raises(ValueError, match="published"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+
+
+def test_v2_recover_start_rejects_resigned_budget_increase(execute, tmp_path, monkeypatch):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    save = execute.save_private_descriptor
+
+    def interrupt_final(root, document, *, name="run.json"):
+        if name == "run.json":
+            raise RuntimeError("interrupted before final descriptor")
+        return save(root, document, name=name)
+
+    monkeypatch.setattr(execute, "save_private_descriptor", interrupt_final)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=run,
+            authority_root=authority, private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+        )
+    monkeypatch.setattr(execute, "save_private_descriptor", save)
+    startup = execute.load_private_descriptor(private, name="startup.json")
+    startup["budget"] = 100
+    envelope = {"schema_version": "fanout-private-envelope-v1",
+                "sha256": execute._sha256(execute._canonical(startup)),
+                "document": startup}
+    (private / "startup.json").write_bytes(execute._canonical(envelope))
+    with pytest.raises(ValueError, match="startup budget differs from authority"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert not (private / "run.json").exists()
+
+
+def test_v2_recover_start_does_not_retry_missing_budget_anchor(execute, tmp_path,
+                                                                  monkeypatch):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    create = fanout.LocalAnchorAuthority.create
+
+    def interrupt_budget_anchor(self, key, value):
+        if key.startswith("startup-budget/"):
+            raise RuntimeError("budget anchor creation interrupted")
+        return create(self, key, value)
+
+    monkeypatch.setattr(fanout.LocalAnchorAuthority, "create", interrupt_budget_anchor)
+    with pytest.raises(RuntimeError, match="budget anchor creation interrupted"):
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=run,
+            authority_root=authority, private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+        )
+    assert (private / "startup.json").exists()
+    assert not run.exists()
+    with pytest.raises(fanout.RunStateError, match="missing or unsafe"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert not (private / "run.json").exists()
+
+
+def test_v2_recover_start_refuses_incomplete_controller_without_repeating_create(
+    execute, tmp_path, monkeypatch,
+):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    creations = []
+
+    def interrupted_create(*args, **kwargs):
+        creations.append((args, kwargs))
+        raise RuntimeError("controller creation interrupted")
+
+    monkeypatch.setattr(fanout, "create_lifecycle_controller", interrupted_create)
+    with pytest.raises(RuntimeError, match="controller creation interrupted"):
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=run,
+            authority_root=authority, private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+        )
+    with pytest.raises(fanout.LifecycleError, match="controller root cannot be opened safely"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert len(creations) == 1
+    assert not (private / "run.json").exists()
+
+
+def test_v2_recover_start_rejects_resigned_baseline_ref_tamper(execute, tmp_path,
+                                                                 monkeypatch):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    save = execute.save_private_descriptor
+
+    def interrupt_final(root, document, *, name="run.json"):
+        if name == "run.json":
+            raise RuntimeError("interrupted before final descriptor")
+        return save(root, document, name=name)
+
+    monkeypatch.setattr(execute, "save_private_descriptor", interrupt_final)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=run,
+            authority_root=authority, private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+        )
+    startup = execute.load_private_descriptor(private, name="startup.json")
+    startup["baseline_manifest_refs"]["address"]["digest"] = "0" * 64
+    envelope = {"schema_version": "fanout-private-envelope-v1",
+                "sha256": execute._sha256(execute._canonical(startup)), "document": startup}
+    (private / "startup.json").write_bytes(execute._canonical(envelope))
+    with pytest.raises(fanout.ArtifactIntegrityError, match="artifact digest mismatch"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert not (private / "run.json").exists()
+
+
+def test_v2_recover_start_rejects_resigned_partial_final_descriptor(execute, tmp_path):
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    execute.start_v2_run(
+        packet, target_roots={"address": address}, run_root=run,
+        authority_root=authority, private_root=private,
+        skill_roots=(tmp_path / "skills",), budget=6,
+        runtime=fanout, registry=_registry(),
+    )
+    published = execute.load_private_descriptor(private)
+    authentic = dict(published)
+    published["budget"] += 1
+    envelope = {"schema_version": "fanout-private-envelope-v1",
+                "sha256": execute._sha256(execute._canonical(published)),
+                "document": published}
+    descriptor = private / "run.json"
+    descriptor.write_bytes(execute._canonical(envelope))
+    temporary = private / (".run.json." + "a" * 32 + ".tmp")
+    os.link(descriptor, temporary)
+    with pytest.raises(ValueError, match="published v2 descriptor differs"):
+        execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert not temporary.exists()
+    authentic_envelope = {"schema_version": "fanout-private-envelope-v1",
+                          "sha256": execute._sha256(execute._canonical(authentic)),
+                          "document": authentic}
+    descriptor.write_bytes(execute._canonical(authentic_envelope))
+    os.link(descriptor, temporary)
+    repaired = execute.recover_start(private, runtime=fanout, registry=_registry())
+    assert repaired["descriptor_link_repaired"] is True
+    assert repaired["provider_turns"] == 0
 
 
 class _NeverMemory:

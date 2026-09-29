@@ -1,6 +1,6 @@
 # llm-fanout-execute — durable owner execution
 
-An admitted plan enters one owner-controlled run. `start` schedules only; `resume` crosses the provider-spend boundary after exact preflight. Source: `shared/skills/llm-fanout-execute/SKILL.md`; owner CLI: `shared/skills/llm-fanout-execute/scripts/execute.py`.
+An admitted plan enters one owner-controlled run. This diagram describes v1 execution: `start` schedules only, and `resume` crosses the provider-spend boundary after exact preflight. V2 accepts distinct repository targets but currently starts dormant and refuses public provider spend. Source: `shared/skills/llm-fanout-execute/SKILL.md`; owner CLI: `shared/skills/llm-fanout-execute/scripts/execute.py`.
 
 ```mermaid
 flowchart TD
@@ -60,5 +60,11 @@ Additional evidence:
 | Owner candidate inspection exports only exact final-seat full manifests to private files and refuses tamper | `tests/test_fanout_execute_skill.py::test_inspect_candidates_exports_exact_final_seats_privately`, `test_inspect_candidates_refuses_tampered_final_artifact` |
 | Real durable rounds can be reconciled after cold reopen | `tests/test_fanout_execute_skill.py::test_resume_fuses_two_hermetic_seats_and_cold_opens_completed_result` |
 | Nested invocation is refused | `tests/test_fanout_execute_skill.py::test_nested_executor_cannot_orchestrate` |
+| V2 starts one dormant run for two writers using the same ticket in distinct repositories | `tests/test_fanout_multirepo_integration.py::test_two_writer_admission_starts_dormant_owner_run` |
+| Two local handovers create one ticket-keyed commit per repository, with an orchestrator-only barrier | `tests/test_fanout_multirepo_integration.py::test_two_repositories_one_run_two_ticket_branches` |
+| One admitted v2 packet completes native fake-seat rounds, exact-session resumes, target-specific synthesis, and both handovers | `tests/test_fanout_multirepo_integration.py::test_admitted_packet_runs_native_fake_seats_through_both_handovers` |
+| A failed dependent target preserves the delivered target and cold status stays read-only | `tests/test_fanout_multirepo_integration.py::test_failed_booking_after_address_delivery_cold_reopens_as_partial` |
 
-The chart describes a control boundary, not a model judge. Same-UID private paths and separate Git workspaces are not a native seat boundary. Read-only runs remain available when repository-write isolation is not yet certified. Live pressure cases and installation checks remain separate release gates. An action approval is a digest-bound attestation, not cryptographic proof of who reviewed it.
+The chart describes a control boundary, not a model judge. Same-UID private paths and separate Git workspaces are not a native seat boundary. V1 read-only runs remain available while repository-write isolation is uncertified. Live pressure cases and installation checks remain separate release gates. An action approval is a digest-bound attestation, not cryptographic proof of who reviewed it.
+
+V2 operator flow today: approve a target-aware bundle separately, then `start --admission-file ... --target-root address=/absolute/address --target-root booking=/absolute/booking` with the run, authority, private, skill-root, and turn-budget flags. `status --private-root ...` can cold-inspect target progress. A verified candidate can be delivered only through an exact owner-approved `handover`; `recover-handover` uses the authenticated pending intent and association. Different repositories may use the same ticket key and independent branch refs. Task11's injected test runner exercised the native policy with disposable `/bin/sh` seats and denied cross-target reads; it did not run Claude, Codex, or agy, or certify a credential route. Public v2 `resume` still refuses provider turns until the live native and tokenless-auth matrix is certified. Pushes, PRs, Jira changes, and deployments remain separate owner actions.

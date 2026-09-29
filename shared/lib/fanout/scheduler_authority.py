@@ -273,6 +273,22 @@ class Scheduler:
         )
 
     @classmethod
+    def resume_exact_v2(cls, expected_plan: FanoutPlanV2 | Mapping[str, object],
+                        expected_inputs: RunInputs, backend: SchedulerBackend,
+                        artifacts: ArtifactStore, *, owner: OwnerCapability,
+                        anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
+                        journal: RunJournal,
+                        lifecycle_controller: LifecycleController) -> "Scheduler":
+        """Reopen owner handover authority without repairing pending scheduler state."""
+        if not isinstance(validate_plan(expected_plan), FanoutPlanV2):
+            raise SchedulerStateError("exact owner reopen requires a v2 plan")
+        return cls._resume_impl(
+            expected_plan, expected_inputs, backend, artifacts, owner=owner,
+            anchor_store=anchor_store, allow_test=False, journal=journal,
+            lifecycle_controller=lifecycle_controller, allow_repair=False,
+        )
+
+    @classmethod
     def _resume_for_test(cls, expected_plan: FanoutPlanV1 | Mapping[str, object],
                          expected_inputs: RunInputs, backend: SchedulerBackend,
                          artifacts: ArtifactStore, *, owner: OwnerCapability,
@@ -289,7 +305,8 @@ class Scheduler:
                      expected_inputs: RunInputs, backend: SchedulerBackend,
                      artifacts: ArtifactStore, *, owner: OwnerCapability,
                      anchor_store: _AnchorAuthority, allow_test: bool,
-                     journal: RunJournal | None, lifecycle_controller: LifecycleController | None) -> "Scheduler":
+                     journal: RunJournal | None, lifecycle_controller: LifecycleController | None,
+                     allow_repair: bool = True) -> "Scheduler":
         plan = validate_plan(expected_plan)
         _owner(owner)
         _target_authority(plan, expected_inputs, artifacts, journal, lifecycle_controller,
@@ -315,6 +332,8 @@ class Scheduler:
         pending = authority["pending"]
         committed = authority["committed"]
         if pending is not None:
+            if not allow_repair:
+                raise SchedulerStateError("scheduler authority is pending; explicit recovery required")
             if record is None:
                 if committed is not None:
                     raise SchedulerStateError("scheduler backend diverges from committed authority state")
@@ -363,7 +382,8 @@ class Scheduler:
                     scheduler._authenticate_handover(
                         state.task_id, state.handover_terminal, allow_blocked=True,
                     )
-            scheduler._quarantine_blocked(owner)
+            if allow_repair:
+                scheduler._quarantine_blocked(owner)
         return scheduler
 
     @classmethod
@@ -378,6 +398,22 @@ class Scheduler:
             original_journal_inputs=original_journal_inputs,
             journal_anchor=anchor_store, scheduler_anchor=anchor_store,
             lifecycle_controller=lifecycle_controller, allow_test=False,
+        )
+
+    @classmethod
+    def inspect_status(cls, expected_plan: FanoutPlanV2 | Mapping[str, object],
+                       expected_inputs: RunInputs, run_root: Path | str,
+                       artifacts: ArtifactStore, *, owner: OwnerCapability,
+                       original_journal_inputs: RunInputs,
+                       anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
+                       lifecycle_controller: LifecycleController):
+        """Authenticate and project v2 scheduler status without any authority CAS."""
+        return cls._inspect_blocked_impl(
+            expected_plan, expected_inputs, run_root, artifacts, owner=owner,
+            original_journal_inputs=original_journal_inputs,
+            journal_anchor=anchor_store, scheduler_anchor=anchor_store,
+            lifecycle_controller=lifecycle_controller, allow_test=False,
+            project_status=True,
         )
 
     @classmethod
@@ -404,7 +440,8 @@ class Scheduler:
                               journal_anchor: _AnchorAuthority,
                               scheduler_anchor: _AnchorAuthority,
                               lifecycle_controller: LifecycleController,
-                              allow_test: bool) -> BlockedHandoverInspection:
+                              allow_test: bool,
+                              project_status: bool = False):
         from .storage import FileSchedulerBackend
         plan = validate_plan(expected_plan)
         if not isinstance(plan, FanoutPlanV2):
@@ -471,6 +508,7 @@ class Scheduler:
             inspected = cls(
                 backend, artifacts, expected_inputs, record, scheduler_anchor,
                 authority_id, authority_key, 0, authority,
+                journal=inspection if project_status else None,
                 lifecycle_controller=lifecycle_controller,
             )
             blocked_targets = set()
@@ -486,6 +524,20 @@ class Scheduler:
                     raise SchedulerStateError("blocked terminal differs from its intent")
                 inspected._validate_handover_claim(task_id, handover[1], handover[0])
                 blocked_targets.add(inspected._plan_tasks()[task_id].target_id)
+            if project_status:
+                for task_id, (_intent, terminal) in inspection.state.branch_handovers.items():
+                    if terminal is not None:
+                        inspected._authenticate_handover(
+                            task_id, terminal, allow_blocked=task_id in inspection.state.branch_blocked,
+                        )
+                for state in record.snapshot.tasks:
+                    if isinstance(state, SchedulerTaskStateV2) and state.handover_terminal is not None:
+                        inspected._authenticate_handover(
+                            state.task_id, state.handover_terminal,
+                            allow_blocked=state.task_id in inspection.state.branch_blocked,
+                        )
+                from .execute import ExecutionService
+                return ExecutionService.v2_status(inspected)
             return BlockedHandoverInspection(tuple(sorted(blocked_targets)), record.revision)
 
     @property

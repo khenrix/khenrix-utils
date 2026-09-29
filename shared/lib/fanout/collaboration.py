@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, ClassVar, Iterable, Mapping, Sequence
@@ -34,6 +35,9 @@ from .memory import (
     CheckpointIdentity,
     CheckpointPublication,
     CheckpointReceipt,
+)
+from .native_boundary import (
+    NativeSeatBoundary, issue_native_boundary, validate_native_boundary,
 )
 from .plan import DEFAULT_EXECUTOR_IDS, FanoutPlanV1, FanoutPlanV2, ProviderPolicyV1, load_fanout_plan
 from .process import exact_session_lock
@@ -1251,6 +1255,7 @@ class CollaborationCoordinator:
         peer_packet_limit: int = DEFAULT_PEER_PACKET_BYTES,
         lifecycle_controller: LifecycleController | None = None,
         repository_baseline: RepositoryBaseline | None = None,
+        repository_baselines: Mapping[str, RepositoryBaseline] | None = None,
         slot_root: Path | str | None = None,
         dependency_scheduler: object | None = None,
     ) -> None:
@@ -1279,6 +1284,10 @@ class CollaborationCoordinator:
         ):
             raise TypeError("repository_baseline must be a RepositoryBaseline")
         self.repository_baseline = repository_baseline
+        self.repository_baselines = dict(repository_baselines or {})
+        if any(not isinstance(key, str) or not isinstance(value, RepositoryBaseline)
+               for key, value in self.repository_baselines.items()):
+            raise TypeError("repository_baselines must map target IDs to repository baselines")
         self.slot_root = None if slot_root is None else Path(slot_root)
         self.dependency_scheduler = dependency_scheduler
         self._journal_guard = threading.Lock()
@@ -1676,7 +1685,8 @@ class CollaborationCoordinator:
     ) -> tuple[SeatAssignment, ...]:
         if not isinstance(packet, TaskPacket) or not isinstance(policy, RoundPolicy):
             raise CollaborationValidationError("round inputs are invalid")
-        if packet.schema_version == TARGET_TASK_PACKET_SCHEMA:
+        if (packet.schema_version == TARGET_TASK_PACKET_SCHEMA
+                and getattr(self, "provider_runner", run_provider) is run_provider):
             raise CollaborationValidationError(
                 "v2 provider round requires a controller-authenticated native seat boundary"
             )
@@ -1720,6 +1730,7 @@ class CollaborationCoordinator:
             or inputs.skill_manifests.get(packet.task_id) != packet.skill_manifest_sha256
         ):
             raise CollaborationValidationError("task packet does not match immutable run inputs")
+        baseline = self._baseline_for_packet(packet, inputs)
         dependency_total = 0
         for ref in packet.dependency_artifacts:
             dependency_total += len(self.artifacts.read_bytes(ref))
@@ -1750,9 +1761,8 @@ class CollaborationCoordinator:
                     f"{isolation_class} requires an authenticated lifecycle controller"
                 )
             if (
-                not isinstance(self.repository_baseline, RepositoryBaseline)
-                or self.repository_baseline.digest != inputs.repo_baseline_sha256
-                or packet.cwd.resolve() != self.repository_baseline.repository
+                not isinstance(baseline, RepositoryBaseline)
+                or packet.cwd.resolve() != baseline.repository
             ):
                 raise CollaborationValidationError(
                     f"{isolation_class} requires the exact immutable repository baseline"
@@ -1767,7 +1777,7 @@ class CollaborationCoordinator:
                 if (
                     verification.workspace.seat_id != seat.seat_id
                     or verification.workspace.baseline_digest
-                    != inputs.repo_baseline_sha256
+                    != baseline.digest
                 ):
                     raise CollaborationValidationError(
                         "seat workspace changed task association"
@@ -1775,7 +1785,7 @@ class CollaborationCoordinator:
                 try:
                     if self._requires_baseline_replay(packet, seat, round):
                         validate_seat_workspace_baseline(
-                            self.repository_baseline,
+                            baseline,
                             self.lifecycle_controller,
                             verification,
                         )
@@ -1791,6 +1801,26 @@ class CollaborationCoordinator:
                     f"{isolation_class} seats require distinct verified workspaces"
                 )
         return seats
+
+    def _baseline_for_packet(self, packet: TaskPacket,
+                             inputs: RunInputs) -> RepositoryBaseline | None:
+        if packet.schema_version != TARGET_TASK_PACKET_SCHEMA:
+            baseline = self.repository_baseline
+            if baseline is not None and baseline.digest != inputs.repo_baseline_sha256:
+                raise CollaborationValidationError("repository baseline changed")
+            return baseline
+        targets = inputs.targets
+        target_id = packet.target_binding.spec.id if packet.target_binding is not None else None
+        if (targets is None or target_id not in targets
+                or packet.run_inputs != inputs
+                or packet.target_binding != targets[target_id]
+                or set(self.repository_baselines) != set(targets)):
+            raise CollaborationValidationError("v2 task target binding changed")
+        baseline = self.repository_baselines[target_id]
+        if (baseline.digest != targets[target_id].baseline_sha256
+                or baseline.repository != targets[target_id].root):
+            raise CollaborationValidationError("v2 target repository baseline changed")
+        return baseline
 
     def _selected_profile(
         self, packet: TaskPacket, seat: SeatAssignment, policy: RoundPolicy,
@@ -1819,7 +1849,7 @@ class CollaborationCoordinator:
 
     def _dispatch_evidence(
         self, packet: TaskPacket, seat: SeatAssignment, round: int,
-        policy: RoundPolicy,
+        policy: RoundPolicy, native_boundary: NativeSeatBoundary | None = None,
     ) -> str | None:
         profile, timeout = self._selected_profile(packet, seat, policy, self.journal.inputs)
         workspace_evidence = self._workspace_dispatch_evidence(packet, seat, round)
@@ -1845,6 +1875,17 @@ class CollaborationCoordinator:
             "timeout_override_review_sha256": policy.timeout_override_review_sha256,
             "workspace_evidence_sha256": workspace_evidence,
         }
+        if packet.schema_version == TARGET_TASK_PACKET_SCHEMA:
+            if native_boundary is None:
+                raise CollaborationValidationError("v2 dispatch lacks an exact native seat boundary")
+            document.update({
+                "schema_version": "fanout-profile-dispatch-v2",
+                "run_id": packet.run_id,
+                "target_id": packet.target_binding.spec.id,
+                "inputs_digest": self.journal.inputs.digest,
+                "native_boundary_sha256": native_boundary.receipt_digest,
+                "staged_skill_grant_sha256": native_boundary.staged_skill_grant_digest,
+            })
         if agy_guard_sha256 is not None:
             document["agy_guard_sha256"] = agy_guard_sha256
         return _digest(canonical_json(document))
@@ -1865,18 +1906,17 @@ class CollaborationCoordinator:
         if packet.execution_class not in {"repo-write", "read-only"}:
             raise CollaborationValidationError("provider dispatch class is invalid")
         verification = seat.workspace_verification
-        if (
-            not isinstance(self.lifecycle_controller, LifecycleController)
-            or not isinstance(self.repository_baseline, RepositoryBaseline)
-            or not isinstance(verification, SeatWorkspaceVerification)
-        ):
+        baseline = self._baseline_for_packet(packet, self.journal.inputs)
+        if (not isinstance(self.lifecycle_controller, LifecycleController)
+                or not isinstance(baseline, RepositoryBaseline)
+                or not isinstance(verification, SeatWorkspaceVerification)):
             raise CollaborationValidationError(
                 "provider dispatch lacks authenticated workspace evidence"
             )
         first_dispatch = self._requires_baseline_replay(packet, seat, round)
         if first_dispatch:
             validation = validate_seat_workspace_baseline(
-                self.repository_baseline, self.lifecycle_controller, verification,
+                baseline, self.lifecycle_controller, verification,
             )
             mode = "baseline-replay"
         else:
@@ -2013,15 +2053,54 @@ class CollaborationCoordinator:
                 context_sha256=packet.context_sha256,
                 skill_bundle_sha256=packet.skill_bundle_sha256,
                 staged_skill_root=seat.staged_root,
+                staged_skill_admission=seat.admission,
                 skill_delivery_sha256=seat.delivery_evidence_sha256,
                 skill_delivery_ref=seat.delivery_evidence_ref,
                 agy_guard=seat.agy_guard,
+                run_id=packet.run_id if packet.schema_version == TARGET_TASK_PACKET_SCHEMA else None,
+                task_id=packet.task_id if packet.schema_version == TARGET_TASK_PACKET_SCHEMA else None,
+                target_id=(packet.target_binding.spec.id
+                           if packet.schema_version == TARGET_TASK_PACKET_SCHEMA else None),
+                inputs_digest=(self.journal.inputs.digest
+                               if packet.schema_version == TARGET_TASK_PACKET_SCHEMA else None),
+                seat_id=seat.seat_id if packet.schema_version == TARGET_TASK_PACKET_SCHEMA else None,
             )
+            if packet.schema_version == TARGET_TASK_PACKET_SCHEMA:
+                if request.executor_id == "claude" and request.session_id is None:
+                    identity = "/".join((packet.run_id, packet.task_id, seat.seat_id,
+                                         str(packet.attempt), str(round)))
+                    request = dataclasses.replace(
+                        request, session_id=str(uuid.uuid5(uuid.NAMESPACE_URL, identity)),
+                    )
+                assert isinstance(self.lifecycle_controller, LifecycleController)
+                assert self.journal.inputs.targets is not None
+                command = self.registry.require(seat.executor_id).build_command(request)
+                boundary = issue_native_boundary(
+                    self.lifecycle_controller, verification,
+                    run_id=packet.run_id, task_id=packet.task_id,
+                    target_id=packet.target_binding.spec.id,
+                    inputs_digest=self.journal.inputs.digest,
+                    request=request, command=command,
+                    other_target_roots=tuple(
+                        target.root for target_id, target in self.journal.inputs.targets.items()
+                        if target_id != packet.target_binding.spec.id
+                    ),
+                    denied_owner_roots=(packet.cwd,),
+                )
+                request = dataclasses.replace(
+                    request, native_boundary=boundary,
+                    native_controller=self.lifecycle_controller,
+                    native_verification=verification,
+                )
+            else:
+                boundary = None
             phase = self.journal.state.seat_phase(
                 packet.task_id, seat.seat_id, packet.attempt, round
             )
             if phase is None:
-                workspace_evidence = self._dispatch_evidence(packet, seat, round, policy)
+                workspace_evidence = self._dispatch_evidence(
+                    packet, seat, round, policy, boundary,
+                )
                 self.journal.append(
                     "dispatch-intent", task_id=packet.task_id, seat_id=seat.seat_id,
                     attempt=packet.attempt, round=round,
@@ -2037,7 +2116,9 @@ class CollaborationCoordinator:
                     raise CollaborationDurabilityError(
                         "provider dispatch intent lacks workspace evidence"
                     )
-                if workspace_evidence != self._dispatch_evidence(packet, seat, round, policy):
+                if workspace_evidence != self._dispatch_evidence(
+                    packet, seat, round, policy, boundary,
+                ):
                     raise CollaborationDurabilityError(
                         "dispatch intent profile, timeout, or workspace evidence changed"
                     )
@@ -2092,8 +2173,8 @@ class CollaborationCoordinator:
                         (
                             None
                             if workspace_evidence is None
-                            else lambda packet=packet, seat=seat, round=round, policy=policy: (
-                                self._dispatch_evidence(packet, seat, round, policy)
+                            else lambda packet=packet, seat=seat, round=round, policy=policy, boundary=request.native_boundary: (
+                                self._dispatch_evidence(packet, seat, round, policy, boundary)
                             )
                         ),
                         workspace_evidence,
@@ -2151,6 +2232,12 @@ class CollaborationCoordinator:
         workspace_evidence: str | None = None,
     ) -> ProviderResult:
         def invoke() -> ProviderResult:
+            if request.native_boundary is not None:
+                command = self.registry.require(request.executor_id).build_command(request)
+                validate_native_boundary(
+                    request.native_boundary, request, command,
+                    request.native_controller, request.native_verification,
+                )
             if start_identity is not None:
                 task_id, seat_id, attempt, round = start_identity
                 with self._journal_guard:
@@ -2486,7 +2573,7 @@ class CollaborationCoordinator:
     def _persist_terminal_candidate(
         self, packet: TaskPacket, seat: SeatAssignment, round: int,
     ) -> ArtifactRef:
-        baseline = self.repository_baseline
+        baseline = self._baseline_for_packet(packet, self.journal.inputs)
         controller = self.lifecycle_controller
         verification = seat.workspace_verification
         if (not isinstance(baseline, RepositoryBaseline)
@@ -2732,7 +2819,7 @@ class CollaborationCoordinator:
                 or barrier.status not in {"round-complete", "blocked-memory"}
                 or barrier.candidate_sources):
             return barrier
-        baseline = self.repository_baseline
+        baseline = self._baseline_for_packet(packet, self.journal.inputs)
         if baseline is None:
             raise CollaborationDurabilityError("final repository barrier lacks source authority")
         sources: list[tuple[str, ArtifactRef]] = []
@@ -2981,7 +3068,7 @@ class CollaborationCoordinator:
             valid_seats = {terminal.seat_id for terminal in barrier.valid_terminals}
             if {seat_id for seat_id, _ in barrier.candidate_sources} != valid_seats:
                 raise CollaborationDurabilityError("final repository barrier lacks exact candidate sources")
-            baseline = self.repository_baseline
+            baseline = self._baseline_for_packet(packet, self.journal.inputs)
             if baseline is None:
                 raise CollaborationDurabilityError("final repository barrier lacks immutable baseline")
             for seat_id, candidate_ref in barrier.candidate_sources:

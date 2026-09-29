@@ -381,7 +381,7 @@ class LocalAnchorAuthority(_AnchorAuthority):
     """
 
     __slots__ = ("_root", "_run_root", "_identity", "_root_identity", "_lock_identity",
-                 "_target_registry_sha256", "_sealed")
+                 "_target_registry_sha256", "_read_only", "_sealed")
     _META = "authority.json"
     _LOCK = ".authority.lock"
     _SCHEMA = "fanout-local-authority-v1"
@@ -389,12 +389,17 @@ class LocalAnchorAuthority(_AnchorAuthority):
     _RECORD_SCHEMA = "fanout-local-anchor-v1"
 
     def __init__(self, root: Path | str, *, run_root: Path | str, repo_root: Path | str,
-                 target_bindings: Mapping[str, object] | None = None) -> None:
+                 target_bindings: Mapping[str, object] | None = None,
+                 _inspect_only: bool = False, _verified_reopen: bool = False) -> None:
         root_path, run_path = _local_authority_paths(root, run_root, repo_root)
-        registry_digest = _local_target_registry_digest(target_bindings, root_path, run_path)
+        registry_digest = _local_target_registry_digest(
+            target_bindings, root_path, run_path,
+            verify_live=not (_inspect_only or _verified_reopen),
+        )
         object.__setattr__(self, "_root", root_path)
         object.__setattr__(self, "_run_root", run_path)
         object.__setattr__(self, "_target_registry_sha256", registry_digest)
+        object.__setattr__(self, "_read_only", _inspect_only)
         root_fd = self._open_root()
         try:
             metadata = self._read_metadata(root_fd)
@@ -414,6 +419,28 @@ class LocalAnchorAuthority(_AnchorAuthority):
 
     def __init_subclass__(cls, **_kwargs: object) -> None:
         raise TypeError("LocalAnchorAuthority is final")
+
+    @classmethod
+    def inspect(cls, root: Path | str, *, run_root: Path | str,
+                repo_root: Path | str,
+                target_bindings: Mapping[str, object] | None = None) -> "LocalAnchorAuthority":
+        """Authenticate saved authority metadata without requiring original live target HEADs."""
+        return cls(root, run_root=run_root, repo_root=repo_root,
+                   target_bindings=target_bindings, _inspect_only=True)
+
+    @classmethod
+    def reopen_after_inspection(cls, inspected: "LocalAnchorAuthority", *,
+                                repo_root: Path | str,
+                                target_bindings: Mapping[str, object]) -> "LocalAnchorAuthority":
+        if not isinstance(inspected, cls) or not inspected._read_only:
+            raise RunStateError("writable authority reopen requires read-only inspection")
+        reopened = cls(inspected._root, run_root=inspected._run_root,
+                       repo_root=repo_root, target_bindings=target_bindings,
+                       _verified_reopen=True)
+        if (reopened._identity != inspected._identity
+                or reopened._target_registry_sha256 != inspected._target_registry_sha256):
+            raise RunStateError("writable authority differs from read-only inspection")
+        return reopened
 
     @classmethod
     def bootstrap(cls, root: Path | str, *, run_root: Path | str,
@@ -473,6 +500,8 @@ class LocalAnchorAuthority(_AnchorAuthority):
         return self._identity
 
     def create(self, key: str, value: bytes) -> AnchorRevision:
+        if self._read_only:
+            raise RunStateError("read-only local authority cannot write")
         key, value = _local_request(key, value)
         name = _local_record_name(key)
         with self._locked_root() as root_fd:
@@ -498,6 +527,8 @@ class LocalAnchorAuthority(_AnchorAuthority):
             return result
 
     def compare_and_set(self, key: str, expected_revision: int, value: bytes) -> AnchorRevision:
+        if self._read_only:
+            raise RunStateError("read-only local authority cannot write")
         key, value = _local_request(key, value)
         if not _is_int(expected_revision, minimum=1):
             raise RunStateError("local anchor expected revision is invalid")
@@ -648,6 +679,7 @@ def _local_absolute_path(value: Path | str, label: str) -> Path:
 
 def _local_target_registry_digest(
     bindings: Mapping[str, object] | None, authority_root: Path, run_root: Path,
+    *, verify_live: bool = True,
 ) -> str | None:
     if bindings is None:
         return None
@@ -662,7 +694,8 @@ def _local_target_registry_digest(
            for key, binding in bindings.items()):
         raise RunStateError("local authority target registry is invalid")
     try:
-        revalidate_target_bindings(bindings, writable_ids=set())
+        if verify_live:
+            revalidate_target_bindings(bindings, writable_ids=set())
         paths = [binding.root for binding in bindings.values()]
         for path in paths:
             _local_authority_paths(authority_root, run_root, path)
@@ -1397,6 +1430,12 @@ class RunInspection:
     authority_revision: int
     journal_sha256: str
     authority_sha256: str
+
+    def branch_handover_state(self, task_id: str) -> tuple[BranchHandoverIntentV2, HandoverTerminalV2 | None]:
+        return self.state.branch_handovers[_identity(task_id, "branch task id")]
+
+    def branch_record_for(self, task_id: str, kind: str) -> tuple[str, str] | None:
+        return self.state.branch_records.get(_identity(task_id, "branch task id"), {}).get(kind)
 
 
 class RunJournal:

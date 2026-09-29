@@ -358,13 +358,14 @@ def run_command(command: ProcessCommand, *,
         raise ProcessValidationError("command must be a ProcessCommand")
     if os.name != "posix":  # pragma: no cover - the contract requires a killable process group.
         raise ProcessValidationError("fanout process execution requires POSIX sessions")
-    environment = build_child_environment(
-        base_environment,
-        overrides=command.environment,
-        max_depth=command.max_depth,
+    native = command.native_boundary is not None
+    if native and base_environment is not None:
+        raise ProcessValidationError("native seat environment is fixed at boundary issuance")
+    environment = None if native else build_child_environment(
+        base_environment, overrides=command.environment, max_depth=command.max_depth,
     )
     with executor_slot(root=command.slot_root, cap=command.slot_cap, timeout=command.slot_timeout):
-        if command.native_boundary is not None:
+        if native:
             from .native_boundary import validate_native_boundary
             original = command.native_original
             if original is None:
@@ -375,16 +376,24 @@ def run_command(command: ProcessCommand, *,
             )
             expected = ("/usr/bin/sandbox-exec", "-f",
                         str(command.native_boundary.profile_path),
-                        str(command.native_boundary.executable_path),
-                        *original.argv[1:])
+                        *command.native_boundary.resolved_argv)
             expected_environment = {
                 "HOME": str(command.native_boundary.state_root / "home"),
                 "TMPDIR": str(command.native_boundary.state_root / "tmp"),
             }
             if (tuple(command.argv) != expected
                     or dict(command.environment) != expected_environment
-                    or command.stdin != original.stdin or command.cwd != original.cwd):
+                    or command.stdin != original.stdin or command.cwd != original.cwd
+                    or command.timeout != original.timeout
+                    or command.slot_cap != original.slot_cap
+                    or command.slot_timeout != original.slot_timeout
+                    or command.slot_root != original.slot_root
+                    or command.max_depth != original.max_depth
+                    or command.term_grace != original.term_grace
+                    or command.reap_timeout != original.reap_timeout):
                 raise ProcessValidationError("native seat command wrapper changed")
+            environment = dict(command.native_boundary.frozen_environment)
+        assert environment is not None
         try:
             process = subprocess.Popen(
                 command.argv,

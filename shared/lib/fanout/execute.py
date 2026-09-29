@@ -50,7 +50,8 @@ from .repo import (
 from .runstate import OwnerCapability, RunInputs
 from .scheduler import ActionBarrier, PlanAmendment, ReconciledResult, Scheduler, WorkDispatch
 from .scheduler_authority import (
-    BackendRecord, _authority_read, _record_matches_binding, _validate_backend_record,
+    ActionBarrierV2, BackendRecord, WorkDispatchV2,
+    _authority_read, _record_matches_binding, _validate_backend_record,
 )
 from .verification import (
     AnswerSynthesisVerification,
@@ -944,6 +945,7 @@ class ExecutionService:
         backend: ExecutionBackend,
         memory_preflight: Callable[[], bool],
         baseline: RepositoryBaseline | None = None,
+        repository_baselines: Mapping[str, RepositoryBaseline] | None = None,
         lifecycle_controller: LifecycleController | None = None,
         limits: ExecutionLimits | None = None,
     ) -> None:
@@ -989,6 +991,15 @@ class ExecutionService:
             raise ExecutionValidationError("provider profile bindings are invalid")
         if baseline is not None and not isinstance(baseline, RepositoryBaseline):
             raise ExecutionValidationError("execution repository baseline is invalid")
+        baselines = dict(repository_baselines or {})
+        targets = inputs.targets
+        if ((targets is None and baselines)
+                or (targets is not None and set(baselines) != set(targets))
+                or any(not isinstance(value, RepositoryBaseline)
+                       or value.repository != targets[key].root
+                       or value.digest != targets[key].baseline_sha256
+                       for key, value in baselines.items())):
+            raise ExecutionValidationError("execution target baselines changed binding")
         if lifecycle_controller is not None:
             try:
                 assert_controller(lifecycle_controller)
@@ -1005,6 +1016,7 @@ class ExecutionService:
         self.backend = backend
         self.memory_preflight = memory_preflight
         self.baseline = baseline
+        self.repository_baselines = MappingProxyType(baselines)
         self.lifecycle_controller = lifecycle_controller
         self.limits = limits
         self._composition_coordinator = coordinator
@@ -1016,6 +1028,7 @@ class ExecutionService:
         self._composition_registry = getattr(coordinator, "registry", None)
         self._composition_owner = getattr(coordinator, "owner", None)
         self._composition_baseline = baseline
+        self._composition_baselines = self.repository_baselines
         self._composition_controller = lifecycle_controller
         self._composition_provider_boundary = MappingProxyType({
             name: _callable_identity(getattr(coordinator, name, None))
@@ -1080,10 +1093,24 @@ class ExecutionService:
         """Read target progress from one authenticated v2 scheduler snapshot."""
         if not isinstance(scheduler, Scheduler) or not isinstance(scheduler.plan, FanoutPlanV2):
             raise ExecutionValidationError("v2 status requires a v2 scheduler")
+
+        def delivered_writer(task: PlanTaskV1) -> bool:
+            if scheduler.handover_terminal_for(task.id) is not None:
+                return True
+            journal = scheduler._journal
+            recorded = (None if journal is None else journal.state.branch_handovers.get(task.id))
+            if recorded is None or recorded[1] is None:
+                return False
+            scheduler._authenticate_handover(task.id, recorded[1])
+            return True
+
         tasks = tuple(task for task in scheduler.plan.tasks if task.kind == "work")
         states: dict[str, str] = {}
         for target in scheduler.plan.targets:
-            target_tasks = tuple(task for task in tasks if task.target_id == target.id)
+            target_tasks = tuple(
+                task for task in tasks
+                if task.target_id == target.id and task.execution_class != "orchestrator-action"
+            )
             phases = tuple(scheduler.task_phase(task.id) for task in target_tasks)
             handover_blocked = bool(
                 scheduler._journal is not None
@@ -1091,7 +1118,7 @@ class ExecutionService:
             )
             delivered = not handover_blocked and (any(
                 task.execution_class == "repo-write"
-                and scheduler.handover_terminal_for(task.id) is not None
+                and delivered_writer(task)
                 for task in target_tasks
             ) or (
                 bool(target_tasks)
@@ -1112,6 +1139,15 @@ class ExecutionService:
                    "blocked" if "blocked" in values else
                    "delivered" if values == {"delivered"} else
                    "candidate" if "candidate" in values else "pending")
+        action_phases = tuple(
+            scheduler.task_phase(task.id) for task in tasks
+            if task.execution_class == "orchestrator-action"
+        )
+        if any(phase in {"failed", "blocked-dependency"} for phase in action_phases):
+            if overall != "partial":
+                overall = "blocked"
+        elif overall == "delivered" and any(phase != "completed" for phase in action_phases):
+            overall = "pending"
         return ExecutionStatus(
             scheduler.inputs.run_id, scheduler.plan_revision, scheduler.revision,
             0, 0,
@@ -1266,7 +1302,7 @@ class ExecutionService:
             plan_revision=state.decision_plan_revision,
             seat_id=seat_id, selected_ref=selected.answer_ref,
             checks=task.checks, controller=self._require_controller(),
-            environment=environment, baseline=self.baseline,
+            environment=environment, baseline=self._baseline_for_task(task),
         )
 
     def verify_read_only_synthesis(
@@ -1310,7 +1346,7 @@ class ExecutionService:
             sources={seat_id: available[seat_id] for seat_id in requested},
             synthesizer_id=synthesizer_id, answer=answer,
             checks=task.checks, controller=self._require_controller(),
-            environment=environment, baseline=self.baseline,
+            environment=environment, baseline=self._baseline_for_task(task),
         )
 
     def submit(
@@ -2249,8 +2285,13 @@ class ExecutionService:
         previous_scheduler_inputs: RunInputs | None = None,
         provider_transition: ProviderProfileTransition | None = None,
     ) -> None:
-        # No durable v2 execution route or certified native seat exists yet.
-        if self.plan.schema_version == "v2" or self.inputs.targets is not None:
+        v2 = self.plan.schema_version == "v2" or self.inputs.targets is not None
+        if v2 and (
+            self.plan.schema_version != "v2"
+            or self.inputs.targets is None
+            or not isinstance(self.coordinator, CollaborationCoordinator)
+            or self.coordinator.provider_runner is run_provider
+        ):
             raise ExecutionPreflightError(
                 "v2 execution requires a validated native seat boundary"
             )
@@ -2303,9 +2344,17 @@ class ExecutionService:
                 raise ExecutionPreflightError(
                     "provider turn budget is below the compiled worst-case spend"
                 )
-            if self.baseline is not None and self.inputs.repo_baseline_sha256 != self.baseline.digest:
+            if v2:
+                if set(self.repository_baselines) != set(self.inputs.targets):
+                    raise ExecutionPreflightError("target baseline preflight changed")
+                for target_id, binding in self.inputs.targets.items():
+                    baseline = self.repository_baselines[target_id]
+                    if baseline.repository != binding.root or baseline.digest != binding.baseline_sha256:
+                        raise ExecutionPreflightError("target baseline preflight changed")
+                self._require_controller()
+            elif self.baseline is not None and self.inputs.repo_baseline_sha256 != self.baseline.digest:
                 raise ExecutionPreflightError("repository baseline preflight changed")
-            if self._work_tasks:
+            if self._work_tasks and not v2:
                 if self.baseline is None or self.inputs.repo_baseline_sha256 != self.baseline.digest:
                     raise ExecutionPreflightError("provider seats require the immutable repository baseline")
                 self._require_controller()
@@ -2335,12 +2384,17 @@ class ExecutionService:
                 ):
                     raise ExecutionPreflightError("task immutable preparation changed")
                 if task.execution_class in {"repo-write", "read-only"}:
-                    baseline = self.baseline
+                    baseline = self._baseline_for_task(task)
                     if not isinstance(baseline, RepositoryBaseline):
                         raise ExecutionPreflightError(
                             "provider task lacks repository baseline evidence"
                         )
                     controller = self._require_controller()
+                    if v2 and (
+                        packet.target_binding != self.inputs.targets.get(task.target_id)
+                        or packet.run_inputs != self.inputs
+                    ):
+                        raise ExecutionPreflightError("task target binding changed")
                     if packet.cwd.resolve() != baseline.repository:
                         raise ExecutionPreflightError(
                             "task cwd differs from the immutable repository baseline"
@@ -2758,6 +2812,7 @@ class ExecutionService:
             or self.artifacts is not self._composition_artifacts
             or self.backend is not self._composition_backend
             or self.baseline is not self._composition_baseline
+            or self.repository_baselines is not self._composition_baselines
             or self.lifecycle_controller is not self._composition_controller
         ):
             raise ExecutionPreflightError(
@@ -2869,9 +2924,16 @@ class ExecutionService:
                 None,
             )
             coordinator_baseline = getattr(coordinator, "repository_baseline", None)
+            coordinator_baselines = getattr(coordinator, "repository_baselines", None)
             if (
                 coordinator_controller is not self.lifecycle_controller
                 or coordinator_baseline is not self.baseline
+                or (self.inputs.targets is not None and (
+                    not isinstance(coordinator_baselines, Mapping)
+                    or set(coordinator_baselines) != set(self.repository_baselines)
+                    or any(coordinator_baselines[key] is not value
+                           for key, value in self.repository_baselines.items())
+                ))
             ):
                 raise ExecutionPreflightError(
                     "execution composition changed repository controller identity"
@@ -3084,13 +3146,13 @@ class ExecutionService:
         owner: OwnerCapability,
     ) -> None:
         for decision in decisions:
-            if isinstance(decision, ActionBarrier):
+            if isinstance(decision, (ActionBarrier, ActionBarrierV2)):
                 phase = self._journal_phase(decision.task_id)
                 if phase is None:
                     self.journal.append("blocked-action", task_id=decision.task_id, owner=owner)
                 elif phase != "blocked-action":
                     raise ExecutionConflictError("action barrier journal state changed")
-            elif not isinstance(decision, WorkDispatch):
+            elif not isinstance(decision, (WorkDispatch, WorkDispatchV2)):
                 raise ExecutionValidationError("scheduler returned an invalid decision")
 
     def _drive_task(self, task: PlanTaskV1, owner: OwnerCapability) -> None:
@@ -3098,12 +3160,21 @@ class ExecutionService:
             self.scheduler.mark_active(task.id, owner=owner)
         if self.scheduler.task_phase(task.id) != "active":
             return
+        if isinstance(self.scheduler.plan, FanoutPlanV2):
+            self.scheduler.assert_dispatchable(task.id)
         preparation = self.preparations[task.id]
-        dependencies = tuple(
-            self.scheduler.result_for(dependency).artifact
-            for dependency in task.depends_on
-        )
-        packet = dataclasses.replace(preparation.packet, dependency_artifacts=dependencies)
+        if isinstance(self.scheduler.plan, FanoutPlanV2):
+            records = tuple(
+                self.scheduler.dependency_record_for(task.id, dependency)
+                for dependency in task.depends_on
+            )
+            packet = dataclasses.replace(preparation.packet, dependency_records=records)
+        else:
+            dependencies = tuple(
+                self.scheduler.result_for(dependency).artifact
+                for dependency in task.depends_on
+            )
+            packet = dataclasses.replace(preparation.packet, dependency_artifacts=dependencies)
         state = self._execution_state(task.id)
         source: object | None = None
         for round_number in range(1, preparation.policy.rounds + 1):
@@ -3304,6 +3375,7 @@ class ExecutionService:
         state: ExecutionTaskState | None = None,
     ) -> None:
         state = self._execution_state(task.id) if state is None else state
+        baseline = self._baseline_for_task(task)
         if (
             task.reconciliation_policy != "select-or-synthesize"
             or not receipt.valid
@@ -3312,7 +3384,7 @@ class ExecutionService:
             or receipt.plan_sha256 != state.decision_plan_sha256
             or receipt.plan_revision != state.decision_plan_revision
             or receipt.checks != task.checks
-            or (self.baseline is not None and receipt.baseline_digest != self.baseline.digest)
+            or (baseline is not None and receipt.baseline_digest != baseline.digest)
         ):
             raise ExecutionPendingError("checked selection lacks exact fresh task verification")
         policy = task.provider_policy or self.plan.defaults
@@ -3378,6 +3450,7 @@ class ExecutionService:
         plan_sha256: str,
         state: ExecutionTaskState | None = None,
     ) -> None:
+        baseline = self._baseline_for_task(task)
         if (
             not receipt.valid
             or receipt.run_id != self.inputs.run_id
@@ -3385,8 +3458,9 @@ class ExecutionService:
             or receipt.plan_sha256 != plan_sha256
             or receipt.plan_revision != plan_revision
             or receipt.checks != task.checks
-            or (bool(task.checks) and self.baseline is not None
-                and receipt.baseline_digest != self.baseline.digest)
+            or (baseline is not None
+                and (self.inputs.targets is not None or bool(task.checks))
+                and receipt.baseline_digest != baseline.digest)
         ):
             raise ExecutionPendingError("answer synthesis lacks exact run, plan, or declared check verification")
         state = self._execution_state(task.id) if state is None else state
@@ -3499,6 +3573,12 @@ class ExecutionService:
 
     def _packet_for(self, task: PlanTaskV1) -> TaskPacket:
         preparation = self.preparations[task.id]
+        if isinstance(self.scheduler.plan, FanoutPlanV2):
+            records = tuple(
+                self.scheduler.dependency_record_for(task.id, dependency)
+                for dependency in task.depends_on
+            )
+            return dataclasses.replace(preparation.packet, dependency_records=records)
         dependencies = tuple(
             self.scheduler.result_for(dependency).artifact
             for dependency in task.depends_on
@@ -3579,9 +3659,22 @@ class ExecutionService:
         return matches[0]
 
     def _require_baseline(self, task: PlanTaskV1) -> RepositoryBaseline:
-        if task.execution_class != "repo-write" or self.baseline is None:
+        baseline = self._baseline_for_task(task)
+        if task.execution_class != "repo-write" or baseline is None:
             raise ExecutionValidationError("command requires repo-write baseline evidence")
-        return self.baseline
+        return baseline
+
+    def _baseline_for_task(self, task: PlanTaskV1) -> RepositoryBaseline | None:
+        if self.inputs.targets is None:
+            return self.baseline
+        target_id = getattr(task, "target_id", None)
+        binding = self.inputs.targets.get(target_id)
+        baseline = self.repository_baselines.get(target_id)
+        if (binding is None or baseline is None
+                or baseline.repository != binding.root
+                or baseline.digest != binding.baseline_sha256):
+            raise ExecutionValidationError("task target baseline changed binding")
+        return baseline
 
     def _require_controller(self) -> LifecycleController:
         if not isinstance(self.lifecycle_controller, LifecycleController):
@@ -3739,6 +3832,7 @@ class ExecutionService:
             backend=self.backend,
             memory_preflight=self.memory_preflight,
             baseline=self.baseline,
+            repository_baselines=self.repository_baselines,
             lifecycle_controller=self.lifecycle_controller,
             limits=self.limits,
         )

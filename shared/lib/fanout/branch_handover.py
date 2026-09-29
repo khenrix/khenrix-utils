@@ -648,12 +648,18 @@ def deliver_branch_candidate(
                            scheduler, controller, journal, owner)
         except Exception as error:
             try:
-                prepared_commit = _prepared_commit_receipt(intent, journal, controller)
-                ref_updated = _optional_ref(binding.root, intent.branch_ref) == prepared_commit["commit_oid"]
+                current_ref = _optional_ref(binding.root, intent.branch_ref)
             except Exception:
-                ref_updated = False
-            if ref_updated:
-                raise HandoverError("handover finalization requires exact recovery") from error
+                return _block(intent, journal, owner, "ref-changed")
+            try:
+                prepared_commit = _prepared_commit_receipt(intent, journal, controller)
+            except Exception:
+                prepared_commit = None
+            old_ref = None if intent.old_ref_oid == _ZERO_OID else intent.old_ref_oid
+            if current_ref != old_ref:
+                if prepared_commit is not None and current_ref == prepared_commit["commit_oid"]:
+                    raise HandoverError("handover finalization requires exact recovery") from error
+                return _block(intent, journal, owner, "ref-changed")
             if isinstance(error, HandoverError) and "branch OID" in str(error):
                 reason = "ref-changed"
             else:
@@ -787,18 +793,25 @@ def recover_branch_handover(
             record = _prepared_commit(intent, journal, controller, artifacts)
         except Exception:
             try:
-                receipt = _prepared_commit_receipt(intent, journal, controller)
-                ref_updated = _optional_ref(binding.root, intent.branch_ref) == receipt["commit_oid"]
+                current_ref = _optional_ref(binding.root, intent.branch_ref)
             except Exception:
-                ref_updated = False
-            return _block(intent, journal, owner,
-                          "git-proof-invalid" if ref_updated else "pre-cas-interrupted")
+                return _block(intent, journal, owner, "ref-changed")
+            try:
+                receipt = _prepared_commit_receipt(intent, journal, controller)
+            except Exception:
+                receipt = None
+            old_ref = None if intent.old_ref_oid == _ZERO_OID else intent.old_ref_oid
+            reason = ("git-proof-invalid" if receipt is not None and current_ref == receipt["commit_oid"]
+                      else "pre-cas-interrupted" if current_ref == old_ref else "ref-changed")
+            return _block(intent, journal, owner, reason)
         try:
             current_ref = _optional_ref(binding.root, intent.branch_ref)
         except Exception:
             return _block(intent, journal, owner, "ref-changed")
         if current_ref != record["commit_oid"]:
-            return _block(intent, journal, owner, "pre-cas-interrupted")
+            old_ref = None if intent.old_ref_oid == _ZERO_OID else intent.old_ref_oid
+            return _block(intent, journal, owner,
+                          "pre-cas-interrupted" if current_ref == old_ref else "ref-changed")
         try:
             _envelopes(intent, binding, plan, inputs, artifacts, controller)
             _source(scheduler, intent.task_id, intent)

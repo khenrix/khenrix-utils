@@ -35,7 +35,8 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_compiler.py tests/test_fanout_runstate.py \
                 tests/test_fanout_local_authority.py tests/test_fanout_storage.py \
                 tests/test_fanout_plan_skill.py tests/test_fanout_execute_skill.py \
-                tests/test_fanout_scheduler.py tests/test_fanout_memory.py \
+                tests/test_fanout_scheduler.py tests/test_fanout_multirepo_integration.py \
+                tests/test_fanout_memory.py \
                 tests/test_fanout_collaboration.py tests/test_fanout_repo.py \
                 tests/test_fanout_targets.py tests/test_fanout_verification.py \
                 tests/test_fanout_lifecycle.py tests/test_fanout_branch_handover.py \
