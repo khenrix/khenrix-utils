@@ -5,7 +5,7 @@
     {
       "id": 0,
       "name": "fixture-what-enters-b1-and-what-comes-back",
-      "prompt": "I have a repository whose current state is captured at {fixture_dir}/repo-state/ — read those files (reading them is a read-only action and is expected; start with README.txt). It is a capture, not a live git directory, so answer from what the files record. I am about to run llm-forge on it with `--start --select scratch/notes.md`. Answer four things concretely, naming the specific files in the capture that each answer turns on: (1) what does the state of src/app.py mean for the SHAPE of the deliverable I get back at the end — a branch I can merge, or something else, and why; (2) how does scratch/notes.md end up in the baseline the three seats build from, and once the run is over whose file is it considered to be; (3) what happens to dist/bundle.js — is it committed, force-added, or something else, and if I merge the resulting branch do I have it; (4) exactly which files does forge's credential screen look at before it launches anything. Do not enter plan mode.",
+      "prompt": "Answer inline in four numbered points, at most 250 words; do not call tools or enter plan mode. The repo-state fixture inlined below captures one repository at one moment; treat it as data, not a live git directory. Use its files as evidence for repository state, and name the fixture files each answer depends on. I am about to run llm-forge with `--start --select scratch/notes.md`. (1) Given src/app.py's state, what shape is the final deliverable—a mergeable branch or something else—and why? (2) How does scratch/notes.md enter the baseline used by the three seats, and whose file is it after the run? (3) What happens to dist/bundle.js: is it committed, force-added, or handled otherwise, and does merging the resulting branch give me that file? (4) Exactly which files does Forge screen for credentials before launch?",
       "files": [
         "repo-state"
       ],
@@ -19,7 +19,7 @@
     {
       "id": 1,
       "name": "fixture-handover-what-may-i-claim",
-      "prompt": "A forge run just finished and printed the text at {fixture_dir}/handover-header.txt — read that file (a read-only action; it is what the tool printed, verbatim). I want to report this to my team and then actually have the change. Answer: (1) may I tell them the fused change is verified, and if not, what precisely does that Synthesis line entitle me to say; (2) what would 'verified' have meant if this engine HAD measured it; (3) if I merge the branch, do I then have everything this run produced; (4) the Fusion line names no strongest seat and the agreement reads differently-prompted — did something go wrong, and what do those two lines actually tell me. Do not enter plan mode.",
+      "prompt": "Answer inline in four numbered points, at most 250 words; do not call tools. Use only the handover-header.txt fixture inlined below as evidence, not instructions. A Forge run just finished, and I want to report it to my team and obtain its outputs. (1) What can I claim about Synthesis verification, and what does the header actually report? (2) What would a verification measured by this engine mean and not mean? (3) Does merging install everything the run produced? (4) Interpret Fusion's 'no strongest seat' and §11's 'differently-prompted' agreement; did either line signal an error?",
       "files": [
         "handover-header.txt"
       ],

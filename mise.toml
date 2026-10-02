@@ -102,7 +102,7 @@ run = "python components/memory/memoryctl.py exclude"
 
 [tasks."memory:test"]
 description = "Run the hermetic portable-memory suite"
-run = "uvx --python 3.12 --with pytest pytest -q tests/test_memory_runtime.py"
+run = "uvx --python 3.12 --with pytest pytest -q tests/test_memory_runtime.py tests/test_memory_exchange.py tests/test_memory_ingress.py"
 
 [tasks."maka:plan"]
 description = "Preview the portable Maka install without changing live state"
@@ -181,7 +181,7 @@ description = "Preview selective skill and house-style delivery without changing
 run = "python components/skills/skillctl.py plan"
 
 [tasks."skills:status"]
-description = "Report drift for the 17 managed skills and four bounded instruction targets"
+description = "Report drift for the 19 managed skills and four bounded instruction targets"
 run = "python components/skills/skillctl.py status"
 
 [tasks."skills:apply"]

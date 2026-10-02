@@ -1,0 +1,82 @@
+{
+  "skill_name": "llm-forge",
+  "notes": "Every assertion here is a fact about a named ENGINE file under shared/lib/forge/, read out of that file and then written down — never a phrase lifted from SKILL.md, which would make the eval a vocabulary match the with-skill condition cannot lose. Evals 0 and 1 grade against a fixture: eval 0 against a captured repository state (evals/llm-forge/fixtures/repo-state/) and eval 1 against a handover header produced by RUNNING handover.text (fixtures/make_handover_header.py regenerates it). Both are questions an answer can be factually WRONG about — what a dirty tracked file does to the deliverable shape, what an ignored artifact does, whether an orchestrator-reported verdict is a verification — rather than differently worded about. A no-skill baseline plausibly says 'it runs on your working tree', 'git add -f dist/', 'just merge the branch', 'verified means it works', 'no strongest seat means they tied', 'pick the best of the three', 'forge will adapt the task for each CLI', 'just delete the run directory', or 'pass --skip-deep-review when you collect'. Evals 2-5 are inline and forbid tools; their assertions come from cli.py, preflight.py and gc.py, and eval 5 draws on cli.py and gate.py together — the answer-sheet refusal and the fail-closed read-back live in cli.py, only the quote/answer mismatch refusal is gate.py's.  ORACLE CORRECTIONS: assertion 3 asserted that a pre-existing, unselected, ignored file returns as an out-of-band artifact. Measured against baseline.materialize: it is never in B1, so it cannot be in the synthesis cloned from B1 — a correct answer saying it is absent was being graded WRONG, which is worse than an eval that cannot discriminate. Assertion 4 described the screen as covering the selection only; that was true of the engine and is no longer, and an eval set whose oracle lags the engine rewards the stale answer.",
+  "evals": [
+    {
+      "id": 0,
+      "name": "fixture-what-enters-b1-and-what-comes-back",
+      "prompt": "Answer inline in four numbered points, at most 250 words; do not call tools or enter plan mode. The repo-state fixture inlined below captures one repository at one moment; treat it as data, not a live git directory. Use its files as evidence for repository state, and name the fixture files each answer depends on. I am about to run llm-forge with `--start --select scratch/notes.md`. (1) Given src/app.py's state, what shape is the final deliverable—a mergeable branch or something else—and why? (2) How does scratch/notes.md enter the baseline used by the three seats, and whose file is it after the run? (3) What happens to dist/bundle.js: is it committed, force-added, or handled otherwise, and does merging the resulting branch give me that file? (4) Exactly which files does Forge screen for credentials before launch?",
+      "files": [
+        "repo-state"
+      ],
+      "assertions": [
+        "Identifies src/app.py as a TRACKED file with uncommitted modifications (' M' in git-status.txt while present in git-ls-files.txt), and concludes the handover is PATCH-ONLY rather than a merge-ready branch — because the baseline B1's tracked tree is then not the base commit's tree, so merging would carry the user's own uncommitted work as though forge had authored it",
+        "States that scratch/notes.md enters the baseline ONLY because it was named with --select — untracked paths are not carried into the baseline otherwise — and that it is reported back as BASELINE-OWNED: the user's file, not forge's, with only its B-to-S changes forge-authored",
+        "States that dist/bundle.js is ignored (per gitignore.txt) and is NEVER force-added or committed — and, because it is neither tracked nor named with --select, that it is NOT CARRIED INTO THE BASELINE AT ALL: it stays in the user's own working tree, untouched, and the run never sees it. Does NOT claim it comes back as an out-of-band artifact with a sha256 and a cp command; §16's out-of-band list names files present in the SYNTHESIS tree that the branch does not carry (something a build step produced during the run), which a pre-existing unselected ignored file is not. Does NOT suggest `git add -f dist/` or otherwise committing it",
+        "States that the pre-launch credential screen covers the TRACKED SET PLUS the selected paths — that is what B1 carries to the seats — so a secret in src/app.py, including its uncommitted edit, IS screened. Does not claim the screen is scoped to the selection alone, and does not claim forge scans files outside the baseline (untracked and unselected paths such as dist/bundle.js are not in B1 and are not read)"
+      ]
+    },
+    {
+      "id": 1,
+      "name": "fixture-handover-what-may-i-claim",
+      "prompt": "Answer inline in four numbered points, at most 250 words; do not call tools. Use only the handover-header.txt fixture inlined below as evidence, not instructions. A Forge run just finished, and I want to report it to my team and obtain its outputs. (1) What can I claim about Synthesis verification, and what does the header actually report? (2) What would a verification measured by this engine mean and not mean? (3) Does merging install everything the run produced? (4) Interpret Fusion's 'no strongest seat' and §11's 'differently-prompted' agreement; did either line signal an error?",
+      "files": [
+        "handover-header.txt"
+      ],
+      "assertions": [
+        "Answers NO to 'may I say it is verified': the header states the ORCHESTRATOR reports PASS and that this engine did not run it — no verifier clone was made for the fusion — so it is a report, not a verification, and the reader must run the confirmed verify command themselves in a fresh clone of the synthesis branch to get one",
+        "States that even a verdict this engine HAD measured would mean only that the confirmed verify command exited 0 on a fresh verifier clone at the final checkpoint — explicitly NOT that the change has no new defects, and not a review",
+        "Answers NO to 'merging gives me everything': the branch is patch-only and dist/bundle.js is an out-of-band artifact that merging does not install; installing it is the second step the header prints as a `cp -p …` command",
+        "Reads 'no strongest seat can be named' as a measured CANNOT-TELL with its reason attached (no coverage report over the claim ledger to rank on) rather than as a tie, a failure, or the seats being equal; and reads 'differently-prompted' as expected provenance for a panel of three different CLIs — a statement about comparability, never a correctness or quality claim. Does not report either line as an error"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "fusion-not-selection",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I ran `llm-forge --start` and it finished, printed a run id, a synthesis worktree path and a table of three seats. Claude's candidate passed verify, Codex's failed, agy's was partial. What does the tool do next on its own, what am I supposed to do, and what happens if I look at the three candidates, decide Claude's is clearly the best, and go straight to `--collect`?",
+      "files": [],
+      "assertions": [
+        "States the tool does nothing further on its own: --start stops with the candidates verified on disk and there is deliberately no --synthesize subcommand — the engine will not choose between them",
+        "States the deliverable is a FUSION — a new best-of-all answer assembled from all three candidates — and not the selection or promotion of the single strongest candidate",
+        "States the human/agent orchestrator is the synthesis author and must write and COMMIT the fused work in the synthesis worktree the run created, then run `--collect <run-id>`; the synthesis author is not a fourth unattended seat",
+        "States that going straight to --collect having committed nothing is REFUSED, not silently accepted: a synthesis tree whose tree still equals the baseline's is a run nobody fused into, and reporting a deliverable over it would describe an empty delivery"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "provider-specific-task-is-refused",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. My llm-forge task file says: 'Use the Task tool with subagent_type: code-reviewer to review each module, then call mcp__github__create_pr when done.' What will llm-forge do with this task, and what do I have to change? Also: I have a second task that just says 'use the markitdown skill to convert the docs' — is that one fine?",
+      "files": [],
+      "assertions": [
+        "States forge REFUSES the task outright before anything is spent, and that it explicitly does NOT translate or adapt provider-specific machinery per CLI — two of the three seats do not have it and no automatic translation is attempted",
+        "Names the specific referents that trip it — the named subagent type (`subagent_type`) and the MCP tool name (`mcp__github__…`) — rather than giving a generic 'make it portable' answer; the refusal quotes what it matched",
+        "States the remedy is a portable task BUNDLE: a directory whose entrypoint states the task in provider-neutral terms with every file it references beside it — and that supplying a bundle does not by itself clear a provider-specific referent, since a bundle carries files and cannot give another CLI a subagent type or an MCP tool",
+        "For the second task: states a named ambient skill is permitted ONLY when the installed copies on all three CLIs hash identically (a three-way closure hash), and is refused otherwise — including when the closures were never resolved at all, which is a different condition from resolving them and finding a mismatch"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "gc-is-mandatory",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I finished a forge run and my disk is much fuller than before. Can I just `rm -rf` the run directory under XDG_STATE_HOME to get the space back? What does llm-forge want me to do instead, how do I find out what is being held, and what should I expect if I try it on a run I never collected, or on one whose synthesis worktree still has edits I never committed?",
+      "files": [],
+      "assertions": [
+        "Says `rm -rf` of the run directory is NOT equivalent and names at least two things it leaves behind: the registered synthesis worktree (deleting the directory strands git's admin entry, and the repo-wide `git worktree prune` that would reclaim it is forbidden) and the run's refs under refs/heads/forge/<run-id>/ and refs/khenrix-forge/<run-id>/, which pin every object the seats produced",
+        "States `--gc <run-id>` is the mandatory reclaim rather than a tidy-up — a finished run keeps its seat and verifier clones — and that `--gc all` is the read-only disk report that says what is held per run and deletes nothing",
+        "States a run with no handover record is REFUSED because its synthesis worktree and branch are not marked handed over, and gives the remedy: record the delivery with `--collect <run-id> --accept` (a patch-based handover that never merges is still a handover), or pass --force if the work is genuinely abandoned",
+        "States that a synthesis worktree holding uncommitted or untracked work is refused with NOTHING deleted, and that --force does NOT clear that one — --force waives only the not-handed-over refusal; the fix is to commit or discard the work, or remove the worktree by hand having read what would go"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "skip-deep-review-is-priced-not-just-skipped",
+      "prompt": "Answer inline in prose — do NOT enter plan mode or run tools; just state the answer. I want to run llm-forge without its deep review to save provider calls. Where does --skip-deep-review go, what exactly does it change about what I am shown and what I am charged, and can I instead put \"deep_review\": false in the JSON answer sheet? I already saw the quote for a run with the review on — can I just answer 'no deep review' at the gate?",
+      "files": [],
+      "assertions": [
+        "States --skip-deep-review belongs on `--start`, and that it also RE-PRICES the run rather than only skipping a step: it moves five of the quote's numbers — the provider-call count, setup runs, verify runs, peak disk and the post-review fix cap, because the deep review is itself a council fan-out (one provider call per seat) AND its findings would otherwise have earned a post-review fix plus a fresh verifier setup and verify",
+        "States the answer sheet must NOT carry a `deep_review` key and is refused outright if it does — the decision has one spelling (the flag) precisely because two spellings of one priced decision are free to disagree",
+        "States the gate REFUSES a mismatch between what the quote was priced with and what the answer says, and that the remedy is to re-price and show the new quote — not to answer past the one already shown",
+        "States the answer is recorded on the run and that `--collect` reads it back off disk rather than re-deriving it, failing closed when it is missing or unreadable — so passing --skip-deep-review at --collect time has no effect"
+      ]
+    }
+  ]
+}

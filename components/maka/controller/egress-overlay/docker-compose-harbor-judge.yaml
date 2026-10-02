@@ -1,0 +1,101 @@
+services:
+  maka-eval-mitmproxy:
+    image: ${MAKA_EGRESS_IMAGE_ID:?}
+    environment:
+      MAKA_EVAL_JUDGE_ONLY: "1"
+    networks:
+      - provider
+      - judge
+    volumes:
+      - type: volume
+        source: secret
+        target: /run/maka-secret
+        read_only: true
+      - type: volume
+        source: ca
+        target: /opt/maka-egress
+      - type: volume
+        source: receipts
+        target: /opt/maka-egress-state
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,socket; assert pathlib.Path('/opt/maka-egress/mitmproxy-ca-cert.pem').is_file(); socket.create_connection(('127.0.0.1',8080),2).close()"
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  judge:
+    image: ${MAKA_CONTROLLER_IMAGE_ID:?}
+    entrypoint:
+      - ${MAKA_EVAL_RUNTIME_ROOT:?}/node/bin/node
+      - ${MAKA_LAB_ROOT:?}/controller/harbor_judge.mjs
+      - --runtime-root
+      - ${MAKA_EVAL_RUNTIME_ROOT:?}
+      - --install-receipt
+      - /opt/maka-install-receipt.json
+      - --controller-image-id
+      - ${MAKA_CONTROLLER_IMAGE_ID:?}
+      - --egress-image-id
+      - ${MAKA_EGRESS_IMAGE_ID:?}
+      - --receipt-root
+      - /opt/maka-egress-state/relay-judge-receipts
+    stdin_open: true
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,nosuid,size=268435456
+      - /root:rw,nosuid,nodev,noexec,mode=0700,size=67108864
+    environment:
+      OPENAI_API_KEY: ${MAKA_JUDGE_DECOY:?}
+      MAKA_RUNTIME_HOST_ELECTION_DEADLINE_MS: "120000"
+      HTTP_PROXY: http://maka-eval-mitmproxy:8080
+      HTTPS_PROXY: http://maka-eval-mitmproxy:8080
+      NO_PROXY: localhost,127.0.0.1
+      NODE_EXTRA_CA_CERTS: /opt/maka-egress/mitmproxy-ca-cert.pem
+    networks:
+      - judge
+    depends_on:
+      maka-eval-mitmproxy:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${MAKA_LAB_ROOT:?}
+        target: ${MAKA_LAB_ROOT:?}
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MAKA_INSTALL_RECEIPT:?}
+        target: /opt/maka-install-receipt.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: ca
+        target: /opt/maka-egress
+        read_only: true
+      - type: volume
+        source: receipts
+        target: /opt/maka-egress-state
+        read_only: true
+
+networks:
+  judge:
+    internal: true
+  provider: {}
+
+volumes:
+  secret:
+    external: true
+    name: ${MAKA_EVAL_SECRET_VOLUME:?}
+  ca: {}
+  receipts: {}

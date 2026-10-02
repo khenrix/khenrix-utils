@@ -23,9 +23,36 @@ system user can reach it. Nothing syncs history to Khenrix or claude-mem cloud
 services. Chroma, cloud sync, telemetry, hosted memory fallback, Telegram,
 transcript watching, and semantic prompt injection are disabled.
 
-Raw prompts and tool events are stored in local SQLite. Text used to compress a
-session is sent only to the provider selected in `route.json`. Route selection
-is explicit and there is no provider fallback.
+Managed Claude/Codex/agy hooks sanitize prompts, nested tool input/response
+strings, agy tool arguments/errors, and transcript-backed turns before dispatch
+to the worker. They remove `private`, `claude-mem-context`, `system_instruction`,
+`system-instruction`, `persisted-output`, and `system-reminder` blocks, including
+case variations, nested blocks and an unclosed block's remaining text. Ordinary
+text and event/session metadata are retained; unsafe identity metadata is rejected
+instead of reassociating the capture. JSON-encoded tool strings are decoded before
+redaction and malformed JSON-shaped strings are rejected. Wholly private captures
+are skipped before route resolution, worker startup, logging, storage or provider use; empty
+sanitized turns cannot fall back to media text or an earlier transcript turn.
+
+Hook JSON is limited to 1 MiB, with 32 levels of nesting and 100,000 nodes across
+the capture. Transcript input and its sanitized snapshot are limited to 16 MiB,
+10,000 lines, and 1 MiB per JSONL record. Duplicate fields, malformed JSON,
+non-finite values, unsafe transcript paths, changing source files and oversized
+input fail closed with a content-free diagnostic. No input is truncated to meet
+these limits. Transcript sources are opened through no-follow descriptors and
+never modified. The child receives only a sanitized temporary snapshot in a
+0700 directory with a 0600 file, removed when the hook finishes. Text blocks use
+one joined-message tag state, matching the upstream transcript reader, while
+retaining their original structure and safe fields. Tags spanning blocks cannot
+expose the enclosed text; retained tool-block input is also sanitized.
+
+Sanitized prompts and tool events are stored in local SQLite. Text used to
+compress a session is sent only to the provider selected in `route.json`. Route
+selection is explicit and there is no provider fallback. These guarantees apply
+to the owned hook entry point; the upstream worker's direct, unmanaged HTTP
+capture endpoints and existing history are outside this ingress contract.
+Maka remains search-only. Existing project exclusion settings and nested/adapter
+hook suppression still apply.
 
 ## Install
 
@@ -45,10 +72,14 @@ once as `*.khenrix-backup`.
 
 A successful apply publishes the owner-only final receipt at
 `~/.local/state/khenrix-utils/memory/install-receipt.json` after the runtime,
-route, all three CLI hooks, and any requested start finish. It records only the
-reviewed package, version, artifact integrity, and source commit. A failed apply
-leaves an older receipt byte-for-byte unchanged or creates no receipt on a first
-install.
+route, all three CLI hooks, and any requested start finish. It records the
+reviewed package, version, artifact integrity, and source commit. Receipt v2 adds
+`capture_sha256`, a named and framed binding of `memoryctl.py` and
+`memory_ingress.py`, checked against the installed controller inventory.
+`controller_sha256` continues to mean the `memory_exchange.py` digest. Historical
+v1 receipts remain unchanged and are stale for the new capture implementation.
+A failed apply leaves an older receipt byte-for-byte unchanged or creates no
+receipt on a first install.
 
 The installed controller carries the reviewed `mise.toml` and `mise.lock`, resolves
 Bun through that pin, and records the absolute mise-pinned Python interpreter in
@@ -74,7 +105,7 @@ The ChatGPT route never reads or copies OAuth tokens. Its authenticated relay
 checks `account/read` through Codex app-server, then invokes an ephemeral,
 read-only `codex exec` with rules, hooks, plugins, apps, agents, browsing, and
 shell tools disabled. Adapter sessions are not persisted or captured. Both
-OpenAI routes request `gpt-6-sol` with `xhigh` effort and `store: false`. The
+OpenAI routes request `gpt-6.1-sol` with `xhigh` effort and `store: false`. The
 Keychain API route explicitly requests Standard processing and rejects a
 response that reports another model or processing tier. The ChatGPT subscription
 route has no API project-tier guarantee; its processing tier is unverified.

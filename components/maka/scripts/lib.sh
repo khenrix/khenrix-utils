@@ -147,7 +147,53 @@ LimitCORE=0"
     done
     test ! -e /core
     printf "vm-core-file=absent\n"
-  '
+  ' </dev/null
+}
+
+assert_maka_guest_source_parity() {
+  local host_source guest_source
+  host_source=$(python3 "$LAB_ROOT/scripts/harbor_judge_input.py" source-digest "$LAB_ROOT") || return 78
+  if ! guest_source=$(colima ssh --profile maka-amd64 -- \
+      python3 "$LAB_ROOT/scripts/harbor_judge_input.py" source-digest "$LAB_ROOT" \
+      </dev/null 2>/dev/null) || test "$guest_source" != "$host_source"; then
+    echo 'Maka guest mount differs from installed source; restart the isolated profile' >&2
+    return 78
+  fi
+}
+
+assert_maka_guest_provider_dns() {
+  if ! colima ssh --profile maka-amd64 -- getent ahostsv4 api.openai.com \
+      </dev/null >/dev/null 2>&1; then
+    echo 'Maka guest DNS cannot resolve api.openai.com; no paid judge request was sent' >&2
+    return 78
+  fi
+}
+
+stage_maka_install_receipt() {
+  local source=$1 destination=$2
+  if test ! -f "$source" || test -L "$source" \
+      || test -e "$destination" || test -L "$destination"; then
+    echo 'Maka install receipt staging path is unsafe' >&2
+    return 78
+  fi
+  install -m 0600 "$source" "$destination"
+  cmp -s "$source" "$destination"
+}
+
+# Called in a background subshell so $! remains the Colima process for cleanup.
+maka_guest_fifo_write() {
+  local mode=$1 fifo=$2
+  case "$mode" in
+    probe-write)
+      exec colima ssh --profile maka-amd64 -- \
+        python3 "$LAB_ROOT/scripts/harbor_judge_input.py" probe-write "$fifo" </dev/null
+      ;;
+    deliver)
+      exec colima ssh --profile maka-amd64 -- \
+        python3 "$LAB_ROOT/scripts/harbor_judge_input.py" deliver "$fifo"
+      ;;
+    *) return 64 ;;
+  esac
 }
 
 # Remove every container that can access one unique broker volume, then remove

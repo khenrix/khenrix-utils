@@ -1914,7 +1914,7 @@ def write_default_configs(home, *, claude_model="best"):
     codex = home / ".codex" / "config.toml"
     codex.parent.mkdir(parents=True, exist_ok=True)
     codex.write_text(
-        'model = "gpt-6-sol"\n'
+        'model = "gpt-6.1-sol"\n'
         'service_tier = "default"\n'
         'model_reasoning_effort = "xhigh"\n'
         'plan_mode_reasoning_effort = "ultra"\n\n'

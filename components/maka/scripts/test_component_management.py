@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import base64
+import hashlib
 import io
 import json
 import os
 import pathlib
 import shutil
+import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -30,6 +33,127 @@ class ComponentInstallerTests(unittest.TestCase):
         cls.upstream_package = component.discover_package_root(
             mise, source, component.clean_environment(layout, mise, account.pw_name)
         )
+
+    def test_installer_monotonic_clock_brackets_node_hrtime(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is not available outside the managed Maka lab")
+        before = int(component.install_monotonic_ns())
+        observed = subprocess.run(
+            [node, "-e", "console.log(process.hrtime.bigint().toString())"],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        after = int(component.install_monotonic_ns())
+        self.assertLessEqual(before, int(observed.stdout.strip()))
+        self.assertLessEqual(int(observed.stdout.strip()), after)
+
+    def test_smoke_tool_profile_overlay_binds_only_skill_tools(self) -> None:
+        paths = (
+            "node_modules/@maka/core/dist/session.js",
+            "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js",
+            "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js",
+        )
+        self.assertTrue(set(paths) <= set(compat.PATCHES))
+        for relative in paths:
+            source = (self.upstream_package / relative).read_bytes()
+            self.assertEqual(compat.PATCHES[relative][0], hashlib.sha256(source).hexdigest())
+            self.assertNotEqual(compat.patched_content(relative, source), source)
+
+        relative = paths[1]
+        patched = compat.patched_content(
+            relative, (self.upstream_package / relative).read_bytes()
+        ).decode("utf-8")
+        package = self.upstream_package / "node_modules"
+        imports = {
+            "@maka/core/attachments": (package / "@maka/core/dist/attachments.js").as_uri(),
+            "@maka/runtime/read-page": (package / "@maka/runtime/dist/read-page.js").as_uri(),
+        }
+        for name, target in imports.items():
+            patched = patched.replace(f"from '{name}'", f"from '{target}'")
+        module_url = "data:text/javascript;base64," + base64.b64encode(
+            patched.encode("utf-8")
+        ).decode("ascii")
+        script = f"""
+            const {{ projectHostedExecutionTools }} = await import({json.dumps(module_url)});
+            const profile = 'khenrix-skill-routing-v1';
+            const tools = ['Skill', 'SkillSearch', 'Bash'].map(name => ({{name}}));
+            const selected = projectHostedExecutionTools(tools, profile).map(tool => tool.name);
+            if (JSON.stringify(selected) !== '["Skill","SkillSearch"]') process.exit(2);
+            try {{
+              projectHostedExecutionTools([{{name: 'Bash'}}], profile);
+              process.exit(3);
+            }} catch (error) {{
+              if (!String(error).includes('Skill')) process.exit(4);
+            }}
+        """
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        observed = subprocess.run(
+            [node, "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(observed.returncode, 0, observed.stderr)
+
+    def test_smoke_tool_profile_keeps_dynamic_skill_catalog(self) -> None:
+        relative = "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js"
+        source = compat.patched_content(
+            relative, (self.upstream_package / relative).read_bytes()
+        ).decode("utf-8")
+        start = source.index("export function createInteractiveRunComposer(input)")
+        end = source.index("/** Routes every model-visible tool surface", start)
+        function_source = source[start:end].replace("export function", "function", 1)
+        script = f"""
+            const source = {json.dumps(function_source)};
+            const dependencies = {{
+              INTERACTIVE_RUN_COMPOSER_ID: 'maka.interactive',
+              INTERACTIVE_RUN_COMPOSER_REVISION: '1',
+              createTurnSkillInventorySnapshotResolver: () => async () =>
+                ({{inventory: ['fanout'], revision: 'catalog-v1'}}),
+              projectHostedExecutionTools: (tools) => tools,
+              hostedExecutionRunProfile: () =>
+                ({{toolNames: ['Skill', 'SkillSearch'], systemPrompt: 'STATIC_SENTINEL'}}),
+              assertUniqueToolNames: () => undefined,
+              buildHostCapabilitiesFromBinding: () => ({{}}),
+              readPromptState: async () => ({{
+                policy: {{workspaceInstructions: {{enabled: false}}, personalization: {{}}}},
+                memory: '', runtimePolicyRevision: 'policy-v1',
+              }}),
+              buildSkillsPromptFragmentFromInventoryWithReport: () => ({{
+                text: 'DYNAMIC_SKILL_SENTINEL',
+                report: {{policyVersion: 'v1', budgetChars: 100, usedChars: 20,
+                  totalCount: 1, eligibleCount: 1, advertisedCount: 1, omittedCount: 0}},
+              }}),
+              buildPersonalizationPromptFragment: () => ({{text: ''}}),
+              assembleMainSessionSystemPrompt: (parts) => parts.filter(Boolean).join('|'),
+              interactiveSourceRevisions: () => ['catalog-v1'],
+              mergeSourceRevisions: (base, additions) => [...base, ...additions],
+            }};
+            const names = Object.keys(dependencies);
+            const create = new Function(...names,
+              source + '\\nreturn createInteractiveRunComposer;')(...Object.values(dependencies));
+            const composer = create({{
+              toolProfile: 'khenrix-skill-routing-v1',
+              boundTools: [{{name: 'Skill'}}, {{name: 'SkillSearch'}}],
+              resolveAdditionalSystemPrompt: async (_context, base) =>
+                ({{text: base + '|PLUGIN_SENTINEL', sourceRevisions: []}}),
+            }});
+            const prompt = await composer.resolveSystemPrompt({{
+              sessionId: 'session-1', turnId: 'turn-1', cwd: '/tmp/smoke',
+            }});
+            if (!prompt.text.includes('DYNAMIC_SKILL_SENTINEL')) process.exit(2);
+            if (prompt.text.includes('STATIC_SENTINEL')) process.exit(3);
+            if (!prompt.text.includes('PLUGIN_SENTINEL')) process.exit(4);
+            if (!prompt.sourceRevisions.includes('catalog-v1')) process.exit(5);
+        """
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node is unavailable")
+        observed = subprocess.run(
+            [node, "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(observed.returncode, 0, observed.stderr)
 
     def _fake_candidate(self, source: pathlib.Path, layout: component.InstallLayout) -> pathlib.Path:
         candidate = component.candidate_path(source, layout)
@@ -91,6 +215,8 @@ class ComponentInstallerTests(unittest.TestCase):
             mock.patch.object(component, "canonical_layout", return_value=layout),
             mock.patch.object(component, "resolve_mise", return_value=home / ".local/bin/mise"),
             mock.patch.object(component, "supported_platform", return_value="macos-arm64"),
+            mock.patch.object(component, "boot_session_uuid", return_value="8041a534-8c46-458b-9ccc-915eacdad88e"),
+            mock.patch.object(component, "install_monotonic_ns", return_value="1000000000"),
             mock.patch.object(
                 component.pwd,
                 "getpwuid",
@@ -159,6 +285,44 @@ class ComponentInstallerTests(unittest.TestCase):
             self.assertIn("--thinking xhigh", rendered)
             self.assertIn("'person with space'", rendered)
             self.assertIn(str(layout.component), rendered)
+
+    def test_judge_command_does_not_run_on_subscription_route(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = pathlib.Path(directory) / "home"
+            layout = component.canonical_layout(home)
+            layout.component.mkdir(parents=True)
+            (layout.component / "mise.toml").write_text("", encoding="utf-8")
+            package = home / "package"
+            package.mkdir(parents=True)
+            (package / "package.json").write_text("{}", encoding="utf-8")
+            mise = home / ".local/bin/mise"
+            mise.parent.mkdir(parents=True)
+            marker = home / "runtime-invoked"
+            mise.write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  *'maka_auth_mode.py show'*) printf '%s\\n' chatgpt-subscription ;;\n"
+                "  *'configure_maka_subscription.mjs'*) exit 0 ;;\n"
+                f"  *) : > '{marker}'; exit 0 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            mise.chmod(0o700)
+            template = (pathlib.Path(__file__).resolve().parent.parent / "wrapper/maka.in").read_text()
+            wrapper = home / "maka"
+            wrapper.write_text(component.render_wrapper(
+                template, layout=layout, account_name="fixture-user",
+                mise=mise, package=package,
+            ), encoding="utf-8")
+            wrapper.chmod(0o700)
+
+            result = subprocess.run(
+                [str(wrapper), "judge", "-"], input="{}", text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=home,
+                env={"PATH": "/usr/bin:/bin"}, timeout=10, check=False,
+            )
+            self.assertEqual(result.returncode, 78)
+            self.assertFalse(marker.exists())
 
     def test_manifest_rejects_symlinks_and_parent_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -262,6 +426,8 @@ class ComponentInstallerTests(unittest.TestCase):
             self.assertEqual(receipt["version"], component.PACKAGE_VERSION)
             self.assertEqual(receipt["integrity"], component.PACKAGE_INTEGRITY)
             self.assertEqual(receipt["source_commit"], component.SOURCE_COMMIT)
+            self.assertEqual(receipt["boot_session_uuid"], "8041a534-8c46-458b-9ccc-915eacdad88e")
+            self.assertEqual(receipt["install_monotonic_ns"], "1000000000")
             self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(layout.state.stat().st_mode & 0o777, 0o700)
             self.assertEqual(

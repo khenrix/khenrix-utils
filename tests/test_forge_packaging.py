@@ -1,4 +1,4 @@
-"""forge must ship in the rendered plugins and be inside the receipt closure."""
+"""Forge remains historical source; active plugins exclude it and retain security checks."""
 import ast
 import importlib.util
 import io
@@ -35,17 +35,15 @@ def _checks_mod():
 CLIS = _checks_mod().CLIS
 
 
-def test_forge_is_bundled_into_the_claude_plugin():
+def test_forge_is_absent_from_the_active_claude_plugin():
     p = _plugin("claude") / "lib" / "forge"
-    assert (p / "baseline.py").is_file(), "run `make render`"
-    assert (p / "fleet.py").is_file()
-    assert not (p / "tests").exists(), "SHARED_LIBS must strip tests/"
+    assert not p.exists(), "historical library must not be rendered"
 
 
-def test_forge_is_bundled_into_every_cli():
+def test_forge_is_absent_from_every_active_cli():
     for cli in CLIS:
         p = _plugin(cli) / "lib" / "forge"
-        assert (p / "gitcmd.py").is_file(), cli
+        assert not p.exists(), cli
 
 
 def test_the_tests_stripper_is_live_and_not_merely_unexercised():
@@ -101,7 +99,7 @@ def test_every_forge_suite_is_named_in_the_makefile_gate():
     """
     on_disk = ({f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.py")}
                | {f"tests/{p.name}" for p in (ROOT / "tests").glob("test_*.bats")})
-    variables = ("FORGE_TESTS", "FORGE_SLOW_TESTS", "COUNCIL_TESTS",
+    variables = ("FORGE_TESTS", "FORGE_SLOW_TESTS", "COUNCIL_TESTS", "FANOUT_TESTS",
                  "DOCTOR_TESTS", "RECONCILE_DEFAULTS_TESTS", "MEMORY_RUNTIME_TESTS",
                  "MAKA_COMPONENT_TESTS", "SKILL_DELIVERY_TESTS", "AUDIT_TESTS",
                  "BATS_SUITES", "TIER0_HOST_SMOKE_TESTS")
@@ -165,16 +163,22 @@ def test_checks_py_is_bundled_beside_forge_in_every_cli():
         assert (_plugin(cli) / "lib" / "checks.py").is_file(), cli
 
 
-def test_a_rendered_plugin_resolves_checks_from_its_own_lib(tmp_path):
-    """End-to-end proof that the bundled copy is placed where the resolver looks.
+def _historical_bundle(root: Path) -> Path:
+    """A current-source compatibility fixture, never an installed-consumer claim."""
+    lib = root / "lib"
+    for name in ("forge", "council"):
+        shutil.copytree(ROOT / "shared/lib" / name, lib / name,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(ROOT / "scripts/lib/checks.py", lib / "checks.py")
+    shutil.copy2(ROOT / "shared/lib/fanout/historical_only.py", lib / "historical_only.py")
+    shutil.copytree(ROOT / "shared/skills/llm-forge/scripts", root / "skills/llm-forge/scripts",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return root
 
-    Runs against a COPY of the plugin's lib/ outside the repo, so screen._checks()'s
-    repo-layout candidate cannot resolve and mask a wrongly-placed bundle. In a
-    subprocess because the forge package is already imported (from shared/lib) by the
-    sibling suites in this session.
-    """
-    lib = tmp_path / "lib"
-    shutil.copytree(_plugin("claude") / "lib", lib)
+
+def test_retained_historical_runtime_resolves_checks_from_its_own_lib(tmp_path):
+    """A standalone source fixture keeps the historical secret-pattern resolver covered."""
+    lib = _historical_bundle(tmp_path / "compatibility") / "lib"
     prog = (
         "import sys; sys.path.insert(0, sys.argv[1]);"
         "from forge import screen;"
@@ -204,7 +208,9 @@ def _fake_root(tmp_path: Path) -> Path:
     (scan_secrets shells out to `git ls-files` with check=True) and a capabilities.toml
     it can parse. An empty repo lists no files, so the scan passes cleanly."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "capabilities.toml").write_text("[models]\n")
+    (tmp_path / "capabilities.toml").write_text(
+        '[historical_only]\nskills = ["llm-council", "llm-forge"]\n'
+        'libraries = ["council", "forge"]\n[models]\n')
     return tmp_path
 
 
@@ -526,13 +532,11 @@ def test_the_skill_quotes_the_numbers_gate_quote_actually_produces():
                 assert shown in body, (deepreview, shown)
 
 
-def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
-    """Run the façade from a RENDERED plugin directory and prove it resolves the bundled
-    engine. The resolution is one `parents[3]` expression covering two layouts, and nothing
-    else in the suite exercises the plugin one."""
+def test_the_historical_skill_can_find_the_engine_from_a_plugin_layout(tmp_path):
+    """The retained facade still resolves a standalone plugin-shaped source fixture."""
     for cli_name in CLIS:
-        script = (ROOT / "marketplaces" / cli_name / "plugins" / "khenrix-utils"
-                  / "skills" / "llm-forge" / "scripts" / "forge.py")
+        bundle = _historical_bundle(tmp_path / cli_name)
+        script = bundle / "skills/llm-forge/scripts/forge.py"
         assert script.is_file(), script
         r = subprocess.run([sys.executable, str(script), "--help"],
                            capture_output=True, text=True)
@@ -541,7 +545,7 @@ def test_the_rendered_skill_can_find_the_engine_from_a_plugin_path():
             assert flag in r.stdout, (cli_name, flag)
 
 
-def test_the_rendered_facade_loads_the_plugins_OWN_engine_not_the_repos():
+def test_the_historical_facade_loads_its_copied_engine_not_the_repos(tmp_path):
     """`--help` exiting 0 proves an engine was found, not WHICH one. Inside this repo both
     are reachable, so a `parents[4]`-shaped expression would resolve `shared/lib` and pass
     every assertion above while being broken for the copy a marketplace actually installs.
@@ -549,8 +553,8 @@ def test_the_rendered_facade_loads_the_plugins_OWN_engine_not_the_repos():
     A subprocess because the forge package is already imported from `shared/lib` by the
     sibling suites in this session, and the first import wins.
     """
-    script = (ROOT / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
-              / "skills" / "llm-forge" / "scripts" / "forge.py")
+    bundle = _historical_bundle(tmp_path / "compatibility")
+    script = bundle / "skills/llm-forge/scripts/forge.py"
     prog = (
         "import importlib.util as u, sys;"
         "s = u.spec_from_file_location('_facade', sys.argv[1]);"
@@ -560,8 +564,7 @@ def test_the_rendered_facade_loads_the_plugins_OWN_engine_not_the_repos():
     r = subprocess.run([sys.executable, "-c", prog, str(script)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    expected = (ROOT / "marketplaces" / "claude" / "plugins" / "khenrix-utils"
-                / "lib" / "forge" / "cli.py")
+    expected = bundle / "lib/forge/cli.py"
     assert r.stdout.strip() == str(expected), r.stdout
 
 

@@ -29,13 +29,13 @@ boundary.
    the requested model and `default` tier, then streams the response. It never
    writes the provider key to disk.
 
-`GET /v1/models` is answered locally with `gpt-6-sol` and `gpt-5.6-sol`. The pinned
+`GET /v1/models` is answered locally with `gpt-6.1-sol`, `gpt-6-sol`, and `gpt-5.6-sol`. The pinned
 adapter's WebSocket probe receives a local 403 and falls back to HTTP.
 Non-streaming title and recap calls are rejected, so auxiliary prompts cannot
 consume this provider capability.
 
-The reserved `openai-responses-compatible` connection exposes
-both models with `xhigh` and `max`, defaulting to `xhigh`. An explicit
+The reserved `custom` connection selects the `openai-responses` protocol and exposes
+all three models with `xhigh` and `max`, defaulting to `xhigh`. An explicit
 `--thinking max` remains `max`; the relay normalizes only the pinned client's
 known derived `medium` fallback to `xhigh`. The pinned SDK can also derive a
 `detailed` reasoning summary; the relay narrows that value to the reviewed
@@ -58,7 +58,7 @@ The listener is also Maka's authenticated global HTTP proxy. It rejects every
 CONNECT and absolute-form request, so an imported connection cannot use the
 proxy to reach another provider. Only `127.0.0.1` and `localhost` bypass it.
 The reconciler enables only the reserved `keychain-openai` connection, selects
-`gpt-6-sol`, keeps `gpt-5.6-sol` selectable, and sets `ask` permissions with
+`gpt-6.1-sol`, keeps `gpt-6-sol` and `gpt-5.6-sol` selectable, and sets `ask` permissions with
 `xhigh` as the normal default.
 
 These checks cover traffic sent through Maka's configured model connection and

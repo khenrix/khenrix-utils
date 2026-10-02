@@ -9,7 +9,7 @@ import pathlib
 import stat
 import sys
 
-MODELS = {"gpt-6-sol", "gpt-5.6-sol"}
+MODELS = {"gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"}
 TIERS = {"default", "flex", "priority", "scale", "auto"}
 FIELDS = {"schema", "time_utc", "requested_model", "observed_model",
           "requested_service_tier", "observed_service_tier", "http_status"}

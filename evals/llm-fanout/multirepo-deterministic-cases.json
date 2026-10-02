@@ -1,0 +1,52 @@
+{
+  "schema_version": "fanout-multirepo-deterministic-cases-v1",
+  "scope": "disposable-local-contracts-not-live-provider-or-quality-certification",
+  "sealed_quality_casebook": "quality-cases.json",
+  "cases": [
+    {
+      "id": "admitted-native-two-writer-handover",
+      "test": "tests/test_fanout_multirepo_integration.py::test_admitted_packet_runs_native_fake_seats_through_both_handovers",
+      "assertions": [
+        "The exact owner-reviewed v2 packet creates one dormant run with two clean targets and no provider turn.",
+        "Three disposable native shell seats execute two exact-session rounds per writer; no real provider or external network is used.",
+        "Booking consumes controller-verified address handover evidence; each target receives one local ticket-branch commit.",
+        "The owner-only integration barrier completes while public v2 resume remains refused."
+      ]
+    },
+    {
+      "id": "artifact-edge-before-handover",
+      "test": "tests/test_fanout_multirepo_integration.py::test_cross_repository_artifact_unlocks_before_branch_handover",
+      "assertions": [
+        "An artifact dependency can unlock from authenticated reconciliation before a branch handover.",
+        "This scheduler fixture creates no cross-target executor workspace."
+      ]
+    },
+    {
+      "id": "partial-cold-status",
+      "test": "tests/test_fanout_multirepo_integration.py::test_failed_booking_after_address_delivery_cold_reopens_as_partial",
+      "assertions": [
+        "A delivered address target and failed booking target cold-inspect as partial without authority repair.",
+        "Repeated inspection does not create a second address commit."
+      ]
+    },
+    {
+      "id": "dirty-read-only-clean-write",
+      "tests": [
+        "tests/test_fanout_execute_skill.py::test_v2_same_ticket_distinct_repositories_bind_dirty_read_only_target",
+        "tests/test_fanout_execute_skill.py::test_v2_dirty_write_target_is_refused"
+      ],
+      "assertions": [
+        "A dirty read-only target may be bound without mutating its caller tree.",
+        "A dirty repository-write target is refused before the dormant run starts."
+      ]
+    },
+    {
+      "id": "frozen-v1-inspection",
+      "test": "tests/test_fanout_execute_skill.py::test_changed_runtime_v1_status_reads_live_authenticated_stores",
+      "assertions": [
+        "Frozen v1 historical status remains available with a changed installed runtime.",
+        "Historical inspection does not authorize provider dispatch."
+      ]
+    }
+  ]
+}

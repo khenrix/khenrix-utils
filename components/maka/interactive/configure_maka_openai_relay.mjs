@@ -10,12 +10,14 @@ import process from 'node:process';
 
 export const LOOPBACK_HOST = '127.0.0.1';
 export const DEFAULT_PORT = 48173;
-export const MODEL_ID = 'gpt-6-sol';
+export const MODEL_ID = 'gpt-6.1-sol';
 export const LEGACY_MODEL_ID = 'gpt-5.6-sol';
-export const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
+export const PREVIOUS_MODEL_ID = 'gpt-6-sol';
+export const MODEL_IDS = [MODEL_ID, PREVIOUS_MODEL_ID, LEGACY_MODEL_ID];
 export const CONNECTION_SLUG = 'keychain-openai';
 export const CONNECTION_NAME = 'OpenAI via local Keychain relay';
-export const RELAY_PROVIDER_TYPE = 'openai-responses-compatible';
+export const RELAY_PROVIDER_TYPE = 'custom';
+export const RELAY_API_PROTOCOL = 'openai-responses';
 export const PROXY_USERNAME = 'maka-local';
 export const HEALTH_CHALLENGE_HEADER = 'X-Maka-Relay-Challenge';
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,256}$/u;
@@ -131,25 +133,54 @@ function sameProxy(left, right) {
 function desiredModelOverrides() {
   return Object.fromEntries(MODEL_IDS.map((model) => [model, {
     thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    capabilities: { parallelToolCalls: true },
   }]));
 }
 
-function hasDesiredModelOverrides(value) {
+function legacyModelOverrides() {
+  return Object.fromEntries([PREVIOUS_MODEL_ID, LEGACY_MODEL_ID].map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+  }]));
+}
+
+function hasDesiredModelOverrides(value, withCapability = true, modelIds = MODEL_IDS) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const entries = Object.entries(value);
-  if (!sameStrings(entries.map(([model]) => model), MODEL_IDS)) return false;
+  if (!sameStrings(entries.map(([model]) => model), modelIds)) return false;
   return entries.every(([, profile]) =>
     profile !== null &&
     typeof profile === 'object' &&
     !Array.isArray(profile) &&
-    Object.keys(profile).length === 2 &&
+    Object.keys(profile).length === (withCapability ? 3 : 2) &&
     sameStrings(profile.thinkingLevels, ['xhigh', 'max']) &&
-    profile.defaultThinkingLevel === 'xhigh'
+    profile.defaultThinkingLevel === 'xhigh' &&
+    (withCapability
+      ? profile.capabilities !== null &&
+        typeof profile.capabilities === 'object' &&
+        !Array.isArray(profile.capabilities) &&
+        Object.keys(profile.capabilities).length === 1 &&
+        profile.capabilities.parallelToolCalls === true
+      : profile.capabilities === undefined)
   );
 }
 
+function isManagedRelayConnection(relay, port) {
+  return relay?.providerType === RELAY_PROVIDER_TYPE &&
+    relay.defaultApiProtocol === RELAY_API_PROTOCOL &&
+    relay.slug === CONNECTION_SLUG &&
+    relay.name === CONNECTION_NAME &&
+    relay.baseUrl === relayBaseUrl(port) &&
+    [MODEL_IDS, [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID]].some((modelIds) =>
+      sameStrings(relay.enabledModelIds, modelIds) &&
+      (hasDesiredModelOverrides(relay.modelOverrides, true, modelIds) ||
+        hasDesiredModelOverrides(relay.modelOverrides, false, modelIds))) &&
+    relay.requestBodyOverlay === undefined;
+}
+
 function connectionCredentialTarget(connection) {
-  if (connection.providerType !== RELAY_PROVIDER_TYPE || connection.baseUrl === undefined) {
+  if (connection.providerType !== RELAY_PROVIDER_TYPE ||
+      connection.defaultApiProtocol !== RELAY_API_PROTOCOL ||
+      connection.baseUrl === undefined) {
     throw new SafeConfigurationError('relay_connection_invalid');
   }
   return {
@@ -161,7 +192,7 @@ function connectionCredentialTarget(connection) {
   };
 }
 
-async function assertReservedSlugCompatible(connection, readCatalog) {
+async function assertReservedSlugCompatible(connection, readCatalog, port) {
   const catalog = await readCatalog(connection);
   const relay = catalog.connections.find((entry) => entry.slug === CONNECTION_SLUG);
   if (
@@ -169,6 +200,10 @@ async function assertReservedSlugCompatible(connection, readCatalog) {
     relay.providerType !== RELAY_PROVIDER_TYPE &&
     relay.providerType !== 'openai'
   ) {
+    throw new SafeConfigurationError('relay_slug_owned_by_other_provider');
+  }
+  if (relay?.providerType === RELAY_PROVIDER_TYPE &&
+      !isManagedRelayConnection(relay, port)) {
     throw new SafeConfigurationError('relay_slug_owned_by_other_provider');
   }
 }
@@ -258,6 +293,7 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
           slug: CONNECTION_SLUG,
           name: CONNECTION_NAME,
           providerType: RELAY_PROVIDER_TYPE,
+          defaultApiProtocol: RELAY_API_PROTOCOL,
           baseUrl,
           enabled: true,
           enabledModelIds: MODEL_IDS,
@@ -269,7 +305,7 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
     relay = catalog.connections.find((entry) => entry.slug === CONNECTION_SLUG);
     if (relay === undefined) throw new SafeConfigurationError('relay_connection_missing');
   }
-  if (relay.providerType !== RELAY_PROVIDER_TYPE) {
+  if (!isManagedRelayConnection(relay, port)) {
     throw new SafeConfigurationError('relay_slug_owned_by_other_provider');
   }
   const needsUpdate =
@@ -299,6 +335,56 @@ async function ensureRelayConnection(connection, readCatalog, port, purgeCredent
     if (relay === undefined) throw new SafeConfigurationError('relay_connection_missing');
   }
   return relay;
+}
+
+export async function restoreLegacyMakaRelayProfile(
+  connection,
+  readCatalog,
+  port = DEFAULT_PORT,
+) {
+  let catalog = await readCatalog(connection);
+  const relay = catalog.connections.find((entry) => entry.slug === CONNECTION_SLUG);
+  if (!isManagedRelayConnection(relay, port)) {
+    throw new SafeConfigurationError('relay_slug_owned_by_other_provider');
+  }
+  const previousModels = [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID];
+  if (catalog.defaultTarget?.connectionId === relay.connectionId &&
+      catalog.defaultTarget.modelId === MODEL_ID) {
+    expectCommitted(
+      'default_target_restore',
+      await connection.request('connection.catalog.set-default-target', {
+        expectedCatalogRevision: catalog.revision,
+        target: { connectionId: relay.connectionId, modelId: PREVIOUS_MODEL_ID },
+      }),
+    );
+    catalog = await readCatalog(connection);
+    if (catalog.defaultTarget?.connectionId !== relay.connectionId ||
+        catalog.defaultTarget.modelId !== PREVIOUS_MODEL_ID) {
+      throw new SafeConfigurationError('relay_profile_downgrade_failed');
+    }
+  }
+  if (sameStrings(relay.enabledModelIds, previousModels) &&
+      hasDesiredModelOverrides(relay.modelOverrides, false, previousModels)) return;
+  expectCommitted(
+    'connection_update',
+    await connection.request('connection.catalog.update', {
+      expected: { connectionId: relay.connectionId, revision: relay.revision },
+      changes: {
+        name: relay.name,
+        enabled: relay.enabled,
+        enabledModelIds: previousModels,
+        modelOverrides: legacyModelOverrides(),
+      },
+    }),
+  );
+  const updated = (await readCatalog(connection)).connections.find(
+    (entry) => entry.connectionId === relay.connectionId,
+  );
+  if (!isManagedRelayConnection(updated, port) ||
+      !sameStrings(updated.enabledModelIds, previousModels) ||
+      !hasDesiredModelOverrides(updated.modelOverrides, false, previousModels)) {
+    throw new SafeConfigurationError('relay_profile_downgrade_failed');
+  }
 }
 
 async function ensureConnectionCredential(connection, relay, token) {
@@ -525,7 +611,7 @@ export async function reconcileMakaRelay(
       // The deny proxy becomes authoritative before any third-party connection
       // is disabled or a legacy relay is migrated, so a partial reconciliation
       // still fails closed on egress.
-      await assertReservedSlugCompatible(connection, readCatalog);
+      await assertReservedSlugCompatible(connection, readCatalog, port);
       await ensureDenyProxy(connection, token, port);
       const relay = await ensureRelayConnection(
         connection,

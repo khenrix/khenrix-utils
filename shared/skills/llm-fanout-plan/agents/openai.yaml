@@ -1,0 +1,6 @@
+interface:
+  display_name: "LLM Fanout Plan"
+  short_description: "Prepare a skill-aware cross-model execution plan"
+  default_prompt: "Use $llm-fanout-plan to turn this approved work into a validated fanout plan."
+policy:
+  allow_implicit_invocation: true

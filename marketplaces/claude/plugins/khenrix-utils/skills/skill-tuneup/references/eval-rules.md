@@ -18,11 +18,16 @@ read it before scaffolding). Key invariants:
   assertion delta yet a blind loss to the tighter baseline). Read it when triaging a weak
   delta; never fail a non-negative-delta run on it. The assertion delta is the "does it
   help" signal.
-- **llm-council is special**: its receipt is WRITTEN by `make eval SKILL=llm-council`,
+- **Historical llm-council compatibility**: its receipt is WRITTEN by `make eval SKILL=llm-council`,
   which gates on `fanout.py --self-test` alone, not the judge harness — executors run under
   `LLM_COUNCIL_DEPTH=1`, so the judged delta never exercises a real council and is advisory
-  only. A live `--smoke` and `make council-test` are additional REQUIRED checks, not what
-  earns the receipt; `council-test` runs inside `verify`/`precommit`.
+  only. Keep `make council-test` and historical live smoke coverage distinct from current
+  `make smoke-llm-fanout`; a paid smoke needs its own authorization and earns no receipt.
+- Current executors and judges use the bounded fanout prompt-only bridge, with memory
+  and collaboration disabled. Only a verified unstarted spawn can retry automatically.
+  Malformed successful judge JSON receives one fresh semantic retry and both raw attempts
+  remain available. Timeouts, quota/errors and uncertain spend are terminal transport
+  evidence, not an automatic whole-eval replay.
 
 ## Scaffolding a missing eval set
 
@@ -43,7 +48,7 @@ make eval SKILL=<t> PROVIDERS=claude,codex,agy   # final gate (~3-4x tokens)
 **Run it in the background and with no other token-heavy agent work in flight.** An eval is
 strictly serial — every case × condition × judge call in sequence — so it routinely outlives
 a foreground command cap, and a kill loses the whole run. Reading files alongside it is
-fine; a council fan-out is not. Raise the per-attempt cap with `TIMEOUT=` rather than
+fine; a fanout review is not. Raise the per-attempt cap with `TIMEOUT=` rather than
 `MODE=deep`, which would also change reasoning depth.
 
 Classify every failure before touching anything:
@@ -52,8 +57,8 @@ Classify every failure before touching anything:
 |---|---|---|
 | Real regression | deterministic fail tied to a specific edit | fix the edit; re-run |
 | Assertion regression | behavior intentionally changed; assertion now wrong | update the assertion; re-run |
-| Invalid run — executor | `errors == 1` with `reason` a timeout/crash (or a `⚠ INVALID RUN` line naming one) — the executor died and was graded on an empty answer | NOT a regression: the delta is unmeasured. Re-run once serially; if it recurs, the eval is under-timed — raise `TIMEOUT=`. Does not consume the 5-iteration fix cap |
-| Invalid run — judge | `errors == 1` with `reason: "judge returned no verdict"` — the *answer* was fine; the grade is the artifact | Also not a regression, and `TIMEOUT=` won't help: the judge already retries twice. Plain re-run, then check the judge model/quota. Same cap exemption |
+| Invalid run — executor | `errors == 1` with a timeout/crash reason — the executor died and was graded on an empty answer | The delta is unmeasured. Inspect retained evidence; a new paid run requires the existing owner spend authority, never automatic replay. Adjust `TIMEOUT=` only with evidence of an inadequate cap. Does not consume the fix cap |
+| Invalid run — judge | `errors == 1` with `reason: "judge returned no verdict"` — the answer was fine; the grade is the artifact | Inspect raw attempts and model/quota. One malformed-success semantic retry is already bounded; do not automatically replay a failed or uncertain paid turn. Same cap exemption |
 | Flaky / judge noise | same input passes sometimes | re-run ONCE; if it passes, accept and note it — do NOT edit the skill to chase a noisy grader |
 
 An invalid run **biases** the delta rather than merely adding noise: it scores 0 and is

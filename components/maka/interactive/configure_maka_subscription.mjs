@@ -6,9 +6,10 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-export const MODEL_ID = 'gpt-6-sol';
+export const MODEL_ID = 'gpt-6.1-sol';
 export const LEGACY_MODEL_ID = 'gpt-5.6-sol';
-export const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
+export const PREVIOUS_MODEL_ID = 'gpt-6-sol';
+export const MODEL_IDS = [MODEL_ID, PREVIOUS_MODEL_ID, LEGACY_MODEL_ID];
 const DEFAULT_THINKING_LEVEL = 'xhigh';
 const LEGACY_OPENCODE_BOOTSTRAP = {
   enabledModelIds: [
@@ -105,6 +106,7 @@ function isSafeCodexConnection(candidate) {
     candidate.requestBodyOverlay === undefined &&
     (candidate.modelOverrides === undefined ||
       isManagedOverride(candidate.modelOverrides, [LEGACY_MODEL_ID]) ||
+      isManagedOverride(candidate.modelOverrides, [PREVIOUS_MODEL_ID, LEGACY_MODEL_ID]) ||
       hasDesiredModelOverrides(candidate.modelOverrides))
   );
 }

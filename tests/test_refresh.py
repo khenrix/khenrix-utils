@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,3 +65,41 @@ def test_sync_removes_obsolete_native_only_copies_from_plugin(monkeypatch, tmp_p
     assert (dest / "skills" / "other" / "SKILL.md").is_file()
     assert all(not (dest / "skills" / name).exists()
                for name in refresh.NATIVE_ONLY_SKILLS)
+
+
+@pytest.mark.parametrize("cli", ["claude", "codex"])
+def test_cached_refresh_never_rediscovers_or_changes_its_recovery_backup(monkeypatch, tmp_path, cli):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copy2(ROOT / "capabilities.toml", repo / "capabilities.toml")
+    source = repo / "marketplaces" / cli / "plugins/khenrix-utils"
+    (source / "skills/ordinary").mkdir(parents=True)
+    (source / "skills/ordinary/SKILL.md").write_text("ordinary\n")
+    home = tmp_path / "home"
+    versions = home / f".{cli}/plugins/cache/khenrix-{cli}-marketplace/khenrix-utils"
+    destination = versions / "0.1.0"
+    historical = destination / "lib/forge"
+    historical.mkdir(parents=True)
+    (historical / "sentinel").write_bytes(b"recover these exact bytes\n")
+    hidden_version = versions / ".user-owned-version"
+    hidden_version.mkdir()
+    monkeypatch.setattr(refresh, "ROOT", repo)
+    monkeypatch.setattr(refresh, "HOME", home)
+
+    first_notes = refresh.sync(cli)
+    backups = list(home.rglob(".khenrix-historical-backup-*"))
+    assert len(backups) == 1
+    backup = backups[0]
+    before = {p.relative_to(backup): (p.read_bytes(), p.stat().st_mode)
+              for p in backup.rglob("*") if p.is_file()}
+    assert before[Path("lib/forge/sentinel")][0] == b"recover these exact bytes\n"
+    assert any(str(backup) in note for note in first_notes)
+    assert set(refresh.installed_dirs(cli)) == {destination, hidden_version}
+
+    refresh.sync(cli)
+
+    assert list(home.rglob(".khenrix-historical-backup-*")) == [backup]
+    assert {p.relative_to(backup): (p.read_bytes(), p.stat().st_mode)
+            for p in backup.rglob("*") if p.is_file()} == before
+    assert not (backup / "skills/ordinary").exists()
+    assert (hidden_version / "skills/ordinary/SKILL.md").is_file()

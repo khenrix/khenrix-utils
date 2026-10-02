@@ -6,9 +6,12 @@ response — e.g. Claude drafts a plan, then asks Codex (or agy) to review it be
 
 > **Safety:** the full-perms flags below bypass all permission/sandbox checks — use them
 > only in trusted workspaces or externally sandboxed environments (same caveat as the
-> `clauded` / `aggy` / `codexo` launch aliases). For review-only invocations prefer each
-> CLI's read-only variant instead: claude `--permission-mode plan`, codex
-> `--sandbox read-only`, agy `--mode plan`.
+> `clauded` / `aggy` / `codexo` launch aliases). For review-only invocations,
+> Codex `--sandbox read-only` has a native filesystem barrier. Fanout's Claude
+> read-only seat uses `--restricted` and a closed read-tool list; its agy seat
+> and the legacy Council/Forge read-only agy path use private native deny rules
+> and a path-confined pre-tool hook. Bare Claude or agy plan mode alone is not
+> a verified no-write boundary. Use a guarded seat or omit agy.
 
 ## Per-CLI quick reference
 
@@ -45,12 +48,12 @@ cat plan.md | codex exec --dangerously-bypass-approvals-and-sandbox \
 - `codex exec review` / `codex review` run a code review against the current repo.
 - `-m/--model <id>`, `-s/--sandbox <read-only|workspace-write|danger-full-access>`.
 
-### Antigravity (agy)
+### Antigravity (agy) — full permissions only
 
 ```bash
-agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
+agy --dangerously-skip-permissions -p "Review this plan and flag risks/gaps:\n\n$(cat plan.md)"
 # flags MUST precede -p (Go flag parsing stops at the first positional) — a flag placed
-# after the prompt is silently dropped; use --mode plan for review-only invocations
+# after the prompt is silently dropped. This example permits writes.
 ```
 
 - `-p` / `--print` runs a single prompt non-interactively and prints the response.
@@ -69,22 +72,23 @@ agy --mode plan --dangerously-skip-permissions -p "Review this plan and flag ris
   `invalid --effort ... (valid: low, medium, high)` — all non-zero. The council never
   passes this flag, carrying the tier in the model label instead (one source of truth),
   which is also now the only route that works.
-- `--mode plan` is a mechanical read-only mode. VERIFIED on agy 1.1.13 (probed
-  2026-08-14): it works headless, blocks a requested write, and the run logs
-  `printmode.go: Print mode: applying agent mode plan` / `manager.go: SetCycleMode
-  called: plan`. On 1.1.11 and earlier this is UNPROVEN — agy 1.1.12's changelog says
-  `--mode` was ignored in headless `-p` runs, so treat older builds as resting on
-  posture-line + worktree isolation alone. (`--sandbox`, the earlier read-only
-  candidate, hung headless as of 2026-06-26, pre-1.1.1 — not re-probed since.) Use
-  `--mode plan` for review-only invocations.
-- **Pair `--mode plan` with `--dangerously-skip-permissions`, don't substitute it.** Per
-  `agy --help` the flags are orthogonal: `--dangerously-skip-permissions` is
-  "auto-approve all tool permission requests without prompting" (a *prompting* policy),
-  while `--mode` sets the execution mode (`accept-edits`, `plan`). Plan mode alone leaves
-  agy with tool prompts nobody can answer headlessly — it then soft-denies its **own**
-  `ReadFile` at `tool_confirmation_manager.go:183` and answers from an empty context,
-  producing a fluent one-sentence non-answer that looks like success. Plan mode is still
-  the write barrier; auto-approve only removes an unanswerable prompt.
+- `--mode plan` is a planning instruction, **not** a mechanical read-only mode.
+  A 2026-08-14 probe on agy 1.1.13 blocked one requested write, but a live
+  2026-09-24 probe on agy 1.2.10 with `--mode plan
+  --dangerously-skip-permissions` created a file in a disposable repository.
+  The [execution-modes documentation](https://www.agy.dev/docs/cli/modes/)
+  describes plan mode as prepending `/plan`; the
+  [headless documentation](https://www.agy.dev/docs/cli/headless/) says
+  `--dangerously-skip-permissions` approves tool calls. Removing the bypass alone
+  soft-denied a harmless read in our headless probe, so it is not a usable
+  read-only replacement. A guarded agy seat needs an isolated configuration,
+  native deny rules, a fail-closed PreToolUse hook, and a live write-denial proof.
+- The legacy `llm-council` and `llm-forge` read-only agy paths now remove the
+  bypass flag and install a private per-seat native policy and path-confined
+  pre-tool hook. A live agy 1.2.10 Council canary on 2026-09-24 read its
+  assigned fixture, attempted a write, received the hook's denial, and left
+  no file behind. Raw `agy --mode plan` remains unsafe to treat as read-only.
+  The evaluation harness's private no-tools agent is a separate boundary.
 - `--add-dir <path>` widens the workspace.
 - **Auth EOL (as of 2026-06):** consumer-OAuth Gemini/agy access is slated to wind down
   around mid-2026 — migrate to an API key / Antigravity sign-in. If agy fails with an
@@ -106,13 +110,11 @@ missing steps, and anything that won't work." \
   --dangerously-bypass-approvals-and-sandbox > codex-review.md
 ```
 
-Swap the CLI and full-perms flag from the table above to route the review to whichever
-model you want — but for agy put every flag BEFORE `-p` (Go flag parsing stops at the
-first positional), and for review-only asks pair `--mode plan` WITH
-`--dangerously-skip-permissions` rather than substituting one for the other
-(e.g. `agy --mode plan --dangerously-skip-permissions -p "..."`). Plan mode is the write
-barrier; auto-approve only removes a prompt nobody can answer headlessly. Dropping it is
-what made agy soft-deny its own `ReadFile` and answer from an empty context.
+Swap the CLI and full-perms flag from the table above only when the target may
+write within an external sandbox. For a read-only agy review, use a proven
+guarded seat or omit agy; adding `--mode plan` to the full-permissions example
+does not make it safe. Put every agy flag before `-p` (Go flag parsing stops at
+the first positional).
 
 ## Where the answers actually live (verify, don't infer)
 
@@ -132,7 +134,7 @@ Measured on 2026-07-29, not inferred:
   moves into the envelope, so for that seat there is nothing on stderr to sentinel-scan —
   `--log-file` is the only other channel. This is the good outcome: stderr was the phantom
   generator, because it echoed whatever files the seat read.
-- **All three CLIs report real token usage**, so council cost is measured, never estimated:
+- The observed CLI envelopes included real token usage:
   agy `usage{input,output,thinking,cache_read,total}_tokens`; codex
   `TurnCompletedEvent{usage}` with `cached_input_tokens`/`cache_write_input_tokens`; claude
   `usage{input,output,cache_creation_input,cache_read_input}_tokens` **plus its own
@@ -144,3 +146,34 @@ Measured on 2026-07-29, not inferred:
 
 Leaked or mirrored copies of a proprietary CLI are out of bounds for any vendor. When
 something is closed, the licensed install on this machine plus a live probe IS the source.
+
+The active skill-eval path is `scripts/eval_harness.py` through fanout's bounded
+`eval_provider.py` bridge and shared process supervisor. It sends prompts on stdin,
+disables memory/collaboration, retains raw attempts, and checks the entire no-tools
+command before launch. Codex and agy use private empty homes; Claude's existing
+safe-mode auth path keeps its real HOME with a private execution cwd. Missing usage
+or served-model observations remain unknown. Only a verified unstarted spawn retries;
+a malformed successful judge verdict has its separately bounded once-fresh retry.
+Current review/smoke instructions use fanout; legacy council commands and deterministic
+security suites remain available for historical compatibility.
+
+Council/Forge source and evidence are historical-only under `capabilities.toml`.
+They are excluded from optional plugin output, native delivery and current receipts.
+The unchanged historical baseline lock verifies original source blobs, not an
+installed consumer or a current live campaign. Prepare a fresh private snapshot
+explicitly, outside the checkout, from the locally available original revision:
+
+```bash
+mise exec -- python scripts/fanout_baseline.py prepare-historical --root "$PWD" --historical-root /absolute/private/owned/snapshot
+KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise exec -- make verify
+```
+
+The owned parent must be mode `0700`; preparation writes only the lock's 59 original
+blobs and unchanged lock to the snapshot, with provenance separately in its parent.
+The deterministic historical gate requires that explicit root, refuses unsafe or
+changed subjects, and performs no automatic fetch or regeneration. Existing current
+live canaries and receipts still require their own fresh certification.
+The release aggregate's fixed `make precommit` child receives only this explicitly
+validated historical selector, not the ambient environment. Its retained attempt
+and process proof include the original source provenance; reopening validates that
+same stored subject, independently of the caller's later environment.

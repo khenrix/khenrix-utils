@@ -5,7 +5,7 @@
     {
       "id": "adhd-action-shape",
       "name": "ADHD mode keeps the next action small, literal, and visibly bounded",
-      "prompt": "Answer inline and do not run tools. Turn on ADHD mode for this session. I need to recover a local test app: open README.md, copy .env.example to .env, set APP_PORT=4100, run mise install, run mise run db:migrate, start mise run dev, and open /health. Assume nothing has been done. Give me the complete procedure in literal language.",
+      "prompt": "Answer inline and do not run tools. Turn on ADHD mode for this session. I need to recover a local test app: open README.md, copy .env.example to .env, set APP_PORT=4100, run mise install, run mise run db:migrate, start mise run dev, and open /health. Assume nothing has been done. Give me the complete procedure in literal language, in at most 250 words.",
       "files": [],
       "assertions": [
         "Leads with the first concrete action instead of a preamble or mode banner, and that action can be done in under two minutes",
@@ -18,7 +18,7 @@
     {
       "id": "adhd-exceptions",
       "name": "ADHD shape yields to explanation, safety, diagnosis, ambiguity, options, and harness rules",
-      "prompt": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent.",
+      "prompt": "Answer inline and do not run tools. ADHD mode is already active. Show the exact response shape you would use for each labeled mini-scenario: A) I ask for a full walkthrough of OAuth authorization-code flow. B) I ask you to drop the production orders table now. C) Three consecutive fixes for a 401 have failed and the auth header assumption is still unverified. D) I say only 'deploy it' when both staging and production exist. E) I ask which cache to choose among local memory, Redis, and Memcached. F) The active harness requires a one-line tool-call announcement before every tool call. Keep each scenario independent. Use one labeled section per scenario and at most 650 words total.",
       "files": [],
       "assertions": [
         "Scenario A gives a complete explanation with resumable headings instead of compressing away needed detail",

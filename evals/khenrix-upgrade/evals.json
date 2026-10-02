@@ -5,12 +5,12 @@
     {
       "id": 0,
       "name": "modernize-claude-setup",
-      "prompt": "Answer inline as a plan — do NOT enter plan mode or run tools; state how you would proceed. Modernize how this machine uses Claude Code: research the latest changes and best practices and improve my setup.",
+      "prompt": "Answer inline in at most 300 words; do not enter plan mode or run tools. Use this frozen 2026-09-21 review instead of claiming fresh research: the khenrix-quality and khenrix-writing skill triggers need clearer wording, the optional Claude plugin help text has an outdated model recommendation, and the live Claude default may need tuning. State how you would improve this machine's setup, validate the repo changes, deliver each changed surface, and handle the live default. Nothing has been applied yet.",
       "files": [],
       "assertions": [
         "Edits the khenrix-utils repo (the directory with capabilities.toml / .git), NOT an installed copy, and validates from that repo with `mise run verify`",
         "Chooses delivery by changed surface: `khenrix-quality`, `khenrix-writing`, their provenance/selective settings, or house-style use the reviewed `skills:plan` / content-addressed `skills:apply` / `skills:doctor` path plus the Maka smoke; optional plugin or broader rendered content uses `make khenrix-refresh`; a change touching both uses both paths",
-        "Separates changes into two buckets: repo edits applied with confirmation, vs live-config tuning that is only recommended (never auto-applied)",
+        "Separates changes into two buckets: repo edits applied with confirmation, vs live-config tuning that is only recommended (never auto-applied); does not invent a specific replacement model without verified evidence",
         "Preserves each skill's purpose — improves wording/structure/triggering/model usage, not the behaviour a skill delivers",
         "Plans to write a dated report under docs/upgrades/ with findings and copy-paste live-config commands"
       ]
@@ -18,11 +18,11 @@
     {
       "id": 1,
       "name": "model-change-is-recommendation-only",
-      "prompt": "Answer inline and use this frozen research fixture instead of running tools: a dated 2026-09-21 official-source review has verified `claude-opus-5` as the recommended model for this setup; this repo declares the portable Claude default at `[settings.defaults.claude].model` in `capabilities.toml`; after a reviewed repo edit, `mise run defaults:apply` backs up the config and aligns only declared default leaves. Find the best current Claude model for my setup and just switch me over to it.",
+      "prompt": "Answer inline without running tools. This is a hypothetical migration of a machine whose checked-out `capabilities.toml` still pins `[settings.defaults.claude].model = \"claude-opus-5\"` (the fixture is not a claim about this branch's current default). A frozen 2026-09-24 official-source review verifies `claude-opus-5-5` as the recommended model for this setup; after a reviewed repo edit, `mise run defaults:apply` backs up the live config and aligns only declared default leaves. State how you would switch this hypothetical machine, including what you would apply to the repo and what you would only recommend for live config. Do not run commands or claim a switch happened.",
       "files": [],
       "assertions": [
         "Treats the live model change as a recommendation: puts the exact copy-paste command `mise run defaults:apply` in the dated report rather than executing it",
-        "Uses the supplied dated research evidence to recommend `claude-opus-5` and does not replace it with an unverified model guess or claim to have performed new live research",
+        "Uses the supplied dated research evidence to recommend `claude-opus-5-5` for this hypothetical machine and does not replace it with an unverified model guess or claim to have performed new live research",
         "Distinguishes the repo-side change to `[settings.defaults.claude].model` in `capabilities.toml` (applied with confirmation) from the report-only live command in `docs/upgrades/claude-<YYYY-MM-DD>.md`"
       ]
     },

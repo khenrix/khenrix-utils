@@ -3,7 +3,7 @@
 Khenrix Utils owns the portable Maka runtime, its model and permission policy,
 the managed launcher, authentication helpers, and the complete audit and
 evaluation lab in this directory. It pins `maka-agent` to
-`0.2.0-dev.47.20260922`; the npm integrity, Apache tag and commit, dependency
+`0.2.0-dev.62.20260928`; the npm integrity, Apache tag and commit, dependency
 versions, and compatibility-overlay hashes are recorded in `provenance.json`.
 The Apache license and notices are under `third_party/apache-maka/`.
 
@@ -22,7 +22,7 @@ The managed runtime supports these routes:
 
 The installer requires `mise`. It stages only paths listed in
 `install-files.txt` plus an isolated copy of the exact lock-pinned npm package,
-applies the source-hash-guarded GPT-6 patch, then copies that verified candidate
+applies the source-hash-guarded GPT-6.1 patch, then copies that verified candidate
 to `~/.local/share/khenrix-utils/maka` and renders `~/.local/bin/maka`
 atomically. It does not copy credentials or alter Maka's native profile. The
 native profile remains `~/Library/Application Support/Maka` on macOS and
@@ -128,7 +128,41 @@ mise -C "$HOME/.local/share/khenrix-utils/maka" run maka:relay-install -- restor
 
 Component upgrades keep owner-only backups under
 `~/.local/state/khenrix-utils/maka/backups`. The apply output and install receipt
-identify the backup ID. Restore one directly from the checkout with:
+identify the backup ID. Before restoring a component that predates the
+`parallelToolCalls` relay profile, downgrade that profile while the newer
+component is still active. This uses Maka's supported Runtime Host catalog
+update to restore the 6.0/5.6 model overrides and, when selected, the 6.1 default to 6.0:
+
+```sh
+cd "$HOME/.local/share/khenrix-utils/maka"
+mise exec -- node --input-type=module <<'JS'
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const load = (path) => import(pathToFileURL(join(process.cwd(), path)).href);
+const { restoreLegacyMakaRelayProfile } = await load('interactive/configure_maka_openai_relay.mjs');
+const packageRoot = 'runtime/package';
+const { connectRuntimeHostCliConnection } = await load(
+  `${packageRoot}/dist/runtime-host-cli-context.js`,
+);
+const { readRuntimeHostConnectionCatalog } = await load(
+  `${packageRoot}/node_modules/@maka/runtime-host/dist/client/catalog-reader.js`,
+);
+const { resolveMakaWorkspaceRoot } = await load(
+  `${packageRoot}/node_modules/@maka/storage/dist/workspace-root.js`,
+);
+const context = await connectRuntimeHostCliConnection({ rootPath: resolveMakaWorkspaceRoot() });
+try {
+  await restoreLegacyMakaRelayProfile(context.connection, readRuntimeHostConnectionCatalog);
+} finally {
+  await context.close();
+}
+JS
+```
+
+The downgrade rejects an unfamiliar reserved connection and preserves credentials
+and the proxy. Restore the backed-up component
+directly from the checkout after the downgrade:
 
 ```sh
 mise -C components/maka exec -- \
@@ -138,7 +172,7 @@ mise -C components/maka exec -- \
 The final receipt is `~/.local/state/khenrix-utils/maka/install-receipt.json`.
 It is published atomically only after component cutover succeeds and records the
 reviewed package, version, npm integrity, Apache source commit, source/patched
-hashes of the GPT-6 compatibility overlay, and a digest of every installed
+hashes of the GPT-6.1 compatibility overlay, and a digest of every installed
 runtime package file. The component
 doctor rejects a missing, stale, non-private, or malformed receipt, component
 drift, and managed-wrapper drift. `maka:stage` builds a separate candidate
@@ -148,14 +182,14 @@ runtime, or removes it when that runtime had no final receipt.
 
 ## Managed policy
 
-Both routes use `gpt-6-sol`, `ask` permissions, and `xhigh` by default for
+Both routes use `gpt-6.1-sol`, `ask` permissions, and `xhigh` by default for
 interactive and headless work. The launcher adds `--thinking xhigh` to
-`maka run` when no explicit value is present. `gpt-5.6-sol` remains selectable
+`maka run` when no explicit value is present. `gpt-6-sol` and `gpt-5.6-sol` remain selectable
 so existing sessions can resume.
 
 The API relay declares exactly `xhigh` and `max`; an explicit
 `maka run --thinking max ...` is the highest supported planning setting. The
-ChatGPT subscription route exposes only up to `xhigh` for GPT-6 Sol until a
+ChatGPT subscription route exposes only up to `xhigh` for GPT-6.1 Sol until a
 live `max` probe proves that entitlement. Therefore
 `max` and `ultra` are unavailable there. Its closest honest planning setting is
 therefore `xhigh`. Ordinary execution uses `xhigh` on both routes.
@@ -166,7 +200,7 @@ selects the pinned package, keeps the caller's working directory, and blocks
 `maka update`; upgrades must change the reviewed Khenrix component and lock.
 
 Subscription startup enforces one enabled canonical `openai-codex` connection,
-`gpt-6-sol` as its default model, while retaining `gpt-5.6-sol` for old sessions,
+`gpt-6.1-sol` as its default model, while retaining `gpt-6-sol` and `gpt-5.6-sol` for old sessions,
 and no enabled proxy, custom base URL,
 request body, arbitrary model override, or other provider. It never reads,
 exports, clears, or replaces OAuth data. These Runtime Host checks run at
@@ -234,7 +268,35 @@ Terminal-Bench `fix-git` cell with `gpt-5.6-sol`, `xhigh`, one repetition, and
 one task group. `maka:pier-preflight` checks Pier without starting a benchmark
 trial. Eval credentials enter only the disposable controller through stdin.
 
-The lab applies two hash-verified compatibility overlays to the published npm
+The separate blind A/B judge requests and attests exactly `gpt-6.1-sol`, `xhigh`,
+default service tier, and zero tools. It refuses historical 5.6 judge evidence.
+The coding-tool smoke does not certify this route.
+After installing this component, building the updated controller/egress images,
+and staging the immutable Linux runtime, `maka judge-harbor-boundary` is a
+read-only, non-paid probe that requires the dedicated Colima profile to be
+running. It verifies the installed source against its private install receipt,
+the complete staged runtime tree, and both resolved controller/egress image
+identities,
+then prints the digest to pin as `expected_boundary_sha256`. A paid ballot
+requires both an explicit selector and one JSON request on stdin:
+
+```sh
+MAKA_JUDGE_PAID_RUN=1 maka judge-harbor - < private-ballot.json
+```
+
+The request has exactly `panel_id: "harbor"`, `criterion`, `answer_a`,
+`answer_b`, and the pinned `expected_boundary_sha256`. Each ballot uses a fresh
+Host session and nonce. The route keeps request JSON in bounded process memory
+and a one-use private FIFO; it never creates a regular request file. The judge
+container reaches the provider only through
+the relay, which removes all outbound tools; the private relay receipt binds
+the nonce and prompt hashes, model, effort, service tier, and zero tools. The
+Host transcript must contain exactly one user prompt and one structured answer
+without tool messages. The ballot and transcript are not included in the
+returned receipt. The route remains uncharacterized until a live provider run
+confirms the transmitted request, provider response, and Host archive together.
+
+The coding runtime applies two hash-verified compatibility overlays to the published npm
 payload. `relay-root-virtiofs-v2` handles Harbor's exact-root artifact writes on
 macOS virtiofs without weakening other task paths. `eval-openai-onboarding-v2`
 supplies the single pinned model row locally for the lab's exact OpenAI route,
@@ -243,6 +305,26 @@ Eval session to prevent an auxiliary title request from racing the first
 subject request. Every near miss retains upstream behavior. Expected base and
 patched hashes are in `provenance.json`; the staged runtime is covered by
 `RUNTIME_SHA256SUMS`.
+
+The current judge adds `harbor-judge-sol61-v1` after those frozen overlays. It
+adds the 6.1 discovery row alongside 5.6 under the same exact lab-route guard,
+and API metadata with `low`, `medium`, `high`, `xhigh`, and `max` efforts. It
+keeps its original immutable runtime identity and hashes.
+
+The active judge selects `harbor-judge-sol61-h2-v1`, adding `undici-h2-close-v1`
+after the unchanged 6.1 overlay. Its separate immutable runtime ends in
+`relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1`.
+The H2 overlay registers Undici's socket-close callback before destroying the
+socket, so a synchronous TLS close completes dispatcher teardown. Exact input
+and output hashes are pinned in provenance, completion markers, image labels,
+runtime-path checks and the active boundary. The build stages and checks all
+three runtime identities; the default coding runtime and its 5.6 benchmark
+inputs stay pinned. The historical coding runtime retains its independently
+measured H2 shutdown failure. Synthetic coding-body and current 6.1/xhigh/default/
+zero-tools H2 regressions run against the corrected active runtime; they do not
+certify a historical-runtime pass. Changed component source invalidates old install and judge-boundary
+receipts. Source tests do not replace a reviewed owner install, dedicated image
+rebuild, fresh boundary digest, and paid characterization.
 
 The evaluated task receives a random decoy and cannot mount the broker socket.
 Only the egress proxy can replace authorization for a strictly validated

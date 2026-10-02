@@ -14,16 +14,17 @@ status line, and shell aliases supported by the three CLIs.
 
 ```text
 capabilities.toml + house-style.md
-                  ├─ shared/skills/       → 2 Khenrix direct-copy + plugin skills
+                  ├─ shared/skills/       → 4 Khenrix direct-copy + plugin skills
                   ├─ shared/superpowers/  → 15 vendored Superpowers skills
                   ├─ components/skills/skillctl.py
-                  │     ├─ 17 declared direct-copy skills → native skill roots
+                  │     ├─ 19 declared direct-copy skills → native skill roots
                   │     └─ bounded house-style block → Claude, Codex, agy, Maka
                   └─ scripts/render.py → optional per-CLI plugin bundles
 ```
 
-The normal skill path is a selective direct copy. It owns the 17 names under
-`[skill_delivery].skills`: `khenrix-quality`, `khenrix-writing`, and the 15-skill
+The normal skill path is a selective direct copy. It owns the 19 names under
+`[skill_delivery].skills`: `khenrix-quality`, `khenrix-writing`,
+`llm-fanout-plan`, `llm-fanout-execute`, and the 15-skill
 Superpowers bundle. It leaves every sibling skill and all instruction text outside
 the Khenrix markers untouched. It does not require the `khenrix-utils` marketplace,
 and the selective installer never installs or enables it. Generated plugin bundles
@@ -42,7 +43,7 @@ mise run skills:apply -- --expect sha256:PLAN_ID
 mise run skills:doctor
 ```
 
-The apply copies all 17 skills to Claude, Codex/Maka, and agy, then reconciles the
+The apply copies all 19 skills to Claude, Codex/Maka, and agy, then reconciles the
 bounded house-style block in all four instruction files. It writes an install
 receipt under `~/.local/state/khenrix-utils/skills/`. See
 [`docs/skills.md`](docs/skills.md) for the skill overview, routing rules, restore
@@ -85,7 +86,7 @@ mise run defaults:apply    # backs up config, then aligns only declared leaves
 | CLI | Portable defaults |
 |---|---|
 | Claude | provider-neutral `best`, Opus 5.5 `xhigh` per-model, `ultracode=false` by default; use `claude --effort ultracode` for a planning session |
-| Codex | `gpt-6-sol`, execution/subagents `xhigh`, planning `ultra`, preferred `service_tier=default` |
+| Codex | `gpt-6.1-sol`, execution/subagents `xhigh`, planning `ultra`, preferred `service_tier=default` |
 | agy | `Gemini 3.8 Flash (High)` |
 
 Existing auth, MCP, plugin, skill and machine-specific settings remain intact.
@@ -119,7 +120,7 @@ mise run maka:auth-mode -- chatgpt-subscription
 mise run maka:install
 ```
 
-`scripts/bootstrap-machine.sh` installs the 17 native skills and verifies both runtimes,
+`scripts/bootstrap-machine.sh` installs the 19 native skills and verifies both runtimes,
 but does not enable or install a `khenrix-utils` marketplace/plugin bundle. The explicit
 `make setup-claude`, `setup-codex`, and `setup-agy` targets remain the opt-in path. A first run
 must set `KHENRIX_MEMORY_ROUTE` and `KHENRIX_MAKA_AUTH_MODE`; it fails instead of

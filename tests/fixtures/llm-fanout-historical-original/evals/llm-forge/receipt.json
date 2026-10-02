@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "skill": "llm-forge",
+  "source_hash": "07a4cafc3f05c8fc086b408ee15137442e59909ec845761e9822f4158ef90191",
+  "eval_set_hash": "c552ac9206facc4dbb4d3a846fe813390df2606e4a2a18aaafba6cd2c35131ee",
+  "providers": [
+    "claude"
+  ],
+  "mode": "normal",
+  "judge": "claude",
+  "delta_pass_rate": 0.5833,
+  "blind_winner": "n/a-deterministic",
+  "provenance": "eval",
+  "per_provider": {
+    "claude": {
+      "delta": 0.5833,
+      "quantum": 0.05,
+      "n_evals": 6,
+      "status": "ok"
+    }
+  },
+  "models": {
+    "claude": "claude-opus-5-5",
+    "judge": "claude-opus-5-5"
+  },
+  "certified_by": "forge-suite-all",
+  "deterministic_gate": "forge-suite-all",
+  "self_test": true,
+  "gate_command": [
+    "uvx",
+    "--with",
+    "pytest",
+    "pytest",
+    "-q",
+    "tests/test_forge_baseline.py",
+    "tests/test_forge_brief.py",
+    "tests/test_forge_bundle.py",
+    "tests/test_forge_cli.py",
+    "tests/test_forge_coverage.py",
+    "tests/test_forge_deepreview.py",
+    "tests/test_forge_fingerprint.py",
+    "tests/test_forge_fix.py",
+    "tests/test_forge_fleet.py",
+    "tests/test_forge_gate.py",
+    "tests/test_forge_gc.py",
+    "tests/test_forge_handover.py",
+    "tests/test_forge_harvest.py",
+    "tests/test_forge_inspect.py",
+    "tests/test_forge_journal.py",
+    "tests/test_forge_launch.py",
+    "tests/test_forge_ledger.py",
+    "tests/test_forge_packaging.py",
+    "tests/test_forge_preflight.py",
+    "tests/test_forge_progress.py",
+    "tests/test_forge_resume.py",
+    "tests/test_forge_review.py",
+    "tests/test_forge_rubric.py",
+    "tests/test_forge_runner.py",
+    "tests/test_forge_runstate.py",
+    "tests/test_forge_screen.py",
+    "tests/test_forge_seams.py",
+    "tests/test_forge_seat.py",
+    "tests/test_forge_seatrecord.py",
+    "tests/test_forge_smoke.py",
+    "tests/test_forge_snapshot.py",
+    "tests/test_forge_storage.py",
+    "tests/test_forge_strategy.py",
+    "tests/test_forge_taskbundle.py",
+    "tests/test_forge_verify.py"
+  ],
+  "gate_counts": {
+    "tests_run": 1817,
+    "skipped": 0,
+    "failed": 0
+  }
+}

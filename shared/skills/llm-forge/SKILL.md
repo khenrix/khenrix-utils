@@ -98,9 +98,10 @@ python3 "$FORGE" --start \
 ```
 
 Forge records its model profile and Claude/agy overrides in the run manifest at `--start`.
-The `gpt6-opus55-v1` profile pins builders to Opus 5.5 and GPT-6 Sol at `xhigh`, regular
+The `gpt61-opus55-v1` profile pins builders to Opus 5.5 and GPT-6.1 Sol at `xhigh`, regular
 reviewers to `max`, and deep review to Claude `ultracode` and Codex `ultra`. A resumed
-run keeps its recorded profile; old manifests without one are labelled
+run keeps its recorded profile, including the older `gpt6-opus55-v1` Sol 6.0 pins;
+old manifests without one are labelled
 `legacy-unpinned` rather than retroactively claiming the new pins. Use
 `--model-claude "<id>"` or `--model-agy "<label>"` only with `--start`; later verbs refuse
 either flag rather than silently changing a model mid-run.

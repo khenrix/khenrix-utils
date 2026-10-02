@@ -6,8 +6,12 @@ them; render.check() prints + fails on any. Self-test (`--self-test`) covers the
 logic with no repo/network dependency.
 """
 from __future__ import annotations
-import hashlib, json, re, subprocess, sys, tempfile, tomllib
+import hashlib, importlib.util, json, re, subprocess, sys, tempfile, tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
+from historical_only import historical_only, read_historical
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 FANOUT_DIR = ROOT / "shared" / "skills" / "llm-council" / "scripts"
@@ -54,22 +58,13 @@ def _load_caps(root: Path) -> dict:
         return tomllib.load(f)
 
 
-def model_crosscheck(root: Path) -> list[str]:
-    """Council seats and portable defaults must use registered provider models."""
-    sys.path.insert(0, str(root / "shared" / "skills" / "llm-council" / "scripts"))
-    try:
-        import fanout
-    except Exception as e:  # noqa: BLE001
-        return [f"model-crosscheck: cannot import fanout.py: {e}"]
+def model_crosscheck(root: Path, *, council_surface=None) -> list[str]:
+    """Active defaults and an explicitly supplied historical surface use registered models."""
     caps = _load_caps(root)
-    # PER-PROVIDER, not a flattened union. The union let a model registered under ANY
-    # provider satisfy a MODES cell for a DIFFERENT one — so a Gemini label mis-filed under
-    # `claude`, or a seat pointed at another provider's model, passed the lint silently.
-    # MODES cells and the [models] table are keyed by the same provider names, so the
-    # stricter check costs nothing and catches the mis-file this was blind to.
+    historical_only(caps)
     models = caps.get("models", {})
     problems = []
-    for mode, cells in fanout.MODES.items():
+    for mode, cells in (council_surface.MODES.items() if council_surface is not None else ()):
         for provider, cell in cells.items():
             m = cell["model"]
             reg = models.get(provider)
@@ -94,6 +89,21 @@ def model_crosscheck(root: Path) -> list[str]:
             problems.append(f"model-crosscheck: settings.defaults.{provider}.model "
                             f"'{m}' not in capabilities [models].{provider}")
     return sorted(set(problems))
+
+
+def _council_model_surface(source: Path):
+    try:
+        spec = importlib.util.spec_from_file_location("_llm_council_fanout", source)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {source}")
+        fanout = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = fanout
+        spec.loader.exec_module(fanout)
+        fanout = sys.modules.pop(spec.name)
+        return fanout
+    except Exception:
+        sys.modules.pop("_llm_council_fanout", None)
+        raise
 
 
 def pricing_coverage(root: Path) -> list[str]:
@@ -244,10 +254,16 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
     stay in render.validate_skill; this only covers what's deterministic here.)"""
     caps = caps or _load_caps(root)
     problems = []
-    declared = {s["name"] for s in caps.get("skills", [])}
+    try:
+        historical_skills, historical_libs = historical_only(caps)
+    except ValueError as error:
+        return [f"structure: {error}"]
+    declared = {s["name"] for s in caps.get("skills", []) if s["name"] not in historical_skills}
     tmpl = {p.name for p in (root / "shared" / "skill-templates").glob("*/") if p.is_dir()}
     # every per_cli declared skill must have a template; every template must be declared
     for s in caps.get("skills", []):
+        if s["name"] in historical_skills:
+            continue
         if s.get("per_cli") and s["name"] not in tmpl:
             problems.append(f"structure: declared per_cli skill '{s['name']}' has no template dir")
     for name in tmpl:
@@ -257,9 +273,16 @@ def structure_checks(root: Path, caps: dict | None = None) -> list[str]:
     for cli in CLIS:
         sk = root / "marketplaces" / cli / "plugins" / "khenrix-utils" / "skills"
         if sk.is_dir():
+            for name in historical_skills:
+                if (sk / name).exists() or (sk / name).is_symlink():
+                    problems.append(f"structure: historical-only skill '{name}' in {cli} plugin")
             names = [p.name for p in sk.glob("*/") if (p / "SKILL.md").exists()]
             for n in {x for x in names if names.count(x) > 1}:
                 problems.append(f"structure: duplicate skill '{n}' in {cli} plugin")
+        for name in historical_libs:
+            path = sk.parent / "lib" / name
+            if path.exists() or path.is_symlink():
+                problems.append(f"structure: historical-only library '{name}' in {cli} plugin")
     return problems
 
 
@@ -312,6 +335,10 @@ def _optional(root: Path, module: str, fn: str) -> list[str]:
 
 def run_all(root: Path = ROOT) -> list[str]:
     caps = _load_caps(root)
+    try:
+        historical_only(caps)
+    except ValueError as error:
+        return [f"capabilities.toml: {error}"]
     return (model_crosscheck(root) + pricing_coverage(root)
             + scan_secrets(root) + structure_checks(root, caps)
             + forge_packaging(root)
@@ -331,13 +358,15 @@ LIB_SCRIPTS = ["scripts/lib/reconcile.py", "scripts/lib/inventory.py"]  # bundle
 # certified"; what "certified" means is decided by these files, so a change to them has to
 # stale it exactly as a change to the skill does.
 GLOBAL_INPUTS = ["scripts/render.py",        # render assembly affects EVERY rendered body
+                 "shared/lib/fanout/historical_only.py",  # shared active-membership policy
                  "scripts/eval_harness.py",  # decides what the gate RUNS
-                 # eval_harness imports this engine to build/run the readonly council that
-                 # certifies every ordinary behavior eval. A certifier change must stale
-                 # those receipts even when the evaluated skill does not bundle council.
-                 "shared/lib/council/engine.py",
+                 "scripts/fanout_baseline.py",  # observes the eval's installed CLI versions
+                 "scripts/lib/portability.py",  # checks rendered vs native skill script delivery
                  "scripts/lib/checks.py",    # decides what the gate ACCEPTS
                  "Makefile"]                 # names the suites a gate can name
+# eval_harness loads the fanout package for its prompt-only adapter/supervisor bridge.
+# Include its transitive runtime imports; historical council/forge closures remain below.
+GLOBAL_INPUT_DIRS = ["shared/lib/fanout"]
 # Extra behavior-affecting inputs per skill: reconcile/instructions consumers read
 # capabilities.toml + house-style.md (+ overlays); llm-council bundles headless-invocation.md.
 SKILL_EXTRA = {
@@ -349,6 +378,10 @@ SKILL_EXTRA = {
     # affecting by this closure's own definition, and reachable from no other entry here
     # (checks.py is in neither LIB_SCRIPTS nor GLOBAL_INPUTS).
     "llm-forge":       ["scripts/lib/checks.py"],
+    # The planner's native bundle mapping chooses the runtime and memory files delivered
+    # with the skill; a mapping edit must stale its certification even if both trees stay put.
+    "llm-fanout-plan": ["capabilities.toml"],
+    "llm-fanout-execute": ["capabilities.toml"],
     # tuneup.py's `approved_models()` reads capabilities [models] AT RUNTIME and
     # `tag_model()` returns "current" vs "stale-candidate" from it — so registering a new
     # model changes what skill-tuneup REPORTS while nothing staled its receipt. That is the
@@ -369,6 +402,10 @@ SKILL_EXTRA_DIRS = {
     # skill itself arrives in a later plan — the entry is inert until evals/llm-forge
     # exists, because receipt_gate only walks skills that have an evals.json.
     "llm-forge":         ["shared/lib/forge", "shared/lib/council"],
+    "llm-fanout-plan":   ["shared/lib/fanout", "components/memory"],
+    "llm-fanout-execute": ["shared/lib/fanout", "components/memory"],
+    "skill-tuneup": ["shared/skills/llm-fanout-plan", "shared/skills/llm-fanout-execute",
+                     "components/memory"],
 }
 
 
@@ -394,7 +431,7 @@ def _skill_source_files(root: Path, skill: str) -> list[Path]:
         p = root / rel
         if p.is_file():
             files.append(p)
-    for d in SKILL_EXTRA_DIRS.get(skill, []):  # whole shared-engine dirs into the closure
+    for d in GLOBAL_INPUT_DIRS + SKILL_EXTRA_DIRS.get(skill, []):
         base = root / d
         if base.is_dir():
             files += [p for p in base.rglob("*") if p.is_file()
@@ -445,8 +482,9 @@ def eval_set_hash(root: Path, skill: str) -> str:
 
 
 def _evald_skills(root: Path) -> list[str]:
+    historical_skills, _ = read_historical(root)
     return sorted(p.name for p in (root / "evals").glob("*/")
-                  if (p / "evals.json").exists())
+                  if (p / "evals.json").exists() and p.name not in historical_skills)
 
 
 def _receipt_is_certified(rec: dict) -> bool:

@@ -982,22 +982,22 @@ def test_maka_release_contract_covers_pin_source_integrity_and_review_surfaces()
 
     assert source.watch == "npm_releases"
     assert source.package_name == "maka-agent"
-    assert source.package_version == "0.2.0-dev.47.20260922"
-    assert source.commit == "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
+    assert source.package_version == "0.2.0-dev.62.20260928"
+    assert source.commit == "2f32205528a4436783c800715261d4b6e286023d"
     assert source.package_integrity == (
-        "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
+        "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ=="
     )
     assert source.paths[:3] == ("LICENSE", "NOTICE", "DISCLAIMER-WIP")
     assert source.path_tree_hash == (
-        "sha256:5704db44b419db7496b11a02d77ad2d9ecceedaabeede4b161ddbe20ae6e2b1e"
+        "sha256:732d3cb73426329ba29dfb10987053c997a7da38445800eeb500a2e597fcd958"
     )
     assert upstreamctl.canonical_source_digest(source) == (
-        "sha256:ef323443b91eaaa9cb2409a62f5dd4f6a606c6d31a8503dcdd8403c8a98d5377"
+        "sha256:87c72ed3436c30a603001d234068d8320d725d0b8deb9602e98318ad757906bf"
     )
     assert source.tag_pattern == r"^v0\.2\.0-dev\.([0-9]+)\.([0-9]{8})$"
     assert {
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/aube-lock.yaml",
-        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.47.20260922/package.json",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/aube-lock.yaml",
+        "components/maka/.mise/locks/npm-maka-agent/0.2.0-dev.62.20260928/package.json",
         "components/maka/mise.toml",
         "components/maka/mise.lock",
         "components/maka/scripts/install_component.py",
@@ -1030,8 +1030,8 @@ def test_maka_attribution_fixture_is_bound_to_pinned_source() -> None:
     pin = (source.package_version, source.commit)
     fixture = {
         (
-            "0.2.0-dev.47.20260922",
-            "6cb8c58084d043f9b87421807fbee1d1ad3bdc03",
+            "0.2.0-dev.62.20260928",
+            "2f32205528a4436783c800715261d4b6e286023d",
         ): {
             "third_party/apache-maka/NOTICE": (
                 "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0"
@@ -1071,6 +1071,7 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
     assert {
         "components/memory/provenance.json",
         "components/memory/memoryctl.py",
+        "components/memory/memory_exchange.py",
         "components/memory/provider_relay.py",
         "components/memory/README.md",
     }.issubset(source.local_contract_paths)
@@ -1083,6 +1084,8 @@ def test_claude_mem_contract_binds_sri_source_license_hooks_and_privacy_guards()
         '{"enabled": False, "installId": "disabled-by-khenrix-utils", "decidedAt": "managed-by-khenrix-utils"}',
         'web_search="disabled"',
         'install_hooks(["claude", "codex", "agy"])',
+        'memoryctl.install_receipt_problem()',
+        '/api/observations/batch',
     }.union(CLAUDE_MEM_DIRECT_PRIVACY_GUARDS).issubset(protected)
     upstreamctl.validate_local_contract(source)
 
@@ -1240,8 +1243,8 @@ def test_claude_mem_each_direct_privacy_guard_detects_removal(
     [
         (
             "maka-release",
-            ["0.2.0-dev.9.20260831", "0.2.0-dev.47.20260922", "0.2.0-dev.48.20260923"],
-            "0.2.0-dev.48.20260923",
+                ["0.2.0-dev.9.20260831", "0.2.0-dev.62.20260928", "0.2.0-dev.63.20260929"],
+                "0.2.0-dev.63.20260929",
         ),
         (
             "claude-mem-release",

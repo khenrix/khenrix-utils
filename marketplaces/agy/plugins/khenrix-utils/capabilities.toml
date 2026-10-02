@@ -14,6 +14,12 @@
 
 version = 1
 
+# Retained source/evidence only. These exact skills and their bound libraries are
+# excluded from active discovery, optional plugin output, and native delivery.
+[historical_only]
+skills = ["llm-council", "llm-forge"]
+libraries = ["council", "forge"]
+
 # ---------------------------------------------------------------------------
 # MCP servers — portable across all three CLIs unless a gate narrows them.
 # `platform` (linux|darwin|windows) gates an entry to matching OSes.
@@ -105,7 +111,7 @@ url = "https://developers.openai.com/mcp"
 [models]
 last_reviewed = "2026-09-23"
 claude = ["claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]
-codex  = ["gpt-6-sol", "gpt-5.6-sol", "gpt-5.5"]
+codex  = ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.5"]
 agy    = ["Gemini 3.8 Flash (High)", "Gemini 3.7 Flash (High)", "Gemini 3.6 Flash (High)", "Gemini 3.5 Flash (High)"]  # rollback is manual — FALLBACK_MODELS in engine.py has no agy key, so older Flash labels are explicit rollback candidates, not automatic runtime fallbacks.
 
 # ---------------------------------------------------------------------------
@@ -132,9 +138,7 @@ per_cli = true
 name = "khenrix-audit"
 per_cli = true
 
-# Shared skill — one body in shared/skills/llm-council/, auto-rendered byte-identical
-# into all three plugins (no per_cli). Listed here for discoverability; render.py
-# discovers it by globbing shared/skills/, not from this entry.
+# Historical source identity; [historical_only] excludes active discovery/delivery.
 [[skills]]
 name = "llm-council"
 
@@ -148,11 +152,15 @@ name = "khenrix-wiki-add"
 [[skills]]
 name = "khenrix-wiki-sync"
 
-# Shared skill — one body in shared/skills/llm-forge/, driving the bundled `forge` stdlib
-# engine (shared/lib/forge/ → each plugin's lib/), which in turn imports the council engine
-# beside it. Listed for discoverability; render.py globs shared/skills/.
+# Historical source identity; [historical_only] excludes active discovery/delivery.
 [[skills]]
 name = "llm-forge"
+
+[[skills]]
+name = "llm-fanout-plan"
+
+[[skills]]
+name = "llm-fanout-execute"
 
 [[skills]]
 name = "khenrix-quality"
@@ -167,6 +175,8 @@ name = "khenrix-writing"
 skills = [
   "khenrix-quality",
   "khenrix-writing",
+  "llm-fanout-plan",
+  "llm-fanout-execute",
   "brainstorming",
   "diagnosing-superpowers",
   "dispatching-parallel-agents",
@@ -186,6 +196,19 @@ skills = [
 source_roots = ["shared/skills", "shared/superpowers"]
 state_dir = "${HOME}/.local/state/khenrix-utils/skills"
 instruction_source = "house-style.md"
+
+# Optional per-skill tables map an installed-skill relative directory to one
+# repository relative source directory. The composite tree is delivered and
+# verified as one skill.
+[skill_delivery.skill_bundles]
+
+[skill_delivery.skill_bundles.llm-fanout-plan]
+"lib/fanout" = "shared/lib/fanout"
+"memory" = "components/memory"
+
+[skill_delivery.skill_bundles.llm-fanout-execute]
+"lib/fanout" = "shared/lib/fanout"
+"memory" = "components/memory"
 
 [skill_delivery.targets]
 claude = "${HOME}/.claude/skills"
@@ -223,7 +246,7 @@ ultracode = false
 effortLevel = "xhigh"
 
 [settings.defaults.codex]
-model = "gpt-6-sol"
+model = "gpt-6.1-sol"
 # Preferred API tier. Codex may omit the field on wire; observe effective tier
 # separately for routes that require a Standard residency or project contract.
 service_tier = "default"
@@ -232,6 +255,10 @@ plan_mode_reasoning_effort = "ultra"
 
 [settings.defaults.codex.agents]
 default_subagent_reasoning_effort = "xhigh"
+
+[settings.defaults.codex.notice.model_migrations]
+"gpt-5.6-sol" = "gpt-6.1-sol"
+"gpt-6-sol" = "gpt-6.1-sol"
 
 [settings.defaults.agy]
 model = "Gemini 3.8 Flash (High)"

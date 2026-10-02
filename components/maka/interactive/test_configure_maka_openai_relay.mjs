@@ -19,12 +19,14 @@ import {
   HEALTH_CHALLENGE_HEADER,
   LOOPBACK_HOST,
   MODEL_ID,
+  LEGACY_MODEL_ID,
   MODEL_IDS,
   PROXY_USERNAME,
   RELAY_PROVIDER_TYPE,
   assertAttestedRelayReady,
   readPrivateToken,
   reconcileMakaRelay,
+  restoreLegacyMakaRelayProfile,
 } from './configure_maka_openai_relay.mjs';
 
 const TOKEN = 'B'.repeat(64);
@@ -45,7 +47,7 @@ const LEGACY_CREDENTIAL_IDS = [
 const TEST_PROVIDER_AUTH_KINDS = {
   'opencode-free': 'none',
   openai: 'api_key',
-  'openai-responses-compatible': 'api_key',
+  custom: 'api_key',
   anthropic: 'api_key',
   'openai-codex': 'oauth_token',
 };
@@ -355,10 +357,12 @@ test('fresh reconciliation installs only decoys and fails other providers closed
   assert(relay);
   assert.equal(relay.name, CONNECTION_NAME);
   assert.equal(relay.providerType, RELAY_PROVIDER_TYPE);
+  assert.equal(relay.defaultApiProtocol, 'openai-responses');
   assert.equal(relay.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
   assert.deepEqual(relay.enabledModelIds, MODEL_IDS);
   assert.deepEqual(relay.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
     thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    capabilities: { parallelToolCalls: true },
   }])));
   assert.equal(relay.enabled, true);
   assert.equal(host.connections.find((entry) => entry.slug === 'opencode-free').enabled, false);
@@ -626,10 +630,12 @@ test('legacy OpenAI relay is replaced by a narrow Responses relay', async () => 
   });
   const configured = host.connections[0];
   assert.equal(configured.providerType, RELAY_PROVIDER_TYPE);
+  assert.equal(configured.defaultApiProtocol, 'openai-responses');
   assert.equal(configured.baseUrl, `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`);
   assert.deepEqual(configured.enabledModelIds, MODEL_IDS);
   assert.deepEqual(configured.modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
     thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    capabilities: { parallelToolCalls: true },
   }])));
   assert(!Object.hasOwn(configured, 'requestBodyOverlay'));
   assert.equal(
@@ -723,6 +729,147 @@ test('a foreign provider owning the reserved slug stops before credentials chang
   assert.deepEqual(mutationOperations(host), []);
 });
 
+test('a reserved custom relay with the wrong protocol fails before mutation', async () => {
+  const host = new FakeRuntimeHost({
+    connections: [{
+      connectionId: RELAY_CONNECTION_ID,
+      revision: 1,
+      slug: CONNECTION_SLUG,
+      name: CONNECTION_NAME,
+      providerType: RELAY_PROVIDER_TYPE,
+      defaultApiProtocol: 'openai-chat',
+      baseUrl: `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`,
+      enabled: true,
+      enabledModelIds: MODEL_IDS,
+      models: [],
+      catalogEntries: [],
+    }],
+  });
+  await assert.rejects(
+    reconcileMakaRelay(host, {
+      token: TOKEN,
+      readCatalog: host.catalog,
+      providerAuthKind: testProviderAuthKind,
+      assertReady: async () => {},
+    }),
+    /relay_slug_owned_by_other_provider/u,
+  );
+  assert.deepEqual(mutationOperations(host), []);
+});
+
+function migratedManagedRelay() {
+  return {
+    connectionId: RELAY_CONNECTION_ID,
+    revision: 7,
+    slug: CONNECTION_SLUG,
+    name: CONNECTION_NAME,
+    providerType: RELAY_PROVIDER_TYPE,
+    defaultApiProtocol: 'openai-responses',
+    baseUrl: `http://${LOOPBACK_HOST}:${DEFAULT_PORT}/v1`,
+    enabled: true,
+    enabledModelIds: MODEL_IDS,
+    modelOverrides: Object.fromEntries(MODEL_IDS.map((model) => [model, {
+      thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    }])),
+    models: [],
+    catalogEntries: [],
+  };
+}
+
+test('a migrated managed relay gains parallel calls without replacing its credentials', async () => {
+  const previous = migratedManagedRelay();
+  previous.enabledModelIds = ['gpt-6-sol', LEGACY_MODEL_ID];
+  previous.modelOverrides = Object.fromEntries(previous.enabledModelIds.map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+  }]));
+  const host = new FakeRuntimeHost({ connections: [previous] });
+  const locator = { scope: 'connection', connectionId: RELAY_CONNECTION_ID, kind: 'api_key' };
+  host.seedCredential(locator, TOKEN, CONNECTION_CREDENTIAL_ID);
+  await reconcileMakaRelay(host, {
+    token: TOKEN,
+    readCatalog: host.catalog,
+    providerAuthKind: testProviderAuthKind,
+    assertReady: async () => {},
+  });
+  assert.equal(host.connections[0].connectionId, RELAY_CONNECTION_ID);
+  assert.deepEqual(host.connections[0].modelOverrides, Object.fromEntries(MODEL_IDS.map((model) => [model, {
+    thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    capabilities: { parallelToolCalls: true },
+  }])));
+  assert.equal(host.credentials.get(host.locatorKey(locator)).revision, 1);
+  assert.equal(host.operations.some(({ operation }) => operation === 'connection.catalog.remove'), false);
+  assert.equal(host.operations.filter(({ operation }) => operation === 'connection.catalog.update').length, 1);
+});
+
+test('explicit profile downgrade restores the prior override without touching credentials', async () => {
+  const relay = migratedManagedRelay();
+  for (const model of MODEL_IDS) {
+    relay.modelOverrides[model].capabilities = { parallelToolCalls: true };
+  }
+  const host = new FakeRuntimeHost({ connections: [relay] });
+  host.defaultTarget = { connectionId: RELAY_CONNECTION_ID, modelId: MODEL_ID };
+  const locator = { scope: 'connection', connectionId: RELAY_CONNECTION_ID, kind: 'api_key' };
+  host.seedCredential(locator, TOKEN, CONNECTION_CREDENTIAL_ID);
+  const packageRoot = pinnedPackageRoot();
+  const protocol = await import(
+    pathToFileURL(resolve(packageRoot, 'node_modules/@maka/runtime-host/dist/protocol/index.js')).href
+  );
+  const fakeRequest = host.request;
+  host.request = async (operation, input) => {
+    protocol.HOST_OPERATION_SPECS[operation].decodeInput(input);
+    return fakeRequest(operation, input);
+  };
+
+  await restoreLegacyMakaRelayProfile(host, host.catalog);
+  assert.deepEqual(host.connections[0].enabledModelIds, ['gpt-6-sol', LEGACY_MODEL_ID]);
+  assert.deepEqual(host.connections[0].modelOverrides, Object.fromEntries(
+    ['gpt-6-sol', LEGACY_MODEL_ID].map((model) => [model, {
+      thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+    }]),
+  ));
+  assert.equal(host.connections[0].connectionId, RELAY_CONNECTION_ID);
+  assert.equal(host.credentials.get(host.locatorKey(locator)).revision, 1);
+  assert.deepEqual(host.defaultTarget, { connectionId: RELAY_CONNECTION_ID, modelId: 'gpt-6-sol' });
+  assert.deepEqual(mutationOperations(host).map(({ operation }) => operation),
+    ['connection.catalog.set-default-target', 'connection.catalog.update']);
+
+  await restoreLegacyMakaRelayProfile(host, host.catalog);
+  assert.equal(mutationOperations(host).length, 2);
+});
+
+test('explicit profile downgrade rejects a foreign reserved connection without mutation', async () => {
+  const relay = migratedManagedRelay();
+  for (const model of MODEL_IDS) {
+    relay.modelOverrides[model].capabilities = { parallelToolCalls: true };
+  }
+  relay.name = 'Unrelated custom connection';
+  const host = new FakeRuntimeHost({ connections: [relay] });
+  await assert.rejects(
+    restoreLegacyMakaRelayProfile(host, host.catalog),
+    /relay_slug_owned_by_other_provider/u,
+  );
+  assert.deepEqual(mutationOperations(host), []);
+});
+
+test('an unrelated custom Responses row with the reserved slug is not rewritten', async () => {
+  const foreign = migratedManagedRelay();
+  foreign.name = 'Unrelated custom connection';
+  const host = new FakeRuntimeHost({ connections: [foreign] });
+  const locator = { scope: 'connection', connectionId: RELAY_CONNECTION_ID, kind: 'api_key' };
+  host.seedCredential(locator, 'foreign-secret', LEGACY_CREDENTIAL_IDS[0]);
+  await assert.rejects(
+    reconcileMakaRelay(host, {
+      token: TOKEN,
+      readCatalog: host.catalog,
+      providerAuthKind: testProviderAuthKind,
+      assertReady: async () => {},
+    }),
+    /relay_slug_owned_by_other_provider/u,
+  );
+  assert.deepEqual(mutationOperations(host), []);
+  assert.equal(host.credentials.get(host.locatorKey(locator)).secret, 'foreign-secret');
+});
+
 test('every emitted request passes the pinned Runtime Host protocol decoders', async () => {
   const packageRoot = pinnedPackageRoot();
   const protocol = await import(
@@ -737,8 +884,8 @@ test('every emitted request passes the pinned Runtime Host protocol decoders', a
   );
   const relayProvider = providerRegistry.PROVIDER_REGISTRY[RELAY_PROVIDER_TYPE];
   assert.equal(relayProvider.authKind, 'api_key');
-  assert.equal(relayProvider.runtimeAdapter.kind, 'openai');
-  assert.equal(relayProvider.runtimeAdapter.apiProtocol, 'openai-responses');
+  assert.equal(relayProvider.protocolAdapters['openai-responses'].kind, 'openai');
+  assert.equal(relayProvider.protocolAdapters['openai-responses'].apiProtocol, 'openai-responses');
   const host = new FakeRuntimeHost();
   host.seedCredential(
     {

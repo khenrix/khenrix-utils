@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -105,7 +106,7 @@ def target_info(repo: Path, skill: str) -> dict:
     gate = (
         "READ-ONLY: refuse tune-up/edit; use upstreamctl diff/sync for the whole bundle"
         if vendored else "evals + receipt + make precommit" if full_gate else
-        "research + both council reviews + audit + convergence — NO khenrix receipt "
+        "research + both fanout reviews + audit + convergence — NO khenrix receipt "
         "(run any gate the target repo has of its own, and report it separately)"
     )
     return {
@@ -419,23 +420,33 @@ LOCK_DIR = Path.home() / ".cache" / "khenrix-utils" / "skill-tuneup.lock.d"
 # it is unbounded and no window can. Step 7 therefore refreshes immediately before
 # presenting the checkpoint AND immediately on resume, which is what turns an unbounded
 # wait back into a bounded gap. `lock status` samples the age without acquiring.
-# RAISED 90 -> 135 ON 2026-08-15, because the window had silently stopped satisfying the
-# invariant in the first line of this comment. MODE_TIMEOUT["deep"] is 1800s (it was 1200
-# when 90 was chosen; the council engine recalibrated it 2026-08-13 after six real deep
-# councils measured 753-1238s), and --retries defaults to 2, so ONE fan-out is now
-# 3 x 1800 = 90 min plus backoff — i.e. exactly the old window, with no margin at all. A
-# legitimate deep run could therefore have its own lock stolen mid-fan-out. 135 restores
-# the original ~1.5x margin (90 was 1.5x the then-longest 60 min step), derived rather
-# than rounded so the next MODE_TIMEOUT change can redo the arithmetic. Step 6's own
-# "deep + retries 1" guidance for tuning this machinery is 60 min.
-# The eval run is LONGER than this window — eval_harness iterates cases
-# serially across providers and both conditions — and is deliberately not covered by it:
-# Step 6 mandates backgrounding the run and Step 1 mandates a `lock refresh` between polls,
-# so an eval is an attended step whose lock never goes 135 min untouched. Kept a constant rather than derived: lock_acquire runs in a DIFFERENT
-# process with no knowledge of the holder's --timeout/--retries, so deriving it would mean
-# writing a deadline into the lock — a new refresh contract, and a crashed deep run
-# blocking the next for an hour. The two stay linked by reading this comment.
+# Retain the historical 135-minute window. The self-test derives the current longest
+# two-round review from the admitted planner policy and provider profile ceilings.
+# Eval cases are serial and can take longer; refresh the lock between bounded polls.
 LOCK_STALE_MIN = 135
+
+
+def review_window_minutes(runtime_root: Path, planner_path: Path) -> float:
+    """Worst-case turn time between lock refreshes for the actual review policy."""
+    def load(name: str, path: Path, *, package: bool = False):
+        spec = importlib.util.spec_from_file_location(
+            name, path, submodule_search_locations=[str(path.parent)] if package else None,
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    runtime = load("_tuneup_review_runtime", runtime_root / "__init__.py", package=True)
+    planner = load("_tuneup_review_planner", planner_path)
+    policy = planner._question_draft(b"review", (), "prompt context only",
+                                     ("claude", "codex", "agy"), "deep")["defaults"]
+    registry = runtime.ProviderRegistry.default()
+    timeout = policy["timeout"] or max(
+        registry.select(provider, "read-only", policy["quality_tier"]).timeout_ceiling
+        for provider in policy["executor_ids"]
+    )
+    return policy["rounds"] * (policy["retries"] + 1) * timeout / 60
 
 
 def lock_acquire(stale_min: int = LOCK_STALE_MIN) -> tuple[bool, str]:
@@ -882,6 +893,8 @@ def _self_test() -> int:
         ti_g, ti_d = target_info(f, "gamma"), target_info(f, "delta")
         ok.append(("skills/<n> in a non-khenrix repo is council-only",
                    ti_g["tier"] == "council-only"))
+        ok.append(("foreign target gate requires both fanout reviews",
+                   "both fanout reviews" in ti_g["gate"] and "council" not in ti_g["gate"]))
         ok.append((".claude/skills/<n> in a non-khenrix repo also resolves",
                    ti_d["found"] and ti_d["tier"] == "council-only"))
         ok.append(("foreign log target is repo-qualified",
@@ -1228,35 +1241,15 @@ def _self_test() -> int:
     ok.append(("triage: a real signal still produces a recommendation",
                "recommend: deep tune-up of 'x'" in
                triage_recommendation([{"skill": "x", "score": 10}])))
-    # the staleness window must exceed the longest step this skill's own guidance produces:
-    # deep timeout 1800s x (retries 1 + 1) = 60 min for a self-tuneup, 90 at the default.
-    # Assert the DOCUMENTED 135, not a weaker bound. A default deep fan-out is already
-    # 3 x 1800s plus backoff = 90 min 15 s before teardown and worktree setup, so `> 90`
-    # still admitted values a single legal fan-out can exhaust — which is exactly how the
-    # previous 90 became wrong when MODE_TIMEOUT["deep"] moved 1200 -> 1800 and nothing
-    # here noticed. The number in the failure table and the number here have to be the
-    # same number.
+    # Keep the documented window and check the actual fanout review policy below.
+    # Standalone copies without the reviewer closure retain the local lock tests.
     ok.append(("lock: the staleness window is the documented 135 min", LOCK_STALE_MIN == 135))
-    # AND ENFORCE THE INVARIANT MECHANICALLY, not just in the comment above the constant.
-    # This is the defect that produced the 135: LOCK_STALE_MIN was coupled to
-    # MODE_TIMEOUT["deep"] by PROSE ONLY, the council engine moved 1200 -> 1800 on
-    # 2026-08-13, and nothing failed — the window silently stopped exceeding a single
-    # legal fan-out. A comment cannot notice a number changing in another file; this can.
-    # Skipped (not failed) when the engine is unreachable, because tuneup.py also runs
-    # against non-khenrix repos that have no council engine.
-    _eng = Path(__file__).resolve().parents[3] / "lib" / "council" / "engine.py"
-    if _eng.is_file():
-        _ns: dict = {}
-        for _ln in _eng.read_text().splitlines():
-            if _ln.startswith("MODE_TIMEOUT"):
-                exec(_ln, _ns)  # noqa: S102 - a literal dict assignment from our own repo
-                break
-        _deep = (_ns.get("MODE_TIMEOUT") or {}).get("deep")
-        if _deep:
-            _longest = 3 * _deep / 60          # default --retries 2 => 3 attempts
-            ok.append((f"lock: window {LOCK_STALE_MIN} min strictly exceeds one default "
-                       f"deep fan-out ({_longest:.0f} min at MODE_TIMEOUT deep={_deep}s)",
-                       LOCK_STALE_MIN > _longest))
+    _runtime_root = Path(__file__).resolve().parents[3] / "lib/fanout"
+    _planner = Path(__file__).resolve().parents[2] / "llm-fanout-plan/scripts/plan.py"
+    if (_runtime_root / "__init__.py").is_file() and _planner.is_file():
+        _longest = review_window_minutes(_runtime_root, _planner)
+        ok.append((f"lock: window {LOCK_STALE_MIN} min strictly exceeds the actual "
+                   f"two-round deep review ({_longest:.0f} min)", LOCK_STALE_MIN > _longest))
     # lock status must be a QUESTION, never an action: it is the answer to "is the holder
     # alive?", and the old answer (`lock acquire`) destroyed the lock past the window.
     with tempfile.TemporaryDirectory() as _std:

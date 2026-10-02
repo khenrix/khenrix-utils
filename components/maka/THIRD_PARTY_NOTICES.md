@@ -3,8 +3,8 @@
 ## Apache Maka
 
 - Project: <https://github.com/apache/maka>
-- npm package: `maka-agent@0.2.0-dev.47.20260922`
-- Reviewed source commit: `6cb8c58084d043f9b87421807fbee1d1ad3bdc03`
+- npm package: `maka-agent@0.2.0-dev.62.20260928`
+- Reviewed source commit: `2f32205528a4436783c800715261d4b6e286023d`
 - License: Apache-2.0
 - License text: [local copy](third_party/apache-maka/LICENSE)
 

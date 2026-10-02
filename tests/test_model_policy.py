@@ -12,6 +12,13 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
+def test_active_codex_default_selects_61_and_keeps_explicit_rollback():
+    with (ROOT / "capabilities.toml").open("rb") as stream:
+        capabilities = tomllib.load(stream)
+    assert capabilities["settings"]["defaults"]["codex"]["model"] == "gpt-6.1-sol"
+    assert capabilities["models"]["codex"][:2] == ["gpt-6.1-sol", "gpt-6-sol"]
+
+
 def load_module(name: str, path: pathlib.Path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -37,15 +44,26 @@ def test_price_coverage_requires_exact_registered_model(tmp_path):
 
 
 def test_crosscheck_includes_portable_defaults(tmp_path, monkeypatch):
+    council_scripts = tmp_path / "shared" / "skills" / "llm-council" / "scripts"
+    council_scripts.mkdir(parents=True)
+    (council_scripts / "fanout.py").write_text(
+        'MODES = {"normal": {"codex": {"model": "seat-unknown"}}}\n'
+    )
     (tmp_path / "capabilities.toml").write_text(
+        '[historical_only]\nskills = ["llm-council", "llm-forge"]\n'
+        'libraries = ["council", "forge"]\n'
         '[models]\nclaude = ["claude-opus-5-5"]\n'
         'codex = ["gpt-6-sol"]\nagy = ["Gemini 3.8 Flash (High)"]\n'
         '[settings.defaults.claude]\nmodel = "best"\n'
         '[settings.defaults.codex]\nmodel = "unknown-model"\n'
         '[settings.defaults.agy]\nmodel = "Gemini 3.8 Flash (High)"\n')
-    monkeypatch.setitem(sys.modules, "fanout", types.SimpleNamespace(MODES={}))
-    issues = checks.model_crosscheck(tmp_path)
+    monkeypatch.setitem(sys.modules, "fanout", types.SimpleNamespace(
+        MODES={"normal": {"codex": {"model": "decoy"}}}))
+    issues = checks.model_crosscheck(tmp_path, council_surface=checks._council_model_surface(
+        council_scripts / "fanout.py"))
     assert any("unknown-model" in issue and "codex" in issue for issue in issues)
+    assert any("seat-unknown" in issue and "codex" in issue for issue in issues)
+    assert not any("decoy" in issue for issue in issues)
     assert not any("best" in issue for issue in issues)
 
 

@@ -91,7 +91,7 @@ def test_routes_are_explicit_private_and_have_no_fallback(
     settings = json.loads(memoryctl.settings_path().read_text())
     assert settings["CLAUDE_MEM_PROVIDER"] == "openrouter"
     assert settings["CLAUDE_MEM_OPENROUTER_BASE_URL"] == "http://127.0.0.1:48174/v1"
-    assert settings["CLAUDE_MEM_OPENROUTER_MODEL"] == "gpt-6-sol"
+    assert settings["CLAUDE_MEM_OPENROUTER_MODEL"] == "gpt-6.1-sol"
     assert settings["CLAUDE_MEM_CHROMA_ENABLED"] == "false"
     assert settings["CLAUDE_MEM_CLOUD_SYNC_HUB_URL"] == ""
     assert settings["CLAUDE_MEM_PRO_MEMORY_BASE_URL"] == ""
@@ -206,11 +206,13 @@ def test_successful_setup_publishes_private_reviewed_install_receipt_last(
     assert events == ["controller", "runtime", "route", "hooks", "restart"]
     assert result["started"] is True
     assert json.loads(receipt_path.read_text()) == {
-        "schema": "khenrix-memory-install-v1",
+        "schema": "khenrix-memory-install-v2",
         "package": "claude-mem",
         "version": memoryctl.PACKAGE_VERSION,
         "integrity": memoryctl.ARTIFACT_INTEGRITY,
         "source_commit": memoryctl.SOURCE_COMMIT,
+        "controller_sha256": memoryctl.expected_install_receipt()["controller_sha256"],
+        "capture_sha256": memoryctl.expected_install_receipt()["capture_sha256"],
     }
     assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(memoryctl.state_dir().stat().st_mode) == 0o700
@@ -386,7 +388,7 @@ def test_subscription_adapter_requires_chatgpt_and_is_isolated(
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
     config_values = [command[index + 1] for index, value in enumerate(command) if value == "--config"]
-    assert command[command.index("--model") + 1] == "gpt-6-sol"
+    assert command[command.index("--model") + 1] == "gpt-6.1-sol"
     assert 'model_reasoning_effort="xhigh"' in config_values
     assert 'cli_auth_credentials_store="auto"' in config_values
     assert [command[index + 1] for index, value in enumerate(command) if value == "--disable"] == [
@@ -421,10 +423,10 @@ def test_codex_session_start_runs_only_the_context_hook(private_home: pathlib.Pa
 
 
 def test_openai_memory_route_requests_standard_and_rejects_policy_drift() -> None:
-    request = {"model": "gpt-6-sol", "messages": [{"role": "user", "content": "summary"}]}
+    request = {"model": "gpt-6.1-sol", "messages": [{"role": "user", "content": "summary"}]}
     payload = relay.chat_to_responses(request)
     assert payload == {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "input": [{"role": "user", "content": "summary"}],
         "reasoning": {"effort": "xhigh"},
         "store": False,
@@ -435,13 +437,13 @@ def test_openai_memory_route_requests_standard_and_rejects_policy_drift() -> Non
     with pytest.raises(relay.RelayError, match="service_tier"):
         relay.chat_to_responses({**request, "service_tier": "priority"})
     response = relay.responses_to_chat({
-        "id": "resp_test", "model": "gpt-6-sol", "service_tier": "default",
+        "id": "resp_test", "model": "gpt-6.1-sol", "service_tier": "default",
         "output_text": "summary",
     })
-    assert response["model"] == "gpt-6-sol"
+    assert response["model"] == "gpt-6.1-sol"
     with pytest.raises(relay.RelayError, match="processing tier"):
         relay.responses_to_chat({
-            "id": "resp_test", "model": "gpt-6-sol", "service_tier": "priority",
+            "id": "resp_test", "model": "gpt-6.1-sol", "service_tier": "priority",
             "output_text": "summary",
         })
 
@@ -842,6 +844,60 @@ def test_memory_doctor_rejects_missing_or_mismatched_install_receipt(
         memoryctl.install_receipt_problem()
         == "memory install receipt contains a duplicate field: version"
     )
+
+
+def test_install_receipt_detects_changed_installed_exchange_controller(
+    private_home: pathlib.Path,
+) -> None:
+    controller = memoryctl.install_controller()
+    memoryctl._atomic_private_json(
+        memoryctl.install_receipt_path(), memoryctl.expected_install_receipt()
+    )
+    assert memoryctl.install_receipt_problem() is None
+
+    exchange = controller / "memory_exchange.py"
+    exchange.write_bytes(exchange.read_bytes() + b"\n# altered\n")
+    assert memoryctl.install_receipt_problem() == (
+        "installed memory controller does not match the reviewed pin"
+    )
+
+
+@pytest.mark.parametrize("name", ["memoryctl.py", "memory_ingress.py"])
+def test_capture_receipt_binds_installed_entrypoint_and_sanitizer(
+    private_home: pathlib.Path, name: str
+) -> None:
+    installed = memoryctl.install_controller()
+    receipt = memoryctl.expected_install_receipt()
+    assert receipt["schema"] == "khenrix-memory-install-v2"
+    assert len(receipt["capture_sha256"]) == 64
+    assert (installed / "memory_ingress.py").is_file()
+    memoryctl._publish_install_receipt()
+    assert memoryctl.install_receipt_problem() is None
+    original = (installed / name).read_bytes()
+    (installed / name).write_bytes(original + b"\n# synthetic tamper\n")
+    assert memoryctl.install_receipt_problem() == (
+        "installed memory capture does not match the reviewed pin"
+    )
+
+
+def test_historical_v1_receipt_is_stale_without_changing_exchange_digest(
+    private_home: pathlib.Path,
+) -> None:
+    historical = {
+        "schema": "khenrix-memory-install-v1",
+        "package": memoryctl.PACKAGE,
+        "version": memoryctl.PACKAGE_VERSION,
+        "integrity": memoryctl.ARTIFACT_INTEGRITY,
+        "source_commit": memoryctl.SOURCE_COMMIT,
+        "controller_sha256": memoryctl.hashlib.sha256(
+            (MEMORY_ROOT / "memory_exchange.py").read_bytes()
+        ).hexdigest(),
+    }
+    memoryctl._atomic_private_json(memoryctl.install_receipt_path(), historical)
+    original = memoryctl.install_receipt_path().read_bytes()
+    assert memoryctl.install_receipt_problem() == "memory install receipt does not match the reviewed pin"
+    assert memoryctl.install_receipt_path().read_bytes() == original
+    assert memoryctl.expected_install_receipt()["controller_sha256"] == historical["controller_sha256"]
 
 
 def test_upgrade_preserves_stop_failure_error_without_staging(

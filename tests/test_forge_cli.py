@@ -47,13 +47,13 @@ ANSWER = "the retry already backs off; adding one would double-sleep"
 
 def test_model_profile_freezes_builder_and_reviewer_effort():
     builder = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)",
-                             profile="gpt6-opus55-v1", phase="builder")
+                             profile="gpt61-opus55-v1", phase="builder")
     reviewer = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)",
-                              profile="gpt6-opus55-v1", phase="reviewer")
+                              profile="gpt61-opus55-v1", phase="reviewer")
     assert builder["claude"] == {"model": "claude-opus-5-5", "thinking": "xhigh"}
-    assert builder["codex"] == {"model": "gpt-6-sol", "thinking": "xhigh"}
+    assert builder["codex"] == {"model": "gpt-6.1-sol", "thinking": "xhigh"}
     assert reviewer["claude"] == {"model": "claude-opus-5-5", "thinking": "max"}
-    assert reviewer["codex"] == {"model": "gpt-6-sol", "thinking": "max"}
+    assert reviewer["codex"] == {"model": "gpt-6.1-sol", "thinking": "max"}
     assert builder["agy"] == reviewer["agy"]
 
     legacy = cli._model_cfg("claude-opus-5", "Gemini 3.7 Flash (High)",
@@ -62,12 +62,25 @@ def test_model_profile_freezes_builder_and_reviewer_effort():
                       "agy": {"model": "Gemini 3.7 Flash (High)"}}
 
 
+def test_new_forge_profile_never_relabels_an_existing_60_run():
+    assert runstate.CURRENT_MODEL_PROFILE == "gpt61-opus55-v1"
+    for phase in ("builder", "reviewer"):
+        current = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)", phase=phase)
+        old = cli._model_cfg("claude-opus-5-5", "Gemini 3.8 Flash (High)",
+                             profile="gpt6-opus55-v1", phase=phase)
+        assert current["codex"]["model"] == "gpt-6.1-sol"
+        assert old["codex"]["model"] == "gpt-6-sol"
+    old_deep = deepreview._profile_cfg(
+        "deep", claude_model=None, agy_model=None, profile="gpt6-opus55-v1")
+    assert old_deep["codex"] == {"model": "gpt-6-sol", "thinking": "ultra"}
+
+
 def test_model_profile_freezes_the_deep_review_panel():
     cfg = deepreview._profile_cfg(
         "deep", claude_model="claude-opus-5-5",
-        agy_model="Gemini 3.8 Flash (High)", profile="gpt6-opus55-v1")
+        agy_model="Gemini 3.8 Flash (High)", profile="gpt61-opus55-v1")
     assert cfg["claude"] == {"model": "claude-opus-5-5", "thinking": "ultracode"}
-    assert cfg["codex"] == {"model": "gpt-6-sol", "thinking": "ultra"}
+    assert cfg["codex"] == {"model": "gpt-6.1-sol", "thinking": "ultra"}
     assert cfg["agy"] == {"model": "Gemini 3.8 Flash (High)", "thinking": "high"}
 
 # Which seat the fake provider answers as a seat that cannot be classified. Module state
@@ -491,12 +504,12 @@ def test_start_records_the_task_bundle_and_hands_the_launcher_its_hash(tmp_path,
         "§19's window comes off the engine's own table and from nowhere else"
     assert seen["cfg"] == {
         "claude": {"model": "claude-opus-5-5", "thinking": "xhigh"},
-        "codex": {"model": "gpt-6-sol", "thinking": "xhigh"},
+        "codex": {"model": "gpt-6.1-sol", "thinking": "xhigh"},
         "agy": {"model": "Gemini 3.8 Flash (High)"},
     }
     assert runstate.read_manifest(run_dir).claude_model == "claude-opus-5-5"
     assert runstate.read_manifest(run_dir).agy_model == "Gemini 3.8 Flash (High)"
-    assert runstate.read_manifest(run_dir).model_profile == "gpt6-opus55-v1"
+    assert runstate.read_manifest(run_dir).model_profile == "gpt61-opus55-v1"
 
 
 def test_start_model_override_wins_and_is_persisted(tmp_path, monkeypatch):
@@ -510,7 +523,7 @@ def test_start_model_override_wins_and_is_persisted(tmp_path, monkeypatch):
                              model_agy="Gemini 3.7 Flash (High)", make_launcher=spy)
     assert seen["cfg"] == {
         "claude": {"model": "claude-sonnet-5", "thinking": "xhigh"},
-        "codex": {"model": "gpt-6-sol", "thinking": "xhigh"},
+        "codex": {"model": "gpt-6.1-sol", "thinking": "xhigh"},
         "agy": {"model": "Gemini 3.7 Flash (High)"},
     }
     assert runstate.read_manifest(run_dir).claude_model == "claude-sonnet-5"
@@ -1466,7 +1479,7 @@ def test_review_convenes_a_round_in_a_clone_and_never_in_the_worktree(tmp_path, 
     assert seen["round"] == 1
     assert seen["cfg"] == {
         "claude": {"model": "claude-opus-5-5", "thinking": "max"},
-        "codex": {"model": "gpt-6-sol", "thinking": "max"},
+        "codex": {"model": "gpt-6.1-sol", "thinking": "max"},
         "agy": {"model": "Gemini 3.8 Flash (High)"},
     }
     assert seen["checkout"] != run_dir / "synthesis", "the panel sat in the worktree"

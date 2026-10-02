@@ -80,7 +80,7 @@
     {
       "id": 6,
       "name": "council-only-tier-ships-ungated",
-      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I want a tune-up on the `deploy-check` skill in my hunter repo at ~/git/hunter \u2014 it lives at ~/git/hunter/.claude/skills/deploy-check/. Walk me through exactly how you would run it: which gate applies, what you would run to establish that, where the run log goes and under what key, and what you would tell me at the end about how it was verified.",
+      "prompt": "Answer inline in prose \u2014 do NOT enter plan mode or run tools; just state the answer. I want a tune-up on the `deploy-check` skill in my garden-notes repo at ~/git/garden-notes \u2014 it lives at ~/git/garden-notes/.claude/skills/deploy-check/. Walk me through exactly how you would run it: which gate applies, what you would run to establish that, where the run log goes and under what key, and what you would tell me at the end about how it was verified.",
       "files": [],
       "assertions": [
         "Resolves the tier with `target-info` rather than assuming it \u2014 a foreign repo is council-only, not full-gate",

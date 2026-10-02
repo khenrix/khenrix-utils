@@ -45,9 +45,10 @@ with contextlib.suppress(ValueError):
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 48173
-MODEL_ID = "gpt-6-sol"
+MODEL_ID = "gpt-6.1-sol"
 LEGACY_MODEL_ID = "gpt-5.6-sol"
-MODEL_IDS = (MODEL_ID, LEGACY_MODEL_ID)
+PREVIOUS_MODEL_ID = "gpt-6-sol"
+MODEL_IDS = (MODEL_ID, PREVIOUS_MODEL_ID, LEGACY_MODEL_ID)
 PROXY_USERNAME = "maka-local"
 OPENAI_HOST = "api.openai.com"
 OPENAI_PORT = 443
@@ -59,11 +60,27 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_UPSTREAM_HEADER_BYTES = 16 * 1024
 KEYCHAIN_SERVICE = "Codex Auth"
 RELAY_READY_PREFIX = b"maka-api-key-relay-ready-v2\nkeychain-account-sha256="
+RELAY_SOURCE_SHA256 = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43,256}$")
 _KEYCHAIN_ACCOUNT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+|:-]{0,127}$")
 _HEALTH_CHALLENGE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 _PROMPT_CACHE_KEY_RE = re.compile(r"^maka:[A-Za-z0-9._:-]{1,240}$")
+_JUDGE_MARKER_RE = re.compile(
+    r"^Judge receipt nonce: (maka:fanout-judge-[0-9a-f]{32})$"
+)
+_ROUTING_MARKER_RE = re.compile(
+    r"^(?:Fanout routing receipt nonce: "
+    r"(maka:fanout-routing-[0-9a-f]{32}(?:-[0-9a-f]{32})?)"
+    r"|Receipt nonce: (maka:probe-[0-9a-f]{32}-[0-9a-f]{32}))$"
+)
+_ROUTING_CACHE_KEY_RE = re.compile(r"^maka:fanout-routing-[0-9a-f]{32}$")
+_PINNED_ROUTING_MARKER_RE = re.compile(
+    r"^maka:(?:fanout-routing|probe)-[0-9a-f]{32}-([0-9a-f]{32})$"
+)
+_PINNED_ROUTING_LINE_PREFIX = "Fanout routing receipt nonce: maka:fanout-routing-"
+_NEUTRAL_ROUTING_LINE_PREFIX = "Receipt nonce: maka:probe-"
+_RESPONSE_ID_RE = re.compile(r"^resp_[A-Za-z0-9_-]{1,240}$")
 _HEALTH_PROOF_CONTEXT = b"maka-relay-health-v1\x00"
 _REQUIRED_BODY_KEYS = frozenset(
     {
@@ -76,7 +93,9 @@ _REQUIRED_BODY_KEYS = frozenset(
         "stream",
     }
 )
-_OPTIONAL_BODY_KEYS = frozenset({"tools", "tool_choice", "prompt_cache_key"})
+_OPTIONAL_BODY_KEYS = frozenset({
+    "tools", "tool_choice", "prompt_cache_key", "previous_response_id",
+})
 _ALLOWED_TOOL_TYPES = frozenset({"function", "apply_patch"})
 _UPSTREAM_RESPONSE_HEADERS = frozenset(
     {
@@ -425,6 +444,7 @@ class TierObserver:
         self.first_data_seen = False
         self.created_model: str | None = None
         self.created_tier: str | None = None
+        self.created_response_id: str | None = None
         self.reported_model: str | None = None
         self.reported_tier: str | None = None
 
@@ -463,6 +483,11 @@ class TierObserver:
         if first_data and event["type"] == "response.created":
             self.created_tier = tier if isinstance(tier, str) else None
             self.created_model = model if isinstance(model, str) else None
+            response_id = response.get("id")
+            self.created_response_id = (
+                response_id if isinstance(response_id, str)
+                and _RESPONSE_ID_RE.fullmatch(response_id) else None
+            )
         self.reported_tier = tier if isinstance(tier, str) else None
         self.reported_model = model if isinstance(model, str) else None
         self.tier = tier if isinstance(tier, str) and tier in self.TIERS else None
@@ -476,6 +501,12 @@ class LoopbackThreadingHTTPServer(http.server.ThreadingHTTPServer):
     # so a second live listener still cannot share the port.
     allow_reuse_address = True
     request_queue_size = 32
+
+    def __init__(self, server_address: tuple[str, int],
+                 handler_class: type[http.server.BaseHTTPRequestHandler]) -> None:
+        super().__init__(server_address, handler_class)
+        self.routing_chains: dict[str, tuple[str, str, str | None]] = {}
+        self.routing_chain_lock = threading.Lock()
 
     def handle_error(self, _request: object, _client_address: object) -> None:
         # Socketserver's default prints tracebacks. Keep all request handling
@@ -576,7 +607,71 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             self._reject(403, f"request_shape_denied_{rejection}")
             return
         body = enforce_outbound_policy(body)
-        requested_model = json.loads(body)["model"]
+        request_metadata = json.loads(body)
+        if judge_request_marker(request_metadata) is not None:
+            # The pinned Host still leaks Read into this profile. The local
+            # relay is the last authority before the provider tool boundary.
+            request_metadata.pop("tools", None)
+            request_metadata["tool_choice"] = "none"
+            body = json.dumps(
+                request_metadata, separators=(",", ":"), ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        cache_key = request_metadata.get("prompt_cache_key")
+        evidence = routing_request_evidence(request_metadata)
+        pinned_cache_key = (isinstance(cache_key, str)
+                            and _ROUTING_CACHE_KEY_RE.fullmatch(cache_key) is not None)
+        pinned_marker = (evidence is not None
+                         and _PINNED_ROUTING_MARKER_RE.fullmatch(evidence[0]) is not None)
+        previous_id = request_metadata.get("previous_response_id")
+        prior = None
+        if isinstance(previous_id, str):
+            with self.server.routing_chain_lock:  # type: ignore[attr-defined]
+                prior = self.server.routing_chains.get(previous_id)  # type: ignore[attr-defined]
+        chain_attributed = (prior is not None and prior[2] == cache_key
+                            and (pinned_cache_key
+                                 or _PINNED_ROUTING_MARKER_RE.fullmatch(prior[0]) is not None))
+        session_bound = (pinned_marker or (chain_attributed and prior is not None
+                         and _PINNED_ROUTING_MARKER_RE.fullmatch(prior[0]) is not None))
+        skill_tools = routing_skill_tools(request_metadata)
+        if (pinned_cache_key or pinned_marker or chain_attributed
+                or routing_pinned_marker_prefix_seen(request_metadata)
+                or (cache_key is None and skill_tools is not None)):
+            attributed = (pinned_marker or (pinned_cache_key and evidence is not None)
+                          or chain_attributed)
+            zero_tool_finalization = (session_bound and "tools" not in request_metadata
+                                      and "tool_choice" not in request_metadata)
+            if self.dependencies.telemetry_path is not None:
+                diagnostic = {
+                    "schema": "khenrix-maka-routing-shape-v1",
+                    "user_content_shape": routing_user_content_shape(request_metadata),
+                    "nonce_seen": evidence is not None,
+                    "pinned_cache_key": pinned_cache_key,
+                }
+                if attributed and skill_tools is None and not zero_tool_finalization:
+                    diagnostic["inbound_tools"] = routing_inbound_tool_shape(request_metadata)
+                with contextlib.suppress(OSError, RelayConfigurationError):
+                    _write_private_value(
+                        self.dependencies.telemetry_path.parent / "relay-routing-last-shape.json",
+                        json.dumps(diagnostic, sort_keys=True),
+                    )
+            if not attributed:
+                self._reject(403, "routing_attribution_denied")
+                return
+            if skill_tools is None:
+                if not zero_tool_finalization:
+                    self._reject(403, "routing_tools_denied")
+                    return
+                # The compatible SDK omits both fields on Maka's final step.
+                # Make the outbound tool-free boundary explicit to the provider.
+                request_metadata["tool_choice"] = "none"
+            else:
+                request_metadata["tools"] = [skill_tools["Skill"], skill_tools["SkillSearch"]]
+            body = json.dumps(
+                request_metadata, separators=(",", ":"), ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        requested_model = request_metadata["model"]
         try:
             provider_key = self.dependencies.key_loader()
         except Exception:
@@ -590,7 +685,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
         finally:
             provider_key = ""
         try:
-            self._relay_upstream(exchange.response, requested_model)
+            self._relay_upstream(exchange.response, request_metadata)
         finally:
             exchange.close()
 
@@ -674,7 +769,9 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             return None
         return body
 
-    def _relay_upstream(self, response: UpstreamResponse, requested_model: str) -> None:
+    def _relay_upstream(self, response: UpstreamResponse,
+                        request_metadata: dict[str, object]) -> None:
+        requested_model = request_metadata["model"]
         status = response.status
         if not isinstance(status, int) or status < 200 or status > 599:
             self._reject(502, "provider_response_invalid")
@@ -704,7 +801,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                     return
                 if not chunk or len(prefix) + len(chunk) > observer.MAX_PREFIX:
                     self._reject(502, "provider_policy_mismatch")
-                    self._record_tier_status(requested_model, observer, 502)
+                    self._record_tier_status(request_metadata, observer, 502)
                     return
                 prefix.extend(chunk)
                 observer.feed(chunk)
@@ -713,7 +810,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                     observer.reported_model != requested_model or
                     observer.reported_tier != "default"):
                 self._reject(502, "provider_policy_mismatch")
-                self._record_tier_status(requested_model, observer, 502)
+                self._record_tier_status(request_metadata, observer, 502)
                 return
         self.send_response(status)
         for name, value in forwarded_headers:
@@ -726,7 +823,7 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(prefix)
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
-                self._record_tier_status(requested_model, observer, status)
+                self._record_tier_status(request_metadata, observer, status)
                 return
         while True:
             # HTTPResponse.read(amount) may buffer a chunked SSE response until
@@ -744,16 +841,16 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 break
-        self._record_tier_status(requested_model, observer, status)
+        self._record_tier_status(request_metadata, observer, status)
 
-    def _record_tier_status(self, requested_model: str,
+    def _record_tier_status(self, request_metadata: dict[str, object],
                             observer: TierObserver, status: int) -> None:
         path = self.dependencies.telemetry_path
         if path is not None:
             receipt = {
                 "schema": "khenrix-maka-relay-tier-v1",
                 "time_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "requested_model": requested_model,
+                "requested_model": request_metadata["model"],
                 "observed_model": observer.model,
                 "requested_service_tier": "default",
                 "observed_service_tier": observer.tier,
@@ -761,6 +858,94 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             }
             with contextlib.suppress(OSError, RelayConfigurationError):
                 _write_private_value(path, json.dumps(receipt, sort_keys=True))
+            evidence = judge_request_evidence(request_metadata)
+            if evidence is not None:
+                marker, prompt_sha256 = evidence
+                digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+                receipt_root = path.parent / "relay-judge-receipts"
+                judge_receipt = {
+                    **receipt,
+                    "schema": "khenrix-maka-judge-request-v1",
+                    "request_marker_sha256": digest,
+                    "prompt_sha256": prompt_sha256,
+                    "relay_source_sha256": RELAY_SOURCE_SHA256,
+                    "outbound_effort": request_metadata["reasoning"]["effort"],
+                    "tool_count": len(request_metadata.get("tools", [])),
+                }
+                with contextlib.suppress(OSError, RelayConfigurationError):
+                    receipt_root.mkdir(mode=0o700, exist_ok=True)
+                    _private_directory(receipt_root)
+                    receipt_path = receipt_root / f"{digest}-{secrets.token_hex(16)}.json"
+                    _write_private_value(receipt_path, json.dumps(judge_receipt, sort_keys=True))
+            routing_evidence = routing_request_evidence(request_metadata)
+            binding = "nonce"
+            cache_key = request_metadata.get("prompt_cache_key")
+            previous_id = request_metadata.get("previous_response_id")
+            if routing_evidence is None and isinstance(previous_id, str):
+                with self.server.routing_chain_lock:  # type: ignore[attr-defined]
+                    prior = self.server.routing_chains.get(previous_id)  # type: ignore[attr-defined]
+                if prior is not None and prior[2] == cache_key:
+                    routing_evidence = prior[:2]
+                    binding = "response-chain"
+            pinned_marker_match = (
+                _PINNED_ROUTING_MARKER_RE.fullmatch(routing_evidence[0])
+                if routing_evidence is not None else None
+            )
+            if routing_evidence is not None and (
+                isinstance(cache_key, str) or pinned_marker_match is not None
+            ):
+                marker, prompt_sha256 = routing_evidence
+                digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+                instance = secrets.token_hex(16)
+                receipt_root = path.parent / "relay-routing-receipts"
+                routing_receipt = {
+                    **receipt,
+                    "schema": "khenrix-maka-routing-request-v1",
+                    "request_marker_sha256": digest,
+                    "request_instance_id": instance,
+                    "prompt_sha256": prompt_sha256,
+                    "binding": binding,
+                    "relay_source_sha256": RELAY_SOURCE_SHA256,
+                    "outbound_effort": request_metadata["reasoning"]["effort"],
+                }
+                if isinstance(cache_key, str):
+                    routing_receipt["prompt_cache_key"] = cache_key
+                if pinned_marker_match is not None:
+                    routing_receipt["routing_session_id"] = (
+                        f"fanout-routing-{pinned_marker_match.group(1)}"
+                    )
+                if (pinned_marker_match is not None or
+                        (isinstance(cache_key, str)
+                         and _ROUTING_CACHE_KEY_RE.fullmatch(cache_key))):
+                    outbound_tools = request_metadata.get("tools", [])
+                    routing_receipt["outbound_tool_names"] = [
+                        tool["name"] for tool in outbound_tools
+                    ]
+                    routing_receipt["tool_count"] = len(outbound_tools)
+                    routing_receipt["outbound_tool_choice"] = request_metadata["tool_choice"]
+                if isinstance(previous_id, str):
+                    routing_receipt["previous_response_id_sha256"] = hashlib.sha256(
+                        previous_id.encode("ascii")
+                    ).hexdigest()
+                if observer.created_response_id is not None:
+                    routing_receipt["response_id_sha256"] = hashlib.sha256(
+                        observer.created_response_id.encode("ascii")
+                    ).hexdigest()
+                with contextlib.suppress(OSError, RelayConfigurationError):
+                    receipt_root.mkdir(mode=0o700, exist_ok=True)
+                    _private_directory(receipt_root)
+                    receipt_path = receipt_root / f"{digest}-{instance}.json"
+                    _write_private_value(receipt_path, json.dumps(routing_receipt, sort_keys=True))
+                    if (observer.created_response_id is not None and status == 200
+                            and observer.model == request_metadata["model"]
+                            and observer.tier == "default"):
+                        with self.server.routing_chain_lock:  # type: ignore[attr-defined]
+                            chains = self.server.routing_chains  # type: ignore[attr-defined]
+                            chains[observer.created_response_id] = (
+                                marker, prompt_sha256, cache_key
+                            )
+                            if len(chains) > 256:
+                                del chains[next(iter(chains))]
 
     def _send_json(self, status: int, document: Mapping[str, object]) -> None:
         encoded = json.dumps(document, separators=(",", ":")).encode("utf-8")
@@ -801,6 +986,165 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
             self.wfile.write(encoded)
+
+
+def judge_request_evidence(request: Mapping[str, object]) -> tuple[str, str] | None:
+    """Bind one judge receipt to a fresh nonce and all provider-visible user text."""
+
+    items = request.get("input")
+    if not isinstance(items, list):
+        return None
+    users = [item for item in items if isinstance(item, dict)
+             and item.get("role") == "user"]
+    if len(users) != 1:
+        return None
+    content = users[0].get("content")
+    if not isinstance(content, list) or len(content) != 1:
+        return None
+    part = content[0]
+    if not isinstance(part, dict) or part.get("type") != "input_text":
+        return None
+    body = part.get("text")
+    if not isinstance(body, str) or len(body) > MAX_REQUEST_BYTES:
+        return None
+    first_line, separator, remaining = body.partition("\n")
+    match = _JUDGE_MARKER_RE.fullmatch(first_line)
+    if match is None or not separator or not remaining:
+        return None
+    return match.group(1), hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def judge_request_marker(request: Mapping[str, object]) -> str | None:
+    evidence = judge_request_evidence(request)
+    return evidence[0] if evidence is not None else None
+
+
+def routing_request_evidence(request: Mapping[str, object]) -> tuple[str, str] | None:
+    """Bind a nonce only when the newest provider-visible user turn carries it."""
+
+    items = request.get("input")
+    if not isinstance(items, list):
+        return None
+    users = [item for item in items if isinstance(item, dict)
+             and item.get("role") == "user"]
+    if not users:
+        return None
+    for user in users[-1:]:
+        content = user.get("content")
+        if not isinstance(content, list) or not content:
+            continue
+        bodies: list[str] = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "input_text":
+                bodies = []
+                break
+            body = part.get("text")
+            if not isinstance(body, str):
+                bodies = []
+                break
+            bodies.append(body)
+        if not bodies:
+            continue
+        visible_text = "\n".join(bodies)
+        if len(visible_text.encode("utf-8")) > MAX_REQUEST_BYTES:
+            return None
+        lines = visible_text.splitlines()
+        if any(_pinned_routing_line_candidate(line)
+               and _ROUTING_MARKER_RE.fullmatch(line) is None for line in lines):
+            return None
+        matches = [match.group(1) or match.group(2) for line in lines
+                   if (match := _ROUTING_MARKER_RE.fullmatch(line)) is not None]
+        if len(matches) > 1:
+            return None
+        if matches:
+            return matches[0], hashlib.sha256(visible_text.encode("utf-8")).hexdigest()
+    return None
+
+
+def _pinned_routing_line_candidate(line: str) -> bool:
+    return (line.startswith(_NEUTRAL_ROUTING_LINE_PREFIX)
+            or (line.startswith(_PINNED_ROUTING_LINE_PREFIX)
+                and "-" in line[len(_PINNED_ROUTING_LINE_PREFIX):]))
+
+
+def routing_pinned_marker_prefix_seen(request: Mapping[str, object]) -> bool:
+    items = request.get("input")
+    if not isinstance(items, list):
+        return False
+    users = [item for item in items if isinstance(item, dict)
+             and item.get("role") == "user"]
+    if not users:
+        return False
+    content = users[-1].get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        _pinned_routing_line_candidate(line)
+        for part in content if isinstance(part, dict)
+        and part.get("type") == "input_text"
+        and isinstance(part.get("text"), str)
+        for line in part["text"].splitlines()
+    )
+
+
+def routing_user_content_shape(request: Mapping[str, object]) -> str:
+    items = request.get("input")
+    if not isinstance(items, list):
+        return "input-other"
+    users = [item for item in items if isinstance(item, dict)
+             and item.get("role") == "user"]
+    if not users:
+        return "no-user"
+    content = users[-1].get("content")
+    if isinstance(content, str):
+        return "string"
+    if not isinstance(content, list):
+        return "other"
+    if len(content) > 8:
+        return "list:many"
+    kinds = []
+    for part in content:
+        kind = part.get("type") if isinstance(part, dict) else None
+        kinds.append(kind if kind in {"input_text", "input_image", "input_file"} else "other")
+    return "list:" + ",".join(kinds)
+
+
+def routing_skill_tools(request: Mapping[str, object]) -> dict[str, dict[str, object]] | None:
+    tools = request.get("tools")
+    if not isinstance(tools, list) or len(tools) not in {2, 3}:
+        return None
+    by_name: dict[str, dict[str, object]] = {}
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            return None
+        name = tool.get("name")
+        if (not isinstance(name, str) or name not in {"Read", "Skill", "SkillSearch"}
+                or name in by_name):
+            return None
+        by_name[name] = tool
+    if set(by_name) not in ({"Skill", "SkillSearch"},
+                            {"Read", "Skill", "SkillSearch"}):
+        return None
+    return by_name
+
+
+def routing_inbound_tool_shape(request: Mapping[str, object]) -> dict[str, object]:
+    tools = request.get("tools")
+    shape = "absent" if "tools" not in request else "other"
+    if not isinstance(tools, list):
+        return {"shape": shape, "count": 0, "names": [], "types": [],
+                "truncated": False}
+    names = []
+    types = []
+    for tool in tools[:8]:
+        name = tool.get("name") if isinstance(tool, dict) else None
+        tool_type = tool.get("type") if isinstance(tool, dict) else None
+        names.append(name if isinstance(name, str)
+                     and name in {"Read", "Skill", "SkillSearch"} else "other")
+        types.append(tool_type if isinstance(tool_type, str)
+                     and tool_type in {"function", "apply_patch"} else "other")
+    return {"shape": "list", "count": len(tools), "names": names, "types": types,
+            "truncated": len(tools) > 8}
 
 
 def responses_body_rejection(raw: bytes) -> str | None:
@@ -859,6 +1203,10 @@ def responses_body_rejection(raw: bytes) -> str | None:
             prompt_cache_key
         ):
             return "cache_key"
+    if "previous_response_id" in body:
+        previous_id = body["previous_response_id"]
+        if not isinstance(previous_id, str) or not _RESPONSE_ID_RE.fullmatch(previous_id):
+            return "previous_response_id"
     model_input = body.get("input")
     if not isinstance(model_input, list) or not model_input:
         return "input"

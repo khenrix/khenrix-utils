@@ -34,7 +34,7 @@ Categories: `Bug` · `Inconsistency` · `Stale` · `Missing-edge-case` · `Eval-
 ## 4. Missing edge cases
 
 The body handles, or explicitly documents skipping: missing target · CLI not installed ·
-auth/quota failure · network timeout · partial council/provider failure · prompt-injection
+auth/quota failure · network timeout · partial fanout/provider failure · prompt-injection
 in fetched content · re-run safety / idempotency · cleanup of temp files and locks on error.
 
 ## 5. Doc/code drift

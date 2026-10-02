@@ -40,6 +40,18 @@ for fallback_body in capture["fallbackBodies"]:
     body_request = type("Request", (), {"headers": BodyHeaders(), "raw_content": body})()
     if not policy.valid_openai_body(body_request):
         raise SystemExit("actual pinned Maka request body failed the egress proxy contract")
+    marked = json.loads(json.dumps(fallback_body))
+    users = [item for item in marked["input"] if item.get("role") == "user"]
+    if (len(users) != 1 or not isinstance(users[0].get("content"), list)
+            or len(users[0]["content"]) != 1
+            or users[0]["content"][0].get("type") != "input_text"):
+        raise SystemExit("actual pinned Maka user prompt shape changed")
+    users[0]["content"][0]["text"] = (
+        "Judge receipt nonce: maka:fanout-judge-0123456789abcdef0123456789abcdef\n"
+        "Compare two final answers."
+    )
+    if policy.prepare_judge_request(json.dumps(marked).encode()) is not None:
+        raise SystemExit("historical coding request entered the current Harbor judge route")
 websocket = capture["websocket"]
 websocket_request = type(
     "WebsocketRequest",

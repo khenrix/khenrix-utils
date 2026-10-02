@@ -42,7 +42,7 @@ silently measures runs instead. So:
 
 - `run-start` once at Step 1. `convergence-status` scopes to the newest one, so a fresh run
   cannot inherit a previous run's stall state.
-- `cycle-end` after EACH cycle's council review, carrying a REQUIRED monotonic `cycle`
+- `cycle-end` after EACH cycle's fanout review, carrying a REQUIRED monotonic `cycle`
   number.
 
 The number is not decoration. Without it a duplicate marker is indistinguishable from a

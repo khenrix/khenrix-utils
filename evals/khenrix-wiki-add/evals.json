@@ -21,8 +21,8 @@
       "files": [],
       "assertions": [
         "Commits through `python3 -m wikisync commit` with an extraction JSON, not a hand-written file",
-        "Relies on the engine to redact the credential-shaped token param from the wiki-visible source_url (SECRET-ABC-123 is NOT stored) while preserving the semantic v=42",
-        "Records wikisync provenance fields such as source_url, source_channel, and native_id so the entry can be resynced later"
+        "Strips the credential-shaped token value before passing any URL or raw extraction to wikisync commit (and does not echo it in the proposed command), while preserving the semantic v=42; does not claim primary display redaction makes the raw cache or ledger safe",
+        "Records resyncable wikisync provenance through a sanitized source_url and source_channel; any explicit native_id is sanitized, or the engine derives it from the already sanitized canonical URL"
       ]
     },
     {

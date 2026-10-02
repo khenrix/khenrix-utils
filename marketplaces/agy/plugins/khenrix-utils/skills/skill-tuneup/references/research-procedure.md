@@ -24,7 +24,7 @@ SKILL.md + references + scripts for what it actually touches:
 | Dependency kind | How to find it | What can drift |
 |---|---|---|
 | CLIs it invokes (`uvx`, `gh`, `claude`, `codex`, `agy`, …) | grep for command names in code blocks | flags, subcommands, defaults, deprecations |
-| Sibling skills / engines it delegates to (fanout.py, eval_harness.py, reconcile.py) | grep for script paths and `Skill(` | their interface contracts |
+| Sibling skills / engines it delegates to (plan.py, execute.py, eval_harness.py, reconcile.py) | grep for script paths and `Skill(` | their interface contracts |
 | Hardcoded endpoints / URLs | `grep -En 'https?://|/api/|/v[0-9]+/'` | only research endpoints the skill itself names |
 | Model IDs | `tuneup.py stale-models --skill <t>` | new releases, retirements, deliberate pins |
 | Repo conventions it documents (make targets, file paths) | read the body | Makefile / layout changes |
@@ -61,7 +61,7 @@ lookup, and get explicit approval before proceeding on probe-only research.
 
 Never hardcode "the latest model" — derive it per run: research the current recommended
 IDs, then cross-check against `capabilities.toml [models]` (the approved registry) and
-`fanout.py`'s MODES table. A model not installed/approved is not "latest" for us.
+fanout's `ProviderRegistry` profiles. A model not installed/approved is not "latest" for us.
 **A deliberate pin is a proposal to discuss with rationale — never an auto-fix.**
 
 ## 5. Emit the upstream delta
@@ -69,7 +69,7 @@ IDs, then cross-check against `capabilities.toml [models]` (the approved registr
 One entry per real change found: what changed, the evidence (version/flag/URL), and
 whether it affects this skill. **Emit the delta even when it leads to no edit** —
 "what changed upstream and why it needs no change" is a valid, valuable outcome.
-This delta list is the input to council review #1.
+This delta list is the input to fanout review #1.
 
 ## Untrusted content
 
@@ -86,7 +86,7 @@ CLI teaches is checked against the others before it is recorded.
 The record is **one required sentence** in the run-log entry naming what was checked per
 provider and what was found ("codex: same wall, different phrasing; agy: no such flag").
 A structured per-provider object is reserved for findings that touch a **shared code
-path** — the council sentinel lists, timeout mapping, output parsing — which is exactly
+path** — provider profiles, timeout policy, structured output parsing — which is exactly
 where the ad-hoc version of this loop has already paid off.
 
 Why it earns its keep, twice measured:

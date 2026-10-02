@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import pathlib
@@ -29,7 +30,11 @@ DUMMY = b"integration-dummy-secret"
 STATE = pathlib.Path("/opt/maka-egress-state")
 SOCKET = pathlib.Path("/run/maka-secret/key.sock")
 CLIENT = "/opt/maka-eval/test_egress_undici_h2_client.mjs"
+PROFILE = sys.argv[1] if len(sys.argv) == 2 else "coding"
+if len(sys.argv) > 2 or PROFILE not in {"coding", "judge"}:
+    raise SystemExit("usage: test_egress_undici_h2.py [coding|judge]")
 received: list[dict[str, str]] = []
+received_bodies: list[bytes] = []
 
 
 class H2Origin(socketserver.BaseRequestHandler):
@@ -51,6 +56,7 @@ class H2Origin(socketserver.BaseRequestHandler):
         self.request.sendall(connection.data_to_send())
         self.request.settimeout(5)
         headers_by_stream: dict[int, dict[str, str]] = {}
+        bodies_by_stream: dict[int, bytearray] = {}
         while True:
             payload = self.request.recv(65535)
             if not payload:
@@ -59,7 +65,9 @@ class H2Origin(socketserver.BaseRequestHandler):
             for event in connection.receive_data(payload):
                 if isinstance(event, RequestReceived):
                     headers_by_stream[event.stream_id] = dict(event.headers)
+                    bodies_by_stream[event.stream_id] = bytearray()
                 elif isinstance(event, DataReceived):
+                    bodies_by_stream[event.stream_id].extend(event.data)
                     connection.acknowledge_received_data(
                         event.flow_controlled_length, event.stream_id
                     )
@@ -68,12 +76,21 @@ class H2Origin(socketserver.BaseRequestHandler):
             if completed_stream is not None:
                 request_headers = headers_by_stream[completed_stream]
                 received.append(request_headers)
+                received_bodies.append(bytes(bodies_by_stream[completed_stream]))
                 body = b'{"ok":true}'
+                content_type = "application/json"
+                if PROFILE == "judge":
+                    content_type = "text/event-stream"
+                    body = (
+                        b'data: {"type":"response.created","response":{"id":"synthetic-judge-response","model":"gpt-6.1-sol","service_tier":"default"}}\n\n'
+                        b'data: {"type":"response.completed","response":{"id":"synthetic-judge-response","model":"gpt-6.1-sol","service_tier":"default","status":"completed","output":[]}}\n\n'
+                        b'data: [DONE]\n\n'
+                    )
                 connection.send_headers(
                     completed_stream,
                     [
                         (":status", "200"),
-                        ("content-type", "application/json"),
+                        ("content-type", content_type),
                         ("content-length", str(len(body))),
                     ],
                 )
@@ -158,6 +175,8 @@ with tempfile.TemporaryDirectory() as temporary:
     environment = dict(os.environ)
     environment["MAKA_EVAL_EGRESS_AUDIT"] = str(STATE / "hits.jsonl")
     environment["MAKA_EVAL_PROXY_TEST_VERBOSE"] = "1"
+    if PROFILE == "judge":
+        environment["MAKA_EVAL_JUDGE_ONLY"] = "1"
     proxy = subprocess.Popen(
         ["python", "/opt/maka-eval/keyed_mitmdump.py", "--ssl-insecure"],
         stdout=subprocess.PIPE,
@@ -184,7 +203,7 @@ with tempfile.TemporaryDirectory() as temporary:
             STATE / "mitmproxy-ca-cert.pem"
         )
         node = subprocess.run(
-            ["/opt/maka-node-toolchain/bin/node", CLIENT],
+            ["/opt/maka-node-toolchain/bin/node", CLIENT] + (["judge"] if PROFILE == "judge" else []),
             text=True,
             capture_output=True,
             env=node_environment,
@@ -220,7 +239,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "sec-fetch-mode": "cors",
             "user-agent": "undici",
             "accept-encoding": "br, gzip, deflate, zstd",
-            "content-length": "430",
+            "content-length": str(len(received_bodies[0])) if PROFILE == "judge" else "430",
         }
     ]
     assert DUMMY not in output
@@ -229,13 +248,44 @@ with tempfile.TemporaryDirectory() as temporary:
     assert DUMMY not in node.stdout.encode()
     assert DUMMY not in node.stderr.encode()
     records = [json.loads(line) for line in audit.splitlines()]
-    assert [record["ruleId"] for record in records] == [
-        "openai_websocket_disabled",
-        "openai_authorized",
-    ]
-    assert [record["normalizedPath"] for record in records] == [
-        "sequence=1",
-        "sequence=1",
-    ]
+    if PROFILE == "judge":
+        assert [record["ruleId"] for record in records] == [
+            "openai_connect", "openai_websocket_disabled", "openai_connect", "openai_authorized",
+        ]
+        assert [record["normalizedPath"] for record in records] == [
+            "allowed", "sequence=1", "allowed", "sequence=1",
+        ]
+        prompt = "Judge receipt nonce: maka:fanout-judge-0123456789abcdef0123456789abcdef\nCompare two final answers."
+        assert len(received_bodies) == 1
+        assert json.loads(received_bodies[0]) == {
+            "model": "gpt-6.1-sol",
+            "reasoning": {"effort": "xhigh", "summary": "auto"},
+            "stream": True, "store": False, "parallel_tool_calls": True,
+            "include": ["reasoning.encrypted_content"],
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            "tool_choice": "none", "prompt_cache_key": "maka:synthetic-integration",
+            "service_tier": "default",
+        }
+        receipts = list((STATE / "relay-judge-receipts").glob("*.json"))
+        assert len(receipts) == 1
+        receipt_bytes = receipts[0].read_bytes()
+        assert DUMMY not in receipt_bytes
+        receipt = json.loads(receipt_bytes)
+        assert receipt["requested_model"] == receipt["observed_model"] == "gpt-6.1-sol"
+        assert receipt["requested_service_tier"] == receipt["observed_service_tier"] == "default"
+        assert receipt["outbound_effort"] == "xhigh"
+        assert receipt["tool_count"] == 0 and receipt["http_status"] == 200
+        assert receipt["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
+        assert receipt["request_marker_sha256"] == hashlib.sha256(
+            b"maka:fanout-judge-0123456789abcdef0123456789abcdef").hexdigest()
+    else:
+        assert [record["ruleId"] for record in records] == [
+            "openai_websocket_disabled",
+            "openai_authorized",
+        ]
+        assert [record["normalizedPath"] for record in records] == [
+            "sequence=1",
+            "sequence=1",
+        ]
 
 print("Pinned Undici HTTP/2 egress integration tests passed")

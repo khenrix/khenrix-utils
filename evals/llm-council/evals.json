@@ -1,6 +1,6 @@
 {
   "skill_name": "llm-council",
-  "notes": "Each with-skill run nests a REAL 3-CLI council (claude+codex+agy headless), so these are expensive and need all three CLIs installed + authenticated. Prompts are deliberately the kind of high-stakes / ambiguous question where independent models may diverge — that's what makes synthesis worth grading. Assertions check that the orchestrator produced ONE integrated answer with conflict-handling and NO per-provider attribution — the skill's synthesis doctrine explicitly forbids meeting-minutes bookkeeping ('Claude said X, codex added Y'); genuine disagreement gets surfaced and resolved, contributions are folded in silently.",
+  "notes": "This model-pressure harness is no-tools: it inlines the skill but does not run the three-CLI engine. These cases test substantive answers and honest panel limitations; they must never reward invented member responses or false consensus. The engine self-test and separately authorized live runs test actual fan-out and synthesis. When verified member answers are available in a real run, the skill should integrate them into one answer and resolve genuine disagreements without meeting-minutes attribution.",
   "evals": [
     {
       "id": 0,
@@ -9,8 +9,8 @@
       "files": [],
       "assertions": [
         "Gives a single clear recommendation (SQLite or Postgres), not a non-committal answer",
-        "Synthesizes into one integrated answer rather than three separate provider summaries pasted together",
-        "Surfaces any genuine cross-model disagreement and resolves it with reasoning — WITHOUT per-provider attribution bookkeeping (no 'provider A said X, provider B said Y' meeting minutes)",
+        "In this no-tools run, clearly says no council was convened and labels its recommendation as a single-model answer; does not fabricate a three-model synthesis",
+        "Does not invent provider positions, cross-model agreement, or disagreement without verified member responses",
         "Addresses the concrete constraints from the prompt (multi-user concurrency, ~50MB/day, heavy aggregation queries)"
       ]
     },
@@ -20,10 +20,10 @@
       "prompt": "Use the council to get a high-confidence answer. Does this Python function have a bug, and if so what is it?\n\n    def chunk(items, n):\n        out = []\n        for i in range(0, len(items), n):\n            out.append(items[i:i+n])\n        return out\n\n    def dedupe_preserve_order(seq):\n        seen = {}\n        return [x for x in seq if x not in seen and not seen.update({x: 1})]\n\nFocus on dedupe_preserve_order. Tell me definitively whether it is correct.",
       "files": [],
       "assertions": [
-        "Reaches a definitive verdict on dedupe_preserve_order rather than hedging",
+        "Reaches a definitive, correctly scoped verdict: the dedupe works for hashable elements, but unhashable elements raise TypeError",
         "Correctly reasons about the `not seen.update(...)` side-effect trick (update returns None, so `not None` is True) and whether the dedupe actually works",
-        "If the members genuinely disagreed, presents and resolves the conflict with reasoning rather than a blind majority vote — per-provider attribution is not required and should not dominate the answer",
-        "Produces one synthesized conclusion, not three separate provider analyses"
+        "In this no-tools run, explicitly says no council was convened rather than claiming high-confidence consensus; still gives a reasoned verdict",
+        "Produces one clear conclusion without fabricated provider analyses or invented panel agreement"
       ]
     },
     {
@@ -34,8 +34,8 @@
       "assertions": [
         "Gives a decisive recommendation (not 'it depends' with no guidance) about where retries belong vs. don't",
         "Raises the key risk that blanket retries on non-idempotent calls can cause duplicate side-effects / retry storms",
-        "Integrates the members' responses into one answer and, if they genuinely disagreed, flags and resolves the conflict (a converged panel needs no disagreement section)",
-        "Reads like one expert's answer — unique member points folded in silently, without per-provider attribution"
+        "In this no-tools run, clearly says no council was convened and gives a provisional single-model recommendation rather than inventing member responses",
+        "Does not claim cross-model agreement or attribute points to providers that did not run"
       ]
     },
     {
@@ -47,6 +47,7 @@
         "Reaches the correct verdict: NOT safe to ship as-is",
         "Correctly explains the NOT IN + NULL three-valued-logic trap (one NULL in the subquery collapses the result to zero rows)",
         "Gives a correct fix (NOT EXISTS, or LEFT JOIN ... WHERE IS NULL)",
+        "In this no-tools run, says no council was convened and does not invent provider positions or panel consensus",
         "Concise and decisive — no padding, no process narration"
       ]
     },
@@ -57,9 +58,10 @@
       "files": [],
       "assertions": [
         "Avoids the glib 'yes, retries cut p99' trap and is decisive",
-        "Notes the 200ms timeout sits far below p99 (cuts legitimately-slow successful requests) and/or that the benefit depends on tail latency being independent vs. correlated/load-driven",
+        "Notes the 200ms timeout sits far below p99 (cuts legitimately-slow successful requests) and/or that the benefit depends on tail latency being independent vs. correlated/load-driven; does not invent the retry rate or a new p99 from only p50 and p99",
         "Warns about retry storms and duplicate side-effects on non-idempotent calls; recommends diagnosing the tail first and/or hedged requests",
-        "Does not overstate the win (a retried request already spent the first timeout, so the ceiling is ~2x the timeout, not the timeout)"
+        "Does not overstate the win (a retried request already spent the first timeout, so the ceiling is ~2x the timeout, not the timeout)",
+        "In this no-tools run, says no council was convened and does not invent provider positions or panel consensus"
       ]
     }
   ]

@@ -16,11 +16,11 @@ def test_council_profiles_are_explicit_and_separate():
     assert council.MODES["normal"]["claude"] == {
         "model": "claude-opus-5-5", "thinking": "max"}
     assert council.MODES["normal"]["codex"] == {
-        "model": "gpt-6-sol", "thinking": "xhigh"}
+        "model": "gpt-6.1-sol", "thinking": "xhigh"}
     assert council.MODES["deep"]["claude"] == {
         "model": "claude-opus-5-5", "thinking": "ultracode"}
     assert council.MODES["deep"]["codex"] == {
-        "model": "gpt-6-sol", "thinking": "ultra"}
+        "model": "gpt-6.1-sol", "thinking": "ultra"}
     assert council.MODES["normal"]["agy"] == council.MODES["deep"]["agy"]
 
 
@@ -65,7 +65,7 @@ def test_fallback_requires_a_model_specific_failure():
         "claude", "claude-fable-5-1", "auth_or_quota",
         "Out of usage credits for this model", structured=True) == "claude-opus-5-5"
     assert council.fallback_target(
-        "codex", "gpt-6-sol", "auth_or_quota",
+        "codex", "gpt-6.1-sol", "auth_or_quota",
         "Quota for this model", structured=True) is None
 
 

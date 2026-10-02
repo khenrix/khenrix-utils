@@ -18,6 +18,190 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import checks  # noqa: E402
 import eval_harness  # noqa: E402
+import fanout_baseline  # noqa: E402
+
+
+@pytest.mark.parametrize("providers,judge", [(("codex", "codex"), "claude"),
+                                            (("codex",), "codex")])
+def test_development_versions_include_judge_and_probe_each_cli_once(providers, judge):
+    calls = []
+    values = {"codex": b"codex-cli 0.160.0\n", "claude": b"2.1.284 (Claude Code)\n"}
+
+    def probe(provider):
+        calls.append(provider)
+        return values[provider]
+
+    measured = eval_harness.collect_cli_versions(providers, judge, version_runner=probe)
+
+    expected = ({"claude": "2.1.284 (Claude Code)", "codex": "codex-cli 0.160.0"}
+                if judge == "claude" else {"codex": "codex-cli 0.160.0"})
+    assert measured == expected
+    assert sorted(calls) == sorted(expected)
+
+
+@pytest.mark.parametrize("raw", [None, "codex-cli 0.160.0", b"", b" \n", b"\xff",
+                                  b"codex 0.160.0\nextra", b"codex 0.160.0\n\n",
+                                  b"codex\r0.160.0", b"codex\x000.160.0",
+                                  b"codex\x1b[0m 0.160.0", b"codex\t0.160.0",
+                                  b"x" * 257])
+def test_development_versions_refuse_invalid_metadata(raw):
+    with pytest.raises(RuntimeError, match="CLI version"):
+        eval_harness.collect_cli_versions(("codex",), "codex", version_runner=lambda _: raw)
+
+
+@pytest.mark.parametrize("providers,judge", [(("unknown",), "claude"),
+                                            (("codex",), "unknown")])
+def test_development_versions_refuse_unknown_executables_before_probe(providers, judge):
+    def probe(_provider):
+        pytest.fail("unknown executable reached the version observer")
+
+    with pytest.raises(RuntimeError, match="CLI"):
+        eval_harness.collect_cli_versions(providers, judge, version_runner=probe)
+
+
+@pytest.fixture
+def measured_campaign(tmp_path, monkeypatch):
+    eval_dir = tmp_path / "evals" / "chunk-map"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "evals.json").write_text(json.dumps({"evals": [
+        {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]},
+    ]}))
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Test skill\nAnswer directly.\n")
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", eval_dir.parent)
+    monkeypatch.setattr(eval_harness, "skill_source_dir", lambda _skill, _provider: skill_dir)
+    monkeypatch.setattr(eval_harness.eval_runtime, "resolve_mode_config", lambda _args: {
+        "codex": {"model": "requested-codex"}, "claude": {"model": "requested-judge"},
+    })
+    monkeypatch.setattr(eval_harness.eval_runtime, "effective_timeout", lambda _args: 30)
+    calls = []
+    artifacts = []
+
+    def provider_turn(provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(provider)
+        if workdir.name.startswith("judge"):
+            raw = '{"expectations": [{"passed": true}]}'
+        elif workdir.name.startswith("compare-"):
+            raw = '{"winner": "A"}'
+        else:
+            raw = "answer"
+        workdir.mkdir(parents=True, exist_ok=True)
+        artifact = workdir / f"{provider}.stdout.attempt-1.txt"
+        artifact.write_text(raw)
+        artifacts.append((artifact, raw))
+        return raw, {"valid": True, "reason": "ok", "duration_sec": 0.01}
+
+    monkeypatch.setattr(eval_harness, "run_text", provider_turn)
+    args = eval_harness.parse_args(["--skill", "chunk-map", "--providers", "codex",
+                                  "--judge", "claude", "--iteration", "1"])
+    return args, eval_dir, calls, artifacts
+
+
+def test_real_eval_measures_before_spend_and_records_versions(measured_campaign, monkeypatch):
+    args, eval_dir, calls, _artifacts = measured_campaign
+    probes = []
+
+    def probe(provider):
+        probes.append((provider, len(calls)))
+        return {"codex": b"codex-cli 0.160.0\n", "claude": b"2.1.284 (Claude Code)\n"}[provider]
+
+    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    assert eval_harness.run(args) == 0
+
+    expected = {"claude": "2.1.284 (Claude Code)", "codex": "codex-cli 0.160.0"}
+    benchmark = json.loads((eval_dir / "workspace/iteration-1/benchmark.json").read_text())
+    receipt = json.loads((eval_dir / "receipt.json").read_text())
+    assert benchmark["metadata"]["cli_versions"] == expected
+    assert benchmark["metadata"]["cli_versions_after"] == expected
+    assert receipt["cli_versions"] == expected
+    assert receipt["provenance"] == "eval"
+    assert len(calls) == 5
+    assert probes == [("claude", 0), ("codex", 0), ("claude", 5), ("codex", 5)]
+
+
+@pytest.mark.parametrize("failure", [b"", b"multi\nline", b"\xff", b"x" * 257,
+                                    fanout_baseline.BaselineError("installed CLI unavailable")])
+def test_failed_initial_version_measurement_refuses_receipt_and_spend(
+    measured_campaign, monkeypatch, failure, capsys,
+):
+    args, eval_dir, calls, artifacts = measured_campaign
+
+    def probe(_provider):
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    assert eval_harness.run(args) == 1
+    assert calls == [] and artifacts == []
+    assert not (eval_dir / "receipt.json").exists()
+    assert "without a receipt" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("after", [b"codex-cli 0.161.0\n", b"", b"bad\nversion"])
+@pytest.mark.parametrize("existing_receipt", [False, True])
+def test_post_campaign_version_failure_keeps_raw_results_without_receipt(
+    measured_campaign, monkeypatch, capsys, after, existing_receipt,
+):
+    args, eval_dir, calls, artifacts = measured_campaign
+    receipt_path = eval_dir / "receipt.json"
+    historical = b'{"historical": true}\n'
+    if existing_receipt:
+        receipt_path.write_bytes(historical)
+
+    def probe(provider):
+        if provider == "claude":
+            return b"2.1.284 (Claude Code)\n"
+        return after if calls else b"codex-cli 0.160.0\n"
+
+    monkeypatch.setattr(fanout_baseline, "installed_version", probe)
+    assert eval_harness.run(args) == 1
+    assert len(calls) == 5
+    assert [path.read_text() for path, _raw in artifacts] == [raw for _path, raw in artifacts]
+    benchmark = json.loads((eval_dir / "workspace/iteration-1/benchmark.json").read_text())
+    assert benchmark["metadata"]["cli_versions"]["codex"] == "codex-cli 0.160.0"
+    assert len(benchmark["runs"]) == 2
+    if after == b"codex-cli 0.161.0\n":
+        assert benchmark["metadata"]["cli_versions_after"]["codex"] == "codex-cli 0.161.0"
+        assert "drift" in capsys.readouterr().err
+    else:
+        assert "without a receipt" in capsys.readouterr().err
+    if existing_receipt:
+        assert receipt_path.read_bytes() == historical
+    else:
+        assert not receipt_path.exists()
+
+
+def test_seeded_receipt_never_claims_measured_cli_versions(tmp_path, monkeypatch):
+    eval_dir = tmp_path / "chunk-map"
+    eval_dir.mkdir()
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", tmp_path)
+    eval_harness._write_receipt("chunk-map", providers=["codex"], mode="standard",
+                                judge="claude", delta=None, seeded=True,
+                                cli_versions={"codex": "codex-cli 0.160.0"})
+    receipt = json.loads((eval_dir / "receipt.json").read_text())
+    assert receipt["provenance"].startswith("seeded:")
+    assert "cli_versions" not in receipt
+
+
+def test_old_development_cli_measurement_does_not_expire_unchanged_receipt(
+    tmp_path, monkeypatch,
+):
+    receipt = json.loads((ROOT / "evals/chunk-map/receipt.json").read_text())
+    receipt["cli_versions"] = {"codex": "codex-cli 0.159.0"}
+    eval_dir = tmp_path / "evals/chunk-map"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "receipt.json").write_text(json.dumps(receipt))
+    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: receipt["source_hash"])
+    monkeypatch.setattr(checks, "eval_set_hash", lambda _root, _skill: receipt["eval_set_hash"])
+    monkeypatch.setattr(fanout_baseline, "installed_version",
+                        lambda _provider: pytest.fail("receipt reader probed host CLI"))
+    assert checks.validate_receipt(tmp_path, "chunk-map") == []
+
+    monkeypatch.setattr(checks, "source_hash", lambda _root, _skill: "changed-source")
+    assert any("changed since last eval" in problem
+               for problem in checks.validate_receipt(tmp_path, "chunk-map"))
 
 
 def test_the_deterministic_gate_runs_the_whole_forge_suite_not_three_modules():
@@ -33,6 +217,18 @@ def test_the_deterministic_gate_runs_the_whole_forge_suite_not_three_modules():
     assert named == on_disk, (
         f"the gate runs {len(named)} of {len(on_disk)} forge suites; missing "
         f"{sorted(on_disk - named)}")
+
+
+def test_planner_receipt_gate_runs_its_deterministic_contracts():
+    """Planner admission and compiler checks must certify its receipt, not only prose."""
+    cmd = eval_harness.DETERMINISTIC_GATED["llm-fanout-plan"]
+    named = {Path(argument).name for argument in cmd if argument.endswith(".py")}
+    assert named >= {"test_fanout_plan_skill.py", "test_fanout_compiler.py",
+                     "test_fanout_plan_schema.py", "test_fanout_skills.py",
+                     "test_skill_delivery.py", "test_render_packaging.py"}
+    assert eval_harness.DETERMINISTIC_GATE_NAMES["llm-fanout-plan"] == "fanout-plan-contracts"
+    assert all(not Path(argument).is_absolute() for argument in
+               eval_harness.portable_gate_command(cmd))
 
 
 def test_deterministic_receipt_command_removes_the_machine_checkout_path():
@@ -148,12 +344,20 @@ def test_the_certifier_and_the_test_manifest_are_in_the_source_closure():
 
 
 @pytest.mark.parametrize("skill", ["chunk-map", "khenrix-setup"])
-def test_council_engine_changes_stale_every_behavior_eval_receipt(tmp_path, skill):
-    """Ordinary evals execute through council.engine even when the skill does not bundle it."""
+@pytest.mark.parametrize("instrument", ["shared/lib/fanout/eval_provider.py",
+                                        "shared/lib/fanout/providers.py",
+                                        "shared/lib/fanout/process.py",
+                                        "shared/lib/fanout/agy_guard.py",
+                                        "shared/lib/fanout/artifacts.py",
+                                        "shared/lib/fanout/errors.py",
+                                        "shared/lib/fanout/skills.py",
+                                        "scripts/fanout_baseline.py"])
+def test_eval_instrument_changes_stale_every_behavior_eval_receipt(tmp_path, skill, instrument):
+    """Changing the evaluator or its version observer must invalidate revision evidence."""
     repo = tmp_path / "repo"
     manifest = checks.source_manifest(ROOT, skill)
     paths = [rel for rel, _hash in manifest if not rel.startswith("skill_facts:")]
-    assert "shared/lib/council/engine.py" in paths
+    assert instrument in paths
     for relative in paths:
         source = ROOT / relative
         destination = repo / relative
@@ -174,8 +378,8 @@ def test_council_engine_changes_stale_every_behavior_eval_receipt(tmp_path, skil
     (eval_dir / "receipt.json").write_text(json.dumps(receipt))
     assert checks.validate_receipt(repo, skill) == []
 
-    engine = repo / "shared" / "lib" / "council" / "engine.py"
-    engine.write_bytes(engine.read_bytes() + b"\n# simulated certifier change\n")
+    changed = repo / instrument
+    changed.write_bytes(changed.read_bytes() + b"\n# simulated certifier change\n")
 
     problems = checks.validate_receipt(repo, skill)
     assert any("changed since last eval" in problem for problem in problems)
@@ -331,3 +535,191 @@ def test_the_seeded_shape_still_needs_no_certifier():
     assert checks._receipt_is_certified(
         {"provenance": "seeded: blessed current committed state"}) is True
     assert checks._receipt_is_certified({}) is False
+
+
+@pytest.mark.parametrize("phase", ["grading", "comparison"])
+@pytest.mark.parametrize("bad", ["{malformed", "{}"])
+def test_malformed_judge_reply_recovers_in_one_fresh_workspace(
+    tmp_path, monkeypatch, phase, bad
+):
+    """Removing the semantic retry would turn a successful second verdict into 0/N or unreadable."""
+    ev = {"id": 0, "name": "sample", "prompt": "Answer this", "assertions": ["first", "second"]}
+    good = (json.dumps({"expectations": [{"passed": True}, {"passed": False}]})
+            if phase == "grading" else json.dumps({"winner": "A"}))
+    replies = iter([bad, good])
+    workdirs = []
+    artifacts = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        raw = next(replies)
+        workdir.mkdir(parents=True, exist_ok=True)
+        artifact = workdir / "claude.stdout.attempt-1.txt"
+        artifact.write_text(raw)
+        workdirs.append(workdir)
+        artifacts.append(artifact)
+        return raw, {"valid": True, "reason": "ok"}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    if phase == "grading":
+        result = eval_harness.grade("answer", ev, "with_skill", "claude", {},
+                                    tmp_path / "case", timeout=30)
+        assert result["passed"] == 1
+    else:
+        result = eval_harness.compare("answer A", "answer B", ev, "claude", {},
+                                      tmp_path / "case", timeout=30, provider="claude")
+        assert result["winner_condition"] == "with_skill"
+    assert result["judge_ok"] is True
+    assert len(workdirs) == 2 and workdirs[0] != workdirs[1]
+    assert [path.read_text() for path in artifacts] == [bad, good]
+
+
+@pytest.mark.parametrize("bad_winner", ["A or B", "AB", "a"])
+def test_comparison_retries_a_noncanonical_winner_before_normalization(
+    tmp_path, monkeypatch, bad_winner
+):
+    """A prefix that looks like slot A is not a verdict choosing exactly A."""
+    first = json.dumps({"winner": bad_winner})
+    replies = iter([first, '{"winner": "B"}'])
+    workdirs = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        workdirs.append(workdir)
+        return next(replies), {"valid": True, "reason": "ok"}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    ev = {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]}
+
+    result = eval_harness.compare("A", "B", ev, "claude", {}, tmp_path,
+                                  timeout=30, provider="claude")
+
+    assert result["judge_ok"] is True
+    assert result["winner_condition"] == "without_skill"
+    assert len(workdirs) == 2 and workdirs[0] != workdirs[1]
+
+
+def test_comparison_accepts_an_exact_trimmed_winner_without_retry(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(workdir)
+        return '{"winner": " B "}', {"valid": True, "reason": "ok"}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    ev = {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]}
+
+    result = eval_harness.compare("A", "B", ev, "claude", {}, tmp_path,
+                                  timeout=30, provider="claude")
+
+    assert result["judge_ok"] is True
+    assert result["winner_condition"] == "without_skill"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["grading", "comparison"])
+def test_valid_first_judge_reply_needs_no_semantic_retry(tmp_path, monkeypatch, phase):
+    calls = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(workdir)
+        raw = (json.dumps({"expectations": [{"passed": True}]})
+               if phase == "grading" else json.dumps({"winner": "A"}))
+        return raw, {"valid": True, "reason": "ok"}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    ev = {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]}
+    if phase == "grading":
+        result = eval_harness.grade("answer", ev, "with_skill", "claude", {},
+                                    tmp_path, timeout=30)
+        assert result["passed"] == 1
+    else:
+        result = eval_harness.compare("A", "B", ev, "claude", {}, tmp_path,
+                                      timeout=30, provider="claude")
+        assert result["winner_condition"] == "with_skill"
+    assert result["judge_ok"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ["grading", "comparison"])
+def test_two_malformed_judge_replies_stop_campaign_without_receipt(
+    tmp_path, monkeypatch, phase
+):
+    """The deterministic gate must not bless an advisory panel whose judge never answered."""
+    eval_root = tmp_path / "evals"
+    eval_dir = eval_root / "llm-fanout-plan"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "evals.json").write_text(json.dumps({"evals": [
+        {"id": 0, "name": "first", "prompt": "Answer", "assertions": ["correct"]},
+        {"id": 1, "name": "second", "prompt": "Answer", "assertions": ["correct"]},
+    ]}))
+    skill_dir = tmp_path / "selected-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Test skill\nAnswer directly.\n")
+    monkeypatch.setattr(eval_harness, "EVALS_ROOT", eval_root)
+    monkeypatch.setattr(eval_harness, "skill_source_dir", lambda _skill, _provider: skill_dir)
+    monkeypatch.setattr(eval_harness.eval_runtime, "resolve_mode_config",
+                        lambda _args: {"claude": {"model": "test-model"}})
+    monkeypatch.setattr(eval_harness.eval_runtime, "effective_timeout", lambda _args: 30)
+    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"test-cli 1.0\n")
+
+    # Keep the real campaign and its gate decision; replace only the costly provider call
+    # and the deterministic subprocess behind receipt writing.
+    monkeypatch.setattr(eval_harness, "_write_receipt",
+                        lambda _skill, **_kwargs: (eval_dir / "receipt.json").write_text("issued"))
+    malformed_artifacts = []
+    calls = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(workdir)
+        is_first_eval = any(part.startswith("eval-0-") for part in workdir.parts)
+        is_grading = workdir.name.startswith("judge")
+        is_comparison = workdir.name.startswith("compare-")
+        malformed = is_first_eval and ((phase == "grading" and is_grading)
+                                       or (phase == "comparison" and is_comparison))
+        if malformed:
+            raw = "{malformed"
+        elif is_grading:
+            raw = json.dumps({"expectations": [{"passed": True}]})
+        elif is_comparison:
+            raw = json.dumps({"winner": "A"})
+        else:
+            raw = "answer"
+        workdir.mkdir(parents=True, exist_ok=True)
+        artifact = workdir / "claude.stdout.attempt-1.txt"
+        artifact.write_text(raw)
+        if malformed:
+            malformed_artifacts.append(artifact)
+        return raw, {"valid": True, "reason": "ok", "duration_sec": 0.01}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    args = eval_harness.parse_args(["--skill", "llm-fanout-plan", "--iteration", "1"])
+
+    assert eval_harness.run(args) == 1
+    assert not (eval_dir / "receipt.json").exists()
+    assert not (eval_dir / "workspace" / "iteration-1" / "eval-1-second").exists()
+    assert len(malformed_artifacts) == 2
+    assert malformed_artifacts[0].parent != malformed_artifacts[1].parent
+    assert [path.read_text() for path in malformed_artifacts] == ["{malformed", "{malformed"]
+
+
+@pytest.mark.parametrize("phase", ["grading", "comparison"])
+def test_judge_transport_error_keeps_its_reason_without_semantic_retry(
+    tmp_path, monkeypatch, phase
+):
+    """The added parse retry must not reinterpret an existing transport failure."""
+    calls = []
+
+    def fake_run_text(_provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(workdir)
+        return "", {"valid": False, "reason": "timeout"}
+
+    monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
+    ev = {"id": 0, "name": "sample", "prompt": "Answer", "assertions": ["correct"]}
+    if phase == "grading":
+        result = eval_harness.grade("answer", ev, "with_skill", "claude", {},
+                                    tmp_path, timeout=30)
+    else:
+        result = eval_harness.compare("A", "B", ev, "claude", {}, tmp_path,
+                                      timeout=30, provider="claude")
+    assert result["judge_ok"] is False
+    assert result["judge_reason"] == "timeout"
+    assert len(calls) == 1

@@ -96,15 +96,15 @@ that CLI's own config, not here.
   bounded task loads only the skills relevant to that task. Treat an upstream reference to
   `superpowers:<name>` as the native direct-copy skill `<name>`; there is no plugin namespace.
 - Route by ownership in this order: an explicitly named user skill; a domain or end-to-end
-  workflow such as `fix-jira-ticket`, `agentic-setup`, Khenrix setup/upgrade, or `llm-forge`;
+  workflow such as `fix-jira-ticket`, `agentic-setup`, Khenrix setup/upgrade, or `llm-fanout-plan`;
   `mikado-graph` for dependency decomposition; then Superpowers for a generic development
   process. `khenrix-quality` shapes code and prose within whichever workflow owns the task.
 - Use `brainstorming` for open-ended design. Do not use it to reopen an accepted plan or
   re-gate work the user has already authorized. Do not recursively run Superpowers execution
-  or sub-agent workflows inside Forge.
+  or sub-agent workflows inside an admitted fanout execution.
 - Apply `test-driven-development` subject to the host's test policy: write tests that prove
   material behavior, not low-impact or implementation-mirroring tests. Do not create a
-  worktree inside Forge, for global machine configuration, or when the task already has a
+  worktree inside fanout execution, for global machine configuration, or when the task already has a
   managed worktree. Review and branch-finishing skills do not override a domain owner or an
   already authorized push or merge.
 - Native `skill-creator` or `skill-tuneup` owns skill authoring and tuning unless the user

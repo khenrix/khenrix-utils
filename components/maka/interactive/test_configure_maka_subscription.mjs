@@ -181,7 +181,7 @@ test('an already-safe subscription profile is read-only and idempotent', async (
   );
 });
 
-test('a GPT-5.6 subscription profile gains GPT-6 as default and keeps old sessions selectable', async () => {
+test('a GPT-5.6 subscription profile gains GPT-6.1 as default and keeps old sessions selectable', async () => {
   const host = fakeConnection(policy(), {
     catalog: safeCatalog({
       defaultTarget: { connectionId: CODEX_ID, modelId: LEGACY_MODEL_ID },
@@ -200,6 +200,25 @@ test('a GPT-5.6 subscription profile gains GPT-6 as default and keeps old sessio
       .map((call) => call.operation),
     ['connection.catalog.update', 'connection.catalog.set-default-target'],
   );
+});
+
+test('a GPT-6 subscription profile gains 6.1 without changing old model identities', async () => {
+  const previousModels = ['gpt-6-sol', LEGACY_MODEL_ID];
+  const host = fakeConnection(policy(), {
+    catalog: safeCatalog({
+      defaultTarget: { connectionId: CODEX_ID, modelId: 'gpt-6-sol' },
+      connections: [codexConnection({
+        enabledModelIds: previousModels,
+        modelOverrides: Object.fromEntries(previousModels.map((model) =>
+          [model, { defaultThinkingLevel: 'xhigh' }])),
+      })],
+    }),
+  });
+  await reconcile(host);
+  const catalog = await host.readCatalog();
+  assert.equal(catalog.defaultTarget.modelId, 'gpt-6.1-sol');
+  assert.deepEqual(catalog.connections[0].enabledModelIds,
+    ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.6-sol']);
 });
 
 test('subscription reconciliation changes only safe chat defaults', async () => {
@@ -371,7 +390,8 @@ test('a stale direct-API default is rejected', async () => {
         connections: [
           {
             connectionId: OTHER_ID,
-            providerType: 'openai-responses-compatible',
+            providerType: 'custom',
+            defaultApiProtocol: 'openai-responses',
             enabled: true,
             enabledModelIds: ['gpt-5.6-sol'],
           },

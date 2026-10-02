@@ -14,6 +14,9 @@ import apply_maka_hosted_onboarding_compat as compat
 
 
 IMPORT_TARGETS = {
+    "@maka/core/openai-urls": Path(
+        "node_modules/@maka/core/dist/openai-urls.js"
+    ),
     "@maka/core/llm-connections": Path(
         "node_modules/@maka/core/dist/llm-connections.js"
     ),
@@ -93,7 +96,8 @@ def executable_test_module(package_root: Path, patched: bytes, destination: Path
     return destination
 
 
-def run_fetch_trap(package_root: Path, patched: bytes, test_root: Path) -> None:
+def run_fetch_trap(package_root: Path, patched: bytes, test_root: Path,
+                   expected_models: list[dict[str, str]] | None = None) -> None:
     node = shutil.which("node")
     if node is None:
         raise RuntimeError("Node is required for the hosted onboarding test")
@@ -101,6 +105,7 @@ def run_fetch_trap(package_root: Path, patched: bytes, test_root: Path) -> None:
         package_root, patched, test_root / "patched-model-fetcher.mjs"
     )
     runner = test_root / "fetch-trap.mjs"
+    expected_models = expected_models if expected_models is not None else [{"id": "gpt-5.6-sol"}]
     runner.write_text(
         f'''import assert from 'node:assert/strict';
 import {{ runConnectionModelDiscoveryEffect }} from {json.dumps(module_path.as_uri())};
@@ -125,14 +130,14 @@ async function exercise(connection, credential, response) {{
 }}
 
 const exact = await exercise(exactConnection, exactCredential);
-assert.deepEqual(exact.result, {{ ok: true, models: [{{ id: 'gpt-5.6-sol' }}] }});
+assert.deepEqual(exact.result, {{ ok: true, models: {json.dumps(expected_models)} }});
 assert.deepEqual(exact.calls, []);
 const maximumDecoy = await exercise(exactConnection, `maka-decoy-${{'a'.repeat(128)}}`);
-assert.deepEqual(maximumDecoy.result, {{ ok: true, models: [{{ id: 'gpt-5.6-sol' }}] }});
+assert.deepEqual(maximumDecoy.result, {{ ok: true, models: {json.dumps(expected_models)} }});
 assert.deepEqual(maximumDecoy.calls, []);
 
 const nearMisses = [
-  ['provider', {{ ...exactConnection, providerType: 'openai-compatible' }}, exactCredential],
+  ['provider', {{ ...exactConnection, providerType: 'custom', defaultApiProtocol: 'openai-responses' }}, exactCredential],
   ['slug', {{ ...exactConnection, slug: 'eval-openai-other' }}, exactCredential],
   ['base URL', {{ ...exactConnection, baseUrl: 'https://api.openai.com/v1/' }}, exactCredential],
   ['short decoy', exactConnection, 'maka-decoy-abcdefg'],

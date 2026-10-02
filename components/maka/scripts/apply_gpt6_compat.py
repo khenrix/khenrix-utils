@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guarded GPT-6 Sol compatibility overlay for the exact pinned Maka package.
+"""Guarded GPT-6.1 Sol compatibility overlay for the exact pinned Maka package.
 
 Apply only to an isolated copy of maka-agent. The mise-owned package and the
 frozen evaluation controller are never modified.
@@ -22,60 +22,143 @@ class OverlayError(RuntimeError):
 
 
 PATCHES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
-    "node_modules/@maka/core/dist/model-metadata.js": (
-        "e7712062254398e70adc333167864d09c4a1aca4775bd24daa2ad09876e4e122",
+    "node_modules/@maka/runtime/dist/model-runtime.js": (
+        "a8f069732226c670c3756a7fedc191d5a9fd56e14b05caaa6b034426bba9ec05",
+        ((
+            "function resolveParallelToolCalls(connection, modelId, adapter) {\n"
+            "    const stored = connection.models?.find((model) => model.id === modelId)?.capabilities\n",
+            "function resolveParallelToolCalls(connection, modelId, adapter) {\n"
+            "    const declared = modelOverride(connection, modelId)?.capabilities?.parallelToolCalls;\n"
+            "    if (declared !== undefined)\n"
+            "        return declared;\n"
+            "    const stored = connection.models?.find((model) => model.id === modelId)?.capabilities\n",
+        ),),
+    ),
+    "node_modules/@maka/core/dist/session.js": (
+        "423dd039034711b38eb4bb15a93821c1ca682e4fe4f7c2814d8a7e9823e22732",
+        ((
+            "    'workhub-coordination-v2',\n];",
+            "    'workhub-coordination-v2',\n"
+            "    'khenrix-skill-routing-v1',\n];",
+        ),),
+    ),
+    "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": (
+        "c4bb3ad567a86d8fda49e7d3f550c1e1e48bc68b3c25d657fac2d6cab19fbe2d",
+        ((
+            "    if (profile === 'workhub-coordination-v1') {\n",
+            "    if (profile === 'khenrix-skill-routing-v1') {\n"
+            "        return {\n"
+            "            toolNames: ['Skill', 'SkillSearch'],\n"
+            "            systemPrompt: '',\n"
+            "            memoryExtraction: false,\n"
+            "        };\n"
+            "    }\n"
+            "    if (profile === 'workhub-coordination-v1') {\n",
+        ),),
+    ),
+    "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js": (
+        "ee88cf0c3fc8815f153791d6b44392ca5cd24f5579b4ca76051403e5f828af52",
         (
+            (
+                "    const runProfile = hostedExecutionRunProfile(input.toolProfile);\n"
+                "    const resolvedBaseSystemPrompts = new Map();\n",
+                "    const runProfile = hostedExecutionRunProfile(input.toolProfile);\n"
+                "    const promptProfile = input.toolProfile === 'khenrix-skill-routing-v1'\n"
+                "        ? undefined\n"
+                "        : runProfile;\n"
+                "    const resolvedBaseSystemPrompts = new Map();\n",
+            ),
+            (
+                "        if (runProfile) {\n"
+                "            return (input.resolveProfileSystemPrompt\n",
+                "        if (promptProfile) {\n"
+                "            return (input.resolveProfileSystemPrompt\n",
+            ),
+            (
+                "        if (!input.resolveAdditionalSystemPrompt || runProfile)\n",
+                "        if (!input.resolveAdditionalSystemPrompt || promptProfile)\n",
+            ),
+        ),
+    ),
+    "node_modules/@maka/runtime/dist/ai-sdk-backend.js": (
+        "90d9f1a3f7ba62a4ac189597cac06ce1babc8005631fe89a1bb594278b186421",
+        ((
+            "            runtime: new ToolAvailabilityRuntime(bindToolResultArchiveDecoder([...modelTools, ...this.memoryTools], this.input.toolResultArchive), this.input.toolAvailability, buildInvalidMakaTool()),\n",
+            "            runtime: new ToolAvailabilityRuntime(bindToolResultArchiveDecoder([...modelTools, ...this.memoryTools], this.input.header.toolProfile === 'khenrix-skill-routing-v1'\n"
+            "                ? undefined : this.input.toolResultArchive), this.input.toolAvailability, buildInvalidMakaTool()),\n",
+        ),),
+    ),
+    "node_modules/@maka/runtime/dist/skills-metadata.js": (
+        "398220f18f9eca49e28f96ba072a5598eb6a7e4b2c23ef5a0be3ba42b0815aa5",
+        ((
+            "export const MAX_SKILL_TOOL_BODY_CHARS = 24_000;",
+            "export const MAX_SKILL_TOOL_BODY_CHARS = 40_000;",
+        ),),
+    ),
+    "node_modules/@maka/core/dist/model-metadata.js": (
+        "454ae64aa3a2dee4fe93d30f3d547e361b6b30f2c26987c69f0a8ab6981cd2cf",
+        (
+            (
+                "const OPENAI_GPT6_MODEL_OVERRIDES = {\n",
+                "const OPENAI_GPT6_MODEL_OVERRIDES = {\n"
+                "    'gpt-6.1-sol': {\n"
+                "        displayName: 'GPT-6.1 Sol',\n"
+                "        capabilities: { ...REASONING_FUNCTION_CALLING, vision: true },\n"
+                "        contextWindow: 1_050_000,\n"
+                "        maxOutputTokens: 128_000,\n"
+                "        thinkingOptions: OPENAI_GPT6_THINKING_OPTIONS,\n"
+                "    },\n",
+            ),
             (
                 "function openAiOAuthModelMetadata(active) {\n    return {\n",
                 "function openAiOAuthModelMetadata(active) {\n    return {\n"
-                "        'gpt-6-sol': {\n"
-                "            ...openAiOAuthBase(active, 'gpt-6-sol'),\n"
-                "            displayName: 'GPT-6 Sol',\n"
-                "            contextWindow: 272_000,\n"
-                "            maxOutputTokens: 128_000,\n"
-                "            capabilities: { vision: true, reasoning: true, functionCalling: true },\n"
-                "            thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },\n"
+                "        'gpt-6.1-sol': {\n"
+                "            ...openAiOAuthBase(active, 'gpt-6.1-sol'),\n"
+                "            ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6.1-sol'],\n"
+                "            thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },\n"
                 "        },\n",
             ),
             (
-                "        'openai-codex': openAiOAuthModelMetadata(active),\n",
-                "        'openai-codex': openAiOAuthModelMetadata(active),\n"
-                "        openai: {\n"
-                "            'gpt-6-sol': {\n"
-                "                displayName: 'GPT-6 Sol',\n"
-                "                contextWindow: 1_050_000,\n"
-                "                maxOutputTokens: 128_000,\n"
-                "                capabilities: { vision: true, reasoning: true, functionCalling: true },\n"
-                "                modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },\n"
-                "                thinkingOptions: { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },\n"
-                "            },\n"
-                "        },\n",
+                "        'gpt-6-sol': {\n"
+                "            ...openAiOAuthBase(active, 'gpt-6-sol'),\n"
+                "            ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-sol'],\n"
+                "        },",
+                "        'gpt-6-sol': {\n"
+                "            ...openAiOAuthBase(active, 'gpt-6-sol'),\n"
+                "            ...OPENAI_GPT6_MODEL_OVERRIDES['gpt-6-sol'],\n"
+                "            thinkingOptions: { efforts: ['low', 'medium', 'high', 'xhigh'] },\n"
+                "        },",
             ),
-            ("        /^gpt-5/i.test(id) ||\n", "        /^gpt-(?:5|6)/i.test(id) ||\n"),
         ),
     ),
     "node_modules/@maka/core/dist/provider-registry.js": (
-        "f367229b68b776b41e19fe718fb31f235aa986b9cdcc4c4c3298dada40906778",
+        "cf153bc1fe45a97d6fb1bb8cc6a2698eecc667c7f4c6ccffab3a1bdea34767d0",
         (
             (
                 "fallbackModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],",
-                "fallbackModels: ['gpt-6-sol', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],",
+                "fallbackModels: ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],",
             ),
             (
                 "fallbackModels: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],",
-                "fallbackModels: ['gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],",
+                "fallbackModels: ['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],",
             ),
         ),
     ),
     "node_modules/@maka/core/dist/model-thinking.js": (
-        "f51d5ff23ea9a77028ee1e5c0c2394479836f62a4da9e488b170ffd65bec01e6",
-        (("    'gpt-6-astra',\n", "    'gpt-6-astra',\n    'gpt-6-sol',\n"),),
+        "864d0f46c5716ede1e3f1208169a0b2fe6c15da8ee7f40fd1d6fedfb18a394d9",
+        (("    'gpt-6-astra',\n", "    'gpt-6-astra',\n    'gpt-6-sol',\n    'gpt-6.1-sol',\n"),),
     ),
 }
 PATCHED_HASHES = {
-    "node_modules/@maka/core/dist/model-metadata.js": "0aef6601a94ea79b0810b9704af6687bd87d1dc42d71ef3e3d9040a758d41e86",
-    "node_modules/@maka/core/dist/provider-registry.js": "b589767669d7fd7fad9e8a900398aa7896a72702a3f26dda850be5dcb66469bd",
-    "node_modules/@maka/core/dist/model-thinking.js": "8b7061b1d188964d1fa6e2a5b534a019113020bdc2c3c601299ca6d5dea4d3e6",
+    "node_modules/@maka/runtime/dist/model-runtime.js": "d38130ccc2dbc03b759c4890a5c038161ea3997c437c8e6c90783673452734a4",
+    "node_modules/@maka/core/dist/session.js": "94dc36d9af33a53475a13b22bb90df3c0efd7bad4247858d4fdb1258e477033d",
+    "node_modules/@maka/runtime-host/dist/server/hosted-execution-tool-profile.js": "5e61c4c3609aafd70c249381d9102cb3634ce016e177b189150f2ca9e6cd73db",
+    "node_modules/@maka/runtime-host/dist/server/interactive-run-composer.js": "92c07f7c713140bcc170985e978b73fbb4eb72f8285855da913f3e73b5495ebc",
+    "node_modules/@maka/runtime/dist/ai-sdk-backend.js": "d8caed4dd0cf4c5072520c5c0dee4c1f0fcd4ebe6851262807cf38f8c1ac8e2e",
+    "node_modules/@maka/runtime/dist/skills-metadata.js": "2fa1b79b305b7d394129163fb032fa4cadfb0f802b43c1314cfe77cfa8ed48a2",
+    "node_modules/@maka/core/dist/model-metadata.js": "6a1e2886e7412b010ee60c4e314827cbac17229e816b489fe974a297e9a166af",
+    "node_modules/@maka/core/dist/provider-registry.js": "ccb5a2c69b2a5b9b1292b34bf39855c7354a46451d6984c8687be0a4b6821821",
+    "node_modules/@maka/core/dist/model-thinking.js": "ace4ab6b47d785d05a710bd9da64d127e451f18f6772170e9b063d6cde121c25",
 }
 
 

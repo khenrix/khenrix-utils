@@ -1,13 +1,16 @@
 # skill-tuneup — flow
 
-One deep target per run: baseline → research → council review 1 → audit → CHECKPOINT →
-apply → eval → council review 2 → converge → ship. A read-only triage mode ranks and
+One deep target per run: baseline → research → fanout review 1 → audit → CHECKPOINT →
+apply → eval → fanout review 2 → converge → ship. Each review has two durable rounds,
+final-answer inspection and an owner synthesis with the admitted quorum. Failed or
+uncertain seats remain visible; a dirty reviewer uses complete committed source.
+A read-only triage mode ranks and
 stops instead. Source: `shared/skills/skill-tuneup/SKILL.md`.
 
 ```mermaid
 flowchart TD
     accTitle: skill-tuneup deep-run flow
-    accDescr: One skill per run - baseline, upstream research probed on all three CLIs, two council reviews, a user checkpoint, a capped eval-fix loop, severity-gated convergence, then ship. Triage ranks and stops.
+    accDescr: One skill per run - baseline, upstream research, two mandatory fanout reviews with two durable rounds each, the existing user checkpoint, a capped eval-fix loop, severity-gated convergence, then ship. Triage ranks and stops.
 
     START([user names a target]) --> G_MODE{triage or<br/>deep run?}
     G_MODE -- "sweep / ranking ask" --> TRIAGE[rank khenrix skills<br/>read-only, no tokens, no edits] --> STOP_T([stop: present the worklist])
@@ -18,8 +21,8 @@ flowchart TD
     G_LOCK -- refused --> HALT_L([stop: another run holds it])
     G_LOCK -- yes --> BASE[Step 4: baseline commit + stale-models<br/>+ prior run-log decisions]
     BASE --> RESEARCH[Step 5: upstream research<br/>every provider finding probed on ALL THREE CLIs]
-    RESEARCH --> COUNCIL1[Step 6: council review 1 - the findings]
-    COUNCIL1 --> AUDIT[Step 7: audit vs checklist<br/>incl. chart-vs-body drift]
+    RESEARCH --> FANOUT1[Step 6: fanout review 1 - findings<br/>two rounds, inspect, synthesize]
+    FANOUT1 --> AUDIT[Step 7: audit vs checklist<br/>incl. chart-vs-body drift]
     AUDIT --> G_CHECK{CHECKPOINT:<br/>user approves scope?}
     G_CHECK -- "trims / defers" --> AUDIT
 
@@ -29,8 +32,8 @@ flowchart TD
         G_EVAL -- "cap reached" --> HAND([stop: hand unresolved to the user])
         G_EVAL -- green --> G_MAT{review-material<br/>exit 0?}
         G_MAT -- "exit 2 - fails closed" --> HAND
-        G_MAT -- yes --> COUNCIL2[Step 9: council review 2 - the diff]
-        COUNCIL2 --> RECORD[record every finding + a cycle-end marker]
+        G_MAT -- yes --> FANOUT2[Step 9: fanout review 2 - diff<br/>two rounds, inspect, synthesize]
+        FANOUT2 --> RECORD[record every finding + a cycle-end marker]
         RECORD --> G_CONV{convergence-status<br/>verdict?}
         G_CONV -- keep-iterating --> APPLY
         G_CONV -- stalled --> HAND

@@ -63,6 +63,34 @@ done
 mise_path=${mise_bin%/*}
 isolated_path="$mise_path:/usr/bin:/bin"
 
+if test "${1:-}" = judge-harbor-boundary; then
+  if test "$#" -ne 1; then
+    echo 'maka judge-harbor-boundary: no arguments expected' >&2
+    exit 64
+  fi
+  exec /usr/bin/env -i \
+    HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+    PATH="$isolated_path" LANG=C LC_ALL=C \
+    "$mise_bin" -C "$maka_lab_root" exec -- \
+    bash "$maka_lab_root/scripts/harbor-judge.sh" --boundary
+fi
+
+if test "${1:-}" = judge-harbor; then
+  if test "$#" -ne 2 || test "$2" != -; then
+    echo 'maka judge-harbor: expected one JSON request on stdin' >&2
+    exit 64
+  fi
+  if test "${MAKA_JUDGE_PAID_RUN:-}" != 1; then
+    echo 'maka judge-harbor: explicit paid run selector is required' >&2
+    exit 78
+  fi
+  exec /usr/bin/env -i \
+    HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+    PATH="$isolated_path" LANG=C LC_ALL=C MAKA_JUDGE_PAID_RUN=1 \
+    "$mise_bin" -C "$maka_lab_root" exec -- \
+    bash "$maka_lab_root/scripts/harbor-judge.sh" --live -
+fi
+
 if ! maka_auth_mode=$(/usr/bin/env -i \
   HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
   PATH="$isolated_path" LANG=C LC_ALL=C \
@@ -124,6 +152,22 @@ case "$maka_auth_mode" in
 esac
 
 caller_working_directory=$PWD
+if test "${1:-}" = judge; then
+  if test "$maka_auth_mode" != api-key-relay; then
+    echo 'maka judge: only the managed API-key relay is characterized' >&2
+    exit 78
+  fi
+  if test "$#" -ne 2 || test "$2" != -; then
+    echo 'maka judge: expected one JSON request on stdin' >&2
+    exit 64
+  fi
+  exec /usr/bin/env -i \
+    HOME="$account_root" USER="$account_name" LOGNAME="$account_name" \
+    PATH="$isolated_path" LANG=C LC_ALL=C \
+    "$mise_bin" -C "$maka_lab_root" exec -- \
+    node "$maka_lab_root/interactive/maka_judge.mjs" \
+      --package-root "$maka_package_root" --cwd "$caller_working_directory"
+fi
 exec "$mise_bin" -C "$maka_lab_root" exec -- \
   /bin/sh -c 'cd "$1" && shift && package=$1 && shift && exec node "$package/dist/cli.js" "$@"' maka \
   "$caller_working_directory" "$maka_package_root" "$@"

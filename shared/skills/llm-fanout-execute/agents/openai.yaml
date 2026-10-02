@@ -1,0 +1,6 @@
+interface:
+  display_name: "LLM Fanout Execute"
+  short_description: "Execute and reconcile a validated fanout plan"
+  default_prompt: "Use $llm-fanout-execute to run this admitted plan and reconcile its results."
+policy:
+  allow_implicit_invocation: true

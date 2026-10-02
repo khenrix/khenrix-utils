@@ -1,7 +1,0 @@
-{
-  "name": "mise-npm-install",
-  "private": true,
-  "dependencies": {
-    "maka-agent": "0.2.0-dev.47.20260922"
-  }
-}

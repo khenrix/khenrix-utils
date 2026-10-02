@@ -1,7 +1,8 @@
 # Selective skill delivery
 
-Khenrix Utils owns 17 public direct-copy skills: the composed
-`khenrix-quality` and `khenrix-writing` skills plus the 15-skill Superpowers
+Khenrix Utils owns 19 public direct-copy skills: the composed
+`khenrix-quality` and `khenrix-writing` skills, `llm-fanout-plan` and
+`llm-fanout-execute`, plus the 15-skill Superpowers
 bundle. The selective installer copies them directly to the native skill roots
 and never installs or enables the `khenrix-utils` marketplace. Optional generated
 plugin bundles explicitly exclude these skills, leaving one native copy and update
@@ -20,6 +21,14 @@ files while preserving all text outside the markers. Per-CLI overlays declared
 under `[instructions.overlays]` are rendered inside that same block, exactly as
 the broader reconcile controller renders them, so the paths do not create
 drift for each other.
+
+`[historical_only]` retains Council/Forge source and evidence while excluding their
+two skills and two libraries from delivery. Direct skill declarations and bundle
+sources cannot reintroduce these historical subtrees, including through an ancestor
+directory. Plugin refresh moves exact stale historical children to an owner-only
+`.khenrix-historical-backup-*` directory and reports the recovery path. Cached
+plugin backups sit outside the version glob; fixed-location plugin backups are
+adjacent to the installed plugin, so subsequent refreshes leave them untouched.
 
 ## Install and inspect
 
@@ -108,9 +117,9 @@ rows, each encoded exactly as `<mode> <type> <object>\t<path>\n`.
 ## Maka smoke
 
 After apply, this opt-in command covers the declared direct-copy skills with explicit
-and natural routing cases. Every natural target other than `using-superpowers` first
+and natural routing cases. Every target other than `using-superpowers` first
 loads that root-session router explicitly, then continues the same session with the
-natural request. This mirrors the shared house rule, prevents two applicable skills from
+target request. This mirrors the shared house rule, prevents two applicable skills from
 competing for one headless tool step, and keeps each turn inside the workspace sandbox.
 It also runs a three-turn
 ADHD-mode activation, action-first continuation, and bounded normal-mode
@@ -123,8 +132,8 @@ mise run skills:maka-smoke
 It never passes `--yolo`, caps steps and time, and writes a hash-bound receipt
 beside the install receipt. The runner reads Maka's SQLite event log in read-only
 mode: explicit cases require a successful canonical root-Turn admission receipt
-from the `agents` source (with queued message admissions accepted for compatible
-clients), while natural cases require a matching `skill_loaded` event with
+from the `agents` source bound to the executed turn, while natural cases require
+a matching `skill_loaded` event with
 `invocation=model_tool`. Both paths reject truncated instructions. When Maka
 records SkillSearch shadow candidates, the loaded skill must be the first-ranked
 candidate; malformed, missing, or lower-ranked shadow evidence fails closed. Raw

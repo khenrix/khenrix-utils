@@ -112,11 +112,12 @@ def _model_cfg(claude_model: str, agy_model: str, *,
     base = {"claude": {"model": claude_model}, "agy": {"model": agy_model}}
     if profile == runstate.LEGACY_MODEL_PROFILE:
         return base  # old manifests recorded neither Codex model nor effort
-    if profile != runstate.CURRENT_MODEL_PROFILE or phase not in {"builder", "reviewer"}:
+    if profile not in {runstate.CURRENT_MODEL_PROFILE, runstate.PREVIOUS_MODEL_PROFILE} or phase not in {"builder", "reviewer"}:
         raise CliError("unsupported Forge model profile or phase")
     effort = "xhigh" if phase == "builder" else "max"
     base["claude"]["thinking"] = effort
-    base["codex"] = {"model": "gpt-6-sol", "thinking": effort}
+    model = "gpt-6.1-sol" if profile == runstate.CURRENT_MODEL_PROFILE else "gpt-6-sol"
+    base["codex"] = {"model": model, "thinking": effort}
     return base
 
 

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
+from historical_only import read_historical
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CLIS = ("claude", "codex", "agy")
@@ -18,7 +23,27 @@ CHAIN_OPS = ("&&", "||", ";")
 
 
 def _shared_skills(root: Path):
-    return sorted((root / "shared" / "skills").glob("*/"))
+    historical_skills, _ = read_historical(root)
+    return sorted(path for path in (root / "shared" / "skills").glob("*/")
+                  if path.name not in historical_skills)
+
+
+def _native_only_skills(root: Path) -> frozenset[str]:
+    manifest = root / "capabilities.toml"
+    if not manifest.is_file():
+        return frozenset()
+    with manifest.open("rb") as file:
+        capabilities = tomllib.load(file)
+    delivery = capabilities.get("skill_delivery", {})
+    declared = delivery.get("skills", []) if isinstance(delivery, dict) else []
+    if not isinstance(declared, list):
+        return frozenset()
+    source = root / "shared" / "skills"
+    return frozenset(
+        name for name in declared
+        if isinstance(name, str) and (source / name).is_dir()
+        and not (source / name).is_symlink()
+    )
 
 
 def _rendered(root: Path, cli: str, skill: str) -> Path:
@@ -33,7 +58,10 @@ def script_tree_parity(root: Path) -> list[str]:
     delta and breaks the moment a real agy session runs the skill.
     """
     problems = []
+    native_only = _native_only_skills(root)
     for skill_dir in _shared_skills(root):
+        if skill_dir.name in native_only:
+            continue
         src = skill_dir / "scripts"
         if not src.is_dir():
             continue

@@ -818,23 +818,26 @@ def test_a_facade_over_the_council_engine_is_reached_through_its_own_name():
     assert "council.engine" in spends[0]
 
 
-def test_this_repositorys_own_precommit_reaches_the_council(tmp_path):
-    """§5.2's claim is about THIS repository, so it is measured against it rather than only
-    against a fixture. `make precommit` -> `scripts/lib/checks.py` -> `make eval` ->
-    `scripts/eval_harness.py` -> `run_council`.
+def test_retained_gate_reaches_the_historical_council_receipt_remedy(tmp_path):
+    """Keep the legacy detector's remedy/spend contract after active eval moved to fanout.
 
-    What this also pins is the limit reported alongside it: `make verify` produces the same
-    remedy line, because the only difference between the two is `advisory=True` and
-    `advisory=False` inside a `python3 -c` one-liner — a runtime exit code, which no static
-    read separates. Neither is refused; both are priced.
+    This explicit command fixture retains the historical Council call chain. It does
+    not claim that the retained gate recognizes the current fanout eval adapter.
+    The reader inspects source only; none of these recipes or provider calls run.
     """
-    both = {t: _found(ROOT, ["make", t]) for t in ("precommit", "verify")}
+    repo = make_repo(tmp_path)
+    write(repo, "Makefile", "precommit: verify\nverify:\n\tpython3 scripts/lib/checks.py\n"
+          "eval:\n\tpython3 scripts/eval_harness.py\n")
+    write(repo, "scripts/lib/checks.py", (ROOT / "scripts/lib/checks.py").read_text())
+    write(repo, "scripts/eval_harness.py", "from council.engine import run_council\n")
+    commit_all(repo, "historical command fixture")
+    both = {t: _found(repo, ["make", t]) for t in ("precommit", "verify")}
     for target, found in both.items():
         remedy = [f for f in found if f.startswith("remedy:")]
         assert len(remedy) == 1, (target, found)
         assert "scripts/lib/checks.py" in remedy[0] and "eval_harness.py" in remedy[0]
         assert not [f for f in found if f.startswith("spends:")], (target, found)
-    assert any(f.startswith("spends:") for f in _found(ROOT, ["make", "eval"])), \
+    assert any(f.startswith("spends:") for f in _found(repo, ["make", "eval"])), \
         "the target the remedy names does spend, or the remedy line above means nothing"
 
 

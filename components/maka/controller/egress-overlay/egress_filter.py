@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 import time
 from pathlib import Path
 from typing import NamedTuple
@@ -42,6 +45,9 @@ OPENAI_API_ENDPOINT = None
 MAX_OPENAI_REQUESTS = 32
 MAX_OPENAI_BODY_BYTES = 16 * 1024 * 1024
 OPENAI_RESPONSES_WEBSOCKET_PROTOCOL = "responses_websockets=2026-02-06"
+JUDGE_ONLY = os.environ.get("MAKA_EVAL_JUDGE_ONLY") == "1"
+JUDGE_MARKER = re.compile(r"^Judge receipt nonce: (maka:fanout-judge-[0-9a-f]{32})$")
+EGRESS_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 _OPENAI_API_KEY: str | None = None
 _OPENAI_REQUEST_COUNT = 0
 _OPENAI_WEBSOCKET_PROBE_COUNT = 0
@@ -494,7 +500,7 @@ def valid_openai_body(request: object) -> bool:
     ):
         return False
     return (
-        body.get("model") == "gpt-5.6-sol"
+        body.get("model") == ("gpt-6.1-sol" if JUDGE_ONLY else "gpt-5.6-sol")
         and body.get("reasoning") == {"effort": "xhigh", "summary": "auto"}
         and body.get("stream") is True
         and body.get("store") is False
@@ -558,6 +564,164 @@ def valid_tool_choice(choice: object) -> bool:
     )
 
 
+def prepare_judge_request(raw: bytes) -> tuple[bytes, dict[str, object]] | None:
+    """Accept one fresh blind prompt and erase Host tools at the provider boundary."""
+    try:
+        body = strict_json_object(raw)
+    except ValueError:
+        return None
+    if body.get("model") != "gpt-6.1-sol" or body.get("reasoning") != {
+        "effort": "xhigh", "summary": "auto"
+    }:
+        return None
+    items = body.get("input")
+    if not isinstance(items, list) or not items:
+        return None
+    users: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("role") not in {
+            "system", "developer", "user"
+        } or set(item) != {"role", "content"}:
+            return None
+        content = item["content"]
+        if item["role"] != "user" and isinstance(content, str):
+            if not content.strip() or len(content.encode("utf-8")) > 48 * 1024:
+                return None
+            continue
+        if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
+            return None
+        part = content[0]
+        if set(part) != {"type", "text"} or part.get("type") != "input_text" or not isinstance(part.get("text"), str):
+            return None
+        if item["role"] == "user":
+            users.append(part["text"])
+    if len(users) != 1 or len(users[0].encode("utf-8")) > 48 * 1024:
+        return None
+    first, separator, rest = users[0].partition("\n")
+    marker = JUDGE_MARKER.fullmatch(first)
+    if marker is None or not separator or not rest:
+        return None
+    body.pop("tools", None)
+    body["tool_choice"] = "none"
+    body["service_tier"] = "default"
+    encoded = json.dumps(body, separators=(",", ":"), ensure_ascii=False,
+                         allow_nan=False).encode("utf-8")
+    evidence: dict[str, object] = {
+        "request_marker_sha256": hashlib.sha256(marker.group(1).encode("ascii")).hexdigest(),
+        "prompt_sha256": hashlib.sha256(users[0].encode("utf-8")).hexdigest(),
+        "requested_model": "gpt-6.1-sol",
+        "requested_service_tier": "default",
+        "outbound_effort": "xhigh",
+        "tool_count": 0,
+    }
+    return encoded, evidence
+
+
+def judge_response_evidence_with_reason(
+    status: int, raw: bytes | None
+) -> tuple[dict[str, str] | None, str | None]:
+    if status != 200:
+        return None, "upstream-status"
+    if not isinstance(raw, bytes):
+        return None, "missing-body"
+    if len(raw) > MAX_OPENAI_BODY_BYTES:
+        return None, "oversize-body"
+    created_id = None
+    completed = False
+    for line in raw.splitlines():
+        if not line.startswith(b"data: "):
+            continue
+        if line == b"data: [DONE]":
+            continue
+        try:
+            event = json.loads(line[6:])
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return None, "invalid-sse"
+        if not isinstance(event, dict):
+            return None, "invalid-sse"
+        kind = event.get("type")
+        if kind in {"response.failed", "response.incomplete", "error"}:
+            return None, "failed-event"
+        if kind in {"response.output_item.added", "response.output_item.done"}:
+            item = event.get("item")
+            if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"].endswith("_call"):
+                return None, "tool-call"
+        if kind not in {"response.created", "response.completed"}:
+            continue
+        response = event.get("response")
+        if not isinstance(response, dict):
+            return None, "invalid-sse"
+        if response.get("model") != "gpt-6.1-sol":
+            return None, "model-mismatch"
+        if response.get("service_tier") != "default":
+            return None, "created-tier" if kind == "response.created" else "completed-tier"
+        response_id = response.get("id")
+        if not isinstance(response_id, str) or not response_id:
+            return None, "invalid-sse"
+        if kind == "response.created":
+            if created_id is not None or completed:
+                return None, "invalid-sse"
+            created_id = response_id
+        else:
+            output = response.get("output")
+            if created_id != response_id:
+                return None, "identity-mismatch"
+            if (completed or not isinstance(output, list)
+                    or response.get("status") not in {None, "completed"}):
+                return None, "invalid-completion"
+            if any(not isinstance(item, dict) or
+                   (isinstance(item.get("type"), str) and item["type"].endswith("_call"))
+                   for item in output):
+                return None, "tool-call"
+            completed = True
+    if not completed:
+        return None, "missing-completion"
+    return {"observed_model": "gpt-6.1-sol", "observed_service_tier": "default"}, None
+
+
+def judge_response_evidence(status: int, raw: bytes | None) -> dict[str, str] | None:
+    evidence, _reason = judge_response_evidence_with_reason(status, raw)
+    return evidence
+
+
+def judge_content_encoding(response: object) -> str:
+    try:
+        values = response.headers.get_all("content-encoding")
+    except (AttributeError, TypeError):
+        return "other"
+    if not values:
+        return "identity"
+    if len(values) != 1 or not isinstance(values[0], str):
+        return "other"
+    value = values[0].strip().lower()
+    return value if value in {"identity", "gzip", "br", "deflate"} else "other"
+
+
+def persist_judge_receipt(root: Path, evidence: dict[str, object]) -> None:
+    root.mkdir(mode=0o700, exist_ok=True)
+    metadata = root.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise OSError("judge receipt directory is unsafe")
+    payload = {
+        "schema": "khenrix-maka-harbor-judge-request-v1",
+        "time_utc_ms": int(time.time() * 1000),
+        "relay_source_sha256": EGRESS_SOURCE_SHA256,
+        **evidence,
+    }
+    name = f"{evidence['request_marker_sha256']}-{secrets.token_hex(16)}.json"
+    descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            descriptor = -1
+            stream.write(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def inject_openai_authorization(flow: object, target: Endpoint) -> None:
     global _OPENAI_REQUEST_COUNT
     if target.host != OPENAI_API_HOST:
@@ -571,7 +735,7 @@ def inject_openai_authorization(flow: object, target: Endpoint) -> None:
         and not getattr(request, "query", None)
         and valid_openai_body(request)
         and _OPENAI_WEBSOCKET_PROBE_COUNT == 1
-        and _OPENAI_REQUEST_COUNT < MAX_OPENAI_REQUESTS
+        and _OPENAI_REQUEST_COUNT < (1 if JUDGE_ONLY else MAX_OPENAI_REQUESTS)
     )
     if not valid:
         flow.response = http.Response.make(
@@ -584,6 +748,15 @@ def inject_openai_authorization(flow: object, target: Endpoint) -> None:
         )
         append_audit("credential_boundary", "", "rejected")
         return
+    if JUDGE_ONLY:
+        prepared = prepare_judge_request(request.raw_content)
+        if prepared is None:
+            flow.response = http.Response.make(403, b"Judge request boundary rejected the request.\n",
+                                               {"X-Maka-Eval-Egress-Rule": "judge_boundary"})
+            append_audit("judge_boundary", "", "rejected")
+            return
+        request.content, evidence = prepared
+        flow.metadata["maka_judge_evidence"] = evidence
     if not _OPENAI_API_KEY:
         raise RuntimeError("OpenAI credential is unavailable")
     next_sequence = _OPENAI_REQUEST_COUNT + 1
@@ -611,6 +784,26 @@ def inject_openai_authorization(flow: object, target: Endpoint) -> None:
 
 def response(flow: object) -> None:
     response = getattr(flow, "response", None)
+    evidence = getattr(flow, "metadata", {}).get("maka_judge_evidence")
+    if JUDGE_ONLY and evidence is not None:
+        upstream_status = getattr(response, "status_code", 0)
+        observed, reason = judge_response_evidence_with_reason(
+            upstream_status, getattr(response, "raw_content", None))
+        if observed is None:
+            flow.response = http.Response.make(502, b"Judge response boundary rejected the response.\n",
+                                               {"X-Maka-Eval-Egress-Rule": "judge_response"})
+            status = upstream_status if type(upstream_status) is int and 100 <= upstream_status <= 599 else 0
+            encoding = judge_content_encoding(response)
+            append_audit("judge_response", "",
+                         f"status={status};encoding={encoding};reason={reason}")
+            return
+        try:
+            persist_judge_receipt(AUDIT_PATH.parent / "relay-judge-receipts",
+                                  {**evidence, **observed, "http_status": 200})
+        except OSError:
+            flow.response = http.Response.make(503, b"Judge receipt is unavailable.\n",
+                                               {"X-Maka-Eval-Egress-Rule": "judge_receipt"})
+            return
     if getattr(response, "status_code", None) != 101:
         return
     # mitmproxy 12.2.3 sets flow.websocket before HttpResponseHook only when
@@ -632,6 +825,9 @@ def http_connect(flow: object) -> None:
         reject_identity(flow)
         return
     apply_http_policy(flow, raw_url)
+    if (JUDGE_ONLY and target == OPENAI_API_ENDPOINT and
+            getattr(flow, "response", None) is None):
+        append_audit("openai_connect", "", "allowed")
 
 
 def tcp_start(flow: object) -> None:

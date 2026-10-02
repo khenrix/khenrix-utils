@@ -18,7 +18,7 @@ class TierStatusTests(unittest.TestCase):
             self.assertEqual(status.inspect(path)["status"], "unobserved")
             receipt = {
                 "schema": "khenrix-maka-relay-tier-v1", "time_utc": "2026-09-23T00:00:00+00:00",
-                "requested_model": "gpt-6-sol", "observed_model": "gpt-6-sol",
+                "requested_model": "gpt-6.1-sol", "observed_model": "gpt-6.1-sol",
                 "requested_service_tier": "default", "observed_service_tier": "default",
                 "http_status": 200,
             }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import io
 import json
@@ -35,23 +36,27 @@ KEYCHAIN_ACCOUNT = "cli|offline-test-account"
 
 
 def created_stream(*, model: str = relay.MODEL_ID,
-                   tier: str = "default", suffix: bytes = b"data: offline\n\n") -> bytes:
+                   tier: str = "default", response_id: str = "resp_offline_request",
+                   suffix: bytes = b"data: offline\n\n") -> bytes:
     event = {"type": "response.created", "response": {"model": model,
-             "service_tier": tier}}
+             "service_tier": tier, "id": response_id}}
     return ("data: " + json.dumps(event) + "\n\n").encode() + suffix
 
 
-def valid_body(*, tools: bool = False, effort: str = "xhigh") -> bytes:
+def valid_body(*, tools: bool = False, effort: str = "xhigh",
+               cache_key: str | None = "maka:offline-session",
+               user_text: str = "offline fixture") -> bytes:
     document: dict[str, object] = {
         "model": relay.MODEL_ID,
-        "input": [{"role": "user", "content": "offline fixture"}],
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": user_text}]}],
         "parallel_tool_calls": True,
         "store": False,
         "include": ["reasoning.encrypted_content"],
         "reasoning": {"effort": effort, "summary": "auto"},
-        "prompt_cache_key": "maka:offline-session",
         "stream": True,
     }
+    if cache_key is not None:
+        document["prompt_cache_key"] = cache_key
     if tools:
         document["tools"] = [
             {
@@ -239,6 +244,8 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(key, DUMMY_PROVIDER_KEY)
         self.assertEqual(json.loads(forwarded)["service_tier"], "default")
         self.assertEqual(json.loads(forwarded)["model"], relay.MODEL_ID)
+        self.assertEqual(len(json.loads(forwarded)["tools"]), 2)
+        self.assertEqual(json.loads(forwarded)["tool_choice"], "auto")
         self.assertTrue(self.fixture.forwarder.exchanges[0].closed)
 
     def test_model_default_medium_is_elevated_before_openai_forwarding(self) -> None:
@@ -278,12 +285,20 @@ class RelayIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(self.fixture.forwarder.calls[0][0])["model"],
                          relay.LEGACY_MODEL_ID)
+        document["model"] = relay.PREVIOUS_MODEL_ID
+        self.fixture.forwarder.response_body = created_stream(model=relay.PREVIOUS_MODEL_ID)
+        status, _, _ = self.fixture.request(
+            "POST", "/v1/responses", json.dumps(document).encode()
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(self.fixture.forwarder.calls[-1][0])["model"],
+                         relay.PREVIOUS_MODEL_ID)
         document["service_tier"] = "priority"
         status, _, _ = self.fixture.request(
             "POST", "/v1/responses", json.dumps(document).encode()
         )
         self.assertEqual(status, 403)
-        self.assertEqual(len(self.fixture.forwarder.calls), 1)
+        self.assertEqual(len(self.fixture.forwarder.calls), 2)
 
     def test_tier_receipt_contains_only_bounded_response_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -308,6 +323,632 @@ class RelayIntegrationTests(unittest.TestCase):
             self.assertEqual(saved["observed_model"], relay.MODEL_ID)
             self.assertNotIn("private prompt", path.read_text())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_judge_receipt_binds_zero_tool_request_to_hashed_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            receipts = parent / "relay-judge-receipts"
+            marker = "maka:fanout-judge-0123456789abcdef0123456789abcdef"
+            digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            event = {
+                "type": "response.created",
+                "response": {"model": relay.MODEL_ID, "service_tier": "default",
+                             "output": [{"text": "private answer"}]},
+            }
+            payload = ("data: " + json.dumps(event) + "\n\n").encode()
+            self.fixture.forwarder.forward = lambda _body, _key: FakeExchange(FakeResponse(payload))
+
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", valid_body(
+                    cache_key=None,
+                    user_text=f"Judge receipt nonce: {marker}\nCompare A and B.",
+                )
+            )
+
+            self.assertEqual(status, 200)
+            saved_path, = receipts.glob(f"{digest}-*.json")
+            saved = json.loads(saved_path.read_text())
+            self.assertEqual(saved["request_marker_sha256"], digest)
+            self.assertEqual(saved["prompt_sha256"], hashlib.sha256(
+                f"Judge receipt nonce: {marker}\nCompare A and B.".encode()).hexdigest())
+            self.assertEqual(saved["requested_model"], relay.MODEL_ID)
+            self.assertEqual(saved["observed_model"], relay.MODEL_ID)
+            self.assertEqual(saved["outbound_effort"], "xhigh")
+            self.assertEqual(saved["tool_count"], 0)
+            self.assertEqual(saved["relay_source_sha256"], relay.RELAY_SOURCE_SHA256)
+            self.assertEqual(saved["observed_service_tier"], "default")
+            self.assertEqual(saved_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(receipts.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn("fanout-judge", saved_path.read_text())
+            self.assertNotIn("private answer", saved_path.read_text())
+
+    def test_routing_receipts_bind_each_latest_user_turn_and_multiple_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            first = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+            second = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+            first_text = f"Fanout routing receipt nonce: {first}\nLoad the routing skill."
+            second_text = (
+                "<user-message>\nLoad the next skill.\n"
+                f"Fanout routing receipt nonce: {second}\n</user-message>"
+            )
+            previous = json.loads(valid_body(user_text=first_text))["input"][0]
+            for _ in range(2):
+                request = json.loads(valid_body(user_text=second_text, tools=True))
+                request["input"] = [
+                    previous,
+                    request["input"][0],
+                    {"role": "assistant", "content": [
+                        {"type": "input_text", "text": "dynamic context after the turn"}
+                    ]},
+                ]
+                status, _, _ = self.fixture.request(
+                    "POST", "/v1/responses", json.dumps(request).encode()
+                )
+                self.assertEqual(status, 200)
+            root = parent / "relay-routing-receipts"
+            digest = hashlib.sha256(second.encode("ascii")).hexdigest()
+            paths = list(root.glob(f"{digest}-*.json"))
+            self.assertEqual(len(paths), 2)
+            for path in paths:
+                saved = json.loads(path.read_text())
+                self.assertEqual(saved["schema"], "khenrix-maka-routing-request-v1")
+                self.assertEqual(saved["request_marker_sha256"], digest)
+                self.assertEqual(saved["prompt_sha256"], hashlib.sha256(
+                    second_text.encode()
+                ).hexdigest())
+                self.assertEqual(saved["requested_model"], relay.MODEL_ID)
+                self.assertEqual(saved["observed_model"], relay.MODEL_ID)
+                self.assertEqual(saved["outbound_effort"], "xhigh")
+                self.assertEqual(saved["observed_service_tier"], "default")
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertNotIn(second, path.read_text())
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(all(
+                "tools" in json.loads(body) for body, _ in self.fixture.forwarder.calls
+            ))
+            self.assertEqual(list(root.glob(
+                f"{hashlib.sha256(first.encode('ascii')).hexdigest()}-*.json"
+            )), [])
+
+    def test_routing_receipt_continues_by_provider_response_id_in_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+            text = f"Load the skill.\nFanout routing receipt nonce: {marker}"
+            cache_key = "maka:session-one"
+            first = json.loads(valid_body(cache_key=cache_key, user_text=text))
+            self.fixture.forwarder.response_body = created_stream(response_id="resp_first")
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(first).encode()
+            )
+            self.assertEqual(status, 200)
+            second = json.loads(valid_body(cache_key=cache_key))
+            second["input"] = [{"type": "function_call_output", "call_id": "call_one", "output": "done"}]
+            second["previous_response_id"] = "resp_first"
+            self.fixture.forwarder.response_body = created_stream(response_id="resp_second")
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(second).encode()
+            )
+            self.assertEqual(status, 200)
+            digest = hashlib.sha256(marker.encode()).hexdigest()
+            paths = list((parent / "relay-routing-receipts").glob(f"{digest}-*.json"))
+            self.assertEqual(len(paths), 2)
+            receipts = [json.loads(path.read_text()) for path in paths]
+            self.assertEqual({receipt["binding"] for receipt in receipts},
+                             {"nonce", "response-chain"})
+            self.assertEqual({receipt["prompt_cache_key"] for receipt in receipts},
+                             {cache_key})
+            self.assertEqual({receipt["prompt_sha256"] for receipt in receipts},
+                             {hashlib.sha256(text.encode()).hexdigest()})
+            third = dict(second)
+            third["prompt_cache_key"] = "maka:session-two"
+            third["previous_response_id"] = "resp_second"
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(third).encode()
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(len(list((parent / "relay-routing-receipts").glob(
+                f"{digest}-*.json"
+            ))), 2)
+
+    def test_pinned_routing_forwards_only_skill_tools_and_attests_them(self) -> None:
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+        prompt = f"Fanout routing receipt nonce: {marker}\nLoad the skill."
+        for inbound_names in (("Read", "Skill", "SkillSearch"),
+                              ("SkillSearch", "Skill")):
+            with self.subTest(inbound_names=inbound_names), tempfile.TemporaryDirectory() as directory:
+                parent = pathlib.Path(directory)
+                parent.chmod(0o700)
+                self.fixture.close()
+                self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+                request = json.loads(valid_body(cache_key=cache_key, user_text=prompt))
+                request["tools"] = [
+                    {"type": "function", "name": name, "description": "fixture",
+                     "parameters": {"type": "object"}}
+                    for name in inbound_names
+                ]
+                request["tool_choice"] = "auto"
+
+                status, _, _ = self.fixture.request(
+                    "POST", "/v1/responses", json.dumps(request).encode()
+                )
+
+                self.assertEqual(status, 200)
+                self.assertEqual(self.fixture.key_loads, 1)
+                forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+                self.assertEqual(
+                    [tool["name"] for tool in forwarded["tools"]],
+                    ["Skill", "SkillSearch"],
+                )
+                self.assertEqual(forwarded["tool_choice"], "auto")
+                digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+                receipt_path, = (parent / "relay-routing-receipts").glob(f"{digest}-*.json")
+                receipt = json.loads(receipt_path.read_text())
+                self.assertEqual(receipt["outbound_tool_names"], ["Skill", "SkillSearch"])
+                self.assertEqual(receipt["tool_count"], 2)
+                self.assertNotIn("Load the skill", receipt_path.read_text())
+
+    def test_pinned_routing_without_cache_key_filters_tools_and_binds_session(self) -> None:
+        session_hex = "fedcba9876543210fedcba9876543210"
+        marker = ("maka:probe-0123456789abcdef0123456789abcdef-"
+                  + session_hex)
+        prompt = f"Load the skill.\nReceipt nonce: {marker}"
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(cache_key=None, user_text=prompt))
+            request["tools"] = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Read", "Skill", "SkillSearch")
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(self.fixture.key_loads, 1)
+            forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+            self.assertNotIn("prompt_cache_key", forwarded)
+            self.assertEqual([tool["name"] for tool in forwarded["tools"]],
+                             ["Skill", "SkillSearch"])
+            digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+            receipt_path, = (parent / "relay-routing-receipts").glob(f"{digest}-*.json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["routing_session_id"],
+                             f"fanout-routing-{session_hex}")
+            self.assertNotIn("prompt_cache_key", receipt)
+            self.assertEqual(receipt["request_marker_sha256"], digest)
+            self.assertEqual(receipt["prompt_sha256"], hashlib.sha256(prompt.encode()).hexdigest())
+            self.assertEqual(receipt["outbound_tool_names"], ["Skill", "SkillSearch"])
+            self.assertEqual(receipt["tool_count"], 2)
+            self.assertEqual(receipt["outbound_tool_choice"], "auto")
+            self.assertNotIn(prompt, receipt_path.read_text())
+            self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
+
+    def test_session_bound_zero_tool_finalization_forwards_none_and_attests_zero(self) -> None:
+        session_hex = "fedcba9876543210fedcba9876543210"
+        marker = ("maka:fanout-routing-0123456789abcdef0123456789abcdef-"
+                  + session_hex)
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = valid_body(
+                cache_key=None,
+                user_text=f"Finish the turn.\nFanout routing receipt nonce: {marker}",
+            )
+
+            status, _, _ = self.fixture.request("POST", "/v1/responses", request)
+
+            self.assertEqual(status, 200)
+            self.assertEqual(self.fixture.key_loads, 1)
+            forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+            self.assertNotIn("tools", forwarded)
+            self.assertEqual(forwarded["tool_choice"], "none")
+            digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+            receipt_path, = (parent / "relay-routing-receipts").glob(f"{digest}-*.json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertEqual(receipt["routing_session_id"],
+                             f"fanout-routing-{session_hex}")
+            self.assertEqual(receipt["outbound_tool_names"], [])
+            self.assertEqual(receipt["tool_count"], 0)
+            self.assertEqual(receipt["outbound_tool_choice"], "none")
+            self.assertNotIn("prompt_cache_key", receipt)
+
+    def test_zero_tool_request_without_session_nonce_is_denied_before_key_loading(self) -> None:
+        cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+        status, _, body = self.fixture.request(
+            "POST", "/v1/responses", valid_body(
+                cache_key=cache_key, user_text="Finish the turn without a nonce.",
+            )
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"]["code"],
+                         "routing_attribution_denied")
+        self.assertEqual(self.fixture.key_loads, 0)
+        self.assertEqual(self.fixture.forwarder.calls, [])
+
+    def test_legacy_one_segment_nonce_cannot_admit_zero_tool_finalization(self) -> None:
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+        status, _, body = self.fixture.request(
+            "POST", "/v1/responses", valid_body(
+                cache_key=cache_key,
+                user_text=f"Finish the turn.\nFanout routing receipt nonce: {marker}",
+            )
+        )
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(body)["error"]["code"], "routing_tools_denied")
+        self.assertEqual(self.fixture.key_loads, 0)
+        self.assertEqual(self.fixture.forwarder.calls, [])
+
+    def test_rejected_routing_tool_diagnostic_is_bounded_and_redacted(self) -> None:
+        marker = ("maka:fanout-routing-0123456789abcdef0123456789abcdef-"
+                  "fedcba9876543210fedcba9876543210")
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(
+                cache_key=None,
+                user_text=f"Fanout routing receipt nonce: {marker}\nPrivate prompt.",
+            ))
+            names = ["Read", "Skill", "SkillSearch", *(["private tool name"] * 7)]
+            request["tools"] = [
+                {"type": "apply_patch" if index == 4 else "function", "name": name,
+                 "description": "private tool description"}
+                for index, name in enumerate(names)
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, body = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 403)
+            self.assertEqual(json.loads(body)["error"]["code"], "routing_tools_denied")
+            self.assertEqual(self.fixture.key_loads, 0)
+            self.assertEqual(self.fixture.forwarder.calls, [])
+            path = parent / "relay-routing-last-shape.json"
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["inbound_tools"], {
+                "shape": "list",
+                "count": 10,
+                "names": ["Read", "Skill", "SkillSearch", *(["other"] * 5)],
+                "types": ["function", "function", "function", "function",
+                          "apply_patch", "function", "function", "function"],
+                "truncated": True,
+            })
+            self.assertNotIn("private", path.read_text())
+            self.assertNotIn(marker, path.read_text())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_no_cache_routing_shape_without_marker_fails_before_key_loading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(cache_key=None,
+                                            user_text="private prompt without a marker"))
+            request["tools"] = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Skill", "SkillSearch")
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, body = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 403)
+            self.assertEqual(json.loads(body)["error"]["code"],
+                             "routing_attribution_denied")
+            self.assertEqual(self.fixture.key_loads, 0)
+            self.assertEqual(self.fixture.forwarder.calls, [])
+            diagnostic = json.loads((parent / "relay-routing-last-shape.json").read_text())
+            self.assertEqual(diagnostic, {
+                "schema": "khenrix-maka-routing-shape-v1",
+                "user_content_shape": "list:input_text",
+                "nonce_seen": False,
+                "pinned_cache_key": False,
+            })
+
+    def test_no_cache_pinned_marker_rejects_extra_tool_before_key_loading(self) -> None:
+        marker = ("maka:fanout-routing-0123456789abcdef0123456789abcdef-"
+                  "fedcba9876543210fedcba9876543210")
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(
+                cache_key=None,
+                user_text=f"Fanout routing receipt nonce: {marker}\nLoad the skill.",
+            ))
+            request["tools"] = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Read", "Skill", "SkillSearch", "Bash")
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, body = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 403)
+            self.assertEqual(json.loads(body)["error"]["code"], "routing_tools_denied")
+            self.assertEqual(self.fixture.key_loads, 0)
+            self.assertEqual(self.fixture.forwarder.calls, [])
+            diagnostic = json.loads((parent / "relay-routing-last-shape.json").read_text())
+            self.assertTrue(diagnostic["nonce_seen"])
+            self.assertFalse(diagnostic["pinned_cache_key"])
+
+    def test_newer_user_turn_cannot_reuse_older_pinned_nonce(self) -> None:
+        marker = ("maka:fanout-routing-0123456789abcdef0123456789abcdef-"
+                  "fedcba9876543210fedcba9876543210")
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(
+                cache_key=None,
+                user_text=f"Fanout routing receipt nonce: {marker}\nEarlier turn.",
+            ))
+            request["input"].append({
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Newer turn has no nonce."}],
+            })
+            request["tools"] = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Skill", "SkillSearch")
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, body = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 403)
+            self.assertEqual(json.loads(body)["error"]["code"],
+                             "routing_attribution_denied")
+            self.assertEqual(self.fixture.key_loads, 0)
+            self.assertEqual(self.fixture.forwarder.calls, [])
+            self.assertFalse(json.loads(
+                (parent / "relay-routing-last-shape.json").read_text()
+            )["nonce_seen"])
+
+    def test_malformed_two_segment_routing_marker_with_extra_tool_fails_closed(self) -> None:
+        nonce = "maka:probe-0123456789abcdef0123456789abcdef"
+        for malformed in (
+            nonce + "-fedcba9876543210fedcba987654321g",
+            nonce,
+        ):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:
+                parent = pathlib.Path(directory)
+                parent.chmod(0o700)
+                self.fixture.close()
+                self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+                request = json.loads(valid_body(
+                    cache_key=None,
+                    user_text=f"Load the skill.\nReceipt nonce: {malformed}",
+                ))
+                request["tools"] = [
+                    {"type": "function", "name": name, "parameters": {"type": "object"}}
+                    for name in ("Read", "Skill", "SkillSearch", "Bash")
+                ]
+                request["tool_choice"] = "auto"
+
+                status, _, body = self.fixture.request(
+                    "POST", "/v1/responses", json.dumps(request).encode()
+                )
+
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body)["error"]["code"],
+                                 "routing_attribution_denied")
+                self.assertEqual(self.fixture.key_loads, 0)
+                self.assertEqual(self.fixture.forwarder.calls, [])
+                diagnostic_path = parent / "relay-routing-last-shape.json"
+                self.assertFalse(json.loads(diagnostic_path.read_text())["nonce_seen"])
+                self.assertNotIn(malformed, diagnostic_path.read_text())
+
+    def test_generic_no_cache_request_keeps_its_tools(self) -> None:
+        status, _, _ = self.fixture.request(
+            "POST", "/v1/responses", valid_body(tools=True, cache_key=None)
+        )
+        self.assertEqual(status, 200)
+        forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+        self.assertEqual([tool["type"] for tool in forwarded["tools"]],
+                         ["function", "apply_patch"])
+
+    def test_pinned_routing_rejects_unbound_or_unexpected_tools_before_key_loading(self) -> None:
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+        valid_prompt = f"Fanout routing receipt nonce: {marker}\nLoad the skill."
+        skill_tools = [
+            {"type": "function", "name": name, "parameters": {"type": "object"}}
+            for name in ("Skill", "SkillSearch")
+        ]
+        cases = (
+            ("no marker", "Load the skill.", skill_tools),
+            ("missing search", valid_prompt, skill_tools[:1]),
+            ("duplicate skill", valid_prompt, [*skill_tools, skill_tools[0]]),
+            ("extra tool", valid_prompt, [*skill_tools, {"type": "function", "name": "Bash"}]),
+            ("wrong type", valid_prompt, [skill_tools[0], {"type": "apply_patch", "name": "SkillSearch"}]),
+            ("malformed name", valid_prompt, [skill_tools[0], {"type": "function", "name": []}]),
+        )
+        for label, prompt, tools in cases:
+            with self.subTest(label=label):
+                request = json.loads(valid_body(cache_key=cache_key, user_text=prompt))
+                request["tools"] = tools
+                request["tool_choice"] = "auto"
+
+                status, _, body = self.fixture.request(
+                    "POST", "/v1/responses", json.dumps(request).encode()
+                )
+
+                self.assertEqual(status, 403)
+                self.assertIn("routing_", json.loads(body)["error"]["code"])
+                self.assertEqual(self.fixture.key_loads, 0)
+                self.assertEqual(self.fixture.forwarder.calls, [])
+
+    def test_pinned_routing_writes_only_bounded_request_shape_diagnostic(self) -> None:
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            request = json.loads(valid_body(
+                cache_key=marker, user_text="private prompt without marker",
+            ))
+            request["tools"] = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Skill", "SkillSearch")
+            ]
+            request["tool_choice"] = "auto"
+
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(request).encode()
+            )
+
+            self.assertEqual(status, 403)
+            path = parent / "relay-routing-last-shape.json"
+            diagnostic = json.loads(path.read_text())
+            self.assertEqual(diagnostic, {
+                "schema": "khenrix-maka-routing-shape-v1",
+                "user_content_shape": "list:input_text",
+                "nonce_seen": False,
+                "pinned_cache_key": True,
+            })
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("private prompt", path.read_text())
+
+    def test_pinned_routing_chain_requires_recorded_response_in_same_session(self) -> None:
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+        other = "maka:fanout-routing-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            tools = [
+                {"type": "function", "name": name, "parameters": {"type": "object"}}
+                for name in ("Read", "Skill", "SkillSearch")
+            ]
+            first = json.loads(valid_body(
+                cache_key=cache_key,
+                user_text=f"Fanout routing receipt nonce: {marker}\nLoad the skill.",
+            ))
+            first.update(tools=tools, tool_choice="auto")
+            self.fixture.forwarder.response_body = created_stream(response_id="resp_routing_first")
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(first).encode()
+            )
+            self.assertEqual(status, 200)
+
+            continuation = json.loads(valid_body(cache_key=cache_key))
+            continuation.update(
+                input=[{"type": "function_call_output", "call_id": "call_one", "output": "done"}],
+                previous_response_id="resp_routing_first",
+                tools=tools,
+                tool_choice="auto",
+            )
+            self.fixture.forwarder.response_body = created_stream(response_id="resp_routing_second")
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", json.dumps(continuation).encode()
+            )
+            self.assertEqual(status, 200)
+            forwarded = json.loads(self.fixture.forwarder.calls[-1][0])
+            self.assertEqual([tool["name"] for tool in forwarded["tools"]],
+                             ["Skill", "SkillSearch"])
+            digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+            receipts = [json.loads(path.read_text()) for path in
+                        (parent / "relay-routing-receipts").glob(f"{digest}-*.json")]
+            self.assertEqual({receipt["binding"] for receipt in receipts},
+                             {"nonce", "response-chain"})
+            self.assertTrue(all(receipt["tool_count"] == 2 for receipt in receipts))
+
+            for attempted_cache_key, previous_id in ((cache_key, "resp_unknown"),
+                                                     (other, "resp_routing_second")):
+                with self.subTest(cache_key=attempted_cache_key, previous_id=previous_id):
+                    attempt = dict(continuation)
+                    attempt.update(prompt_cache_key=attempted_cache_key,
+                                   previous_response_id=previous_id)
+                    status, _, body = self.fixture.request(
+                        "POST", "/v1/responses", json.dumps(attempt).encode()
+                    )
+                    self.assertEqual(status, 403)
+                    self.assertIn("routing_", json.loads(body)["error"]["code"])
+                    self.assertEqual(len(self.fixture.forwarder.calls), 2)
+                    self.assertEqual(self.fixture.key_loads, 2)
+
+    def test_judge_marker_removes_runtime_leaked_tools_before_forwarding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = pathlib.Path(directory)
+            parent.chmod(0o700)
+            self.fixture.close()
+            self.fixture = RelayServerFixture(telemetry_path=parent / "last-tier.json")
+            marker = "maka:fanout-judge-0123456789abcdef0123456789abcdef"
+            digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+
+            status, _, _ = self.fixture.request(
+                "POST", "/v1/responses", valid_body(
+                    tools=True, cache_key=None,
+                    user_text=f"Judge receipt nonce: {marker}\nCompare A and B.",
+                )
+            )
+
+            self.assertEqual(status, 200)
+            forwarded = json.loads(self.fixture.forwarder.calls[0][0])
+            self.assertNotIn("tools", forwarded)
+            self.assertEqual(forwarded.get("tool_choice"), "none")
+            receipt_path, = (parent / "relay-judge-receipts").glob(f"{digest}-*.json")
+            self.assertEqual(json.loads(receipt_path.read_text())["tool_count"], 0)
+
+    def test_judge_marker_requires_one_first_line_user_text(self) -> None:
+        marker = "maka:fanout-judge-0123456789abcdef0123456789abcdef"
+        valid = json.loads(valid_body(
+            cache_key=None,
+            user_text=f"Judge receipt nonce: {marker}\nCompare final answers.",
+        ))
+        self.assertEqual(relay.judge_request_marker(valid), marker)
+        quoted_phrase = json.loads(valid_body(
+            cache_key=None,
+            user_text=(f"Judge receipt nonce: {marker}\n"
+                       f'Answer A: "Judge receipt nonce: {marker}"'),
+        ))
+        self.assertEqual(relay.judge_request_marker(quoted_phrase), marker)
+        for changed in (
+            {**valid, "input": [{"role": "assistant", "content": valid["input"][0]["content"]}]},
+            {**valid, "input": [*valid["input"], *valid["input"]]},
+            {**valid, "input": [{"role": "user", "content": [
+                *valid["input"][0]["content"], {"type": "input_text", "text": "extra"},
+            ]}]},
+            {**valid, "input": [{"role": "user", "content": [{"type": "input_text",
+                "text": f"Preamble\nJudge receipt nonce: {marker}"}]}]},
+        ):
+            with self.subTest(input=changed["input"]):
+                self.assertIsNone(relay.judge_request_marker(changed))
 
     def test_stream_rejects_observed_tier_or_model_before_output(self) -> None:
         for payload in (
@@ -436,9 +1077,9 @@ class RelayIntegrationTests(unittest.TestCase):
             f'"model":"another-model","model":"{relay.MODEL_ID}"',
             1,
         ).encode()
-        nonfinite = valid.replace('"content":"offline fixture"', '"content":NaN', 1).encode()
+        nonfinite = valid.replace('"text":"offline fixture"', '"text":NaN', 1).encode()
         exponent_overflow = valid.replace(
-            '"content":"offline fixture"', '"content":1e999', 1
+            '"text":"offline fixture"', '"text":1e999', 1
         ).encode()
         for body in (duplicate, nonfinite, exponent_overflow):
             with self.subTest(body=body):

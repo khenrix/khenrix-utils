@@ -1,0 +1,2 @@
+{"type":"thread.started","thread_id":"codex-thread-1"}
+{"type":"turn.failed","error":{"message":"quota exhausted"}}

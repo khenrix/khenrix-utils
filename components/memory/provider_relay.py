@@ -23,7 +23,7 @@ from typing import Any
 
 OPENAI_HOST = "api.openai.com"
 OPENAI_PATH = "/v1/responses"
-MODEL = "gpt-6-sol"
+MODEL = "gpt-6.1-sol"
 EFFORT = "xhigh"
 MAX_BODY = 16 * 1024 * 1024
 MAX_MESSAGES = 256

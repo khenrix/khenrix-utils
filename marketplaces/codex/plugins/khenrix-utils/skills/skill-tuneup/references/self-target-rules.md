@@ -3,41 +3,41 @@
 Special handling when the tune-up target IS part of this skill's own machinery. The
 danger: a tool reviewing its own under-test diff, or unbounded recursion.
 
-## Target = llm-council
+## Target touches the reviewer runtime
 
-The council reviews (findings + diff) run through `fanout.py`. If the working tree has
-modified `shared/skills/llm-council/**` OR `shared/lib/council/**`, the under-test engine
-must NOT be its own reviewer:
+Both reviews use the fanout planner and durable read-only executor. Before either launch,
+inspect changes to `shared/lib/fanout/**`, both `shared/skills/llm-fanout-*/**`, and
+`components/memory/**`. Include any other source in the selected runtime's actual import
+or operator closure. A dirty reviewer must not review itself.
 
-1. Extract the last committed engine and run that instead:
-   ```bash
-   GOOD=$(mktemp -d)/engine.py
-   git -C <repo> show HEAD:shared/lib/council/engine.py > "$GOOD"
-   python3 "$GOOD" --prompt-file <diff-prompt> --out json
-   ```
-2. If that is unusable too (e.g. the fix targets a bug in the committed engine), fall
-   back to a single-provider review: run one other CLI headlessly against the diff
-   (see `headless-invocation.md` at the plugin root) and treat it as a 1-member panel.
-3. Either way, **tell the user the reviewer was substituted and why.**
+Extract the complete committed source tree so relative imports, both CLI entries,
+capabilities, and memory modules all come from one commit:
 
-**Consequence for a panel change.** `MODES` lives in `engine.py`, so extracting HEAD's engine
-also extracts the OLD panel — a model bump is necessarily reviewed by the models it replaces,
-and the new panel never reviews its own diff. That is the intended independence, not a bug.
-The compensating control is integration evidence: smoke **every changed seat** with the
-working-tree engine (pass `--providers` explicitly to isolate the changed seat and avoid
-spending on unrelated ones — note `--providers` DEFAULTS to `claude,codex,agy`, so
-`smoke()`'s `["claude"]` fallback is unreachable from the CLI; measured 2026-08-15 — or check the
-manifest's per-seat `model`/`thinking` provenance) and probe any timing claim the change
-alters. The smoke proves the seats resolve and answer; it is not a review of their judgment.
+```bash
+REVIEW_KU=$(mktemp -d)
+git -C "$KU" rev-parse HEAD
+git -C "$KU" archive HEAD | tar -x -C "$REVIEW_KU"
+FANOUT_PLAN="$REVIEW_KU/shared/skills/llm-fanout-plan/scripts/plan.py"
+FANOUT_EXECUTE="$REVIEW_KU/shared/skills/llm-fanout-execute/scripts/execute.py"
+```
 
-The eval gate for llm-council is also special. The receipt is WRITTEN by
-`make eval SKILL=llm-council`, which gates on `fanout.py --self-test` alone — never the
-with-skill/baseline judge harness. A live `--smoke` and `make council-test` are additional
-REQUIRED checks, not what earns the receipt (`council-test` runs inside `verify`/
-`precommit`). See `references/eval-rules.md`.
+Check both extraction exit statuses before proceeding. Do not extract just one engine
+file, blend dirty modules into its imports, or copy a current runtime into the archive.
+Admit review skills from exact clean roots. Keep `REPO` pointing to the under-test target;
+the question/evidence and captured baseline describe its candidate, while `REVIEW_KU`
+supplies the independent committed reviewer. Do not execute helpers from the dirty target
+as part of reviewer startup. Disclose the selected commit, runtime, panel and reason.
 
-Note `LLM_COUNCIL_DEPTH` already blocks a council spawning inside a council member —
-do not "fix" that guard away.
+Committed profiles may name the previous models; report that fact instead of changing
+the review panel silently. Installed-profile and memory preflight still apply. If that
+committed runtime cannot meet the review contract, retain the failure and stop. An
+alternative requires an explicitly user-selected independent reviewer, separately
+admitted and disclosed; never quietly fall back or lower quorum.
+
+For a historical llm-council target, current fanout is already a different runtime; keep
+the historical engine's deterministic/security checks. Current default smoke is
+`make smoke-llm-fanout`, with separate spend authorization. A smoke proves transport
+behavior, not independent review quality or the final skill receipt.
 
 ## Target = skill-tuneup (this skill)
 
@@ -45,7 +45,7 @@ do not "fix" that guard away.
   as committed at HEAD, not the under-test working-tree copy you are editing.
 - The tuneup lock (`skill-tuneup.lock.d`, Step 1 of SKILL.md) makes a literal nested
   self-run refuse to start; don't work around it.
-- For the final review: council-review the diff as usual (fanout.py is not under test),
+- For the final review: fanout-review the diff under the runtime rule above,
   but the ultimate reviewer is the **user reading the diff** — say so explicitly.
 
 ## Target = khenrix-setup / khenrix-upgrade

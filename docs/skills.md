@@ -1,6 +1,6 @@
 # Shared skills
 
-Khenrix Utils manages 17 skills for Claude Code, Codex, agy, and Maka. The two
+Khenrix Utils manages 19 skills for Claude Code, Codex, agy, and Maka. The four
 Khenrix-authored skills live under `shared/skills/`; the 15 vendored Superpowers
 skills live under `shared/superpowers/`. They are copied directly from this
 repository. This selective install never installs or
@@ -12,6 +12,8 @@ native-only skills.
 |---|---|
 | `khenrix-quality` | Easier-to-follow replies, minimal AI-prose cleanup, and code-quality work. Modes: `adhd`, `prose-edit`, `prose-detect`, `code`, and `code-workflow`. |
 | `khenrix-writing` | Humanizing prose, matching a voice sample, or a deeper rewrite. Mode: `humanize`. |
+| `llm-fanout-plan` | Turn an approved plan, direct question, or reviewed task bundle into a validated skill-aware fanout DAG. |
+| `llm-fanout-execute` | Execute an admitted fanout plan through isolated CLI seats, shared memory, reconciliation, and owner-reviewed handover. |
 | `using-superpowers` | Load the relevant development-process skill before acting in a root session. |
 | `brainstorming` | Turn an open-ended idea into an agreed design before implementation. |
 | `writing-plans` | Turn an agreed design into a concrete implementation plan. |
@@ -54,16 +56,20 @@ Natural-language requests that name the former `i-have-adhd`, `no-ai-slop`, `pon
 `ponytail-help`, or `humanizer` route to the matching mode. The corresponding legacy
 command forms `/<former-name>`, `$<former-name>`, and `/skill:<former-name>` are retired.
 Invoke `khenrix-quality` or `khenrix-writing` with the matching mode instead. The
-selective installer owns those two composed skills and the 15 verbatim Superpowers
+selective installer owns those two composed skills, the two fanout skills, and the 15 verbatim Superpowers
 directories; Agentic Setup removes the retired legacy directories in its bounded migration.
 
 Routing keeps one workflow in charge. An explicitly named skill wins first, followed
 by a domain or end-to-end owner such as `fix-jira-ticket`, `agentic-setup`, Khenrix
-setup/upgrade, or `llm-forge`. Use `mikado-graph` for dependency decomposition and
+setup/upgrade, or `llm-fanout-plan`. Use `mikado-graph` for dependency decomposition and
 Superpowers for a generic development process. `khenrix-quality` shapes the result
 inside that owner. `brainstorming` is for open-ended design and does not reopen an
 accepted plan. Upstream names such as `superpowers:systematic-debugging` mean the
 plain native skill `systematic-debugging` in this installation.
+
+Council and Forge are historical source/evidence only. Their two skills and two
+libraries are declared under `[historical_only]`, excluded from current delivery
+and receipt membership, and retained with their compatibility/security suites.
 
 The brainstorming visual companion is optional. When the user accepts it, launch
 it only through its managed script, which always sets
@@ -81,7 +87,7 @@ mise run skills:doctor
 mise run skills:status
 ```
 
-The controller owns only the 17 declared skill directories and the bounded
+The controller owns only the 19 declared skill directories and the bounded
 `khenrix-managed` instruction block. All sibling skills and text outside that
 block are preserved.
 

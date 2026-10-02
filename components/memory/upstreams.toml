@@ -9,7 +9,7 @@ license = "Apache-2.0"
 upstream_license_path = "LICENSE"
 local_license_path = "LICENSE.claude-mem.txt"
 license_path_policy = "component"
-adaptation = "Pins the claude-mem npm worker and source while protecting SRI, source and license provenance, additive lifecycle hooks, and local-only privacy behavior."
+adaptation = "Pins the unchanged claude-mem npm worker/source/SRI/license with owned bounded capture ingress, sanitized transcript snapshots, additive lifecycle hooks, explicit routes, and a v2 capture-component receipt. Direct unmanaged worker HTTP capture remains outside the ingress contract."
 relationship = "adapter"
 affected_capability_ids = ["agy-memory-hooks", "codex-memory-hooks", "mem-search", "memory-runtime-controller"]
 watch = "npm_releases"
@@ -24,11 +24,15 @@ review_commands = ["mise exec -- make memory-runtime-test"]
 paths = [
   "components/memory/provenance.json",
   "components/memory/memoryctl.py",
+  "components/memory/memory_ingress.py",
+  "components/memory/memory_exchange.py",
   "components/memory/provider_relay.py",
   "components/memory/README.md",
   "components/memory/LICENSE.claude-mem.txt",
+  "tests/test_memory_ingress.py",
+  "tests/test_memory_runtime.py",
 ]
-hash = "sha256:d1bc8b756111344c2d25eefaa595731373c5857e1151cade95155b08c32063ae"
+hash = "sha256:6920cf19f89e1cbdc7508ccd96f0072d59d035be004a6611dc14e7cc27f3c303"
 required_text = [
   { path = "components/memory/provenance.json", text = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g==" },
   { path = "components/memory/provenance.json", text = "4520de9e0f8d6cdc20597520e383d8b51d93137f" },
@@ -61,4 +65,10 @@ required_text = [
   { path = "components/memory/memoryctl.py", text = '{"enabled": False, "installId": "disabled-by-khenrix-utils", "decidedAt": "managed-by-khenrix-utils"}' },
   { path = "components/memory/provider_relay.py", text = 'web_search="disabled"' },
   { path = "components/memory/memoryctl.py", text = "install_hooks([\"claude\", \"codex\", \"agy\"])" },
+  { path = "components/memory/memoryctl.py", text = '"schema": "khenrix-memory-install-v2"' },
+  { path = "components/memory/memoryctl.py", text = "memory_ingress.prepare_hook(sys.stdin.buffer" },
+  { path = "components/memory/memory_ingress.py", text = "MAX_HOOK_BYTES = 1024 * 1024" },
+  { path = "components/memory/memory_ingress.py", text = "MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024" },
+  { path = "components/memory/memory_exchange.py", text = "memoryctl.install_receipt_problem()" },
+  { path = "components/memory/memory_exchange.py", text = "/api/observations/batch" },
 ]

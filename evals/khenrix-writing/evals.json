@@ -29,7 +29,7 @@
     {
       "id": "fact-relationship-preservation",
       "name": "Humanization preserves names, numbers, dates, and causal relationships",
-      "prompt": "Deeply humanize this without changing any claim: 'On 6 May, Priya's two-person team reduced median checkout latency from 480 ms to 310 ms after enabling connection pooling. The experiment covered 18,204 requests in eu-west-1; p95 stayed at 920 ms. Priya called the result useful but incomplete.'",
+      "prompt": "Deeply humanize this without changing any claim. Return only the rewritten paragraph, in at most 100 words: 'On 6 May, Priya's two-person team reduced median checkout latency from 480 ms to 310 ms after enabling connection pooling. The experiment covered 18,204 requests in eu-west-1; p95 stayed at 920 ms. Priya called the result useful but incomplete.'",
       "files": [],
       "assertions": [
         "Preserves 6 May, Priya, the two-person team, 480 ms, 310 ms, connection pooling, 18,204 requests, eu-west-1, p95 of 920 ms, and useful but incomplete",

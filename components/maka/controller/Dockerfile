@@ -33,17 +33,25 @@ RUN mise exec -- python controller/test_secret_broker.py \
     && package_root="$(dirname "$package_json")" \
     && /opt/venvs/harbor-0.20.0/bin/python controller/test_maka_compat.py "$package_root" \
     && mise exec -- /opt/venvs/harbor-0.20.0/bin/python controller/test_maka_hosted_onboarding_compat.py "$package_root" \
+    && mise exec -- /opt/venvs/harbor-0.20.0/bin/python controller/test_maka_harbor_judge_compat.py "$package_root" \
+    && mise exec -- /opt/venvs/harbor-0.20.0/bin/python controller/test_undici_h2_close_compat.py "$package_root" \
     && mise exec -- node controller/provider-request-contract.mjs "$package_root" /tmp/provider-request.json \
     && mise exec -- python controller/assert-provider-body.py /tmp/provider-request.json \
     && rm /tmp/provider-request.json
 
 LABEL org.opencontainers.image.title="Maka audit lab controller" \
-      org.opencontainers.image.version="0.2.0-dev.47.20260922" \
-      org.opencontainers.image.revision="6cb8c58084d043f9b87421807fbee1d1ad3bdc03" \
+      org.opencontainers.image.version="0.2.0-dev.62.20260928" \
+      org.opencontainers.image.revision="2f32205528a4436783c800715261d4b6e286023d" \
       io.maka.eval.compatibility-overlay="relay-root-virtiofs-v2-eval-openai-onboarding-v2" \
-      io.maka.eval.relay-agent-sha256="8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0" \
-      io.maka.eval.model-fetcher-sha256="69f457fd88c1f124c360c0f5bb0195999a0997f9d9170ef5c8f61ce6e9817d01" \
-      io.maka.eval.maka-subject-sha256="2f39e06a20291b7d2759d5bd9d54e912c3d32817c15f74140ef9cf62b51ec8f3" \
+      io.maka.eval.relay-agent-sha256="6214ed402d2d8345b20b625739b9a08905116bfdd944775938d5d78054033621" \
+      io.maka.eval.model-fetcher-sha256="427672c03fead122a387d4f690d85ec2d800fe7e7a9e70d02f8fbe648d413dd7" \
+      io.maka.eval.maka-subject-sha256="f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775" \
+      io.maka.judge.compatibility-overlay="relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1" \
+      io.maka.judge.runtime-variant="harbor-judge-sol61-h2-v1" \
+      io.maka.judge.model-fetcher-sha256="7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5" \
+      io.maka.judge.model-metadata-sha256="9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7" \
+      io.maka.judge.undici-h2-base-sha256="611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7" \
+      io.maka.judge.undici-h2-sha256="521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087" \
       io.maka.eval.terminal-bench-revision="d49e28f1e4ddd13d289e85a5f312a66750951932"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/maka-lab/controller/entrypoint.sh"]

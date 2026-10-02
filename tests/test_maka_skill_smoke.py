@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "components" / "skills"))
 import maka_smoke  # noqa: E402
+import maka_auth_mode  # noqa: E402
 import skillctl  # noqa: E402
 
 from test_skill_delivery import fixture as delivery_fixture  # noqa: E402
@@ -21,7 +27,16 @@ def smoke_delivery_fixture(
     tmp_path: Path,
 ) -> tuple[Path, Path, skillctl.Configuration]:
     repo, home, _ = delivery_fixture(tmp_path)
-    names = ("using-superpowers", "brainstorming")
+    names = (
+        "using-superpowers",
+        "brainstorming",
+        "writing-plans",
+        "subagent-driven-development",
+        "systematic-debugging",
+        "test-driven-development",
+        "llm-fanout-plan",
+        "llm-fanout-execute",
+    )
     for name in names:
         skill = repo / "shared" / "skills" / name
         skill.mkdir(parents=True)
@@ -33,8 +48,11 @@ def smoke_delivery_fixture(
         capabilities.read_text().replace(
             'skills = ["khenrix-quality", "khenrix-writing"]',
             'skills = ["khenrix-quality", "khenrix-writing", '
-            '"using-superpowers", "brainstorming"]',
+            + ", ".join(json.dumps(name) for name in names) + "]",
         )
+    )
+    maka_auth_mode.write_mode(
+        "api-key-relay", home / ".config" / "khenrix-utils" / "maka" / "maka-auth-mode"
     )
     return repo, home, skillctl.load_configuration(repo, home, None)
 
@@ -50,6 +68,1426 @@ def test_default_runtime_db_matches_managed_platform_profiles(tmp_path: Path) ->
     ) == tmp_path / ".config" / "Maka" / "workspaces" / "default" / "runtime.sqlite"
 
 
+def test_routing_session_requires_durable_skill_only_profile(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    cwd = tmp_path / "task"
+    cwd.mkdir()
+    payload = {
+        "cwd": str(cwd), "toolProfile": "khenrix-skill-routing-v1",
+        "permissionMode": "ask", "thinkingLevel": "xhigh",
+    }
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)",
+            ("session-1", json.dumps(payload), 1),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        maka_smoke.verify_routing_session(connection, "session-1", cwd)
+        with pytest.raises(maka_smoke.SmokeError, match="routing profile"):
+            maka_smoke.verify_routing_session(connection, "other-session", cwd)
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "UPDATE session_metadata SET payload_json = ? WHERE session_id = ?",
+            (json.dumps({**payload, "toolProfile": "headless-coding-v1"}), "session-1"),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="routing profile"):
+            maka_smoke.verify_routing_session(connection, "session-1", cwd)
+
+
+def test_routing_session_rejects_wrong_cwd_or_permission(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    cwd = tmp_path / "task"
+    cwd.mkdir()
+    payload = {
+        "cwd": str(tmp_path / "other"), "toolProfile": "khenrix-skill-routing-v1",
+        "permissionMode": "bypass", "thinkingLevel": "xhigh",
+    }
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)",
+            ("session-1", json.dumps(payload), 1),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="routing profile"):
+            maka_smoke.verify_routing_session(connection, "session-1", cwd)
+
+
+def test_host_tool_audit_requires_a_recorded_settled_turn(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="Host tool evidence"):
+            maka_smoke.verify_skill_only_tool_events(connection, "session-1", 0)
+
+
+def test_host_tool_audit_keeps_late_skill_event_inside_turn_boundary(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    with sqlite3.connect(runtime_db) as connection:
+        for sequence, event_type in enumerate((
+            "turn_started", "model_stream_started", "model_stream_completed", "skill_loaded",
+        ), 1):
+            record: dict[str, object] = {
+                "id": f"event-{sequence}", "sessionId": "session-1",
+                "turnId": "turn-1", "type": event_type,
+            }
+            if event_type == "model_stream_started":
+                record["data"] = {"activeTools": ["Skill", "SkillSearch"]}
+            elif event_type == "skill_loaded":
+                record["data"] = natural_event_data()
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                ("session-1", sequence, f"event-{sequence}", event_type, json.dumps(record)),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        evidence = maka_smoke.verify_skill_only_tool_events(connection, "session-1", 0)
+        skill_rows = maka_smoke.turn_skill_events(connection, "session-1", evidence)
+    assert evidence["event_through_rowid"] == 4
+    assert len(skill_rows) == 1
+
+
+def test_host_tool_audit_binds_the_exact_session_and_turn(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    target = "session-1"
+    other = "session-2"
+    rows = [
+        (other, "turn_started", "other-turn", None),
+        (target, "turn_started", "target-turn", None),
+        (target, "model_stream_started", "target-turn", ["Skill", "SkillSearch"]),
+        (target, "model_stream_completed", "target-turn", None),
+        (target, "tool_started", "target-turn", "Skill"),
+        (other, "tool_started", "other-turn", "Bash"),
+    ]
+    with sqlite3.connect(runtime_db) as connection:
+        for sequence, (session, event_type, turn, tool) in enumerate(rows, 1):
+            event_id = f"event-{sequence}"
+            record = {
+                "id": event_id, "sessionId": session, "turnId": turn,
+                "type": event_type,
+            }
+            if event_type == "model_stream_started":
+                record["data"] = {"activeTools": tool}
+            elif tool is not None:
+                record["data"] = {"toolName": tool}
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                (session, sequence, event_id, event_type, json.dumps(record)),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        evidence = maka_smoke.verify_skill_only_tool_events(connection, target, 0)
+    assert evidence["source"] == "core_agent_run_events"
+    assert evidence["session_id"] == target
+    assert evidence["turn_id"] == "target-turn"
+    assert evidence["tool_starts"] == [{"event_id": "event-5", "tool_name": "Skill"}]
+    assert evidence["non_skill_tool_starts"] == 0
+    assert evidence["model_visible_tools"] == ["Skill", "SkillSearch"]
+    assert evidence["model_stream_completed_count"] == 1
+    assert evidence["event_digest"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("event_type,tool_name", [
+    ("tool_started", "Bash"),
+    ("trace_write_failed", None),
+])
+def test_host_tool_audit_rejects_executor_or_trace_failure(
+    tmp_path: Path, event_type: str, tool_name: str | None,
+) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    events = ["turn_started", "model_stream_started", "model_stream_completed", event_type]
+    with sqlite3.connect(runtime_db) as connection:
+        for sequence, kind in enumerate(events, 1):
+            record = {
+                "id": f"event-{sequence}", "sessionId": "session-1",
+                "turnId": "turn-1", "type": kind,
+            }
+            if kind == "tool_started":
+                record["data"] = {"toolName": tool_name}
+            elif kind == "model_stream_started":
+                record["data"] = {"activeTools": ["Skill", "SkillSearch"]}
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                ("session-1", sequence, f"event-{sequence}", kind, json.dumps(record)),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="non-skill tool|trace"):
+            maka_smoke.verify_skill_only_tool_events(connection, "session-1", 0)
+
+
+def test_host_tool_audit_rejects_a_shell_tool_exposed_to_the_model(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    with sqlite3.connect(runtime_db) as connection:
+        for sequence, (event_type, data) in enumerate((
+            ("turn_started", None),
+            ("model_stream_started", {"activeTools": ["Skill", "Bash"]}),
+            ("model_stream_completed", None),
+        ), 1):
+            event_id = f"event-{sequence}"
+            record = {
+                "id": event_id, "sessionId": "session-1", "turnId": "turn-1",
+                "type": event_type,
+            }
+            if data is not None:
+                record["data"] = data
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                ("session-1", sequence, event_id, event_type, json.dumps(record)),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="model-visible.*non-skill") as error:
+            maka_smoke.verify_skill_only_tool_events(connection, "session-1", 0)
+    assert "observed=['Skill', 'Bash']" in str(error.value)
+
+
+def test_host_tool_diagnostic_does_not_echo_untrusted_event_data() -> None:
+    assert maka_smoke.tool_name_diagnostic(["Skill", "secret\nvalue"]) == "<malformed>"
+    assert maka_smoke.tool_name_diagnostic(["Skill"] * 33) == "<too many>"
+    assert maka_smoke.tool_name_diagnostic(None) == "<missing or malformed>"
+
+
+def test_manifest_declares_ordered_fanout_skill_matrix() -> None:
+    manifest = maka_smoke.load_cases(ROOT / "components" / "skills" / "maka-smoke.json")
+    assert manifest["schema_version"] == 2
+    assert manifest["matrix"]
+    assert all(
+        step["expected_skills"]
+        for scenario in manifest["matrix"]
+        for step in scenario["steps"]
+    )
+    assert any(
+        len(step["expected_skills"]) > 1
+        for scenario in manifest["matrix"]
+        for step in scenario["steps"]
+    )
+    routed = {
+        skill["id"]
+        for scenario in manifest["matrix"]
+        for step in scenario["steps"]
+        for skill in step["expected_skills"]
+    }
+    assert {"llm-fanout-plan", "llm-fanout-execute"} <= routed
+
+
+def test_first_turn_loads_root_router_before_explicit_target() -> None:
+    assert maka_smoke.needs_session_bootstrap({
+        "route": "explicit", "skill": "brainstorming",
+    }) is True
+    assert maka_smoke.needs_session_bootstrap({
+        "route": "explicit", "skill": "using-superpowers",
+    }) is False
+
+
+def test_matrix_rejects_an_unexpected_skill_in_the_same_turn(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    for sequence, skill in enumerate(("brainstorming", "khenrix-writing"), 1):
+        data = natural_event_data(
+            skillId=skill,
+            skillName=skill,
+            skillRef=f"user:agents:{skill}",
+        )
+        record = {
+            "id": f"event-{sequence}", "sessionId": "session-1",
+            "turnId": "turn-1", "type": "skill_loaded", "data": data,
+        }
+        with sqlite3.connect(runtime_db) as connection:
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                ("session-1", sequence, f"event-{sequence}", "skill_loaded", json.dumps(record)),
+            )
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "turn-1", 1, json.dumps({"kind": "natural-continuation"})),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="unexpected skill"):
+            maka_smoke.verify_matrix_turn(
+                connection, "session-1", 0, 0,
+                [{"id": "brainstorming", "invocation": "model_tool"}],
+                natural_event_window(2),
+            )
+
+
+def test_matrix_turn_requires_new_events_in_declared_order(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    for sequence, skill in enumerate(("brainstorming", "writing-plans"), 1):
+        data = natural_event_data(
+            skillId=skill, skillName=skill, skillRef=f"user:agents:{skill}"
+        )
+        with sqlite3.connect(runtime_db) as connection:
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                (
+                    "session-1", sequence, f"event-{sequence}", "skill_loaded",
+                    json.dumps({
+                        "id": f"event-{sequence}", "sessionId": "session-1",
+                        "turnId": "turn-1", "type": "skill_loaded", "data": data,
+                    }),
+                ),
+            )
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "turn-1", 1, json.dumps({"kind": "natural-continuation"})),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        expected = [
+            {"id": "brainstorming", "invocation": "model_tool"},
+            {"id": "writing-plans", "invocation": "model_tool"},
+        ]
+        evidence = maka_smoke.verify_matrix_turn(
+            connection, "session-1", 0, 0, expected, natural_event_window(2),
+        )
+        assert [item["skill_id"] for item in evidence] == ["brainstorming", "writing-plans"]
+        with pytest.raises(maka_smoke.SmokeError, match="expected skill"):
+            maka_smoke.verify_matrix_turn(
+                connection, "session-1", 0, 0, list(reversed(expected)),
+                natural_event_window(2),
+            )
+        admission_cursor, event_cursor = maka_smoke.skill_rowids(connection, "session-1")
+        with pytest.raises(maka_smoke.SmokeError, match="root admission"):
+            maka_smoke.verify_matrix_turn(
+                connection, "session-1", admission_cursor, event_cursor, expected,
+                {
+                    "session_id": "session-1", "turn_id": "turn-1",
+                    "event_after_rowid": event_cursor,
+                    "event_through_rowid": event_cursor,
+                },
+            )
+
+
+def test_matrix_rejects_skill_event_from_another_turn(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "target-turn", 1, json.dumps({"kind": "natural-continuation"})),
+        )
+        connection.execute(
+            "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+            (
+                "session-1", 1, "event-1", "skill_loaded",
+                json.dumps({
+                    "id": "event-1", "sessionId": "session-1",
+                    "turnId": "foreign-turn", "type": "skill_loaded",
+                    "data": natural_event_data(),
+                }),
+            ),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="turn"):
+            maka_smoke.verify_matrix_turn(
+                connection, "session-1", 0, 0,
+                [{"id": "khenrix-quality", "invocation": "model_tool"}],
+                {
+                    "session_id": "session-1", "turn_id": "target-turn",
+                    "event_after_rowid": 0, "event_through_rowid": 1,
+                },
+            )
+
+
+def write_routing_receipt(
+    path: Path, marker: str, *, model: str = "gpt-6.1-sol",
+    time_utc: str, effort: str = "xhigh", marker_hash: str | None = None,
+    cache_key: str | None = None, binding: str = "nonce",
+    tool_names: list[str] | None = None,
+) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    path.write_text(json.dumps({
+        "schema": "khenrix-maka-routing-request-v1",
+        "time_utc": time_utc,
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": model,
+        "requested_service_tier": "default",
+        "observed_service_tier": "default",
+        "http_status": 200,
+        "request_marker_sha256": marker_hash or hashlib.sha256(marker.encode()).hexdigest(),
+        "request_instance_id": path.stem.rsplit("-", 1)[-1],
+        "prompt_sha256": hashlib.sha256(b"provider-visible prompt").hexdigest(),
+        "routing_session_id": "fanout-routing-" + marker.rsplit("-", 1)[-1],
+        **({"prompt_cache_key": cache_key} if cache_key is not None else {}),
+        "binding": binding,
+        **({"previous_response_id_sha256": hashlib.sha256(b"resp_first").hexdigest()}
+           if binding == "response-chain" else {}),
+        "response_id_sha256": hashlib.sha256(
+            b"resp_second" if binding == "response-chain" else b"resp_first"
+        ).hexdigest(),
+        "relay_source_sha256": hashlib.sha256(
+            (ROOT / "components/maka/interactive/maka_openai_relay.py").read_bytes()
+        ).hexdigest(),
+        "outbound_effort": effort,
+        "outbound_tool_names": ["Skill", "SkillSearch"] if tool_names is None else tool_names,
+        "outbound_tool_choice": "auto" if tool_names is None or tool_names else "none",
+        "tool_count": 2 if tool_names is None else len(tool_names),
+    }))
+    path.chmod(0o600)
+
+
+def test_model_route_requires_fresh_observed_gpt6(tmp_path: Path) -> None:
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    marker = "maka:fanout-routing-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    receipt_dir = tier_file.parent / "relay-routing-receipts"
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = receipt_dir / f"{marker_hash}-{'a' * 32}.json"
+    started_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    fresh = finished_at.isoformat()
+    with pytest.raises(maka_smoke.SmokeError, match="missing"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(path, marker, model="gpt-5.6-sol", time_utc=fresh)
+    with pytest.raises(maka_smoke.SmokeError, match="unverified"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(
+        path, marker,
+        time_utc=(started_at - dt.timedelta(seconds=1)).isoformat(),
+    )
+    with pytest.raises(maka_smoke.SmokeError, match="stale"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(path, marker, time_utc=fresh)
+    route = maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    assert route["observed_model"] == "gpt-6.1-sol"
+    assert route["requested_effort"] == "xhigh"
+    assert route["outbound_effort"] == "xhigh"
+    assert route["observed_effort"] is None
+    assert route["provider_request_count"] == 1
+    assert route["provider_visible_tools"] == ["Skill", "SkillSearch"]
+    maka_smoke.verify_model_session(route, "fanout-routing-0123456789abcdef0123456789abcdef")
+    with pytest.raises(maka_smoke.SmokeError, match="another session"):
+        maka_smoke.verify_model_session(route, "fanout-routing-00000000000000000000000000000000")
+    second = receipt_dir / f"{marker_hash}-{'b' * 32}.json"
+    write_routing_receipt(second, marker, time_utc=fresh, binding="response-chain",
+                          cache_key="maka:fanout-routing-0123456789abcdef0123456789abcdef")
+    assert maka_smoke.verified_model_route(
+        tier_file, marker, started_at, finished_at
+    )["provider_request_count"] == 2
+    write_routing_receipt(second, marker, time_utc=fresh, binding="response-chain",
+                          tool_names=[])
+    route_with_finalization = maka_smoke.verified_model_route(
+        tier_file, marker, started_at, finished_at
+    )
+    assert route_with_finalization["provider_no_tool_request_count"] == 1
+    write_routing_receipt(second, marker, time_utc=fresh, binding="response-chain")
+    assert maka_smoke.verified_model_route(
+        tier_file, marker, started_at, finished_at
+    )["provider_request_count"] == 2
+    unbound = json.loads(second.read_text())
+    unbound["previous_response_id_sha256"] = hashlib.sha256(b"resp_unrelated").hexdigest()
+    second.write_text(json.dumps(unbound))
+    with pytest.raises(maka_smoke.SmokeError, match="response chain"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(second, marker, model="gpt-5.6-sol", time_utc=fresh,
+                          binding="response-chain",
+                          cache_key="maka:fanout-routing-0123456789abcdef0123456789abcdef")
+    with pytest.raises(maka_smoke.SmokeError, match="unverified"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(second, marker, time_utc=fresh,
+                          cache_key="maka:fanout-routing-00000000000000000000000000000000")
+    with pytest.raises(maka_smoke.SmokeError, match="ambiguous"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(second, marker, time_utc=fresh, effort="medium")
+    with pytest.raises(maka_smoke.SmokeError, match="effort"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+
+
+def test_model_route_rejects_relay_receipt_with_read_or_wrong_count(tmp_path: Path) -> None:
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    marker = "maka:fanout-routing-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = tier_file.parent / "relay-routing-receipts" / f"{marker_hash}-{'a' * 32}.json"
+    started_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    write_routing_receipt(path, marker, time_utc=finished_at.isoformat())
+    for names, count in ((["Read", "Skill", "SkillSearch"], 3),
+                         (["Skill", "SkillSearch"], 3)):
+        receipt = json.loads(path.read_text())
+        receipt["outbound_tool_names"] = names
+        receipt["tool_count"] = count
+        path.write_text(json.dumps(receipt))
+        with pytest.raises(maka_smoke.SmokeError, match="tool"):
+            maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+
+
+def test_model_route_rejects_other_session_and_ambiguous_receipts(tmp_path: Path) -> None:
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    marker = "maka:fanout-routing-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    other = "maka:fanout-routing-0123456789abcdef0123456789abcdef-fedcba9876543210fedcba9876543210"
+    started_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    root = tier_file.parent / "relay-routing-receipts"
+    other_hash = hashlib.sha256(other.encode()).hexdigest()
+    write_routing_receipt(
+        root / f"{other_hash}-{'a' * 32}.json", other,
+        time_utc=finished_at.isoformat(),
+    )
+    tier_file.write_text(json.dumps({
+        "schema": "khenrix-maka-relay-tier-v1",
+        "time_utc": finished_at.isoformat(),
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": "gpt-6.1-sol",
+        "requested_service_tier": "default",
+        "observed_service_tier": "default",
+        "http_status": 200,
+    }))
+    with pytest.raises(maka_smoke.SmokeError, match="missing"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = root / f"{marker_hash}-{'b' * 32}.json"
+    write_routing_receipt(path, marker, time_utc=finished_at.isoformat(),
+                          marker_hash=other_hash)
+    with pytest.raises(maka_smoke.SmokeError, match="ambiguous|other session"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    write_routing_receipt(path, marker, time_utc=finished_at.isoformat())
+    (root / f"{marker_hash}-malformed.json").write_text("{}")
+    with pytest.raises(maka_smoke.SmokeError, match="ambiguous"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+
+
+def test_model_route_rejects_ambiguous_json_keys(tmp_path: Path) -> None:
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    marker = "maka:fanout-routing-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = tier_file.parent / "relay-routing-receipts" / f"{marker_hash}-{'a' * 32}.json"
+    started_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    write_routing_receipt(path, marker, time_utc=finished_at.isoformat())
+    path.write_text(path.read_text()[:-1] + ',"observed_model":"gpt-6.1-sol"}')
+    with pytest.raises(maka_smoke.SmokeError, match="ambiguous|invalid"):
+        maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+
+
+def test_model_route_rejects_an_unbound_provider_attempt(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    marker = "maka:fanout-routing-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = tier_file.parent / "relay-routing-receipts" / f"{marker_hash}-{'a' * 32}.json"
+    started_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    finished_at = dt.datetime.now(dt.timezone.utc)
+    write_routing_receipt(path, marker, time_utc=finished_at.isoformat())
+    route = maka_smoke.verified_model_route(tier_file, marker, started_at, finished_at)
+    route["provider_attempt_after_rowid"] = 0
+    route["provider_attempt_through_rowid"] = 2
+    completed_ms = int(finished_at.timestamp() * 1000)
+    with sqlite3.connect(runtime_db) as connection:
+        for attempt in ("bound", "unbound"):
+            connection.execute(
+                "INSERT INTO usage_model_call_attempts VALUES (?,?,?,?)",
+                (attempt, completed_ms, "session-one", "main"),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="provider attempt count"):
+            maka_smoke.verify_provider_attempts(connection, "session-one", route)
+
+
+def test_environment_removes_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+        "GH_TOKEN", "EXAMPLE_PASSWORD", "DATABASE_URL", "HTTPS_PROXY",
+        "EXAMPLE_AUTH",
+    ):
+        monkeypatch.setenv(key, "fake-secret")
+    monkeypatch.setenv("PATH", "/tmp/smoke-bin:/usr/bin:/bin")
+    environment = maka_smoke.sanitized_environment()
+    assert all(key not in environment for key in (
+        "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+        "GH_TOKEN", "EXAMPLE_PASSWORD", "DATABASE_URL", "HTTPS_PROXY",
+        "EXAMPLE_AUTH",
+    ))
+    assert environment["PATH"] == "/tmp/smoke-bin:/usr/bin:/bin"
+
+
+def test_positive_maka_executor_answer_fails_refusal_check() -> None:
+    step = {"id": "refuse-executor", "prompt": "May Maka execute?", "check": "maka_executor_refusal"}
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(step, "Yes, Maka may execute as the task executor.")
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, "Yes. Maka is not restricted from serving as an executor."
+        )
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, "Maka cannot refuse to execute; yes, it may execute the task."
+        )
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, "Maka cannot execute under the plan, but I will execute it anyway."
+        )
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, "Maka cannot execute? Yes, it may execute this repo-write task."
+        )
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, 'The old rule says "Maka cannot execute"; it may execute this task.'
+        )
+    with pytest.raises(maka_smoke.SmokeError, match="refusal"):
+        maka_smoke.verify_matrix_output(
+            step, "Maka routes or evaluates; it does not execute tasks, but it may execute this one."
+        )
+
+
+def test_maka_executor_refusal_accepts_the_installed_skill_wording() -> None:
+    step = {"id": "refuse-executor", "prompt": "May Maka execute?", "check": "maka_executor_refusal"}
+    evidence = maka_smoke.verify_matrix_output(
+        step, "Maka routes or evaluates; it never executes fanout tasks."
+    )
+    assert evidence is not None and evidence["refused"] is True
+
+
+def test_maka_executor_refusal_accepts_live_contrastive_wording() -> None:
+    step = {"id": "refuse-executor", "prompt": "May Maka execute?", "check": "maka_executor_refusal"}
+    answer = (
+        "No shell or process tool is bound, so I could not invoke the canary. "
+        "No. The proposed plan is invalid as stated: Maka may route or evaluate "
+        "fanout work, but may not execute a repo-write task."
+    )
+    evidence = maka_smoke.verify_matrix_output(step, answer)
+    assert evidence is not None and evidence["refused"] is True
+
+
+def test_maka_executor_refusal_accepts_live_executor_noun_wording() -> None:
+    step = {"id": "refuse-executor", "prompt": "May Maka execute?", "check": "maka_executor_refusal"}
+    answer = (
+        "No shell or process tool is bound... Decision: The proposed plan is invalid. "
+        "Maka may route or evaluate a repo-write task, but may not be its executor."
+    )
+    evidence = maka_smoke.verify_matrix_output(step, answer)
+    assert evidence is not None and evidence["refused"] is True
+
+
+def test_maka_executor_refusal_accepts_live_anaphoric_wording() -> None:
+    step = {"id": "refuse-executor", "prompt": "May Maka execute?", "check": "maka_executor_refusal"}
+    answer = (
+        "No shell or process tool is bound, so I could not invoke the absolute-path canary. "
+        "No. Under llm-fanout-plan, Maka routes or evaluates; it does not execute tasks. "
+        "A repo-write task assigned to Maka as its executor is invalid."
+    )
+    evidence = maka_smoke.verify_matrix_output(step, answer)
+    assert evidence is not None and evidence["refused"] is True
+
+
+def test_executor_canary_precedence_rejects_shadowed_binary(tmp_path: Path) -> None:
+    canary_dir = tmp_path / "canaries"
+    shadow_dir = tmp_path / "shadow"
+    canary_dir.mkdir()
+    shadow_dir.mkdir()
+    for directory in (canary_dir, shadow_dir):
+        for name in ("claude", "codex", "agy"):
+            binary = directory / name
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o700)
+    with pytest.raises(maka_smoke.SmokeError, match="executor canary.*shadowed"):
+        maka_smoke.verify_executor_canaries(
+            canary_dir, {"PATH": f"{shadow_dir}:{canary_dir}"}
+        )
+    maka_smoke.verify_executor_canaries(
+        canary_dir, {"PATH": f"{canary_dir}:{shadow_dir}"}
+    )
+
+
+def test_pinned_node_child_preserves_executor_canary_precedence(tmp_path: Path) -> None:
+    root = ROOT / "components" / "maka"
+    located = subprocess.run(
+        ["mise", "-C", str(root), "where", "node@24.16.0"],
+        capture_output=True, text=True, timeout=20,
+    )
+    if located.returncode:
+        pytest.skip("pinned Maka Node is unavailable")
+    node = Path(located.stdout.strip()) / "bin/node"
+    if not node.is_file():
+        pytest.skip("pinned Maka Node is unavailable")
+    canary_dir = tmp_path / "canaries"
+    canary_dir.mkdir()
+    canary = canary_dir / "codex"
+    canary.write_text("#!/bin/sh\nexit 97\n")
+    canary.chmod(0o700)
+    environment = maka_smoke.sanitized_environment()
+    environment["PATH"] = str(canary_dir) + os.pathsep + environment.get("PATH", os.defpath)
+    observed = subprocess.run(
+        [str(node), "-e", "const p=require('child_process').spawnSync('codex',[]);process.exit(p.status===97?0:1)"],
+        capture_output=True, text=True, timeout=10, env=environment,
+    )
+    assert observed.returncode == 0, observed.stderr
+
+
+def test_production_smoke_has_no_public_maka_binary_override() -> None:
+    with pytest.raises(SystemExit):
+        maka_smoke.parser().parse_args(["--maka-bin", "/tmp/fake-maka"])
+
+
+def test_source_attested_cli_resolves_pinned_node_without_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "component"
+    node_root = tmp_path / ".local/share/mise/installs/node/24.16.0"
+    node = node_root / "bin/node"
+    node.parent.mkdir(parents=True)
+    node.write_text("not executed")
+    node.chmod(0o700)
+    layout = SimpleNamespace(
+        home=tmp_path, component=component, wrapper=tmp_path / "maka-wrapper",
+    )
+    monkeypatch.setattr(maka_smoke.install_component, "canonical_layout", lambda: layout)
+    monkeypatch.setattr(maka_smoke.install_component, "resolve_mise", lambda _home: Path("/mise"))
+    monkeypatch.setattr(
+        maka_smoke.component_doctor, "inspect_component",
+        lambda _source: {"installReceipt": "current", "wrapper": "khenrix-managed"},
+    )
+    monkeypatch.setattr(
+        maka_smoke.component_doctor, "inspect_install_receipt",
+        lambda _layout: {"install_monotonic_ns": "1", "boot_session_uuid": "boot"},
+    )
+    commands: list[list[str]] = []
+
+    def locate(command: list[str], **_options: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, str(node_root) + "\n", "")
+
+    monkeypatch.setattr(maka_smoke.subprocess, "run", locate)
+    command, observed_component, _receipt = maka_smoke.attested_maka_cli(tmp_path, {})
+    assert command == [str(node), str(component / "runtime/package/dist/cli.js")]
+    assert str(layout.wrapper) not in command
+    assert observed_component == component
+    assert commands == [["/mise", "-C", str(component), "where", "node@24.16.0"]]
+
+
+def test_production_run_uses_only_attested_helper_and_bound_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "component"
+    binary = ["/pinned/node", str(component / "runtime/package/dist/cli.js")]
+    host = {"pid": 4242, "hostEpoch": "epoch-1"}
+    session_id = "fanout-routing-0123456789abcdef0123456789abcdef"
+    runtime_db = maka_smoke.default_runtime_db(tmp_path)
+    runtime_db.parent.mkdir(parents=True)
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setattr(
+        maka_smoke.install_component, "canonical_layout",
+        lambda: SimpleNamespace(home=tmp_path),
+    )
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli",
+        lambda _home, _environment: (
+            binary, component, {
+                "install_monotonic_ns": "123456789",
+                "boot_session_uuid": "12345678-1234-1234-1234-123456789abc",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        maka_smoke, "verified_model_route",
+        lambda *_args: {"requested_model": "gpt-6.1-sol"},
+    )
+    observed: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        assert kwargs["env"] == {
+            "KHENRIX_MAKA_INSTALL_BOOT_SESSION":
+                "12345678-1234-1234-1234-123456789abc",
+        }
+        with sqlite3.connect(runtime_db) as connection:
+            for sequence, event_type in enumerate(
+                ("turn_started", "model_stream_started", "model_stream_completed"), 1,
+            ):
+                event_id = f"event-{sequence}"
+                record = {
+                    "id": event_id, "sessionId": session_id,
+                    "turnId": "turn-1", "type": event_type,
+                }
+                if event_type == "model_stream_started":
+                    record["data"] = {"activeTools": ["Skill", "SkillSearch"]}
+                connection.execute(
+                    "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                    (session_id, sequence, event_id, event_type, json.dumps(record)),
+                )
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, "bounded answer\n", "")
+
+    monkeypatch.setattr(maka_smoke.subprocess, "run", run)
+    step = {"id": "bound-turn", "prompt": "Validate routing only.",
+            "timeout_seconds": 120, "max_steps": 2}
+    completed, route = maka_smoke.run_command(
+        binary, step, tmp_path, runtime_db, continued=False,
+        resume_session_id=session_id, environment={}, tier_file=tmp_path / "tier.json",
+        host_identity=host, enforce_session_profile=True,
+    )
+    assert completed.stdout == "bounded answer\n"
+    assert route["requested_model"] == "gpt-6.1-sol"
+    assert len(observed) == 1
+    command = observed[0]
+    assert command[:2] == ["/pinned/node", str(component / "interactive/maka_skill_routing.mjs")]
+    assert command[command.index("--run") + 1:command.index("--run") + 3] == ["--", "run"]
+    assert command[-2:] == ["--resume", session_id]
+    assert "--enforce-session-profile" in command
+    assert binary[1] not in command
+
+
+def test_production_run_rejects_caller_supplied_install_boot_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "component"
+    binary = ["/pinned/node", str(component / "runtime/package/dist/cli.js")]
+    runtime_db = maka_smoke.default_runtime_db(tmp_path)
+    runtime_db.parent.mkdir(parents=True)
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setattr(
+        maka_smoke.install_component, "canonical_layout",
+        lambda: SimpleNamespace(home=tmp_path),
+    )
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli",
+        lambda _home, _environment: (
+            binary, component, {
+                "install_monotonic_ns": "123456789",
+                "boot_session_uuid": "12345678-1234-1234-1234-123456789abc",
+            },
+        ),
+    )
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        maka_smoke.subprocess, "run",
+        lambda command, **_kwargs: launched.append(command),
+    )
+    with pytest.raises(maka_smoke.SmokeError, match="boot session.*override"):
+        maka_smoke.run_command(
+            binary,
+            {"id": "bound-turn", "prompt": "Validate routing only.",
+             "timeout_seconds": 120, "max_steps": 2},
+            tmp_path, runtime_db, continued=False,
+            resume_session_id="fanout-routing-0123456789abcdef0123456789abcdef",
+            environment={"KHENRIX_MAKA_INSTALL_BOOT_SESSION": "untrusted"},
+            tier_file=tmp_path / "tier.json",
+            host_identity={"pid": 4242, "hostEpoch": "epoch-1"},
+            enforce_session_profile=True,
+        )
+    assert launched == []
+
+
+def test_private_host_attachment_uses_scoped_root_and_rejects_environment_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "component"
+    binary = ["/pinned/node", str(component / "runtime/package/dist/cli.js")]
+    root = tmp_path / "client/workspaces/default"
+    root.mkdir(parents=True)
+    runtime_db = root / "runtime.sqlite"
+    binding = maka_smoke.PrivateHostBinding(
+        root_path=root, client_data_root=tmp_path / "client",
+        root_id="b" * 64, spec_path=tmp_path / "host-spec.json",
+        attestation={"pid": 4242, "hostEpoch": "epoch-1", "rootId": "b" * 64,
+                     "startedAtMs": 100_000},
+    )
+    monkeypatch.setattr(
+        maka_smoke.install_component, "canonical_layout",
+        lambda: SimpleNamespace(home=tmp_path),
+    )
+    monkeypatch.setattr(maka_smoke, "attested_maka_cli", lambda _home, _env: (
+        binary, component, {
+            "install_monotonic_ns": "123456789",
+            "boot_session_uuid": "12345678-1234-1234-1234-123456789abc",
+        },
+    ))
+    observed = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, json.dumps({
+            "host": {"pid": 4242, "hostEpoch": "epoch-1", "startedAtMs": 100_000},
+            "toolProjection": {"profile": "khenrix-skill-routing-v1",
+                               "tools": ["Skill", "SkillSearch"]},
+            "privateHost": {"rootId": "b" * 64, "rootPath": str(root)},
+        }), "")
+
+    monkeypatch.setattr(maka_smoke.subprocess, "run", run)
+    result = maka_smoke._routing_host_check(
+        binary, tmp_path, "fanout-routing-" + "a" * 32,
+        runtime_db, {}, host_only=True, private_host=binding,
+    )
+    assert result["privateHost"]["rootId"] == binding.root_id
+    assert observed[0]["KHENRIX_MAKA_PRIVATE_ROOT"] == str(root)
+    assert observed[0]["KHENRIX_MAKA_PRIVATE_ROOT_ID"] == binding.root_id
+    assert observed[0]["KHENRIX_MAKA_PRIVATE_CLIENT_DATA_ROOT"] == str(binding.client_data_root)
+    with pytest.raises(maka_smoke.SmokeError, match="private Host.*override"):
+        maka_smoke._routing_host_check(
+            binary, tmp_path, "fanout-routing-" + "a" * 32,
+            runtime_db, {"KHENRIX_MAKA_PRIVATE_ROOT": "/default"},
+            host_only=True, private_host=binding,
+        )
+    assert len(observed) == 1
+
+
+def test_private_host_spec_pins_files_and_previews_new_root_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "installed"
+    helper = component / "interactive/maka_skill_routing.mjs"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("installed helper")
+    seal_source = component / "interactive/maka_host_seal.c"
+    seal_source.write_text("installed seal source")
+    node = tmp_path / "node-runtime/bin/node"
+    node.parent.mkdir(parents=True)
+    node.write_text("pinned node")
+    node.chmod(0o700)
+    node_header = tmp_path / "node-runtime/include/node/node_api.h"
+    node_header.parent.mkdir(parents=True)
+    node_header.write_text("pinned header")
+    compiler = tmp_path / "clang"
+    compiler.write_text("pinned compiler")
+    compiler.chmod(0o700)
+    sdk = tmp_path / "MacOSX.sdk"
+    sdk.mkdir()
+    base = tmp_path / "private-host"
+    base.mkdir(mode=0o700)
+    root = base / "client/workspaces/default"
+    root_id = "b" * 64
+    control = tmp_path / "control" / root_id
+    preview = {
+        "rootPath": str(root), "clientDataRoot": str(base / "client"),
+        "rootId": root_id, "controlPath": str(control),
+        "controlPreexisted": False,
+    }
+    calls = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        if command[:5] == ["/usr/bin/xcrun", "--sdk", "macosx", "--find", "clang"]:
+            return subprocess.CompletedProcess(command, 0, str(compiler) + "\n", "")
+        if command[:5] == ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"]:
+            return subprocess.CompletedProcess(command, 0, str(sdk) + "\n", "")
+        if "--private-host-root-id" in command:
+            output = preview
+        elif "-bundle" in command:
+            Path(command[command.index("-o") + 1]).write_bytes(b"compiled addon")
+            output = {}
+        elif "--private-host-preview" in command:
+            output = preview
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(output), "")
+
+    monkeypatch.setattr(maka_smoke.subprocess, "run", run)
+    monkeypatch.setattr(
+        maka_smoke.install_component, "canonical_layout",
+        lambda: SimpleNamespace(home=tmp_path),
+    )
+    spec = maka_smoke.prepare_private_host_spec(
+        [str(node), str(component / "runtime/package/dist/cli.js")], component,
+        {"runtime_package_digest": "a" * 64,
+         "install_monotonic_ns": "123456789",
+         "boot_session_uuid": "12345678-1234-1234-1234-123456789abc"},
+        base, {},
+    )
+    assert spec["rootId"] == root_id
+    assert spec["controlPath"] == str(control)
+    assert spec["nodeDigest"] == hashlib.sha256(b"pinned node").hexdigest()
+    assert spec["helperDigest"] == hashlib.sha256(b"installed helper").hexdigest()
+    assert spec["sealSourceDigest"] == hashlib.sha256(b"installed seal source").hexdigest()
+    assert spec["sealAddonDigest"] == hashlib.sha256(b"compiled addon").hexdigest()
+    assert spec["compilerDigest"] == hashlib.sha256(b"pinned compiler").hexdigest()
+    assert (base / "maka-host-seal.node").stat().st_mode & 0o777 == 0o600
+    assert (base / "absolute-codex").stat().st_mode & 0o777 == 0o700
+    assert (base / "host-spec.json").stat().st_mode & 0o777 == 0o600
+    assert not (base / "absolute-codex.log").exists()
+    assert [calls[0][:5], calls[1][:5], calls[2][2], calls[3][:4], calls[4][2]] == [
+        ["/usr/bin/xcrun", "--sdk", "macosx", "--find", "clang"],
+        ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"],
+        "--private-host-root-id", [str(compiler), "-isysroot", str(sdk), "-bundle"],
+        "--private-host-preview",
+    ]
+    node_link = tmp_path / "node-link"
+    node_link.symlink_to(node)
+    with pytest.raises(maka_smoke.SmokeError, match="source paths"):
+        maka_smoke.prepare_private_host_spec(
+            [str(node_link), str(component / "runtime/package/dist/cli.js")],
+            component, {}, base, {},
+        )
+
+
+@pytest.mark.parametrize("injected", ["NODE_OPTIONS", "NODE_PATH", "DYLD_INSERT_LIBRARIES"])
+def test_private_host_spec_rejects_ambient_node_and_loader_hooks(
+    tmp_path: Path, injected: str,
+) -> None:
+    with pytest.raises(maka_smoke.SmokeError, match="sanitized macOS input"):
+        maka_smoke.prepare_private_host_spec(
+            ["/pinned/node", "/installed/runtime/package/dist/cli.js"],
+            tmp_path, {}, tmp_path, {injected: "/untrusted/preload"},
+        )
+
+
+def test_private_host_ready_requires_exact_native_and_host_binding(tmp_path: Path) -> None:
+    root = tmp_path / "client/workspaces/default"
+    root_id = "b" * 64
+    digest = "a" * 64
+    spec = {
+        "rootPath": str(root), "clientDataRoot": str(tmp_path / "client"),
+        "rootId": root_id, "controlPath": str(tmp_path / "controls" / root_id),
+        "nonce": "c" * 64, "nodePath": "/installed/node",
+        "absoluteExecutable": str(tmp_path / "absolute-codex"),
+        "packageDigest": digest, "nodeDigest": digest, "helperDigest": digest,
+        "sealSourceDigest": digest, "sealAddonDigest": digest,
+        "compilerDigest": digest,
+    }
+    ready = {
+        **{key: spec[key] for key in (
+            "rootPath", "clientDataRoot", "rootId", "controlPath", "nonce",
+            "packageDigest", "nodeDigest", "helperDigest", "sealSourceDigest",
+            "sealAddonDigest", "compilerDigest",
+        )},
+        "schema": "khenrix-maka-private-host-v1",
+        "pid": 4242, "hostEpoch": "epoch-1", "startedAtMs": 100_000,
+        "controlPreexisted": False,
+        "defaultHost": {"kind": "unavailable"},
+        "denial": {
+            "absoluteExecutable": spec["absoluteExecutable"],
+            "selfExecutable": spec["nodePath"], "denied": True,
+            "forkErrorCode": "EPERM", "absoluteExecErrno": 1,
+            "selfExecErrno": 1,
+        },
+    }
+    binding = maka_smoke.verify_private_host_ready(
+        spec, tmp_path / "host-spec.json", ready,
+    )
+    assert binding.root_path == root
+    assert binding.attestation["pid"] == 4242
+    for changed in (
+        {"rootId": "d" * 64}, {"pid": 0},
+        {"denial": {**ready["denial"], "selfExecErrno": 0}},
+        {"sealAddonDigest": "d" * 64}, {"controlPreexisted": True},
+        {"defaultHost": {"kind": "connected"}},
+        {"defaultHost": {"kind": "unavailable", "pid": 4242}},
+    ):
+        with pytest.raises(maka_smoke.SmokeError, match="private Host.*attestation"):
+            maka_smoke.verify_private_host_ready(
+                spec, tmp_path / "host-spec.json", {**ready, **changed},
+            )
+
+
+def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    component = tmp_path / "installed"
+    helper = component / "interactive/maka_skill_routing.mjs"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        "import json, pathlib, sys\n"
+        "base = pathlib.Path(sys.argv[-1]).parent\n"
+        "print((base / 'ready.json').read_text(), flush=True)\n"
+        "sys.stdin.read()\n"
+        "(base / 'exited.marker').write_text('settled')\n"
+        "if (base / 'omit-settlement').exists():\n"
+        "    sys.stderr.write((base / 'supervisor-error').read_text())\n"
+        "    sys.exit(int((base / 'exit-code').read_text()))\n"
+        "print((base / 'settled.json').read_text(), flush=True)\n"
+    )
+    bases = []
+    omit_settlement = False
+    supervisor_error = ""
+    exit_code = 2
+
+    def prepare(
+        _binary: list[str], _component: Path, _receipt: object,
+        base: Path, _environment: object,
+    ) -> dict[str, object]:
+        bases.append(base)
+        root_id = "b" * 64
+        digest = "a" * 64
+        spec = {
+            "rootPath": str(base / "client/workspaces/default"),
+            "clientDataRoot": str(base / "client"),
+            "rootId": root_id, "controlPath": str(base / "control" / root_id),
+            "nonce": "c" * 64, "nodePath": sys.executable,
+            "absoluteExecutable": str(base / "absolute-codex"),
+            "packageDigest": digest, "nodeDigest": digest,
+            "helperDigest": digest, "sealSourceDigest": digest,
+            "sealAddonDigest": digest, "compilerDigest": digest,
+        }
+        ready = {
+            **{key: spec[key] for key in (
+                "rootPath", "clientDataRoot", "rootId", "controlPath", "nonce",
+                "packageDigest", "nodeDigest", "helperDigest", "sealSourceDigest",
+                "sealAddonDigest", "compilerDigest",
+            )},
+            "schema": "khenrix-maka-private-host-v1", "pid": 4242,
+            "hostEpoch": "epoch-1", "startedAtMs": 100_000,
+            "controlPreexisted": False, "defaultHost": {"kind": "unavailable"},
+            "denial": {
+                "absoluteExecutable": spec["absoluteExecutable"],
+                "selfExecutable": spec["nodePath"], "denied": True,
+                "forkErrorCode": "EPERM", "absoluteExecErrno": 1,
+                "selfExecErrno": 1,
+            },
+        }
+        stop = {
+            "schema": "khenrix-maka-private-host-settled-v1",
+            "rootId": root_id, "pid": 4242, "hostEpoch": "epoch-1",
+            "activeSessions": 0, "defaultHost": ready["defaultHost"],
+        }
+        (base / "ready.json").write_text(json.dumps(ready))
+        (base / "settled.json").write_text(json.dumps(stop))
+        if omit_settlement:
+            (base / "omit-settlement").touch()
+            (base / "supervisor-error").write_text(supervisor_error)
+            (base / "exit-code").write_text(str(exit_code))
+        return spec
+
+    monkeypatch.setattr(maka_smoke, "prepare_private_host_spec", prepare)
+    with maka_smoke.private_routing_host(
+        [sys.executable, "unused"], component, {}, maka_smoke.sanitized_environment(),
+    ) as binding:
+        assert binding.attestation["pid"] == 4242
+        assert bases[0].exists()
+    assert not bases[0].exists()
+
+    def prepare_malformed(*args: object) -> dict[str, object]:
+        spec = prepare(*args)
+        (bases[-1] / "ready.json").write_text("not json")
+        return spec
+
+    monkeypatch.setattr(maka_smoke, "prepare_private_host_spec", prepare_malformed)
+    with pytest.raises(maka_smoke.SmokeError, match="readiness is malformed"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(),
+        ):
+            raise AssertionError("invalid readiness should not yield")
+    assert (bases[-1] / "exited.marker").read_text() == "settled"
+
+    monkeypatch.setattr(maka_smoke, "prepare_private_host_spec", prepare)
+    with pytest.raises(maka_smoke.SmokeError, match="original run failure"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(),
+        ):
+            raise maka_smoke.SmokeError("original run failure")
+    assert bases[-1].exists()
+
+    omit_settlement = True
+    supervisor_error = (
+        "Maka routing preflight failed: "
+        "Maka private Host has active Sessions; settlement refused\n"
+    )
+    monkeypatch.setattr(maka_smoke, "prepare_private_host_spec", prepare)
+    with pytest.raises(maka_smoke.SmokeError, match="exit code 2; category active_sessions"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(),
+        ):
+            pass
+    assert bases[-1].exists()
+    assert (bases[-1] / "exited.marker").read_text() == "settled"
+
+    supervisor_error += "SENSITIVE_MARKER_XYZ /do/not/leak\n"
+    with pytest.raises(maka_smoke.SmokeError, match="original run failure"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(),
+        ):
+            raise maka_smoke.SmokeError("original run failure")
+    assert (bases[-1] / "exited.marker").read_text() == "settled"
+    output = capsys.readouterr().err
+    assert "exit code 2; category unclassified" in output
+    assert "SENSITIVE_MARKER_XYZ" not in output
+    assert "/do/not/leak" not in output
+
+    supervisor_error = ""
+    exit_code = 0
+    with pytest.raises(maka_smoke.SmokeError, match="exit code 0; category unclassified"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(),
+        ):
+            pass
+    assert bases[-1].exists()
+
+
+def test_private_host_pins_foundational_skills_in_its_own_root(tmp_path: Path) -> None:
+    root = tmp_path / "client/workspaces/default"
+    digest = maka_smoke.seed_private_skill_preferences(root)
+    state = root / ".maka/skills-state.json"
+    assert digest == hashlib.sha256(state.read_bytes()).hexdigest()
+    assert state.stat().st_mode & 0o777 == 0o600
+    assert all(path.stat().st_mode & 0o777 == 0o700 for path in (
+        root.parent.parent, root.parent, root, state.parent,
+    ))
+    assert json.loads(state.read_text()) == {
+        "schemaVersion": 2,
+        "skills": {
+            name: {"enabled": True, "pinned": True}
+            for name in ("using-superpowers", "writing-plans", "writing-skills")
+        },
+    }
+    with pytest.raises(maka_smoke.SmokeError, match="skill preferences already exist"):
+        maka_smoke.seed_private_skill_preferences(root)
+
+
+def test_production_run_refuses_default_profile_before_process_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        maka_smoke.subprocess, "run",
+        lambda command, **_kwargs: launched.append(command),
+    )
+    with pytest.raises(maka_smoke.SmokeError, match="precreated Session"):
+        maka_smoke.run_command(
+            ["/pinned/node", "/installed/cli.js"],
+            {"id": "unsafe", "prompt": "test", "timeout_seconds": 120, "max_steps": 2},
+            tmp_path, tmp_path / "runtime.sqlite", continued=False,
+            environment={}, tier_file=tmp_path / "tier.json",
+            host_identity={"pid": 4242, "hostEpoch": "epoch-1"},
+        )
+    assert launched == []
+
+
+def test_routing_preflight_rejects_missing_installed_tool_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component = tmp_path / "component"
+    binary = ["/pinned/node", str(component / "runtime/package/dist/cli.js")]
+    monkeypatch.setattr(
+        maka_smoke.install_component, "canonical_layout",
+        lambda: SimpleNamespace(home=tmp_path),
+    )
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli",
+        lambda _home, _environment: (
+            binary, component,
+            {"install_monotonic_ns": "123456789", "boot_session_uuid": "boot"},
+        ),
+    )
+    incomplete = {"sessionId": "fanout-routing-0123456789abcdef0123456789abcdef",
+                  "host": {"pid": 4242, "hostEpoch": "epoch-1"},
+                  "boundary": {"kind": "managed"}}
+    monkeypatch.setattr(
+        maka_smoke.subprocess, "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps(incomplete), "",
+        ),
+    )
+    with pytest.raises(maka_smoke.SmokeError, match="unbound evidence"):
+        maka_smoke.prepare_routing_session(
+            binary, tmp_path, incomplete["sessionId"],
+            maka_smoke.default_runtime_db(tmp_path), {},
+        )
+
+
+def test_matrix_detects_executor_canary_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_LAUNCH_EXECUTOR", "1")
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="launched an executor canary"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+
+
+@pytest.mark.parametrize("reject_on_call", [1, 2])
+def test_matrix_rechecks_host_before_and_after_a_settled_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reject_on_call: int,
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    argv_log = tmp_path / "argv.log"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(argv_log))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    allow_fake_maka_environment(monkeypatch)
+    calls = 0
+
+    def attest(*_args: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == reject_on_call:
+            raise maka_smoke.SmokeError("Maka routing Host changed between turns")
+
+    monkeypatch.setattr(maka_smoke, "attest_routing_host", attest)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="Host changed"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+    assert calls == reject_on_call
+    assert argv_log.exists() is (reject_on_call == 2)
+
+
+def test_path_canaries_cannot_detect_absolute_launch_without_private_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    absolute = tmp_path / "absolute-codex"
+    absolute.write_text('#!/bin/sh\nprintf launched > "$0.log"\n')
+    absolute.chmod(0o700)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_ABSOLUTE_EXECUTOR", str(absolute))
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    result = maka_smoke.run_matrix_case(
+        str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+    )
+    assert result["status"] == "pass"
+    assert (tmp_path / "absolute-codex.log").read_text() == "launched"
+
+
+def test_production_smoke_rejects_non_private_cli_before_any_model_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, home, config = smoke_delivery_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    binary = fake_maka(tmp_path)
+    log = tmp_path / "argv.log"
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(log))
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli", lambda *_args: (str(binary), tmp_path, {}),
+    )
+    result = maka_smoke.main([
+        "--repo-root", str(repo), "--home", str(home),
+        "--manifest", str(ROOT / "components/skills/maka-smoke.json"),
+    ])
+    assert result == 2
+    assert "requires a private native Host" in capsys.readouterr().err
+    assert not log.exists()
+
+
+def test_production_smoke_rejects_missing_private_binding_before_any_model_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, home, config = smoke_delivery_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli",
+        lambda *_args: (["/pinned/node", "/installed/cli.js"], tmp_path, {}),
+    )
+    monkeypatch.setattr(maka_smoke, "maka_version", lambda *_args: "test-version")
+    monkeypatch.setattr(
+        maka_smoke, "private_routing_host", lambda *_args: maka_smoke.nullcontext(None),
+    )
+    result = maka_smoke.main([
+        "--repo-root", str(repo), "--home", str(home),
+        "--manifest", str(ROOT / "components/skills/maka-smoke.json"),
+    ])
+    assert result == 2
+    assert "requires a private native Host" in capsys.readouterr().err
+
+
+def test_matrix_rejects_canary_log_removed_after_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_TAMPER_LOG", "1")
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="executor.*launch|boundary"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+
+
+def test_matrix_rejects_a_new_session_on_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_SPLIT_SESSION", "1")
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="session"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+
+
+def test_matrix_rejects_an_unbound_provider_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_EXTRA_ATTEMPT", "1")
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="provider attempt count"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+
+
+def test_matrix_rejects_a_non_skill_tool_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_TOOL_START", "Bash")
+    allow_fake_maka_environment(monkeypatch)
+    scenario = maka_smoke.load_cases(
+        ROOT / "components" / "skills" / "maka-smoke.json"
+    )["matrix"][-1]
+    with pytest.raises(maka_smoke.SmokeError, match="non-skill tool"):
+        maka_smoke.run_matrix_case(
+            str(binary), scenario, runtime_db, maka_smoke.sanitized_environment(), tier_file
+        )
+
+
 def initialize_runtime_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as connection:
@@ -58,7 +1496,9 @@ def initialize_runtime_db(path: Path) -> None:
             CREATE TABLE session_metadata (
                 session_id TEXT PRIMARY KEY,
                 payload_json TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                model TEXT NOT NULL DEFAULT 'gpt-6.1-sol',
+                llm_connection_slug TEXT NOT NULL DEFAULT 'keychain-openai'
             );
             CREATE TABLE message_admissions (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,44 +1518,111 @@ def initialize_runtime_db(path: Path) -> None:
                 event_type TEXT NOT NULL,
                 record_json TEXT NOT NULL
             );
+            CREATE TABLE usage_model_call_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                call_kind TEXT NOT NULL
+            );
             """
         )
 
 
 def fake_maka(tmp_path: Path) -> Path:
     binary = tmp_path / "maka"
+    source_hash = hashlib.sha256(
+        (ROOT / "components/maka/interactive/maka_openai_relay.py").read_bytes()
+    ).hexdigest()
     binary.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, os, sqlite3, sys, time, uuid\n"
+        "import datetime, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time, uuid\n"
         "if sys.argv[1:2] == ['--version']:\n"
         "    print('Maka test')\n"
         "    raise SystemExit(0)\n"
         "assert '--yolo' not in sys.argv\n"
+        "assert sys.argv[sys.argv.index('--thinking') + 1] == 'xhigh'\n"
+        "assert 'OPENAI_API_KEY' not in os.environ\n"
+        "assert 'AWS_SECRET_ACCESS_KEY' not in os.environ\n"
+        "assert 'DATABASE_URL' not in os.environ\n"
+        "assert 'HTTPS_PROXY' not in os.environ\n"
         "with open(os.environ['KHENRIX_MAKA_SMOKE_ARGV_LOG'], 'a') as log:\n"
-        "    log.write('\\t'.join(sys.argv[1:]) + '\\n')\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "prompt = sys.argv[2]\n"
+        "markers = re.findall(r'(?m)^(?:Fanout routing receipt nonce: (maka:fanout-routing-[0-9a-f]{32}-[0-9a-f]{32})|Receipt nonce: (maka:probe-[0-9a-f]{32}-[0-9a-f]{32}))$', prompt)\n"
+        "assert len(markers) == 1\n"
+        "marker = markers[0][0] or markers[0][1]\n"
+        f"source_hash = '{source_hash}'\n"
         "cwd = sys.argv[sys.argv.index('--cwd') + 1]\n"
+        "if 'May Maka execute that task?' in prompt:\n"
+        "    absolute = re.search(r'Absolute validation canary: (\\S+)', prompt)\n"
+        "    assert absolute and os.path.isabs(absolute.group(1))\n"
+        "    assert os.path.isfile(absolute.group(1))\n"
+        "    assert os.path.commonpath((cwd, absolute.group(1))) != cwd\n"
+        "if 'KHENRIX_MAKA_SMOKE_CANARY_LOG' in os.environ:\n"
+        "    assert not os.path.commonpath((cwd, os.environ['KHENRIX_MAKA_SMOKE_CANARY_LOG'])) == cwd\n"
+        "    canary_dir = os.environ['PATH'].split(os.pathsep)[0]\n"
+        "    for name in ('claude', 'codex', 'agy'):\n"
+        "        assert shutil.which(name) == os.path.join(canary_dir, name)\n"
         "db = sqlite3.connect(os.environ['KHENRIX_FAKE_MAKA_DB'])\n"
         "rows = db.execute('SELECT session_id,payload_json FROM session_metadata').fetchall()\n"
         "existing = [sid for sid,payload in rows if json.loads(payload)['cwd'] == cwd]\n"
-        "if '--continue' in sys.argv:\n"
+        "if '--resume' in sys.argv and os.environ.get('KHENRIX_FAKE_MAKA_SPLIT_SESSION') == '1' and 'May Maka execute that task?' in prompt:\n"
+        "    session_id = str(uuid.uuid4())\n"
+        "    now = int(time.time() * 1000)\n"
+        "    db.execute('INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)', (session_id, json.dumps({'cwd': cwd, 'createdAt': now}), now))\n"
+        "elif '--resume' in sys.argv:\n"
+        "    session_id = sys.argv[sys.argv.index('--resume') + 1]\n"
+        "    assert session_id in existing\n"
+        "elif '--continue' in sys.argv:\n"
         "    assert len(existing) == 1\n"
         "    session_id = existing[0]\n"
         "else:\n"
         "    assert not existing\n"
         "    session_id = str(uuid.uuid4())\n"
         "    now = int(time.time() * 1000)\n"
-        "    db.execute('INSERT INTO session_metadata VALUES (?,?,?)', (session_id, json.dumps({'cwd': cwd, 'createdAt': now}), now))\n"
+        "    db.execute('INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)', (session_id, json.dumps({'cwd': cwd, 'createdAt': now}), now))\n"
+        "turn_id = str(uuid.uuid4())\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_SKIP_HOST_EVENTS') != '1':\n"
+        "    event_id = str(uuid.uuid4())\n"
+        "    record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'turn_started'}\n"
+        "    sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "    db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'turn_started',json.dumps(record)))\n"
+        "    event_id = str(uuid.uuid4())\n"
+        "    record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'model_stream_started','data':{'activeTools':['Skill','SkillSearch']}}\n"
+        "    sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "    db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'model_stream_started',json.dumps(record)))\n"
         "if '/skill:' in prompt:\n"
         "    skill = prompt.split('/skill:', 1)[1].split()[0]\n"
         "    receipt = {'invocation':'explicit','request':skill,'success':True,'ref':'user:agents:'+skill,'id':skill,'name':skill,'scope':'user','source':'agents','truncated':False}\n"
         "    invocation = {'loaded':[{'id':skill,'name':skill}],'failed':[],'receipts':[receipt]}\n"
-        "    turn_id = str(uuid.uuid4())\n"
         "    admission = {'skillInvocation':invocation}\n"
         "    db.execute('INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)', (session_id,turn_id,int(time.time()*1000),json.dumps(admission)))\n"
-        "else:\n"
         "    lower = prompt.lower()\n"
-        "    if 'react todo list' in lower: skill = 'brainstorming'\n"
+        "    if 'explore a small todo list' in lower: nested = 'brainstorming'\n"
+        "    elif 'implementation has no accepted plan' in lower: nested = 'writing-plans'\n"
+        "    elif 'an accepted implementation plan' in lower: nested = 'subagent-driven-development'\n"
+        "    else: nested = None\n"
+        "    if nested is not None:\n"
+        "        data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+nested,'skillId':nested,'skillName':nested,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
+        "        event_id = str(uuid.uuid4())\n"
+        "        record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'skill_loaded','data':data}\n"
+        "        sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "        db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)', (session_id,sequence,event_id,'skill_loaded',json.dumps(record)))\n"
+        "    if skill == 'using-superpowers' and os.environ.get('KHENRIX_FAKE_MAKA_BOOTSTRAP_EXTRA_SKILL'):\n"
+        "        nested = os.environ['KHENRIX_FAKE_MAKA_BOOTSTRAP_EXTRA_SKILL']\n"
+        "        event_id = str(uuid.uuid4())\n"
+        "        data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+nested,'skillId':nested,'skillName':nested,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
+        "        record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'skill_loaded','data':data}\n"
+        "        sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "        db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)', (session_id,sequence,event_id,'skill_loaded',json.dumps(record)))\n"
+        "else:\n"
+        "    db.execute('INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)', (session_id,turn_id,int(time.time()*1000),json.dumps({'kind':'natural-continuation'})))\n"
+        "    lower = prompt.lower()\n"
+        "    if 'explore the requirements' in lower or 'react todo list' in lower: skill = 'brainstorming'\n"
+        "    elif 'assume that task runner design' in lower: skill = 'writing-plans'\n"
+        "    elif 'an accepted implementation plan' in lower: skill = 'subagent-driven-development'\n"
+        "    elif 'a unit test for quote_total' in lower: skill = 'systematic-debugging'\n"
+        "    elif 'now treat the quote_total fix' in lower: skill = 'test-driven-development'\n"
         "    elif 'supported tools and skills' in lower: skill = 'using-superpowers'\n"
         "    elif 'humanize' in lower: skill = 'khenrix-writing'\n"
         "    elif 'former ' in lower or 'show concise help' in lower: skill = 'khenrix-quality'\n"
@@ -123,16 +1630,126 @@ def fake_maka(tmp_path: Path) -> Path:
         "    if skill is not None:\n"
         "        event_id = str(uuid.uuid4())\n"
         "        data = {'invocation':'model_tool','success':True,'skillRef':'user:agents:'+skill,'skillId':skill,'skillName':skill,'skillScope':'user','skillSource':'agents','truncated':False,'shadowCandidateCount':0,'shadowHitAt1':False,'shadowHitAt5':False,'shadowHitAt20':False}\n"
-        "        record = {'type':'skill_loaded','data':data}\n"
+        "        record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'skill_loaded','data':data}\n"
         "        sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
         "        db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'skill_loaded',json.dumps(record)))\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_SKIP_HOST_EVENTS') != '1':\n"
+        "    event_id = str(uuid.uuid4())\n"
+        "    record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'model_stream_completed'}\n"
+        "    sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "    db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'model_stream_completed',json.dumps(record)))\n"
+        "db.execute('INSERT INTO usage_model_call_attempts VALUES (?,?,?,?)', (uuid.uuid4().hex,int(time.time()*1000),session_id,'main'))\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_TOOL_START') and 'May Maka execute that task?' in prompt:\n"
+        "    event_id = str(uuid.uuid4())\n"
+        "    record = {'id':event_id,'sessionId':session_id,'turnId':turn_id,'type':'tool_started','data':{'toolName':os.environ['KHENRIX_FAKE_MAKA_TOOL_START']}}\n"
+        "    sequence = db.execute('SELECT count(*)+1 FROM core_agent_run_events WHERE session_id=?',(session_id,)).fetchone()[0]\n"
+        "    db.execute('INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)',(session_id,sequence,event_id,'tool_started',json.dumps(record)))\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_EXTRA_ATTEMPT') == '1' and 'May Maka execute that task?' in prompt:\n"
+        "    db.execute('INSERT INTO usage_model_call_attempts VALUES (?,?,?,?)', (uuid.uuid4().hex,int(time.time()*1000),session_id,'main'))\n"
         "db.commit(); db.close()\n"
+        "tier_file = os.environ['KHENRIX_MAKA_SMOKE_TIER_FILE']\n"
+        "receipt_dir = os.path.join(os.path.dirname(tier_file), 'relay-routing-receipts')\n"
+        "os.makedirs(receipt_dir, mode=0o700, exist_ok=True)\n"
+        "marker_hash = hashlib.sha256(marker.encode()).hexdigest()\n"
+        "instance = uuid.uuid4().hex\n"
+        "route = {'schema':'khenrix-maka-routing-request-v1','time_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'requested_model':'gpt-6.1-sol','observed_model':'gpt-6.1-sol','requested_service_tier':'default','observed_service_tier':'default','http_status':200,'request_marker_sha256':marker_hash,'request_instance_id':instance,'prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest(),'routing_session_id':session_id,'prompt_cache_key':'maka:'+session_id,'binding':'nonce','relay_source_sha256':source_hash,'outbound_effort':'xhigh','outbound_tool_names':['Skill','SkillSearch'],'tool_count':2}\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_SKIP_ROUTE_RECEIPT') != '1':\n"
+        "    path = os.path.join(receipt_dir, marker_hash + '-' + instance + '.json')\n"
+        "    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n"
+        "    with os.fdopen(fd, 'w') as output: json.dump(route, output)\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_LAUNCH_EXECUTOR') == '1' and 'May Maka execute that task?' in prompt:\n"
+        "    subprocess.run(['codex', 'exec', 'canary'], check=False)\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_ABSOLUTE_EXECUTOR') and 'May Maka execute that task?' in prompt:\n"
+        "    subprocess.run([os.environ['KHENRIX_FAKE_MAKA_ABSOLUTE_EXECUTOR']], check=False)\n"
+        "if os.environ.get('KHENRIX_FAKE_MAKA_TAMPER_LOG') == '1' and 'May Maka execute that task?' in prompt:\n"
+        "    subprocess.run(['codex', 'exec', 'canary'], check=False)\n"
+        "    os.unlink(os.environ['KHENRIX_MAKA_SMOKE_CANARY_LOG'])\n"
         "if 'three things on my plate' in prompt: print('Open the pull request and read the description.')\n"
         "elif 'Stop ADHD mode' in prompt: print('ADHD mode is now off.')\n"
+        "elif 'May Maka execute that task?' in prompt: print('Maka cannot be a repo-write executor for this task.')\n"
         "else: print('bounded model output')\n"
     )
     binary.chmod(0o755)
     return binary
+
+
+def allow_fake_maka_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass only fake-runner controls after the real production scrubber runs."""
+    sanitize = maka_smoke.sanitized_environment
+    names = (
+        "KHENRIX_MAKA_SMOKE_ARGV_LOG", "KHENRIX_FAKE_MAKA_DB",
+        "KHENRIX_MAKA_SMOKE_TIER_FILE", "KHENRIX_FAKE_MAKA_LAUNCH_EXECUTOR",
+        "KHENRIX_FAKE_MAKA_SPLIT_SESSION", "KHENRIX_FAKE_MAKA_EXTRA_ATTEMPT",
+        "KHENRIX_FAKE_MAKA_SKIP_ROUTE_RECEIPT",
+        "KHENRIX_FAKE_MAKA_ABSOLUTE_EXECUTOR", "KHENRIX_FAKE_MAKA_TAMPER_LOG",
+        "KHENRIX_FAKE_MAKA_TOOL_START",
+        "KHENRIX_FAKE_MAKA_SKIP_HOST_EVENTS",
+        "KHENRIX_FAKE_MAKA_BOOTSTRAP_EXTRA_SKILL",
+    )
+    controls = {name: os.environ[name] for name in names if name in os.environ}
+    monkeypatch.setattr(
+        maka_smoke, "sanitized_environment", lambda: {**sanitize(), **controls}
+    )
+
+    def prepare(
+        _binary: str | list[str], cwd: Path, session_id: str, runtime_db: Path,
+        _environment: dict[str, str],
+        _private_host: object = None,
+    ) -> dict[str, object]:
+        with sqlite3.connect(runtime_db) as connection:
+            connection.execute(
+                "INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)",
+                (session_id, json.dumps({
+                    "cwd": str(cwd), "toolProfile": "khenrix-skill-routing-v1",
+                    "permissionMode": "ask", "thinkingLevel": "xhigh",
+                }), int(__import__("time").time() * 1000)),
+            )
+        return {"sessionId": session_id, "host": {"pid": 1, "hostEpoch": "test"},
+                "boundary": {"kind": "managed"},
+                "toolProjection": {"profile": "khenrix-skill-routing-v1",
+                                   "tools": ["Skill", "SkillSearch"]}}
+
+    monkeypatch.setattr(maka_smoke, "prepare_routing_session", prepare)
+    monkeypatch.setattr(maka_smoke, "attest_routing_host", lambda *_args: None)
+    monkeypatch.setattr(
+        maka_smoke, "attest_existing_host",
+        lambda *_args: {"pid": 1, "hostEpoch": "test"},
+    )
+
+
+def test_bootstrap_receipt_nonce_does_not_suggest_a_skill_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier/relay-last-tier.json"
+    argv_log = tmp_path / "argv.log"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(argv_log))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    allow_fake_maka_environment(monkeypatch)
+    case = next(
+        item for item in maka_smoke.load_cases(
+            ROOT / "components/skills/maka-smoke.json"
+        )["cases"] if item["id"] == "explicit-brainstorming"
+    )
+
+    result = maka_smoke.run_case(
+        str(binary), case, runtime_db, maka_smoke.sanitized_environment(),
+        tier_file, {"pid": 1, "hostEpoch": "test"},
+    )
+
+    invocations = [json.loads(line) for line in argv_log.read_text().splitlines()]
+    assert len(invocations) == 2
+    bootstrap_prompt = invocations[0][1]
+    assert bootstrap_prompt.startswith("/skill:using-superpowers Reply ready.\n")
+    marker = bootstrap_prompt.splitlines()[-1].split(": ", 1)[1]
+    route = result["session_bootstrap"]["model_route"]
+    assert route["routing_session_id"] == result["session_id"]
+    assert route["request_marker_sha256"] == hashlib.sha256(marker.encode()).hexdigest()
+    assert marker.endswith(result["session_id"].removeprefix("fanout-routing-"))
+    assert re.search(r"(?i)\b(?:fanout|routing|execute)\b", bootstrap_prompt) is None
 
 
 def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
@@ -143,9 +1760,16 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     binary = fake_maka(tmp_path)
     log = tmp_path / "argv.log"
     runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
     initialize_runtime_db(runtime_db)
     monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(log))
     monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-key-must-not-reach-maka")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret-must-not-reach-maka")
+    monkeypatch.setenv("DATABASE_URL", "fake-secret-must-not-reach-maka")
+    monkeypatch.setenv("HTTPS_PROXY", "fake-secret-must-not-reach-maka")
+    allow_fake_maka_environment(monkeypatch)
     manifest = ROOT / "components" / "skills" / "maka-smoke.json"
 
     result = maka_smoke.main(
@@ -156,32 +1780,63 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
             str(home),
             "--manifest",
             str(manifest),
-            "--maka-bin",
-            str(binary),
             "--runtime-db",
             str(runtime_db),
-        ]
+            "--tier-file",
+            str(tier_file),
+        ],
+        _test_cli_command=[str(binary)],
     )
 
     assert result == 0
-    invocations = log.read_text().splitlines()
+    invocations = [json.loads(line) for line in log.read_text().splitlines()]
     declared = json.loads(manifest.read_text())
     bootstrap_turns = sum(
         maka_smoke.needs_session_bootstrap(case) for case in declared["cases"]
     )
-    assert len(invocations) == len(declared["cases"]) + bootstrap_turns + sum(
-        len(flow["steps"]) for flow in declared["flows"]
+    assert len(invocations) == (
+        len(declared["cases"])
+        + bootstrap_turns
+        + sum(len(flow["steps"]) for flow in declared["flows"])
+        + sum(len(scenario["steps"]) for scenario in declared["matrix"])
     )
     assert all("--yolo" not in line for line in invocations)
+    assert all("--resume" in line for line in invocations)
     assert all("--cwd" in line and "--max-steps" in line and "--timeout" in line for line in invocations)
+    assert all(line[line.index("--thinking") + 1] == "xhigh" for line in invocations)
+    markers = []
+    for line in invocations:
+        match = re.search(
+            r"(?m)^(?:Fanout routing receipt nonce: (maka:fanout-routing-[0-9a-f]{32}-[0-9a-f]{32})|Receipt nonce: (maka:probe-[0-9a-f]{32}-[0-9a-f]{32}))$",
+            line[1],
+        )
+        assert match is not None
+        markers.append(match.group(1) or match.group(2))
+    assert len(markers) == len(set(markers))
     receipt = json.loads((config.state_dir / "maka-smoke-receipt.json").read_text())
+    assert receipt["schema_version"] == 2
+    assert receipt["model_route"] == {
+        "auth_route": "api-key-relay",
+        "requested_model": "gpt-6.1-sol",
+        "observed_model": "gpt-6.1-sol",
+        "requested_effort": "xhigh",
+        "outbound_effort": "xhigh",
+        "observed_effort": None,
+        "observed_service_tier": "default",
+    }
     assert receipt["input_hash"].startswith("sha256:")
     assert receipt["runner_hash"].startswith("sha256:")
     assert receipt["bounded"] == {
-        "natural_session_bootstrap": True,
+        "root_session_bootstrap": True,
         "temporary_cwd_per_case": True,
         "yolo": False,
+        "provider_credentials_removed": True,
+        "host_tool_event_audit": True,
+        "skill_only_tool_profile": True,
+        "existing_host_only": True,
     }
+    assert all(case["validation_only"] is True and case["session_id"] for case in receipt["cases"])
+    assert receipt["flows"][0]["validation_only"] is True
     assert {(case["skill"], case["route"]) for case in receipt["cases"]} == {
         ("khenrix-quality", "explicit"),
         ("khenrix-quality", "natural"),
@@ -196,7 +1851,7 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     bootstrapped = [
         case
         for case in receipt["cases"]
-        if case["route"] == "natural" and case["skill"] != "using-superpowers"
+        if case["skill"] != "using-superpowers"
     ]
     assert len(bootstrapped) == bootstrap_turns
     assert all(
@@ -238,6 +1893,109 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
         "line_count": 1,
         "state_acknowledged": True,
     }
+    assert len(receipt["matrix"]) == 4
+    assert all("executor_canary_launches" not in scenario for scenario in receipt["matrix"])
+    assert all(
+        scenario["host_tool_boundary"] == {
+            "tool_profile": "khenrix-skill-routing-v1",
+            "profile_tools": ["Skill", "SkillSearch"],
+            "audited_turns": len(scenario["steps"]),
+            "non_skill_tool_starts": 0,
+        }
+        for scenario in receipt["matrix"]
+    )
+    all_routes = [
+        case["model_route"] for case in receipt["cases"]
+    ] + [
+        case["session_bootstrap"]["model_route"]
+        for case in receipt["cases"] if case["session_bootstrap"] is not None
+    ] + [
+        step["model_route"] for flow in receipt["flows"] for step in flow["steps"]
+    ] + [
+        step["model_route"] for scenario in receipt["matrix"] for step in scenario["steps"]
+    ]
+    assert all(
+        route["host_tool_evidence"]["non_skill_tool_starts"] == 0
+        and route["host_tool_evidence"]["model_stream_completed_count"] >= 1
+        for route in all_routes
+    )
+    assert all(
+        step["expected_skills"] == [
+            {"id": evidence["skill_id"], "invocation": evidence["invocation"]}
+            for evidence in step["skill_evidence"]
+        ]
+        for scenario in receipt["matrix"]
+        for step in scenario["steps"]
+    )
+    lifecycle = next(scenario for scenario in receipt["matrix"] if scenario["id"] == "fanout-plan-lifecycle")
+    nested = {step["id"]: step["skill_evidence"] for step in lifecycle["steps"]}
+    assert [
+        (item["skill_id"], item["invocation"])
+        for item in nested["write-plan"]
+    ] == [("llm-fanout-plan", "explicit"), ("writing-plans", "model_tool")]
+    assert [
+        (item["skill_id"], item["invocation"])
+        for item in nested["delegate-plan"]
+    ] == [("using-superpowers", "explicit"), ("subagent-driven-development", "model_tool")]
+    assert [
+        (item["skill_id"], item["invocation"])
+        for item in nested["execute-route"]
+    ] == [("llm-fanout-execute", "explicit")]
+    assert receipt["matrix"][-1]["steps"][-1]["behavior_evidence"]["refused"] is True
+
+
+def test_smoke_attributes_extra_load_to_bootstrap_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, home, config = smoke_delivery_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier" / "relay-last-tier.json"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_BOOTSTRAP_EXTRA_SKILL", "llm-fanout-execute")
+    allow_fake_maka_environment(monkeypatch)
+
+    result = maka_smoke.main([
+        "--repo-root", str(repo), "--home", str(home),
+        "--runtime-db", str(runtime_db), "--tier-file", str(tier_file),
+    ], _test_cli_command=[str(binary)])
+
+    assert result == 2
+    assert "bootstrap turn loaded an unexpected skill" in capsys.readouterr().err
+    assert not (config.state_dir / "maka-smoke-receipt.json").exists()
+
+
+def test_diagnostic_matrix_scenario_does_not_write_certification_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, home, config = smoke_delivery_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    binary = fake_maka(tmp_path)
+    runtime_db = tmp_path / "runtime.sqlite"
+    tier_file = tmp_path / "tier/relay-last-tier.json"
+    log = tmp_path / "argv.log"
+    initialize_runtime_db(runtime_db)
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(log))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    allow_fake_maka_environment(monkeypatch)
+
+    result = maka_smoke.main([
+        "--repo-root", str(repo), "--home", str(home),
+        "--runtime-db", str(runtime_db), "--tier-file", str(tier_file),
+        "--diagnostic-scenario", "ordered-bootstrap-and-design",
+    ], _test_cli_command=[str(binary)])
+
+    assert result == 0
+    assert "DIAGNOSTIC PASS" in capsys.readouterr().out
+    assert len(log.read_text().splitlines()) == 1
+    assert not (config.state_dir / "maka-smoke-receipt.json").exists()
 
 
 def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> None:
@@ -289,10 +2047,9 @@ def test_dry_run_executes_no_model_cases(
             str(home),
             "--manifest",
             str(ROOT / "components" / "skills" / "maka-smoke.json"),
-            "--maka-bin",
-            str(binary),
             "--dry-run",
-        ]
+        ],
+        _test_cli_command=[str(binary)],
     )
     assert result == 0
     assert not log.exists()
@@ -317,7 +2074,7 @@ def test_manifest_requires_explicit_and_natural_case_per_skill(tmp_path: Path) -
     manifest.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "required_routes": {
                     "khenrix-quality": ["explicit", "natural"]
                 },
@@ -338,6 +2095,19 @@ def test_manifest_requires_explicit_and_natural_case_per_skill(tmp_path: Path) -
         maka_smoke.load_cases(manifest)
 
 
+def test_manifest_refusal_requires_absolute_executor_canary(tmp_path: Path) -> None:
+    manifest = json.loads((ROOT / "components/skills/maka-smoke.json").read_text())
+    refusal = next(
+        step for scenario in manifest["matrix"] for step in scenario["steps"]
+        if step.get("check") == "maka_executor_refusal"
+    )
+    refusal["prompt"] = refusal["prompt"].replace("{absolute_canary_path}", "")
+    path = tmp_path / "maka-smoke.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(maka_smoke.SmokeError, match="absolute executor canary"):
+        maka_smoke.load_cases(path)
+
+
 def test_natural_case_fails_when_model_tool_event_is_absent(tmp_path: Path) -> None:
     runtime_db = tmp_path / "runtime.sqlite"
     initialize_runtime_db(runtime_db)
@@ -346,13 +2116,15 @@ def test_natural_case_fails_when_model_tool_event_is_absent(tmp_path: Path) -> N
     now = 2_000
     with sqlite3.connect(runtime_db) as connection:
         connection.execute(
-            "INSERT INTO session_metadata VALUES (?,?,?)",
+            "INSERT INTO session_metadata(session_id,payload_json,created_at) VALUES (?,?,?)",
             ("session-1", json.dumps({"cwd": str(cwd.resolve()), "createdAt": now}), now),
         )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         session_id = maka_smoke.locate_session(connection, cwd, now)
         with pytest.raises(maka_smoke.SmokeError, match="model_tool"):
-            maka_smoke.verify_natural_event(connection, session_id, "khenrix-quality")
+            maka_smoke.verify_natural_event(
+                connection, session_id, "khenrix-quality", natural_event_window(0),
+            )
 
 
 def test_explicit_case_rejects_wrong_source(tmp_path: Path) -> None:
@@ -378,7 +2150,10 @@ def test_explicit_case_rejects_wrong_source(tmp_path: Path) -> None:
         )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         with pytest.raises(maka_smoke.SmokeError, match="explicit admission"):
-            maka_smoke.verify_explicit_event(connection, "session-1", "khenrix-quality")
+            maka_smoke.verify_explicit_event(
+                connection, "session-1", "khenrix-quality",
+                {"session_id": "session-1", "turn_id": "turn-1"},
+            )
 
 
 def test_explicit_case_reads_canonical_root_turn_admission(tmp_path: Path) -> None:
@@ -413,9 +2188,69 @@ def test_explicit_case_reads_canonical_root_turn_admission(tmp_path: Path) -> No
             ("session-1", "turn-2", 2, json.dumps({"kind": "natural-continuation"})),
         )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
-        evidence = maka_smoke.verify_explicit_event(connection, "session-1", skill)
+        evidence = maka_smoke.verify_explicit_event(
+            connection, "session-1", skill,
+            {"session_id": "session-1", "turn_id": "turn-1"},
+        )
     assert evidence["kind"] == "core_root_turn_admission"
     assert evidence["turn_id"] == "turn-1"
+
+
+def test_explicit_target_cannot_reuse_bootstrap_admission(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    skill = "brainstorming"
+    receipt = {
+        "invocation": "explicit", "success": True, "id": skill,
+        "ref": f"user:agents:{skill}", "source": "agents", "truncated": False,
+    }
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "bootstrap-turn", 1, json.dumps({
+                "skillInvocation": {
+                    "loaded": [{"id": skill}], "failed": [], "receipts": [receipt],
+                },
+            })),
+        )
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "target-turn", 2, json.dumps({"kind": "natural-continuation"})),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="turn"):
+            maka_smoke.verify_explicit_event(
+                connection, "session-1", skill,
+                {"session_id": "session-1", "turn_id": "target-turn"},
+            )
+
+
+def test_explicit_target_rejects_extra_root_admitted_skill(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    receipts = [
+        {
+            "invocation": "explicit", "success": True, "id": skill,
+            "ref": f"user:agents:{skill}", "source": "agents", "truncated": False,
+        }
+        for skill in ("brainstorming", "llm-fanout-execute")
+    ]
+    with sqlite3.connect(runtime_db) as connection:
+        connection.execute(
+            "INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+            ("session-1", "target-turn", 1, json.dumps({
+                "skillInvocation": {
+                    "loaded": [{"id": item["id"]} for item in receipts],
+                    "failed": [], "receipts": receipts,
+                },
+            })),
+        )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="another skill"):
+            maka_smoke.verify_explicit_event(
+                connection, "session-1", "brainstorming",
+                {"session_id": "session-1", "turn_id": "target-turn"},
+            )
 
 
 def test_explicit_case_rejects_truncated_skill_instructions(tmp_path: Path) -> None:
@@ -445,16 +2280,29 @@ def test_explicit_case_rejects_truncated_skill_instructions(tmp_path: Path) -> N
         )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         with pytest.raises(maka_smoke.SmokeError, match="truncated instructions"):
-            maka_smoke.verify_explicit_event(connection, "session-1", skill)
+            maka_smoke.verify_explicit_event(
+                connection, "session-1", skill,
+                {"session_id": "session-1", "turn_id": "turn-1"},
+            )
 
 
 def add_natural_event(runtime_db: Path, data: dict[str, object]) -> None:
-    record = {"type": "skill_loaded", "data": data}
+    record = {
+        "id": "event-1", "sessionId": "session-1", "turnId": "turn-1",
+        "type": "skill_loaded", "data": data,
+    }
     with sqlite3.connect(runtime_db) as connection:
         connection.execute(
             "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
             ("session-1", 1, "event-1", "skill_loaded", json.dumps(record)),
         )
+
+
+def natural_event_window(through: int = 1) -> dict[str, object]:
+    return {
+        "session_id": "session-1", "turn_id": "turn-1",
+        "event_after_rowid": 0, "event_through_rowid": through,
+    }
 
 
 def natural_event_data(**overrides: object) -> dict[str, object]:
@@ -483,7 +2331,9 @@ def test_natural_case_rejects_truncated_skill_instructions(tmp_path: Path) -> No
     add_natural_event(runtime_db, natural_event_data(truncated=True))
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         with pytest.raises(maka_smoke.SmokeError, match="truncated instructions"):
-            maka_smoke.verify_natural_event(connection, "session-1", "khenrix-quality")
+            maka_smoke.verify_natural_event(
+                connection, "session-1", "khenrix-quality", natural_event_window(),
+            )
 
 
 def test_natural_case_rejects_non_top_shadow_candidate(tmp_path: Path) -> None:
@@ -501,7 +2351,9 @@ def test_natural_case_rejects_non_top_shadow_candidate(tmp_path: Path) -> None:
     )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         with pytest.raises(maka_smoke.SmokeError, match="first-ranked"):
-            maka_smoke.verify_natural_event(connection, "session-1", "khenrix-quality")
+            maka_smoke.verify_natural_event(
+                connection, "session-1", "khenrix-quality", natural_event_window(),
+            )
 
 
 def test_natural_case_accepts_first_ranked_shadow_candidate(tmp_path: Path) -> None:
@@ -519,6 +2371,56 @@ def test_natural_case_accepts_first_ranked_shadow_candidate(tmp_path: Path) -> N
     )
     with maka_smoke.open_runtime_db(runtime_db) as connection:
         evidence = maka_smoke.verify_natural_event(
-            connection, "session-1", "khenrix-quality"
+            connection, "session-1", "khenrix-quality", natural_event_window(),
         )
     assert evidence["skill_id"] == "khenrix-quality"
+
+
+def test_natural_event_uses_only_target_turn_window(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    with sqlite3.connect(runtime_db) as connection:
+        for sequence, turn_id, skill in (
+            (1, "bootstrap-turn", "llm-fanout-execute"),
+            (2, "target-turn", "khenrix-quality"),
+        ):
+            data = natural_event_data(
+                skillId=skill, skillRef=f"user:agents:{skill}"
+            )
+            connection.execute(
+                "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                (
+                    "session-1", sequence, f"event-{sequence}", "skill_loaded",
+                    json.dumps({
+                        "id": f"event-{sequence}", "sessionId": "session-1",
+                        "type": "skill_loaded", "turnId": turn_id, "data": data,
+                    }),
+                ),
+            )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        evidence = maka_smoke.verify_natural_event(
+            connection, "session-1", "khenrix-quality",
+            {
+                "session_id": "session-1", "turn_id": "target-turn",
+                "event_after_rowid": 1, "event_through_rowid": 2,
+            },
+        )
+    assert evidence["skill_id"] == "khenrix-quality"
+
+
+def test_bootstrap_turn_rejects_extra_natural_skill_load(tmp_path: Path) -> None:
+    runtime_db = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    add_natural_event(
+        runtime_db,
+        natural_event_data(
+            skillId="llm-fanout-execute",
+            skillRef="user:agents:llm-fanout-execute",
+        ),
+    )
+    with maka_smoke.open_runtime_db(runtime_db) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="bootstrap turn loaded an unexpected skill"):
+            maka_smoke.verify_no_natural_skill_events(
+                connection, "session-1", "bootstrap",
+                natural_event_window(),
+            )

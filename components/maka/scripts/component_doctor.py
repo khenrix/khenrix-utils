@@ -35,7 +35,7 @@ EXPECTED_INTEGRITY = PACKAGE_INTEGRITY
 EXPECTED_COMMIT = SOURCE_COMMIT
 EXCLUDED_DIRECTORY_NAMES = {"__pycache__", "evidence", "runtime", "trials"}
 EXPECTED_ATTRIBUTION_HASHES = {
-    "third_party/apache-maka/LICENSE": "ebd45d2cb43f6d451345b872b944b937e6b444fa34edb81b743b2330f4dfa927",
+    "third_party/apache-maka/LICENSE": "fdb34c95e9813af2fdae53b72582198d38af648778134139788960a2b031da38",
     "third_party/apache-maka/NOTICE": "4cce021a96be5a16e86083c0020b788b4ca1b3ed24185ff3a4a51e53419045f0",
     "third_party/apache-maka/DISCLAIMER-WIP": "67268b9e9381fe3fda6bc56c484ae8b50ef7dad4c6f1ee7beec021673dfd830c",
 }
@@ -126,6 +126,8 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
         "source_digest",
         "overlay_hashes",
         "runtime_package_digest",
+        "boot_session_uuid",
+        "install_monotonic_ns",
     }
     require(set(receipt) == allowed, "install receipt fields are invalid")
     require(receipt.get("schema") == "khenrix-maka-install-v2", "install receipt schema mismatch")
@@ -133,6 +135,14 @@ def inspect_install_receipt(layout: InstallLayout) -> dict[str, object]:
     require(receipt.get("version") == PACKAGE_VERSION, "install receipt version mismatch")
     require(receipt.get("integrity") == EXPECTED_INTEGRITY, "install receipt integrity mismatch")
     require(receipt.get("source_commit") == EXPECTED_COMMIT, "install receipt source commit mismatch")
+    boot = receipt.get("boot_session_uuid")
+    require(isinstance(boot, str) and re.fullmatch(
+        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot,
+    ) is not None, "install receipt boot session is invalid")
+    monotonic = receipt.get("install_monotonic_ns")
+    require(isinstance(monotonic, str) and re.fullmatch(
+        r"[1-9][0-9]{0,19}", monotonic,
+    ) is not None, "install receipt monotonic anchor is invalid")
     digest = receipt.get("source_digest")
     require(isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest) is not None,
             "install receipt source digest is invalid")

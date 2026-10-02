@@ -43,6 +43,7 @@ class PinnedOverlayTests(unittest.TestCase):
             metadata = (package / "node_modules/@maka/core/dist/model-metadata.js").read_text()
             registry = (package / "node_modules/@maka/core/dist/provider-registry.js").read_text()
             self.assertIn("'gpt-6-sol'", metadata)
+            self.assertIn("'gpt-6.1-sol'", metadata)
             self.assertIn("'gpt-5.6-sol'", metadata)
             self.assertIn("'gpt-6-sol'", registry)
             self.assertIn("'gpt-5.6-sol'", registry)
@@ -57,6 +58,24 @@ class PinnedOverlayTests(unittest.TestCase):
             with self.assertRaisesRegex(compat.OverlayError, "source hash differs"):
                 compat.apply_overlay(package)
             self.assertEqual([path.read_bytes() for path in paths[:-1]], originals[:-1])
+
+    def test_skill_routing_hides_archive_read_without_disabling_compaction(self) -> None:
+        relative = "node_modules/@maka/runtime/dist/ai-sdk-backend.js"
+        self.assertIn(relative, compat.PATCHES)
+        patched = compat.patched_content(relative, (self.package / relative).read_bytes())
+        source = patched.decode("utf-8")
+        self.assertIn("this.input.header.toolProfile === 'khenrix-skill-routing-v1'", source)
+        self.assertIn("? undefined : this.input.toolResultArchive", source)
+        self.assertIn("this.compaction = new AiSdkCompaction({\n            input,", source)
+        self.assertIn("bindToolResultArchiveDecoder", source)
+
+    def test_skill_tool_loads_complete_superpowers_instructions(self) -> None:
+        relative = "node_modules/@maka/runtime/dist/skills-metadata.js"
+        self.assertIn(relative, compat.PATCHES)
+        patched = compat.patched_content(relative, (self.package / relative).read_bytes())
+        self.assertIn("MAX_SKILL_TOOL_BODY_CHARS = 40_000", patched.decode("utf-8"))
+        skill = pathlib.Path(__file__).resolve().parents[3] / "shared/superpowers/subagent-driven-development/SKILL.md"
+        self.assertLess(len(skill.read_text(encoding="utf-8")), 40_000)
 
 
 if __name__ == "__main__":

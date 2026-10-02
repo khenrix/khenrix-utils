@@ -259,7 +259,8 @@ class TransitionError(RuntimeError):
 #
 # Prefixes rather than a substring test: a user's `refs/heads/forgery-experiments` is theirs.
 _FORGE_REF_PREFIXES = ("refs/khenrix-forge/", "refs/heads/forge/")
-CURRENT_MODEL_PROFILE = "gpt6-opus55-v1"
+CURRENT_MODEL_PROFILE = "gpt61-opus55-v1"
+PREVIOUS_MODEL_PROFILE = "gpt6-opus55-v1"
 LEGACY_MODEL_PROFILE = "legacy-unpinned"
 
 
@@ -810,7 +811,7 @@ def _nonempty_text(name, value, source):
 
 
 def _model_profile(name, value, source):
-    if value not in {CURRENT_MODEL_PROFILE, LEGACY_MODEL_PROFILE}:
+    if value not in {CURRENT_MODEL_PROFILE, PREVIOUS_MODEL_PROFILE, LEGACY_MODEL_PROFILE}:
         raise ManifestError(f"{source}: {name} is not a supported model profile")
     return value
 

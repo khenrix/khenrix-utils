@@ -14,6 +14,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
+from historical_only import read_historical
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 CHART_DIR = "docs/skill-charts"
 
@@ -29,8 +33,11 @@ KINDS = {"code", "agent"}
 def chart_skills(root: Path) -> list[str]:
     """Every skill that owes a chart: shared skills + templated skills."""
     out = []
+    historical_skills, _ = read_historical(root)
     for base in ("shared/skills", "shared/skill-templates"):
         for p in sorted((root / base).glob("*/")):
+            if p.name in historical_skills:
+                continue
             if (p / "SKILL.md").is_file() or (p / "SKILL.md.tmpl").is_file():
                 out.append(p.name)
     return out

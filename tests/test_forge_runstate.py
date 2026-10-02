@@ -48,10 +48,13 @@ def _run_dir(tmp_path):
 
 def test_model_profile_is_recorded_and_legacy_manifests_remain_readable(tmp_path):
     repo = make_repo(tmp_path)
-    current = _manifest(repo, model_profile="gpt6-opus55-v1")
+    current = _manifest(repo, model_profile="gpt61-opus55-v1")
     run = _run_dir(tmp_path)
     runstate.write_manifest(run, current)
-    assert runstate.read_manifest(run).model_profile == "gpt6-opus55-v1"
+    assert runstate.read_manifest(run).model_profile == "gpt61-opus55-v1"
+    previous = {**json.loads(json.dumps(dataclasses.asdict(current))),
+                "model_profile": "gpt6-opus55-v1"}
+    assert runstate._decode(previous, "6.0 fixture").model_profile == "gpt6-opus55-v1"
 
     row = json.loads(json.dumps(dataclasses.asdict(current)))
     row.pop("model_profile")

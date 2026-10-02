@@ -5,6 +5,7 @@ These tests pin behaviour that MUST survive the shared-core extraction
 pre-move fanout.py and must stay green, unmodified, through every task
 of Plan A. If one goes red after a refactor, the refactor is wrong.
 """
+import importlib.util
 import json
 import signal
 import subprocess
@@ -20,13 +21,11 @@ STUB = ROOT / "shared" / "skills" / "llm-council" / "tests" / "stub_provider.py"
 
 
 def import_fanout():
-    """Import fanout exactly the way checks.model_crosscheck / eval_harness do."""
-    sys.path.insert(0, str(FANOUT.parent))
-    try:
-        import fanout  # noqa: PLC0415
-        return fanout
-    finally:
-        sys.path.pop(0)
+    """Load the retained facade without depending on the active package's cache key."""
+    spec = importlib.util.spec_from_file_location("historical_council_characterization", FANOUT)
+    facade = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(facade)
+    return sys.modules[spec.name]
 
 
 def _stub_spec(fanout, tmp, mode="ok"):

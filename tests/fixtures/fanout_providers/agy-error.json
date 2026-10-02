@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"agy-conversation-1","init":{"cwd":"/tmp/work","tools":[],"permission_mode":"always-proceed","model":"gemini-3.8-flash-high"}}
+{"event":"result","result":{"conversation_id":"agy-conversation-1","status":"ERROR","response":"","error":"quota exhausted","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":17}}}

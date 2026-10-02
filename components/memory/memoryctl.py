@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import contextlib
 import datetime as dt
 import errno
 import hashlib
@@ -33,13 +34,15 @@ from typing import Any
 
 import tomllib
 
+import memory_ingress
+
 PACKAGE = "claude-mem"
 PACKAGE_VERSION = "13.25.3"
 SOURCE_COMMIT = "4520de9e0f8d6cdc20597520e383d8b51d93137f"
 ARTIFACT_URL = "https://registry.npmjs.org/claude-mem/-/claude-mem-13.25.3.tgz"
 ARTIFACT_INTEGRITY = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g=="
 BUN_VERSION = "1.4.2"
-OPENAI_MODEL = "gpt-6-sol"
+OPENAI_MODEL = "gpt-6.1-sol"
 RELAY_PORT = 48174
 GATEWAY_PORT = 48175
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
@@ -50,6 +53,8 @@ PROJECT_RE = re.compile(r"^[^\x00-\x1f,]{1,512}$")
 ROUTES = {"claude-subscription", "codex-subscription", "openai-keychain", "local-claude"}
 CONTROLLER_FILES = (
     "memoryctl.py",
+    "memory_ingress.py",
+    "memory_exchange.py",
     "memory_search.py",
     "memory_gateway.py",
     "provider_relay.py",
@@ -196,13 +201,34 @@ def _load_private_json(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
+CAPTURE_FILES = ("memoryctl.py", "memory_ingress.py")
+
+
+def _capture_digest(files: Mapping[str, tuple[int, str]]) -> str:
+    digest = hashlib.sha256(b"khenrix-memory-capture-v1\0")
+    for name in CAPTURE_FILES:
+        size, content_digest = files[name]
+        digest.update(name.encode("ascii") + b"\0" + str(size).encode("ascii") + b"\0")
+        digest.update(bytes.fromhex(content_digest))
+    return digest.hexdigest()
+
+
 def expected_install_receipt() -> dict[str, str]:
+    source = pathlib.Path(__file__).resolve().parent
+    capture = {}
+    for name in CAPTURE_FILES:
+        payload = (source / name).read_bytes()
+        capture[name] = (len(payload), hashlib.sha256(payload).hexdigest())
     return {
-        "schema": "khenrix-memory-install-v1",
+        "schema": "khenrix-memory-install-v2",
         "package": PACKAGE,
         "version": PACKAGE_VERSION,
         "integrity": ARTIFACT_INTEGRITY,
         "source_commit": SOURCE_COMMIT,
+        "controller_sha256": hashlib.sha256(
+            (source / "memory_exchange.py").read_bytes()
+        ).hexdigest(),
+        "capture_sha256": _capture_digest(capture),
     }
 
 
@@ -248,6 +274,22 @@ def install_receipt_problem() -> str | None:
         return str(error)
     if observed != expected_install_receipt():
         return "memory install receipt does not match the reviewed pin"
+    installed = installed_controller_root()
+    if installed.exists() or installed.is_symlink():
+        inventory = controller_inventory()
+        if not inventory["complete"]:
+            return "installed memory controller is incomplete or unsafe"
+        exchange = next(
+            item for item in inventory["files"] if item["name"] == "memory_exchange.py"
+        )
+        if exchange["sha256"] != observed["controller_sha256"]:
+            return "installed memory controller does not match the reviewed pin"
+        capture = {
+            item["name"]: (item["bytes"], item["sha256"])
+            for item in inventory["files"] if item["name"] in CAPTURE_FILES
+        }
+        if _capture_digest(capture) != observed["capture_sha256"]:
+            return "installed memory capture does not match the reviewed pin"
     return None
 
 
@@ -630,6 +672,73 @@ def install_controller() -> pathlib.Path:
     return target
 
 
+def controller_inventory() -> dict[str, Any]:
+    """Return a bounded inventory of the expected installed controller files."""
+    root = installed_controller_root()
+    files: list[dict[str, Any]] = []
+    complete = True
+    try:
+        _assert_private_directory(root, create=False)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened_root = os.fstat(root_fd)
+        named_root = root.lstat()
+        if (
+            (opened_root.st_dev, opened_root.st_ino) != (named_root.st_dev, named_root.st_ino)
+            or not stat.S_ISDIR(opened_root.st_mode)
+            or opened_root.st_uid != os.getuid()
+            or stat.S_IMODE(opened_root.st_mode) != 0o700
+        ):
+            os.close(root_fd)
+            root_fd = None
+            complete = False
+    except (MemoryConfigurationError, OSError):
+        root_fd = None
+        complete = False
+    try:
+        for name in CONTROLLER_FILES:
+            expected_mode = 0o700 if name.endswith(".py") else 0o600
+            entry: dict[str, Any] = {
+                "name": name,
+                "present": False,
+                "mode": None,
+                "bytes": None,
+                "sha256": None,
+            }
+            if root_fd is not None:
+                try:
+                    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+                    try:
+                        metadata = os.fstat(descriptor)
+                        safe = (
+                            stat.S_ISREG(metadata.st_mode)
+                            and metadata.st_uid == os.getuid()
+                            and stat.S_IMODE(metadata.st_mode) == expected_mode
+                            and metadata.st_nlink == 1
+                        )
+                        if safe:
+                            digest = hashlib.sha256()
+                            while chunk := os.read(descriptor, 64 * 1024):
+                                digest.update(chunk)
+                            entry.update(
+                                {
+                                    "present": True,
+                                    "mode": f"{expected_mode:04o}",
+                                    "bytes": metadata.st_size,
+                                    "sha256": digest.hexdigest(),
+                                }
+                            )
+                    finally:
+                        os.close(descriptor)
+                except OSError:
+                    pass
+            complete = complete and bool(entry["present"])
+            files.append(entry)
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+    return {"complete": complete, "files": files}
+
+
 def _bun_version(candidate: str) -> str | None:
     try:
         result = subprocess.run(
@@ -871,22 +980,34 @@ def run_worker(arguments: list[str]) -> int:
         os.environ.get("KHENRIX_NESTED_AGENT") == "1" or os.environ.get("KHENRIX_MEMORY_ADAPTER") == "1"
     ):
         return 0
-    route = read_route()
-    _ensure_relay(route)
-    os.umask(0o077)
-    prefix = [_bun_path(), str(_worker_script())]
-    env = runtime_environment(route)
-    if len(arguments) >= 2 and arguments[:2] == ["hook", "codex"]:
-        env["CLAUDE_MEM_CODEX_HOOK"] = "1"
-    if arguments and arguments[0] == "hook":
-        started = subprocess.run([*prefix, "start"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
-        if started.returncode != 0:
-            return started.returncode
-        _ensure_gateway()
-    result = subprocess.run([*prefix, *arguments], env=env, check=False)
-    if result.returncode == 0 and arguments and arguments[0] == "start":
-        _ensure_gateway()
-    return result.returncode
+    hook = bool(arguments and arguments[0] == "hook")
+    with contextlib.ExitStack() as cleanup:
+        payload = None
+        if hook:
+            if len(arguments) != 3:
+                raise MemoryConfigurationError("memory hook input rejected")
+            try:
+                payload = cleanup.enter_context(memory_ingress.prepare_hook(sys.stdin.buffer, *arguments[1:]))
+            except memory_ingress.IngressRejected:
+                raise MemoryConfigurationError("memory hook input rejected") from None
+            if payload is None:
+                return 0
+        route = read_route()
+        _ensure_relay(route)
+        os.umask(0o077)
+        prefix = [_bun_path(), str(_worker_script())]
+        env = runtime_environment(route)
+        if len(arguments) >= 2 and arguments[:2] == ["hook", "codex"]:
+            env["CLAUDE_MEM_CODEX_HOOK"] = "1"
+        if hook:
+            started = subprocess.run([*prefix, "start"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
+            if started.returncode != 0:
+                return started.returncode
+            _ensure_gateway()
+        result = subprocess.run([*prefix, *arguments], env=env, check=False, **({"input": payload} if hook else {}))
+        if result.returncode == 0 and arguments and arguments[0] == "start":
+            _ensure_gateway()
+        return result.returncode
 
 
 def stop_worker(*, ignore_missing_route: bool = False) -> int:
@@ -1293,6 +1414,9 @@ def _database_problem() -> str | None:
 def health_document(*, require_running: bool) -> dict[str, Any]:
     problems: list[str] = []
     warnings: list[str] = []
+    controller = controller_inventory()
+    if not controller["complete"]:
+        problems.append("installed memory controller is incomplete or unsafe")
     route: dict[str, Any] | None = None
     try:
         _assert_private_directory(config_dir(), create=False)
@@ -1338,6 +1462,7 @@ def health_document(*, require_running: bool) -> dict[str, Any]:
         "worker": "running" if worker_up else "stopped",
         "relay": "running" if relay_up else ("stopped" if relay_required else "not-required"),
         "gateway": "running" if gateway_up else "stopped",
+        "controller": controller,
         "hooks": hooks,
         "storage": storage_document(),
         "problems": problems,

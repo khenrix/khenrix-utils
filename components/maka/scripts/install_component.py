@@ -18,12 +18,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 
 PACKAGE_NAME = "maka-agent"
-PACKAGE_VERSION = "0.2.0-dev.47.20260922"
-PACKAGE_INTEGRITY = "sha512-stMt7l7j4pE5qge6LEwOMVv79SU/6hL0h+zc8SJdzIx/jrmQba3GHZx7OB/Rmq546rbMK4uV12ulWfQD18dPew=="
-SOURCE_COMMIT = "6cb8c58084d043f9b87421807fbee1d1ad3bdc03"
+PACKAGE_VERSION = "0.2.0-dev.62.20260928"
+PACKAGE_INTEGRITY = "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ=="
+SOURCE_COMMIT = "2f32205528a4436783c800715261d4b6e286023d"
 MANIFEST_NAME = "install-files.txt"
 INSTALL_RELATIVE = pathlib.Path(".local/share/khenrix-utils/maka")
 WRAPPER_RELATIVE = pathlib.Path(".local/bin/maka")
@@ -74,6 +75,33 @@ def supported_platform(system: str | None = None, machine: str | None = None) ->
     raise ComponentInstallError(
         "managed Maka supports macOS arm64 and Linux x86-64/WSL only"
     )
+
+
+def boot_session_uuid() -> str:
+    try:
+        if platform.system() == "Darwin":
+            value = subprocess.run(
+                ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"],
+                check=True, capture_output=True, text=True, timeout=5,
+            ).stdout.strip()
+        else:
+            value = pathlib.Path("/proc/sys/kernel/random/boot_id").read_text(
+                encoding="ascii"
+            ).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise ComponentInstallError("Maka boot session is unavailable") from error
+    if re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value) is None:
+        raise ComponentInstallError("Maka boot session is invalid")
+    return value.lower()
+
+
+def install_monotonic_ns() -> str:
+    # Node's uv_hrtime (and process.uptime) use MONOTONIC_RAW on macOS.
+    clock = time.CLOCK_MONOTONIC_RAW if platform.system() == "Darwin" else time.CLOCK_MONOTONIC
+    value = time.clock_gettime_ns(clock)
+    if value <= 0:
+        raise ComponentInstallError("Maka monotonic installation time is unavailable")
+    return str(value)
 
 
 def resolve_mise(home: pathlib.Path, candidates: tuple[pathlib.Path, ...] | None = None) -> pathlib.Path:
@@ -611,6 +639,8 @@ def install(source: pathlib.Path, *, activate: bool) -> pathlib.Path:
                 "source_digest": candidate_info["source_digest"],
                 "overlay_hashes": candidate_info["overlay_hashes"],
                 "runtime_package_digest": candidate_info["runtime_package_digest"],
+                "boot_session_uuid": boot_session_uuid(),
+                "install_monotonic_ns": install_monotonic_ns(),
                 "platform": supported_platform(),
                 "component": str(layout.component),
                 "wrapper": str(layout.wrapper),

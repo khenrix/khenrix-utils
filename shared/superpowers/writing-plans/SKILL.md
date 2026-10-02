@@ -93,6 +93,11 @@ owns the code, in that task's own step style.]
 
 ## Task Structure
 
+Put `  **Depends on:** none` immediately after a Step heading when it can
+start independently. Otherwise list the exact earlier `Task N/Step M` IDs it
+needs, separated by commas. Declare only real prerequisites: listing two Tasks
+in order does not make them dependent, and independent Tasks may run in parallel.
+
 ````markdown
 ### Task N: [Component Name]
 
@@ -108,6 +113,7 @@ owns the code, in that task's own step style.]
   block is how they learn the names and types neighboring tasks use.]
 
 - [ ] **Step 1: Write the failing test**
+  **Depends on:** none
 
 ```python
 def test_specific_behavior():
@@ -116,11 +122,13 @@ def test_specific_behavior():
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
+  **Depends on:** Task N/Step 1
 
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: FAIL with "function not defined"
 
 - [ ] **Step 3: Write minimal implementation**
+  **Depends on:** Task N/Step 2
 
 ```python
 def function(input):
@@ -128,11 +136,13 @@ def function(input):
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
+  **Depends on:** Task N/Step 3
 
 Run: `pytest tests/path/test.py::test_name -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
+  **Depends on:** Task N/Step 4
 
 ```bash
 git add tests/path/test.py src/path/file.py

@@ -14,6 +14,8 @@ const undiciPackage = JSON.parse(await readFile(
   'utf8',
 ));
 assert.equal(undiciPackage.version, '8.10.2');
+const profile = process.argv[2] ?? 'coding';
+assert.ok(['coding', 'judge'].includes(profile));
 
 const transport = createProxiedFetchTransport({
   enabled: true,
@@ -46,6 +48,12 @@ const body = {
   tool_choice: 'auto',
   prompt_cache_key: 'maka:synthetic-integration',
 };
+if (profile === 'judge') {
+  body.model = 'gpt-6.1-sol';
+  body.input = [{ role: 'user', content: [{ type: 'input_text',
+    text: 'Judge receipt nonce: maka:fanout-judge-0123456789abcdef0123456789abcdef\nCompare two final answers.',
+  }] }];
+}
 
 try {
   const response = await state.wrapFetch(transport.fetch)(
@@ -61,7 +69,22 @@ try {
     },
   );
   assert.equal(response.status, 200);
-  assert.deepEqual(JSON.parse(await response.text()), { ok: true });
+  if (profile === 'judge') {
+    const events = (await response.text()).split('\n')
+      .filter((line) => line.startsWith('data: ') && line !== 'data: [DONE]')
+      .map((line) => JSON.parse(line.slice(6)));
+    assert.deepEqual(events, [
+      { type: 'response.created', response: {
+        id: 'synthetic-judge-response', model: 'gpt-6.1-sol', service_tier: 'default',
+      } },
+      { type: 'response.completed', response: {
+        id: 'synthetic-judge-response', model: 'gpt-6.1-sol', service_tier: 'default',
+        status: 'completed', output: [],
+      } },
+    ]);
+  } else {
+    assert.deepEqual(JSON.parse(await response.text()), { ok: true });
+  }
 } finally {
   state.close();
   await transport.close();

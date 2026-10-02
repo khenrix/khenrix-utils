@@ -45,7 +45,8 @@ DEFAULT_STATUS_KEYS = {
     "claude": {"model", "effortLevel", "ultracode",
                "modelSettings.claude-opus-5-5.effortLevel"},
     "codex": {"model", "service_tier", "model_reasoning_effort",
-              "plan_mode_reasoning_effort", "agents.default_subagent_reasoning_effort"},
+              "plan_mode_reasoning_effort", "agents.default_subagent_reasoning_effort",
+              "notice.model_migrations.gpt-5.6-sol", "notice.model_migrations.gpt-6-sol"},
     "agy": {"model"},
 }
 MANAGED_BEGIN = "<!-- khenrix-managed:begin house-style -->"
@@ -426,7 +427,8 @@ def toml_table_bounds(lines: list[str], table: str) -> tuple[int, int] | None:
 
 
 def set_toml_table_key(text: str, table: str, key: str, value) -> str:
-    rendered = f"{key} = {toml_value(value)}\n"
+    spelling = key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+    rendered = f"{spelling} = {toml_value(value)}\n"
     lines = text.splitlines(keepends=True)
     bounds = toml_table_bounds(lines, table)
     if bounds is None:

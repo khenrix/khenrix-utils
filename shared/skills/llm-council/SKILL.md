@@ -24,21 +24,16 @@ fan-out in bash; run the engine and synthesize from its manifest.
 > decisions that justify the spend — high-stakes, ambiguous, or contested questions —
 > not routine tasks.
 >
-> **Read-only by default.** All three members are now **mechanically constrained**:
-> Claude (plan mode, plan-file writes suppressed), Codex (read-only sandbox), and agy
-> (`--mode plan`, accepted since agy 1.1.1, but the mechanical block is VERIFIED only on
-> 1.1.13+ — probed 2026-08-14: a requested write was blocked and the run's own log
-> confirms plan mode engaged. Older builds are unproven; treat them as resting on the
-> posture line and worktree isolation alone). agy keeps `--dangerously-skip-permissions`
-> *alongside* `--mode plan`: the two are orthogonal per `agy --help` (auto-approve is a
-> prompting policy, plan mode is the write barrier), and dropping it left agy unable to
-> approve its own reads headlessly. Two soft layers remain on top: a read-only
-> posture line prepended to every member's prompt (identical conditions preserved) and a
-> throwaway git-worktree cwd for agy — both added after the 2026-07-11 breakout incident,
-> kept as defense in depth. This suits the council's job (a second opinion / synthesis,
-> not edits) and makes it low-risk to convene even
-> mid-task. Pass `--allow-writes` only when you explicitly want the members
-> to edit/execute (that bypasses permission/sandbox prompts — only in a trusted workspace).
+> **Read-only by default.** Codex uses its read-only sandbox. The agy seat
+> removes `--dangerously-skip-permissions` and receives a private native deny
+> policy plus a path-confined pre-tool hook; a live 2026-09-24 canary on agy
+> 1.2.10 read the assigned fixture, denied an actual write attempt, and left no
+> file behind. `--mode plan` alone is **not** a write barrier. Claude uses plan
+> mode with `ExitPlanMode` disabled, but this is not a filesystem sandbox; use a
+> stronger isolated seat if strict no-write enforcement is required. The
+> read-only posture line and agy's throwaway worktree remain additional layers.
+> Pass `--allow-writes` only when you explicitly want members to edit or execute
+> in a trusted workspace.
 
 ## 1. Locate the engine
 
@@ -79,7 +74,7 @@ python3 "$FANOUT" --prompt-file "$PROMPT_FILE" --mode deep --out json
 
 ### Prompt shape (matters most for the codex seat)
 
-- **Open with the request-type verb.** GPT-6 Sol dispatches on it: "Review …" / "Diagnose …
+- **Open with the request-type verb.** "Review …" / "Diagnose …
   — do not modify anything" lands in a bucket that natively forbids writes and stops short
   of implementing fixes; "fix"/"implement" authorizes edits. Match the verb to intent.
 - **Review asks need an explicit output contract** (5.6 dropped its built-in one):
@@ -104,9 +99,9 @@ fine for most runs.
 The council is a fixed panel of three models. The two modes differ in **both** the claude
 seat's reasoning tier and how hard the others think:
 
-- **`normal`** (default) — Opus 5.5 at `max`, GPT-6 Sol at `xhigh`, Gemini 3.8 Flash
+- **`normal`** (default) — Opus 5.5 at `max`, GPT-6.1 Sol at `xhigh`, Gemini 3.8 Flash
   (High). Use for most council runs.
-- **`deep`** — Opus 5.5 at **`ultracode`**, GPT-6 Sol at **`ultra`**, Flash unchanged (no tier
+- **`deep`** — Opus 5.5 at **`ultracode`**, GPT-6.1 Sol at **`ultra`**, Flash unchanged (no tier
   above High exists) + a longer timeout. Use for genuinely high-stakes /
   maximum-confidence asks (architecture, risky changes), or when the user says "deep",
   "think hard", or "maximum confidence". **Deep is not bounded by the ~3x figure above.**
@@ -117,7 +112,7 @@ seat's reasoning tier and how hard the others think:
   is that deep's ceiling is not known to be 3x, not that it is.
 
 Claude documents `ultracode` as a coding workflow that sends `xhigh` effort, while
-`max` is its deepest single-model effort. Codex's `ultra` is a CLI tier; the GPT-6 Sol
+`max` is its deepest single-model effort. Codex's `ultra` is a CLI tier; the GPT-6.1 Sol
 API's highest effort value is `max`. agy receives no separate `--effort` because Flash
 encodes High in its model label.
 

@@ -1,0 +1,34 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      maka-agent:
+        specifier: 0.2.0-dev.62.20260928
+        version: 0.2.0-dev.62.20260928
+
+packages:
+
+  maka-agent@0.2.0-dev.62.20260928:
+    resolution: {integrity: sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==}
+    engines: {node: '>=22.19.0'}
+    hasBin: true
+
+snapshots:
+
+  maka-agent@0.2.0-dev.62.20260928:
+    bundledDependencies:
+      - '@agentclientprotocol/sdk'
+      - '@earendil-works/pi-tui'
+      - '@maka/core'
+      - '@maka/eval'
+      - '@maka/mcp'
+      - '@maka/runtime'
+      - '@maka/runtime-host'
+      - '@maka/storage'
+      - undici

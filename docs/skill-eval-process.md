@@ -68,6 +68,47 @@ notice. Changed license bytes require an explicit `--accept-license-change` afte
 the terms and attribution wording. It must precede eval because all three are inside the
 receipt's source closure.
 
+## CLI lifecycle and release measurements
+
+An unchanged installed skill remains discoverable and usable after a compatible host
+CLI update. A version newer than its last development measurement is informational;
+it does not require a downgrade, instruction rewrite or paid reevaluation. A concrete
+capability, protocol or loader failure still stops the affected operation. Recorded
+fanout runs retain their profiles and inputs, and exact isolated-write certificates
+retain their guest executable, image, source and route checks.
+
+When instructions, metadata, helpers or shared runtime change, identify every affected
+skill using `scripts/lib/checks.py`'s `source_manifest` closure. Run the relevant
+deterministic tests, current target CLI discovery/metadata checks and bounded behavior
+or pressure evaluations before publishing or claiming the revision verified. Include
+Claude, Codex, agy and Maka where they provide the relevant capability; Maka remains
+outside the three-provider harness. Report an unavailable target as unverified.
+The shared eval harness and its CLI version observer are inputs to every behavior
+receipt: changing them affects all of those skills, not just the edited fanout skill.
+
+Each real harness campaign observes the selected executors and judge with `--version`
+before the first paid turn. It records the deduplicated, bounded UTF-8 single-line
+observations as `metadata.cli_versions` in `benchmark.json` and `cli_versions` in a
+successfully earned receipt. It observes the same CLIs again before receipt issuance
+and retains `metadata.cli_versions_after`. A failed initial measurement stops before
+spend; later failed measurement or version drift retains the benchmark and raw attempts,
+returns failure, and writes no receipt or automatic replay. Retain the actual commands,
+invocation identities, outcomes and raw private evidence with the evaluated revision.
+
+CLI metadata describes the measured release; receipt readers do not compare it with
+the user's current host version. Older and seeded receipts must never be restamped to
+claim a newer binary was measured. Unchanged source/eval hashes remain valid across a
+CLI-only update, while changed source or eval inputs require new evidence. The historical
+whole-help characterization receipt is diagnostic: its opt-in
+`scripts/fanout_baseline.py check-characterization` comparison remains exact, and its
+drift is not an ordinary installed-skill admission gate.
+
+Requested model names in a receipt record configuration, not the model actually served.
+Missing positive served-model observations remain separate release-proof requirements;
+version measurements, source tests and native discovery cannot satisfy them. Fresh
+receipts for changed closures belong to the approved final-source release sequence,
+alongside its live canaries, Maka judgments, trial and strict gate.
+
 ## Layout
 
 ```
@@ -98,14 +139,17 @@ mise exec -- make eval SKILL=khenrix-quality
 mise exec -- make eval SKILL=khenrix-quality PROVIDERS=claude,codex,agy MODE=deep
 ```
 
-Notes: executors run **read-only / plan-only** by default (`make_readonly` swaps each
-provider's bypass flag — claude `--permission-mode plan` plus plan-file suppression
-(`--disallowedTools ExitPlanMode` + an appended system prompt), codex `--sandbox read-only`;
-agy `--mode plan` — a mechanical read-only mode since agy 1.1.1, since its `--sandbox` hangs
-headless (see `make_readonly`'s docstring) — plus a READONLY_POSTURE line prepended to every
-executor's prompt and a fresh temporary cwd whose contents are discarded —
-so a skill that mutates config (`khenrix-setup`/`khenrix-upgrade`) is
-mechanically constrained on all three during an eval.
+Notes: the eval harness removes permission-bypass flags, isolates each
+provider's home and working directory, and applies a checked no-tools boundary
+before launch. Claude also uses plan mode and an empty built-in tool set; Codex
+uses its read-only sandbox with shell and app tools disabled; agy selects the
+private `eval-no-tools` agent with no bypass. A read-only posture line is
+prepended to each executor's prompt, and canary scanning checks for unintended
+actions afterward. The agy `--mode plan` flag is **not** the write barrier:
+agy 1.2.10 wrote a file under `--mode plan --dangerously-skip-permissions` in
+a disposable live probe. The harness's separate no-tools boundary is what
+keeps a skill that normally mutates config (`khenrix-setup`/`khenrix-upgrade`)
+from doing so during an eval.
 
 The installed-binary help and bounded hostile probes were checked on 2026-09-21 before
 these barriers were wired. Every executor and judge has an unconditional no-tools boundary:

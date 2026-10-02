@@ -11,12 +11,12 @@ from pathlib import Path
 
 OVERLAY_ID = "relay-root-virtiofs-v2"
 RELAY_PATH = Path("node_modules/@maka/eval/harbor/relay_agent.py")
-BASE_SHA256 = "c8654a17bd9ecefac2ce183c3fcc238fc142d9e2a47d703541c9cfc9a29fe3ee"
-PATCHED_SHA256 = "8761f73c2940365ca8a5861a9057a62f0ea2de6276b393512e50f72cb66e3bd0"
+BASE_SHA256 = "045c2774a37bc014232d5d9a2f2008f40ec4291d36c39ab632ebf3698ef0789f"
+PATCHED_SHA256 = "6214ed402d2d8345b20b625739b9a08905116bfdd944775938d5d78054033621"
 
-IMPORTS_OLD = b'''if framework == "harbor":\n    from harbor.agents.base import BaseAgent\nelse:\n    from pier.agents.base import BaseAgent\n'''
+IMPORTS_OLD = b'''BaseAgent = importlib.import_module(framework_agent_module(framework)).BaseAgent\n'''
 
-IMPORTS_NEW = b'''if framework == "harbor":\n    from harbor.agents.base import BaseAgent\n    from harbor.constants import MAIN_SERVICE_NAME\n    from harbor.environments.docker.docker import DockerEnvironment\n    from harbor.environments.docker.docker_unix import UnixOps\nelse:\n    from pier.agents.base import BaseAgent\n'''
+IMPORTS_NEW = b'''BaseAgent = importlib.import_module(framework_agent_module(framework)).BaseAgent\nif framework == "harbor":\n    from harbor.constants import MAIN_SERVICE_NAME\n    from harbor.environments.docker.docker import DockerEnvironment\n    from harbor.environments.docker.docker_unix import UnixOps\n'''
 
 SETUP_OLD = b'''        prepared = await environment.exec(\n            "mkdir -p /logs/agent /logs/artifacts && "\n            f"chown {owner} /logs/agent /logs/artifacts && "\n            "chmod 700 /logs/agent /logs/artifacts",\n            user="root",\n        )\n'''
 

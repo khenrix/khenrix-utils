@@ -11,7 +11,7 @@ re-created from reviewed commands on each machine.
 
 | Thing | Home | Syncs how |
 |---|---|---|
-| Canonical skills and base instructions | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`, `shared/superpowers/`) | **git** + `mise run skills:apply` copies the 17 managed skills and bounded instructions |
+| Canonical skills and base instructions | `khenrix-utils` (`capabilities.toml`, `house-style.md`, `shared/skills/`, `shared/superpowers/`) | **git** + `mise run skills:apply` copies the 19 managed skills and bounded instructions |
 | MCP servers and baseline settings | `khenrix-utils` (`capabilities.toml`) | **git** + the broader reconcile flow when deliberately enabled |
 | Obsidian wiki / knowledge base | `~/git/obsidian-vault` | **git** (`git@github.com:khenrix/obsidian-vault.git`, **private**) via the obsidian-git plugin |
 | Project repos (e.g. `hunter`) + their `.claude/skills/` | each project repo | **git** (each repo's own remote) |
@@ -205,13 +205,13 @@ mise run skills:apply -- --expect sha256:PLAN_ID
 mise run skills:doctor
 ```
 
-This installs `khenrix-quality`, `khenrix-writing`, and the 15-skill Superpowers
+This installs `khenrix-quality`, `khenrix-writing`, both fanout skills, and the 15-skill Superpowers
 bundle into the native skill roots for Claude, Codex/Maka, and agy. It also
 updates the bounded house-style block in all four instruction files. Existing
 sibling skills and text outside the markers stay unchanged.
 
 Other Claude plugins keep their normal install path. They are independent of the
-17 Khenrix-managed direct-copy skills:
+19 Khenrix-managed direct-copy skills:
 
 ```bash
 claude plugin marketplace add anthropics/claude-plugins-official
@@ -257,7 +257,7 @@ mise exec -- python3 scripts/doctor.py --only cli-model-defaults
 
 The portable defaults are Claude provider-neutral `best`, Opus 5.5 `xhigh`
 under `modelSettings`, and `ultracode=false` (use `claude --effort ultracode`
-for a planning session); Codex `gpt-6-sol`, execution/subagents `xhigh`,
+for a planning session); Codex `gpt-6.1-sol`, execution/subagents `xhigh`,
 planning `ultra`, and preferred `service_tier=default`; and agy
 `Gemini 3.8 Flash (High)`. Apply creates numbered
 `*.khenrix-backup` files and preserves every unrelated field.

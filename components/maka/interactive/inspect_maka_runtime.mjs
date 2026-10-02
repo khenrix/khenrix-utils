@@ -6,13 +6,15 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
-const EXPECTED_VERSION = '0.2.0-dev.47.20260922';
-const MODEL_ID = 'gpt-6-sol';
+const EXPECTED_VERSION = '0.2.0-dev.62.20260928';
+const MODEL_ID = 'gpt-6.1-sol';
 const LEGACY_MODEL_ID = 'gpt-5.6-sol';
-const MODEL_IDS = [MODEL_ID, LEGACY_MODEL_ID];
+const PREVIOUS_MODEL_ID = 'gpt-6-sol';
+const MODEL_IDS = [MODEL_ID, PREVIOUS_MODEL_ID, LEGACY_MODEL_ID];
 const RELAY_SLUG = 'keychain-openai';
 const RELAY_NAME = 'OpenAI via local Keychain relay';
-const RELAY_PROVIDER = 'openai-responses-compatible';
+const RELAY_PROVIDER = 'custom';
+const RELAY_API_PROTOCOL = 'openai-responses';
 const RELAY_BASE_URL = 'http://127.0.0.1:48173/v1';
 const RELAY_PROXY = {
   enabled: true,
@@ -60,9 +62,11 @@ function hasExactApiOverride(value) {
   return MODEL_IDS.every((id) => {
     const model = value[id];
     return (
-    exactKeys(model, ['thinkingLevels', 'defaultThinkingLevel']) &&
+    exactKeys(model, ['thinkingLevels', 'defaultThinkingLevel', 'capabilities']) &&
     sameStrings(model.thinkingLevels, ['xhigh', 'max']) &&
-    model.defaultThinkingLevel === 'xhigh'
+    model.defaultThinkingLevel === 'xhigh' &&
+    exactKeys(model.capabilities, ['parallelToolCalls']) &&
+    model.capabilities.parallelToolCalls === true
     );
   });
 }
@@ -121,6 +125,7 @@ export function validateMakaRuntimeSnapshot(mode, { policySnapshot, catalog, enr
       connection.slug !== RELAY_SLUG ||
       connection.name !== RELAY_NAME ||
       connection.providerType !== RELAY_PROVIDER ||
+      connection.defaultApiProtocol !== RELAY_API_PROTOCOL ||
       connection.baseUrl !== RELAY_BASE_URL ||
       Object.hasOwn(connection, 'requestBodyOverlay') ||
       !hasExactApiOverride(connection.modelOverrides)
@@ -225,25 +230,50 @@ async function selfTest() {
     slug: RELAY_SLUG,
     name: RELAY_NAME,
     providerType: RELAY_PROVIDER,
+    defaultApiProtocol: RELAY_API_PROTOCOL,
     baseUrl: RELAY_BASE_URL,
     modelOverrides: {
-      [MODEL_ID]: { thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh' },
-      [LEGACY_MODEL_ID]: { thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh' },
+      [MODEL_ID]: {
+        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        capabilities: { parallelToolCalls: true },
+      },
+      [LEGACY_MODEL_ID]: {
+        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        capabilities: { parallelToolCalls: true },
+      },
+      [PREVIOUS_MODEL_ID]: {
+        thinkingLevels: ['xhigh', 'max'], defaultThinkingLevel: 'xhigh',
+        capabilities: { parallelToolCalls: true },
+      },
     },
   };
-  validateMakaRuntimeSnapshot('api-key-relay', {
+  const apiSnapshot = (connection) => ({
     policySnapshot,
     catalog: {
-      defaultTarget: { connectionId: api.connectionId, modelId: MODEL_ID },
-      connections: [api],
+      defaultTarget: { connectionId: connection.connectionId, modelId: MODEL_ID },
+      connections: [connection],
     },
   });
+  validateMakaRuntimeSnapshot('api-key-relay', apiSnapshot(api));
+  for (const missingCapability of [false, true]) {
+    const invalid = structuredClone(api);
+    if (missingCapability) delete invalid.modelOverrides[MODEL_ID].capabilities;
+    else invalid.modelOverrides[MODEL_ID].capabilities.parallelToolCalls = false;
+    let rejected = false;
+    try {
+      validateMakaRuntimeSnapshot('api-key-relay', apiSnapshot(invalid));
+    } catch (error) {
+      rejected = error instanceof SafeInspectionError && error.code === 'api_connection_invalid';
+    }
+    if (!rejected) throw new Error('self_test_expected_api_rejection');
+  }
   const subscription = {
     ...base,
     providerType: 'openai-codex',
     modelOverrides: {
       [MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
       [LEGACY_MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
+      [PREVIOUS_MODEL_ID]: { defaultThinkingLevel: 'xhigh' },
     },
   };
   validateMakaRuntimeSnapshot('chatgpt-subscription', {

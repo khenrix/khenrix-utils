@@ -9,7 +9,7 @@ python = "3.12.14"
 uv = "0.12.15"
 docker-cli = "29.8.1"
 docker-compose = "5.5.1"
-"npm:maka-agent" = "0.2.0-dev.47.20260922"
+"npm:maka-agent" = "0.2.0-dev.62.20260928"
 "aqua:docker/buildx" = "0.37.1"
 
 [env]
@@ -56,6 +56,10 @@ run = "./scripts/import-smoke.sh"
 [tasks."maka:harbor-smoke"]
 description = "Run one pinned fix-git Harbor cell in the disposable amd64 lab"
 run = "./scripts/harbor-smoke.sh"
+
+[tasks."maka:harbor-judge"]
+description = "Run one explicitly gated blind A/B judge in the pinned amd64 lab"
+run = "./scripts/harbor-judge.sh"
 
 [tasks."maka:pier-preflight"]
 description = "Validate the pinned Pier environment and Maka preflight only"

@@ -6,7 +6,7 @@ portable Maka runtime and policy used on managed machines: the exact package
 pin, launcher, authentication helpers, model and permission defaults,
 provenance, tests, and audit lab live in `components/maka`.
 
-The current pin is `maka-agent@0.2.0-dev.47.20260922`. Agentic Setup remains the
+The current pin is `maka-agent@0.2.0-dev.62.20260928`. Agentic Setup remains the
 broader inventory and sync owner for the other shared skills and plugins.
 Khenrix Utils owns and direct-delivers `khenrix-quality` and `khenrix-writing`
 plus the 15-skill Superpowers bundle to Claude, Codex, agy, and Maka. Installing
@@ -20,11 +20,11 @@ native skill root after `mise run skills:apply`.
 | macOS arm64 | Yes | Yes | Yes, with Colima |
 | Linux x86-64, including WSL | Yes | No | No |
 
-Both authentication routes use `gpt-6-sol`, `ask` permissions, and `xhigh`
+Both authentication routes use `gpt-6.1-sol`, `ask` permissions, and `xhigh`
 for normal interactive and headless work. The API route also supports an
 explicit `max` setting for planning. The ChatGPT subscription route in this
-pinned release has no live proof of GPT-6 Sol `max`, so `xhigh` is its highest
-verified planning setting. Both routes keep `gpt-5.6-sol` selectable for
+pinned release has no live proof of GPT-6.1 Sol `max`, so `xhigh` is its highest
+offered planning setting, pending fresh entitlement proof. Both routes keep `gpt-6-sol` and `gpt-5.6-sol` selectable for
 resuming old sessions. The frozen evaluation controller remains on 5.6.
 
 Maka keeps its native workspace data under
@@ -201,7 +201,7 @@ Managed Khenrix state is split by purpose:
 - Maka's native profile stores its local vault, workspace, and sessions.
 
 The subscription launcher enforces one enabled canonical `openai-codex`
-connection, `gpt-6-sol` as the default with `gpt-5.6-sol` still enabled, and no enabled proxy, custom endpoint,
+connection, `gpt-6.1-sol` as the default with `gpt-6-sol` and `gpt-5.6-sol` still enabled, and no enabled proxy, custom endpoint,
 custom request body, arbitrary model overlay, or second provider. It does not
 read, export, clear, or replace OAuth data. This is a launch-time Runtime Host
 check, not an operating-system firewall; a user can change connections later
@@ -279,5 +279,5 @@ as one reviewed unit:
 6. Run the full macOS doctor when the change touches the audit lab, then review
    `maka:plan` before applying the upgrade.
 7. Verify the selected auth route, `ask` permission default,
-   `gpt-6-sol` as default, `gpt-5.6-sol` resumability, and reasoning policy on
+   `gpt-6.1-sol` as default, `gpt-6-sol` and `gpt-5.6-sol` resumability, and reasoning policy on
    the installed runtime.

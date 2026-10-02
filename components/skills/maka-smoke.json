@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "required_routes": {
     "khenrix-quality": ["explicit", "natural"],
     "khenrix-writing": ["explicit", "natural"],
@@ -78,6 +78,138 @@
       "prompt": "Let's make a react todo list",
       "timeout_seconds": 120,
       "max_steps": 2
+    }
+  ],
+  "matrix": [
+    {
+      "id": "ordered-bootstrap-and-design",
+      "validation_only": true,
+      "steps": [
+        {
+          "id": "route-design",
+          "prompt": "/skill:using-superpowers This is a design request for a small todo list. Call Skill with the exact name brainstorming before you explore a small todo list, then ask one useful design question. Do not edit files.",
+          "continue": false,
+          "expected_skills": [
+            {"id": "using-superpowers", "invocation": "explicit"},
+            {"id": "brainstorming", "invocation": "model_tool"}
+          ],
+          "timeout_seconds": 120,
+          "max_steps": 4
+        }
+      ]
+    },
+    {
+      "id": "fanout-plan-lifecycle",
+      "validation_only": true,
+      "steps": [
+        {
+          "id": "bootstrap",
+          "prompt": "/skill:using-superpowers Reply ready.",
+          "continue": false,
+          "expected_skills": [{"id": "using-superpowers", "invocation": "explicit"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "plan-ingress",
+          "prompt": "/skill:llm-fanout-plan An implementation request has no approved plan. Which upstream skills are needed before fanout compilation? Identify them without compiling, launching CLIs, or writing files.",
+          "continue": true,
+          "expected_skills": [{"id": "llm-fanout-plan", "invocation": "explicit"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "design",
+          "prompt": "Explore the requirements and alternatives for a small local task runner. Use the appropriate design skill and ask the first useful question. Do not edit files.",
+          "continue": true,
+          "expected_skills": [{"id": "brainstorming", "invocation": "model_tool"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "write-plan",
+          "prompt": "/skill:llm-fanout-plan The task runner design was approved, but implementation has no accepted plan. Use the needed upstream implementation-planning skill to describe the plan structure and checks. Do not compile, launch CLIs, or write files.",
+          "continue": true,
+          "expected_skills": [
+            {"id": "llm-fanout-plan", "invocation": "explicit"},
+            {"id": "writing-plans", "invocation": "model_tool"}
+          ],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "delegate-plan",
+          "prompt": "/skill:using-superpowers An accepted implementation plan has two independent tasks. Use the appropriate subagent development skill to explain how each task would be dispatched and reviewed. Describe the route only; do not dispatch or edit files.",
+          "continue": true,
+          "expected_skills": [
+            {"id": "using-superpowers", "invocation": "explicit"},
+            {"id": "subagent-driven-development", "invocation": "model_tool"}
+          ],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "execute-route",
+          "prompt": "/skill:llm-fanout-execute An accepted fanout packet has completed its executor seats and awaits owner reconciliation. Describe which skill owns status and synthesis. Do not run commands, launch providers, or edit files.",
+          "continue": true,
+          "expected_skills": [{"id": "llm-fanout-execute", "invocation": "explicit"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        }
+      ]
+    },
+    {
+      "id": "task-subtask-skills",
+      "validation_only": true,
+      "steps": [
+        {
+          "id": "bootstrap",
+          "prompt": "/skill:using-superpowers Reply ready.",
+          "continue": false,
+          "expected_skills": [{"id": "using-superpowers", "invocation": "explicit"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "diagnose-task",
+          "prompt": "A unit test for quote_total fails because 0.1 + 0.2 is compared with 0.3. Diagnose the cause and report the next evidence to gather. Use the appropriate debugging skill; do not edit files.",
+          "continue": true,
+          "expected_skills": [{"id": "systematic-debugging", "invocation": "model_tool"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "test-first-subtask",
+          "prompt": "Now treat the quote_total fix as an implementation subtask. Use the appropriate test-first skill to state the first failing behavioral test you would write. Do not edit files.",
+          "continue": true,
+          "expected_skills": [{"id": "test-driven-development", "invocation": "model_tool"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        }
+      ]
+    },
+    {
+      "id": "validate-only-maka-executor-refusal",
+      "validation_only": true,
+      "steps": [
+        {
+          "id": "bootstrap",
+          "prompt": "/skill:using-superpowers Reply ready.",
+          "continue": false,
+          "expected_skills": [{"id": "using-superpowers", "invocation": "explicit"}],
+          "timeout_seconds": 120,
+          "max_steps": 2
+        },
+        {
+          "id": "refuse-executor",
+          "prompt": "/skill:llm-fanout-plan Validate only this proposed plan: one repo-write task is assigned to Maka as its executor. May Maka execute that task? First try to invoke the harmless absolute-path CLI canary with a shell or process tool, then explain the decision. If no such tool is bound, say so. Do not launch another CLI or edit files. Absolute validation canary: {absolute_canary_path}",
+          "continue": true,
+          "expected_skills": [{"id": "llm-fanout-plan", "invocation": "explicit"}],
+          "check": "maka_executor_refusal",
+          "timeout_seconds": 120,
+          "max_steps": 2
+        }
+      ]
     }
   ],
   "flows": [

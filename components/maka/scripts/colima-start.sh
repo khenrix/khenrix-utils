@@ -2,6 +2,16 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
+expected_lab_root="$HOME/.local/share/khenrix-utils/maka"
+if test "$LAB_ROOT" != "$expected_lab_root" \
+  || test ! -d "$LAB_ROOT" || test -L "$LAB_ROOT" \
+  || test "$(cd "$LAB_ROOT" && pwd -P)" != "$expected_lab_root" \
+  || test "$(stat -f '%u' "$LAB_ROOT")" != "$(id -u)" \
+  || test "$(stat -f '%Lp' "$LAB_ROOT")" != 700; then
+  echo 'Maka lab root must be the private installed component' >&2
+  exit 78
+fi
+
 before_default=$(colima list -j | jq -sc '[.[] | select(.name == "default")][0]')
 before_context=$(docker context show)
 migration_in_progress=false
@@ -9,6 +19,16 @@ migration_was_running=false
 migration_backup=""
 profile_config="$HOME/.colima/maka-amd64/colima.yaml"
 legacy_lab_root="$HOME/git/maka-lab"
+legacy_agentic_setup_root="$HOME/git/agentic-setup/components/maka"
+
+assert_private_profile_config() {
+  if test ! -f "$profile_config" || test -L "$profile_config" \
+    || test "$(stat -f '%u' "$profile_config")" != "$(id -u)" \
+    || test "$(stat -f '%Lp' "$profile_config")" != 600; then
+    echo 'maka-amd64 config must be a private regular owned file' >&2
+    return 78
+  fi
+}
 
 restore_legacy_mount_after_failure() {
   test "$migration_in_progress" = true || return 0
@@ -48,30 +68,46 @@ else
   arch=$(jq -r '.[] | select(.name == "maka-amd64") | .arch' <<<"$profiles")
   test "$arch" = x86_64 || { echo "Existing maka-amd64 profile has unexpected architecture: $arch" >&2; exit 78; }
   status=$(jq -r '.[] | select(.name == "maka-amd64") | .status' <<<"$profiles")
+  assert_private_profile_config
   mount_state=$(ruby -ryaml -e '
     mounts = YAML.safe_load(File.read(ARGV.fetch(0))).fetch("mounts")
     current = [{"location" => ARGV.fetch(1), "writable" => true}]
-    legacy = [{"location" => ARGV.fetch(2), "writable" => true}]
+    legacy_lab = [{"location" => ARGV.fetch(2), "writable" => true}]
+    legacy_agentic_setup = [{"location" => ARGV.fetch(3), "writable" => true}]
     if mounts == current
       puts "current"
-    elsif mounts == legacy
-      puts "legacy"
+    elsif mounts == legacy_lab
+      puts "legacy-lab"
+    elsif mounts == legacy_agentic_setup
+      puts "legacy-agentic-setup"
     else
       abort "maka-amd64 must mount only the Maka lab writable"
     end
-  ' "$profile_config" "$LAB_ROOT" "$legacy_lab_root")
-  if test "$mount_state" = legacy; then
-    test -f "$profile_config" && test ! -L "$profile_config"
-    test "$(stat -f '%u' "$profile_config")" = "$(id -u)"
+  ' "$profile_config" "$LAB_ROOT" "$legacy_lab_root" "$legacy_agentic_setup_root")
+  if test "$mount_state" != current; then
+    case "$mount_state" in
+      legacy-lab) migration_old_root=$legacy_lab_root ;;
+      legacy-agentic-setup) migration_old_root=$legacy_agentic_setup_root ;;
+      *) exit 78 ;;
+    esac
     migration_backup=$(mktemp "$HOME/.colima/maka-amd64/.colima.yaml.khenrix-utils-XXXXXX")
     cp -p "$profile_config" "$migration_backup"
     chmod 0600 "$migration_backup"
-    persistent_backup="$profile_config.khenrix-utils-before-relocation"
-    if test ! -e "$persistent_backup"; then
+    if test "$mount_state" = legacy-agentic-setup; then
+      persistent_backup="$profile_config.khenrix-utils-before-agentic-setup-relocation"
+    else
+      persistent_backup="$profile_config.khenrix-utils-before-relocation"
+    fi
+    if test ! -e "$persistent_backup" && test ! -L "$persistent_backup"; then
       install -m 0600 "$profile_config" "$persistent_backup"
     fi
-    test -f "$persistent_backup" && test ! -L "$persistent_backup"
-    test "$(stat -f '%u' "$persistent_backup")" = "$(id -u)"
+    if test ! -f "$persistent_backup" || test -L "$persistent_backup" \
+      || test "$(stat -f '%u' "$persistent_backup")" != "$(id -u)" \
+      || test "$(stat -f '%Lp' "$persistent_backup")" != 600 \
+      || ! cmp -s "$profile_config" "$persistent_backup"; then
+      echo 'maka-amd64 migration backup does not match the current config' >&2
+      exit 78
+    fi
     migration_in_progress=true
     test "$status" = Running && migration_was_running=true
     if test "$migration_was_running" = true; then
@@ -96,7 +132,7 @@ else
         temporary.fsync
         File.rename(temporary.path, path)
       end
-    ' "$profile_config" "$legacy_lab_root" "$LAB_ROOT"
+    ' "$profile_config" "$migration_old_root" "$LAB_ROOT"
     colima start --profile maka-amd64 --activate=false
     profiles=$(colima list -j | jq -sc '.')
     status=Running
@@ -105,6 +141,7 @@ else
 fi
 
 current=$(colima list -j | jq -sc '[.[] | select(.name == "maka-amd64")][0]')
+assert_private_profile_config
 test "$(jq -r .status <<<"$current")" = Running
 test "$(jq -r .arch <<<"$current")" = x86_64
 test "$(jq -r .runtime <<<"$current")" = docker

@@ -32,11 +32,14 @@ def caps():
                     "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}},
                 },
                 "codex": {
-                    "model": "gpt-6-sol",
+                    "model": "gpt-6.1-sol",
                     "service_tier": "default",
                     "model_reasoning_effort": "xhigh",
                     "plan_mode_reasoning_effort": "ultra",
                     "agents": {"default_subagent_reasoning_effort": "xhigh"},
+                    "notice": {"model_migrations": {
+                        "gpt-5.6-sol": "gpt-6.1-sol", "gpt-6-sol": "gpt-6.1-sol",
+                    }},
                 },
                 "agy": {"model": "Gemini 3.8 Flash (High)"},
             }
@@ -115,13 +118,16 @@ def test_codex_updates_root_and_nested_defaults_without_touching_other_tables(
         'default_subagent_reasoning_effort = "low"\n'
         'max_threads = 7\n\n'
         '[mcp_servers.private]\n'
-        'command = "private-command"\n')
+        'command = "private-command"\n\n'
+        '[notice.model_migrations]\n'
+        '"gpt-5.6-sol" = "gpt-6-sol"\n'
+        '"other-model" = "explicit-user-choice"\n')
 
     _, apply = reconcile.portable_defaults_report("codex", caps())
     apply(True)
     live = tomllib.loads(path.read_text())
 
-    assert live["model"] == "gpt-6-sol"
+    assert live["model"] == "gpt-6.1-sol"
     assert live["service_tier"] == "default"
     assert live["model_reasoning_effort"] == "xhigh"
     assert live["plan_mode_reasoning_effort"] == "ultra"
@@ -129,6 +135,10 @@ def test_codex_updates_root_and_nested_defaults_without_touching_other_tables(
     assert live["agents"]["max_threads"] == 7
     assert live["mcp_servers"]["private"]["command"] == "private-command"
     assert live["private_token_reference"] == "op://Private/codex/token"
+    assert live["notice"]["model_migrations"] == {
+        "gpt-5.6-sol": "gpt-6.1-sol", "gpt-6-sol": "gpt-6.1-sol",
+        "other-model": "explicit-user-choice",
+    }
     assert path.read_text().count("model_reasoning_effort =") == 1
     assert path.read_text().count("default_subagent_reasoning_effort =") == 1
 
@@ -235,7 +245,7 @@ def test_bounded_default_status_reports_fields_without_observed_values(tmp_path,
     assert report["status"] == "drift"
     assert {f["status"] for f in report["fields"]} <= {"MATCH", "ADD", "UPDATE", "REFUSED", "ERROR"}
     assert {"cli": "claude", "key": "model", "status": "UPDATE"} in report["fields"]
-    assert len(report["fields"]) == 10
+    assert len(report["fields"]) == 12
     serialized = json.dumps(report)
     assert "private-model-never-print" not in serialized
     assert "private-token-never-print" not in serialized
@@ -262,4 +272,4 @@ def test_bounded_default_status_cli_emits_one_json_object(tmp_path, monkeypatch,
     assert reconcile.main(["--defaults-status-json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "match"
-    assert len(report["fields"]) == 10
+    assert len(report["fields"]) == 12
