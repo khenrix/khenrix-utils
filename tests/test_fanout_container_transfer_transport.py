@@ -563,9 +563,17 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                 assert command.argv[5:8] == ("-c", 'model_provider="fanout"', "-c")
                 assert 'base_url="http://127.0.0.1:43187/v1"' in command.argv[8]
                 assert 'x-fanout-seat="disposable-placeholder"' in command.argv[8]
+                assert command.argv[9:13] == (
+                    "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
+                )
                 if turn_request.resume:
                     native_argv = (
                         "codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"',
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                        "--json", "codex-thread-1", "-",
+                    )
+                    routed_argv = (
+                        "resume", "-c", 'sandbox_mode="danger-full-access"',
                         "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
                         "--json", "codex-thread-1", "-",
                     )
@@ -574,9 +582,13 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                         "codex", "exec", "-", "--json", "--sandbox", "workspace-write",
                         "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
                     )
+                    routed_argv = (
+                        "-", "--json", "--sandbox", "danger-full-access",
+                        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+                    )
                 native = ProviderRegistry.default().require("codex").build_command(turn_request)
                 assert native.argv == native_argv
-                assert command.argv[9:] == native_argv[2:]
+                assert command.argv[13:] == routed_argv
                 assert command.stdin == turn_request.prompt_bytes
                 assert command.cwd == turn_request.cwd
             return ProcessResult(ProcessStatus.EXIT, 0, stdout, b"")

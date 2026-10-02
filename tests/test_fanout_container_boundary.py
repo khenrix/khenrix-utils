@@ -349,6 +349,106 @@ def test_successful_initial_binds_exact_id_for_cold_resume(boundary_module, tmp_
     assert len(cold_transport.calls) == 1
 
 
+@pytest.mark.parametrize("route", ("initial", "resume"))
+def test_codex_admitted_container_uses_outer_sandbox_on_exact_turn(
+    boundary_module, tmp_path, route,
+):
+    request, boundary, transport, store, ledger, controller = _seat(
+        boundary_module, tmp_path, "codex", terminal_id="codex-thread-1",
+    )
+    assert boundary_module.run_container_turn(request, boundary).valid
+    if route == "resume":
+        ledger.fence_epoch(boundary.permit_id, 1)
+        cold_store = boundary_module.SessionStore(
+            controller, "run-one", "task-one", "target-one", "seat-one",
+            boundary.session_volume,
+        )
+        request, boundary, transport, store, *_ = _seat(
+            boundary_module, tmp_path, "codex", controller=controller,
+            store=cold_store, ledger=ledger, epoch=2, resume=True,
+            session_id=cold_store.resume("codex").session_id,
+            terminal_id="codex-thread-1",
+        )
+        assert boundary_module.run_container_turn(request, boundary).valid
+    command, = transport.calls
+    if route == "resume":
+        assert 'sandbox_mode="danger-full-access"' in command.argv
+    else:
+        assert command.argv[command.argv.index("--sandbox") + 1] == "danger-full-access"
+    prefix = (
+        "codex", "exec", "--ignore-user-config", "--strict-config",
+        "--skip-git-repo-check", "-c", 'model_provider="fanout"', "-c",
+        'model_providers.fanout={name="Fanout",'
+        'base_url="http://127.0.0.1:43187/v1",wire_api="responses",'
+        'http_headers={x-fanout-seat="disposable-placeholder"},'
+        'request_max_retries=0,stream_max_retries=0}',
+        "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
+    )
+    tail = (
+        ("resume", "-c", 'sandbox_mode="danger-full-access"', "-m", "gpt-6.1-sol",
+         "-c", 'model_reasoning_effort="xhigh"', "--json", "codex-thread-1", "-")
+        if route == "resume" else
+        ("-", "--json", "--sandbox", "danger-full-access", "-m", "gpt-6.1-sol",
+         "-c", 'model_reasoning_effort="xhigh"')
+    )
+    assert command.argv == prefix + tail
+    native = ProviderRegistry.default().require("codex").build_command(request)
+    assert replace(command, argv=native.argv) == native
+    assert store.resume("codex").session_id == "codex-thread-1"
+
+
+@pytest.mark.parametrize("changed", ("unprofiled", "read-only", "target", "prompt"))
+def test_codex_outer_sandbox_refuses_changed_request_before_dispatch(
+    boundary_module, tmp_path, changed,
+):
+    request, boundary, transport, *_ = _seat(
+        boundary_module, tmp_path, "codex", terminal_id="codex-thread-1",
+    )
+    changes = {
+        "unprofiled": {"profile": None},
+        "read-only": {
+            "execution_class": "read-only",
+            "profile": ProviderRegistry.default().select("codex", "read-only", "standard"),
+        },
+        "target": {"target_id": "other-target"},
+        "prompt": {"prompt": "other task"},
+    }
+    with pytest.raises(ProviderRequestError):
+        boundary_module.run_container_turn(replace(request, **changes[changed]), boundary)
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize("changed", ("initial_argv", "resume_argv", "requested_model", "requested_effort"))
+def test_codex_outer_sandbox_refuses_sealed_ad_hoc_profile_before_dispatch(
+    boundary_module, tmp_path, changed,
+):
+    request, boundary, transport, *_ = _seat(
+        boundary_module, tmp_path, "codex", terminal_id="codex-thread-1",
+    )
+    changes = {
+        "initial_argv": ("codex", "exec", "--sandbox", "danger-full-access"),
+        "resume_argv": ("codex", "exec", "resume", "--last", "-"),
+        "requested_model": "other-model",
+        "requested_effort": "low",
+    }
+    profile = replace(request.profile, **{changed: changes[changed]}, profile_sha256=None)
+    altered = replace(request, profile=profile)
+    if changed == "requested_model":
+        with pytest.raises(ProviderRequestError, match="association"):
+            boundary_module.issue_container_boundary(
+                boundary.controller, altered, transport.vm_probe, transport.handle,
+                boundary.admission,
+            )
+    else:
+        sealed = boundary_module.issue_container_boundary(
+            boundary.controller, altered, transport.vm_probe, transport.handle,
+            boundary.admission,
+        )
+        with pytest.raises(ProviderRequestError, match="profile changed"):
+            boundary_module.run_container_turn(altered, sealed)
+    assert transport.calls == []
+
+
 def test_cold_resume_refuses_changed_upstream_route(boundary_module, tmp_path):
     initial, boundary, _, _, ledger, controller = _seat(
         boundary_module, tmp_path, "claude", session_id=CLAUDE_ID,

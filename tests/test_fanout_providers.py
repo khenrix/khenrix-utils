@@ -780,9 +780,10 @@ def test_codex_read_only_rechecks_exact_workspace_and_rejects_aliases(
         adapter.build_command(ProviderRequest("codex", "read", cwd="seat", profile=profile))
 
 
-def test_codex_repo_write_argv_is_unchanged_by_read_only_isolation(tmp_path):
+@pytest.mark.parametrize("pinned", (False, True))
+def test_codex_repo_write_argv_is_unchanged_by_read_only_isolation(tmp_path, pinned):
     registry = ProviderRegistry.default()
-    profile = registry.select("codex", "repo-write", "standard")
+    profile = registry.select("codex", "repo-write", "standard") if pinned else None
     adapter = registry.require("codex")
 
     initial = adapter.build_command(ProviderRequest(
@@ -794,11 +795,10 @@ def test_codex_repo_write_argv_is_unchanged_by_read_only_isolation(tmp_path):
     )).argv
     assert initial == (
         "codex", "exec", "-", "--json", "--sandbox", "workspace-write",
-        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
-    )
+    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"') if pinned else ())
     assert resumed == (
         "codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"',
-        "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
+    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"') if pinned else ()) + (
         "--json", "exact-codex-thread", "-",
     )
 

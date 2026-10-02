@@ -47,7 +47,7 @@ from .process import (ProcessCommand, ProcessResult, ProcessStatus,
                       TimeoutEvidence, _cleanup_group, build_child_environment,
                       executor_slot)
 from .providers import (AgyAdapter, ClaudeAdapter, ProviderRequest, ProviderResult,
-                        ProviderRegistry, _make_result)
+                        ProviderRegistry, _make_result, _render_profile_argv)
 
 
 _CATEGORY = "container-seat-admission"
@@ -1707,17 +1707,29 @@ _CODEX_LOOPBACK_PROVIDER = (
 )
 
 
-def _route_command(provider: str, command: ProcessCommand) -> ProcessCommand:
-    if provider != "codex":
+def _route_command(request: ProviderRequest, command: ProcessCommand) -> ProcessCommand:
+    if request.executor_id != "codex":
         return command
-    if command.argv[:2] != ("codex", "exec"):
+    if request.execution_class != "repo-write" or request.profile is None:
+        raise ProviderRequestError("container Codex command needs a repo-write profile")
+    template = request.profile.resume_argv if request.resume else request.profile.initial_argv
+    if command.argv != _render_profile_argv(template, request.session_id):
         raise ProviderRequestError("container Codex command grammar differs")
-    from dataclasses import replace
+    # The attested outer container supplies isolation; nested namespaces are unavailable.
+    if request.resume:
+        if command.argv[:5] != ("codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"'):
+            raise ProviderRequestError("container Codex resume sandbox grammar differs")
+        routed = ("resume", "-c", 'sandbox_mode="danger-full-access"', *command.argv[5:])
+    else:
+        if command.argv[:6] != ("codex", "exec", "-", "--json", "--sandbox", "workspace-write"):
+            raise ProviderRequestError("container Codex initial sandbox grammar differs")
+        routed = ("-", "--json", "--sandbox", "danger-full-access", *command.argv[6:])
     return replace(command, argv=(
         "codex", "exec", "--ignore-user-config", "--strict-config",
         "--skip-git-repo-check",
         "-c", 'model_provider="fanout"', "-c", _CODEX_LOOPBACK_PROVIDER,
-        *command.argv[2:],
+        "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
+        *routed,
     ))
 
 
@@ -1737,7 +1749,7 @@ def _run_container_turn(request: ProviderRequest,
         command = adapter.build_command(request, brokered_diagnostic=True)
     else:
         command = adapter.build_command(request)
-    command = _route_command(request.executor_id, command)
+    command = _route_command(request, command)
     turn_digest = _turn_digest(request, boundary)
     transport = boundary.admission.transport
     control = (getattr(transport, "_control", None)
