@@ -989,6 +989,10 @@ def run_worker(arguments: list[str]) -> int:
             try:
                 payload = cleanup.enter_context(memory_ingress.prepare_hook(sys.stdin.buffer, *arguments[1:]))
             except memory_ingress.IngressRejected:
+                if arguments[1] == "codex":
+                    # Reject the capture without blocking Codex prompts, tools or Stop.
+                    print("memory: capture skipped (input rejected)", file=sys.stderr)
+                    return 0
                 raise MemoryConfigurationError("memory hook input rejected") from None
             if payload is None:
                 return 0

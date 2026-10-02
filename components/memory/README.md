@@ -39,7 +39,12 @@ the capture. Transcript input and its sanitized snapshot are limited to 16 MiB,
 10,000 lines, and 1 MiB per JSONL record. Duplicate fields, malformed JSON,
 non-finite values, unsafe transcript paths, changing source files and oversized
 input fail closed with a content-free diagnostic. No input is truncated to meet
-these limits. Transcript sources are opened through no-follow descriptors and
+these limits. Codex skips rejected memory captures with a content-free warning
+and a successful hook exit so prompts, tools and Stop can continue; rejected
+data never reaches the worker. Codex uses inline prompt, tool and summary fields
+without opening or forwarding its full transcript. Only a summary lacking
+nonempty inline assistant text uses the bounded transcript fallback.
+Transcript sources are opened through no-follow descriptors and
 never modified. The child receives only a sanitized temporary snapshot in a
 0700 directory with a 0600 file, removed when the hook finishes. Text blocks use
 one joined-message tag state, matching the upstream transcript reader, while

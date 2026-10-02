@@ -303,6 +303,14 @@ def prepare_hook(stream: BinaryIO, platform: str, event: str) -> Iterator[bytes 
                 continue
             if key in document and document[key] is not None and not isinstance(document[key], str):
                 _reject()
+        # Only Codex summaries without inline text need history. Never forward
+        # an unused transcript path for the worker to read outside this boundary.
+        if platform == "codex" and (
+            event != "summarize"
+            or isinstance(document.get("last_assistant_message"), str) and document["last_assistant_message"]
+        ):
+            for key in TRANSCRIPT_KEYS:
+                document.pop(key, None)
         budget = [0]
         safe = _sanitize(document, budget)
         if any(document.get(key) != safe.get(key) for key in IDENTITY_KEYS):

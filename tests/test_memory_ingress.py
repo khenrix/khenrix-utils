@@ -178,6 +178,52 @@ def _transcript(tmp_path, entries):
     return path
 
 
+@pytest.mark.parametrize("event,fields", [
+    ("context", {}),
+    ("session-init", {"prompt": "current <private>synthetic-secret</private> prompt"}),
+    ("file-context", {"tool_input": {"command": "current <private>synthetic-secret</private> command"}}),
+    ("observation", {"tool_input": {"command": "current <private>synthetic-secret</private> command"}}),
+    ("summarize", {"last_assistant_message": "current <private>synthetic-secret</private> answer"}),
+])
+def test_codex_inline_event_does_not_read_or_forward_large_history(ingress, tmp_path, event, fields):
+    path = tmp_path / "large-transcript.jsonl"
+    with path.open("wb") as handle:
+        handle.truncate(16 * 1024 * 1024 + 1)
+    result, captured, routed = ingress(
+        _hook(transcript_path=str(path), transcriptPath=str(path), **fields), "codex", event,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert routed
+    assert captured is not None
+    assert "transcript_path" not in captured["payload"]
+    assert "transcriptPath" not in captured["payload"]
+    assert captured["transcripts"] == []
+    assert "synthetic-secret" not in captured["raw"]
+    assert path.stat().st_size == 16 * 1024 * 1024 + 1
+
+
+@pytest.mark.parametrize("event", ["context", "session-init", "file-context", "observation", "summarize"])
+@pytest.mark.parametrize("raw", [b'{', b'{"prompt":"synthetic-secret </private>"}'])
+def test_rejected_codex_capture_does_not_block_agent_or_reach_worker(ingress, event, raw):
+    result, captured, routed = ingress(raw, "codex", event)
+    assert result.returncode == 0
+    assert captured is None
+    assert not routed
+    assert result.stdout == b""
+    assert result.stderr == b"memory: capture skipped (input rejected)\n"
+
+
+def test_codex_oversized_summary_fallback_skips_capture_without_blocking(ingress, tmp_path):
+    path = tmp_path / "large-transcript.jsonl"
+    with path.open("wb") as handle:
+        handle.truncate(16 * 1024 * 1024 + 1)
+    result, captured, routed = ingress(_hook(transcript_path=str(path)), "codex", "summarize")
+    assert result.returncode == 0
+    assert captured is None
+    assert not routed
+    assert result.stderr == b"memory: capture skipped (input rejected)\n"
+
+
 def test_agy_transcript_capture_uses_private_sanitized_snapshot(ingress, tmp_path):
     path = _transcript(tmp_path, [
         {"step_index": 1, "source": "USER", "type": "USER_INPUT",
