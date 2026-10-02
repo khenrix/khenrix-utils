@@ -32,7 +32,7 @@ paths = [
   "tests/test_memory_ingress.py",
   "tests/test_memory_runtime.py",
 ]
-hash = "sha256:6920cf19f89e1cbdc7508ccd96f0072d59d035be004a6611dc14e7cc27f3c303"
+hash = "sha256:40ae7553c9cc46b6b0645c866fd703166e04b1c9c64cfb1fdb7cb8600c46baf5"
 required_text = [
   { path = "components/memory/provenance.json", text = "sha512-Hqa33Vv8YJ5fnaHzZc3HC3JihHagHji5O9R66ZBIKn3DDPOlaDfI5X2oxuSdtp7kRMsEpMc2p7wMXPEe0kZG9g==" },
   { path = "components/memory/provenance.json", text = "4520de9e0f8d6cdc20597520e383d8b51d93137f" },
