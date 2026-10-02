@@ -5,9 +5,11 @@ import importlib
 import importlib.util
 import json
 import os
+import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -1412,6 +1414,170 @@ def test_live_relay_thread_prevents_successful_close_and_lease_release(
         control.close()
     assert lease.released
     assert control._lease is None
+
+
+@pytest.fixture
+def local_drain_control(boundary_module, tmp_path, monkeypatch):
+    with monkeypatch.context() as patch:
+        control, lease = _partial_ssh_control(boundary_module, tmp_path, patch, None)
+    # A short native path fits Unix sockets even under a long pytest TMPDIR.
+    with tempfile.TemporaryDirectory(prefix="fanout-drain-") as directory:
+        path = str(Path(directory) / "relay.sock")
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(path)
+            info = os.lstat(path)
+            control._socket_at_open = GuestSocketAttestation(
+                path, info.st_uid, info.st_mode, info.st_dev,
+                info.st_ino, info.st_ctime_ns)
+            control.broker.permit.max_requests = 4
+            yield control, lease
+
+
+def _execute_drain_guest_locally(control, monkeypatch, error, stage, events):
+    class Exchange:
+        def settimeout(self, value):
+            assert value == 2
+
+        def connect(self, path):
+            assert path == control._socket_at_open.path
+            self.exchange("connect")
+
+        def sendall(self, data):
+            assert data == (b"POST http://invalid.invalid/ HTTP/1.1\r\n"
+                            b"Host: 127.0.0.1:43187\r\nContent-Length: 0\r\n\r\n")
+            self.exchange("sendall")
+
+        def recv(self, size):
+            assert size == 1024
+            self.exchange("recv")
+            return b""
+
+        def exchange(self, current):
+            events.append(current)
+            if current == stage:
+                raise error
+
+        def close(self):
+            events.append("connection_closed")
+
+    def ssh(guest, data=b"", *, operation, timeout=30):
+        assert guest[:3] == ("sudo", "-n", "python3")
+        assert guest[5] == "-c" and data == b"" and timeout == 30
+        events.append(operation)
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, "argv", ["-c", *guest[7:]])
+            if operation == "relay_drain":
+                def connection(family):
+                    assert family == socket.AF_UNIX
+                    return Exchange()
+                patch.setattr(socket, "socket", connection)
+            else:
+                assert operation == "socket_closed_check"
+                assert control._process is None and control._thread is None
+            try:
+                exec(compile(guest[6], "<guest-control>", "exec"), {})
+            except SystemExit as failure:
+                if failure.code:
+                    raise ProviderRequestError("local guest control failed") from failure
+        return b""
+
+    monkeypatch.setattr(control, "_ssh", ssh, raising=False)
+
+
+@pytest.mark.parametrize("stage,exchanges", [
+    ("connect", ["connect"]),
+    ("sendall", ["connect", "sendall"]),
+    ("recv", ["connect", "sendall", "recv"]),
+])
+def test_drain_connection_reset_stops_without_another_exchange(
+    local_drain_control, monkeypatch, stage, exchanges,
+):
+    control, _ = local_drain_control
+    proof = control._socket_at_open
+    events = []
+    _execute_drain_guest_locally(control, monkeypatch,
+                                ConnectionResetError(104, "reset"), stage, events)
+    control._drain_relay(proof)
+    assert events == ["relay_drain", *exchanges, "connection_closed"]
+    assert os.path.lexists(proof.path)
+    assert control._socket_at_open == proof
+
+
+@pytest.mark.parametrize("socket_removed", (True, False), ids=("absent", "remaining"))
+def test_reset_close_requires_independent_socket_absence(
+    local_drain_control, monkeypatch, socket_removed,
+):
+    control, lease = local_drain_control
+    proof = control._socket_at_open
+    events = []
+    _execute_drain_guest_locally(control, monkeypatch,
+                                ConnectionResetError(104, "reset"), "recv", events)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys;sys.stdin.buffer.read()"],
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    control._process = process
+    control._lease = lease()
+    control._lease.__enter__()
+
+    def finish():
+        process.wait()
+        if socket_removed:
+            os.unlink(proof.path)
+
+    control._thread = threading.Thread(target=finish, daemon=True)
+    control._thread.start()
+    try:
+        if socket_removed:
+            control.close()
+            assert control._socket_at_open is None
+        else:
+            with pytest.raises(ProviderRequestError, match="did not close cleanly") as raised:
+                control.close()
+            assert isinstance(raised.value.__cause__, ProviderRequestError)
+            assert control._socket_at_open == proof
+        assert events == ["relay_drain", "connect", "sendall", "recv",
+                          "connection_closed", "socket_closed_check"]
+        assert process.poll() is not None
+        assert control._process is None and control._thread is None
+        assert lease.released and control._lease is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=3)
+        process.stdin.close()
+        if os.path.lexists(proof.path):
+            os.unlink(proof.path)
+        control.close()
+
+
+def test_drain_changed_socket_identity_prevents_exchange(local_drain_control, monkeypatch):
+    control, _ = local_drain_control
+    proof = control._socket_at_open
+    events = []
+    _execute_drain_guest_locally(control, monkeypatch,
+                                ConnectionResetError(104, "reset"), "recv", events)
+    os.unlink(proof.path)
+    with socket.socket(socket.AF_UNIX) as replacement:
+        replacement.bind(proof.path)
+        with pytest.raises(ProviderRequestError, match="local guest control failed"):
+            control._drain_relay(proof)
+    assert events == ["relay_drain"]
+    assert os.path.lexists(proof.path)
+
+
+@pytest.mark.parametrize("error", (TimeoutError("timed out"), OSError(5, "I/O error")),
+                         ids=("timeout", "unrelated-oserror"))
+def test_drain_timeout_and_unrelated_errors_remain_failures(
+    local_drain_control, monkeypatch, error,
+):
+    control, _ = local_drain_control
+    events = []
+    _execute_drain_guest_locally(control, monkeypatch, error, "recv", events)
+    with pytest.raises(type(error)) as raised:
+        control._drain_relay(control._socket_at_open)
+    assert raised.value is error
+    assert events == ["relay_drain", "connect", "sendall", "recv", "connection_closed"]
+    assert os.path.lexists(control._socket_at_open.path)
 
 
 @pytest.mark.parametrize("stream", (1, 2))

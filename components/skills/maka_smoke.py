@@ -356,11 +356,12 @@ def private_host_supervisor_failure(code: int, stderr: BinaryIO) -> SmokeError:
 def private_routing_host(
     binary: list[str], component: Path, receipt: Mapping[str, Any],
     environment: Mapping[str, str],
+    *, retain_private_host: bool = False,
 ):
     """Own one fresh Host until every bounded Turn and its native checks settle."""
 
     base = Path(tempfile.mkdtemp(prefix="khenrix-maka-private-host-")).resolve()
-    process: subprocess.Popen[str] | None = None
+    process: subprocess.Popen[bytes] | None = None
     supervisor_stderr: BinaryIO | None = None
     binding: PrivateHostBinding | None = None
     settled = False
@@ -370,12 +371,14 @@ def private_routing_host(
         if os.path.lexists(spec["controlPath"]):
             raise SmokeError("Maka private Host control appeared before launch")
         try:
-            supervisor_stderr = tempfile.TemporaryFile(mode="w+b", dir=base)
+            stderr_path = base / "supervisor-stderr.log"
+            _private_file(stderr_path, b"")
+            supervisor_stderr = stderr_path.open("r+b")
             process = subprocess.Popen(
                 [binary[0], str(component / "interactive/maka_skill_routing.mjs"),
                  "--supervise-private-host", str(spec_path)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=supervisor_stderr,
-                text=True, env=dict(environment),
+                env=dict(environment),
             )
         except OSError as error:
             raise SmokeError(f"Maka private Host supervisor could not start: {error}") from error
@@ -387,6 +390,7 @@ def private_routing_host(
                     f"Maka private Host did not attest readiness; supervisor PID {process.pid}"
                 )
         line = process.stdout.readline()
+        _private_file(base / "host-readiness.jsonl", line)
         try:
             ready = json.loads(line, object_pairs_hook=unique_json_object)
         except (TypeError, ValueError) as error:
@@ -406,11 +410,16 @@ def private_routing_host(
                         code = process.wait(timeout=20)
                     except subprocess.TimeoutExpired as error:
                         raise SmokeError("Maka private Host settlement timed out") from error
+                    assert process.stdout is not None
+                    final = process.stdout.readline()
+                    try:
+                        _private_file(base / "host-settlement.jsonl", final)
+                    except OSError as error:
+                        raise SmokeError("Maka private Host settlement evidence could not be retained") from error
                     if binding is not None:
                         assert supervisor_stderr is not None
                         if code != 0:
                             raise private_host_supervisor_failure(code, supervisor_stderr)
-                        final = process.stdout.readline()
                         try:
                             stopped = json.loads(final, object_pairs_hook=unique_json_object)
                         except (TypeError, ValueError):
@@ -432,7 +441,7 @@ def private_routing_host(
         finally:
             if supervisor_stderr is not None:
                 supervisor_stderr.close()
-            if settled and pending_failure is None:
+            if settled and pending_failure is None and not retain_private_host:
                 shutil.rmtree(base)
             else:
                 print(
@@ -1609,10 +1618,11 @@ def run_command(
         child_environment["KHENRIX_MAKA_INSTALL_BOOT_SESSION"] = install_boot_session
     else:
         prefix = [binary]
+    prompt = f"{item['prompt']}\nReceipt nonce: {marker}"
     command = [
         *prefix,
         "run",
-        f"{item['prompt']}\nReceipt nonce: {marker}",
+        prompt,
         "--cwd",
         str(cwd),
         "--timeout",
@@ -1644,7 +1654,7 @@ def run_command(
     try:
         completed = subprocess.run(
             command,
-            text=True,
+            text=private_host is None,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1652,8 +1662,31 @@ def run_command(
             env=child_environment,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        if private_host is not None:
+            try:
+                retain_private_turn_output(
+                    private_host, item, resume_session_id, prompt, marker,
+                    getattr(error, "stdout", None), getattr(error, "stderr", None),
+                    returncode=None, timed_out=isinstance(error, subprocess.TimeoutExpired),
+                )
+            except OSError:
+                print("Maka private Host turn output evidence could not be retained", file=sys.stderr)
         raise SmokeError(f"case {item['id']} could not complete: {error}") from error
     finished_at = dt.datetime.now(dt.timezone.utc)
+    if private_host is not None:
+        try:
+            retain_private_turn_output(
+                private_host, item, resume_session_id, prompt, marker,
+                completed.stdout, completed.stderr,
+                returncode=completed.returncode, timed_out=False,
+            )
+        except OSError as error:
+            raise SmokeError(f"case {item['id']} output evidence could not be retained") from error
+        completed = subprocess.CompletedProcess(
+            completed.args, completed.returncode,
+            completed.stdout.decode() if isinstance(completed.stdout, bytes) else completed.stdout,
+            completed.stderr.decode() if isinstance(completed.stderr, bytes) else completed.stderr,
+        )
     if host_identity is not None and not enforce_session_profile:
         attest_existing_host(binary, cwd, runtime_db, environment, host_identity, private_host)
     with open_runtime_db(runtime_db) as connection:
@@ -1676,6 +1709,24 @@ def run_command(
     route["provider_attempt_through_rowid"] = attempt_through_rowid
     route["host_tool_evidence"] = host_tool_evidence
     return completed, route
+
+
+def retain_private_turn_output(
+    private_host: PrivateHostBinding, item: Mapping[str, Any], session_id: str,
+    prompt: str, marker: str, stdout: bytes | str | None, stderr: bytes | str | None,
+    *, returncode: int | None, timed_out: bool,
+) -> None:
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    path = private_host.spec_path.parent / f"turn-{marker_hash}"
+    for suffix, content in ((".stdout", stdout), (".stderr", stderr)):
+        data = content.encode() if isinstance(content, str) else content or b""
+        _private_file(path.with_suffix(suffix), data)
+    _private_file(path.with_suffix(".json"), canonical({
+        "case_id": item["id"], "session_id": session_id,
+        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "request_marker_sha256": marker_hash,
+        "returncode": returncode, "timed_out": timed_out,
+    }))
 
 
 def needs_session_bootstrap(case: Mapping[str, Any]) -> bool:
@@ -2099,6 +2150,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--runtime-db", type=Path)
     result.add_argument("--tier-file", type=Path)
     result.add_argument("--dry-run", action="store_true")
+    result.add_argument(
+        "--retain-private-host", action="store_true",
+        help="Retain the private native Host and its evidence after successful settlement",
+    )
     result.add_argument("--diagnostic-scenario", help="Run one matrix scenario without a certification receipt")
     return result
 
@@ -2169,7 +2224,10 @@ def main(
                 print(f"PLAN {scenario['id']} validation-only matrix")
             return 0
         host_context = (
-            private_routing_host(binary, component, install_receipt, environment)
+            private_routing_host(
+                binary, component, install_receipt, environment,
+                retain_private_host=options.retain_private_host,
+            )
             if isinstance(binary, list) else nullcontext(None)
         )
         with host_context as private_host:

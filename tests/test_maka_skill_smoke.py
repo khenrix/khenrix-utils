@@ -1084,13 +1084,16 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
     helper.write_text(
         "import json, pathlib, sys\n"
         "base = pathlib.Path(sys.argv[-1]).parent\n"
-        "print((base / 'ready.json').read_text(), flush=True)\n"
+        "sys.stdout.buffer.write((base / 'ready.json').read_bytes() + b'\\r\\n')\n"
+        "sys.stdout.buffer.flush()\n"
         "sys.stdin.read()\n"
         "(base / 'exited.marker').write_text('settled')\n"
         "if (base / 'omit-settlement').exists():\n"
         "    sys.stderr.write((base / 'supervisor-error').read_text())\n"
         "    sys.exit(int((base / 'exit-code').read_text()))\n"
-        "print((base / 'settled.json').read_text(), flush=True)\n"
+        "sys.stderr.buffer.write(b'private-supervisor-\\xff\\r\\n')\n"
+        "sys.stdout.buffer.write((base / 'settled.json').read_bytes() + b'\\r\\n')\n"
+        "sys.stdout.buffer.flush()\n"
     )
     bases = []
     omit_settlement = False
@@ -1135,6 +1138,11 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
             "rootId": root_id, "pid": 4242, "hostEpoch": "epoch-1",
             "activeSessions": 0, "defaultHost": ready["defaultHost"],
         }
+        root = Path(spec["rootPath"])
+        maka_smoke.seed_private_skill_preferences(root)
+        initialize_runtime_db(root / "runtime.sqlite")
+        (root / "runtime.sqlite").chmod(0o600)
+        maka_smoke._private_file(base / "host-spec.json", maka_smoke.canonical(spec))
         (base / "ready.json").write_text(json.dumps(ready))
         (base / "settled.json").write_text(json.dumps(stop))
         if omit_settlement:
@@ -1151,6 +1159,33 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
         assert bases[0].exists()
     assert not bases[0].exists()
 
+    with maka_smoke.private_routing_host(
+        [sys.executable, "unused"], component, {}, maka_smoke.sanitized_environment(),
+        retain_private_host=True,
+    ) as binding:
+        retained = bases[-1]
+        spec_bytes = binding.spec_path.read_bytes()
+        database_bytes = (binding.root_path / "runtime.sqlite").read_bytes()
+    assert retained.exists()
+    assert binding.spec_path.read_bytes() == spec_bytes
+    assert (binding.root_path / "runtime.sqlite").read_bytes() == database_bytes
+    assert (retained / "supervisor-stderr.log").read_bytes() == b"private-supervisor-\xff\r\n"
+    for original, captured in (
+        ("ready.json", "host-readiness.jsonl"),
+        ("settled.json", "host-settlement.jsonl"),
+    ):
+        assert (retained / captured).read_bytes() == (retained / original).read_bytes() + b"\r\n"
+    for path in (
+        retained, binding.root_path, binding.spec_path,
+        binding.root_path / "runtime.sqlite", retained / "supervisor-stderr.log",
+        retained / "host-readiness.jsonl", retained / "host-settlement.jsonl",
+    ):
+        assert path.stat().st_uid == os.getuid()
+        assert path.stat().st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+    output = capsys.readouterr()
+    assert str(retained) in output.err
+    assert "private-supervisor" not in output.out + output.err
+
     def prepare_malformed(*args: object) -> dict[str, object]:
         spec = prepare(*args)
         (bases[-1] / "ready.json").write_text("not json")
@@ -1164,6 +1199,7 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
         ):
             raise AssertionError("invalid readiness should not yield")
     assert (bases[-1] / "exited.marker").read_text() == "settled"
+    assert (bases[-1] / "host-readiness.jsonl").read_bytes() == b"not json\r\n"
 
     monkeypatch.setattr(maka_smoke, "prepare_private_host_spec", prepare)
     with pytest.raises(maka_smoke.SmokeError, match="original run failure"):
@@ -1184,10 +1220,12 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
         with maka_smoke.private_routing_host(
             [sys.executable, "unused"], component, {},
             maka_smoke.sanitized_environment(),
+            retain_private_host=True,
         ):
             pass
     assert bases[-1].exists()
     assert (bases[-1] / "exited.marker").read_text() == "settled"
+    assert (bases[-1] / "supervisor-stderr.log").read_bytes() == supervisor_error.encode()
 
     supervisor_error += "SENSITIVE_MARKER_XYZ /do/not/leak\n"
     with pytest.raises(maka_smoke.SmokeError, match="original run failure"):
@@ -1211,6 +1249,24 @@ def test_private_host_supervisor_lifecycle_waits_for_settlement_before_cleanup(
         ):
             pass
     assert bases[-1].exists()
+
+    omit_settlement = False
+    private_file = maka_smoke._private_file
+
+    def fail_settlement_evidence(path: Path, data: bytes, mode: int = 0o600) -> None:
+        if path.name == "host-settlement.jsonl":
+            raise OSError("controlled settlement evidence write failure")
+        private_file(path, data, mode)
+
+    monkeypatch.setattr(maka_smoke, "_private_file", fail_settlement_evidence)
+    with pytest.raises(maka_smoke.SmokeError, match="original run failure"):
+        with maka_smoke.private_routing_host(
+            [sys.executable, "unused"], component, {},
+            maka_smoke.sanitized_environment(), retain_private_host=True,
+        ):
+            raise maka_smoke.SmokeError("original run failure")
+    assert bases[-1].exists()
+    assert "teardown also failed" in capsys.readouterr().err
 
 
 def test_private_host_pins_foundational_skills_in_its_own_root(tmp_path: Path) -> None:
@@ -1363,8 +1419,10 @@ def test_path_canaries_cannot_detect_absolute_launch_without_private_host(
     assert (tmp_path / "absolute-codex.log").read_text() == "launched"
 
 
+@pytest.mark.parametrize("retain", [False, True])
 def test_production_smoke_rejects_non_private_cli_before_any_model_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    retain: bool,
 ) -> None:
     repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
@@ -1377,14 +1435,17 @@ def test_production_smoke_rejects_non_private_cli_before_any_model_turn(
     result = maka_smoke.main([
         "--repo-root", str(repo), "--home", str(home),
         "--manifest", str(ROOT / "components/skills/maka-smoke.json"),
+        *(["--retain-private-host"] if retain else []),
     ])
     assert result == 2
     assert "requires a private native Host" in capsys.readouterr().err
     assert not log.exists()
 
 
+@pytest.mark.parametrize("retain", [False, True])
 def test_production_smoke_rejects_missing_private_binding_before_any_model_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    retain: bool,
 ) -> None:
     repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
@@ -1393,15 +1454,20 @@ def test_production_smoke_rejects_missing_private_binding_before_any_model_turn(
         lambda *_args: (["/pinned/node", "/installed/cli.js"], tmp_path, {}),
     )
     monkeypatch.setattr(maka_smoke, "maka_version", lambda *_args: "test-version")
-    monkeypatch.setattr(
-        maka_smoke, "private_routing_host", lambda *_args: maka_smoke.nullcontext(None),
-    )
+    def host_context(*_args: object, retain_private_host: bool = False) -> object:
+        if retain_private_host != retain:
+            raise AssertionError("main did not forward private Host retention")
+        return maka_smoke.nullcontext(None)
+
+    monkeypatch.setattr(maka_smoke, "private_routing_host", host_context)
     result = maka_smoke.main([
         "--repo-root", str(repo), "--home", str(home),
         "--manifest", str(ROOT / "components/skills/maka-smoke.json"),
+        *(["--retain-private-host"] if retain else []),
     ])
     assert result == 2
     assert "requires a private native Host" in capsys.readouterr().err
+    assert not (config.state_dir / "maka-smoke-receipt.json").exists()
 
 
 def test_matrix_rejects_canary_log_removed_after_launch(
@@ -1944,6 +2010,155 @@ def test_smoke_runs_bounded_cases_and_writes_hash_bound_receipt(
     assert receipt["matrix"][-1]["steps"][-1]["behavior_evidence"]["refused"] is True
 
 
+@pytest.mark.parametrize("outcome,write_failure", [
+    ("success", None), ("failure", None), ("timeout", None),
+    ("timeout", ".stdout"), ("startup", ".stderr"),
+    ("success", ".json"), ("failure", ".stdout"),
+])
+def test_private_turn_output_preserves_native_bytes_before_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], outcome: str, write_failure: str | None,
+) -> None:
+    binary = fake_maka(tmp_path)
+    binary.write_text(
+        binary.read_text()
+        + "sys.stdout.flush()\n"
+        + "sys.stdout.buffer.write(b'private-turn-output\\r\\n')\n"
+        + "sys.stdout.buffer.flush()\n"
+        + "sys.stderr.buffer.write(b'private-turn-stderr\\r\\n')\n"
+        + "sys.stderr.buffer.flush()\n"
+        + ("sys.exit(7)\n" if outcome == "failure" else "")
+        + ("time.sleep(2)\n" if outcome == "timeout" else "")
+    )
+    base = tmp_path / "private-host"
+    base.mkdir(mode=0o700)
+    root = base / "client/workspaces/default"
+    maka_smoke.seed_private_skill_preferences(root)
+    runtime_db = root / "runtime.sqlite"
+    initialize_runtime_db(runtime_db)
+    binding = maka_smoke.PrivateHostBinding(
+        root_path=root, client_data_root=base / "client", root_id="b" * 64,
+        spec_path=base / "host-spec.json",
+        attestation={"pid": 4242, "hostEpoch": "epoch-1", "rootId": "b" * 64,
+                     "startedAtMs": 100_000},
+    )
+    tier_file = tmp_path / "tier/relay-last-tier.json"
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(runtime_db))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier_file))
+    allow_fake_maka_environment(monkeypatch)
+    original_failures = []
+    if outcome in {"timeout", "startup"}:
+        run = subprocess.run
+
+        def timed_run(command: list[str], **kwargs: object) -> object:
+            if outcome == "startup":
+                error = OSError("controlled CLI start failure")
+                original_failures.append(error)
+                raise error
+            try:
+                return run(command, **{**kwargs, "timeout": 0.5})
+            except subprocess.TimeoutExpired as error:
+                original_failures.append(error)
+                raise
+
+        monkeypatch.setattr(maka_smoke.subprocess, "run", timed_run)
+    session_id = "fanout-routing-0123456789abcdef0123456789abcdef"
+    case = {"id": "private-output", "prompt": "Validate routing only.",
+            "timeout_seconds": 120, "max_steps": 2}
+    maka_smoke.prepare_routing_session(
+        str(binary), tmp_path, session_id, runtime_db, maka_smoke.sanitized_environment(),
+    )
+    arguments = {
+        "continued": False, "resume_session_id": session_id,
+        "environment": maka_smoke.sanitized_environment(), "tier_file": tier_file,
+        "private_host": binding,
+    }
+    if write_failure is not None:
+        private_file = maka_smoke._private_file
+
+        def fail_turn_evidence(path: Path, data: bytes, mode: int = 0o600) -> None:
+            if path.name.startswith("turn-") and path.suffix == write_failure:
+                raise OSError("SENSITIVE_RETENTION_ERROR /private/do/not/leak")
+            private_file(path, data, mode)
+
+        monkeypatch.setattr(maka_smoke, "_private_file", fail_turn_evidence)
+        expected = (
+            "could not complete" if outcome in {"timeout", "startup"}
+            else "output evidence could not be retained"
+        )
+        with pytest.raises(maka_smoke.SmokeError, match=expected) as caught:
+            maka_smoke.run_command(str(binary), case, tmp_path, runtime_db, **arguments)
+        if outcome in {"timeout", "startup"}:
+            assert caught.value.__cause__ is original_failures[-1]
+        assert base.is_dir() and runtime_db.is_file()
+        output = capsys.readouterr()
+        assert "SENSITIVE_RETENTION_ERROR" not in output.out + output.err
+        assert "/private/do/not/leak" not in output.out + output.err
+        if outcome in {"timeout", "startup"}:
+            assert "turn output evidence could not be retained" in output.err
+
+        repo, home, config = smoke_delivery_fixture(tmp_path)
+        skillctl.apply(config, expect=None, as_json=False)
+        monkeypatch.setattr(maka_smoke, "maka_version", lambda *_args: "test-version")
+
+        def run_private_case(*_args: object) -> object:
+            return maka_smoke.run_command(
+                str(binary), case, tmp_path, runtime_db, **arguments,
+            )
+
+        monkeypatch.setattr(maka_smoke, "run_case", run_private_case)
+        capsys.readouterr()
+        result = maka_smoke.main([
+            "--repo-root", str(repo), "--home", str(home),
+            "--runtime-db", str(runtime_db), "--tier-file", str(tier_file),
+            "--retain-private-host",
+        ], _test_cli_command=[str(binary)])
+        assert result == 2
+        assert not (config.state_dir / "maka-smoke-receipt.json").exists()
+        assert base.is_dir() and runtime_db.is_file()
+        assert base.stat().st_mode & 0o777 == 0o700
+        for path in base.glob("turn-*"):
+            assert path.stat().st_uid == os.getuid()
+            assert path.stat().st_mode & 0o777 == 0o600
+        output = capsys.readouterr()
+        assert expected in output.err
+        assert "private-turn" not in output.out
+        assert "SENSITIVE_RETENTION_ERROR" not in output.out + output.err
+        assert "/private/do/not/leak" not in output.out + output.err
+        return
+    if outcome == "success":
+        completed, _route = maka_smoke.run_command(
+            str(binary), case, tmp_path, runtime_db, **arguments,
+        )
+        assert completed.stdout == "bounded model output\nprivate-turn-output\r\n"
+    else:
+        with pytest.raises(maka_smoke.SmokeError, match=(
+            "failed with 7" if outcome == "failure" else "could not complete"
+        )):
+            maka_smoke.run_command(str(binary), case, tmp_path, runtime_db, **arguments)
+    identities = list(base.glob("turn-*.json"))
+    assert len(identities) == 1
+    identity = json.loads(identities[0].read_bytes())
+    invocation = json.loads((tmp_path / "argv.log").read_text())
+    marker = invocation[1].splitlines()[-1].split(": ", 1)[1]
+    assert identity["case_id"] == "private-output"
+    assert identity["session_id"] == session_id
+    assert identity["prompt_sha256"] == hashlib.sha256(invocation[1].encode()).hexdigest()
+    assert identity["request_marker_sha256"] == hashlib.sha256(marker.encode()).hexdigest()
+    assert identity["timed_out"] is (outcome == "timeout")
+    assert identity["returncode"] == {"success": 0, "failure": 7, "timeout": None}[outcome]
+    assert identities[0].with_suffix(".stdout").read_bytes() == (
+        b"bounded model output\nprivate-turn-output\r\n"
+    )
+    assert identities[0].with_suffix(".stderr").read_bytes() == b"private-turn-stderr\r\n"
+    for path in base.glob("turn-*"):
+        assert path.stat().st_uid == os.getuid()
+        assert path.stat().st_mode & 0o777 == 0o600
+    output = capsys.readouterr()
+    assert "private-turn" not in output.out
+
+
 def test_smoke_attributes_extra_load_to_bootstrap_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -2030,14 +2245,25 @@ def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> Non
         maka_smoke.verify_flow_output(opt_out, "Understood. I can help with anything else.")
 
 
+@pytest.mark.parametrize("retain", [False, True])
 def test_dry_run_executes_no_model_cases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retain: bool,
 ) -> None:
     repo, home, config = smoke_delivery_fixture(tmp_path)
     skillctl.apply(config, expect=None, as_json=False)
     binary = fake_maka(tmp_path)
     log = tmp_path / "argv.log"
     monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(log))
+    monkeypatch.setattr(
+        maka_smoke, "attested_maka_cli",
+        lambda *_args: ([sys.executable, str(binary)], tmp_path, {}),
+    )
+    monkeypatch.setattr(maka_smoke, "maka_version", lambda *_args: "test-version")
+
+    def unexpected_host(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("dry-run started a private Host")
+
+    monkeypatch.setattr(maka_smoke, "private_routing_host", unexpected_host)
 
     result = maka_smoke.main(
         [
@@ -2048,8 +2274,8 @@ def test_dry_run_executes_no_model_cases(
             "--manifest",
             str(ROOT / "components" / "skills" / "maka-smoke.json"),
             "--dry-run",
+            *(["--retain-private-host"] if retain else []),
         ],
-        _test_cli_command=[str(binary)],
     )
     assert result == 0
     assert not log.exists()

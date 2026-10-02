@@ -1225,7 +1225,7 @@ for _ in range(limit):
   c.connect(p)
   c.sendall(b"POST http://invalid.invalid/ HTTP/1.1\\r\\nHost: 127.0.0.1:43187\\r\\nContent-Length: 0\\r\\n\\r\\n")
   c.recv(1024)
- except (ConnectionRefusedError,FileNotFoundError,BrokenPipeError):
+ except (ConnectionRefusedError,FileNotFoundError,BrokenPipeError,ConnectionResetError):
   break
  finally:
   c.close()
