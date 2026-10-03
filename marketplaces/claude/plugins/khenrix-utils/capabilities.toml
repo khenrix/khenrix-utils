@@ -197,18 +197,62 @@ source_roots = ["shared/skills", "shared/superpowers"]
 state_dir = "${HOME}/.local/state/khenrix-utils/skills"
 instruction_source = "house-style.md"
 
-# Optional per-skill tables map an installed-skill relative directory to one
-# repository relative source directory. The composite tree is delivered and
+# Optional per-skill tables map an installed-skill relative path to one
+# repository relative source directory or regular file. The composite tree is delivered and
 # verified as one skill.
 [skill_delivery.skill_bundles]
 
 [skill_delivery.skill_bundles.llm-fanout-plan]
-"lib/fanout" = "shared/lib/fanout"
-"memory" = "components/memory"
+"capabilities.toml" = "capabilities.toml"
+"scripts/lib/checks.py" = "scripts/lib/checks.py"
+"shared/lib/fanout" = "shared/lib/fanout"
+"components/memory" = "components/memory"
+"components/fanout-container" = "components/fanout-container"
+"shared/skills/llm-fanout-plan" = "shared/skills/llm-fanout-plan"
+"shared/skills/llm-fanout-execute" = "shared/skills/llm-fanout-execute"
+"mise.toml" = "mise.toml"
+"mise.lock" = "mise.lock"
+"scripts/fanout_baseline.py" = "scripts/fanout_baseline.py"
+"scripts/fanout_benchmark.py" = "scripts/fanout_benchmark.py"
+"scripts/fanout_container_certify.py" = "scripts/fanout_container_certify.py"
+"scripts/fanout_container_vm_probe.py" = "scripts/fanout_container_vm_probe.py"
+"scripts/fanout_council_campaign.py" = "scripts/fanout_council_campaign.py"
+"scripts/fanout_forge_campaign.py" = "scripts/fanout_forge_campaign.py"
+"scripts/fanout_forge_fixtures.py" = "scripts/fanout_forge_fixtures.py"
+"scripts/fanout_forge_live.py" = "scripts/fanout_forge_live.py"
+"scripts/fanout_native_canary.py" = "scripts/fanout_native_canary.py"
+"scripts/fanout_prepare.py" = "scripts/fanout_prepare.py"
+"scripts/fanout_readonly_canaries.py" = "scripts/fanout_readonly_canaries.py"
+"scripts/fanout_release_certificate.py" = "scripts/fanout_release_certificate.py"
+"scripts/fanout_release_evaluations.py" = "scripts/fanout_release_evaluations.py"
+"scripts/fanout_route_doctor.py" = "scripts/fanout_route_doctor.py"
+"scripts/fanout_smoke.py" = "scripts/fanout_smoke.py"
 
 [skill_delivery.skill_bundles.llm-fanout-execute]
-"lib/fanout" = "shared/lib/fanout"
-"memory" = "components/memory"
+"capabilities.toml" = "capabilities.toml"
+"scripts/lib/checks.py" = "scripts/lib/checks.py"
+"shared/lib/fanout" = "shared/lib/fanout"
+"components/memory" = "components/memory"
+"components/fanout-container" = "components/fanout-container"
+"shared/skills/llm-fanout-plan" = "shared/skills/llm-fanout-plan"
+"shared/skills/llm-fanout-execute" = "shared/skills/llm-fanout-execute"
+"mise.toml" = "mise.toml"
+"mise.lock" = "mise.lock"
+"scripts/fanout_baseline.py" = "scripts/fanout_baseline.py"
+"scripts/fanout_benchmark.py" = "scripts/fanout_benchmark.py"
+"scripts/fanout_container_certify.py" = "scripts/fanout_container_certify.py"
+"scripts/fanout_container_vm_probe.py" = "scripts/fanout_container_vm_probe.py"
+"scripts/fanout_council_campaign.py" = "scripts/fanout_council_campaign.py"
+"scripts/fanout_forge_campaign.py" = "scripts/fanout_forge_campaign.py"
+"scripts/fanout_forge_fixtures.py" = "scripts/fanout_forge_fixtures.py"
+"scripts/fanout_forge_live.py" = "scripts/fanout_forge_live.py"
+"scripts/fanout_native_canary.py" = "scripts/fanout_native_canary.py"
+"scripts/fanout_prepare.py" = "scripts/fanout_prepare.py"
+"scripts/fanout_readonly_canaries.py" = "scripts/fanout_readonly_canaries.py"
+"scripts/fanout_release_certificate.py" = "scripts/fanout_release_certificate.py"
+"scripts/fanout_release_evaluations.py" = "scripts/fanout_release_evaluations.py"
+"scripts/fanout_route_doctor.py" = "scripts/fanout_route_doctor.py"
+"scripts/fanout_smoke.py" = "scripts/fanout_smoke.py"
 
 [skill_delivery.targets]
 claude = "${HOME}/.claude/skills"
