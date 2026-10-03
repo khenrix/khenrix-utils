@@ -371,7 +371,7 @@ def reopen_turn_completion(coordinator, packet, seat, terminal, peer):
     from .broker import BrokerPermit
     from .container_boundary import _turn_digest, _authenticated_launch
     from .container_certification import _certificate as parse_certificate, _read_owned_json, _require_certificate_turn_binding
-    from .container_broker import PermitLedger, _digest
+    from .container_broker import PermitLedger, _digest, attempt_limit
     from .container_runtime import ContainerHandle, ContainerSpec
     from .container_source import release_source_binding
     from .container_transfer_transport import InputTransferReceipt, validate_input_receipt, admitted_request_digest, reopen_stopped_seat
@@ -464,9 +464,15 @@ def reopen_turn_completion(coordinator, packet, seat, terminal, peer):
     records, attempts, auxiliary, fenced = snapshot
     ledger = PermitLedger(controller.root / "locks/spend", controller)
     with ledger._locked() as current:
-        if current["permits"][proof["permit_id"]]["permit_digest"] != _digest(permit):
+        entry = current["permits"][proof["permit_id"]]
+        if entry["permit_digest"] != _digest(permit):
             raise ValueError("original complete permit")
-    if not records or not fenced or attempts != len(records) + auxiliary or auxiliary > (1 if seat.executor_id == "agy" else 0):
+        refusals = entry["auxiliary_refusals"]
+    if (not 1 <= len(records) <= probe._MAX_MAIN_REQUESTS or not fenced
+            or type(attempts) is not int or type(auxiliary) is not int or type(refusals) is not int
+            or auxiliary < 0 or attempts != len(records) + auxiliary
+            or attempts > attempt_limit(permit) or refusals != min(1, auxiliary)
+            or (seat.executor_id != "agy" and auxiliary != 0)):
         raise ValueError("settled main request budget")
     # Reopen the original normalization and credential fingerprint without sending.
     probe_root = Path(json.loads(trial.payload)["probe_root"])
@@ -549,7 +555,8 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
     credential = credential_source.load()
     permit = BrokerPermit(request.executor_id, request.run_id, request.task_id, request.target_id,
         request.seat_id, "resume" if request.resume else "initial", profile.requested_model,
-        "disposable-placeholder", probe._MAX_MAIN_REQUESTS, 1024 * 1024, 8 * 1024 * 1024, 1024,
+        "disposable-placeholder", probe._MAX_MAIN_REQUESTS, 1024 * 1024, 8 * 1024 * 1024,
+        probe._SPEND_CEILING["max_output_tokens_per_call"],
         response_deadline=300, inputs_digest=inputs.digest, session_id=request.session_id,
         clamp_output_tokens=request.executor_id in {"claude", "agy"},
         upstream_route_digest=route.digest, upstream_origin=route.profile.origin,

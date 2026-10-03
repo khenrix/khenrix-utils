@@ -43,7 +43,7 @@ from shared.lib.fanout.container_boundary import (
     ContainerAdmission, PinnedDockerTransport, SessionStore,
     issue_container_boundary, run_container_turn,
 )
-from shared.lib.fanout.container_broker import FrameStream, HostRelay, PermitLedger, _digest
+from shared.lib.fanout.container_broker import FrameStream, HostRelay, PermitLedger, _digest, attempt_limit
 from shared.lib.fanout.container_credentials import HostCredentialSource, RouteCredentialError
 from shared.lib.fanout.container_certification import (
     CertificationRejected, PrivateProbeDecision, read_private_route_evidence,
@@ -98,7 +98,7 @@ _MAX_MAIN_REQUESTS = 4
 _SPEND_CEILING = {"max_model_calls": 24,
                   "max_request_bytes_per_call": 1024 * 1024,
                   "max_response_bytes_per_call": 8 * 1024 * 1024,
-                  "max_output_tokens_per_call": 1024}
+                  "max_output_tokens_per_call": 8192}
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,11 +276,15 @@ def _broker_evidence_valid(provider: str, cell: Mapping[str, object]) -> bool:
     auxiliary = cell.get("broker_auxiliary_attempt_count")
     return (type(cell.get("broker_request_count")) is int
             and cell["broker_request_count"] == len(records)
-            and type(auxiliary) is int and 0 <= auxiliary <= (1 if provider == "agy" else 0)
+            and type(auxiliary) is int and auxiliary >= 0
+            and (provider == "agy" or auxiliary == 0)
             and type(cell.get("broker_auxiliary_refusal_count")) is int
-            and cell["broker_auxiliary_refusal_count"] == auxiliary
+            and cell["broker_auxiliary_refusal_count"] == min(1, auxiliary)
             and type(cell.get("broker_attempt_count")) is int
             and cell["broker_attempt_count"] == len(records) + auxiliary
+            and cell["broker_attempt_count"] <= attempt_limit({
+                "provider": provider, "model": cell.get("requested_model"),
+                "max_requests": _MAX_MAIN_REQUESTS})
             and cell.get("broker_dispositions") == dispositions)
 
 
@@ -1855,7 +1859,7 @@ def _live_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
     permit = BrokerPermit(
         provider, run_id, task_id, target_id, seat_id, route,
         profile.requested_model, "disposable-placeholder", _MAX_MAIN_REQUESTS,
-        1024 * 1024, 8 * 1024 * 1024, 1024,
+        1024 * 1024, 8 * 1024 * 1024, _SPEND_CEILING["max_output_tokens_per_call"],
         response_deadline=300, inputs_digest=inputs_digest,
         session_id=session_id,
         clamp_output_tokens=provider in {"claude", "agy"},

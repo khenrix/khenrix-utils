@@ -250,7 +250,7 @@ def complete_receipt(certifier, company_manifest):
             "spend_ceiling": {"max_model_calls": 24,
                               "max_request_bytes_per_call": 1048576,
                               "max_response_bytes_per_call": 8388608,
-                              "max_output_tokens_per_call": 1024},
+                              "max_output_tokens_per_call": 8192},
             "target_ids": ["repo-alpha", "repo-beta"], "providers": providers}
 
 
@@ -310,7 +310,7 @@ def test_complete_live_matrix_allows_missing_terminal_model_with_wire_proof(
 
 
 @pytest.mark.parametrize("change", ("missing", "swapped", "wrong_wire", "extra_attempt",
-                                    "auxiliary_attempt", "uncertain", "malformed_permit"))
+                                    "auxiliary_marker", "uncertain", "malformed_permit"))
 def test_ledger_identity_and_finite_attempts_bind_every_main_send(
     certifier, complete_receipt, change,
 ):
@@ -323,10 +323,10 @@ def test_ledger_identity_and_finite_attempts_bind_every_main_send(
         cell["ledger_requests"][0]["identity"]["wire_model"] = "gemini-3.8-flash-high"
     elif change == "extra_attempt":
         cell["broker_attempt_count"] = 2
-    elif change == "auxiliary_attempt":
+    elif change == "auxiliary_marker":
         cell["broker_attempt_count"] = 3
         cell["broker_auxiliary_attempt_count"] = 2
-        cell["broker_auxiliary_refusal_count"] = 1
+        cell["broker_auxiliary_refusal_count"] = 2
     elif change == "malformed_permit":
         cell["permit_id"] = []
     else:
@@ -504,7 +504,7 @@ def _invented_approval_packet(certifier, company_manifest, private, packet_path)
         "spend_ceiling": {"max_model_calls": 24,
                           "max_request_bytes_per_call": 1048576,
                           "max_response_bytes_per_call": 8388608,
-                          "max_output_tokens_per_call": 1024},
+                          "max_output_tokens_per_call": 8192},
     }
     certifier._write_private(packet_path, certifier.canonical_json(payload))
     return payload
@@ -791,7 +791,7 @@ def test_live_cell_normalizes_output_before_effective_identity_without_sending(
         assert broker.permit.max_requests == 4
         assert broker.permit.max_request_bytes == 1048576
         assert broker.permit.max_response_bytes == 8388608
-        assert broker.permit.max_output_tokens == 1024
+        assert broker.permit.max_output_tokens == 8192
         assert broker.permit.response_deadline == 300
         auth = {"claude": "x-api-key", "codex": "x-fanout-seat",
                 "agy": "x-goog-api-key"}[provider]
@@ -832,29 +832,29 @@ def test_live_cell_normalizes_output_before_effective_identity_without_sending(
         assert caught.value is primary
         assert len(identities) == 1
         identity = identities[0]
-        assert identity.effective_output_tokens == 1024
+        assert identity.effective_output_tokens == 8192
         assert identity.upstream_route_digest == selected.digest
         assert identity.upstream_model == selected.profile.effective_model
         assert identity.upstream_origin == selected.profile.origin
         effective = json.loads(previews[0].body)
         if provider == "agy":
             assert effective["generationConfig"] == {
-                "maxOutputTokens": 1024, "thinkingConfig": {"thinkingBudget": 4096}}
+                "maxOutputTokens": 8192, "thinkingConfig": {"thinkingBudget": 4096}}
             assert identity.wire_model == "gemini-3.8-flash"
         elif provider == "claude":
-            assert effective["max_tokens"] == 1024
+            assert effective["max_tokens"] == 8192
             assert effective["thinking"] == {"type": "adaptive"}
             assert effective["output_config"] == {"effort": "max"}
             assert effective["anthropic_version"] == "vertex-2023-10-16"
             assert "model" not in effective
             assert identity.wire_model == "claude-opus-5-5"
         else:
-            assert effective["max_output_tokens"] == 1024
+            assert effective["max_output_tokens"] == 8192
             assert effective["reasoning"] == {"effort": "xhigh"}
             assert identity.wire_model == "gpt-6.1-sol"
 
         invalid = (None, True, False, 0, -1, 1.5, "1024")
-        invalid += (1025,) if provider == "codex" else ("missing",)
+        invalid += (8193,) if provider == "codex" else ("missing",)
         for index, limit in enumerate(invalid):
             bad = json.loads(json.dumps(document))
             generation = bad.setdefault("generationConfig", {}) if provider == "agy" else bad
@@ -871,6 +871,8 @@ def test_live_cell_normalizes_output_before_effective_identity_without_sending(
         with pytest.raises(BrokerRejected):
             dispatch_once(replace(request, body=b"{malformed"), ledger, broker)
         assert len(identities) == len(previews) == 1
+        with pytest.raises(BrokerRejected):
+            dispatch_once(replace(request, body=b" " * 1048577), ledger, broker)
         assert sends == []
         raise primary
 
@@ -1330,7 +1332,7 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
         assert capability_parent_synced, "capability filename was not durable before seat start"
         assert broker.permit.max_request_bytes == 1048576
         assert broker.permit.max_response_bytes == 8388608
-        assert broker.permit.max_output_tokens == 1024
+        assert broker.permit.max_output_tokens == 8192
         assert broker.permit.response_deadline == 300
         provider = broker.permit.provider
         route = broker.permit.route
@@ -1672,7 +1674,7 @@ def _completed_quality_root(certifier, complete_receipt, tmp_path, monkeypatch,
     complete_receipt["spend_ceiling"] = {"max_model_calls": 24,
                                          "max_request_bytes_per_call": 1048576,
                                          "max_response_bytes_per_call": 8388608,
-                                         "max_output_tokens_per_call": 1024}
+                                         "max_output_tokens_per_call": 8192}
     approval = {
         "reference": complete_receipt["approval_reference"],
         "observation_date": complete_receipt["observation_date"],
@@ -1704,7 +1706,7 @@ def _completed_quality_root(certifier, complete_receipt, tmp_path, monkeypatch,
             permit = BrokerPermit(
                 provider, "private-quality", "synthetic-task", "repo-alpha",
                 f"seat-{provider}", route, profile.requested_model,
-                "disposable-placeholder", 4, 1048576, 8388608, 1024,
+                "disposable-placeholder", 4, 1048576, 8388608, 8192,
                 inputs_digest="9" * 64, session_id=f"session-{provider}",
                 upstream_route_digest=routed["digest"],
                 upstream_origin=routed["origin"],
@@ -1843,8 +1845,9 @@ def test_verifier_accepts_six_authenticated_route_cells(
     assert certifier.verify_private_route_evidence(root, company_manifest[2]).passed
 
 
-@pytest.mark.parametrize("main_requests", (2, 4))
-@pytest.mark.parametrize("auxiliary_attempts", (0, 1))
+@pytest.mark.parametrize("main_requests,auxiliary_attempts", (
+    (2, 0), (2, 1), (4, 0), (4, 1), (3, 3), (1, 5),
+))
 def test_bounded_tool_loop_reopens_every_authenticated_request(
     certifier, complete_receipt, tmp_path, monkeypatch, company_manifest,
     main_requests, auxiliary_attempts,
@@ -1860,6 +1863,37 @@ def test_bounded_tool_loop_reopens_every_authenticated_request(
         assert all(entry["used"] == main_requests for entry in durable["permits"].values())
     assert certifier.evaluate_private_probe(complete_receipt).passed
     assert certifier.verify_private_route_evidence(root, company_manifest[2]).passed
+
+
+@pytest.mark.parametrize("provider,main_requests,auxiliary,attempts,marker", (
+    ("agy", 4, 3, 7, 1),
+    ("agy", 3, 2, 6, 1),
+    ("agy", 3, 3, 6, 0),
+    ("agy", 3, 3, 6, 3),
+    ("agy", True, 0, 1, 0),
+    ("agy", -1, 0, 1, 0),
+    ("agy", 1, False, 1, 0),
+    ("agy", 1, 0, True, 0),
+    ("agy", 1, 0, 1, False),
+    ("agy", 1, -1, 0, 0),
+    ("agy", 1, 0, -1, 0),
+    ("agy", 1, 0, 1, -1),
+    ("claude", 1, 1, 2, 1),
+    ("codex", 1, 1, 2, 1),
+))
+def test_receipt_rejects_unbounded_or_unaccounted_refused_attempts(
+    certifier, complete_receipt, provider, main_requests, auxiliary, attempts, marker,
+):
+    cell = complete_receipt["providers"][provider]["initial"]
+    seed = cell["ledger_requests"][0]
+    cell["ledger_requests"] = [{**seed, "request_id": f"main-{index}"}
+                               for index in range(main_requests)]
+    cell["broker_dispositions"] = [{"request_id": record["request_id"],
+        "state": "settled", "response_sha256": record["response_digest"]}
+        for record in cell["ledger_requests"]]
+    cell.update(broker_request_count=main_requests, broker_attempt_count=attempts,
+                broker_auxiliary_attempt_count=auxiliary, broker_auxiliary_refusal_count=marker)
+    assert not certifier.evaluate_private_probe(complete_receipt).passed
 
 
 @pytest.mark.parametrize("provider,damage", (
@@ -1934,7 +1968,7 @@ def test_bounded_tool_loop_damage_stops_maka_before_construction(
     elif damage == "disposition":
         record["response_digest"] = cell["broker_dispositions"][1]["response_sha256"] = "0" * 64
     elif damage == "output_tokens":
-        record["identity"]["effective_output_tokens"] = 1025
+        record["identity"]["effective_output_tokens"] = 8193
     elif damage == "wire_model":
         record["identity"]["wire_model"] = "another-model"
     elif damage == "route":
@@ -1972,13 +2006,13 @@ def test_bounded_tool_loop_damage_stops_maka_before_construction(
     assert not (root / "quality-attempt.json").exists()
 
 
-@pytest.mark.parametrize("damage", ("second", "unknown", "unexplained", "unparseable"))
-def test_unrecognized_or_repeated_auxiliary_cannot_complete_tool_loop(
+@pytest.mark.parametrize("damage", ("unknown", "unexplained", "unparseable"))
+def test_unrecognized_or_unaccounted_auxiliary_cannot_complete_tool_loop(
     certifier, complete_receipt, tmp_path, monkeypatch, company_manifest, damage,
 ):
     root, _, _ = _completed_quality_root(
         certifier, complete_receipt, tmp_path, monkeypatch, main_requests=4,
-        auxiliary_attempts=2 if damage == "second" else 1 if damage == "unknown" else 0,
+        auxiliary_attempts=1 if damage == "unknown" else 0,
         auxiliary_path=("/v1beta/models/unknown-model:streamGenerateContent?alt=sse"
                         if damage == "unknown" else None),
         unexplained_attempts=int(damage == "unexplained"),

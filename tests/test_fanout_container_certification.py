@@ -122,7 +122,7 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch):
                 identity = TransferIdentity(request.run_id, request.task_id, request.target_id, request.seat_id, request.inputs_digest)
                 permit = BrokerPermit(provider, request.run_id, request.task_id, request.target_id,
                     request.seat_id, route, profile.requested_model, "disposable-placeholder",
-                    4, 1048576, 8388608, 1024, inputs_digest=request.inputs_digest,
+                    4, 1048576, 8388608, 8192, inputs_digest=request.inputs_digest,
                     session_id=request.session_id, upstream_route_digest=selected[provider].digest,
                     upstream_origin=selected[provider].profile.origin,
                     upstream_model=selected[provider].profile.effective_model,

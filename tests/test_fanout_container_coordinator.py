@@ -17,6 +17,7 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
     boundary_module, company_manifest, tmp_path, monkeypatch,
 ):
     """Exercise lifetime/capture only; certificate/startup admission is inert setup."""
+    import json
     from dataclasses import replace
     from shared.lib import fanout as runtime
     from shared.lib.fanout import container_coordinator as helper, container_certification as authority, container_credentials
@@ -60,6 +61,18 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
     monkeypatch.setattr(transport, "stage_inputs", lambda *_: receipt)
     def existing_owned_seat(_cls, admitted_controller, spec, **kwargs):
         assert admitted_controller is controller and spec == transport.spec
+        broker = kwargs["broker"]
+        assert broker.permit.max_requests == 4
+        assert broker.permit.max_request_bytes == 1048576
+        assert broker.permit.max_response_bytes == 8388608
+        assert broker.permit.max_output_tokens == 8192
+        prepared = broker.preview_upstream("POST", "/v1/messages",
+            {"content-type": "application/json", "x-api-key": "disposable-placeholder"},
+            runtime.canonical_json({"model": "claude-opus-5-5", "max_tokens": 128000,
+                "messages": [], "stream": True, "thinking": {"type": "adaptive"}}))
+        effective = json.loads(prepared.body)
+        assert effective["max_tokens"] == 8192
+        assert effective["thinking"] == {"type": "adaptive"}
         control.permit_id, control.epoch = kwargs["permit_id"], kwargs["epoch"]
         return transport
     monkeypatch.setattr(boundary_module.PinnedDockerTransport, "start_live", classmethod(existing_owned_seat))
@@ -398,6 +411,8 @@ def _assert_persisted_certificate_turn_refusals(root, certificate, trial_control
     from shared.lib.fanout.container_runtime import ContainerSpec, ContainerLauncher
     from shared.lib.fanout.container_source import release_source_binding
     from shared.lib.fanout.controller import read_evidence, write_evidence
+    from shared.lib.fanout.broker import BrokerRejected
+    from shared.lib.fanout.container_broker import PermitLedger
     fields = ("image_digest", "cli_digest", "profile_digest", "upstream_route_digest",
               "vm_docker_endpoint", "vm_ssh_host_key_sha256", "vm_effective_mounts_sha256", "vm_guest_mounts_sha256")
     cases = [(field, missing) for field in fields for missing in (False, True)]
@@ -472,6 +487,53 @@ def _assert_persisted_certificate_turn_refusals(root, certificate, trial_control
             pointer.write_bytes(original_pointer)
             raw_path.write_bytes(original_raw)
     assert all(value == (True, False) for value in results.values()), results
+    with helper._open_trial_authority(root) as cold:
+        coordinator = cold.service.coordinator
+        coordinator.trial_certificate = certificate
+        task = next(task for task in cold.service.plan.tasks if task.id == "change")
+        packet = cold.service._packet_for(task)
+        first = cold.service._restore_barrier(cold.service._execution_state(task.id).barriers[0], packet)
+        ledger = PermitLedger(coordinator.lifecycle_controller.root / "locks/spend", coordinator.lifecycle_controller)
+        original_ledger = ledger._record.read_bytes()
+        with ledger._locked() as durable:
+            original_state = copy.deepcopy(durable)
+        cases = [("agy", field, value) for field in ("attempts", "auxiliary_attempts", "auxiliary_refusals")
+                 for value in (True, -1)]
+        cases.extend(("agy", "auxiliary_refusals", value) for value in (0, 3))
+        cases.extend((("agy", "unaccounted", None), ("agy", "over_budget", None),
+                      ("claude", "auxiliary", None), ("codex", "auxiliary", None)))
+        for provider, damage, value in cases:
+            terminal = next(item for item in first.valid_terminals if item.executor_id == provider)
+            seat = next(item for item in cold.service.preparations[task.id].seats if item.seat_id == terminal.seat_id)
+            original = helper.reopen_turn_completion(coordinator, packet, seat, terminal, None)
+            if provider == "agy":
+                assert len(original["ledger"][0]) == 3 and original["ledger"][1:] == [6, 3, True]
+            pointer = cold.artifacts.root / (coordinator._provider_prefix(packet, 1, seat.seat_id) + "/container-turn.json")
+            original_pointer = pointer.read_bytes()
+            changed_state, changed_proof = copy.deepcopy(original_state), copy.deepcopy(original)
+            entry = changed_state["permits"][original["permit_id"]]
+            if damage == "unaccounted":
+                entry["auxiliary_attempts"] = changed_proof["ledger"][2] = 2
+            elif damage == "over_budget":
+                fourth_id = "fourth-main"
+                request = copy.deepcopy(changed_state["requests"][original["ledger"][0][0]["request_id"]])
+                changed_state["requests"][fourth_id] = request
+                changed_state["send_claims"][fourth_id] = True
+                entry.update(used=4, attempts=7)
+            elif damage == "auxiliary":
+                entry.update(attempts=2, auxiliary_attempts=1, auxiliary_refusals=1)
+            else:
+                entry[damage] = value
+            try:
+                ledger._record.write_bytes(runtime.canonical_json({"payload": changed_state, "mac": ledger._mac(changed_state)}))
+                changed_ref = write_evidence(coordinator.lifecycle_controller, "container-coordinator-turn", changed_proof)
+                pointer.write_bytes(runtime.canonical_json({"evidence": list(changed_ref)}))
+                with pytest.raises((BrokerRejected, ValueError), match=(
+                        "settled main request budget" if damage == "unaccounted" else "broker ledger attempt entry")):
+                    helper.reopen_turn_completion(coordinator, packet, seat, terminal, None)
+            finally:
+                ledger._record.write_bytes(original_ledger)
+                pointer.write_bytes(original_pointer)
 
 
 def test_no_spend_trial_cli_prepares_targets_before_owner_issuance(tmp_path, certifier, capsys):
@@ -534,6 +596,7 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
     from shared.lib.fanout.container_vm import VMProbe
     from scripts import fanout_container_certify as probe
     from test_fanout_container_boundary import _terminal, SESSION_IDS
+    from test_fanout_container_certify import _refuse_auxiliary
     canonical = runtime.canonical_json
     sha = lambda data: hashlib.sha256(data).hexdigest()
     service, coordinator = opened.service, opened.service.coordinator
@@ -584,7 +647,7 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             launch = write_evidence(controller, "container-seat-launch", {"spec": asdict(spec), "handle": asdict(handle),
                 "route": "start" if number == 1 else "recover"})
             permit = BrokerPermit(provider, packet.run_id, task.id, task.target_id, seat.seat_id,
-                "initial" if number == 1 else "resume", profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 1024,
+                "initial" if number == 1 else "resume", profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
                 session_id=request.session_id, inputs_digest=service.inputs.digest,
                 upstream_route_digest=routes[provider].digest, upstream_origin=routes[provider].profile.origin,
                 upstream_model=routes[provider].profile.effective_model, upstream_path=probe_receipt["machine_routes"][provider]["path"])
@@ -638,6 +701,7 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             exported = parent / "published"
             exported.mkdir(mode=0o700)
             (exported / "README.md").write_bytes(f"synthetic exported {task.id} {provider} {number}\n".encode())
+            (exported / "README.md").chmod(0o644)
             manifest = snapshot_manifest(exported, identity)
             export_payload = {"identity": asdict(identity), "turn_digest": turn, "manifest_sha256": sha(canonical(asdict(manifest))),
                 "root": str(exported), "container_id": handle.container_id, "container_inspect_sha256": handle.inspect_sha256,
@@ -668,19 +732,29 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             wire_identity = OutboundRequestIdentity("POST", path, sha(body), 32,
                 "gemini-3.8-flash" if provider == "agy" else profile.requested_model,
                 prepared.route_digest, prepared.origin, prepared.path, sha(prepared.body), prepared.effective_model)
-            wire_id = f"{task.id}-{provider}-{number}"
             response = b'{"ok":true}'
-            ledger.record_attempt(permit_id, number)
-            ledger.reserve(permit_id, number, wire_id, wire_identity)
-            ledger.claim_send(permit_id, number, wire_id, permit, wire_identity)
-            ledger.settle(wire_id, sha(response))
+            if provider == "agy":
+                for _ in range(3):
+                    _refuse_auxiliary(ledger, permit, permit_id, number)
+            wires = []
+            for index in range(3 if provider == "agy" else 1):
+                wire_id = f"{task.id}-{provider}-{number}-{index}"
+                ledger.record_attempt(permit_id, number)
+                ledger.reserve(permit_id, number, wire_id, wire_identity)
+                ledger.claim_send(permit_id, number, wire_id, permit, wire_identity)
+                ledger.settle(wire_id, sha(response))
+                def wire_ref(name, data):
+                    return asdict(private.write_bytes(f"{request.artifact_prefix}-wire/{wire_id}/{name}.bin", data))
+                wire = {"request_id": wire_id, "http_status": 200, "content_type": "application/json",
+                    "normalized_body": wire_ref("normal", body), "effective_body": wire_ref("effective", prepared.body),
+                    "response_body": wire_ref("response", response)}
+                wire["delivered_body"] = wire["response_body"]
+                wires.append(wire)
             helper.fence_stopped_turn(controller, ledger, SimpleNamespace(spec=spec, handle=handle, stop_evidence=stopped), permit_id, number)
-            def wire_ref(name, data):
-                return asdict(private.write_bytes(f"{request.artifact_prefix}-wire/{wire_id}/{name}.bin", data))
-            wire = {"request_id": wire_id, "http_status": 200, "content_type": "application/json",
-                "normalized_body": wire_ref("normal", body), "effective_body": wire_ref("effective", prepared.body),
-                "response_body": wire_ref("response", response)}
-            wire["delivered_body"] = wire["response_body"]
+            if provider == "agy":
+                records, attempts, auxiliary, fenced = probe._ledger_snapshot(controller, permit_id, number)
+                assert len(records) == 3 and (attempts, auxiliary, fenced) == (6, 3, True)
+                assert ledger.auxiliary_refusal_count(permit_id, number) == 1
             from shared.lib.fanout.container_credentials import HostCredentialSource
             credential_source = HostCredentialSource(routes[provider].profile)
             credential_source.load()
@@ -691,12 +765,15 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
                 "process": {"status": "exit", "returncode": 0, "capture_complete": True,
                     "stdout": asdict(result.stdout_ref), "stderr": asdict(result.stderr_ref), "answer": asdict(result.answer_ref)},
                 "permit": asdict(permit), "permit_id": permit_id, "permit_epoch": number,
-                "ledger": probe._ledger_snapshot(controller, permit_id, number), "wire": [wire],
+                "ledger": probe._ledger_snapshot(controller, permit_id, number), "wire": wires,
                 "credential_source_fingerprint": credential_source.fingerprint,
                 "vm_profile_identity": observations[provider]["profile_identity"],
                 "session_id": result.session_id, "valid": True})
             result = replace(result, container_completion=completed, candidate_export=export)
             terminal = coordinator._persist_terminal(packet, coordinator._terminal_from_provider(packet, seat, number, request, result))
+            if provider == "agy":
+                reopened = helper.reopen_turn_completion(coordinator, packet, seat, terminal, peer)
+                assert len(reopened["ledger"][0]) == 3 and reopened["ledger"][1:] == [6, 3, True]
             opened.journal.append("provider-terminal", task_id=task.id, seat_id=seat.seat_id, attempt=1, round=number,
                 evidence_sha256=terminal.terminal_ref.digest, owner=opened.owner)
             opened.journal.append("artifacts-durable", task_id=task.id, seat_id=seat.seat_id, attempt=1, round=number, owner=opened.owner)
