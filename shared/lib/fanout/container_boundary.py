@@ -1233,7 +1233,7 @@ for _ in range(limit):
 """
         self._ssh(_as_guest_relay_uid(
             "-c", script, proof.path, str(proof.device), str(proof.inode),
-            str(proof.ctime_ns), str(self.broker.permit.max_requests)), operation="relay_drain", timeout=30)
+            str(proof.ctime_ns), str(attempt_limit(self.broker.permit) + 1)), operation="relay_drain", timeout=30)
 
 
 @dataclass(frozen=True, slots=True)

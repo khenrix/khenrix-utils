@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import fanout_baseline  # noqa: E402
 import fanout_smoke  # noqa: E402
+from test_fanout_container_upstream import connection_factory  # noqa: F401
 from test_fanout_readonly_canaries import canaries, _forbid_reopen_sends_and_probes
 
 

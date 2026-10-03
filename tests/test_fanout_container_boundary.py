@@ -40,6 +40,7 @@ from shared.lib.fanout.providers import (  # noqa: E402
     ProviderRegistry, ProviderRequest, run_provider,
 )
 import test_fanout_container_runtime as runtime_tests  # noqa: E402
+import test_fanout_container_broker as broker_tests  # noqa: E402
 import test_fanout_container_transfer_transport as transfer_transport_tests  # noqa: E402
 
 
@@ -1482,6 +1483,59 @@ def _execute_drain_guest_locally(control, monkeypatch, error, stage, events):
         return b""
 
     monkeypatch.setattr(control, "_ssh", ssh, raising=False)
+
+
+@pytest.mark.parametrize("provider,model,slots", [
+    ("claude", "test-model", 4),
+    ("codex", "test-model", 4),
+    ("agy", "gemini-3.8-flash-high", 6),
+])
+def test_owner_drain_closes_idle_relay_including_final_refusal(
+    boundary_module, tmp_path, monkeypatch, provider, model, slots,
+):
+    control, _ = _partial_ssh_control(boundary_module, tmp_path, monkeypatch, None)
+    control.broker.permit.provider = provider
+    control.broker.permit.model = model
+    control.broker.permit.max_requests = 4
+    guest = broker_tests._guest_module()
+    with tempfile.TemporaryDirectory(prefix="fanout-drain-", dir="/private/tmp") as directory:
+        monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", directory)
+        frames = broker_tests._Frames([{"type": "ready_ack"}, {"type": "closed"}])
+        relay = guest.GuestRelay("seat-test", "a" * 64, 1, frames,
+                                 max_requests=slots, max_request_bytes=1024,
+                                 max_response_bytes=1024)
+        relay.timeout = 1
+        info = os.lstat(guest.seat_socket_path("seat-test"))
+        proof = GuestSocketAttestation(
+            guest.seat_socket_path("seat-test"), info.st_uid, info.st_mode,
+            info.st_dev, info.st_ino, info.st_ctime_ns)
+        failures = []
+
+        def serve():
+            try:
+                relay.serve()
+            except Exception as error:
+                failures.append(error)
+
+        def ssh(argv, data=b"", *, operation, timeout=30):
+            assert operation == "relay_drain" and data == b"" and timeout == 30
+            with monkeypatch.context() as patch:
+                patch.setattr(sys, "argv", ["-c", *argv[7:]])
+                exec(compile(argv[6], "<guest-control>", "exec"), {})
+            return b""
+
+        monkeypatch.setattr(control, "_ssh", ssh, raising=False)
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            control._drain_relay(proof)
+            thread.join(timeout=0.1)
+            assert not thread.is_alive()
+            assert not os.path.lexists(proof.path)
+            assert not failures
+            assert [frame["type"] for frame in frames.sent] == ["ready", "close"]
+        finally:
+            thread.join(timeout=2)
 
 
 @pytest.mark.parametrize("stage,exchanges", [

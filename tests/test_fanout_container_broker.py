@@ -1028,6 +1028,55 @@ def test_guest_accepts_only_finite_34_attempt_ceiling(monkeypatch):
                              max_response_bytes=1024)
 
 
+def test_exhausted_relay_keeps_its_socket_until_owner_drain(monkeypatch):
+    guest = _guest_module()
+    with tempfile.TemporaryDirectory(prefix="fanout-terminal-", dir="/private/tmp") as directory:
+        monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", directory)
+        frames = _Frames([{"type": "ready_ack"}, {"type": "closed"}])
+        relay = guest.GuestRelay("seat-1", "a" * 64, 1, frames,
+                                 max_requests=1, max_request_bytes=1024,
+                                 max_response_bytes=1024)
+        relay.timeout = 1
+        failures = []
+
+        def serve():
+            try:
+                relay.serve()
+            except Exception as error:
+                failures.append(error)
+
+        original = os.lstat(guest.seat_socket_path("seat-1"))
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            _drain_guest_socket(guest.seat_socket_path("seat-1"))
+            thread.join(timeout=0.1)
+            assert thread.is_alive(), "relay closed before terminal attestation"
+            observed = os.lstat(guest.seat_socket_path("seat-1"))
+            assert (observed.st_dev, observed.st_ino, observed.st_ctime_ns) == (
+                original.st_dev, original.st_ino, original.st_ctime_ns)
+            _drain_guest_socket(guest.seat_socket_path("seat-1"))
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+            assert not os.path.lexists(guest.seat_socket_path("seat-1"))
+            assert not failures
+            assert [frame["type"] for frame in frames.sent] == ["ready", "close"]
+        finally:
+            thread.join(timeout=2)
+
+
+def _drain_guest_socket(path):
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(2)
+        client.connect(path)
+        client.sendall(b"POST http://invalid.invalid/ HTTP/1.1\r\n"
+                       b"Host: 127.0.0.1:43187\r\nContent-Length: 0\r\n\r\n")
+        response = bytearray()
+        while chunk := client.recv(4096):
+            response.extend(chunk)
+        assert b"HTTP/1.1 403" in response
+
+
 def test_guest_unix_http_round_trip_uses_typed_host_frames(monkeypatch, tmp_path):
     guest = _guest_module()
     permit = _permit()
@@ -1067,6 +1116,7 @@ def test_guest_unix_http_round_trip_uses_typed_host_frames(monkeypatch, tmp_path
         while chunk := client.recv(4096):
             parts.append(chunk)
         client.close()
+        _drain_guest_socket(guest.seat_socket_path("seat-1"))
         remote.join(timeout=3)
         host.join(timeout=3)
     host_socket.close()
@@ -1127,6 +1177,7 @@ def test_guest_host_two_agy_auxiliary_denials_then_one_main_send(monkeypatch, tm
         auxiliary = "/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse"
         main = "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
         statuses = [post(auxiliary), post(auxiliary), post(main)]
+        _drain_guest_socket(guest.seat_socket_path("seat-1"))
         remote.join(timeout=3)
         host.join(timeout=3)
     host_socket.close()

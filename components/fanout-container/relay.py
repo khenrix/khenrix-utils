@@ -258,7 +258,8 @@ class GuestRelay(UnixStreamServer):
                               "permit_id": self.permit_id, "epoch": self.epoch})
             if self.frames.recv() != {"type": "ready_ack"}:
                 raise RelayRejected("relay readiness was not admitted")
-            while self.used < self.max_requests:
+            # Keep the exhausted socket attested until one final local refusal.
+            while self.used <= self.max_requests:
                 prior = self.used
                 self.handle_request()
                 if self.used == prior:

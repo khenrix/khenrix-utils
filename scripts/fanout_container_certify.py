@@ -1125,6 +1125,13 @@ def _fake_http_exchange(ledger: PermitLedger, broker: Broker, permit_id: str,
             response = client.getresponse()
             status = response.status
             payload = response.read()
+            with connector(guest.BROKER_SOCKET) as drain:
+                drain.sendall(b"POST http://invalid.invalid/ HTTP/1.1\r\n"
+                              b"Host: 127.0.0.1:43187\r\nContent-Length: 0\r\n\r\n")
+                refusal = http.client.HTTPResponse(drain)
+                refusal.begin()
+                if refusal.status != 403 or refusal.read() != b"":
+                    raise CertificationRejected("fake HTTP relay drain was not refused")
             remote.join(timeout=5)
             host.join(timeout=5)
         finally:

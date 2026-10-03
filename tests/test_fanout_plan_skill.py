@@ -691,6 +691,8 @@ def test_portability_exempts_declared_native_only_scripts_not_plugin_scripts(tmp
     sys.modules[spec.name] = portability
     spec.loader.exec_module(portability)
     (tmp_path / "capabilities.toml").write_text(
+        '[historical_only]\nskills = ["llm-council", "llm-forge"]\n'
+        'libraries = ["council", "forge"]\n'
         '[skill_delivery]\nskills = ["native"]\n', encoding="utf-8")
     for name in ("native", "plugin"):
         scripts = tmp_path / "shared/skills" / name / "scripts"
