@@ -1831,6 +1831,12 @@ def _live_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
                   b"Target: repo-alpha. Context: private bounded certification.\n"
                   b"Edit only README.md by appending exactly: " + marker +
                   b"Do not modify any other path. Report the completed edit.\n")
+    if provider == "agy":
+        plan_bytes += (b"The current directory is already the target repository; README.md exists.\n"
+                       b"Read it once with view_file, then use a native file-editing tool to append the line, "
+                       b"preserving all existing bytes. Report completion.\n"
+                       b"Do not use shell commands, directory listings, or byte-inspection commands "
+                       b"for this single-file edit.\n")
     skills_bytes = canonical_json({"skills": ["llm-fanout-execute"],
                                    "delivery": "bounded synthetic context"})
     dependencies_bytes = canonical_json({"repo-beta": "synthetic sibling only"})
