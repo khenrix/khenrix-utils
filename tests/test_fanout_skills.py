@@ -581,6 +581,85 @@ def test_stage_detects_drift_while_copying(tmp_path: Path, monkeypatch: pytest.M
     assert not (bundles / "seat").exists()
 
 
+@pytest.mark.parametrize("operation", ("resolve", "stage"))
+def test_actual_read_growth_is_bounded_before_hashing_or_publication(tmp_path, monkeypatch, operation):
+    root, bundles = tmp_path / "skills", tmp_path / "bundles"
+    bundles.mkdir()
+    skill = _write_skill(root, "review")
+    source = skill / "SKILL.md"
+    resolver = _resolver(_root("root", root, 0), max_file_bytes=64)
+    admission = resolver.admit(("review",), task_id="task", seat_id="seat",
+                               provider="codex", session_id="session")
+    original = skills_module.os.fdopen
+    source_inode = source.stat().st_ino
+    reads = []
+    copying = operation == "resolve"
+    original_copy = resolver._copy_skill
+
+    def begin_copy(*args):
+        nonlocal copying
+        copying = True
+        return original_copy(*args)
+
+    monkeypatch.setattr(resolver, "_copy_skill", begin_copy)
+
+    class GrowingRead:
+        def __init__(self, file):
+            self.file = file
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.file.close()
+
+        def read(self, size=-1):
+            reads.append(size)
+            source.write_bytes(b"x" * 4096)
+            return self.file.read(size)
+
+    def grow_at_read(descriptor, mode, **kwargs):
+        file = original(descriptor, mode, **kwargs)
+        if copying and mode == "rb" and os.fstat(descriptor).st_ino == source_inode:
+            return GrowingRead(file)
+        return file
+
+    monkeypatch.setattr(skills_module.os, "fdopen", grow_at_read)
+    with pytest.raises(SkillAdmissionError, match="drift|size|limit"):
+        if operation == "resolve":
+            resolver.resolve(("review",))
+        else:
+            resolver.stage(admission, bundles / "seat")
+    assert reads == [9]  # Eight admitted bytes plus one overflow sentinel.
+    assert not (bundles / "seat").exists()
+
+
+def test_staging_preserves_authenticated_nested_empty_directories(tmp_path):
+    root, bundles = tmp_path / "skills", tmp_path / "bundles"
+    bundles.mkdir()
+    skill = _write_skill(root, "review")
+    (skill / "empty" / "nested").mkdir(parents=True)
+    (skill / "another-empty").mkdir()
+    resolver = _resolver(_root("root", root, 0))
+    admission = resolver.admit(("review",), task_id="task", seat_id="seat",
+                               provider="codex", session_id="session")
+    staged = resolver.stage(admission, bundles / "seat")
+    assert sorted(path.relative_to(staged.staged_root / "review").as_posix()
+                  for path in (staged.staged_root / "review").rglob("*")) == [
+                      "SKILL.md", "another-empty", "empty", "empty/nested",
+                  ]
+    assert all(path.stat().st_mode & 0o777 == 0o700
+               for path in (staged.staged_root / "review").rglob("*") if path.is_dir())
+    assert skillctl_tree_hash(staged.staged_root / "review") == admission.skills[0].tree_hash
+    assert resolver.verify_engine_delivery(
+        staged, (SkillLoadEvidence.engine(staged.skills[0], staged),),
+    ).engine_delivered
+    (skill / "empty" / "nested").rmdir()
+    with pytest.raises(SkillAdmissionError, match="drift"):
+        resolver.stage(admission, bundles / "drifted")
+    assert not (bundles / "drifted").exists()
+
+
 def test_plan_effective_skills_only_admit_executor_inheritance_and_none_is_empty(tmp_path: Path):
     """A seat inherits Task 5 executor skills only, never orchestrator controls or defaults."""
     root = tmp_path / "skills"

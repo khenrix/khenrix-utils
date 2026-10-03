@@ -1774,15 +1774,129 @@ class HistoricalRunStatus:
     scheduler_revision: int
     amendments: Mapping[int, str]
     handovers: Mapping[str, str]
+    plan_revision: int | None = None
+    inputs_digest: str | None = None
+    provider_profiles: Mapping[str, str] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "schema_version": self.schema_version, "run_id": self.run_id,
             "journal_seq": self.journal_seq,
             "scheduler_revision": self.scheduler_revision,
             "amendments": {str(key): value for key, value in self.amendments.items()},
             "handovers": dict(self.handovers), "read_only": True,
         }
+        if self.plan_revision is not None:
+            result.update(plan_revision=self.plan_revision, inputs_digest=self.inputs_digest,
+                          provider_profiles=dict(self.provider_profiles))
+        return result
+
+
+def _inspect_v1_run(private_root: Path | str, *, runtime, registry=None):
+    """Inspect original authority and exact admitted replacement without mutable reopen."""
+    private = Path(private_root)
+    descriptor = load_private_descriptor(private)
+    if descriptor.get("schema_version") != "fanout-execute-private-v1":
+        raise ValueError("v1 inspection requires a saved v1 descriptor")
+    initial_inputs = runtime.RunInputs.from_dict(descriptor["inputs"])
+    packet = descriptor["admission_packet"]
+    initial_plan = runtime.FanoutPlanV1.from_dict(packet["compiled"]["plan"])
+    if (initial_inputs.targets is not None or descriptor["run_id"] != initial_inputs.run_id
+            or packet["schema_version"] != "fanout-plan-admission-v1"
+            or _sha256(runtime.canonical_json(initial_plan.to_dict())) != initial_inputs.compiled_plan_sha256
+            or _sha256(packet["source_markdown"].encode("utf-8")) != initial_inputs.source_sha256
+            or _sha256(runtime.canonical_json(packet["draft"])) != initial_inputs.draft_sha256
+            or _sha256(packet["compiled"]["parser_version"].encode()) != initial_inputs.parser_sha256):
+        raise ValueError("saved v1 admission differs from original run inputs")
+    run, authority, repository = (Path(descriptor[name])
+                                  for name in ("run_root", "authority_root", "repo_root"))
+    _separate_paths(repository, run, authority, private)
+    owner = runtime.OwnerCapability.from_token(descriptor["owner_token"])
+    anchor = runtime.LocalAnchorAuthority.inspect(authority, run_root=run, repo_root=repository)
+    inspection = runtime.RunJournal.inspect(run, initial_inputs, owner, anchor_store=anchor)
+    if inspection.pending_authority or inspection.recovery.torn_tail_bytes:
+        raise ValueError("pending journal authority needs recover-journal --private-root before resume")
+    with (runtime.ArtifactStore.open_existing(run / "artifacts") as artifacts,
+          runtime.FileSchedulerBackend.inspect(run, run_id=initial_inputs.run_id, owner=owner) as scheduler_backend,
+          runtime.FileExecutionBackend.inspect(run, run_id=initial_inputs.run_id, owner=owner) as execution_backend):
+        baseline = _load_baseline(runtime, artifacts, descriptor["baseline_manifest_ref"], repository)
+        if baseline.digest != initial_inputs.repo_baseline_sha256:
+            raise ValueError("saved v1 original baseline binding changed")
+        catalog = registry or runtime.ProviderRegistry.default()
+        initial_registry = _initial_registry(runtime, descriptor, catalog, initial_inputs)
+        plan, inputs, revision = _accepted_plan_inputs(
+            runtime, inspection, artifacts, execution_backend, initial_plan, initial_inputs,
+        )
+        _accepted_registry(runtime, artifacts, initial_registry, inputs, adapter_catalog=catalog)
+        bindings = {1: (initial_plan, initial_inputs)}
+        for number, amendment in sorted(inspection.state.amendments.items()):
+            documents = runtime.ExecutionService.recovery_documents(inspection, artifacts, revision=number)
+            if (documents.inputs.run_id != initial_inputs.run_id
+                    or documents.inputs.repo_baseline_sha256 != baseline.digest
+                    or documents.plan.source != initial_plan.source):
+                raise ValueError("v1 amendment changed immutable run identity, source or baseline")
+            if amendment.phase == "plan-amendment-accepted":
+                bindings[number] = (documents.plan, documents.inputs)
+        scheduler = runtime.Scheduler._resume_impl(
+            plan, inputs, scheduler_backend, artifacts, owner=owner,
+            anchor_store=anchor, allow_test=False, journal=inspection,
+            lifecycle_controller=None, allow_repair=False,
+        )
+        snapshot = scheduler_backend.read().snapshot
+        if (snapshot.plan_revision != revision or bindings.get(revision) != (plan, inputs)):
+            raise ValueError("v1 scheduler revision lacks exact accepted amendment binding")
+        for task in snapshot.tasks:
+            if task.plan_revision:
+                decision = bindings.get(task.plan_revision)
+                if decision is None or (task.decision_plan_sha256, task.decision_inputs_digest) != (
+                    decision[1].compiled_plan_sha256, decision[1].digest,
+                ):
+                    raise ValueError("v1 scheduler decision differs from admitted historical binding")
+        projected = sum(len((task.provider_policy or plan.defaults).executor_ids)
+                        * (task.provider_policy or plan.defaults).rounds
+                        * ((task.provider_policy or plan.defaults).retries + 1)
+                        for task in plan.tasks if task.kind == "work"
+                        and task.execution_class != "orchestrator-action")
+        runtime.ExecutionBudget(descriptor["budget"])
+        if projected > descriptor["budget"]:
+            raise ValueError("v1 status provider budget differs from admitted plan")
+        status = runtime.ExecutionStatus(inputs.run_id, revision, scheduler.revision, 0, projected,
+            tuple(runtime.ExecutionTaskStatus(task.task_id, task.phase, 0) for task in snapshot.tasks))
+        record = execution_backend.read()
+        if record is not None:
+            _validate_v2_status_execution(record, execution_backend, status, plan, inputs, artifacts, runtime)
+            rounds = {task.task_id: len(task.barriers) for task in record.snapshot.tasks}
+            status = dataclasses.replace(status, execution_revision=record.revision,
+                tasks=tuple(dataclasses.replace(task, completed_rounds=rounds[task.task_id])
+                            for task in status.tasks))
+        return status, inspection, inputs
+
+
+def inspect_v1_status(private_root: Path | str, *, runtime, registry=None) -> dict[str, object]:
+    status, inspection, _inputs = _inspect_v1_run(private_root, runtime=runtime, registry=registry)
+    return {**status.to_dict(), **_unresolved_uncertain_status(inspection.state)}
+
+
+def recover_journal(private_root: Path | str, *, runtime) -> dict[str, object]:
+    """Use only the private current-v1 owner to resolve existing durable journal recovery."""
+    descriptor = load_private_descriptor(private_root)
+    if (descriptor.get("schema_version") != "fanout-execute-private-v1"
+            or descriptor.get("runtime_sha256") != _runtime_digest(runtime)):
+        raise ValueError("recover-journal requires the original current-v1 runtime")
+    inputs = runtime.RunInputs.from_dict(descriptor["inputs"])
+    repository, run, authority = (Path(descriptor[name])
+                                  for name in ("repo_root", "run_root", "authority_root"))
+    _separate_paths(repository, run, authority, Path(private_root))
+    owner = runtime.OwnerCapability.from_token(descriptor["owner_token"])
+    inspected_anchor = runtime.LocalAnchorAuthority.inspect(authority, run_root=run, repo_root=repository)
+    inspection = runtime.RunJournal.inspect(run, inputs, owner, anchor_store=inspected_anchor)
+    anchor = runtime.LocalAnchorAuthority(authority, run_root=run, repo_root=repository)
+    with runtime.RunJournal.resume(run, inputs, owner, anchor_store=anchor,
+                                   expected_inspection=inspection) as journal:
+        recovery = journal.recover_pending(owner)
+        return {"run_id": inputs.run_id, "journal_seq": journal.state.seq,
+                "recovered": inspection.pending_authority or bool(inspection.recovery.torn_tail_bytes),
+                "recovery": recovery}
 
 
 def inspect_historical_run(private_root: Path | str, *, runtime=None) -> HistoricalRunStatus:
@@ -1792,6 +1906,16 @@ def inspect_historical_run(private_root: Path | str, *, runtime=None) -> Histori
     storage = sys.modules[f"{runtime.__name__}.storage"]
     source = Path(private_root)
     frozen = (source / "descriptor.json").is_file()
+    if not frozen:
+        descriptor = load_private_descriptor(source)
+        if descriptor.get("runtime_sha256") == _runtime_digest(runtime):
+            raise runtime.RunStateError("historical status requires a changed v1 runtime")
+        status, inspection, inputs = _inspect_v1_run(source, runtime=runtime)
+        return HistoricalRunStatus(inputs.to_dict()["schema_version"], inputs.run_id,
+            inspection.state.seq, status.scheduler_revision,
+            MappingProxyType({number: amendment.phase for number, amendment in inspection.state.amendments.items()}),
+            MappingProxyType({task_id: handover.phase for task_id, handover in inspection.state.handovers.items()}),
+            status.plan_revision, inputs.digest, inputs.provider_profiles)
     if frozen:
         manifest_bytes = _read_file(str(source / "manifest.json"), limit=16_384)
         if _sha256(manifest_bytes) != _FROZEN_V1_FIXTURE_MANIFEST_SHA256:
@@ -1821,14 +1945,6 @@ def inspect_historical_run(private_root: Path | str, *, runtime=None) -> Histori
         names = {"inputs": "inputs.json", "owner": "owner.json", "events": "events.jsonl",
                  "snapshot": "snapshot.json", "scheduler_meta": "scheduler-meta.json",
                  "scheduler_record": "scheduler-record.json"}
-    else:
-        descriptor = load_private_descriptor(source)
-        records_root = Path(descriptor["run_root"])
-        names = {"inputs": "inputs.json", "owner": "owner.json", "events": "events.jsonl",
-                 "snapshot": "snapshot.json", "scheduler_meta": ".fanout-scheduler.meta.json",
-                 "scheduler_record": ".fanout-scheduler.record.json"}
-        if not (records_root / "snapshot.json").exists():
-            del names["snapshot"]
     if (not isinstance(descriptor, dict)
             or descriptor.get("schema_version") != "fanout-execute-private-v1"
             or descriptor.get("runtime_sha256") == _runtime_digest(runtime)):
@@ -1888,27 +2004,6 @@ def inspect_historical_run(private_root: Path | str, *, runtime=None) -> Histori
                 or snapshot.backend_identity != meta["backend_identity"]
                 or snapshot.backend_key != meta["backend_key"]):
             raise ValueError("historical scheduler binding changed")
-        if not frozen:
-            anchor = runtime.LocalAnchorAuthority(
-                descriptor["authority_root"], run_root=descriptor["run_root"],
-                repo_root=descriptor["repo_root"],
-            )
-            inspection = runtime.RunJournal.inspect(
-                records_root, inputs, capability, anchor_store=anchor,
-            )
-            if inspection.state.to_dict() != state.to_dict():
-                raise ValueError("historical authority differs from journal")
-            scheduler_authority = sys.modules[f"{runtime.__name__}.scheduler_authority"]
-            authority_key = scheduler_authority._authority_key(
-                capability, inputs.run_id, snapshot.backend_identity, snapshot.backend_key,
-            )
-            _, authority_record = scheduler_authority._authority_read(
-                anchor, anchor.identity, authority_key, inputs.run_id,
-                snapshot.backend_identity, snapshot.backend_key, capability,
-            )
-            binding = scheduler_authority._snapshot_binding(snapshot)
-            if binding not in (authority_record["committed"], authority_record["pending"]):
-                raise ValueError("historical scheduler differs from authority")
         return HistoricalRunStatus(
             inputs.to_dict()["schema_version"], inputs.run_id, state.seq,
             snapshot.backend_revision,
@@ -2091,7 +2186,7 @@ def open_run(private_root: Path | str, *, runtime=None, registry=None, memory_fa
             run, initial_inputs, owner, anchor_store=anchor,
         )
         if inspection.pending_authority:
-            raise ValueError("pending journal authority needs explicit status recovery before resume")
+            raise ValueError("pending journal authority needs recover-journal --private-root before resume")
         if inspection.state.amendments:
             with runtime.ArtifactStore.open_existing(run / "artifacts") as preview_artifacts:
                 for revision in sorted(inspection.state.amendments):
@@ -2486,8 +2581,7 @@ def _inspect_candidates(opened: RunContext, task_id: str,
             "candidate_count": len(exported)}
 
 
-def _unresolved_uncertain_status(opened: RunContext) -> dict[str, object]:
-    state = opened.journal.state
+def _unresolved_uncertain_status(state) -> dict[str, object]:
     unresolved = sorted(
         key for key, phase in state.seat_phases.items()
         if phase == "uncertain-attempt" and key not in state.uncertainty_resolutions
@@ -2542,6 +2636,7 @@ def _parser() -> argparse.ArgumentParser:
     start.add_argument("--max-turns", type=int, required=True)
     command("recover-start", "rebuild a missing final descriptor from private pre-spend escrow")
     command("status", "read safe durable task metadata")
+    command("recover-journal", "resolve authenticated current-v1 journal authority without provider work")
     command("resume", "advance a started run from its durable barriers")
     uncertain = command("recover-uncertain", "exclude one uncertain source turn by owner action")
     uncertain.add_argument("--task-id", required=True)
@@ -2628,6 +2723,9 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
             result = recover_start(args.private_root, runtime=runtime, registry=registry)
             print(_canonical(result).decode("utf-8"), end="")
             return 0
+        if args.command == "recover-journal":
+            print(_canonical(recover_journal(args.private_root, runtime=runtime)).decode("utf-8"), end="")
+            return 0
         if args.command in {"status", "resume"}:
             private_root = Path(args.private_root)
             if (private_root / "descriptor.json").is_file():
@@ -2647,6 +2745,9 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
                         raise runtime.RunStateError("restore the original runtime to resume this run")
                     print(_canonical(inspect_historical_run(private_root, runtime=runtime).to_dict()).decode("utf-8"), end="")
                     return 0
+                if args.command == "status":
+                    print(_canonical(inspect_v1_status(private_root, runtime=runtime, registry=registry)).decode("utf-8"), end="")
+                    return 0
         if args.command in {"handover", "recover-handover"}:
             private_root = Path(args.private_root)
             if (private_root / _DESCRIPTOR).is_file():
@@ -2662,7 +2763,7 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
         with open_run(args.private_root, for_dispatch=args.command == "resume", **common) as opened:
             service, owner = opened.service, opened.owner
             if args.command == "status":
-                result = {**service.status().to_dict(), **_unresolved_uncertain_status(opened)}
+                result = {**service.status().to_dict(), **_unresolved_uncertain_status(opened.journal.state)}
             elif args.command == "resume":
                 status = service.status()
                 result = (service.start(owner=owner) if status.authority_state == "resolved"

@@ -2174,6 +2174,205 @@ def test_changed_runtime_v1_status_reads_live_authenticated_stores(execute, tmp_
     assert status.journal_seq == 0
 
 
+def _private_inventory(*roots):
+    return {
+        str(path): (stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode),
+                    info.st_dev, info.st_ino,
+                    path.read_bytes() if path.is_file() else None)
+        for root in roots for path in (root, *root.rglob("*"))
+        for info in (path.lstat(),)
+    }
+
+
+def test_current_v1_status_does_not_settle_complete_pending_journal(execute, tmp_path,
+                                                                  monkeypatch, capsys):
+    spec = importlib.util.spec_from_file_location("status_pending_smoke", ROOT / "scripts/fanout_smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = smoke
+    spec.loader.exec_module(smoke)
+    smoke.fanout = fanout
+    packet, _ = _question_packet(tmp_path, executors=("claude", "codex"))
+    repo = _repository(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+
+    def composition():
+        return dict(runtime=fanout, registry=_registry(),
+                    memory_factory=lambda artifacts, health: smoke._FakeMemory(tmp_path, artifacts),
+                    memory_preflight=lambda: True,
+                    provider_runner=smoke._FakeProvider(tmp_path, poison_peer=False))
+
+    execute.prepare_run(packet, repo_root=repo, run_root=run, authority_root=authority,
+                        private_root=private, skill_roots=(tmp_path / "skills",),
+                        budget=12, **composition())
+    with execute.open_run(private, **composition()) as opened:
+        assert opened.service.resume(owner=opened.owner).tasks[0].completed_rounds == 2
+        verified = opened.service.verify_read_only_synthesis(
+            "answer", source_seat_ids=[execute._task_seat_id("answer", executor)
+                                     for executor in ("claude", "codex")],
+            synthesizer_id="owner", answer=b"A final answer from both final seats.\n",
+            owner=opened.owner,
+        )
+
+        def crash_commit(record, offset):
+            assert record["type"] == "reconciliation-verifying"
+            raise OSError("complete event before authority CAS")
+
+        monkeypatch.setattr(opened.journal, "_anchor_commit", crash_commit)
+        with pytest.raises(OSError, match="before authority CAS"):
+            opened.service.submit("answer", verified, owner=opened.owner)
+    before = _private_inventory(private, run, authority, repo)
+    calls = _private_inventory(tmp_path / "calls")
+    result = execute.main(["status", "--private-root", str(private)], **composition())
+    assert _private_inventory(private, run, authority, repo) == before
+    assert _private_inventory(tmp_path / "calls") == calls
+    assert result == 2
+    assert "recover-journal" in capsys.readouterr().err
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("inspection/recovery invoked provider, memory, version, Git or scheduler repair")
+
+    with monkeypatch.context() as blocked:
+        blocked.setattr(fanout.repo, "_git", forbidden)
+        blocked.setattr(fanout.providers, "run_command", forbidden)
+        blocked.setattr(fanout.Scheduler, "resume", forbidden)
+        assert execute.main(["recover-journal", "--private-root", str(private)],
+                            runtime=fanout) == 0
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered["recovered"] is True
+    assert _private_inventory(tmp_path / "calls") == calls
+    with execute.open_run(private, **composition()) as reopened:
+        assert reopened.journal.state.task_phases["answer"] == "reconciliation-verifying"
+        assert reopened.service.resume(owner=reopened.owner).tasks[0].completed_rounds == 2
+        reopened.service.submit("answer", verified, owner=reopened.owner)
+    assert _private_inventory(tmp_path / "calls") == calls
+
+
+def test_fresh_process_v1_status_authenticates_accepted_amendment_and_runtime_fence(
+    execute, tmp_path,
+):
+    runtime = execute._runtime()
+    packet = _action_gate_packet(tmp_path)
+    repo = _repository(tmp_path)
+    private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
+    private.mkdir(mode=0o700)
+    defaults = runtime.ProviderRegistry.default(version_probe=lambda executor: {
+        "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+    }[executor])
+    registry = runtime.ProviderRegistry((
+        dataclasses.replace(profile, characterized=True, profile_sha256=None)
+        if profile.executor_id == "codex" and profile.execution_class == "read-only" else profile
+        for profile in defaults._profiles.values()
+    ), version_probe=defaults._version_probe)
+    common = dict(runtime=runtime, registry=registry, memory_factory=_NeverMemory,
+                  memory_preflight=lambda: True,
+                  provider_runner=lambda *_args, **_kwargs: pytest.fail("fixture dispatched"))
+    execute.prepare_run(packet, repo_root=repo, run_root=run, authority_root=authority,
+                        private_root=private, skill_roots=(tmp_path / "skills",),
+                        budget=12, **common)
+    with execute.open_run(private, **common) as opened:
+        service = opened.service
+        task = dataclasses.replace(next(task for task in service.plan.tasks if task.id == "later"),
+                                   objective="Analyze the amended question.")
+        plan = dataclasses.replace(service.plan, tasks=tuple(
+            task if old.id == "later" else old for old in service.plan.tasks))
+        plan_bytes = runtime.canonical_json(plan.to_dict())
+        inputs = dataclasses.replace(service.inputs, compiled_plan_sha256=hashlib.sha256(plan_bytes).hexdigest())
+        old = service.preparations["later"]
+        task_bytes = runtime.canonical_json(task.to_dict())
+        preparation = dataclasses.replace(old, inputs=inputs, plan_revision=2,
+            packet=dataclasses.replace(old.packet, compiled_plan=plan_bytes,
+                compiled_plan_sha256=inputs.compiled_plan_sha256, task=task_bytes,
+                task_sha256=hashlib.sha256(task_bytes).hexdigest()))
+        assert service.submit_amendment(plan, inputs, {"later": preparation},
+            inputs.provider_profiles, expected_plan_revision=1, owner=opened.owner).plan_revision == 2
+
+    isolated = tmp_path / "owned-helper"
+    shutil.copytree(ROOT / "shared/lib/fanout", isolated / "shared/lib/fanout",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    (isolated / "scripts").mkdir()
+    cli = isolated / "scripts/execute.py"
+    shutil.copy2(CLI, cli)
+    compiler = isolated / "shared/lib/fanout/compiler.py"
+    original_compiler = compiler.read_bytes()
+    compiler.write_bytes(original_compiler + b"\n# Owned current-runtime change.\n")
+    before = _private_inventory(private, run, authority, repo)
+    activity = tmp_path / "unexpected-activity"
+    sentinels = tmp_path / "activity-sentinels"
+    sentinels.mkdir()
+    (sentinels / "sitecustomize.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "def audit(event, args):\n"
+        "    if event in {'subprocess.Popen', 'socket.connect'}:\n"
+        f"        Path({str(activity)!r}).write_text(event)\n"
+        "        raise AssertionError('unexpected process/network activity')\n"
+        "sys.addaudithook(audit)\n",
+    )
+
+    def invoke(command):
+        return subprocess.run([sys.executable, str(cli), command, "--private-root", str(private)],
+                              capture_output=True, text=True, check=False,
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                                   "PYTHONPATH": str(sentinels)})
+
+    historical = invoke("status")
+    assert historical.returncode == 0, historical.stderr
+    status = json.loads(historical.stdout)
+    assert status["run_id"] == inputs.run_id
+    assert status["plan_revision"] == 2
+    assert status["inputs_digest"] == inputs.digest
+    assert status["provider_profiles"] == dict(inputs.provider_profiles)
+    assert status["read_only"] is True
+    assert _private_inventory(private, run, authority, repo) == before
+    assert not activity.exists()
+
+    compiler.write_bytes(original_compiler)
+    current = invoke("status")
+    assert current.returncode == 0, current.stderr
+    assert json.loads(current.stdout)["plan_revision"] == 2
+    assert _private_inventory(private, run, authority, repo) == before
+    assert not activity.exists()
+
+    for module, function in (("repo.py", "_git"), ("providers.py", "run_command")):
+        path = isolated / "shared/lib/fanout" / module
+        path.write_bytes(path.read_bytes() + (
+            f"\ndef {function}(*args, **kwargs):\n"
+            f"    Path({str(activity)!r}).write_text('unexpected activity')\n"
+            "    raise AssertionError('unexpected activity')\n"
+        ).encode())
+    refused = invoke("resume")
+    assert refused.returncode == 2
+    assert "restore the original runtime to resume this run" in refused.stderr
+    assert not activity.exists()
+    assert _private_inventory(private, run, authority, repo) == before
+
+    document = run / "artifacts/amendments/inputs" / (inputs.digest + ".json")
+    original = document.read_bytes()
+    document.write_bytes(b"{}\n")
+    tampered = _private_inventory(private, run, authority, repo)
+    assert invoke("status").returncode == 2
+    assert _private_inventory(private, run, authority, repo) == tampered
+    document.write_bytes(original)
+    document.rename(document.with_suffix(".missing"))
+    missing = _private_inventory(private, run, authority, repo)
+    assert invoke("status").returncode == 2
+    assert _private_inventory(private, run, authority, repo) == missing
+    document.with_suffix(".missing").rename(document)
+    scheduler_path = run / ".fanout-scheduler.record.json"
+    scheduler = json.loads(scheduler_path.read_bytes())
+    scheduler["revision"] += 1
+    scheduler["snapshot"]["backend_revision"] += 1
+    scheduler["snapshot_sha256"] = hashlib.sha256(
+        runtime.canonical_json(scheduler["snapshot"]),
+    ).hexdigest()
+    scheduler_path.write_bytes(runtime.canonical_json(scheduler))
+    mismatched = _private_inventory(private, run, authority, repo)
+    external_refusal = invoke("status")
+    assert external_refusal.returncode == 2
+    assert not activity.exists()
+    assert _private_inventory(private, run, authority, repo) == mismatched
+
+
 def test_cold_status_survives_agy_binary_drift_but_dispatch_still_refuses(
     execute, tmp_path, monkeypatch,
 ):

@@ -391,18 +391,35 @@ class SkillResolver:
     def _copy_skill(self, skill: ResolvedSkill, destination: Path,
                     owned: list[tuple[Path, tuple[int, int]]]) -> None:
         _mkdir_owned(destination, owned)
-        for relative, digest, _size, mode in skill.manifest:
+        source_root = Path(skill.source.path) / skill.name
+        entries = _walk(source_root, self.limits)
+        expected = {relative: (digest, size, mode)
+                    for relative, digest, size, mode in skill.manifest}
+        seen = set()
+        for relative, source, info in entries:
             target = destination / relative
-            cursor = destination
-            for part in PurePosixPath(relative).parts[:-1]:
-                cursor /= part
-                if not cursor.exists():
-                    _mkdir_owned(cursor, owned)
-            source = Path(skill.source.path) / skill.name / relative
-            data = _read_regular(source)
+            if stat.S_ISDIR(info.st_mode):
+                _mkdir_owned(target, owned)
+                continue
+            if relative not in expected:
+                raise SkillAdmissionError(f"skill drift while staging: {skill.name}/{relative}")
+            digest, size, mode = expected[relative]
+            if (info.st_size, _canonical_mode(info.st_mode)) != (size, mode):
+                raise SkillAdmissionError(f"skill drift while staging: {skill.name}/{relative}")
+            data = _read_regular(source, max_bytes=size, expected=info)
             if hashlib.sha256(data).hexdigest() != digest:
                 raise SkillAdmissionError(f"skill drift while staging: {skill.name}/{relative}")
             _write_private_file(target, data, executable=bool(mode & 0o111), owned=owned)
+            seen.add(relative)
+        if seen != set(expected):
+            raise SkillAdmissionError(f"skill files drifted while staging: {skill.name}")
+        for _relative, source, info in entries:
+            if stat.S_ISDIR(info.st_mode):
+                final = os.lstat(source)
+                if (final.st_dev, final.st_ino, final.st_mtime_ns) != (
+                    info.st_dev, info.st_ino, info.st_mtime_ns,
+                ):
+                    raise SkillAdmissionError(f"skill directory drift while staging: {source}")
         _fsync_directory(destination)
 
     def _verify_staged(self, admission: SkillAdmission) -> None:
@@ -428,9 +445,10 @@ def verify_staged_admission(
     if observed_entries != expected_entries:
         raise SkillAdmissionError("staged bundle contains unrelated or missing skills")
     manifest = root / "manifest.json"
+    expected_manifest = canonical_json(admission.manifest_dict())
     if (
         stat.S_IMODE(os.lstat(manifest).st_mode) != 0o400
-        or _read_regular(manifest) != canonical_json(admission.manifest_dict())
+        or _read_regular(manifest, max_bytes=len(expected_manifest)) != expected_manifest
     ):
         raise SkillAdmissionError("staged bundle manifest drifted")
     bounded = limits or SkillLimits()
@@ -461,7 +479,7 @@ def _tree_hash(root: Path, limits: SkillLimits) -> tuple[str, tuple[tuple[str, s
         if stat.S_ISDIR(entry.st_mode):
             digest.update(b"D\0" + encoded + b"\0" + oct(mode).encode() + b"\n")
             continue
-        data = _read_regular(path, expected=entry)
+        data = _read_regular(path, max_bytes=min(entry.st_size, limits.max_file_bytes), expected=entry)
         digest.update(b"F\0" + encoded + b"\0" + oct(mode).encode() + b"\0" + str(len(data)).encode() + b"\0" + data + b"\n")
         records.append((relative, hashlib.sha256(data).hexdigest(), len(data), mode))
         contents[relative] = data
@@ -613,7 +631,8 @@ def _safe_existing_directory(path: Path | str, what: str) -> Path:
     return path
 
 
-def _read_regular(path: Path, *, expected: os.stat_result | None = None) -> bytes:
+def _read_regular(path: Path, *, max_bytes: int,
+                  expected: os.stat_result | None = None) -> bytes:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -623,16 +642,21 @@ def _read_regular(path: Path, *, expected: os.stat_result | None = None) -> byte
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise SkillAdmissionError(f"skill file changed type while reading: {path}")
+        if info.st_size > max_bytes:
+            raise SkillAdmissionError(f"skill file size exceeds read limit: {path}")
         if expected is not None and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
             expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns
         ):
             raise SkillAdmissionError(f"skill file drift while reading: {path}")
         with os.fdopen(descriptor, "rb", closefd=False) as file:
-            data = file.read()
+            data = file.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise SkillAdmissionError(f"skill file size exceeds read limit: {path}")
         final = os.fstat(descriptor)
-        if expected is not None and (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != (
-            expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns
-        ):
+        if (not stat.S_ISREG(final.st_mode) or final.st_nlink != 1
+                or (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != (
+                    info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                )):
             raise SkillAdmissionError(f"skill file drift while reading: {path}")
         return data
     finally:
