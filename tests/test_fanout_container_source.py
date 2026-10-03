@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import hashlib
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -269,6 +270,84 @@ def test_release_runtime_component_preserves_the_old_framed_encoding(source_modu
     binding = _release(source_module, release_root)
     assert binding.runtime_sha256 == expected.hexdigest()
     assert source_module.runtime_source_digest(release_root) == expected.hexdigest()
+
+
+@pytest.fixture
+def hidden_release_root(release_root):
+    installed = release_root / "installed"
+    hidden = installed / ".runtime"
+    hidden.mkdir(parents=True)
+    for path in list(release_root.iterdir()):
+        if path != installed:
+            path.rename(hidden / path.name)
+    canonical = hidden / "shared/skills/llm-fanout-execute"
+    for relative in ("SKILL.md", "agents/openai.yaml", "scripts/execute.py"):
+        target = installed / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(canonical / relative, target)
+    return installed
+
+
+def test_hidden_source_attests_outer_explicit_hidden_and_default_roots(
+    source_module, hidden_release_root, monkeypatch,
+):
+    installed = hidden_release_root
+    monkeypatch.setattr(source_module, "_SOURCE_ROOT", installed / ".runtime")
+    expected = source_module.release_source_binding(installed / ".runtime")
+    assert source_module.release_source_binding(installed) == expected
+    assert source_module.release_source_binding() == expected
+    assert source_module.runtime_source_digest(installed) == expected.runtime_sha256
+
+
+@pytest.mark.parametrize("root", ("outer", "hidden", "default"))
+@pytest.mark.parametrize("relative", ("SKILL.md", "agents/openai.yaml", "scripts/execute.py"))
+def test_hidden_source_refuses_changed_outer_bytes(
+    source_module, hidden_release_root, monkeypatch, root, relative,
+):
+    installed = hidden_release_root
+    monkeypatch.setattr(source_module, "_SOURCE_ROOT", installed / ".runtime")
+    active = installed / relative
+    active.write_bytes(active.read_bytes() + b"changed\n")
+    selected = {"outer": installed, "hidden": installed / ".runtime", "default": None}[root]
+    with pytest.raises(ValueError, match="active"):
+        source_module.release_source_binding(selected)
+
+
+@pytest.mark.parametrize("root", ("outer", "hidden", "default"))
+@pytest.mark.parametrize("malformed", ("missing", "empty", "file", "symlink"))
+def test_hidden_source_refuses_missing_or_unsafe_runtime(
+    source_module, hidden_release_root, monkeypatch, root, malformed,
+):
+    installed = hidden_release_root
+    hidden = installed / ".runtime"
+    original = installed / "saved-runtime"
+    hidden.rename(original)
+    if malformed == "empty":
+        hidden.mkdir()
+    elif malformed == "file":
+        hidden.write_text("unsafe runtime\n")
+    elif malformed == "symlink":
+        hidden.symlink_to(original, target_is_directory=True)
+    monkeypatch.setattr(source_module, "_SOURCE_ROOT", hidden)
+    selected = {"outer": installed, "hidden": hidden, "default": None}[root]
+    with pytest.raises(ValueError, match="missing|unsafe|required"):
+        source_module.release_source_binding(selected)
+
+
+@pytest.mark.parametrize("change", ("missing-entry", "ambiguous-entry", "missing-metadata", "linked-entry"))
+def test_hidden_source_cannot_skip_active_validation(source_module, hidden_release_root, change):
+    installed = hidden_release_root
+    entry = installed / "scripts/execute.py"
+    if change == "ambiguous-entry":
+        (installed / "scripts/plan.py").write_bytes(b"other entry\n")
+    elif change == "missing-metadata":
+        (installed / "SKILL.md").unlink()
+    else:
+        entry.unlink()
+        if change == "linked-entry":
+            entry.symlink_to(installed / ".runtime/shared/skills/llm-fanout-execute/scripts/execute.py")
+    with pytest.raises(ValueError, match="active|missing|regular|symlink"):
+        source_module.release_source_binding(installed / ".runtime")
 
 
 def test_memory_closure_derives_added_controller_without_executing_source(source_module, release_root):

@@ -308,8 +308,12 @@ def test_delivery_stages_executor_runtime_memory_and_gate(tmp_path: Path):
         bundled = staged["llm-fanout-execute"]
         for relative, source in (("shared/lib/fanout/__init__.py", "shared/lib/fanout/__init__.py"),
                                  ("components/memory/memory_exchange.py", "components/memory/memory_exchange.py")):
-            assert (bundled / relative).read_bytes() == (ROOT / source).read_bytes()
+            assert (bundled / ".runtime" / relative).read_bytes() == (ROOT / source).read_bytes()
         assert (bundled / "scripts/execute.py").is_file()
+        assert {path.relative_to(bundled).as_posix() for path in bundled.rglob("SKILL.md")} == {
+            "SKILL.md", ".runtime/shared/skills/llm-fanout-plan/SKILL.md",
+            ".runtime/shared/skills/llm-fanout-execute/SKILL.md",
+        }
     source_paths = {path for path, _ in checks.source_manifest(ROOT, "llm-fanout-execute")}
     assert "shared/lib/fanout/execute.py" in source_paths
     assert "components/memory/memory_exchange.py" in source_paths
@@ -370,7 +374,7 @@ assert pathlib.Path(probe.__file__).is_relative_to(entry.parent.parent)
 assert pathlib.Path(source.__file__).is_relative_to(entry.parent.parent)
 if hasattr(helper, "_memory_modules"):
     controller, exchange = helper._memory_modules()
-    assert pathlib.Path(controller.__file__).is_relative_to(entry.parent.parent / "components/memory")
+    assert pathlib.Path(controller.__file__).is_relative_to(entry.parent.parent / ".runtime/components/memory")
     assert not controller.installed_controller_root().is_relative_to(entry.parent.parent)
 print(json.dumps(binding.to_dict(), sort_keys=True))
 '''
@@ -396,7 +400,7 @@ sys.modules["shared"] = foreign
     assert "foreign parent package" in refused.stderr
     for relative in ("shared/lib/fanout/container_boundary.py",
                      "components/memory/memoryctl.py", "mise.lock"):
-        leaf = installed / relative
+        leaf = installed / ".runtime" / relative
         original = leaf.read_bytes()
         leaf.write_bytes(original + b"\n# source changed\n")
         changed = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
@@ -405,7 +409,7 @@ sys.modules["shared"] = foreign
         assert changed.returncode == 0, changed.stderr
         assert json.loads(changed.stdout) != expected
         leaf.write_bytes(original)
-    leaf = installed / "components/fanout-container/relay.py"
+    leaf = installed / ".runtime/components/fanout-container/relay.py"
     original = leaf.read_bytes()
     leaf.unlink()
     for symlink in (False, True):
@@ -423,8 +427,9 @@ sys.modules["shared"] = foreign
 @pytest.mark.parametrize("skill,entry", (("llm-fanout-plan", "plan.py"),
                                         ("llm-fanout-execute", "execute.py")))
 @pytest.mark.parametrize("relative", ("SKILL.md", "agents/openai.yaml", "scripts/{entry}"))
+@pytest.mark.parametrize("canonical", (False, True))
 def test_source_binding_refuses_changed_active_installed_entry(tmp_path: Path, relative: str,
-                                                              skill: str, entry: str):
+                                                              skill: str, entry: str, canonical: bool):
     spec = importlib.util.spec_from_file_location("_active_delivery", ROOT / "components/skills/skillctl.py")
     assert spec and spec.loader
     delivery = importlib.util.module_from_spec(spec)
@@ -434,7 +439,8 @@ def test_source_binding_refuses_changed_active_installed_entry(tmp_path: Path, r
     from fanout.container_source import SourceClosureError, release_source_binding
     with delivery.staged_skill_sources(config) as staged:
         installed = staged[skill]
-        active = installed / relative.format(entry=entry)
+        active_root = installed / ".runtime/shared/skills" / skill if canonical else installed
+        active = active_root / relative.format(entry=entry)
         active.write_bytes(active.read_bytes() + b"\n# changed active entry\n")
         with pytest.raises(SourceClosureError, match="active"):
             release_source_binding(installed)
@@ -466,10 +472,11 @@ helper._runtime()
 
 
 @pytest.mark.parametrize("source_cli", (PLANNER, CLI))
-@pytest.mark.parametrize("relative", ("shared", "shared/lib", "shared/lib/fanout",
-                                      "shared/lib/fanout/__init__.py",
-                                      "shared/lib/fanout/container_source.py",
-                                      "shared/lib/fanout/compiler.py"))
+@pytest.mark.parametrize("relative", (".runtime", ".runtime/shared", ".runtime/shared/lib",
+                                      ".runtime/shared/lib/fanout",
+                                      ".runtime/shared/lib/fanout/__init__.py",
+                                      ".runtime/shared/lib/fanout/container_source.py",
+                                      ".runtime/shared/lib/fanout/compiler.py"))
 def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, source_cli, relative):
     spec = importlib.util.spec_from_file_location("_import_boundary_delivery", ROOT / "components/skills/skillctl.py")
     delivery = importlib.util.module_from_spec(spec)
@@ -478,9 +485,9 @@ def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, sourc
     config = delivery.load_configuration(ROOT, tmp_path / "home", None)
     marker = tmp_path / "external-imported"
     external = tmp_path / "external"
-    shutil.copytree(ROOT / "shared/lib/fanout", external / "shared/lib/fanout",
+    shutil.copytree(ROOT / "shared/lib/fanout", external / ".runtime/shared/lib/fanout",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    leaf = external / (relative if relative.endswith(".py") else "shared/lib/fanout/__init__.py")
+    leaf = external / (relative if relative.endswith(".py") else ".runtime/shared/lib/fanout/__init__.py")
     code = leaf.read_text()
     mark = f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
     if "from __future__ import annotations\n" in code:
@@ -513,19 +520,21 @@ importlib.import_module(runtime.__name__ + ".container_source").release_source_b
     assert "unsafe" in result.stderr
 
 
-def test_cold_memory_loader_refuses_linked_components_before_external_code(tmp_path):
+@pytest.mark.parametrize("relative", (".runtime", ".runtime/components", ".runtime/components/memory"))
+def test_cold_memory_loader_refuses_linked_components_before_external_code(tmp_path, relative):
     installed = tmp_path / "installed"
-    (installed / "shared").mkdir(parents=True)
+    (installed / ".runtime/components/memory").mkdir(parents=True)
     (installed / "scripts").mkdir()
     shutil.copy2(CLI, installed / "scripts/execute.py")
     external = tmp_path / "external"
-    shutil.copytree(ROOT / "components/memory", external / "memory",
+    shutil.copytree(ROOT / "components/memory", external / ".runtime/components/memory",
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     marker = tmp_path / "external-memory-imported"
-    ingress = external / "memory/memory_ingress.py"
+    ingress = external / ".runtime/components/memory/memory_ingress.py"
     ingress.write_text(ingress.read_text().replace("from __future__ import annotations\n",
         f"from __future__ import annotations\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n", 1))
-    (installed / "components").symlink_to(external, target_is_directory=True)
+    shutil.rmtree(installed / relative)
+    (installed / relative).symlink_to(external / relative, target_is_directory=True)
     command = '''
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
@@ -539,6 +548,42 @@ helper._memory_modules()
                             cwd=tmp_path, capture_output=True, text=True)
     assert not marker.exists(), result.stderr
     assert result.returncode != 0 and "unsafe" in result.stderr
+
+
+@pytest.mark.parametrize("source_cli", (PLANNER, CLI))
+@pytest.mark.parametrize("malformed", ("missing", "empty", "file", "broken-symlink"))
+def test_hidden_runtime_refuses_missing_or_malformed_closure(tmp_path, source_cli, malformed):
+    installed = tmp_path / "installed"
+    (installed / "scripts").mkdir(parents=True)
+    shutil.copy2(source_cli, installed / "scripts" / source_cli.name)
+    hidden = installed / ".runtime"
+    if malformed == "empty":
+        hidden.mkdir()
+    elif malformed == "file":
+        hidden.write_text("not a runtime directory\n")
+    elif malformed == "broken-symlink":
+        hidden.symlink_to(tmp_path / "missing-runtime", target_is_directory=True)
+    if malformed != "missing":
+        fallback = installed / "lib/fanout"
+        fallback.mkdir(parents=True)
+        (fallback / "__init__.py").write_text("raise RuntimeError('flat fallback executed')\n")
+    command = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+for operation in (helper._runtime, *([helper._memory_modules] if hasattr(helper, "_memory_modules") else [])):
+    try:
+        operation()
+    except ValueError:
+        continue
+    raise AssertionError("malformed hidden closure was accepted")
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(installed / "scripts" / source_cli.name)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("source_cli", (PLANNER, CLI))

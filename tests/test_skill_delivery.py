@@ -228,8 +228,9 @@ def test_configuration_accepts_an_additional_valid_direct_copy_skill(tmp_path: P
     assert len([entry for entry in entries if entry.kind == "skill"]) == 9
 
 
+@pytest.mark.parametrize("prefix", ("lib", ".runtime/shared/lib"))
 def test_bundle_bytes_and_modes_are_part_of_plan_install_receipt_and_doctor(
-    tmp_path: Path,
+    tmp_path: Path, prefix: str,
 ) -> None:
     repo, home, plain = fixture(tmp_path)
     plain_id, _ = skillctl.plan(plain)
@@ -244,9 +245,9 @@ def test_bundle_bytes_and_modes_are_part_of_plan_install_receipt_and_doctor(
         manifest.read_text().replace(
             "[skill_delivery.targets]",
             '[skill_delivery.skill_bundles.khenrix-quality]\n'
-            '"lib/runtime" = "shared/lib/runtime"\n\n'
+            f'"{prefix}/runtime" = "shared/lib/runtime"\n\n'
             '[skill_delivery.skill_bundles.khenrix-writing]\n'
-            '"lib/writing-runtime" = "shared/lib/runtime"\n\n'
+            f'"{prefix}/writing-runtime" = "shared/lib/runtime"\n\n'
             "[skill_delivery.targets]",
         )
     )
@@ -260,16 +261,16 @@ def test_bundle_bytes_and_modes_are_part_of_plan_install_receipt_and_doctor(
 
     skillctl.apply(config, expect=plan_id, as_json=False)
     for root in config.targets.values():
-        installed = root / "khenrix-quality" / "lib/runtime"
+        installed = root / "khenrix-quality" / prefix / "runtime"
         assert (installed / "__init__.py").read_bytes() == b"VERSION = 1\n"
         assert stat.S_IMODE((installed / "run.sh").stat().st_mode) == 0o755
-        assert (root / "khenrix-writing/lib/writing-runtime/__init__.py").read_bytes() == b"VERSION = 1\n"
+        assert (root / "khenrix-writing" / prefix / "writing-runtime/__init__.py").read_bytes() == b"VERSION = 1\n"
     receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
     assert receipt["skills"]["khenrix-quality"]["source_hash"] == quality.desired_hash
     assert receipt["skills"]["khenrix-writing"]["source_hash"] == writing.desired_hash
     skillctl.doctor(config, as_json=False)
 
-    installed_file = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    installed_file = home / ".agents/skills/khenrix-quality" / prefix / "runtime/__init__.py"
     installed_file.write_bytes(b"local edit\n")
     with pytest.raises(skillctl.DeliveryError, match="doctor found"):
         skillctl.doctor(config, as_json=False)
@@ -286,13 +287,16 @@ def test_bundle_bytes_and_modes_are_part_of_plan_install_receipt_and_doctor(
         skillctl.doctor(config, as_json=False)
 
 
+@pytest.mark.parametrize("prefix", ("lib", ".runtime/shared/lib"))
 def test_bundle_tree_is_backed_up_and_restored_with_exact_modes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str,
 ) -> None:
-    repo, home, config = bundle_fixture(tmp_path)
+    repo, home, config = bundle_fixture(tmp_path, {
+        "khenrix-quality": {f"{prefix}/runtime": "shared/lib/runtime"},
+    })
     skillctl.apply(config, expect=None, as_json=False)
     target = home / ".agents/skills/khenrix-quality"
-    bundled = target / "lib/runtime/run.sh"
+    bundled = target / prefix / "runtime/run.sh"
     bundled.chmod(0o700)
     before = tree_snapshot(target)
     (repo / "shared/lib/runtime/run.sh").write_bytes(b"#!/bin/sh\nexit 9\n")
@@ -319,13 +323,16 @@ def test_bundle_tree_is_backed_up_and_restored_with_exact_modes(
     assert not (config.state_dir / skillctl.RECEIPT_NAME).exists()
 
 
-def test_bundle_edit_after_apply_refuses_restore(tmp_path: Path) -> None:
-    repo, home, config = bundle_fixture(tmp_path)
+@pytest.mark.parametrize("prefix", ("lib", ".runtime/shared/lib"))
+def test_bundle_edit_after_apply_refuses_restore(tmp_path: Path, prefix: str) -> None:
+    repo, home, config = bundle_fixture(tmp_path, {
+        "khenrix-quality": {f"{prefix}/runtime": "shared/lib/runtime"},
+    })
     skillctl.apply(config, expect=None, as_json=False)
     (repo / "shared/lib/runtime/__init__.py").write_bytes(b"VERSION = 2\n")
     skillctl.apply(config, expect=None, as_json=False)
     receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_text())
-    bundled = home / ".agents/skills/khenrix-quality/lib/runtime/__init__.py"
+    bundled = home / ".agents/skills/khenrix-quality" / prefix / "runtime/__init__.py"
     bundled.write_bytes(b"local edit\n")
 
     with pytest.raises(skillctl.DeliveryError, match="changed after apply"):

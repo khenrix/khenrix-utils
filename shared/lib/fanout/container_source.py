@@ -171,11 +171,21 @@ def _read_source(root: Path, name: str, budget: int) -> bytes:
         raise SourceClosureError(f"source could not be read safely: {path}") from error
 
 
-def runtime_source_digest(root: Path | None = None) -> str:
-    """Hash sorted relative path/byte pairs from the bounded runtime closure."""
+def _source_root(root: Path | None) -> Path:
     source_root = _SOURCE_ROOT if root is None else Path(root)
     if source_root.is_symlink() or not source_root.is_dir():
         raise SourceClosureError("source root is missing or unsafe")
+    hidden = source_root / ".runtime"
+    if hidden.exists() or hidden.is_symlink():
+        if hidden.is_symlink() or not hidden.is_dir():
+            raise SourceClosureError("source root is missing or unsafe")
+        return hidden
+    return source_root
+
+
+def runtime_source_digest(root: Path | None = None) -> str:
+    """Hash sorted relative path/byte pairs from the bounded runtime closure."""
+    source_root = _source_root(root)
     _validate_active_skill(source_root)
     return _digest_paths(source_root, _source_paths(source_root))
 
@@ -184,17 +194,19 @@ def _validate_active_skill(root: Path) -> None:
     """Bind direct-copy entry/metadata duplicates to the canonical release bytes."""
     entries = {"llm-fanout-plan": "scripts/plan.py",
                "llm-fanout-execute": "scripts/execute.py"}
+    active_root = root.parent if root.name == ".runtime" else root
     active = [name for name, entry in entries.items()
-              if (root / entry).exists() or (root / entry).is_symlink()]
-    metadata = (root / "SKILL.md", root / "agents/openai.yaml")
-    if not active and not any(path.exists() or path.is_symlink() for path in metadata):
+              if (active_root / entry).exists() or (active_root / entry).is_symlink()]
+    metadata = (active_root / "SKILL.md", active_root / "agents/openai.yaml")
+    if (root.name != ".runtime" and not active
+            and not any(path.exists() or path.is_symlink() for path in metadata)):
         return
     if len(active) != 1:
         raise SourceClosureError("active fanout skill entry is missing or ambiguous")
     name = active[0]
     for relative in ("SKILL.md", "agents/openai.yaml", entries[name]):
         canonical = f"shared/skills/{name}/{relative}"
-        if _read_source(root, relative, _MAX_TOTAL_BYTES) != _read_source(root, canonical, _MAX_TOTAL_BYTES):
+        if _read_source(active_root, relative, _MAX_TOTAL_BYTES) != _read_source(root, canonical, _MAX_TOTAL_BYTES):
             raise SourceClosureError(f"active fanout skill differs from canonical source: {relative}")
 
 
@@ -245,9 +257,7 @@ def _memory_paths(root: Path, controller: bytes | None = None) -> list[str]:
 
 def release_source_binding(root: Path | None = None) -> ReleaseSourceBinding:
     """Attest the named runtime and managed-memory closures without importing memory code."""
-    source_root = _SOURCE_ROOT if root is None else Path(root)
-    if source_root.is_symlink() or not source_root.is_dir():
-        raise SourceClosureError("source root is missing or unsafe")
+    source_root = _source_root(root)
     runtime = runtime_source_digest(source_root)
     controller = _read_source(source_root, "components/memory/memoryctl.py", _MAX_TOTAL_BYTES)
     memory = _digest_paths(source_root, _memory_paths(source_root, controller),

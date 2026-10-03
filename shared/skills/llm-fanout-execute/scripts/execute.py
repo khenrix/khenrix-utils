@@ -73,9 +73,13 @@ def _require_import_path(root: Path, path: Path, *, directory: bool = False) -> 
 
 def _runtime():
     skill_root = Path(__file__).resolve().parents[1]
+    hidden_root = skill_root / ".runtime"
     candidates = (skill_root / "shared/lib/fanout", skill_root.parent.parent / "lib/fanout",
                   skill_root / "lib/fanout")
-    if any(path.exists() or path.is_symlink() for path in
+    if hidden_root.exists() or hidden_root.is_symlink():
+        _require_import_path(skill_root, hidden_root, directory=True)
+        runtime_root = hidden_root / "shared/lib/fanout"
+    elif any(path.exists() or path.is_symlink() for path in
            (skill_root / "shared", skill_root / "components")):
         runtime_root = candidates[0]
     elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
@@ -132,10 +136,14 @@ def _runtime():
 
 def _memory_modules():
     skill_root = Path(__file__).resolve().parents[1]
+    hidden_root = skill_root / ".runtime"
     candidates = (skill_root / "components/memory", skill_root / "memory",
                   skill_root.parent.parent.parent / "components/memory")
     names = ("memory_ingress.py", "memoryctl.py", "memory_exchange.py")
-    if any(path.exists() or path.is_symlink() for path in
+    if hidden_root.exists() or hidden_root.is_symlink():
+        _require_import_path(skill_root, hidden_root, directory=True)
+        source = hidden_root / "components/memory"
+    elif any(path.exists() or path.is_symlink() for path in
            (skill_root / "shared", skill_root / "components")):
         source = candidates[0]
     elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":

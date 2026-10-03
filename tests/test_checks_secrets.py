@@ -13,6 +13,12 @@ sys.path.insert(0, str(ROOT / "scripts" / "lib"))
 
 import checks  # noqa: E402
 
+
+def test_bundled_scanner_source_has_no_credential_shaped_examples():
+    source = (ROOT / "scripts/lib/checks.py").read_text()
+    assert not any(pattern.search(source) for pattern in checks.SECRET_FAIL)
+
+
 # Matches AKIA[0-9A-Z]{16} and is NOT in SECRET_ALLOW_SHA. The obvious choice —
 # AKIAIOSFODNN7EXAMPLE — is one of this repo's own three allowlisted decoys, so a fixture
 # using it comes back clean even when the scanner is working, which reads as a broken

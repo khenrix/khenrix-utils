@@ -100,7 +100,7 @@ spec.loader.exec_module(helper)
 runtime = helper._runtime()
 evaluations = importlib.import_module("scripts.fanout_release_evaluations")
 source = importlib.import_module(runtime.__name__ + ".container_source")
-assert evaluations.ROOT == entry.parent.parent
+assert evaluations.ROOT == entry.parent.parent / ".runtime"
 proofs, _ = evaluations._read_owned_json(evidence_root / "proofs.json")
 controller = evaluations.probe._quality_controller(evidence_root)
 with runtime.ArtifactStore.open_existing(evidence_root / "raw") as store:
