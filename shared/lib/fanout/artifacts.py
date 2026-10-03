@@ -5,6 +5,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -43,6 +44,22 @@ class ArtifactLimits:
     def __post_init__(self) -> None:
         if self.max_file_bytes < 0 or self.max_total_bytes < 0:
             raise ValueError("artifact limits must be non-negative")
+
+
+def _unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _finite_json_number(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("nonfinite JSON number")
+    return number
 
 
 class ArtifactStore:
@@ -132,7 +149,7 @@ class ArtifactStore:
             os.close(root_fd)
         try:
             try:
-                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
             except OSError as error:
                 if error.errno in {errno.ELOOP, errno.ENOTDIR}:
                     raise ArtifactPathError(f"artifact is not a regular contained file: {ref.path}") from error
@@ -154,6 +171,8 @@ class ArtifactStore:
                             f"{total} > {self.limits.max_file_bytes} bytes"
                         )
                     chunks.append(chunk)
+                os.fsync(fd)
+                os.fsync(parent_fd)
             finally:
                 os.close(fd)
         finally:
@@ -167,7 +186,9 @@ class ArtifactStore:
 
     def read_json(self, ref: ArtifactRef) -> Any:
         """Read a verified UTF-8 JSON artifact."""
-        return json.loads(self.read_bytes(ref).decode("utf-8"))
+        return json.loads(self.read_bytes(ref).decode("utf-8"),
+                          object_pairs_hook=_unique_json_object,
+                          parse_constant=_finite_json_number, parse_float=_finite_json_number)
 
     def read_by_digest(self, path: str, digest: str) -> bytes:
         """Resolve a deterministic content-addressed path without trusting caller size."""
@@ -181,7 +202,7 @@ class ArtifactStore:
         finally:
             os.close(root_fd)
         try:
-            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
             try:
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode):

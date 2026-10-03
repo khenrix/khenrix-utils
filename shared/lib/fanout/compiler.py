@@ -21,13 +21,13 @@ from .skills import ResolvedSkill, SkillResolver
 from .targets import TargetSpec
 
 
-PARSER_VERSION = "superpowers-writing-plans-v10-fanout-strict"
-PARSER_VERSION_V2 = "superpowers-writing-plans-v11-target-aware"
-LEGACY_INSPECTION_PARSER_VERSION = "superpowers-writing-plans-v6-legacy-inspection"
-COMPILER_VERSION = "fanout-compiler-v12"
+PARSER_VERSION = "superpowers-writing-plans-v12-fanout-strict"
+PARSER_VERSION_V2 = "superpowers-writing-plans-v13-target-aware"
+LEGACY_INSPECTION_PARSER_VERSION = "superpowers-writing-plans-v7-legacy-inspection"
+COMPILER_VERSION = "fanout-compiler-v14"
 DRAFT_SCHEMA_VERSION = "fanout-draft-v1"
 DRAFT_SCHEMA_VERSION_V2 = "fanout-draft-v2"
-COMPILER_VERSION_V2 = "fanout-compiler-v13-target-aware"
+COMPILER_VERSION_V2 = "fanout-compiler-v15-target-aware"
 
 _PLAN_TITLE = re.compile(r"^# [^\n]+ Implementation Plan$")
 _TASK = re.compile(r"^### Task ([1-9][0-9]*): (.+)$")
@@ -46,7 +46,7 @@ _TIER_HINT = re.compile(r"\bquality[\s_-]+tier\b", re.IGNORECASE)
 _TIER_VALUE = re.compile(r"^(?:\*\*)?quality[ _]tier\s*[:=]\s*(?:\*\*)?\s*`?(normal|deep)`?\.?$", re.IGNORECASE)
 _INTERFACE_ITEM = re.compile(r"^- (?:Consumes|Produces): .+")
 _METADATA = ("Goal", "Architecture", "Tech Stack", "Spec")
-_VAGUE = re.compile(r"\b(?:tbd|todo|implement later|appropriate validation|fill in details)\b", re.IGNORECASE)
+_VAGUE = re.compile(r"\b(?:tbd|todo(?!\s+markers?\b)|implement later|appropriate validation|fill in details)\b", re.IGNORECASE)
 
 
 class PlanParseMode(str, Enum):
@@ -128,7 +128,7 @@ class CompiledFanoutPlanV1:
             "draft_sha256": self.draft_sha256,
             "draft_mapping_sha256": self.draft_mapping_sha256,
             "resolved_skill_manifests": {
-                task_id: [dict(manifest) for manifest in manifests]
+                task_id: [_manifest_dict(manifest) for manifest in manifests]
                 for task_id, manifests in self.resolved_skill_manifests.items()
             },
             "resolved_skills_sha256": self.resolved_skills_sha256,
@@ -245,7 +245,8 @@ def _parse_superpowers_plan(source_bytes: bytes, *, source_path: str,
     source_tests = tuple((task_id, tuple(_source_file_path(line, number) for line in test_lines))
                          for number, (task_id, test_lines) in enumerate(source_test_lines, start=1))
 
-    constraints = _global_constraints(lines, task_positions[0][0])
+    constraints = _global_constraints(lines, task_positions[0][0],
+                                       legacy_fence_compatibility=legacy_fence_compatibility)
     fields = dict(
         source_path=source_path,
         source_sha256=_sha256(source_bytes),
@@ -310,7 +311,7 @@ def compile_superpowers_plan(source_bytes: bytes, *, source_path: str, draft_byt
         draft_mapping_sha256=_sha256(canonical_draft),
         resolved_skill_manifests=frozen_manifests,
         resolved_skills_sha256=_sha256(canonical_json({
-            task_id: [dict(item) for item in manifests[task_id]] for task_id in sorted(manifests)
+            task_id: [_manifest_dict(item) for item in manifests[task_id]] for task_id in sorted(manifests)
         })),
     )
 
@@ -353,7 +354,7 @@ def compile_superpowers_plan_v2(source_bytes: bytes, *, source_path: str, draft_
         resolved_skill_manifests=MappingProxyType({task_id: tuple(manifests[task_id])
                                                    for task_id in sorted(manifests)}),
         resolved_skills_sha256=_sha256(canonical_json({
-            task_id: [dict(item) for item in manifests[task_id]] for task_id in sorted(manifests)
+            task_id: [_manifest_dict(item) for item in manifests[task_id]] for task_id in sorted(manifests)
         })),
         target_registry_sha256=_sha256(canonical_json([target.to_dict() for target in plan.targets])),
         source_step_targets_sha256=_sha256(canonical_json({
@@ -406,13 +407,15 @@ def _validate_preamble(lines: Sequence[str], end: int, *, strict: bool) -> None:
         raise CompilerError(f"source is missing required metadata: {', '.join(missing)}")
     if global_heading is None:
         raise CompilerError("source is missing ## Global Constraints")
-    _global_constraints(lines, end)
+    _global_constraints(lines, end, legacy_fence_compatibility=not strict)
     if strict:
         _reject_unowned_document_work(lines, 1, end, allow_global_constraints=True)
 
 
-def _global_constraints(lines: Sequence[str], end: int) -> tuple[str, ...]:
-    start = next(index for index, line in _unfenced_lines(lines, 1, end)
+def _global_constraints(lines: Sequence[str], end: int, *,
+                        legacy_fence_compatibility: bool = False) -> tuple[str, ...]:
+    start = next(index for index, line in _unfenced_lines(
+        lines, 1, end, legacy_fence_compatibility=legacy_fence_compatibility)
                  if line == "## Global Constraints") + 1
     stop = end
     for index in range(start, end):
@@ -458,6 +461,8 @@ def _unfenced_lines(lines: Sequence[str], start: int, limit: int, *,
         if was_fenced or in_fence is not None:
             continue
         yield index, lines[index]
+    if in_fence is not None and not legacy_fence_compatibility:
+        raise CompilerError("source has an unterminated fenced example")
 
 
 def _fence_opener(line: str) -> _Fence | None:
@@ -548,6 +553,7 @@ def _parse_task(body: Sequence[str], task_number: int, *, target_id: str | None 
     first_step: int | None = None
     latest_step: int | None = None
     structural_section: str | None = None
+    has_files = False
     for index, line in enumerate(body):
         was_fenced = in_fence is not None
         in_fence = _next_fence_state(in_fence, line,
@@ -576,6 +582,7 @@ def _parse_task(body: Sequence[str], task_number: int, *, target_id: str | None 
             continue
         if line.startswith("**Files:**"):
             structural_section = "files" if first_step is None else None
+            has_files = has_files or first_step is None
             continue
         if line.startswith("**Interfaces:**"):
             structural_section = "interfaces" if first_step is None else None
@@ -604,7 +611,7 @@ def _parse_task(body: Sequence[str], task_number: int, *, target_id: str | None 
     preamble = body[:first]
     if not any(line.strip() for line in preamble):
         raise CompilerError(f"Task {task_number} has no owned task section before Step 1")
-    if not any(line.startswith("**Files:**") for line in preamble):
+    if not has_files:
         raise CompilerError(f"Task {task_number} is missing its required **Files:** section")
     records: list[SourceStepRecord] = []
     expected = 1
@@ -887,10 +894,16 @@ def _skill_manifest(skill: ResolvedSkill) -> Mapping[str, object]:
         "source": skill.source.identity,
         "origins": tuple(origin.identity for origin in skill.origins),
         "tree_hash": skill.tree_hash,
-        "references": tuple({"path": path, "sha256": digest} for path, digest in skill.references),
-        "files": tuple({"path": path, "sha256": digest, "size": size, "mode": mode}
+        "references": tuple(MappingProxyType({"path": path, "sha256": digest}) for path, digest in skill.references),
+        "files": tuple(MappingProxyType({"path": path, "sha256": digest, "size": size, "mode": mode})
                        for path, digest, size, mode in skill.manifest),
     })
+
+
+def _manifest_dict(manifest: Mapping[str, object]) -> dict[str, object]:
+    return dict(manifest, origins=list(manifest["origins"]),
+                references=[dict(item) for item in manifest["references"]],
+                files=[dict(item) for item in manifest["files"]])
 
 
 def _no_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

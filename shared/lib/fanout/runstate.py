@@ -1510,6 +1510,9 @@ class RunJournal:
         path = Path(root).absolute()
         if type(anchor_store) is LocalAnchorAuthority:
             anchor_store.check_run_root(path)
+        anchor_key = _identity(
+            f"fanout/{_sha256(inputs.run_id.encode())}/{secrets.token_hex(16)}", "anchor key",
+        )
         root_fd = _open_private_directory(path, create=True, exclusive=True)
         lock_fd: int | None = None
         event_fd: int | None = None
@@ -1524,7 +1527,6 @@ class RunJournal:
             _write_new_private(root_fd, cls._EVENT_FILE, b"")
             event_fd = _open_event_journal(root_fd)
             journal_identity = _lock_identity(event_fd)
-            anchor_key = f"fanout/{inputs.run_id}/{secrets.token_hex(16)}"
             initial_anchor = _authority_record(
                 store_id, anchor_key, 1, inputs.run_id, journal_identity,
                 0, _ZERO_CHECKSUM, 0, None, capability._mac_key(),
@@ -1707,6 +1709,8 @@ class RunJournal:
                     if torn or offset != base_offset + len(encoded) or not records or records[-1] != record:
                         raise RunStateError("journal does not contain the exact pending authority event")
                     if commit_pending:
+                        os.fsync(event_fd)
+                        os.fsync(root_fd)
                         committed = _authority_record(
                             store_id, owner["anchor_key"], anchor_revision.revision + 1, stored.run_id,
                             (owner["journal_device"], owner["journal_inode"]), state.seq,
@@ -2097,9 +2101,8 @@ class RunJournal:
         """Resolve an externally durable pending append without guessing provider work.
 
         Exact complete events are committed during ``resume``. An absent or
-        partial dispatch intent is explicitly discarded. Any later seat event
-        is durably replaced by ``uncertain-attempt`` for the same exact
-        task/seat/attempt/round before dispatch can resume.
+        partial dispatch intent is explicitly discarded. Unsettled provider
+        work becomes exact uncertainty; settled publication repair stays blocked.
         """
         self._authorize(owner)
         self._assert_lock_intact()
@@ -2123,6 +2126,8 @@ class RunJournal:
         if suffix == encoded:
             prospective = _copy_state(self.state)
             _apply_event(prospective, pending["type"], pending["payload"])
+            os.fsync(fd)
+            os.fsync(self._root_fd)
             committed = _authority_record(
                 self._anchor_store_id, self._anchor_key, self._anchor_revision + 1,
                 self.inputs.run_id, self._journal_identity, pending["seq"],
@@ -2142,13 +2147,13 @@ class RunJournal:
             self.recovery = RecoveryReport()
             self._failed = False
             return "committed"
-        if current_size != base_offset:
-            os.ftruncate(fd, base_offset)
-            os.fsync(fd)
-            os.fsync(self._root_fd)
-            self.recovery = RecoveryReport()
-            self._assert_journal_intact()
         if pending["type"] == "dispatch-intent" or pending["type"] not in _SEAT_EVENTS:
+            if current_size != base_offset:
+                os.ftruncate(fd, base_offset)
+                os.fsync(fd)
+                os.fsync(self._root_fd)
+                self.recovery = RecoveryReport()
+                self._assert_journal_intact()
             committed = _authority_record(
                 self._anchor_store_id, self._anchor_key, self._anchor_revision + 1,
                 self.inputs.run_id, self._journal_identity, self.state.seq,
@@ -2166,6 +2171,10 @@ class RunJournal:
 
         payload = pending["payload"]
         assert isinstance(payload, dict)
+        if pending["type"] not in {"process-started", "provider-terminal", "uncertain-attempt"}:
+            raise RunStateError("settled provider work requires publication/state repair, not uncertainty")
+        payload = _event_payload("uncertain-attempt", payload["task_id"], payload["seat_id"],
+                                 payload["attempt"], payload["round"])
         prospective = _copy_state(self.state)
         _apply_event(prospective, "uncertain-attempt", payload)
         uncertain = self._make_record("uncertain-attempt", payload, self._anchor_revision + 2)
@@ -2256,6 +2265,11 @@ class RunJournal:
 
     def _replace_pending_and_append(self, record: Mapping[str, object], prospective: RunState) -> None:
         encoded = canonical_json(record)
+        if self.state.seq >= self.limits.max_events:
+            raise RunStateError("journal event limit exceeded")
+        if self._journal_offset + len(encoded) > self.limits.max_journal_bytes:
+            raise RunStateError("journal byte limit exceeded")
+        fd = self._event_fd()
         pending = _authority_record(
             self._anchor_store_id, self._anchor_key, self._anchor_revision + 1,
             self.inputs.run_id, self._journal_identity, self.state.seq,
@@ -2267,7 +2281,7 @@ class RunJournal:
         )
         self._anchor_revision = revision.revision
         self._pending_authority = pending
-        fd = self._event_fd()
+        os.ftruncate(fd, self._journal_offset)
         _write_all(fd, encoded)
         os.fsync(fd)
         os.fsync(self._root_fd)

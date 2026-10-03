@@ -655,6 +655,161 @@ def test_authority_create_and_stale_cas_errors_never_advance_run_state(tmp_path:
         journal.close()
 
 
+@pytest.mark.parametrize("entrypoint", ["resume", "recover"])
+@pytest.mark.parametrize("failed_target", ["event", "root", None])
+def test_pending_complete_requires_durability_before_cas(tmp_path, monkeypatch, entrypoint, failed_target):
+    runtime = sys.modules[f"{SPEC.name}.runstate"]
+    root = tmp_path / "run"
+    authority = FaultingAnchorStore()
+    journal, owner = RunJournal.create(root, _inputs(), anchor_store=authority)
+    _seat(journal, "dispatch-intent")
+    authority.fail_cas_call = 4
+    with pytest.raises(RunStateError):
+        _seat(journal, "process-started")
+    authority.fail_cas_call = None
+    identities = {"event": os.stat(root / "events.jsonl").st_ino, "root": os.stat(root).st_ino}
+    before = dict(authority.records)
+    sync = runtime.os.fsync
+    observed = []
+    cas = authority.compare_and_set
+
+    def observe_sync(fd):
+        inode = os.fstat(fd).st_ino
+        target = next((key for key, value in identities.items() if value == inode), None)
+        if target is not None:
+            observed.append(target)
+            if target == failed_target:
+                raise OSError("injected recovery durability failure")
+        return sync(fd)
+
+    def observe_cas(*args):
+        assert observed[:2] == ["event", "root"]
+        return cas(*args)
+
+    if entrypoint == "resume":
+        journal.close()
+    monkeypatch.setattr(runtime.os, "fsync", observe_sync)
+    monkeypatch.setattr(authority, "compare_and_set", observe_cas)
+    try:
+        if failed_target is not None:
+            with pytest.raises(OSError, match="durability"):
+                if entrypoint == "resume":
+                    RunJournal.resume(root, _inputs(), owner, anchor_store=authority)
+                else:
+                    journal.recover_pending(owner)
+            assert authority.records == before
+        elif entrypoint == "resume":
+            journal = RunJournal.resume(root, _inputs(), owner, anchor_store=authority)
+            assert journal.state.seq == 2
+        else:
+            assert journal.recover_pending(owner) == "committed"
+        assert observed
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("pending_type", ["provider-terminal", "publication-intent"])
+def test_pending_terminal_identity_and_settled_publication_recovery(tmp_path, monkeypatch, partial, pending_type):
+    runtime = sys.modules[f"{SPEC.name}.runstate"]
+    root = tmp_path / "run"
+    authority = MemoryAnchorStore()
+    journal, owner = RunJournal.create(root, _inputs(), anchor_store=authority)
+    _seat(journal, "dispatch-intent")
+    _seat(journal, "process-started")
+    evidence = "a" * 64
+    if pending_type == "publication-intent":
+        journal.append("provider-terminal", task_id="work", seat_id="claude", attempt=1, round=1,
+                       evidence_sha256=evidence)
+        _seat(journal, "artifacts-durable")
+    write = runtime._write_all
+
+    def crash(fd, data):
+        if partial:
+            os.write(fd, data[:len(data) // 2])
+        raise OSError("interrupted append")
+
+    monkeypatch.setattr(runtime, "_write_all", crash)
+    with pytest.raises(OSError):
+        journal.append(pending_type, task_id="work", seat_id="claude", attempt=1, round=1,
+                       evidence_sha256=evidence if pending_type == "provider-terminal" else None)
+    journal.close()
+    monkeypatch.setattr(runtime, "_write_all", write)
+    before = (root / "events.jsonl").read_bytes(), dict(authority.records)
+    resumed = RunJournal.resume(root, _inputs(), owner, anchor_store=authority)
+    try:
+        if pending_type == "publication-intent":
+            with pytest.raises(RunStateError, match="settled"):
+                resumed.recover_pending(owner)
+            assert resumed.state.seat_phase("work", "claude", 1, 1) == "artifacts-durable"
+            assert resumed.state.evidence_digest("provider-terminal", "work", "claude", 1, 1) == evidence
+            assert ((root / "events.jsonl").read_bytes(), authority.records) == before
+        else:
+            assert resumed.recover_pending(owner) == "uncertain-attempt"
+            payload = json.loads((root / "events.jsonl").read_bytes().splitlines()[-1])["payload"]
+            assert payload == {"task_id": "work", "seat_id": "claude", "attempt": 1, "round": 1}
+        with pytest.raises(RunStateError):
+            _seat(resumed, "dispatch-intent", attempt=2)
+    finally:
+        resumed.close()
+    reopened = RunJournal.resume(root, _inputs(), owner, anchor_store=authority)
+    try:
+        assert reopened.state.seat_phase("work", "claude", 1, 1) == (
+            "artifacts-durable" if pending_type == "publication-intent" else "uncertain-attempt")
+    finally:
+        reopened.close()
+
+
+def test_pending_uncertainty_quota_refuses_before_any_replacement_mutation(tmp_path, monkeypatch):
+    runtime = sys.modules[f"{SPEC.name}.runstate"]
+    root = tmp_path / "run"
+    authority = MemoryAnchorStore()
+    journal, owner = RunJournal.create(root, _inputs(), anchor_store=authority)
+    _seat(journal, "dispatch-intent")
+    write = runtime._write_all
+
+    def crash(fd, data):
+        os.write(fd, data[:len(data) // 2])
+        raise OSError("partial append")
+
+    monkeypatch.setattr(runtime, "_write_all", crash)
+    with pytest.raises(OSError):
+        _seat(journal, "process-started")
+    journal.close()
+    monkeypatch.setattr(runtime, "_write_all", write)
+    anchor = json.loads(next(iter(authority.records.values())).value)
+    limit = anchor["offset"] + len(fanout.canonical_json(anchor["pending"]))
+    before = (root / "events.jsonl").read_bytes(), dict(authority.records)
+    resumed = RunJournal.resume(root, _inputs(), owner, anchor_store=authority,
+                                limits=RunLimits(max_journal_bytes=limit))
+    try:
+        with pytest.raises(RunStateError, match="byte limit"):
+            resumed.recover_pending(owner)
+        assert ((root / "events.jsonl").read_bytes(), authority.records) == before
+    finally:
+        resumed.close()
+
+
+@pytest.mark.parametrize("length", [88, 89, 128])
+def test_local_authority_accepts_full_run_id_with_bounded_saved_anchor_key(tmp_path, length):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(("git", "-C", str(repo), "init", "-q"), check=True, capture_output=True)
+    root = tmp_path / "run"
+    authority = fanout.LocalAnchorAuthority.bootstrap(tmp_path / "authority", run_root=root, repo_root=repo)
+    inputs = dataclasses.replace(_inputs(), run_id="r" * length)
+    journal, owner = RawRunJournal.create(root, inputs, anchor_store=authority)
+    key = journal._anchor_key
+    assert key.startswith("fanout/" + hashlib.sha256(inputs.run_id.encode()).hexdigest() + "/")
+    assert len(key) <= 128
+    journal.close()
+    resumed = RawRunJournal.resume(root, inputs, owner, anchor_store=authority)
+    try:
+        assert resumed._anchor_key == key
+    finally:
+        resumed.close()
+
+
 def test_pending_process_start_is_owner_classified_uncertain_before_retry(tmp_path: Path, monkeypatch):
     """A crash before the journal write must preserve exact possibly billable identity."""
     root = tmp_path / "run"

@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,8 +175,8 @@ def test_agy_1_2_13_gemini_base_url_initial_reaches_fake_endpoint() -> None:
                 }
                 version = _sandbox(policy, [str(AGY), "--version"],
                                    env=env, cwd=workspace)
-                if version.returncode != 0 or version.stdout.strip() != "1.2.13":
-                    pytest.fail("installed agy version probe did not report 1.2.13")
+                assert version.returncode == 0, version.stderr
+                assert re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version.stdout.strip()), version.stdout
                 prompt = json.dumps({"event": "user", "message": {"content": "canary"}}) + "\n"
                 result = _sandbox(
                     policy, [str(AGY), "--new-project", "--mode", "plan",

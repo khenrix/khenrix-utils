@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 from .artifacts import canonical_json
@@ -159,6 +160,13 @@ def resume_lifecycle_controller(root: Path | str, capability: LifecycleCapabilit
 
 def assert_controller(value: LifecycleController) -> None:
     """Recheck the durable root record before any privileged operation."""
+    with _controller_root(value):
+        pass
+
+
+@contextmanager
+def _controller_root(value: LifecycleController):
+    """Keep the authenticated descriptor across privileged child opens."""
     if not isinstance(value, LifecycleController):
         raise LifecycleError("an authenticated lifecycle controller is required")
     try:
@@ -174,6 +182,7 @@ def assert_controller(value: LifecycleController) -> None:
         _validate_record(record, value._secret, identity)
         if record["controller_id"] != value.controller_id:
             raise LifecycleError("controller identity changed")
+        yield root_fd
     finally:
         os.close(root_fd)
 
@@ -201,7 +210,6 @@ def write_evidence(controller: LifecycleController, category: str, payload: dict
         category.encode("ascii")
     except UnicodeEncodeError as error:
         raise LifecycleError("controller evidence category is invalid") from error
-    assert_controller(controller)
     unsigned: dict[str, object] = {
         "schema_version": _EVIDENCE_SCHEMA,
         "controller_id": controller.controller_id,
@@ -211,20 +219,23 @@ def write_evidence(controller: LifecycleController, category: str, payload: dict
     record = dict(unsigned)
     record["mac"] = _mac(controller._secret, b"evidence:" + category.encode("ascii"), unsigned)
     data = canonical_json(record)
+    if len(data) > _READ_LIMIT:
+        raise LifecycleError("controller evidence exceeds its limit")
     digest = hashlib.sha256(data).hexdigest()
     name = f"{digest}.json"
-    receipts = controller_directory(controller, "receipts")
-    try:
-        receipts_fd = os.open(receipts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as error:
-        raise LifecycleError("controller evidence directory is unavailable") from error
-    try:
-        _write_new(receipts_fd, name, data)
-    except LifecycleError as error:
-        if not _evidence_matches(receipts_fd, name, data):
-            raise error
-    finally:
-        os.close(receipts_fd)
+    with _controller_root(controller) as root_fd:
+        try:
+            receipts_fd = os.open("receipts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        except OSError as error:
+            raise LifecycleError("controller evidence directory is unavailable") from error
+        try:
+            try:
+                _write_new(receipts_fd, name, data)
+            except LifecycleError as error:
+                if not _evidence_matches(receipts_fd, name, data):
+                    raise error
+        finally:
+            os.close(receipts_fd)
     return name, digest
 
 
@@ -239,16 +250,15 @@ def read_evidence(controller: LifecycleController, category: str, name: str, dig
         or len(digest) != 64
     ):
         raise LifecycleError("controller evidence reference is invalid")
-    assert_controller(controller)
-    receipts = controller_directory(controller, "receipts")
-    try:
-        receipts_fd = os.open(receipts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as error:
-        raise LifecycleError("controller evidence directory is unavailable") from error
-    try:
-        data = _read_named(receipts_fd, name)
-    finally:
-        os.close(receipts_fd)
+    with _controller_root(controller) as root_fd:
+        try:
+            receipts_fd = os.open("receipts", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+        except OSError as error:
+            raise LifecycleError("controller evidence directory is unavailable") from error
+        try:
+            data = _read_named(receipts_fd, name)
+        finally:
+            os.close(receipts_fd)
     if hashlib.sha256(data).hexdigest() != digest or name != f"{digest}.json":
         raise LifecycleError("controller evidence digest changed")
     try:
@@ -278,29 +288,37 @@ def _mac(secret: str, domain: bytes, value: object) -> str:
 
 
 def _write_new(root_fd: int, name: str, data: bytes) -> None:
+    temporary = f".{secrets.token_hex(16)}.tmp"
     try:
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
     except OSError as error:
         raise LifecycleError("controller record cannot be created") from error
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                raise OSError("short controller record write")
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.fsync(root_fd)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("short controller record write")
+                view = view[written:]
+            os.fsync(fd)
+            os.link(temporary, name, src_dir_fd=root_fd, dst_dir_fd=root_fd, follow_symlinks=False)
+        finally:
+            os.close(fd)
+            os.unlink(temporary, dir_fd=root_fd)
+        os.fsync(root_fd)
+    except OSError as error:
+        raise LifecycleError("controller record cannot be published durably") from error
 
 
 def _read_record(root_fd: int) -> dict[str, object]:
     try:
-        fd = os.open(_RECORD, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+        fd = os.open(_RECORD, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root_fd)
     except OSError as error:
         raise LifecycleError("controller record is unavailable") from error
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise LifecycleError("controller record is not a regular file")
         data = bytearray()
         while len(data) <= _READ_LIMIT:
             chunk = os.read(fd, 8192)
@@ -309,6 +327,8 @@ def _read_record(root_fd: int) -> dict[str, object]:
             data.extend(chunk)
         if len(data) > _READ_LIMIT:
             raise LifecycleError("controller record exceeds its limit")
+        os.fsync(fd)
+        os.fsync(root_fd)
     finally:
         os.close(fd)
     try:
@@ -322,10 +342,12 @@ def _read_record(root_fd: int) -> dict[str, object]:
 
 def _read_named(root_fd: int, name: str) -> bytes:
     try:
-        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root_fd)
     except OSError as error:
         raise LifecycleError("controller evidence is unavailable") from error
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise LifecycleError("controller evidence is not a regular file")
         data = bytearray()
         while len(data) <= _READ_LIMIT:
             chunk = os.read(fd, 8192)
@@ -334,7 +356,11 @@ def _read_named(root_fd: int, name: str) -> bytes:
             data.extend(chunk)
         if len(data) > _READ_LIMIT:
             raise LifecycleError("controller evidence exceeds its limit")
+        os.fsync(fd)
+        os.fsync(root_fd)
         return bytes(data)
+    except OSError as error:
+        raise LifecycleError("controller evidence durability is unavailable") from error
     finally:
         os.close(fd)
 

@@ -9,7 +9,7 @@ import re
 import stat
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .artifacts import ArtifactRef, canonical_json
 from .broker import Broker, BrokerListener, BrokerPermit, BrokerRejected, _json_object
@@ -25,6 +25,10 @@ from .repo import validate_seat_workspace
 MODEL = "gpt-6.1-sol"
 _CATEGORY = "codex-readonly-canary"
 _ISSUER = object()
+_SESSION_BYTES = 8 * 1024 * 1024
+_SESSION_CANDIDATES = 4
+_SESSION_TOTAL_BYTES = 32 * 1024 * 1024
+_SESSION_ENTRIES = 64
 
 
 def _sha(raw):
@@ -157,23 +161,127 @@ def _private_home(home):
 
 
 def _session_capture(home, session_id):
-    root = home / ".codex/sessions"
+    _private_home(home)
     found = []
-    if root.is_symlink():
-        raise ValueError("canary session root is unsafe")
-    for path in root.rglob("*.jsonl"):
-        if len(found) > 4 or any(parent.is_symlink() for parent in path.parents if parent != home):
-            raise ValueError("canary private session state is unsafe")
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 8 * 1024 * 1024:
-            raise ValueError("canary private session state is unsafe")
-        raw = path.read_bytes()
-        first = _json_object(raw.splitlines()[0])
-        if first.get("type") == "session_meta" and first.get("payload", {}).get("id") == session_id:
-            found.append({"path": str(path.relative_to(home)), "sha256": _sha(raw), "size": len(raw)})
+    count = 0
+    total = 0
+    entries = 0
+    def scan(directory, relative):
+        nonlocal entries, count, total
+        with os.scandir(directory) as iterator:
+            while True:
+                if entries >= _SESSION_ENTRIES:
+                    raise ValueError("canary session traversal limit exceeded")
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    break
+                entries += 1
+                path = relative / entry.name
+                if entry.is_symlink():
+                    raise ValueError("canary private session state is unsafe")
+                if entry.is_dir(follow_symlinks=False):
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    try:
+                        scan(child, path)
+                    finally:
+                        os.close(child)
+                elif entry.name.endswith(".jsonl"):
+                    if count >= _SESSION_CANDIDATES:
+                        raise ValueError("canary session candidate limit exceeded")
+                    count += 1
+                    raw = _read_session(home, str(path))
+                    total += len(raw)
+                    if total > _SESSION_TOTAL_BYTES:
+                        raise ValueError("canary aggregate session byte limit exceeded")
+                    if _session_identity(raw) == session_id:
+                        found.append(({"path": str(path), "sha256": _sha(raw), "size": len(raw)}, raw))
+    try:
+        home_fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            codex_fd = os.open(".codex", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=home_fd)
+            try:
+                root_fd = os.open("sessions", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=codex_fd)
+                try:
+                    scan(root_fd, PurePosixPath(".codex/sessions"))
+                finally:
+                    os.close(root_fd)
+            finally:
+                os.close(codex_fd)
+        finally:
+            os.close(home_fd)
+    except OSError as error:
+        raise ValueError("canary private session state is unsafe or missing") from error
     if len(found) != 1:
         raise ValueError("canary exact private session state is missing or ambiguous")
     return found[0]
+
+
+def _session_identity(raw):
+    lines = raw.split(b"\n", 1)
+    first = _json_object(lines[0])
+    payload = first.get("payload")
+    if first.get("type") != "session_meta" or not isinstance(payload, dict):
+        raise ValueError("canary session metadata is missing")
+    return payload.get("id")
+
+
+def _read_session(home, relative):
+    path = PurePosixPath(relative)
+    if (not isinstance(relative, str) or str(path) != relative or path.is_absolute()
+            or path.parts[:2] != (".codex", "sessions") or len(path.parts) < 3
+            or ".." in path.parts or not path.name.endswith(".jsonl")):
+        raise ValueError("canary private session path is unsafe")
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for part in path.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        leaf = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        try:
+            before = os.fstat(leaf)
+            if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= _SESSION_BYTES:
+                raise ValueError("canary private session state is unsafe or oversized")
+            raw = bytearray()
+            while len(raw) <= _SESSION_BYTES:
+                chunk = os.read(leaf, min(65536, _SESSION_BYTES + 1 - len(raw)))
+                if not chunk:
+                    break
+                raw.extend(chunk)
+            after = os.fstat(leaf)
+            current = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+            if (len(raw) != before.st_size or len(raw) > _SESSION_BYTES
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                       != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                    or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("canary private session state changed during capture")
+            return bytes(raw)
+        finally:
+            os.close(leaf)
+    finally:
+        os.close(fd)
+
+
+def _session_snapshot(coordinator, request, state, session_id):
+    if (type(state) is not dict or set(state) != {"path", "sha256", "size", "snapshot"}
+            or type(state["size"]) is not int or not 0 < state["size"] <= _SESSION_BYTES
+            or not isinstance(state["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", state["sha256"])):
+        raise ValueError("canary original session descriptor is invalid")
+    if not isinstance(state["path"], str) or type(state["snapshot"]) is not dict:
+        raise ValueError("canary original session descriptor types are invalid")
+    path = PurePosixPath(state["path"])
+    if (str(path) != state["path"] or path.is_absolute() or ".." in path.parts
+            or path.parts[:2] != (".codex", "sessions") or len(path.parts) < 3 or path.suffix != ".jsonl"):
+        raise ValueError("canary original session path is invalid")
+    snapshot = ArtifactRef(**state["snapshot"])
+    if (snapshot.path != request.artifact_prefix + "/codex-canary-session.jsonl"
+            or snapshot.digest != state["sha256"] or type(snapshot.size) is not int
+            or snapshot.size != state["size"]):
+        raise ValueError("canary original session snapshot is misassociated")
+    raw = coordinator.artifacts.read_bytes(snapshot)
+    if _session_identity(raw) != session_id:
+        raise ValueError("canary original session snapshot belongs to another session")
 
 
 @dataclass(frozen=True)
@@ -217,9 +325,8 @@ class CanaryTurn:
             raise ProviderRequestError("canary exact private HOME changed")
         if self.initial is not None:
             state = self.initial["session_state"]
-            path = home / state["path"]
-            if (path.is_symlink() or _hash_file(path) != state["sha256"]
-                    or path.stat().st_size != state["size"]):
+            raw = _read_session(home, state["path"])
+            if _sha(raw) != state["sha256"] or len(raw) != state["size"]:
                 raise ProviderRequestError("canary exact initial session bytes changed")
         executable = Path(record["executable"])
         if _executable("codex") != executable or _hash_file(executable) != record["executable_sha256"]:
@@ -309,7 +416,10 @@ class CanaryTurn:
             identity, model = response_model(body, captured["content_type"])
             wire.append({**captured, "response_id": identity, "response_model": model})
         auth = read_evidence(self.coordinator.lifecycle_controller, _CATEGORY, self.evidence_name, self.evidence_digest)
-        proof = {"schema_version": "fanout-codex-canary-proof-v1",
+        state, session_bytes = _session_capture(Path(auth["private_home"]["path"]), result.session_id)
+        state["snapshot"] = asdict(self.coordinator.artifacts.write_bytes(
+            request.artifact_prefix + "/codex-canary-session.jsonl", session_bytes))
+        proof = {"schema_version": "fanout-codex-canary-proof-v2",
             "authorization_name": self.evidence_name, "authorization_digest": self.evidence_digest,
             "native": _native_record(result), "native_observed_model": result.observed_model,
             "process": {"status": process.status.value, "exit_code": process.returncode, "capture_complete": process.capture_complete},
@@ -319,7 +429,7 @@ class CanaryTurn:
             "wire_records": wire, "ledger_records": list(records),
             "native_deliveries": list(listener.native_deliveries),
             "credential_source_fingerprint": held["credential_source_fingerprint"],
-            "response_model": MODEL, "session_state": _session_capture(Path(auth["private_home"]["path"]), result.session_id)}
+            "response_model": MODEL, "session_state": state}
         name, digest = write_evidence(self.coordinator.lifecycle_controller, _CATEGORY, proof)
         self.coordinator.artifacts.write_json(request.artifact_prefix + "/codex-canary-proof.json",
             {"evidence_name": name, "evidence_digest": digest})
@@ -372,7 +482,7 @@ def reopen_turn(coordinator, packet, seat, round_number, result, *, prior=None, 
         route = authorization["route"]
         if route["digest"] != _sha(canonical_json({key: item for key, item in route.items() if key != "digest"})):
             raise ValueError("canary original admitted route descriptor changed")
-        if (proof["schema_version"] != "fanout-codex-canary-proof-v1"
+        if (proof["schema_version"] != "fanout-codex-canary-proof-v2"
                 or authorization["schema_version"] != "fanout-codex-canary-authorization-v1"
                 or authorization["binding"] != _binding(coordinator, packet, seat, round_number, request)
                 or authorization["route"]["digest"] != coordinator.journal.inputs.skill_manifests.get("codex-canary-route")
@@ -381,6 +491,23 @@ def reopen_turn(coordinator, packet, seat, round_number, result, *, prior=None, 
                 or proof["process"] != {"status": "exit", "exit_code": 0, "capture_complete": True}
                 or proof["response_model"] != MODEL or proof["epoch"] != round_number):
             raise ValueError("canary original turn binding changed")
+        fingerprint = proof["credential_source_fingerprint"]
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("canary original credential-source fingerprint is missing")
+        _session_snapshot(coordinator, request, proof["session_state"], result.session_id)
+        if round_number == 1:
+            if authorization["initial_authorization_digest"] is not None:
+                raise ValueError("canary initial turn has an unexpected predecessor")
+        else:
+            initial = reopen_turn(coordinator, packet, seat, 1, prior)
+            initial_auth = read_evidence(controller, _CATEGORY,
+                initial["authorization_name"], initial["authorization_digest"])
+            if (authorization["initial_authorization_digest"] != initial["authorization_digest"]
+                    or authorization["route"] != initial_auth["route"]
+                    or authorization["private_home"] != initial_auth["private_home"]
+                    or proof["native"]["session_id"] != initial["native"]["session_id"]
+                    or fingerprint != initial["credential_source_fingerprint"]):
+                raise ValueError("canary exact original predecessor association changed")
         from .diagnostic import codex_broker_command
         from .container_broker import _digest
         original = request.profile.adapter.build_command(request)

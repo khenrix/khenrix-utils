@@ -123,9 +123,9 @@ class MemoryBackend:
         self.fail_after_mutation = False
         self.records: list[BackendRecord] = []
         self._temporary = tempfile.TemporaryDirectory(
-            prefix="fanout-scheduler-test-", dir="/private/tmp",
+            prefix="fanout-scheduler-test-",
         )
-        self.artifacts = ArtifactStore(Path(self._temporary.name) / "artifacts")
+        self.artifacts = ArtifactStore(Path(self._temporary.name).resolve() / "artifacts")
         self.artifact_index = 0
 
     def identity(self) -> str:
@@ -564,7 +564,7 @@ def test_v2_amendment_rejects_changed_unscheduled_target_binding(tmp_path):
 
 def test_v2_same_target_amendment_reopens_with_unchanged_bindings(tmp_path):
     scheduler, backend, journal, controller, _baseline, owner = _v2_handover_fixture(
-        tmp_path, dependency_mode="artifact",
+        tmp_path, dependency_mode="artifact", recoverable_amendments=True,
     )
     replacement = scheduler.plan.to_dict()
     replacement["tasks"][2]["objective"] = "Improved event processing."
@@ -573,6 +573,22 @@ def test_v2_same_target_amendment_reopens_with_unchanged_bindings(tmp_path):
         scheduler.inputs,
         compiled_plan_sha256=hashlib.sha256(fanout.canonical_json(plan.to_dict())).hexdigest(),
     )
+    profiles = fanout.canonical_json({
+        "profiles": dict(sorted(inputs.provider_profiles.items())),
+        "schema_version": "fanout-provider-profiles-v1",
+    })
+    profiles_digest = hashlib.sha256(profiles).hexdigest()
+    for kind, digest, data in (
+        ("plans", inputs.compiled_plan_sha256, fanout.canonical_json(plan.to_dict())),
+        ("inputs", inputs.digest, fanout.canonical_json(inputs.to_dict())),
+        ("profiles", profiles_digest, profiles),
+    ):
+        backend.artifacts.write_bytes(f"amendments/{kind}/{digest}.json", data)
+    binding = dict(revision=2, old_plan_sha256=scheduler.plan_sha256,
+                   old_inputs_digest=scheduler.inputs_digest,
+                   new_plan_sha256=inputs.compiled_plan_sha256, new_inputs_digest=inputs.digest,
+                   old_profiles_sha256=profiles_digest, new_profiles_sha256=profiles_digest, owner=owner)
+    journal.append_amendment("plan-amendment-intent", **binding)
     amendment = scheduler.accept_amendment(
         plan, inputs, expected_plan_revision=1, owner=owner,
     )
@@ -583,6 +599,9 @@ def test_v2_same_target_amendment_reopens_with_unchanged_bindings(tmp_path):
         lifecycle_controller=controller,
     )
     assert reopened.plan_revision == 2
+    with pytest.raises(SchedulerStateError, match="amendment"):
+        reopened.schedule_ready(owner=owner)
+    journal.append_amendment("plan-amendment-accepted", **binding)
     assert [item.task_id for item in reopened.schedule_ready(owner=owner)] == ["address", "events"]
 
 

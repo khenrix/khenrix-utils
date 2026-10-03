@@ -82,7 +82,7 @@ def main() -> None:
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         payload = json.loads(sys.stdin.buffer.read(128 * 1024 + 1))
         allowed = _decision(payload, policy)
-    except (OSError, ValueError, UnicodeError, TypeError):
+    except (OSError, ValueError, UnicodeError, TypeError, RecursionError):
         pass
     sys.stdout.write(json.dumps({
         "decision": "allow" if allowed else "deny",

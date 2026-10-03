@@ -1065,21 +1065,34 @@ def handover_candidate(
                 journal.poison()
             if backup_ready and destination_mutation_started:
                 assert backup is not None and backup_digest is not None
+                assert journal is not None
+                path = journal.path
+                _close_journal(journal)
+                journal = None
+                try:
+                    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        _trim_torn_journal(path, parent_fd)
+                        _discard_unacknowledged_completion(path, parent_fd)
+                    finally:
+                        os.close(parent_fd)
+                    journal = _HandoverJournal.reopen(path)
+                except BaseException as recovery_error:
+                    raise HandoverError("handover failed; writable rollback evidence is unavailable") from recovery_error
                 try:
                     _rollback_from_backup(
                         pinned.descriptor,
                         backup,
                         backup_digest,
-                        None,
+                        journal,
                         mutations=mutations,
                     )
-                    _finalize_rollback_journal(journal, discard_unacknowledged_completion=True)
+                    _close_journal(journal)
                     journal = None
                 except BaseException as rollback_error:
                     try:
                         _finalize_rollback_conflict_journal(
                             journal,
-                            discard_unacknowledged_completion=True,
                         )
                         journal = None
                     except BaseException as disposition_error:
@@ -1130,7 +1143,7 @@ def recover_handover(
     except (OSError, StopIteration, ValueError, TypeError) as error:
         raise HandoverError("handover recovery evidence is unavailable") from error
 
-    if state.status != "active":
+    if state.status not in {"active", "not-mutated"}:
         return _handover_disposition(controller, transaction, state)
 
     with _destination_lock(state.destination) as pinned:
@@ -1146,21 +1159,32 @@ def recover_handover(
             expected_candidate_digest=expected_candidate_digest,
             expected_transaction_digest=expected_transaction_digest,
         )
+        _assert_destination_path(pinned)
+        if _directory_identity(pinned.descriptor) != state.identity:
+            raise HandoverError("handover recovery destination identity changed")
         if state.status != "active":
+            if state.status == "not-mutated":
+                records = _read_journal_records(transaction / "handover.jsonl")
+                if not any(record["step"] == "handover-not-mutated" for record in records):
+                    with_journal = _HandoverJournal.reopen(transaction / "handover.jsonl")
+                    try:
+                        with_journal.record("handover-not-mutated")
+                    finally:
+                        _close_journal(with_journal)
+                    _assert_destination_path(pinned)
+                    terminal = _recovery_state(controller, transaction)
+                    return _handover_disposition(controller, transaction, terminal)
             return _handover_disposition(controller, transaction, state)
         assert state.backup_digest is not None
         mutations = _recovery_mutations(_read_journal_records(transaction / "handover.jsonl"))
-        refreshed_device, refreshed_inode = _directory_identity(pinned.descriptor)
-        if (refreshed_device, refreshed_inode) != state.identity:
-            raise HandoverError("handover recovery destination identity changed")
         backup = transaction / "backup"
         if backup.is_symlink() or not backup.is_dir():
             raise HandoverError("handover recovery backup is unavailable")
         journal: _HandoverJournal | None = None
         try:
             journal = _HandoverJournal.reopen(transaction / "handover.jsonl")
-        except BaseException:
-            journal = None
+        except Exception as error:
+            raise HandoverError("handover recovery writable journal is unavailable") from error
         try:
             _rollback_from_backup(
                 pinned.descriptor,
@@ -1393,6 +1417,7 @@ def garbage_collect(controller: LifecycleController, owned_paths: Sequence[RunOw
     for claim in claims:
         if claim.controller_id != controller.controller_id or claim.run_root != controller.root:
             raise GarbageCollectionError("run-owned claim belongs to another controller")
+        _claimable_path(claim.path)
         _validate_owned_claim(controller, claim)
         try:
             root_fd = os.open(claim.run_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -1917,29 +1942,9 @@ def _restore_owned_path(
             mutation,
             quarantine,
         )
-    parts = PurePosixPath(path).parts
-    try:
-        parent_fd = _open_rollback_parent(destination, parts, expected_outputs)
-        if parent_fd is None:
-            return False
-        try:
-            detached = quarantine.detach_expected(parent_fd, parts[-1], expected, path)
-            if detached is None:
-                return True
-            temporary, information = detached
-            try:
-                quarantine.discard(temporary, information)
-            except HandoverError:
-                quarantine.restore_moved(temporary, parent_fd, parts[-1], information)
-                return False
-        finally:
-            parent_expected = expected_outputs.get("/".join(parts[:-1]))
-            if parent_expected is not None and parent_expected.kind == "directory":
-                os.fchmod(parent_fd, parent_expected.mode)
-                os.fsync(parent_fd)
-            os.close(parent_fd)
-    except (CandidateValidationError, OSError) as error:
-        raise HandoverError("transaction-owned caller path could not be quarantined for rollback") from error
+    if actual is not None:
+        # Legacy expected bytes do not establish ownership of a current caller inode.
+        return False
     return _restore_pre_handover_path(
         destination,
         path,
@@ -2211,6 +2216,28 @@ def _require_rollback_prestate(
     """Prove every mutated baseline subtree and retained source before terminal rollback."""
     current = _snapshot_tree(destination)
     for path in {mutation.path for mutation in mutations.operations}:
+        path_mutations = [mutation for mutation in mutations.operations if mutation.path == path]
+        if all(
+            mutation.action in {"directory-mode", "directory-prepare"}
+            and mutation.before_known and mutation.before is not None
+            and mutation.before.kind == "directory"
+            and mutation.expected is not None and mutation.expected.kind == "directory"
+            and mutation.bound_identity is not None
+            for mutation in path_mutations
+        ):
+            if _tree_entry_at(destination, path) != next((entry for entry in backup if entry.path == path), None):
+                raise HandoverError("transaction rollback retained unresolved mutation state")
+            with _opened_tree_root(destination) as root_fd:
+                parts = PurePosixPath(path).parts
+                parent_fd = _open_parent(root_fd, parts, create=False)
+                try:
+                    entry = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                    if any((entry.st_dev, entry.st_ino, _kind(entry.st_mode)) != mutation.bound_identity
+                           for mutation in path_mutations):
+                        raise HandoverError("restored directory identity no longer belongs to the transaction")
+                finally:
+                    os.close(parent_fd)
+            continue
         prefix = f"{path}/"
         expected_subtree = tuple(
             entry for entry in backup
@@ -2456,6 +2483,18 @@ def _recovery_state(
     if identity != recorded_identity:
         raise HandoverError("handover recovery destination identity changed")
     completions = [record for record in records if record["step"] == "handover-complete"]
+    not_mutated = [record for record in records if record["step"] == "handover-not-mutated"]
+    if not_mutated:
+        if len(not_mutated) != 1 or records[-1] != not_mutated[0] or any(
+            record["step"] in {"handover-complete", "rollback-complete", "rollback-conflict", "final-checks-intent"}
+            or record["step"].startswith("destination-") and record["step"].endswith("-intent")
+            for record in records
+        ):
+            raise HandoverError("handover recovery has incompatible not-mutated terminal evidence")
+        return _HandoverRecoveryState(
+            destination, identity, baseline_digest, candidate_digest,
+            task_id, transaction_sha256, "not-mutated", None,
+        )
     if len(completions) > 1:
         raise HandoverError("handover recovery completion record is malformed")
     if completions:
@@ -3148,7 +3187,7 @@ def _claimable_path(path: str) -> None:
     top_level = PurePosixPath(path).parts[0]
     if top_level in {"controller.json", "receipts", "locks", "quarantine"}:
         raise GarbageCollectionError("run-owned claim targets controller control state")
-    if path in {"transactions", "verifier"}:
+    if top_level == "transactions" or path == "verifier":
         raise GarbageCollectionError("run-owned claim must name one exact controller artifact")
 
 

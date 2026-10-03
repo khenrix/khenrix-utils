@@ -433,3 +433,47 @@ def test_read_json_rejects_invalid_stored_json_after_digest_verification(tmp_pat
 
     with pytest.raises(json.JSONDecodeError):
         store.read_json(ref)
+
+
+@pytest.mark.parametrize("payload", [b'{"x":1,"x":2}', b'{"nested":{"x":1,"x":2}}',
+    b'{"x":NaN}', b'{"x":Infinity}', b'{"nested":[1e999]}'])
+def test_read_json_rejects_ambiguous_and_nonfinite_verified_bytes(tmp_path, payload):
+    with ArtifactStore(tmp_path) as store:
+        ref = store.write_bytes("input.json", payload)
+        assert store.read_bytes(ref) == payload
+        with pytest.raises(ValueError):
+            store.read_json(ref)
+        valid = store.write_bytes("ordinary.json", b'{ "x" : 1 }')
+        assert store.read_json(valid) == {"x": 1}
+
+
+@pytest.mark.parametrize("by_digest", [False, True])
+def test_fifo_artifact_read_refuses_within_deadline(tmp_path, by_digest):
+    with ArtifactStore(tmp_path / "store") as store:
+        os.mkfifo(store.root / "fifo", 0o600)
+        code = (f"import sys; sys.path.insert(0,{str(ROOT / 'shared/lib')!r}); "
+                f"from fanout import ArtifactStore,ArtifactRef; s=ArtifactStore.open_existing({str(store.root)!r}); "
+                + ("s.read_by_digest('fifo','0'*64)" if by_digest else "s.read_bytes(ArtifactRef('fifo','0'*64,0))"))
+        try:
+            result = subprocess.run((sys.executable, "-c", code), capture_output=True, timeout=1)
+        except subprocess.TimeoutExpired:
+            pytest.fail("FIFO open blocked before regular-file validation")
+        assert result.returncode != 0 and b"ArtifactPathError" in result.stderr
+
+
+def test_visible_artifact_requires_successful_durability_handshake(tmp_path, monkeypatch):
+    with ArtifactStore(tmp_path) as store:
+        ref = store.write_bytes("output.bin", b"settled")
+        real_fsync = artifacts.os.fsync
+        synced = []
+        def failing_directory(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory durability unavailable")
+            synced.append("file")
+            real_fsync(fd)
+        monkeypatch.setattr(artifacts.os, "fsync", failing_directory)
+        with pytest.raises(OSError, match="durability unavailable"):
+            store.read_bytes(ref)
+        assert synced == ["file"]
+        monkeypatch.setattr(artifacts.os, "fsync", real_fsync)
+        assert store.read_bytes(ref) == b"settled"

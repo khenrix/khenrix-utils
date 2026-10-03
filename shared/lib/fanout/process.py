@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import select
 import selectors
 import signal
 import stat
@@ -410,16 +411,12 @@ def run_prompt_only_command(command: ProcessCommand, *, provider: str,
 def _supervise_command(command: ProcessCommand, environment: dict[str, str] | None, *,
                        on_started: Callable[[int], None] | None = None) -> ProcessResult:
     native = command.native_boundary is not None
-    with executor_slot(root=command.slot_root, cap=command.slot_cap, timeout=command.slot_timeout):
+    with executor_slot(root=command.slot_root, cap=command.slot_cap, timeout=command.slot_timeout), _exit_observer() as exited:
         if native:
             from .native_boundary import validate_native_boundary
             original = command.native_original
             if original is None:
                 raise ProcessValidationError("native seat command lacks its exact original")
-            validate_native_boundary(
-                command.native_boundary, command.native_request, original,
-                command.native_controller, command.native_verification,
-            )
             expected = ("/usr/bin/sandbox-exec", "-f",
                         str(command.native_boundary.profile_path),
                         *command.native_boundary.resolved_argv)
@@ -436,8 +433,13 @@ def _supervise_command(command: ProcessCommand, environment: dict[str, str] | No
                     or command.slot_root != original.slot_root
                     or command.max_depth != original.max_depth
                     or command.term_grace != original.term_grace
-                    or command.reap_timeout != original.reap_timeout):
+                    or command.reap_timeout != original.reap_timeout
+                    or command.max_output_bytes != original.max_output_bytes):
                 raise ProcessValidationError("native seat command wrapper changed")
+            validate_native_boundary(
+                command.native_boundary, command.native_request, original,
+                command.native_controller, command.native_verification,
+            )
             environment = dict(command.native_boundary.frozen_environment)
         assert environment is not None
         try:
@@ -458,29 +460,51 @@ def _supervise_command(command: ProcessCommand, environment: dict[str, str] | No
                 stderr=b"",
                 error=f"{type(error).__name__}: {error.strerror or 'could not start command'}",
             )
+        cleanup_started = False
+        def cleanup(grace: float):
+            nonlocal cleanup_started
+            cleanup_started = True
+            return _cleanup_group(process, grace, command.reap_timeout)
         try:
+            exited(process.pid)
             if on_started is not None:
                 on_started(process.pid)
-            if command.max_output_bytes is not None:
-                return _bounded_capture(process, command)
-            stdout, stderr = process.communicate(input=command.stdin, timeout=command.timeout)
-        except subprocess.TimeoutExpired as first:
-            return _timed_out_result(process, command, first)
+            return _bounded_capture(process, command, lambda: exited(process.pid), cleanup)
         except BaseException:
-            _cleanup_group(process, command.term_grace, command.reap_timeout)
+            if not cleanup_started:
+                cleanup(command.term_grace)
             raise
-    return ProcessResult(
-        status=ProcessStatus.EXIT,
-        returncode=process.returncode,
-        stdout=_as_bytes(stdout),
-        stderr=_as_bytes(stderr),
-        pid=process.pid,
-    )
+        finally:
+            _close_pipes(process)
 
 
-def _bounded_capture(process: subprocess.Popen[bytes], command: ProcessCommand) -> ProcessResult:
+@contextlib.contextmanager
+def _exit_observer():
+    """Observe only the owned child without making its group identity reusable."""
+    if hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+        yield lambda pid: os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    elif hasattr(select, "kqueue"):
+        with contextlib.closing(select.kqueue()) as queue:
+            registered = False
+            done = False
+            def exited(pid):
+                nonlocal registered, done
+                if not registered:
+                    queue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                        flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                        fflags=select.KQ_NOTE_EXIT)], 0, 0)
+                    registered = True
+                if not done:
+                    done = bool(queue.control(None, 1, 0))
+                return done
+            yield exited
+    else:
+        raise ProcessValidationError("process execution requires non-reaping owned-child exit observation")
+
+
+def _bounded_capture(process: subprocess.Popen[bytes], command: ProcessCommand,
+                     exited: Callable[[], bool], cleanup: Callable) -> ProcessResult:
     """Capture both streams within one cap; an overflow is never a successful prefix."""
-    assert command.max_output_bytes is not None
     assert process.stdin and process.stdout and process.stderr
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     remaining = command.max_output_bytes
@@ -488,6 +512,7 @@ def _bounded_capture(process: subprocess.Popen[bytes], command: ProcessCommand) 
     deadline = time.monotonic() + command.timeout
     status = ProcessStatus.EXIT
     timeout = None
+    fenced = False
     with selectors.DefaultSelector() as selector:
         for pipe, name in ((process.stdout, "stdout"), (process.stderr, "stderr")):
             os.set_blocking(pipe.fileno(), False)
@@ -497,12 +522,15 @@ def _bounded_capture(process: subprocess.Popen[bytes], command: ProcessCommand) 
             selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
         else:
             process.stdin.close()
-        while selector.get_map():
+        while selector.get_map() or not fenced:
+            if not fenced and exited():
+                cleanup(0)
+                fenced = True
             wait = deadline - time.monotonic()
             if wait <= 0:
                 status = ProcessStatus.TIMEOUT
                 break
-            for key, _events in selector.select(wait):
+            for key, _events in selector.select(min(wait, _POLL_INTERVAL)):
                 if key.data == "stdin":
                     try:
                         count = os.write(key.fd, input_view[:65536])
@@ -513,24 +541,20 @@ def _bounded_capture(process: subprocess.Popen[bytes], command: ProcessCommand) 
                         selector.unregister(key.fileobj)
                         key.fileobj.close()
                     continue
-                chunk = os.read(key.fd, min(65536, remaining + 1))
+                chunk = os.read(key.fd, 65536 if remaining is None else min(65536, remaining + 1))
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
-                streams[key.data].extend(chunk[:remaining])
-                if len(chunk) > remaining:
+                streams[key.data].extend(chunk if remaining is None else chunk[:remaining])
+                if remaining is not None and len(chunk) > remaining:
                     status = ProcessStatus.OUTPUT_LIMIT
                     break
-                remaining -= len(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
             if status is not ProcessStatus.EXIT:
                 break
-        if status is ProcessStatus.EXIT:
-            try:
-                process.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                status = ProcessStatus.TIMEOUT
-        if status is not ProcessStatus.EXIT:
-            terminated, killed, reaped = _cleanup_group(process, command.term_grace, command.reap_timeout)
+        if status is not ProcessStatus.EXIT and not fenced:
+            terminated, killed, reaped = cleanup(command.term_grace)
             if status is ProcessStatus.TIMEOUT:
                 timeout = TimeoutEvidence(command.timeout, terminated, killed, reaped)
     _close_pipes(process)
@@ -575,6 +599,8 @@ def _timed_out_result(process: subprocess.Popen[bytes], command: ProcessCommand,
 def _cleanup_group(process: subprocess.Popen[bytes], grace: float,
                    reap_timeout: float) -> tuple[bool, bool, bool]:
     """TERM, then always KILL and bounded-reap an unreaped session leader."""
+    if process.returncode is not None:
+        return False, False, True
     pgid = process.pid
     if pgid == os.getpgrp():  # Defensive latch if session creation is ever accidentally removed.
         raise ProcessValidationError("refusing to signal the caller's process group")

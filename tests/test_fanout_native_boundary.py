@@ -32,6 +32,8 @@ broker_module = importlib.import_module(f"{SPEC.name}.broker")
 
 @pytest.fixture
 def seat(request):
+    if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").is_file():
+        pytest.skip("native Seatbelt boundary requires macOS sandbox-exec")
     disposable = tempfile.TemporaryDirectory(prefix="fanout-native-seat-", dir="/private/tmp")
     request.addfinalizer(disposable.cleanup)
     tmp_path = Path(disposable.name)
@@ -555,6 +557,22 @@ def test_native_launch_rejects_post_issue_timeout_change(seat):
     )
     with pytest.raises(fanout.ProcessValidationError, match="wrapper changed"):
         fanout.run_command(replace(wrapped, timeout=command.timeout + 1))
+
+
+@pytest.mark.parametrize("cap", [None, 2048])
+def test_native_capture_cap_mutation_refuses_before_spawn(seat, monkeypatch, cap):
+    controller, verification, request, command, _, _ = seat
+    command = replace(command, max_output_bytes=1024)
+    boundary = _boundary(seat, command)
+    with pytest.raises(fanout.ProviderRequestError, match="boundary"):
+        fanout.validate_native_boundary(boundary, request, replace(command, max_output_bytes=cap),
+                                        controller, verification)
+    wrapped = fanout.wrap_native_command(command, boundary, request=request,
+                                         controller=controller, verification=verification)
+    process = sys.modules[f"{SPEC.name}.process"]
+    monkeypatch.setattr(process.subprocess, "Popen", lambda *a, **kw: pytest.fail("mutated cap reached spawn"))
+    with pytest.raises(fanout.ProcessValidationError, match="wrapper changed"):
+        fanout.run_command(replace(wrapped, max_output_bytes=cap))
 
 
 def test_claude_native_environment_sets_private_internal_temp(seat):

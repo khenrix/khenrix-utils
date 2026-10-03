@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -239,6 +240,156 @@ def _directory_mode_recovery_transaction(
     return lifecycle, controller, transaction, repository, private, source_quarantine, journal
 
 
+@pytest.mark.parametrize("relative", ["transactions/active", "transactions/conflict/backup", "transactions/unknown/quarantine/source"])
+def test_gc_preserves_all_transaction_recovery_material_at_issue_and_collection(tmp_path, monkeypatch, relative):
+    controller = _controller(tmp_path)
+    target = controller.root / relative
+    target.mkdir(parents=True)
+    child = target / "original"
+    child.write_bytes(b"recovery material")
+    identity = target.stat().st_ino, child.stat().st_ino
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    with pytest.raises(GarbageCollectionError):
+        claim_run_path(controller, relative)
+    # Replay an authentic claim issued under the prior eligibility policy.
+    with monkeypatch.context() as prior:
+        prior.setattr(lifecycle, "_claimable_path", lambda _path: None)
+        stale_claim = claim_run_path(controller, relative)
+    with pytest.raises(GarbageCollectionError):
+        garbage_collect(controller, (stale_claim,))
+    assert (target.stat().st_ino, child.stat().st_ino) == identity
+    assert child.read_bytes() == b"recovery material"
+
+
+@pytest.mark.parametrize("settled_while_waiting", [False, True])
+def test_prepared_recovery_is_locked_durable_terminal_and_revokes_delivery(tmp_path, monkeypatch, settled_while_waiting):
+    repository = _repository(tmp_path)
+    baseline, receipt, controller = _receipt(tmp_path, repository)
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    transaction = lifecycle.prepare_handover_transaction(baseline, receipt, controller=controller)
+    before = _tree(repository)
+    entered = threading.Event()
+    result = []
+    errors = []
+
+    def recover():
+        entered.set()
+        try:
+            result.append(fanout.recover_handover(controller, transaction.transaction_root))
+        except BaseException as error:
+            errors.append(error)
+
+    with lifecycle._destination_lock(repository):
+        worker = threading.Thread(target=recover)
+        worker.start()
+        assert entered.wait(1)
+        worker.join(.1)
+        assert worker.is_alive()
+        if settled_while_waiting:
+            journal = lifecycle._HandoverJournal.reopen(transaction.journal)
+            try:
+                journal.record("handover-not-mutated")
+            finally:
+                journal.close()
+    worker.join(3)
+    assert not worker.is_alive() and not errors
+    assert (result[0].status, result[0].recovered) == ("not-mutated", False)
+    records = lifecycle._read_journal_records(transaction.journal)
+    assert records[-1]["step"] == "handover-not-mutated"
+    with pytest.raises(HandoverError):
+        handover_candidate(baseline, receipt, controller=controller, transaction=transaction)
+    assert _tree(repository) == before
+    again = fanout.recover_handover(controller, transaction.transaction_root)
+    assert (again.status, again.recovered) == ("not-mutated", False)
+
+
+@pytest.mark.parametrize("extra", ["handover-not-mutated", "destination-write-intent", "handover-complete"])
+def test_not_mutated_terminal_rejects_duplicate_or_incompatible_later_evidence(tmp_path, extra):
+    repository = _repository(tmp_path)
+    baseline, receipt, controller = _receipt(tmp_path, repository)
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    transaction = lifecycle.prepare_handover_transaction(baseline, receipt, controller=controller)
+    journal = lifecycle._HandoverJournal.reopen(transaction.journal)
+    try:
+        journal.record("handover-not-mutated")
+        journal.record(extra)
+    finally:
+        journal.close()
+    with pytest.raises(HandoverError):
+        fanout.recover_handover(controller, transaction.transaction_root)
+
+
+@pytest.mark.parametrize("failure", [OSError, KeyboardInterrupt, SystemExit])
+def test_active_recovery_requires_writable_journal_before_any_caller_effect(tmp_path, monkeypatch, failure):
+    repository = _repository(tmp_path)
+    baseline, receipt, controller = _receipt(tmp_path, repository)
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    # Stop an ordinary modern transaction after durable mutation evidence.
+    restore = lifecycle._rollback_from_backup
+    monkeypatch.setattr(lifecycle, "_rollback_from_backup", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("stop rollback")))
+    original = lifecycle._HandoverJournal.record
+
+    def stop_completion(self, step, path=None, **kwargs):
+        if step == "handover-complete":
+            raise OSError("stop completion")
+        return original(self, step, path, **kwargs)
+
+    monkeypatch.setattr(lifecycle._HandoverJournal, "record", stop_completion)
+    with pytest.raises(HandoverError):
+        handover_candidate(baseline, receipt, controller=controller)
+    monkeypatch.setattr(lifecycle, "_rollback_from_backup", restore)
+    transaction = next((controller.root / "transactions").iterdir())
+    before = (_tree(repository), lifecycle._snapshot_tree(transaction / "backup"),
+              lifecycle._snapshot_tree(transaction / "quarantine"), (transaction / "handover.jsonl").read_bytes())
+    monkeypatch.setattr(lifecycle._HandoverJournal, "reopen", classmethod(
+        lambda cls, path: (_ for _ in ()).throw(failure("reopen refused"))))
+    with pytest.raises((HandoverError, failure)):
+        fanout.recover_handover(controller, transaction)
+    assert (_tree(repository), lifecycle._snapshot_tree(transaction / "backup"),
+            lifecycle._snapshot_tree(transaction / "quarantine"), (transaction / "handover.jsonl").read_bytes()) == before
+
+
+@pytest.mark.parametrize("invalidation_failure", [False, True])
+def test_failed_completion_is_invalidated_and_write_ahead_before_first_rollback_effect(tmp_path, monkeypatch, invalidation_failure):
+    repository = _repository(tmp_path)
+    baseline, receipt, controller = _receipt(tmp_path, repository)
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    original = lifecycle._HandoverJournal.record
+    observed = []
+
+    def write_then_fail(self, step, path=None, **kwargs):
+        value = original(self, step, path, **kwargs)
+        if step == "handover-complete":
+            raise OSError("unacknowledged full completion")
+        return value
+
+    monkeypatch.setattr(lifecycle._HandoverJournal, "record", write_then_fail)
+    if invalidation_failure:
+        monkeypatch.setattr(lifecycle, "_discard_unacknowledged_completion",
+                            lambda *args: (_ for _ in ()).throw(OSError("invalidation refused")))
+    restore = lifecycle._restore_owned_path
+
+    def first_effect(*args, **kwargs):
+        transaction = next((controller.root / "transactions").iterdir())
+        steps = [item["step"] for item in lifecycle._read_journal_records(transaction / "handover.jsonl")]
+        assert "handover-complete" not in steps
+        assert steps[-1] == "rollback-intent"
+        observed.append(True)
+        restore(*args, **kwargs)
+        raise KeyboardInterrupt("interrupt after first restoration")
+
+    monkeypatch.setattr(lifecycle, "_restore_owned_path", first_effect)
+    with pytest.raises(HandoverError):
+        handover_candidate(baseline, receipt, controller=controller)
+    if invalidation_failure:
+        assert not observed
+        assert (repository / "changed.txt").read_bytes() == b"after\n"
+    else:
+        assert observed
+        transaction = next((controller.root / "transactions").iterdir())
+        assert lifecycle._recovery_state(controller, transaction).status != "committed"
+
+
 def test_collection_reads_seat_workspaces_without_mutating_them(tmp_path):
     """Collection that writes a peer checkout could contaminate a later candidate or round."""
     repository = _repository(tmp_path)
@@ -448,7 +599,7 @@ def test_handover_rolls_back_when_the_completion_journal_write_fails(tmp_path, m
     def fail_completion(self, step, path=None, **kwargs):
         if step == "handover-complete":
             raise OSError("injected completion fsync failure")
-        return original(self, step, path)
+        return original(self, step, path, **kwargs)
 
     monkeypatch.setattr(lifecycle._HandoverJournal, "record", fail_completion)
 
@@ -456,6 +607,9 @@ def test_handover_rolls_back_when_the_completion_journal_write_fails(tmp_path, m
         handover_candidate(baseline, receipt, controller=controller)
 
     assert _tree(repository) == before
+    transaction = next((controller.root / "transactions").iterdir())
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", False)
 
 
 def test_torn_completion_record_is_never_followed_by_an_interior_journal_append_and_is_recoverable(tmp_path, monkeypatch):
@@ -480,7 +634,8 @@ def test_torn_completion_record_is_never_followed_by_an_interior_journal_append_
 
     transaction = next((controller.root / "transactions").iterdir())
     assert _tree(repository) == before
-    assert not fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", False)
     assert all(
         json.loads(line)["step"] != "handover-complete"
         for line in (transaction / "handover.jsonl").read_text(encoding="utf-8").splitlines()
@@ -535,7 +690,8 @@ def test_completion_append_error_after_writing_bytes_is_not_recovered_as_a_false
     assert _tree(repository) == before
     assert records[-1]["step"] == "rollback-complete"
     assert all(record["step"] != "handover-complete" for record in records)
-    assert not fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", False)
 
 
 def test_handover_revalidates_the_caller_after_stage_before_direct_writes(tmp_path, monkeypatch):
@@ -584,7 +740,8 @@ def test_handover_preserves_a_caller_edit_detected_before_the_first_direct_mutat
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "late backup-window edit\n"
     assert (repository / "remove.txt").exists()
     transaction = next((controller.root / "transactions").iterdir())
-    assert not fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("not-mutated", False)
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "late backup-window edit\n"
 
 
@@ -979,10 +1136,18 @@ def test_handover_rollback_restores_a_candidate_directory_mode_without_removing_
 
     assert stat.S_IMODE(private.stat().st_mode) == 0o755
     assert (private / "late-user.txt").read_text(encoding="utf-8") == "preserve me\n"
+    assert injected
+    child_identity = (private / "late-user.txt").stat().st_ino
+    transaction = next((controller.root / "transactions").iterdir())
+    journal_before = (transaction / "handover.jsonl").read_bytes()
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", False)
+    assert (private / "late-user.txt").stat().st_ino == child_identity
+    assert (transaction / "handover.jsonl").read_bytes() == journal_before
 
 
-def test_recovery_restores_a_durable_incomplete_handover_deterministically(tmp_path):
-    """A crash after a write-ahead backup must have one authenticated rollback outcome."""
+def test_legacy_completed_expected_only_recovery_preserves_exact_peer_and_backup(tmp_path):
+    """Legacy expected bytes cannot authorize deletion of an exact-byte replacement inode."""
     repository = _repository(tmp_path)
     baseline = capture_repository_baseline(repository)
     controller = _controller(tmp_path)
@@ -1023,13 +1188,23 @@ def test_recovery_restores_a_durable_incomplete_handover_deterministically(tmp_p
     journal.close()
     (repository / "changed.txt").write_text("crash-window write\n", encoding="utf-8")
 
-    assert fanout.recover_handover(controller, transaction)
-    assert lifecycle._snapshot_tree(repository) == before
+    displaced = tmp_path / "legacy-original"
+    (repository / "changed.txt").rename(displaced)
+    (repository / "changed.txt").write_bytes(b"crash-window write\n")
+    (repository / "changed.txt").chmod(0o644)
+    peer_inode = (repository / "changed.txt").stat().st_ino
+    backup_before = lifecycle._snapshot_tree(backup)
+    disposition = fanout.recover_handover(controller, transaction, conflict_disposition=True)
+    assert (disposition.status, disposition.recovered) == ("conflict", False)
+    assert (repository / "changed.txt").stat().st_ino == peer_inode
+    assert (repository / "changed.txt").read_bytes() == displaced.read_bytes() == b"crash-window write\n"
+    assert lifecycle._snapshot_tree(backup) == backup_before
     steps = [json.loads(line)["step"] for line in (transaction / "handover.jsonl").read_text().splitlines()]
-    assert steps[-1] == "rollback-complete"
+    assert steps[-1] == "rollback-conflict"
     (repository / "post-recovery-user-edit.txt").write_text("must survive\n", encoding="utf-8")
 
-    assert not fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction, conflict_disposition=True)
+    assert (disposition.status, disposition.recovered) == ("conflict", False)
     assert (repository / "post-recovery-user-edit.txt").read_text(encoding="utf-8") == "must survive\n"
 
 
@@ -1070,12 +1245,16 @@ def test_recovery_never_reports_success_when_the_destination_rebinds_after_rollb
             },
         },
     )
-    journal.record("destination-write", "changed.txt")
-    journal.close()
     replacement = tmp_path / "recovery-replacement"
     displaced = tmp_path / "recovery-displaced-caller"
     shutil.copytree(repository, replacement, symlinks=True)
     (repository / "changed.txt").write_text("crash-window write\n", encoding="utf-8")
+    (repository / "changed.txt").chmod(0o644)
+    information = (repository / "changed.txt").stat()
+    journal.record("destination-created", "changed.txt", details={"action": "write",
+        "device": information.st_dev, "inode": information.st_ino, "kind": "file"})
+    journal.record("destination-write", "changed.txt")
+    journal.close()
     original = lifecycle._HandoverJournal.record
     injected = False
 
@@ -1136,12 +1315,17 @@ def test_recovery_reverses_only_a_journal_owned_path_and_keeps_a_late_caller_edi
             },
         },
     )
+    (repository / "changed.txt").write_text("crash-window write\n", encoding="utf-8")
+    (repository / "changed.txt").chmod(0o644)
+    information = (repository / "changed.txt").stat()
+    journal.record("destination-created", "changed.txt", details={"action": "write",
+        "device": information.st_dev, "inode": information.st_ino, "kind": "file"})
     journal.record("destination-write", "changed.txt")
     journal.close()
-    (repository / "changed.txt").write_text("crash-window write\n", encoding="utf-8")
     (repository / "late-caller-edit.txt").write_text("must survive\n", encoding="utf-8")
 
-    assert fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", True)
 
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "before\n"
     assert (repository / "late-caller-edit.txt").read_text(encoding="utf-8") == "must survive\n"
@@ -1473,7 +1657,8 @@ def test_recovery_restores_the_exact_quarantined_source_after_a_pre_record_crash
     transaction = next((controller.root / "transactions").iterdir())
     assert removal_reached
     assert not (repository / "remove.txt").exists()
-    assert fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", True)
     assert (repository / "remove.txt").read_bytes() == b"remove\n"
     assert (repository / "remove.txt").stat().st_ino == source_inode
     steps = [json.loads(line)["step"] for line in (transaction / "handover.jsonl").read_text().splitlines()]
@@ -1662,37 +1847,35 @@ def test_directory_mode_update_reverts_an_inode_moved_from_its_bound_name(tmp_pa
     candidate = create_candidate(baseline, seat.root)
     controller = _controller(tmp_path)
     receipt = verify_candidate(baseline, candidate, (_passing_check(),), controller=controller)
-    verification = sys.modules[f"{fanout.__name__}.verification"]
-    original = verification.os.fchmod
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    original = lifecycle._TransactionQuarantine.restore_directory_with_mode
     original_inode = private.stat().st_ino
     displaced = tmp_path / "externally-moved-private"
     injected = False
 
-    def rebind_before_mode_change(fd, mode):
-        nonlocal injected
+    def rebind_before_mode_change(self, temporary, parent_fd, name, expected, mode):
+        nonlocal injected, displaced
         if (
-            os.fstat(fd).st_ino == original_inode
+            expected.st_ino == original_inode
             and not injected
-            and private.exists()
-            and private.stat().st_ino == original_inode
+            and not private.exists()
         ):
             injected = True
-            os.rename(private, displaced)
+            displaced = self.path / temporary
             shutil.copytree(displaced, private, symlinks=True)
             private.chmod(0o700)
-        return original(fd, mode)
+        return original(self, temporary, parent_fd, name, expected, mode)
 
-    monkeypatch.setattr(verification.os, "fchmod", rebind_before_mode_change)
+    monkeypatch.setattr(lifecycle._TransactionQuarantine, "restore_directory_with_mode", rebind_before_mode_change)
 
     try:
         handover_candidate(baseline, receipt, controller=controller)
     except HandoverError:
         pass
 
-    if injected:
-        assert stat.S_IMODE(displaced.stat().st_mode) == 0o755
-    else:
-        assert not displaced.exists()
+    assert injected
+    assert displaced.stat().st_ino == original_inode
+    assert stat.S_IMODE(displaced.stat().st_mode) == 0o755
     assert stat.S_IMODE(private.stat().st_mode) == 0o700
 
 
@@ -1711,52 +1894,47 @@ def test_directory_mode_update_never_mutates_an_inode_rebound_after_its_identity
     candidate = create_candidate(baseline, seat.root)
     controller = _controller(tmp_path)
     receipt = verify_candidate(baseline, candidate, (_passing_check(),), controller=controller)
-    verification = sys.modules[f"{fanout.__name__}.verification"]
-    original_stat = verification.os.stat
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    original_fchmod = lifecycle.os.fchmod
     original_inode = private.stat().st_ino
-    repository_inode = repository.stat().st_ino
     displaced = tmp_path / "post-check-displaced-private"
     injected = False
 
-    def rebind_after_successful_mode_identity_check(name, *args, **kwargs):
-        nonlocal injected
-        information = original_stat(name, *args, **kwargs)
-        parent_fd = kwargs.get("dir_fd")
+    def rebind_after_successful_mode_identity_check(fd, mode):
+        nonlocal injected, displaced
+        information = os.fstat(fd)
         frame = sys._getframe(1)
         inside_bound_mode_helper = False
         while frame is not None:
-            if frame.f_code.co_name == "_set_bound_directory_mode":
+            if frame.f_code.co_name == "restore_directory_with_mode":
                 inside_bound_mode_helper = True
                 break
             frame = frame.f_back
         if (
             not injected
             and inside_bound_mode_helper
-            and name == "private"
-            and parent_fd is not None
-            and os.fstat(parent_fd).st_ino == repository_inode
             and information.st_ino == original_inode
-            and stat.S_IMODE(information.st_mode) == 0o700
+            and not private.exists()
         ):
             injected = True
-            os.rename(private, displaced)
+            transaction = next((controller.root / "transactions").iterdir())
+            displaced = next(path for path in (transaction / "quarantine").iterdir()
+                             if path.stat().st_ino == original_inode)
             shutil.copytree(displaced, private, symlinks=True)
             private.chmod(0o700)
-        return information
+        return original_fchmod(fd, mode)
 
-    monkeypatch.setattr(verification.os, "stat", rebind_after_successful_mode_identity_check)
+    monkeypatch.setattr(lifecycle.os, "fchmod", rebind_after_successful_mode_identity_check)
 
     try:
         handover_candidate(baseline, receipt, controller=controller)
     except HandoverError:
         pass
 
-    if injected:
-        assert stat.S_IMODE(displaced.stat().st_mode) == 0o755
-        assert stat.S_IMODE(private.stat().st_mode) == 0o700
-    else:
-        assert not displaced.exists()
-        assert stat.S_IMODE(private.stat().st_mode) == 0o711
+    assert injected
+    assert displaced.stat().st_ino == original_inode
+    assert stat.S_IMODE(displaced.stat().st_mode) == 0o755
+    assert stat.S_IMODE(private.stat().st_mode) == 0o700
 
 
 def test_gc_directory_restore_never_reopens_a_peer_replacement_for_mode(tmp_path, monkeypatch):
@@ -1767,6 +1945,7 @@ def test_gc_directory_restore_never_reopens_a_peer_replacement_for_mode(tmp_path
     (owned / "marker").write_text("owned\n", encoding="utf-8")
     peer = controller.root / "peer"
     peer.mkdir(mode=0o755)
+    peer.chmod(0o755)
     (peer / "marker").write_text("peer\n", encoding="utf-8")
     claim = claim_run_path(controller, "owned")
     lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
@@ -1834,7 +2013,8 @@ def test_recovery_reverts_a_bound_directory_mode_without_an_operation_completion
     journal.close()
     private.chmod(0o700)
 
-    assert fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", True)
     assert private.stat().st_ino == identity.st_ino
     assert stat.S_IMODE(private.stat().st_mode) == 0o755
     records = [
@@ -1892,7 +2072,8 @@ def test_directory_mode_rollback_uses_its_journaled_quarantine_name_across_inter
     assert not private.exists()
     assert tuple(path.name for path in quarantine.iterdir()) == (source_quarantine,)
 
-    assert fanout.recover_handover(controller, transaction)
+    disposition = fanout.recover_handover(controller, transaction)
+    assert (disposition.status, disposition.recovered) == ("rolled-back", True)
     assert private.stat().st_ino == identity.st_ino
     assert stat.S_IMODE(private.stat().st_mode) == 0o755
     assert not any(quarantine.iterdir())
@@ -1941,7 +2122,7 @@ def test_peer_directory_never_completes_rollback_while_the_baseline_source_is_re
     (private / "peer.txt").write_text("peer\n", encoding="utf-8")
     private.chmod(0o755)
 
-    with pytest.raises(HandoverError, match="unresolved mutation"):
+    with pytest.raises(HandoverError, match="restored directory identity no longer belongs to the transaction"):
         fanout.recover_handover(controller, transaction)
 
     assert (private / "peer.txt").read_text(encoding="utf-8") == "peer\n"

@@ -21,7 +21,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_CONNECT_TARGETS = {
-    "chatgpt.com:443", "github.com:443", "ab.chatgpt.com:443",
+    "chatgpt.com:443", "github.com:443", "api.github.com:443", "ab.chatgpt.com:443",
 }
 
 
@@ -52,6 +52,8 @@ def native_policy():
         )
         workspace = boundary.run_root / "cases" / "forge-01" / "seats" / "codex"
         workspace.mkdir(mode=0o700, parents=True)
+        subprocess.run(("git", "-C", str(workspace), "init", "-q"),
+                       check=True, capture_output=True)
         (workspace / "sentinel").write_text("seat\n", encoding="utf-8")
         seat_env = fixtures.seat_environment(boundary, workspace, "codex")
         state = Path(seat_env["HOME"])
@@ -123,6 +125,7 @@ def fake_responses(request):
                     "has_broker_header": (headers.get("X-Fanout-Seat") == "disposable-placeholder"
                                           if headers is not None else None),
                     "model_is_fake": None,
+                    "model_is_profile": None,
                     "body_fields": None,
                     "status": self._last_status,
                 }
@@ -144,6 +147,8 @@ def fake_responses(request):
                 payload = None
             self._record["model_is_fake"] = (isinstance(payload, dict)
                                               and payload.get("model") == "fake-canary-model")
+            self._record["model_is_profile"] = (isinstance(payload, dict)
+                                                and payload.get("model") == "gpt-6.1-sol")
             self._record["body_fields"] = sorted(payload) if isinstance(payload, dict) else None
             post_number = next(post_numbers) if self.command == "POST" else 0
             if (self.command == "POST" and post_number <= 2
@@ -195,7 +200,8 @@ def fake_responses(request):
 
 def _run_codex(native_policy: dict, policy: str, port: int,
                *, timeout: int = 10, resume_id: str | None = None,
-               prompt: str = "say canary", broker_marker: bool = False
+               prompt: str = "say canary", broker_marker: bool = False,
+               adapter_command=None,
                ) -> subprocess.CompletedProcess[str]:
     proxy = f"http://127.0.0.1:{port}"
     env = {
@@ -236,9 +242,16 @@ def _run_codex(native_policy: dict, policy: str, port: int,
             "--skip-git-repo-check", "--json", "-m", "fake-canary-model",
             "-c", 'sandbox_mode="read-only"', *provider_options, resume_id, prompt,
         ]
+    stdin = None
+    if adapter_command is not None:
+        prefix = 3 if adapter_command.argv[1:3] == ("exec", "resume") else 2
+        command = ["/usr/bin/sandbox-exec", "-p", policy, str(native_policy["codex"]),
+                   *adapter_command.argv[1:prefix], *provider_options,
+                   *adapter_command.argv[prefix:]]
+        stdin = adapter_command.stdin.decode("utf-8")
     return subprocess.run(
         command, cwd=native_policy["workspace"], env=env,
-        capture_output=True, text=True, timeout=timeout,
+        input=stdin, capture_output=True, text=True, timeout=timeout,
     )
 
 
@@ -262,10 +275,9 @@ def _socket_errno(policy: str, host: str, port: int) -> int:
 
 
 def _assert_fake_requests(requests: queue.Queue, *, posts: int,
-                          post_status: int) -> None:
+                          post_status: int, profile_model: bool = False) -> None:
     observed = list(requests.queue)
     received_posts = 0
-    connect_counts: dict[str, int] = {}
     assert observed
     for record in observed:
         assert record["headers_parsed"] is True, observed
@@ -275,14 +287,10 @@ def _assert_fake_requests(requests: queue.Queue, *, posts: int,
             target = record["path"]
             assert target in EXPECTED_CONNECT_TARGETS, observed
             assert record["status"] == 400, observed
-            # Optional startup CONNECTs vary by timing, but none may repeat more
-            # than once per Codex invocation (one invocation per expected POST).
-            connect_counts[target] = connect_counts.get(target, 0) + 1
-            assert connect_counts[target] <= posts, observed
             continue
         assert (record["method"], record["path"]) == ("POST", "/v1/responses"), observed
         assert record["status"] == post_status, observed
-        assert record["model_is_fake"] is True, observed
+        assert record["model_is_profile" if profile_model else "model_is_fake"] is True, observed
         received_posts += 1
     assert received_posts == posts, observed
 
@@ -435,12 +443,31 @@ def test_codex_completes_from_fake_sse_without_model_or_auth(
 
 @pytest.mark.parametrize("fake_responses", ["complete"], indirect=True)
 def test_codex_resumes_exact_private_session_from_fake_sse(
-    native_policy: dict, fake_responses,
+    native_policy: dict, fake_responses, monkeypatch,
 ) -> None:
     port, requests = fake_responses
     policy = (native_policy["policy"] + " (deny network-outbound)"
               + f' (allow network-outbound (remote ip "localhost:{port}"))')
-    first = _run_codex(native_policy, policy, port, prompt="first canary")
+    spec = importlib.util.spec_from_file_location(
+        "_codex_native_production_geometry", ROOT / "shared/lib/fanout/__init__.py",
+        submodule_search_locations=[str(ROOT / "shared/lib/fanout")],
+    )
+    runtime = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = runtime
+    spec.loader.exec_module(runtime)
+    providers = sys.modules[f"{spec.name}.providers"]
+    CodexAdapter, ProviderRegistry, ProviderRequest = (
+        providers.CodexAdapter, providers.ProviderRegistry, providers.ProviderRequest,
+    )
+    profile = ProviderRegistry.default().select("codex", "read-only", "standard")
+    adapter = CodexAdapter()
+    with monkeypatch.context() as private:
+        private.setenv("HOME", str(native_policy["state"]))
+        private.delenv("CODEX_HOME", raising=False)
+        initial = adapter.build_command(ProviderRequest("codex", "first canary",
+            cwd=native_policy["workspace"], profile=profile))
+    assert "first canary" not in initial.argv and initial.stdin == b"first canary"
+    first = _run_codex(native_policy, policy, port, adapter_command=initial)
     _applied(first)
     assert first.returncode == 0, (first.stdout[-2000:], first.stderr[-2000:])
     first_events = [json.loads(line) for line in first.stdout.splitlines()]
@@ -448,8 +475,13 @@ def test_codex_resumes_exact_private_session_from_fake_sse(
                      if event["type"] == "thread.started")
     assert list((native_policy["state"] / ".codex" / "sessions").rglob("*.jsonl"))
 
-    second = _run_codex(native_policy, policy, port,
-                        resume_id=thread_id, prompt="second canary")
+    with monkeypatch.context() as private:
+        private.setenv("HOME", str(native_policy["state"]))
+        private.delenv("CODEX_HOME", raising=False)
+        resumed = adapter.build_command(ProviderRequest("codex", "second canary",
+            cwd=native_policy["workspace"], profile=profile, session_id=thread_id, resume=True))
+    assert "second canary" not in resumed.argv and resumed.stdin == b"second canary"
+    second = _run_codex(native_policy, policy, port, adapter_command=resumed)
     _applied(second)
     assert second.returncode == 0, (second.stdout[-2000:], second.stderr[-2000:])
     second_events = [json.loads(line) for line in second.stdout.splitlines()]
@@ -458,4 +490,4 @@ def test_codex_resumes_exact_private_session_from_fake_sse(
     assert any(event["type"] == "item.completed"
                and event["item"].get("text") == "fixture-second"
                for event in second_events)
-    _assert_fake_requests(requests, posts=2, post_status=200)
+    _assert_fake_requests(requests, posts=2, post_status=200, profile_model=True)

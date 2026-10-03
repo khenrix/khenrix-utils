@@ -406,6 +406,7 @@ def test_child_environment_rejects_unsafe_agy_xdg_config(tmp_path, state):
     config = home / ".config"
     if state == "public":
         config.mkdir(mode=0o755)
+        config.chmod(0o755)
     elif state == "symlink":
         target = tmp_path / "other-config"
         target.mkdir()
@@ -556,6 +557,7 @@ def test_slot_root_replacement_before_open_is_rejected_without_writing_replaceme
             swapped = True
             root.rename(original)
             replacement.mkdir(mode=0o755)
+            replacement.chmod(0o755)
             replacement.rename(root)
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -729,3 +731,40 @@ def test_bounded_capture_drains_large_stdin_and_both_output_pipes(tmp_path):
     assert result.returncode == 0 and result.capture_complete
     assert result.stdout == payload
     assert result.stderr == b"e" * 65536
+
+
+@pytest.mark.parametrize("cap", [None, 1024])
+def test_normal_completion_fences_detached_stdio_descendant_before_reaping(tmp_path, monkeypatch, cap):
+    ready = tmp_path / "descendant.pid"
+    child = "import os,signal,sys,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(4)"
+    parent = ("import subprocess,sys,time,pathlib; "
+              f"subprocess.Popen([sys.executable,'-c',{child!r},sys.argv[1]], stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+              "p=pathlib.Path(sys.argv[1]); "
+              "exec('while not p.exists(): time.sleep(.001)'); print('complete',flush=True)")
+    cleanup_states = []
+    real_cleanup = process._cleanup_group
+    def cleanup(leader, grace, timeout):
+        cleanup_states.append(leader.returncode)
+        return real_cleanup(leader, grace, timeout)
+    monkeypatch.setattr(process, "_cleanup_group", cleanup)
+    result = run_command(ProcessCommand(argv=(sys.executable, "-c", parent, str(ready)),
+        stdin=b"", cwd=tmp_path, timeout=2, term_grace=.01,
+        slot_root=tmp_path / "slots", max_output_bytes=cap))
+    assert result.status is ProcessStatus.EXIT and result.stdout == b"complete\n"
+    assert cleanup_states == [None]
+    _wait_for_process_death(int(ready.read_text()))
+
+
+def test_fast_exit_registration_and_cleanup_error_never_resignal_reaped_group(tmp_path, monkeypatch):
+    real_cleanup = process._cleanup_group
+    calls = []
+    def cleanup(leader, grace, timeout):
+        calls.append(leader.returncode)
+        real_cleanup(leader, grace, timeout)
+        raise RuntimeError("after owned cleanup")
+    monkeypatch.setattr(process, "_cleanup_group", cleanup)
+    with pytest.raises(RuntimeError, match="after owned cleanup"):
+        run_command(ProcessCommand(argv=(sys.executable, "-c", "pass"), stdin=b"",
+            cwd=tmp_path, timeout=2, term_grace=.01, slot_root=tmp_path / "slots"),
+            on_started=lambda _: time.sleep(.1))
+    assert calls == [None]

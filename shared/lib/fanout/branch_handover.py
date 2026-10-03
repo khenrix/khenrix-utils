@@ -571,6 +571,13 @@ def _initial_git(intent: BranchHandoverIntentV2, binding: TargetBinding,
     return baseline
 
 
+def _settled_scheduler(scheduler: Scheduler, owner: OwnerCapability) -> None:
+    try:
+        scheduler._assert_settled_journal(owner)
+    except Exception as error:
+        raise HandoverError("handover requires settled current scheduler/journal amendment authority") from error
+
+
 def prepare_branch_handover(
     binding: TargetBinding, candidate_envelope: TargetEvidenceEnvelope,
     verification_envelope: TargetEvidenceEnvelope, *, plan: FanoutPlanV2,
@@ -586,6 +593,7 @@ def prepare_branch_handover(
             or scheduler._journal is not journal or scheduler._lifecycle_controller is not controller
             or scheduler.plan != plan or scheduler.inputs != inputs or scheduler.artifacts is not artifacts):
         raise HandoverError("handover requires exact target, controller, and envelopes")
+    _settled_scheduler(scheduler, owner)
     if (candidate_envelope.evidence_kind != "candidate"
             or verification_envelope.evidence_kind != "verification"
             or candidate_envelope.task_id != task_id or verification_envelope.task_id != task_id
@@ -593,6 +601,7 @@ def prepare_branch_handover(
             or verification_envelope.target_id != binding.spec.id):
         raise HandoverError("handover envelopes differ from selected target task")
     with _handover_lock(binding) as pinned:
+        _settled_scheduler(scheduler, owner)
         expected_head_ref = _head_ref(binding.root)
         baseline = _target_baseline(binding, clean=True, expected_head_ref=expected_head_ref)
         source = scheduler.handover_source_for(task_id)
@@ -660,6 +669,7 @@ def deliver_branch_candidate(
             or scheduler._journal is not journal or scheduler._lifecycle_controller is not controller
             or scheduler.plan != plan or scheduler.inputs != inputs or scheduler.artifacts is not artifacts):
         raise HandoverError("delivery authority differs from prepared handover")
+    _settled_scheduler(scheduler, owner)
     if journal.branch_handover_state(intent.task_id) != (intent, None):
         raise HandoverError("branch handover is completed or changed")
     blocked = journal.state.branch_blocked.get(intent.task_id)
@@ -669,7 +679,9 @@ def deliver_branch_candidate(
         try:
             pinned = locks.enter_context(_handover_lock(binding))
         except Exception:
+            _settled_scheduler(scheduler, owner)
             return _block(intent, journal, owner, "delivery-failed")
+        _settled_scheduler(scheduler, owner)
         try:
             state = _require_association(
                 intent, journal, controller, transaction, prepared.expected_head_ref,
@@ -857,6 +869,7 @@ def recover_branch_handover(
             or scheduler._lifecycle_controller is not controller
             or scheduler.plan != plan or scheduler.inputs != inputs or scheduler.artifacts is not artifacts):
         raise HandoverError("recovery authority differs from handover intent")
+    _settled_scheduler(scheduler, owner)
     recorded, terminal = journal.branch_handover_state(intent.task_id)
     if recorded != intent:
         raise HandoverError("recovery intent differs from authenticated journal")
@@ -867,7 +880,9 @@ def recover_branch_handover(
         try:
             locks.enter_context(_handover_lock(binding))
         except Exception:
+            _settled_scheduler(scheduler, owner)
             return _block(intent, journal, owner, "delivery-failed")
+        _settled_scheduler(scheduler, owner)
         try:
             _require_association(intent, journal, controller)
         except Exception:

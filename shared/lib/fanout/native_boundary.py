@@ -575,6 +575,7 @@ def _command_digest(command: ProcessCommand) -> str:
         "slot_root": None if command.slot_root is None else str(command.slot_root),
         "max_depth": command.max_depth, "term_grace": command.term_grace,
         "reap_timeout": command.reap_timeout,
+        "max_output_bytes": command.max_output_bytes,
     })).hexdigest()
 
 
@@ -657,11 +658,12 @@ def _check_canonical_broker_command(
 
     if request.execution_class != "read-only" or request.profile is None:
         raise ProviderRequestError("broker diagnostic is read-only")
-    registry = ProviderRegistry.default()
+    registry = ProviderRegistry.for_installed((request.executor_id,))
     profile = registry.admit(
         request.executor_id, request.execution_class, request.profile.quality_tier,
     )
-    profile = replace(profile, cli_version=request.profile.cli_version, profile_sha256=None)
+    if profile.cli_version != request.profile.cli_version:
+        raise ProviderRequestError("CLI version drifted from the pinned executor profile")
     if profile.digest != request.profile.digest:
         raise ProviderRequestError("broker diagnostic profile differs from the canonical contract")
     registry = ProviderRegistry((profile,), version_probe=registry._version_probe)

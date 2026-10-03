@@ -226,6 +226,74 @@ def _resolver(tmp_path: Path) -> SkillResolver:
     return SkillResolver((SkillRoot("test", root, 0, provider="codex", target="test"),))
 
 
+@pytest.mark.parametrize("location", ["preamble", "between", "trailing"])
+def test_unterminated_document_fence_rejects_entire_source(location):
+    source = _source()
+    if location == "preamble":
+        source = source.replace(b"## Scope\n", b"```markdown\n## Scope\n", 1)
+    elif location == "between":
+        source = source.replace(b"### Task 2:", b"## Notes\n\n```markdown\n### Task 2:", 1)
+    else:
+        source += b"## Notes\n\n```markdown\nUnclosed example.\n"
+    with pytest.raises(CompilerError, match="unterminated"):
+        parse_superpowers_plan(source, source_path="docs/plan.md")
+
+
+@pytest.mark.parametrize("v2", [False, True])
+def test_compiled_nested_skill_provenance_is_immutable_and_exports_independent(tmp_path, v2):
+    resolver = _resolver(tmp_path)
+    skill = tmp_path / "skills" / "review"
+    (skill / "reference.md").write_text("Reference\n")
+    (skill / "SKILL.md").write_text("# Review\n[Reference](reference.md)\n")
+    source = _v2_source() if v2 else _source()
+    compile_plan = compiler_module.compile_superpowers_plan_v2 if v2 else compile_superpowers_plan
+    compiled = compile_plan(source, source_path="docs/plan.md",
+                            draft_bytes=_v2_draft(source) if v2 else _draft(source), resolver=resolver)
+    before = compiled.to_bytes()
+    manifest = compiled.resolved_skill_manifests["inspect"][0]
+    for field in ("references", "files"):
+        assert manifest[field]
+        with pytest.raises(TypeError):
+            manifest[field][0]["path"] = "tampered"
+        exported = compiled.to_dict()
+        exported["resolved_skill_manifests"]["inspect"][0][field][0]["path"] = "tampered"
+        assert compiled.to_bytes() == before
+        assert compiled.to_dict()["resolved_skill_manifests"]["inspect"][0][field][0]["path"] != "tampered"
+
+
+def test_fenced_files_do_not_satisfy_required_structural_declaration():
+    source = _source().replace(b"**Files:**\n- Test: `tests/test_example.py`\n",
+                               b"```markdown\n**Files:**\n- Test: `tests/test_example.py`\n```\n", 1)
+    with pytest.raises(CompilerError, match="Files"):
+        parse_superpowers_plan(source, source_path="docs/plan.md")
+    assert len(parse_superpowers_plan(_source(), source_path="docs/plan.md").steps) == 3
+
+
+@pytest.mark.parametrize("closer", [b"```", b"```` decorated"])
+def test_legacy_preamble_constraints_use_selected_fence_grammar(closer):
+    source = _source().replace(b"## Global Constraints\n",
+                               b"````markdown\nExample\n" + closer + b"\n\n## Global Constraints\n", 1)
+    parsed = parse_superpowers_plan(source, source_path="docs/plan.md",
+                                    mode=compiler_module.PlanParseMode.LEGACY_INSPECTION)
+    assert parsed.global_constraints == ("Preserve byte-bound source evidence.", "Do not invent work.")
+    with pytest.raises(CompilerError, match="legacy inspection"):
+        compile_superpowers_plan(parsed, source_path="docs/plan.md", draft_bytes=b"{}", resolver=None)
+
+
+def test_source_aligned_todo_marker_removal_compiles_but_bare_placeholder_refuses(tmp_path):
+    source = _source().replace(b"Implement only the checked behavior.", b"Remove stale TODO markers.")
+    draft = json.loads(_draft(source))
+    draft["tasks"][1].update(title="Remove stale TODO markers",
+                             objective="Remove stale TODO markers from shared/example.py.",
+                             acceptance=["The stale TODO markers are removed."])
+    assert compile_superpowers_plan(source, source_path="docs/plan.md",
+                                   draft_bytes=json.dumps(draft).encode(), resolver=_resolver(tmp_path))
+    draft["tasks"][1]["objective"] = "TODO"
+    with pytest.raises(CompilerError, match="placeholder"):
+        compile_superpowers_plan(source, source_path="docs/plan.md",
+                                 draft_bytes=json.dumps(draft).encode(), resolver=_resolver(tmp_path))
+
+
 def _v2_draft(source: bytes) -> bytes:
     draft = json.loads(_draft(source))
     draft["schema_version"] = "fanout-draft-v2"

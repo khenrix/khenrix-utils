@@ -22,7 +22,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .artifacts import ArtifactRef, ArtifactStore, canonical_json
+from .artifacts import ArtifactLimits, ArtifactRef, ArtifactStore, canonical_json
 from .agy_guard import AgyReadOnlyGuard, _BINARY as _AGY_DIRECT_BINARY, validate_agy_readonly_guard
 from .errors import (
     ArtifactError,
@@ -378,6 +378,7 @@ class _Parsed:
     final: bool
     error: str | None = None
     observed_model: str | None = None
+    successful_file_change: bool = False
 
 
 class ProviderAdapter:
@@ -403,6 +404,7 @@ class ProviderAdapter:
             slot_cap=request.slot_cap,
             slot_timeout=request.slot_timeout,
             slot_root=request.slot_root,
+            max_output_bytes=ArtifactLimits().max_file_bytes,
         )
 
 
@@ -528,8 +530,14 @@ class CodexAdapter(ProviderAdapter):
         final = False
         error: str | None = None
         observed_model: str | None = None
+        successful_file_change = False
         for event in events:
             kind = event.get("type")
+            if final and kind in {"thread.started", "turn.started", "item.started", "item.updated",
+                                  "item.completed", "turn.completed", "turn.failed", "error"}:
+                if error is not None:
+                    continue
+                raise ProviderProtocolError("Codex emitted semantic events after its terminal")
             if kind == "thread.started":
                 candidate = _optional_string(event.get("thread_id"))
                 if candidate is None:
@@ -541,6 +549,10 @@ class CodexAdapter(ProviderAdapter):
                 item = event.get("item")
                 if isinstance(item, dict) and item.get("type") == "agent_message":
                     answer = item["text"] if isinstance(item.get("text"), str) else ""
+                elif isinstance(item, dict) and item.get("type") == "file_change":
+                    if item.get("status") not in {"in_progress", "completed", "failed"}:
+                        raise ProviderProtocolError("Codex file change has invalid status")
+                    successful_file_change = successful_file_change or item["status"] == "completed"
                 elif isinstance(item, dict) and item.get("type") == "error":
                     message = _optional_string(item.get("message"))
                     # Codex exec serializes this nonfatal metadata warning as an error item.
@@ -563,7 +575,7 @@ class CodexAdapter(ProviderAdapter):
                 detail = event.get("error")
                 error = _optional_string(detail.get("message")) if isinstance(detail, dict) else _optional_string(event.get("message"))
                 error = error or "Codex reported a structured error"
-        return _Parsed(session_id, answer, usage, final, error, observed_model)
+        return _Parsed(session_id, answer, usage, final, error, observed_model, successful_file_change)
 
 
 class AgyAdapter(ProviderAdapter):
@@ -860,7 +872,8 @@ class ProviderRegistry:
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             raise ProviderRequestError("installed CLI version is unavailable") from error
         profiles = (
-            replace(profile, cli_version=observed[profile.executor_id], profile_sha256=None)
+            replace(profile, cli_version=observed[profile.executor_id], profile_sha256=None,
+                    characterized=profile.characterized and profile.cli_version == observed[profile.executor_id])
             if profile.execution_class == _READ_ONLY and profile.executor_id in observed
             else profile for profile in base._profiles.values()
         )
@@ -1045,7 +1058,6 @@ def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderReg
         if type(capture) is not CanaryTurn:
             raise ProviderRequestError("Codex canary capture lacks authenticated authority")
         capture.validate(request)
-    selected_registry.assert_installed_version(profile)
     request = replace(request, profile=profile)
     adapter = selected_registry.require(request.executor_id)
     # Claude makes the initial ID caller-owned. Establish it once before the
@@ -1057,6 +1069,7 @@ def _run_provider_with_runner(request: ProviderRequest, *, registry: ProviderReg
     parsed: _Parsed | None = None
     attempts = 0
     for attempts in range(1, request.retries + 2):
+        selected_registry.assert_installed_version(profile)
         command = adapter.build_command(request)
         if capture is None:
             last_process = runner(command)
@@ -1115,6 +1128,11 @@ def _make_result(request: ProviderRequest, adapter: ProviderAdapter, process: Pr
         valid, reason, hint = False, "timeout", "provider exceeded its configured deadline"
     elif process.status == ProcessStatus.SPAWN_ERROR:
         valid, reason, hint = False, "spawn-error", process.error or "provider did not start"
+    elif (process.status is not ProcessStatus.EXIT or type(process.returncode) is not int
+          or process.returncode != 0 or not process.capture_complete):
+        valid, reason, hint = False, "process-error", process.error or "provider process evidence is incomplete or unsuccessful"
+    elif parsed and parsed.successful_file_change and request.execution_class == _READ_ONLY:
+        valid, reason, hint = False, "protocol-error", "read-only provider reported a successful file change"
     elif parsed is None or not parsed.final or not session_id or not answer:
         valid, reason, hint = False, "protocol-error", "provider output lacks a final answer and exact session identity"
     elif request.session_id is not None and session_id != request.session_id:

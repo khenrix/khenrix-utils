@@ -25,7 +25,7 @@ from .repo import SeatWorkspaceVerification, validate_seat_workspace
 _CATEGORY = "agy-readonly-guard"
 _BINARY = Path.home() / ".local" / "libexec" / "agy-bin"
 _HOOK_SOURCE = Path(__file__).with_name("agy_readonly_hook.py")
-_HOOK_SHA256 = "d7b49ab6020b96e91e07e34e9949132b61f8fe3a9d637a7413115279526d69da"
+_HOOK_SHA256 = "6df3fd308c2dc2cbf0ff9753f903a26e61c8d03972fe00ad42affd19bdf4e72d"
 _FILES = (
     "fanout_guard.py",
     "policy.json",

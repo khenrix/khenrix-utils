@@ -382,7 +382,10 @@ class Scheduler:
                     scheduler._authenticate_handover(
                         state.task_id, state.handover_terminal, allow_blocked=True,
                     )
-            if allow_repair:
+            if allow_repair and not (journal is not None and any(
+                amendment.phase == "plan-amendment-intent"
+                for amendment in journal.state.amendments.values()
+            )):
                 scheduler._quarantine_blocked(owner)
         return scheduler
 
@@ -683,7 +686,7 @@ class Scheduler:
         return tuple(_action_barrier(state) for state in states)
 
     def schedule_ready(self, *, owner: OwnerCapability) -> tuple[WorkDispatch | ActionBarrier | WorkDispatchV2 | ActionBarrierV2, ...]:
-        self._assert_usable()
+        self._assert_settled_journal(owner)
         states = self._states()
         quarantined = self._quarantine_states(states)
         active_tasks = sum(state.phase in _ACTIVE_PHASES for state in states.values())
@@ -693,6 +696,8 @@ class Scheduler:
         for task in (item for item in self.plan.tasks if item.kind == "work"):
             state = states[task.id]
             if state.phase != "unscheduled":
+                continue
+            if self._blocked_handover_dependency(task.id, set()):
                 continue
             dependencies = self._ready_dependencies(task, states)
             if dependencies is None or active_tasks >= _MAX_ACTIVE_TASKS:
@@ -946,6 +951,10 @@ class Scheduler:
                 inputs: RunInputs) -> None:
         self._assert_usable()
         _owner(owner)
+        if snapshot.plan_revision == self.plan_revision:
+            self._assert_settled_journal(owner)
+        else:
+            self._assert_amendment_authority(snapshot, inputs, owner)
         revision, authority = _authority_read(
             self._authority, self._authority_id, self._authority_key,
             self._inputs.run_id, self._record.snapshot.backend_identity,
@@ -1093,6 +1102,65 @@ class Scheduler:
     def _assert_usable(self) -> None:
         if self._failed:
             raise SchedulerStateError("scheduler requires authority recovery")
+
+    def _assert_settled_journal(self, owner: OwnerCapability) -> None:
+        self._assert_usable()
+        _owner(owner)
+        if self._journal is None:
+            return
+        self._journal.authorize_owner(owner)
+        if any(amendment.phase == "plan-amendment-intent"
+               for amendment in self._journal.state.amendments.values()):
+            raise SchedulerStateError("journal amendment requires exact recovery")
+        from .execute import ExecutionService, _provider_profiles_digest
+        if self._journal.state.amendments:
+            try:
+                documents = ExecutionService.recovery_documents(self._journal, self._artifacts)
+            except Exception as error:
+                raise SchedulerStateError("journal amendment documents are invalid") from error
+            expected_revision = documents.revision
+            expected_binding = (documents.binding[2], documents.binding[3], documents.binding[5])
+        else:
+            initial = self._journal.inputs
+            expected_revision = 1
+            expected_binding = (initial.compiled_plan_sha256, initial.digest,
+                                _provider_profiles_digest(initial.provider_profiles))
+        if (self.plan_revision != expected_revision
+                or (self.plan_sha256, self.inputs_digest,
+                    _provider_profiles_digest(self._inputs.provider_profiles)) != expected_binding):
+            raise SchedulerStateError("scheduler differs from settled journal amendment authority")
+        revision, authority = _authority_read(
+            self._authority, self._authority_id, self._authority_key,
+            self._inputs.run_id, self._record.snapshot.backend_identity,
+            self._record.snapshot.backend_key, owner,
+        )
+        if (revision.revision != self._authority_revision or authority != self._authority_record
+                or authority["pending"] is not None
+                or not _record_matches_binding(self._record, authority["committed"])):
+            raise SchedulerStateError("scheduler differs from settled current authority")
+
+    def _assert_amendment_authority(self, snapshot: SchedulerSnapshot,
+                                    inputs: RunInputs, owner: OwnerCapability) -> None:
+        if self._journal is None:
+            return
+        self._journal.authorize_owner(owner)
+        from .execute import ExecutionService, _provider_profiles_digest
+        try:
+            documents = ExecutionService.recovery_documents(self._journal, self._artifacts)
+        except Exception as error:
+            raise SchedulerStateError("journal amendment documents are invalid") from error
+        amendment = self._journal.state.amendments[documents.revision]
+        expected_binding = (
+            self.plan_sha256, self.inputs_digest, snapshot.plan_sha256, inputs.digest,
+            _provider_profiles_digest(self._inputs.provider_profiles),
+            _provider_profiles_digest(inputs.provider_profiles),
+        )
+        if (snapshot.plan_revision != self.plan_revision + 1
+                or amendment.revision != snapshot.plan_revision
+                or amendment.phase != "plan-amendment-intent"
+                or amendment.binding != expected_binding
+                or documents.plan != snapshot.plan or documents.inputs != inputs):
+            raise SchedulerStateError("scheduler amendment differs from exact durable intent")
 
 
 def _target_authority(plan: FanoutPlanV1, inputs: RunInputs, artifacts: ArtifactStore,

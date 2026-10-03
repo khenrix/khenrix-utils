@@ -104,6 +104,26 @@ def test_default_codex_profiles_admit_measured_01590_and_reject_older_binary():
         registry.assert_installed_version(registry.select("codex", "read-only", "deep"))
 
 
+@pytest.mark.parametrize("executor", ["claude", "agy"])
+@pytest.mark.parametrize("upgraded", [False, True])
+def test_installed_readonly_profile_truthful_characterization_matches_native_canonical_join(tmp_path, monkeypatch, executor, upgraded):
+    providers = sys.modules[f"{SPEC.name}.providers"]
+    native = sys.modules[f"{SPEC.name}.native_boundary"]
+    old = fanout.ProviderRegistry.default().select(executor, "read-only", "standard")
+    observed = "2.1.999" if executor == "claude" else "1.2.99"
+    if not upgraded:
+        observed = old.cli_version
+    monkeypatch.setattr(providers, "_installed_cli_version", lambda _executor: observed)
+    registry = fanout.ProviderRegistry.for_installed((executor,))
+    profile = registry.admit(executor, "read-only", "standard")
+    assert profile.cli_version == observed
+    assert profile.characterized is (old.characterized and not upgraded)
+    request = fanout.ProviderRequest(executor, "local admission only", cwd=tmp_path, profile=profile,
+        session_id="11111111-1111-4111-8111-111111111111" if executor == "claude" else None)
+    command = profile.adapter.build_command(request, brokered_diagnostic=True)
+    native._check_canonical_broker_command(request, command, None)
+
+
 def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
     """Capability admission must preserve requested effort and historical evidence."""
     registry = fanout.ProviderRegistry.default()

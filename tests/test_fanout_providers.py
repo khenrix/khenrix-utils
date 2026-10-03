@@ -288,7 +288,7 @@ def test_installed_readonly_admission_preserves_invocation_and_historical_eviden
     profile = registry.admit(executor, "read-only", tier)
     template = ProviderRegistry.default().select(executor, "read-only", tier)
     assert profile.cli_version == version
-    assert profile.to_dict() == {**template.to_dict(), "cli_version": version}
+    assert profile.to_dict() == {**template.to_dict(), "cli_version": version, "characterized": False}
     registry.assert_installed_version(profile)
     with pytest.raises(ProviderRequestError, match="characterization"):
         registry.admit(executor, "repo-write", "standard")
@@ -1129,6 +1129,87 @@ def test_codex_stream_uses_final_agent_message_not_intermediate_commentary():
     parsed = ProviderRegistry.default().require("codex").parse(stdout)
 
     assert parsed.answer == '{"fact":"verified"}'
+
+
+@pytest.mark.parametrize("status,code,complete,valid", [
+    (ProcessStatus.OUTPUT_LIMIT, 0, True, False),
+    (ProcessStatus.EXIT, 0, False, False),
+    (ProcessStatus.EXIT, None, True, False),
+    (ProcessStatus.EXIT, 0, True, True),
+])
+def test_provider_success_requires_complete_zero_exit(tmp_path, status, code, complete, valid):
+    stdout = (FIXTURES / "claude-success.json").read_bytes()
+    request = _request("claude", tmp_path, session_id=json.loads(stdout)["session_id"])
+    result = _fake_provider(request, lambda _: ProcessResult(status, code, stdout, b"failure capture",
+                                                            capture_complete=complete))
+    assert result.valid is valid
+    assert result.stdout == stdout and result.stderr == b"failure capture"
+    assert request.artifact_store.read_bytes(result.stdout_ref) == stdout
+
+
+@pytest.mark.parametrize("status,execution_class,valid", [
+    ("completed", "read-only", False), ("failed", "read-only", True),
+    ("completed", "repo-write", True),
+])
+def test_codex_successful_file_change_requires_write_class(tmp_path, _mock_clean_codex_host,
+                                                         status, execution_class, valid):
+    events = [
+        {"type": "thread.started", "thread_id": "codex-thread-1"},
+        {"type": "item.completed", "item": {"id": "item_1", "type": "file_change",
+            "changes": [{"path": "shared/example.py", "kind": "update"}], "status": status}},
+        {"type": "item.completed", "item": {"id": "item_2", "type": "command_execution",
+            "command": "ls", "aggregated_output": "example.py", "exit_code": 0, "status": "completed"}},
+        {"type": "item.completed", "item": {"id": "item_3", "type": "mcp_tool_call",
+            "server": "test", "tool": "read", "arguments": {}, "result": None,
+            "error": {"message": "unavailable"}, "status": "failed"}},
+        {"type": "item.completed", "item": {"id": "item_4", "type": "agent_message", "text": "READY"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}},
+    ]
+    stdout = b"\n".join(json.dumps(event).encode() for event in events) + b"\n"
+    registry = ProviderRegistry.default()
+    if execution_class == "repo-write":
+        registry = ProviderRegistry(tuple(replace(profile, characterized=True, profile_sha256=None)
+            if profile.executor_id == "codex" and profile.execution_class == "repo-write" else profile
+            for profile in registry._profiles.values()))
+    request = _request("codex", tmp_path, execution_class=execution_class,
+                       profile=registry.select("codex", execution_class, "standard"))
+    result = _fake_provider(request, lambda _: _result(stdout=stdout), registry=registry)
+    assert result.valid is valid
+    assert result.stdout == stdout
+
+
+@pytest.mark.parametrize("tail", [
+    {"type": "item.completed", "item": {"type": "agent_message", "text": "replacement"}},
+    {"type": "turn.completed", "usage": {}},
+    {"type": "turn.failed", "error": {"message": "late failure"}},
+])
+def test_codex_terminal_cannot_be_overwritten(tail):
+    events = [{"type": "thread.started", "thread_id": "thread-1"},
+              {"type": "item.completed", "item": {"type": "agent_message", "text": "READY"}},
+              {"type": "turn.completed", "model": "mismatched-model", "usage": {}}, tail]
+    with pytest.raises(ProviderProtocolError):
+        providers.CodexAdapter().parse(b"\n".join(json.dumps(event).encode() for event in events))
+
+
+def test_known_unstarted_retry_rechecks_cli_version_without_second_launch(tmp_path):
+    version = ["2.1.284"]
+    registry = ProviderRegistry.default(version_probe=lambda _: version[0])
+    launched = []
+    def unstarted(command):
+        launched.append(command)
+        version[0] = "2.2.0"
+        return ProcessResult(ProcessStatus.SPAWN_ERROR, None, b"", b"", error="not started")
+    with pytest.raises(ProviderRequestError, match="version drifted"):
+        providers._run_provider_with_runner(_request("claude", tmp_path, retries=1),
+                                            registry=registry, runner=unstarted)
+    assert len(launched) == 1
+
+
+@pytest.mark.parametrize("executor", ["claude", "codex", "agy"])
+def test_ordinary_provider_commands_share_finite_artifact_capture_cap(tmp_path, executor,
+                                                                    _mock_clean_codex_host):
+    command = ProviderRegistry.default().require(executor).build_command(_request(executor, tmp_path))
+    assert command.max_output_bytes == 64 * 1024 * 1024
 
 
 def test_codex_empty_final_message_does_not_promote_intermediate_commentary():

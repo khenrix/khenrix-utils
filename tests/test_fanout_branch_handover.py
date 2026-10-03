@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -683,6 +684,171 @@ def test_blocked_handover_frees_capacity_for_independent_target_and_descendants(
     scheduler.mark_active("reports", owner=owner)
 
 
+def test_completed_dependency_does_not_hide_transitive_block_from_fresh_decisions(tmp_path):
+    scheduler, backend, journal, _controller, owner = _scheduled_handover_dependant(
+        tmp_path, independent_count=2, descendant=True,
+    )
+    scheduler.mark_active("booking", owner=owner)
+    scheduler.begin_reconciliation("booking", owner=owner)
+    scheduler.complete_reconciliation(
+        "booking", cases._receipt(scheduler, backend, "booking"), owner=owner,
+    )
+    scheduler.mark_active("analytics", owner=owner)
+    scheduler.begin_reconciliation("analytics", owner=owner)
+    scheduler.complete_reconciliation(
+        "analytics", cases._receipt(scheduler, backend, "analytics"), owner=owner,
+    )
+    journal.append_branch_blocked("address", "git-proof-invalid", owner=owner)
+    decisions = scheduler.schedule_ready(owner=owner)
+    assert [decision.task_id for decision in decisions] == ["reports"]
+    shipping = next(state for state in scheduler._record.snapshot.tasks if state.task_id == "shipping")
+    assert shipping.phase == "unscheduled"
+    assert shipping.decision_id == "" and shipping.seat_count == 0
+    assert scheduler.task_phase("shipping") == "blocked-dependency"
+    assert scheduler.active_task_count == 1 and scheduler.active_seat_count == 2
+
+
+def _persist_amendment_intent(scheduler, backend, journal, owner, *, task_id="booking",
+                              old_profiles_digest=None):
+    replacement = scheduler.plan.to_dict()
+    next(task for task in replacement["tasks"] if task["id"] == task_id)["objective"] = "Revised objective."
+    plan = fanout.plan.FanoutPlanV2.from_dict(replacement)
+    inputs = dataclasses.replace(
+        scheduler.inputs, compiled_plan_sha256=hashlib.sha256(fanout.canonical_json(plan.to_dict())).hexdigest(),
+    )
+    profiles = fanout.canonical_json({
+        "profiles": dict(sorted(inputs.provider_profiles.items())),
+        "schema_version": "fanout-provider-profiles-v1",
+    })
+    profile_digest = hashlib.sha256(profiles).hexdigest()
+    for kind, digest, data in (
+        ("plans", inputs.compiled_plan_sha256, fanout.canonical_json(plan.to_dict())),
+        ("inputs", inputs.digest, fanout.canonical_json(inputs.to_dict())),
+        ("profiles", profile_digest, profiles),
+    ):
+        backend.artifacts.write_bytes(f"amendments/{kind}/{digest}.json", data)
+    binding = dict(
+        revision=scheduler.plan_revision + 1,
+        old_plan_sha256=scheduler.plan_sha256, old_inputs_digest=scheduler.inputs_digest,
+        new_plan_sha256=inputs.compiled_plan_sha256, new_inputs_digest=inputs.digest,
+        old_profiles_sha256=old_profiles_digest or profile_digest,
+        new_profiles_sha256=profile_digest, owner=owner,
+    )
+    journal.append_amendment("plan-amendment-intent", **binding)
+    return plan, inputs, binding
+
+
+def _handover_mutation_snapshot(tmp_path, scheduler, backend, journal):
+    files = tuple(sorted(
+        (str(path.relative_to(tmp_path)), path.stat().st_mode & 0o777, path.read_bytes())
+        for path in tmp_path.rglob("*") if path.is_file()
+    ))
+    return (files, backend.read(), journal._anchor_store.read(journal._anchor_key),
+            scheduler._authority.read(scheduler._authority_key))
+
+
+@pytest.mark.parametrize("operation", ("prepare", "deliver", "recover", "schedule", "quarantine"))
+def test_unfinished_amendment_fences_ordinary_handover_and_scheduler_effects(tmp_path, operation):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
+        tmp_path, changed=True, recoverable_amendments=True,
+    )
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    binding = scheduler.inputs.targets["address"]
+    kwargs = dict(plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
+                  scheduler=scheduler, controller=controller, journal=journal, owner=owner)
+    prepared = None
+    if operation in {"deliver", "recover", "quarantine"}:
+        prepared = handover.prepare_branch_handover(
+            binding, candidate, verification, task_id="address", **kwargs,
+        )
+    if operation == "quarantine":
+        handover.deliver_branch_candidate(prepared, **kwargs)
+        scheduler.mark_active("events", owner=owner)
+        scheduler.begin_reconciliation("events", owner=owner)
+        scheduler.complete_reconciliation("events", cases._receipt(scheduler, backend, "events"), owner=owner)
+        scheduler.schedule_ready(owner=owner)
+        journal.append_branch_blocked("address", "git-proof-invalid", owner=owner)
+        plan, inputs, amendment_binding = _persist_amendment_intent(
+            scheduler, backend, journal, owner, task_id="booking",
+        )
+    else:
+        plan, inputs, amendment_binding = _persist_amendment_intent(scheduler, backend, journal, owner)
+    before = _handover_mutation_snapshot(tmp_path, scheduler, backend, journal)
+    if operation == "quarantine":
+        reopened = fanout.Scheduler._resume_for_test(
+            scheduler.plan, scheduler.inputs, backend, backend.artifacts, owner=owner,
+            anchor_store=scheduler._authority, journal=journal, lifecycle_controller=controller,
+        )
+        assert reopened.revision == scheduler.revision
+        assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == before
+        with pytest.raises(fanout.SchedulerStateError, match="amendment"):
+            reopened.schedule_ready(owner=owner)
+    else:
+        error = fanout.SchedulerStateError if operation == "schedule" else fanout.HandoverError
+        with pytest.raises(error, match="amendment"):
+            if operation == "prepare":
+                handover.prepare_branch_handover(binding, candidate, verification, task_id="address", **kwargs)
+            elif operation == "deliver":
+                handover.deliver_branch_candidate(prepared, **kwargs)
+            elif operation == "recover":
+                handover.recover_branch_handover(prepared.intent, **kwargs)
+            else:
+                scheduler.mark_active("events", owner=owner)
+    assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == before
+    if operation == "prepare":
+        amendment = scheduler.accept_amendment(plan, inputs, expected_plan_revision=1, owner=owner)
+        assert amendment.plan_revision == 2
+        journal.append_amendment("plan-amendment-accepted", **amendment_binding)
+        scheduler.mark_active("events", owner=owner)
+
+
+def test_delivery_rechecks_amendment_after_acquiring_target_lock(tmp_path, monkeypatch):
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
+        tmp_path, changed=True, recoverable_amendments=True,
+    )
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    kwargs = dict(plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
+                  scheduler=scheduler, controller=controller, journal=journal, owner=owner)
+    prepared = handover.prepare_branch_handover(
+        scheduler.inputs.targets["address"], candidate, verification, task_id="address", **kwargs,
+    )
+    original_lock = handover._handover_lock
+    snapshots = []
+    @contextmanager
+    def changed_authority(binding):
+        with original_lock(binding) as pinned:
+            _persist_amendment_intent(scheduler, backend, journal, owner)
+            snapshots.append(_handover_mutation_snapshot(tmp_path, scheduler, backend, journal))
+            yield pinned
+    monkeypatch.setattr(handover, "_handover_lock", changed_authority)
+    with pytest.raises(fanout.HandoverError, match="amendment"):
+        handover.deliver_branch_candidate(prepared, **kwargs)
+    assert len(snapshots) == 1
+    assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == snapshots[0]
+
+
+@pytest.mark.parametrize("damage", ("replacement", "profiles", "missing"))
+def test_amendment_exemption_requires_exact_intent_and_durable_documents(tmp_path, damage):
+    scheduler, backend, journal, _controller, owner, _candidate, _verification = _settled_writer(
+        tmp_path, recoverable_amendments=True,
+    )
+    plan, inputs, _binding = _persist_amendment_intent(
+        scheduler, backend, journal, owner,
+        old_profiles_digest="0" * 64 if damage == "profiles" else None,
+    )
+    if damage == "replacement":
+        replacement = plan.to_dict()
+        replacement["tasks"][1]["objective"] = "Different replacement objective."
+        plan = fanout.plan.FanoutPlanV2.from_dict(replacement)
+        inputs = dataclasses.replace(inputs, compiled_plan_sha256=hashlib.sha256(fanout.canonical_json(plan.to_dict())).hexdigest())
+    elif damage == "missing":
+        (backend.artifacts.root / f"amendments/plans/{inputs.compiled_plan_sha256}.json").unlink()
+    before = _handover_mutation_snapshot(tmp_path, scheduler, backend, journal)
+    with pytest.raises(fanout.SchedulerStateError, match="amendment"):
+        scheduler.accept_amendment(plan, inputs, expected_plan_revision=1, owner=owner)
+    assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == before
+
+
 def test_blocked_writer_artifact_edge_stays_eligible(tmp_path):
     scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
         tmp_path, dependency_mode="artifact",
@@ -859,17 +1025,15 @@ def test_cold_blocked_inspection_authenticates_amended_plan_documents(tmp_path, 
         backend.artifacts.write_bytes(f"amendments/{kind}/{digest}.json", data)
     old_plan_sha256 = scheduler.plan_sha256
     old_inputs_digest = scheduler.inputs_digest
-    amendment = scheduler.accept_amendment(
-        amended_plan, amended_inputs, expected_plan_revision=1, owner=owner,
-    )
     binding = dict(
-        revision=amendment.plan_revision,
+        revision=2,
         old_plan_sha256=old_plan_sha256, old_inputs_digest=old_inputs_digest,
-        new_plan_sha256=scheduler.plan_sha256, new_inputs_digest=scheduler.inputs_digest,
+        new_plan_sha256=amended_inputs.compiled_plan_sha256, new_inputs_digest=amended_inputs.digest,
         old_profiles_sha256=profiles_sha256, new_profiles_sha256=profiles_sha256,
         owner=owner,
     )
     journal.append_amendment("plan-amendment-intent", **binding)
+    scheduler.accept_amendment(amended_plan, amended_inputs, expected_plan_revision=1, owner=owner)
     journal.append_amendment("plan-amendment-accepted", **binding)
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     prepared = handover.prepare_branch_handover(
@@ -1622,17 +1786,22 @@ def test_checkout_edit_before_cas_blocks_without_ref_mutation(tmp_path, monkeypa
 
 
 def test_mode_only_checkout_edit_before_cas_blocks_without_ref_mutation(tmp_path, monkeypatch):
-    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
+        tmp_path, baseline_mode=0o644,
+    )
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     binding = scheduler.inputs.targets["address"]
+    assert (binding.root / "README.md").stat().st_mode & 0o777 == 0o644
     prepared = handover.prepare_branch_handover(
         binding, candidate, verification, plan=scheduler.plan, inputs=scheduler.inputs,
         artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
         journal=journal, owner=owner, task_id="address",
     )
+    injected = []
     def change_mode(at):
         if at == "after-prepared-commit":
             (binding.root / "README.md").chmod(0o600)
+            injected.append((binding.root / "README.md").stat().st_mode & 0o777)
     monkeypatch.setattr(handover, "_checkpoint", change_mode)
 
     blocked = handover.deliver_branch_candidate(
@@ -1640,6 +1809,7 @@ def test_mode_only_checkout_edit_before_cas_blocks_without_ref_mutation(tmp_path
         artifacts=backend.artifacts, scheduler=scheduler, controller=controller,
         journal=journal, owner=owner,
     )
+    assert injected == [0o600]
     assert isinstance(blocked, handover.BlockedHandover)
     assert journal.state.branch_blocked["address"][0] == prepared.intent.sha256
     assert cases._git(binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref) == ""
@@ -2491,32 +2661,19 @@ def test_previously_blocked_recovery_keeps_original_reason_when_lock_unavailable
 
 
 def test_unrelated_unscheduled_amendment_keeps_settled_writer_handover_available(tmp_path):
-    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(tmp_path)
+    scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
+        tmp_path, recoverable_amendments=True,
+    )
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     binding = scheduler.inputs.targets["address"]
     source = scheduler.result_for("address")
     original_writer = scheduler.plan.tasks[0]
     old_plan_sha256 = scheduler.plan_sha256
     old_inputs_digest = scheduler.inputs_digest
-    replacement = scheduler.plan.to_dict()
-    replacement["tasks"][1]["objective"] = "Revised booking objective."
-    amended_plan = fanout.plan.FanoutPlanV2.from_dict(replacement)
-    amended_inputs = dataclasses.replace(
-        scheduler.inputs,
-        compiled_plan_sha256=hashlib.sha256(fanout.canonical_json(amended_plan.to_dict())).hexdigest(),
-    )
+    amended_plan, amended_inputs, amendment_binding = _persist_amendment_intent(scheduler, backend, journal, owner)
     amendment = scheduler.accept_amendment(
         amended_plan, amended_inputs, expected_plan_revision=1, owner=owner,
     )
-    profile_digest = hashlib.sha256(fanout.canonical_json(dict(amended_inputs.provider_profiles))).hexdigest()
-    amendment_binding = dict(
-        revision=amendment.plan_revision,
-        old_plan_sha256=old_plan_sha256, old_inputs_digest=old_inputs_digest,
-        new_plan_sha256=scheduler.plan_sha256, new_inputs_digest=scheduler.inputs_digest,
-        old_profiles_sha256=profile_digest, new_profiles_sha256=profile_digest,
-        owner=owner,
-    )
-    journal.append_amendment("plan-amendment-intent", **amendment_binding)
     journal.append_amendment("plan-amendment-accepted", **amendment_binding)
     assert scheduler.plan_revision == 2
     assert scheduler.plan.tasks[0] == original_writer
@@ -2556,11 +2713,13 @@ def test_changed_reconciled_result_blocks_after_prepare(tmp_path):
         scheduler._record,
         snapshot=dataclasses.replace(scheduler._record.snapshot, tasks=tuple(states)),
     )
-    blocked = handover.deliver_branch_candidate(
-        prepared, plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
-        scheduler=scheduler, controller=controller, journal=journal, owner=owner,
-    )
-    assert isinstance(blocked, handover.BlockedHandover)
+    before = _handover_mutation_snapshot(tmp_path, scheduler, backend, journal)
+    with pytest.raises(fanout.HandoverError, match="settled current"):
+        handover.deliver_branch_candidate(
+            prepared, plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
+            scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+        )
+    assert _handover_mutation_snapshot(tmp_path, scheduler, backend, journal) == before
     assert cases._git(binding.root, "for-each-ref", "--format=%(objectname)", binding.spec.branch_ref) == ""
 
 

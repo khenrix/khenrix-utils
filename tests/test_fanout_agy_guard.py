@@ -469,6 +469,11 @@ def test_guard_hook_confines_reads_and_denies_tool_writes(tmp_path, monkeypatch)
     assert decision("write_to_file", {"TargetFile": "canary.txt"}) == "deny"
     assert decision("run_command", {"CommandLine": "touch canary.txt"}) == "deny"
     assert decision("read_url_content", {"Url": "file:///fixture.txt"}) == "deny"
+    deep = subprocess.run((sys.executable, str(guard.home / "fanout_guard.py")),
+        input=b"[" * 10000 + b"0" + b"]" * 10000, capture_output=True, timeout=2)
+    assert deep.returncode == 0 and deep.stderr == b""
+    assert len(deep.stdout.splitlines()) == 1
+    assert json.loads(deep.stdout)["decision"] == "deny"
 
 
 def test_guarded_agy_child_receives_only_private_auth_paths_and_eu_route(tmp_path, monkeypatch):
