@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -26,8 +27,10 @@ from scripts.lib import checks
 from shared.lib.fanout.artifacts import ArtifactRef, ArtifactStore, canonical_json
 from shared.lib.fanout.certification import CertificationDecision
 from shared.lib.fanout.container_certification import RELEASE_CHECKS, TRIAL_CHECKS, _artifact_json
-from shared.lib.fanout.container_routes import _read_owned_json
-from shared.lib.fanout.container_source import ReleaseSourceBinding, release_source_binding
+from shared.lib.fanout.container_routes import _open_parent, _read_owned_json
+from shared.lib.fanout.container_source import (
+    ReleaseSourceBinding, _MAX_TOTAL_BYTES, _read_source, release_source_binding,
+)
 from shared.lib.fanout.controller import create_lifecycle_controller, read_evidence, write_evidence
 from shared.lib.fanout.evaluation import validate_maka_ballot
 from shared.lib.fanout.process import ProcessCommand, ProcessResult, ProcessStatus, run_command
@@ -56,17 +59,21 @@ def _authenticate(controller, category: str, value: Mapping) -> None:
         raise ValueError("release proof completion changed")
 
 
-def _gate_inputs() -> dict:
-    return {"files": {name: _sha((ROOT / name).read_bytes())
+def _gate_inputs(producer_root: Path | None = None) -> dict:
+    root = ROOT if producer_root is None else producer_root
+    for skill in SKILLS:
+        _read_source(root, f"evals/{skill}/evals.json", _MAX_TOTAL_BYTES)
+    return {"files": {name: _sha(_read_source(root, name, _MAX_TOTAL_BYTES))
                       for name in ("Makefile", "scripts/lib/checks.py", "scripts/render.py")},
-            "skills": {skill: {"source_manifest": checks.source_manifest(ROOT, skill),
-                               "eval_set_hash": checks.eval_set_hash(ROOT, skill)} for skill in SKILLS}}
+            "skills": {skill: {"source_manifest": checks.source_manifest(root, skill),
+                               "eval_set_hash": checks.eval_set_hash(root, skill)} for skill in SKILLS}}
 
 
-def _historical_subject(root: Path) -> dict:
+def _historical_subject(root: Path, *, producer_root: Path | None = None) -> dict:
     if not root.is_absolute():
         raise ValueError("strict gate requires an explicit historical snapshot absolute root")
-    expected = json.loads((ROOT / baseline.HISTORICAL_LOCK).read_bytes())
+    producer = ROOT if producer_root is None else producer_root
+    expected = json.loads(_read_source(producer, baseline.HISTORICAL_LOCK, _MAX_TOTAL_BYTES))
     if baseline.check_historical(expected, root):
         raise ValueError("strict gate historical source subject changed")
     return {"root": str(root),
@@ -105,19 +112,18 @@ def capture_strict_gate(controller, store: ArtifactStore) -> dict:
 
 
 def validate_strict_gate(controller, store: ArtifactStore, value: Mapping,
-                         source_binding: ReleaseSourceBinding) -> None:
+                         source_binding: ReleaseSourceBinding) -> Path:
     try:
         _authenticate(controller, "release-strict-gate-complete", value)
         if (value["schema_version"] != "fanout-release-strict-gate-v1"
-                or value["argv"] != list(STRICT_ARGV) or value["cwd"] != str(ROOT)
+                or source_binding != release_source_binding()
+                or value["argv"] != list(STRICT_ARGV)
                 or value["status"] != ProcessStatus.EXIT.value or type(value["returncode"]) is not int
                 or value["returncode"] != 0 or value["capture_complete"] is not True
+                or type(value["pid"]) is not int or value["pid"] <= 0
                 or value["timeout"] is not None or value["error"] is not None
                 or value["before_binding"] != source_binding.to_dict()
-                or value["after_binding"] != source_binding.to_dict()
-                or value["historical_subject"] != _historical_subject(Path(value["historical_subject"]["root"]))
-                or canonical_json(value["before_gate_inputs"]) != canonical_json(_gate_inputs())
-                or canonical_json(value["after_gate_inputs"]) != canonical_json(_gate_inputs())):
+                or value["after_binding"] != source_binding.to_dict()):
             raise ValueError("strict gate did not complete on current fixed inputs")
         for name in ("stdout_ref", "stderr_ref"):
             store.read_bytes(ArtifactRef(**value[name]))
@@ -125,6 +131,34 @@ def validate_strict_gate(controller, store: ArtifactStore, value: Mapping,
                                            len(canonical_json(value))))
         if raw != canonical_json(value):
             raise ValueError("strict process capture changed")
+        attempt, raw_attempt = _read_owned_json(controller.root.parent / "strict-gate-attempt.json")
+        if (raw_attempt != canonical_json(attempt) or canonical_json(attempt) != canonical_json({
+                "argv": list(STRICT_ARGV), "cwd": value["cwd"],
+                "release_source_binding": value["before_binding"],
+                "gate_inputs": value["before_gate_inputs"],
+                "historical_subject": value["historical_subject"], "retry": False})):
+            raise ValueError("strict original attempt changed")
+        producer = Path(value["cwd"])
+        if (not producer.is_absolute() or str(producer) != value["cwd"]
+                or producer.resolve(strict=True) != producer):
+            raise ValueError("strict producer path is not canonical")
+        directory_fd = _open_parent(producer / "source")
+        try:
+            info = os.fstat(directory_fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError("strict producer directory is not owned")
+        finally:
+            os.close(directory_fd)
+        if release_source_binding(producer) != source_binding:
+            raise ValueError("strict producer source changed")
+        if (value["historical_subject"] != _historical_subject(
+                Path(value["historical_subject"]["root"]), producer_root=producer)
+                or canonical_json(value["before_gate_inputs"]) != canonical_json(_gate_inputs(producer))
+                or canonical_json(value["after_gate_inputs"]) != canonical_json(_gate_inputs(producer))
+                or release_source_binding(producer) != source_binding
+                or release_source_binding() != source_binding):
+            raise ValueError("strict producer evidence changed")
+        return producer
     except Exception as error:
         raise ValueError("strict gate proof is incomplete or stale") from error
 
@@ -150,22 +184,29 @@ def capture_skill_evaluations(controller, store: ArtifactStore) -> dict:
 
 
 def validate_skill_evaluations(controller, store: ArtifactStore, value: Mapping,
-                               source_binding: ReleaseSourceBinding) -> None:
+                               source_binding: ReleaseSourceBinding, *,
+                               producer_root: Path | None = None) -> None:
     try:
         _authenticate(controller, "release-skill-evaluations-complete", value)
+        producer = ROOT if producer_root is None else producer_root
         if (value["schema_version"] != "fanout-release-skill-evaluations-v1"
+                or source_binding != release_source_binding()
+                or source_binding != release_source_binding(producer)
                 or value["release_source_binding"] != source_binding.to_dict()
                 or set(value["skills"]) != set(SKILLS)):
             raise ValueError("skill closure changed")
         for skill in SKILLS:
             item = value["skills"][skill]
             raw = store.read_bytes(ArtifactRef(**item["receipt_ref"]))
-            if (raw != (ROOT / "evals" / skill / "receipt.json").read_bytes()
-                    or item["source_hash"] != checks.source_hash(ROOT, skill)
-                    or canonical_json(item["source_manifest"]) != canonical_json(checks.source_manifest(ROOT, skill))
-                    or item["eval_set_hash"] != checks.eval_set_hash(ROOT, skill)
-                    or checks.validate_receipt(ROOT, skill, final=True, panel=["claude", "codex", "agy"])):
+            _read_source(producer, f"evals/{skill}/evals.json", _MAX_TOTAL_BYTES)
+            if (raw != _read_source(producer, f"evals/{skill}/receipt.json", _MAX_TOTAL_BYTES)
+                    or item["source_hash"] != checks.source_hash(producer, skill)
+                    or canonical_json(item["source_manifest"]) != canonical_json(checks.source_manifest(producer, skill))
+                    or item["eval_set_hash"] != checks.eval_set_hash(producer, skill)
+                    or checks.validate_receipt(producer, skill, final=True, panel=["claude", "codex", "agy"])):
                 raise ValueError("current raw final receipt was not proven")
+        if release_source_binding(producer) != source_binding or release_source_binding() != source_binding:
+            raise ValueError("source changed during receipt reopening")
     except Exception as error:
         raise ValueError("skill evaluation proof is incomplete or stale") from error
 
@@ -235,8 +276,9 @@ def validate_release_evaluations(controller, evaluation_root: Path, values: Mapp
                for tier, value in (("standard", standard), ("deep", deep))):
             raise ValueError("raw canary receipt hash changed")
         with ArtifactStore.open_existing(Path(evaluation_root) / "raw") as store:
-            validate_skill_evaluations(controller, store, values["skill_evaluations"], source_binding)
-            validate_strict_gate(controller, store, values["strict_gate"], source_binding)
+            producer = validate_strict_gate(controller, store, values["strict_gate"], source_binding)
+            validate_skill_evaluations(controller, store, values["skill_evaluations"], source_binding,
+                                       producer_root=producer)
         if source_binding != release_source_binding():
             raise ValueError("source changed during semantic reopening")
         return CertificationDecision(True, ())

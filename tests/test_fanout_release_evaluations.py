@@ -5,6 +5,9 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,11 +37,16 @@ def release_root(tmp_path, monkeypatch):
     from scripts import fanout_baseline
     checkout = tmp_path / "owned-checkout"
     checkout.mkdir(mode=0o700)
-    for relative in ("Makefile", "scripts/lib/checks.py", "scripts/render.py"):
+    for relative in ("shared/lib/fanout", "components/memory", "components/fanout-container",
+                     "shared/skills/llm-fanout-plan", "shared/skills/llm-fanout-execute"):
+        shutil.copytree(ROOT / relative, checkout / relative,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for relative in ("Makefile", "scripts/lib/checks.py", "scripts/render.py",
+                     "capabilities.toml", "mise.toml", "mise.lock",
+                     *(path.relative_to(ROOT).as_posix() for path in ROOT.glob("scripts/fanout_*.py"))):
         path = checkout / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes((ROOT / relative).read_bytes())
-    (checkout / "capabilities.toml").write_text("")
     lock = checkout / fanout_baseline.HISTORICAL_LOCK
     lock.parent.mkdir(parents=True)
     lock.write_bytes((ROOT / fanout_baseline.HISTORICAL_LOCK).read_bytes())
@@ -47,9 +55,6 @@ def release_root(tmp_path, monkeypatch):
         source=ROOT / "tests/fixtures/llm-fanout-historical-original")
     monkeypatch.setenv("KHENRIX_HISTORICAL_BASELINE_ROOT", str(historical))
     for skill in helper.SKILLS:
-        source = checkout / "shared/skills" / skill
-        source.mkdir(parents=True)
-        (source / "SKILL.md").write_text("Synthetic declared skill source\n")
         evals = checkout / "evals" / skill
         evals.mkdir(parents=True)
         (evals / "evals.json").write_text("[]\n")
@@ -68,6 +73,172 @@ def release_root(tmp_path, monkeypatch):
     store.close()
 
 
+def test_cold_delivered_validator_reopens_authenticated_producer_evidence(release_root, tmp_path, monkeypatch):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"complete synthetic gate output\n", b"retained stderr\n",
+        capture_complete=True, pid=12345))
+    strict = helper.capture_strict_gate(controller, store)
+    skills = helper.capture_skill_evaluations(controller, store)
+    helper.probe._write_private(root / "proofs.json", helper.canonical_json({"strict": strict, "skills": skills}))
+    helper.probe._write_private(root.with_name(root.name + ".controller-capability"),
+                                controller.capability.export_token().encode("ascii"))
+    spec = importlib.util.spec_from_file_location("_release_cold_delivery", ROOT / "components/skills/skillctl.py")
+    delivery = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = delivery
+    spec.loader.exec_module(delivery)
+    config = delivery.load_configuration(ROOT, tmp_path / "home", None)
+    delivery.apply(config, expect=delivery.plan(config)[0], as_json=True)
+    installed = config.home / ".agents/skills/llm-fanout-execute"
+    command = '''
+import importlib, importlib.util, pathlib, sys
+entry, evidence_root, producer_root = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("installed_helper", entry)
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+runtime = helper._runtime()
+evaluations = importlib.import_module("scripts.fanout_release_evaluations")
+source = importlib.import_module(runtime.__name__ + ".container_source")
+assert evaluations.ROOT == entry.parent.parent
+proofs, _ = evaluations._read_owned_json(evidence_root / "proofs.json")
+controller = evaluations.probe._quality_controller(evidence_root)
+with runtime.ArtifactStore.open_existing(evidence_root / "raw") as store:
+    producer = evaluations.validate_strict_gate(controller, store, proofs["strict"], source.release_source_binding())
+    assert producer == producer_root
+    evaluations.validate_skill_evaluations(controller, store, proofs["skills"],
+                                          source.release_source_binding(), producer_root=producer)
+    assert store.read_bytes(runtime.ArtifactRef(**proofs["strict"]["stdout_ref"])) == b"complete synthetic gate output\\n"
+    assert store.read_bytes(runtime.ArtifactRef(**proofs["strict"]["stderr_ref"])) == b"retained stderr\\n"
+assert not (evaluations.ROOT / "evals").exists()
+assert all(not getattr(module, "__file__", "") or not pathlib.Path(module.__file__).is_relative_to(producer_root)
+           for module in sys.modules.values())
+print("authenticated producer evidence reopened")
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(installed / "scripts/execute.py"), str(root), str(helper.ROOT)],
+                            cwd=config.home, env={"PATH": os.environ["PATH"], "HOME": str(config.home)},
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "authenticated producer evidence reopened"
+    for path in (helper.ROOT / "shared/lib/fanout/container_boundary.py",
+                 helper.ROOT / "Makefile", helper.ROOT / "evals/llm-fanout-plan/receipt.json",
+                 helper.ROOT / "evals/llm-fanout-plan/evals.json",
+                 tmp_path / "historical/snapshot/shared/lib/council/engine.py",
+                 root / "raw/strict-gate/stdout.bin", root / "raw/strict-gate/process.json"):
+        original = path.read_bytes()
+        path.write_bytes(original + b"\nchanged evidence\n")
+        refused = subprocess.run(result.args, cwd=config.home,
+                                 env={"PATH": os.environ["PATH"], "HOME": str(config.home)},
+                                 capture_output=True, text=True)
+        assert refused.returncode != 0, str(path)
+        assert "proof is incomplete or stale" in refused.stderr
+        path.write_bytes(original)
+    renamed = helper.ROOT.with_name("hidden-producer")
+    helper.ROOT.rename(renamed)
+    for symlink in (False, True):
+        if symlink:
+            helper.ROOT.symlink_to(renamed, target_is_directory=True)
+        refused = subprocess.run(result.args, cwd=config.home,
+                                 env={"PATH": os.environ["PATH"], "HOME": str(config.home)},
+                                 capture_output=True, text=True)
+        assert refused.returncode != 0
+        assert "strict gate proof is incomplete or stale" in refused.stderr
+    helper.ROOT.unlink()
+    renamed.rename(helper.ROOT)
+
+
+@pytest.mark.parametrize("reseal", (False, True))
+def test_changed_proof_cannot_redirect_before_producer_reads(release_root, tmp_path, monkeypatch, reseal):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"synthetic complete gate", b"", capture_complete=True, pid=12345))
+    proof = helper.capture_strict_gate(controller, store)
+    foreign = tmp_path / "unrelated-producer"
+    proof["cwd"] = str(foreign)
+    if reseal:
+        unsigned = {key: value for key, value in proof.items()
+                    if key not in {"completion_evidence_name", "completion_evidence_digest"}}
+        proof = helper._seal(controller, "release-strict-gate-complete", unsigned)
+        (root / "raw/strict-gate/process.json").write_bytes(helper.canonical_json(proof))
+    resolve = Path.resolve
+    read_bytes = Path.read_bytes
+    def refuse_external_resolution(path, *args, **kwargs):
+        if path.is_relative_to(foreign):
+            pytest.fail("unverified producer path was resolved")
+        return resolve(path, *args, **kwargs)
+    def refuse_external_read(path):
+        if path.is_relative_to(foreign):
+            pytest.fail("unverified producer evidence was read")
+        return read_bytes(path)
+    monkeypatch.setattr(Path, "resolve", refuse_external_resolution)
+    monkeypatch.setattr(Path, "read_bytes", refuse_external_read)
+    with pytest.raises(ValueError, match="strict gate proof"):
+        helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
+
+
+@pytest.mark.parametrize("damage", ("missing", "cwd", "argv", "binding", "gate", "subject",
+                                    "mode", "symlink", "noncanonical"))
+def test_strict_gate_requires_unchanged_original_attempt(release_root, monkeypatch, damage):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"synthetic complete gate", b"", capture_complete=True, pid=12345))
+    proof = helper.capture_strict_gate(controller, store)
+    path = root / "strict-gate-attempt.json"
+    attempt = json.loads(path.read_bytes())
+    if damage == "missing":
+        path.unlink()
+    elif damage == "mode":
+        path.chmod(0o644)
+    elif damage == "symlink":
+        replacement = path.with_name("other-attempt.json")
+        path.rename(replacement)
+        path.symlink_to(replacement)
+    elif damage == "noncanonical":
+        path.write_text(json.dumps(attempt, indent=2))
+    else:
+        key = {"binding": "release_source_binding", "gate": "gate_inputs",
+               "subject": "historical_subject"}.get(damage, damage)
+        attempt[key] = "/unrelated/producer" if damage == "cwd" else {}
+        path.write_bytes(helper.canonical_json(attempt))
+    with pytest.raises(ValueError, match="strict gate proof"):
+        helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
+
+
+@pytest.mark.parametrize("pid", (None, 0, "12345", True))
+def test_strict_gate_refuses_resealed_invalid_process_pid(release_root, monkeypatch, pid):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"synthetic complete gate", b"", capture_complete=True, pid=12345))
+    original = helper.capture_strict_gate(controller, store)
+    unsigned = {key: value for key, value in original.items()
+                if key not in {"completion_evidence_name", "completion_evidence_digest"}}
+    unsigned["pid"] = pid
+    changed = helper._seal(controller, "release-strict-gate-complete", unsigned)
+    (root / "raw/strict-gate/process.json").write_bytes(helper.canonical_json(changed))
+    with pytest.raises(ValueError, match="strict gate proof"):
+        helper.validate_strict_gate(controller, store, changed, helper.release_source_binding())
+
+
+@pytest.mark.parametrize("leaf", ("Makefile", "evals/llm-fanout-plan/receipt.json",
+                                  "evals/llm-fanout-plan/evals.json"))
+def test_producer_evidence_refuses_identical_bytes_through_symlink(release_root, tmp_path, monkeypatch, leaf):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"synthetic complete gate", b"", capture_complete=True, pid=12345))
+    strict = helper.capture_strict_gate(controller, store)
+    skills = helper.capture_skill_evaluations(controller, store)
+    path = helper.ROOT / leaf
+    outside = tmp_path / "outside-evidence.json"
+    outside.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(outside)
+    with pytest.raises(ValueError):
+        producer = helper.validate_strict_gate(controller, store, strict, helper.release_source_binding())
+        helper.validate_skill_evaluations(controller, store, skills, helper.release_source_binding(),
+                                          producer_root=producer)
+
+
 def test_strict_gate_transports_and_reopens_only_its_explicit_historical_subject(release_root, monkeypatch):
     from shared.lib.fanout import process
     helper, root, controller, store = release_root
@@ -80,7 +251,7 @@ def test_strict_gate_transports_and_reopens_only_its_explicit_historical_subject
         assert tuple(command.argv) == helper.STRICT_ARGV
         assert environment.get("KHENRIX_HISTORICAL_BASELINE_ROOT") == str(historical)
         assert "ANTHROPIC_API_KEY" not in environment
-        return helper.ProcessResult(helper.ProcessStatus.EXIT, 0, b"bounded fake gate", b"")
+        return helper.ProcessResult(helper.ProcessStatus.EXIT, 0, b"bounded fake gate", b"", pid=12345)
 
     monkeypatch.setattr(process, "_supervise_command", supervise)
     proof = helper.capture_strict_gate(controller, store)
@@ -129,7 +300,7 @@ def test_strict_gate_reopens_fixed_command_complete_process_output_and_source(re
         assert tuple(command.argv) == ("mise", "exec", "--", "make", "precommit")
         assert Path(command.cwd) == helper.ROOT
         return helper.ProcessResult(helper.ProcessStatus.EXIT, 0,
-            b"full gate stdout\n" + b"x" * 8192, b"full gate stderr\x00\n", capture_complete=True)
+            b"full gate stdout\n" + b"x" * 8192, b"full gate stderr\x00\n", capture_complete=True, pid=12345)
 
     monkeypatch.setattr(helper, "run_command", command_run)
     proof = helper.capture_strict_gate(controller, store)
@@ -274,7 +445,7 @@ def test_all_five_release_dependencies_reopen_complete_original_proofs(
             "receipt": receipt, "raw_receipt_sha256": summary["tiers"][tier]["raw_receipt_sha256"]}
     values["skill_evaluations"] = helper.capture_skill_evaluations(controller, store)
     monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
-        helper.ProcessStatus.EXIT, 0, b"full synthetic gate result", b"", capture_complete=True))
+        helper.ProcessStatus.EXIT, 0, b"full synthetic gate result", b"", capture_complete=True, pid=12345))
     values["strict_gate"] = helper.capture_strict_gate(controller, store)
     assert helper.validate_release_evaluations(controller, root, values,
         helper.release_source_binding(), tmp_path / "trial").passed
@@ -314,7 +485,7 @@ def test_release_runner_reopens_current_version_canaries_without_host_probes(
     monkeypatch.setattr(helper, "maka_evidence", lambda _: {"synthetic": True})
     monkeypatch.setattr(helper, "validate_maka_evidence", lambda *_: None)
     monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
-        helper.ProcessStatus.EXIT, 0, b"synthetic complete strict gate", b"", capture_complete=True))
+        helper.ProcessStatus.EXIT, 0, b"synthetic complete strict gate", b"", capture_complete=True, pid=12345))
     destination = tmp_path / "new-release"
     result = helper.run_release_evaluations(destination, trial_root=trial_root,
         maka_root=tmp_path / "synthetic-maka", standard_root=Path(standard["private_run_root"]),

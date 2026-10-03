@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 REQUIRED = (
+    "capabilities.toml",
     "mise.toml",
     "mise.lock",
     "shared/lib/fanout/broker.py",
@@ -38,6 +39,7 @@ REQUIRED = (
     "shared/skills/llm-fanout-execute/scripts/execute.py",
     "scripts/fanout_container_certify.py",
     "scripts/fanout_route_doctor.py",
+    "scripts/lib/checks.py",
 )
 
 

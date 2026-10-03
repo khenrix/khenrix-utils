@@ -306,8 +306,8 @@ def test_delivery_stages_executor_runtime_memory_and_gate(tmp_path: Path):
     config = skillctl.load_configuration(ROOT, tmp_path / "home", None)
     with skillctl.staged_skill_sources(config) as staged:
         bundled = staged["llm-fanout-execute"]
-        for relative, source in (("lib/fanout/__init__.py", "shared/lib/fanout/__init__.py"),
-                                 ("memory/memory_exchange.py", "components/memory/memory_exchange.py")):
+        for relative, source in (("shared/lib/fanout/__init__.py", "shared/lib/fanout/__init__.py"),
+                                 ("components/memory/memory_exchange.py", "components/memory/memory_exchange.py")):
             assert (bundled / relative).read_bytes() == (ROOT / source).read_bytes()
         assert (bundled / "scripts/execute.py").is_file()
     source_paths = {path for path, _ in checks.source_manifest(ROOT, "llm-fanout-execute")}
@@ -316,6 +316,153 @@ def test_delivery_stages_executor_runtime_memory_and_gate(tmp_path: Path):
     assert "capabilities.toml" in source_paths
     assert str(ROOT / "tests/test_fanout_execute_skill.py") in harness.DETERMINISTIC_GATED["llm-fanout-execute"]
     assert harness.DETERMINISTIC_GATE_NAMES["llm-fanout-execute"] == "fanout-execute-contracts"
+
+
+@pytest.mark.parametrize("skill,entry", (("llm-fanout-plan", "plan.py"),
+                                        ("llm-fanout-execute", "execute.py")))
+def test_delivered_cold_helpers_attest_checkout_closure_without_source(
+    tmp_path: Path, skill: str, entry: str,
+):
+    spec = importlib.util.spec_from_file_location("_cold_delivery", ROOT / "components/skills/skillctl.py")
+    assert spec and spec.loader
+    delivery = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = delivery
+    spec.loader.exec_module(delivery)
+    original_config = delivery.load_configuration(ROOT, tmp_path / "home", None)
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    files = {ROOT / "capabilities.toml", original_config.house_source,
+             *original_config.instruction_overlays.values()}
+    sources = {*original_config.sources.values(),
+               *(source for bundles in original_config.skill_bundles.values() for source in bundles.values())}
+    for source in files | sources:
+        destination = origin / source.relative_to(ROOT)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        else:
+            shutil.copy2(source, destination)
+    config = delivery.load_configuration(origin, tmp_path / "home", None)
+    delivery.apply(config, expect=delivery.plan(config)[0], as_json=True)
+    from fanout.container_source import release_source_binding
+    expected = release_source_binding(ROOT).to_dict()
+    origin.rename(tmp_path / "hidden-origin")
+    installed = config.home / ".agents/skills" / skill
+    probe = '''
+import importlib, importlib.util, json, pathlib, sys
+entry = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("cold_helper", entry)
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+runtime = helper._runtime()
+source = importlib.import_module(runtime.__name__ + ".container_source")
+binding = source.release_source_binding()
+certification = importlib.import_module(runtime.__name__ + ".container_certification")
+coordinator = importlib.import_module(runtime.__name__ + ".container_coordinator")
+probe = importlib.import_module("scripts.fanout_container_certify")
+evaluations = importlib.import_module("scripts.fanout_release_evaluations")
+assert probe.SourceClosureError is source.SourceClosureError
+assert probe.CertificationRejected is certification.CertificationRejected
+assert evaluations.ReleaseSourceBinding is source.ReleaseSourceBinding
+assert coordinator.run_coordinator_turn.__globals__["ArtifactStore"] is runtime.ArtifactStore
+assert pathlib.Path(probe.__file__).is_relative_to(entry.parent.parent)
+assert pathlib.Path(source.__file__).is_relative_to(entry.parent.parent)
+if hasattr(helper, "_memory_modules"):
+    controller, exchange = helper._memory_modules()
+    assert pathlib.Path(controller.__file__).is_relative_to(entry.parent.parent / "components/memory")
+    assert not controller.installed_controller_root().is_relative_to(entry.parent.parent)
+print(json.dumps(binding.to_dict(), sort_keys=True))
+'''
+    environment = {"PATH": os.environ["PATH"], "HOME": str(config.home),
+                   "PYTHONDONTWRITEBYTECODE": "1"}
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
+                             str(installed / "scripts" / entry)],
+                            cwd=config.home, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == expected
+    assert not list(installed.rglob("__pycache__"))
+    foreign = '''
+from types import ModuleType
+foreign = ModuleType("shared")
+foreign.__path__ = ["/foreign/shared"]
+sys.modules["shared"] = foreign
+'''
+    refused = subprocess.run([sys.executable, "-I", "-B", "-c",
+                              "import sys\n" + foreign + probe,
+                              str(installed / "scripts" / entry)],
+                             cwd=config.home, env=environment, capture_output=True, text=True)
+    assert refused.returncode != 0
+    assert "foreign parent package" in refused.stderr
+    for relative in ("shared/lib/fanout/container_boundary.py",
+                     "components/memory/memoryctl.py", "mise.lock"):
+        leaf = installed / relative
+        original = leaf.read_bytes()
+        leaf.write_bytes(original + b"\n# source changed\n")
+        changed = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
+                                  str(installed / "scripts" / entry)],
+                                 cwd=config.home, env=environment, capture_output=True, text=True)
+        assert changed.returncode == 0, changed.stderr
+        assert json.loads(changed.stdout) != expected
+        leaf.write_bytes(original)
+    leaf = installed / "components/fanout-container/relay.py"
+    original = leaf.read_bytes()
+    leaf.unlink()
+    for symlink in (False, True):
+        if symlink:
+            leaf.symlink_to(tmp_path / "hidden-origin/components/fanout-container/relay.py")
+        refused = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
+                                  str(installed / "scripts" / entry)],
+                                 cwd=config.home, env=environment, capture_output=True, text=True)
+        assert refused.returncode != 0
+        assert "SourceClosureError" in refused.stderr
+    leaf.unlink()
+    leaf.write_bytes(original)
+
+
+@pytest.mark.parametrize("skill,entry", (("llm-fanout-plan", "plan.py"),
+                                        ("llm-fanout-execute", "execute.py")))
+@pytest.mark.parametrize("relative", ("SKILL.md", "agents/openai.yaml", "scripts/{entry}"))
+def test_source_binding_refuses_changed_active_installed_entry(tmp_path: Path, relative: str,
+                                                              skill: str, entry: str):
+    spec = importlib.util.spec_from_file_location("_active_delivery", ROOT / "components/skills/skillctl.py")
+    assert spec and spec.loader
+    delivery = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = delivery
+    spec.loader.exec_module(delivery)
+    config = delivery.load_configuration(ROOT, tmp_path / "home", None)
+    from fanout.container_source import SourceClosureError, release_source_binding
+    with delivery.staged_skill_sources(config) as staged:
+        installed = staged[skill]
+        active = installed / relative.format(entry=entry)
+        active.write_bytes(active.read_bytes() + b"\n# changed active entry\n")
+        with pytest.raises(SourceClosureError, match="active"):
+            release_source_binding(installed)
+
+
+@pytest.mark.parametrize("source_cli", (PLANNER, CLI))
+def test_installed_helper_does_not_fall_back_to_unrelated_parent_runtime(tmp_path, source_cli):
+    installed = tmp_path / "owner/skills" / source_cli.parent.parent.name
+    (installed / "shared").mkdir(parents=True)
+    (installed / "scripts").mkdir()
+    shutil.copy2(source_cli, installed / "scripts" / source_cli.name)
+    unrelated = installed.parent.parent / "lib/fanout"
+    unrelated.mkdir(parents=True)
+    (unrelated / "__init__.py").write_text("raise RuntimeError('unrelated runtime executed')\n")
+    command = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+helper._runtime()
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(installed / "scripts" / source_cli.name)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "bundled fanout runtime is missing" in result.stderr
+    assert "unrelated runtime executed" not in result.stderr
 
 
 def test_execute_receipt_stales_on_runtime_memory_or_bundle_mapping(tmp_path: Path):

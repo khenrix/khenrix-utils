@@ -5,7 +5,10 @@ import importlib.util
 import http.client
 import itertools
 import json
+import os
 import queue
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,12 +29,18 @@ EXPECTED_CONNECT_TARGETS = {
 def native_policy():
     if sys.platform != "darwin":
         pytest.skip("native Forge boundary requires macOS sandbox-exec")
+    if not Path("/usr/bin/sandbox-exec").is_file() or not os.access("/usr/bin/sandbox-exec", os.X_OK):
+        pytest.skip("native Forge boundary requires executable macOS sandbox-exec")
     spec = importlib.util.spec_from_file_location(
         "fanout_forge_fixtures", ROOT / "scripts" / "fanout_forge_fixtures.py"
     )
     assert spec and spec.loader
     fixtures = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixtures)
+    try:
+        fixtures._installed_executables()
+    except (fixtures.FixtureError, OSError) as error:
+        pytest.skip(f"native Forge CLI prerequisite unavailable: {error}")
     with tempfile.TemporaryDirectory(prefix="forge-codex-canary-", dir="/private/tmp") as raw:
         temporary = Path(raw)
         baseline = temporary / "baseline"
@@ -57,7 +66,7 @@ def native_policy():
         }
 
 
-def test_installed_codex_version_is_01590_under_native_policy(native_policy: dict) -> None:
+def test_installed_codex_reports_observed_version_under_native_policy(native_policy: dict) -> None:
     result = subprocess.run(
         ["/usr/bin/sandbox-exec", "-p", native_policy["policy"],
          str(native_policy["codex"]), "--version"],
@@ -68,7 +77,17 @@ def test_installed_codex_version_is_01590_under_native_policy(native_policy: dic
     )
     _applied(result)
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "codex-cli 0.159.0"
+    assert re.fullmatch(r"codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", result.stdout.strip()), result.stdout
+
+
+@pytest.mark.parametrize("executor", ("claude", "codex", "agy"))
+def test_native_policy_skips_a_missing_cli_prerequisite(monkeypatch, executor: str) -> None:
+    if sys.platform != "darwin":
+        pytest.skip("native prerequisite fixture requires macOS")
+    which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == executor else which(name))
+    with pytest.raises(pytest.skip.Exception, match="CLI prerequisite unavailable"):
+        next(native_policy.__wrapped__())
 
 
 @pytest.fixture

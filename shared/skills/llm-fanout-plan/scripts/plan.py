@@ -3,18 +3,54 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.machinery
 import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 
 def _runtime():
     skill_root = Path(__file__).resolve().parents[1]
-    candidates = (skill_root / "lib/fanout", skill_root.parent.parent / "lib/fanout")
-    runtime_root = next((path for path in candidates if (path / "__init__.py").is_file()), None)
-    if runtime_root is None:
+    candidates = (skill_root / "shared/lib/fanout", skill_root.parent.parent / "lib/fanout",
+                  skill_root / "lib/fanout")
+    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+        runtime_root = candidates[0]
+    elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
+        runtime_root = candidates[1]
+    else:
+        runtime_root = candidates[2]
+    if not (runtime_root / "__init__.py").is_file():
         raise ValueError("bundled fanout runtime is missing")
+    if runtime_root != candidates[2]:
+        for name, root in (("shared", runtime_root.parents[1]),
+                           ("shared.lib", runtime_root.parent),
+                           ("scripts", runtime_root.parents[2] / "scripts")):
+            parent = sys.modules.get(name)
+            if parent is None:
+                parent = ModuleType(name)
+                parent.__path__ = [str(root)]
+                parent.__package__ = name
+                parent.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=True)
+                parent.__spec__.submodule_search_locations = parent.__path__
+                sys.modules[name] = parent
+            elif (getattr(parent, "__file__", None) is not None or
+                  {Path(path).resolve() for path in getattr(parent, "__path__", ())} != {root.resolve()}):
+                raise ValueError("fanout runtime has a foreign parent package")
+        existing = sys.modules.get("shared.lib.fanout")
+        if existing is not None:
+            if Path(existing.__file__).resolve().parent != runtime_root.resolve():
+                raise ValueError("fanout runtime imported a foreign package")
+            return existing
+        spec = importlib.util.spec_from_file_location("shared.lib.fanout", runtime_root / "__init__.py",
+            submodule_search_locations=[str(runtime_root)])
+        if spec is None or spec.loader is None:
+            raise ValueError("fanout runtime imported a foreign package")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
     spec = importlib.util.spec_from_file_location(
         "_fanout_plan_cli_runtime", runtime_root / "__init__.py",
         submodule_search_locations=[str(runtime_root)],

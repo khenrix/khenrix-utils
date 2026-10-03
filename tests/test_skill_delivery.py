@@ -99,6 +99,67 @@ def plant_unsafe_ignored_bundle_entry(repo: Path, kind: str) -> None:
         os.mkfifo(source / "runtime.pyc")
 
 
+def test_file_bundle_delivery_tracks_bytes_modes_and_restore(tmp_path: Path) -> None:
+    repo, home, config = bundle_fixture(tmp_path, {
+        "khenrix-quality": {"scripts/run.sh": "shared/lib/runtime/run.sh"},
+    })
+    skillctl.apply(config, expect=skillctl.plan(config)[0], as_json=True)
+    target = home / ".agents/skills/khenrix-quality/scripts/run.sh"
+    assert target.read_bytes() == b"#!/bin/sh\nexit 0\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    target.chmod(0o700)
+    original = tree_snapshot(target.parent.parent)
+    source = repo / "shared/lib/runtime/run.sh"
+    source.write_bytes(b"#!/bin/sh\nexit 9\n")
+    source.chmod(0o600)
+    skillctl.apply(config, expect=skillctl.plan(config)[0], as_json=True)
+    receipt = json.loads((config.state_dir / skillctl.RECEIPT_NAME).read_bytes())
+    assert target.read_bytes() == b"#!/bin/sh\nexit 9\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+    target.chmod(0o600)
+    with pytest.raises(skillctl.DeliveryError, match="changed"):
+        skillctl.restore(config, receipt["backup_id"])
+    target.chmod(0o644)
+    skillctl.restore(config, receipt["backup_id"])
+    assert tree_snapshot(target.parent.parent) == original
+
+
+@pytest.mark.parametrize("source", ("shared", "shared/lib", "shared/lib/council/file.py"))
+def test_file_bundle_refuses_historical_ancestors(tmp_path: Path, source: str) -> None:
+    with pytest.raises(skillctl.DeliveryError, match="historical-only"):
+        bundle_fixture(tmp_path, {"khenrix-quality": {"source": source}})
+
+
+@pytest.mark.parametrize("changed", ("symlink", "fifo", "missing", "ancestor"))
+def test_file_bundle_refuses_unsafe_source_after_admission(tmp_path: Path, changed: str) -> None:
+    repo, _, config = bundle_fixture(tmp_path, {
+        "khenrix-quality": {"scripts/run.sh": "shared/lib/runtime/run.sh"},
+    })
+    source = repo / "shared/lib/runtime/run.sh"
+    source.unlink()
+    if changed == "symlink":
+        source.symlink_to(repo / "house-style.md")
+    elif changed == "fifo":
+        os.mkfifo(source)
+    elif changed == "ancestor":
+        directory = source.parent
+        directory.rename(directory.with_name("hidden-runtime"))
+        directory.symlink_to(directory.with_name("hidden-runtime"), target_is_directory=True)
+    with pytest.raises(skillctl.DeliveryError):
+        skillctl.plan(config)
+
+
+@pytest.mark.parametrize("mappings", (
+    {"SKILL.md": "shared/lib/runtime/run.sh"},
+    {"references/mode.md/nested": "shared/lib/runtime/run.sh"},
+    {"scripts/run.sh": "shared/lib/runtime/run.sh", "scripts/run.sh/nested": "shared/lib/runtime"},
+    {"scripts": "shared/lib/runtime", "scripts/run.sh": "shared/lib/runtime/run.sh"},
+))
+def test_file_bundle_refuses_canonical_and_cross_bundle_collisions(tmp_path, mappings):
+    with pytest.raises(skillctl.DeliveryError, match="collides"):
+        bundle_fixture(tmp_path, {"khenrix-quality": mappings})
+
+
 def tree_snapshot(root: Path) -> dict[str, tuple[str, int, bytes | None]]:
     snapshot = {".": ("directory", stat.S_IMODE(root.stat().st_mode), None)}
     for item in sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()):

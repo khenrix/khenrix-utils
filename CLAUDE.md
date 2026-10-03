@@ -5,9 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this repo is
 
 khenrix-utils is the source of truth for Claude Code, Codex, Antigravity/`agy`,
-and Maka. `components/skills/skillctl.py` directly copies 17 skills into their
-native skill roots: the Khenrix-authored `khenrix-quality` and `khenrix-writing`
-from `shared/skills/`, plus 15 vendored Superpowers skills from
+and Maka. `components/skills/skillctl.py` directly copies 19 skills into their
+native skill roots: `khenrix-quality`, `khenrix-writing`, `llm-fanout-plan` and
+`llm-fanout-execute` from `shared/skills/`, plus 15 vendored Superpowers skills from
 `shared/superpowers/`. It also reconciles a bounded house-style block in all four
 instruction files. This selective path does not use a marketplace. The repository
 also owns shared MCP servers, portable settings, shell aliases, a status line, and
@@ -21,7 +21,7 @@ both paths.
 - `marketplaces/<cli>/plugins/khenrix-utils/{capabilities.toml,house-style.md,statusline/}`
 - any `marketplaces/.../skills/*/scripts/{reconcile.py,inventory.py}`
 - `marketplaces/.../skills/<name>/` for plugin-delivered skills sourced from
-  `shared/skills/`. The two Khenrix direct-copy skills and all 15 skills from
+  `shared/skills/`. The four Khenrix direct-copy skills and all 15 skills from
   `shared/superpowers/` are excluded.
 - `marketplaces/.../skills/{khenrix-setup,khenrix-upgrade,khenrix-audit}/SKILL.md` — generated from
   `shared/skill-templates/<skill>/SKILL.md.tmpl` + the per-CLI `[skill_facts.*]` tables
@@ -31,8 +31,10 @@ Edit the originals instead:
 - Capabilities (MCP servers, settings, aliases, instruction targets): `capabilities.toml`
 - Shared base instructions: `house-style.md` — keep it provider-agnostic; CLI-specific
   guidance belongs in that CLI's own config, not here.
-- Shared Khenrix/plugin skills: `shared/skills/<name>/SKILL.md`. The two
-  Khenrix-authored direct-copy skills are `khenrix-quality` and `khenrix-writing`.
+- Shared Khenrix/plugin skills: `shared/skills/<name>/SKILL.md`. The four
+  Khenrix-authored direct-copy skills are `khenrix-quality`, `khenrix-writing`,
+  `llm-fanout-plan` and `llm-fanout-execute`. The fanout controls are native-only;
+  their helpers execute the canonical bundled `shared/lib/fanout` source.
 - Vendored Superpowers skills: `shared/superpowers/<name>/`. Their bodies are
   immutable reviewed upstream material; never edit one as a generic per-skill
   change. Review the central bundle provenance at
@@ -55,8 +57,14 @@ Edit the originals instead:
 
 ## After editing any source-of-truth file
 
-Run `mise run verify` to validate manifests, skills, charts, and
-`capabilities.toml`. For either Khenrix direct-copy skill or an atomic Superpowers
+Run `KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise run verify`
+to validate manifests, skills, charts, and `capabilities.toml`. Both `verify` and
+`precommit` require the explicit unchanged original historical snapshot. Prepare
+it once under an owned `0700` parent with `mise exec -- python
+scripts/fanout_baseline.py prepare-historical --root "$PWD" --historical-root
+/absolute/private/owned/snapshot`; neither gate skips or regenerates it. See
+`headless-invocation.md` for the provenance contract.
+For any Khenrix direct-copy skill or an atomic Superpowers
 bundle update, also run `mise run skills:test`, `mise run
 skills:upstream-status`, and `mise run skills:plan`.
 Apply a reviewed plan with `mise run skills:apply -- --expect sha256:PLAN_ID`,
@@ -79,7 +87,7 @@ blind-reviewed before commit — for every provider, not just Claude. The full p
 (`scripts/eval_harness.py`). Pre-commit ritual for a skill change:
 
 ```bash
-mise run verify
+KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise run verify
 mise exec -- make eval-test
 mise exec -- make eval SKILL=<changed-skill> PROVIDERS=claude,codex,agy
 ```
@@ -95,18 +103,20 @@ unchanged bodies (0.06–0.08) exceeds a threshold of 0 and splitting triples th
 Read the per-provider numbers when a delta is weak or surprising — a pooled pass can hide a
 provider-sized regression.
 `skill-creator` (Claude) and Codex's native creator are optional accelerators on top; the
-harness is the baseline that also covers agy. `llm-council` is one exception — its
-model/mode wiring is gated by `fanout.py --self-test` + `--smoke`, not the judge harness.
-The `DETERMINISTIC_GATED` skills (`khenrix-wiki-add`, `khenrix-wiki-sync`, `llm-forge`) are
-the other: their receipt is earned by a real test suite because a read-only harness cannot
-exercise what they do. Their judge run still costs tokens and is recorded as advisory — the
-receipt names which suite gated it (see the process doc).
+harness is the baseline that also covers agy. The `DETERMINISTIC_GATED` current skills
+(`khenrix-wiki-add`, `khenrix-wiki-sync`, `llm-fanout-plan`, `llm-fanout-execute`)
+earn their receipts through their declared real contract suites; judge runs are advisory.
+Council/Forge's former self-test/smoke and deterministic receipt exceptions apply
+only to unchanged historical sources and evidence. They are excluded from current
+discovery, delivery and receipt requirements. Retirement-first discovery does not
+grant fanout repository-write authority; fresh exact-source certification remains required.
 
 `make eval` writes `evals/<skill>/receipt.json` (skill source-closure hash + eval-set hash)
 on a passing run. **`make precommit`** is the commit-boundary gate: it checks render is in
 sync AND that every eval'd skill's receipt matches its current source (a changed skill with a
 stale/missing receipt fails). `make verify` only warns about stale receipts — run
-`make precommit` before committing a skill change. The source closure includes the bundled
+`KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise exec -- make precommit`
+before committing a skill change. The source closure includes the bundled
 `scripts/lib/*` and `scripts/render.py`, so editing the reconcile engine correctly stales
 every skill. Seed receipts for the current blessed state with `eval_harness.py --seed-receipt`.
 
@@ -152,8 +162,8 @@ missing chart or a dangling evidence reference.
   `description` ≤1024 chars, body <500 lines (enforced by `render.py --check`).
 - Reconcile is non-destructive by design: it only adds missing entries or updates ones
   tagged `khenrix-managed`, and never removes machine-specific config. Preserve this invariant.
-- Selective delivery owns only the 17 names declared in `[skill_delivery].skills`
-  (two Khenrix skills from `shared/skills/` and 15 vendored Superpowers skills from
+- Selective delivery owns only the 19 names declared in `[skill_delivery].skills`
+  (four Khenrix skills from `shared/skills/` and 15 vendored Superpowers skills from
   `shared/superpowers/`), its private state directory, and the bounded house-style
   block. Preserve unrelated skills, parent-directory modes, and instruction text
   outside the markers. Refuse symlinked managed paths rather than following them.

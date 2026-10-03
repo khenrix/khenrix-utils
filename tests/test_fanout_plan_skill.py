@@ -646,9 +646,9 @@ def test_delivery_stages_runtime_and_memory_and_receipt_covers_both(tmp_path: Pa
 
     with skillctl.staged_skill_sources(config) as staged:
         bundled = staged["llm-fanout-plan"]
-        assert (bundled / "lib/fanout/__init__.py").read_bytes() == (
+        assert (bundled / "shared/lib/fanout/__init__.py").read_bytes() == (
             ROOT / "shared/lib/fanout/__init__.py").read_bytes()
-        assert (bundled / "memory/memory_exchange.py").read_bytes() == (
+        assert (bundled / "components/memory/memory_exchange.py").read_bytes() == (
             ROOT / "components/memory/memory_exchange.py").read_bytes()
         result = subprocess.run(
             [sys.executable, str(bundled / "scripts/plan.py"), "from-question",

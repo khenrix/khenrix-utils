@@ -1,5 +1,13 @@
 # llm-fanout Design Contract
 
+Prospective amendment for the accepted remaining work (2026-10-03): active
+Council/Forge discovery and delivery retire first while original source and
+measured evidence remain historical-only. Repository-write authority stays
+closed until the exact-source certification and fresh live gates below pass.
+Current approved Sol 6.1 profiles and canonical direct-copy delivery are stated
+below; this amendment does not restamp historical measurements or claim a new
+served-model review.
+
 ## Goal
 
 Replace `llm-council` and `llm-forge` with two provider-neutral skills:
@@ -19,11 +27,12 @@ output and manifest parity are explicitly out of scope.
 
 - Runtime code supports Python 3.11+ with the standard library only. The
   repository's pinned Python 3.12 is the development runtime.
-- After integrating the current `origin/main`, snapshot its Council/Forge source,
-  skills, fixtures, installed CLI help, and earned receipts as the comparison
-  baseline. Their implementation and skill bytes stay unchanged for the rest
-  of the core plan; baseline locks may be regenerated only from measured
-  current inputs and freshly earned receipts.
+- Preserve the pinned original Council/Forge source, skills, fixtures, CLI help
+  and earned receipts as the comparison baseline. Historical source and locks
+  stay immutable. `verify` and `precommit` require an explicit private original
+  snapshot selected through `KHENRIX_HISTORICAL_BASELINE_ROOT`; prepare it once
+  with `scripts/fanout_baseline.py prepare-historical`. Neither gate skips this
+  prerequisite nor automatically regenerates it from current inputs.
 - Default executors are exactly `claude`, `codex`, and `agy`. Executor IDs are
   registry keys, not an enum, so later adapters require no schema change.
 - Maka is a mandatory routing and evaluation host. It is not an executor and
@@ -33,7 +42,7 @@ output and manifest parity are explicitly out of scope.
 - Versioned executor profiles pin model, effort, CLI version, invocation flags,
   and effective timeout by provider, execution class, and quality tier.
   Standard defaults are `claude-opus-5-5` at `max` for read-only and `xhigh`
-  for repo-write; `gpt-6-sol` at `xhigh` for both; and
+  for repo-write; `gpt-6.1-sol` at `xhigh` for both; and
   `Gemini 3.8 Flash (High)` for both. A requested read-only `deep` tier uses
   Claude `ultracode`, Codex `ultra`, and agy High at an 1800-second default,
   subject to live CLI characterization. Standard
@@ -225,6 +234,11 @@ stdout. It uses authenticated `/api/memory/save` and exact
 `/api/observations/batch`; semantic search and `/context/inject` are not
 correctness paths.
 
+The fanout bundles also carry `components/memory` as release-bound owner-side
+control source. Bundle presence does not supply worker authority: execute checks
+the independently installed memory receipt and inventory, authenticated health
+and initialization, then selects that installation's exchange executable.
+
 Executor child environments set `KHENRIX_NESTED_AGENT=1` so automatic memory
 hooks cannot leak prior peer context into blind round one. The orchestrator's
 explicit exchange is unaffected.
@@ -258,10 +272,31 @@ restores the pre-handover backup if final verification fails.
 
 ## Skill Delivery and Maka
 
-Both fanout skills are canonical direct-copy skills. A generic `skill_bundles`
-mapping materializes `shared/lib/fanout` as `lib/fanout` inside each installed
-skill without duplicating the canonical source. Composite plan IDs, backups,
-receipts, rollback, collision checks, and traversal checks cover the whole tree.
+Both fanout skills are canonical direct-copy skills. Existing `skill_bundles`
+mappings deliver the complete release source at the same logical repository paths
+inside each skill: `shared/lib/fanout`, both `shared/skills/llm-fanout-*`
+directories, `components/memory`, `components/fanout-container`, root runtime
+files, `capabilities.toml`, `scripts/fanout_*.py` and `scripts/lib/checks.py`.
+The manifest and checks dependency are part of the runtime source inventory.
+The helper executes this bundled runtime with
+the certifier/coordinator's shared namespace; release attestation works without
+the originating checkout. Active top-level helper and metadata bytes must equal
+their canonical bundled copies. Composite plan IDs, backups, receipts, rollback,
+collision checks, traversal checks and observed mode hashes cover the whole tree,
+including bounded regular-file bundle leaves. Bundled memory control source and
+the independently installed memory worker retain separate authority.
+
+Certified release-evidence reopening retains an owner-held producer checkout as
+evidence. The installed runtime always attests itself; it authenticates the
+original strict completion, stored process/output and owned canonical attempt
+before reopening that attempt's recorded producer directory. The directory must
+be canonical, owned and free of symlinks, and its full release binding must match
+the active binding before and after evidence reads. The same producer root
+supplies the unchanged strict gate inputs, original historical subject and raw
+current final receipts. Producer code is hashed, never imported or executed.
+Missing or changed evidence fails closed. Receipt/eval data are not bundled;
+this retained evidence requirement is separate from independent source
+attestation and does not make certification authority portable to another machine.
 
 Maka smoke schema v2 records ordered `expected_skills[]` and proves primary
 admission, nested natural loads, source, rank, truncation, session identity, and
@@ -273,12 +308,12 @@ retaining compaction archives; the managed relay independently permits only
 those two tools on the provider wire and attests the outbound set.
 
 Maka also judges quality comparisons through a separate evaluation adapter that
-cannot be registered as an executor. Routing smoke uses the interactive GPT-6
-Sol route. Quality comparison runs both that route and the pinned Harbor-lab
-GPT-5.6 Sol profile through no-tools, arbitrary-case, structured-ballot
-invocations, not the existing fixed Harbor benchmark. Each ballot records
+cannot be registered as an executor. Routing smoke uses the interactive
+`gpt-6.1-sol` route at `xhigh`. Quality comparison runs both that route and the
+separate Harbor-lab `gpt-6.1-sol` profile at `xhigh` through no-tools,
+arbitrary-case, structured-ballot invocations, not the existing fixed Harbor benchmark. Each ballot records
 auth route, requested and observed model, and effort. The routes are separate
-mandatory panels: failure of either fails certification. Repeated GPT-6 Sol
+mandatory panels: failure of either fails certification. Repeated Sol 6.1
 ballots never increase the number of independent cases or model families.
 
 ## Quality and Retirement Gates
@@ -313,9 +348,12 @@ Core certification requires:
 - At least 30 operational samples support p95 claims. A standard three-seat,
   two-round run is six no-retry turns. Resume never repeats a settled turn.
 
-Only a green non-inferiority receipt unlocks consumer migration.
+Active legacy discovery and delivery retire before these receipts under the
+accepted retirement-first amendment. That change grants no repository-write
+capability. A green non-inferiority receipt, exact source/route/image/certificate
+admission and fresh installed/live proof remain required for write availability.
 
-Legacy retirement additionally requires zero active run directories, legacy
+Completing legacy run retirement additionally requires zero active run directories, legacy
 refs, registered worktrees, and related Git admin entries across every repository
 named by legacy manifests. Historical artifacts remain untouched. Destructive
 per-run cleanup keeps its normal approval boundary.

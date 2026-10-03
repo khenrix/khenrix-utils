@@ -49,6 +49,33 @@ receipt under `~/.local/state/khenrix-utils/skills/`. See
 [`docs/skills.md`](docs/skills.md) for the skill overview, routing rules, restore
 command, and upstream update process.
 
+The fanout skills carry the full release control source at its canonical
+repository paths inside each delivered skill, including `shared/lib/fanout`,
+both `shared/skills/llm-fanout-*` controls, `components/memory`,
+`components/fanout-container`, required root files, `scripts/fanout_*.py` and
+the release validator's `scripts/lib/checks.py` dependency. The manifest and
+that dependency are included in the runtime source binding.
+The active helper and metadata must match their attested canonical copies.
+Bundled memory code performs owner-side control checks; the independent memory
+installation, receipt and authenticated worker still provide memory authority.
+
+Source attestation and normal read-only use work independently of the originating
+checkout. Certified release-evidence reopening additionally needs the retained
+owner-held producer checkout and its original evidence. The installed validator
+authenticates the strict attempt and stored process before using the producer's
+recorded path, requires the same full source binding, and rechecks its current
+gate inputs, original historical subject and raw final receipts. Missing or
+changed producer evidence refuses admission; receipts and evaluation data are
+not delivered with the skills.
+
+Council and Forge are retired from active discovery and delivery first, while
+their source and measured evidence remain historical-only. This retirement does
+not open repository-write execution: exact source, route, image and certificate
+admission and fresh live proof remain required. Current approved Codex profiles
+use `gpt-6.1-sol` with standard `xhigh` and read-only deep `ultra`; the separate
+Harbor quality panel uses `gpt-6.1-sol` at `xhigh`. Approval does not establish an
+observed served model or revalidate an older run.
+
 The 15 Superpowers directories are a pinned snapshot of
 [`obra/superpowers`](https://github.com/obra/superpowers). Their immutable commit,
 selected paths, tree hash, license, and notice are recorded with the canonical
@@ -172,9 +199,18 @@ Read-only inspection without installing:
 mise run skills:plan      # selective skill and house-style diff
 mise run skills:status    # exits non-zero when managed content drifted
 mise run defaults:status # model/effort drift only
-mise run verify           # validate manifests + skills
+KHENRIX_HISTORICAL_BASELINE_ROOT=/absolute/private/owned/snapshot mise run verify
 mise exec -- make status  # full config diff for every CLI
 ```
+
+`verify` and `precommit` require an explicit private snapshot of the original
+historical sources. Prepare it once from the pinned original revision with
+`mise exec -- python scripts/fanout_baseline.py prepare-historical --root "$PWD"
+--historical-root /absolute/private/owned/snapshot`, under an owned `0700` parent,
+then supply that same root through `KHENRIX_HISTORICAL_BASELINE_ROOT` to both
+gates. The gate fails when the snapshot is missing or changed; it neither skips
+the check nor regenerates the snapshot. See [headless-invocation.md](headless-invocation.md)
+for the original provenance and preparation contract.
 
 ## Editing the source of truth
 
@@ -182,7 +218,8 @@ mise exec -- make status  # full config diff for every CLI
 - **Shared house style:** `house-style.md` (rendered into each CLI's memory file
   inside an idempotent `khenrix-managed` block)
 - **Khenrix-authored direct-copy skills:** `shared/skills/khenrix-quality/` and
-  `shared/skills/khenrix-writing/`
+  `shared/skills/khenrix-writing/`, plus the native controls
+  `shared/skills/llm-fanout-plan/` and `shared/skills/llm-fanout-execute/`
 - **Vendored direct-copy skills:** the 15 Superpowers directories under
   `shared/superpowers/`
 - **Selective delivery, receipts, restore, and Maka smoke:** `components/skills/`
@@ -215,7 +252,7 @@ Then run `khenrix-setup` in the CLI if the change affects live capabilities.
 |------|---------|
 | `capabilities.toml` | LLM-agnostic capability manifest (zero-dependency TOML) |
 | `house-style.md` | Bounded shared instructions → Claude, Codex, agy, and Maka instruction files |
-| `shared/skills/` | Shared Khenrix/plugin skill bodies; contains the two Khenrix direct-copy skills |
+| `shared/skills/` | Shared Khenrix/plugin skill bodies; contains the four Khenrix direct-copy skills |
 | `shared/superpowers/` | The 15 vendored Superpowers skill bodies; copied directly and excluded from plugins |
 | `components/skills/` | Selective delivery, restore, provenance checks, and Maka routing smoke |
 | `shared/skill-templates/` | Shared body templates for the per-CLI skills (filled from `[skill_facts.*]`) |

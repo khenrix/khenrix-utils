@@ -60,11 +60,17 @@ def _sha256(data: bytes) -> str:
 
 def _runtime():
     skill_root = Path(__file__).resolve().parents[1]
-    candidates = (skill_root / "lib/fanout", skill_root.parent.parent / "lib/fanout")
-    runtime_root = next((path for path in candidates if (path / "__init__.py").is_file()), None)
-    if runtime_root is None:
+    candidates = (skill_root / "shared/lib/fanout", skill_root.parent.parent / "lib/fanout",
+                  skill_root / "lib/fanout")
+    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+        runtime_root = candidates[0]
+    elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
+        runtime_root = candidates[1]
+    else:
+        runtime_root = candidates[2]
+    if not (runtime_root / "__init__.py").is_file():
         raise ValueError("bundled fanout runtime is missing")
-    if runtime_root == candidates[1]:
+    if runtime_root != candidates[2]:
         # The certificate authority and its fixed producer share this package.
         for name, root in (("shared", runtime_root.parents[1]),
                            ("shared.lib", runtime_root.parent),
@@ -107,10 +113,16 @@ def _runtime():
 
 def _memory_modules():
     skill_root = Path(__file__).resolve().parents[1]
-    candidates = (skill_root / "memory", skill_root.parent.parent.parent / "components/memory")
+    candidates = (skill_root / "components/memory", skill_root / "memory",
+                  skill_root.parent.parent.parent / "components/memory")
     names = ("memory_ingress.py", "memoryctl.py", "memory_exchange.py")
-    source = next((path for path in candidates if all((path / name).is_file() for name in names)), None)
-    if source is None:
+    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+        source = candidates[0]
+    elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
+        source = candidates[2]
+    else:
+        source = candidates[1]
+    if not all((source / name).is_file() for name in names):
         raise ValueError("bundled memory controller is missing")
     if source.is_symlink() or any((source / name).is_symlink() for name in names):
         raise ValueError("bundled memory controller is unsafe")

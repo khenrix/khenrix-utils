@@ -343,7 +343,7 @@ def load_configuration(repo_root: Path, home: Path, state_override: Path | None)
                 raise DeliveryError(f"skill bundle destination collides with another bundle: {destination}")
             if contains_historical(data, Path(raw_source)):
                 raise DeliveryError(f"skill bundle source contains historical-only content: {raw_source}")
-            source = repo_source_directory(repo_root, raw_source, "skill bundle source")
+            source = repo_bundle_source(repo_root, raw_source, "skill bundle source")
             destinations[destination] = source
         skill_bundles[skill] = destinations
     target_data = raw.get("targets")
@@ -446,15 +446,16 @@ def repo_source_path(repo_root: Path, raw: str, label: str) -> Path:
     return path
 
 
-def repo_source_directory(repo_root: Path, raw: str, label: str) -> Path:
+def repo_bundle_source(repo_root: Path, raw: str, label: str) -> Path:
     relative = Path(raw)
     if not raw or relative == Path(".") or relative.is_absolute() or ".." in relative.parts:
         raise DeliveryError(f"{label} escapes the repository: {raw}")
     path = repo_root / relative
     assert_no_symlink_path(path, repo_root, allow_missing=False)
-    if not path.is_dir():
-        raise DeliveryError(f"{label} must be a real directory: {path}")
-    tree_hash(path, ignore_bytecode=True)
+    if path.is_dir():
+        tree_hash(path, ignore_bytecode=True)
+    elif not path.is_file():
+        raise DeliveryError(f"{label} must be a regular file or real directory: {path}")
     return path
 
 
@@ -646,8 +647,8 @@ def staged_skill_sources(config: Configuration):
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
             )
             for destination, source in bundles.items():
-                assert_no_symlink_path(source, config.repo_root, allow_missing=False)
-                tree_hash(source, ignore_bytecode=True)
+                repo_bundle_source(config.repo_root, source.relative_to(config.repo_root).as_posix(),
+                                   "skill bundle source")
                 target = staged / destination
                 if target.exists() or target.is_symlink() or any(
                     (staged / parent).is_file() or (staged / parent).is_symlink()
@@ -655,10 +656,13 @@ def staged_skill_sources(config: Configuration):
                 ):
                     raise DeliveryError(f"skill bundle destination collides in staged tree: {destination}")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(
-                    source, target, symlinks=True, copy_function=shutil.copy2,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-                )
+                if source.is_dir():
+                    shutil.copytree(
+                        source, target, symlinks=True, copy_function=shutil.copy2,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                    )
+                else:
+                    shutil.copy2(source, target, follow_symlinks=False)
             tree_hash(staged)
             sources[skill] = staged
         yield sources

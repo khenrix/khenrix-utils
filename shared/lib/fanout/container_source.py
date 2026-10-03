@@ -97,6 +97,8 @@ def _source_paths(root: Path) -> list[str]:
         for path in root.glob(pattern)
     }
     required = {
+        "capabilities.toml",
+        "scripts/lib/checks.py",
         *_HOST_RUNTIME,
         *(f"shared/lib/fanout/{name}" for name in _CORE),
         *(f"components/fanout-container/{name}" for name in _IMAGE),
@@ -174,7 +176,26 @@ def runtime_source_digest(root: Path | None = None) -> str:
     source_root = _SOURCE_ROOT if root is None else Path(root)
     if source_root.is_symlink() or not source_root.is_dir():
         raise SourceClosureError("source root is missing or unsafe")
+    _validate_active_skill(source_root)
     return _digest_paths(source_root, _source_paths(source_root))
+
+
+def _validate_active_skill(root: Path) -> None:
+    """Bind direct-copy entry/metadata duplicates to the canonical release bytes."""
+    entries = {"llm-fanout-plan": "scripts/plan.py",
+               "llm-fanout-execute": "scripts/execute.py"}
+    active = [name for name, entry in entries.items()
+              if (root / entry).exists() or (root / entry).is_symlink()]
+    metadata = (root / "SKILL.md", root / "agents/openai.yaml")
+    if not active and not any(path.exists() or path.is_symlink() for path in metadata):
+        return
+    if len(active) != 1:
+        raise SourceClosureError("active fanout skill entry is missing or ambiguous")
+    name = active[0]
+    for relative in ("SKILL.md", "agents/openai.yaml", entries[name]):
+        canonical = f"shared/skills/{name}/{relative}"
+        if _read_source(root, relative, _MAX_TOTAL_BYTES) != _read_source(root, canonical, _MAX_TOTAL_BYTES):
+            raise SourceClosureError(f"active fanout skill differs from canonical source: {relative}")
 
 
 def _digest_paths(source_root: Path, names: list[str], *,

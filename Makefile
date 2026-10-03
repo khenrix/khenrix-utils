@@ -194,7 +194,7 @@ forge-test-slow: ## Clone- and process-heavy forge suites (no token cost, slower
 forge-host-smoke: ## Optional host integration checks for installed CLI plugin caches
 	$(call RUN_PYTEST,tests/forge_host_smoke.py)
 
-codex-tokenless-canary: ## Codex 0.157.1 fake-provider test under native Seatbelt
+codex-tokenless-canary: ## Installed Codex fake-provider capability tests under native Seatbelt
 	$(call RUN_PYTEST,tests/test_codex_tokenless_canary.py)
 
 forge-proc-host-smoke: ## Optional Linux witness for hostile /proc process names
