@@ -76,3 +76,51 @@ def test_codex_injected_cap_must_fit_request_byte_budget():
     with pytest.raises(BrokerRejected, match="byte budget"):
         _dispatch(broker, body)
     assert sent == []
+
+
+@pytest.mark.parametrize("explicit_cap", (False, True))
+@pytest.mark.parametrize("value", (b'NaN', b'Infinity', b'-Infinity', b'1e999',
+                                    b'[' * 80 + b'0' + b']' * 80),
+                         ids=("nan", "infinity", "negative-infinity", "overflow", "deep"))
+def test_invalid_json_values_refuse_before_spend_in_both_request_forms(explicit_cap, value):
+    sent = []
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: (sent.append(_args), BrokerResponse(
+            200, {"content-type": "application/json"}, b'{}'))[1])
+    cap = b',"max_output_tokens":16' if explicit_cap else b''
+    body = b'{"model":"test-model","input":' + value + cap + b'}'
+    with pytest.raises(BrokerRejected):
+        _dispatch(broker, body)
+    assert sent == []
+    assert broker.effective_output_tokens == ()
+
+
+@pytest.mark.parametrize("explicit_cap", (False, True))
+def test_finite_nested_request_values_preserve_both_request_forms(explicit_cap):
+    sent = []
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: (sent.append(_args[3]), BrokerResponse(
+            200, {"content-type": "application/json"}, b'{"value":1.25}'))[1])
+    cap = b',"max_output_tokens":16' if explicit_cap else b''
+    body = b'{"model":"test-model","input":[{"value":1.25}]' + cap + b'}'
+    assert _dispatch(broker, body).body == b'{"value":1.25}'
+    assert json.loads(sent[0])["input"] == [{"value": 1.25}]
+    assert broker.effective_output_tokens == ((16,) if explicit_cap else (32,))
+
+
+@pytest.mark.parametrize("explicit_cap", (False, True))
+@pytest.mark.parametrize("depth", (63, 64))
+def test_request_json_depth_boundary_refuses_before_send(explicit_cap, depth):
+    sent = []
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: (sent.append(_args[3]), BrokerResponse(
+            200, {"content-type": "application/json"}, b'{}'))[1])
+    cap = b',"max_output_tokens":16' if explicit_cap else b''
+    body = b'{"model":"test-model","input":' + b'[' * depth + b'0' + b']' * depth + cap + b'}'
+    if depth == 64:
+        with pytest.raises(BrokerRejected):
+            _dispatch(broker, body)
+        assert sent == [] and broker.effective_output_tokens == ()
+    else:
+        assert _dispatch(broker, body).body == b'{}'
+        assert len(sent) == 1

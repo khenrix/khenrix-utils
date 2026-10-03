@@ -38,6 +38,7 @@ _AUTH_HEADERS = frozenset({
 _FORWARD_HEADERS = frozenset({
     "content-type", "accept", "anthropic-version", "anthropic-beta", "openai-beta",
 })
+_MAX_JSON_DEPTH = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +126,17 @@ class BrokerResponse:
     body: bytes | Iterable[bytes]
 
 
+def _check_json_depth(value: object) -> None:
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            if depth >= _MAX_JSON_DEPTH:
+                raise BrokerRejected("broker JSON nesting exceeds its finite depth budget")
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
+
+
 def _contains_secret(value: object, credential: str) -> bool:
     pending = [(value, 0)]
     while pending:
@@ -139,8 +151,12 @@ def _contains_secret(value: object, credential: str) -> bool:
                     raise BrokerRejected("broker upstream response nesting is unsupported")
                 try:
                     nested = json.loads(item, object_pairs_hook=_unique_json_pairs)
+                    _check_json_depth(nested)
+                    json.dumps(nested, allow_nan=False)
                 except json.JSONDecodeError:
                     continue
+                except (ValueError, RecursionError) as error:
+                    raise BrokerRejected("broker upstream response is not safe JSON") from error
                 pending.append((nested, nested_depth + 1))
         elif isinstance(item, list):
             pending.extend((child, nested_depth) for child in item)
@@ -167,9 +183,11 @@ def _safe_response_body(body: bytes, mime: str, credential: str) -> bytes:
         decoded = body.decode("utf-8")
         if mime == "application/json":
             parsed = json.loads(decoded, object_pairs_hook=_unique_json_pairs)
+            _check_json_depth(parsed)
             if _contains_secret(parsed, credential):
                 raise BrokerRejected("broker upstream response contains a disallowed disclosure")
-            safe = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")).encode()
+            safe = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"),
+                              allow_nan=False).encode()
         elif mime == "text/event-stream":
             frames = []
             for block in decoded.replace("\r\n", "\n").split("\n\n"):
@@ -193,14 +211,18 @@ def _safe_response_body(body: bytes, mime: str, credential: str) -> bytes:
                 data = "\n".join(data_lines)
                 if data != "[DONE]":
                     parsed = json.loads(data, object_pairs_hook=_unique_json_pairs)
+                    _check_json_depth(parsed)
                     if _contains_secret(parsed, credential):
                         raise BrokerRejected("broker upstream response contains a disallowed disclosure")
-                    data = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))
+                    data = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"),
+                                      allow_nan=False)
                 frames.append((f"event: {event}\n" if event else "") + f"data: {data}\n\n")
             safe = "".join(frames).encode()
         else:
             raise BrokerRejected("broker upstream response content type is unsupported")
-    except (json.JSONDecodeError, UnicodeError) as error:
+    except BrokerRejected:
+        raise
+    except (ValueError, UnicodeError, RecursionError) as error:
         raise BrokerRejected("broker upstream response is not structured UTF-8") from error
     return safe
 
@@ -274,12 +296,7 @@ def _safe_stream_body(chunks: Iterable[bytes], credential: str,
                 raise BrokerRejected("broker upstream stream failed")
             if kind == "end":
                 if buffer.strip():
-                    safe = inspect_frame(buffer)
-                    safe_total += len(safe)
-                    if safe_total > max_bytes:
-                        raise BrokerRejected("broker upstream response exceeds the finite byte budget")
-                    if safe:
-                        yield safe
+                    raise BrokerRejected("broker upstream SSE frame is incomplete")
                 return
             if not isinstance(value, bytes):
                 raise BrokerRejected("broker upstream stream chunk is invalid")
@@ -326,7 +343,9 @@ def _unique_headers(headers: Mapping[str, str]) -> dict[str, str]:
 def _json_object(body: bytes) -> dict[str, object]:
     try:
         value = json.loads(body, object_pairs_hook=_unique_json_pairs)
-    except (ValueError, UnicodeError) as error:
+        _check_json_depth(value)
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
+    except (ValueError, UnicodeError, RecursionError) as error:
         raise BrokerRejected("broker request body is not valid JSON") from error
     if not isinstance(value, dict):
         raise BrokerRejected("broker request body must be an object")
@@ -404,7 +423,7 @@ def _validate_request(permit: BrokerPermit, method: str, path: str,
         try:
             body = json.dumps(document, ensure_ascii=False, sort_keys=True,
                               separators=(",", ":"), allow_nan=False).encode()
-        except (TypeError, ValueError, UnicodeError) as error:
+        except (TypeError, ValueError, UnicodeError, RecursionError) as error:
             raise BrokerRejected("broker request body is not safe JSON") from error
         if len(body) > permit.max_request_bytes:
             raise BrokerRejected("broker request exceeds the finite byte budget")
@@ -559,7 +578,10 @@ class Broker:
         if isinstance(response.body, bytes):
             if len(response.body) > self.permit.max_response_bytes:
                 raise BrokerRejected("broker upstream response exceeds the finite byte budget")
-            safe_body = _safe_response_body(response.body, mime, self._credential)
+            safe_body = (b"".join(_safe_stream_body((response.body,), self._credential,
+                         self.permit.max_response_bytes, expires))
+                         if mime == "text/event-stream" else
+                         _safe_response_body(response.body, mime, self._credential))
             if len(safe_body) > self.permit.max_response_bytes:
                 raise BrokerRejected("broker upstream response exceeds the finite byte budget")
             if time.monotonic() > expires:
@@ -684,6 +706,7 @@ class BrokerListener:
                 self._read_lock = threading.Lock()
                 self._read_complete = False
                 self._read_expired = False
+                self._delivery_started = False
 
                 def expire() -> None:
                     with self._read_lock:
@@ -712,6 +735,7 @@ class BrokerListener:
             def _reply(self, status: int, body: bytes,
                        headers: Mapping[str, str] | None = None) -> None:
                 self.close_connection = True
+                self._delivery_started = True
                 self.send_response(status)
                 for name, value in (headers or {}).items():
                     self.send_header(name, value)
@@ -729,6 +753,7 @@ class BrokerListener:
                     for frame in stream:
                         if not started:
                             self.close_connection = True
+                            self._delivery_started = True
                             self.send_response(response.status)
                             self.send_header("Content-Type", "text/event-stream")
                             self.send_header("Transfer-Encoding", "chunked")
@@ -739,6 +764,7 @@ class BrokerListener:
                         self.wfile.flush()
                     if not started:
                         self.close_connection = True
+                        self._delivery_started = True
                         self.send_response(response.status)
                         self.send_header("Content-Type", "text/event-stream")
                         self.send_header("Transfer-Encoding", "chunked")
@@ -819,10 +845,16 @@ class BrokerListener:
                                 "body_sha256": digest, "delivery": "native-http-complete"})
                 except BrokerRejected:
                     listener._fence_native()
-                    self._refuse()
+                    if self._delivery_started:
+                        self.close_connection = True
+                    else:
+                        self._refuse()
                 except Exception:
                     listener._fence_native()
-                    self._reply(500, b"broker internal failure")
+                    if self._delivery_started:
+                        self.close_connection = True
+                    else:
+                        self._reply(500, b"broker internal failure")
 
             do_GET = do_PUT = do_DELETE = do_CONNECT = do_OPTIONS = do_HEAD = _refuse
 

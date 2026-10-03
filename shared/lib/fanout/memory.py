@@ -703,7 +703,6 @@ class MemoryCheckpointExchange:
         owner: OwnerCapability,
     ) -> CheckpointReceipt:
         self._validate_inputs(checkpoint, journal, owner)
-        checkpoint_ref, intent_ref = self._persist_intent(checkpoint)
         phase = journal.state.seat_phase(
             checkpoint.identity.task_id,
             checkpoint.identity.seat_id,
@@ -713,15 +712,26 @@ class MemoryCheckpointExchange:
         if phase == "publication-intent":
             self._block(journal, checkpoint.identity, owner)
             raise CheckpointBlockedError("ambiguous-publication-intent")
+        if phase not in {"artifacts-durable", "checkpoint-published", "checkpoint-verified"}:
+            raise MemoryDurabilityError("checkpoint seat is not ready for publication")
+        try:
+            checkpoint_ref, intent_ref = self._persist_intent(checkpoint)
+        except (MemoryError, ArtifactError):
+            self._block(journal, checkpoint.identity, owner)
+            raise
         if phase != "artifacts-durable":
             raise MemoryDurabilityError("checkpoint seat is not ready for publication")
-        journal.append(
-            "publication-intent",
-            task_id=checkpoint.identity.task_id,
-            seat_id=checkpoint.identity.seat_id,
-            attempt=checkpoint.identity.attempt,
-            round=checkpoint.identity.round,
-        )
+        try:
+            journal.append(
+                "publication-intent",
+                task_id=checkpoint.identity.task_id,
+                seat_id=checkpoint.identity.seat_id,
+                attempt=checkpoint.identity.attempt,
+                round=checkpoint.identity.round,
+            )
+        except (RunStateError, OSError) as error:
+            self._block(journal, checkpoint.identity, owner)
+            raise MemoryDurabilityError("publication intent could not be made durable") from error
         publication: CheckpointPublication | None = None
         try:
             observation_id = self.controller.save(checkpoint)
@@ -749,11 +759,13 @@ class MemoryCheckpointExchange:
             return receipt
         except CheckpointBlockedError:
             raise
-        except (MemoryError, ArtifactError, RunStateError) as error:
-            self._block(journal, checkpoint.identity, owner)
-            raise CheckpointBlockedError(
-                "publication-failed", publication=publication
-            ) from error
+        except (MemoryError, ArtifactError, RunStateError, OSError) as error:
+            failure = CheckpointBlockedError("publication-failed", publication=publication)
+            try:
+                self._block(journal, checkpoint.identity, owner)
+            except MemoryDurabilityError as block_error:
+                raise block_error from failure
+            raise failure from error
 
     def recover(
         self,
@@ -794,7 +806,10 @@ class MemoryCheckpointExchange:
                 )
         else:
             if task_phase in {None, "memory-recovered"}:
-                self._block(journal, checkpoint.identity, owner)
+                try:
+                    self._block(journal, checkpoint.identity, owner)
+                except MemoryDurabilityError as error:
+                    raise error from CheckpointBlockedError("recovery-failed", publication=publication)
                 task_phase = "blocked-memory"
                 active_owner = recovery_owner
             if task_phase != "blocked-memory":
@@ -809,10 +824,13 @@ class MemoryCheckpointExchange:
             self._verify_publication(checkpoint, publication)
             observation = self.controller.fetch((publication.observation_id,))[0]
             receipt = self._verify_and_persist(checkpoint, publication, observation)
-        except (MemoryError, ArtifactError) as error:
-            raise CheckpointBlockedError(
-                "recovery-failed", publication=publication
-            ) from error
+        except (MemoryError, ArtifactError, OSError) as error:
+            failure = CheckpointBlockedError("recovery-failed", publication=publication)
+            try:
+                self._block(journal, checkpoint.identity, owner)
+            except MemoryDurabilityError as block_error:
+                raise block_error from failure
+            raise failure from error
         try:
             if phase == "publication-intent":
                 journal.append(
@@ -841,8 +859,10 @@ class MemoryCheckpointExchange:
                     round=checkpoint.identity.round,
                     owner=owner,
                 )
-        except RunStateError as error:
-            raise MemoryDurabilityError("recovered checkpoint transitions were not durable") from error
+        except (RunStateError, OSError) as error:
+            failure = CheckpointBlockedError("recovery-failed", publication=publication)
+            failure.__cause__ = error
+            raise MemoryDurabilityError("recovered checkpoint transitions were not durable") from failure
         return receipt
 
     def verify_existing(
@@ -921,7 +941,7 @@ class MemoryCheckpointExchange:
                     )
                 raise MemoryDurabilityError("durable memory evidence changed")
             return expected
-        except ArtifactError as error:
+        except (ArtifactError, OSError) as error:
             raise MemoryDurabilityError("durable memory evidence could not be written") from error
 
     def _persist_intent(self, checkpoint: Checkpoint) -> tuple[ArtifactRef, ArtifactRef]:
@@ -1239,5 +1259,5 @@ class MemoryCheckpointExchange:
                 round=identity.round,
                 owner=owner,
             )
-        except RunStateError as error:
+        except (RunStateError, OSError) as error:
             raise MemoryDurabilityError("blocked-memory could not be made durable") from error

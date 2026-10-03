@@ -466,6 +466,9 @@ def test_same_identity_with_a_different_digest_is_equivocation_before_a_second_s
         exchange.publish(checkpoint, journal=journal, owner=owner)
         with pytest.raises(MemoryEquivocationError):
             exchange.publish(_checkpoint("second"), journal=journal, owner=owner)
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.task_phases["work"] == "blocked-memory"
+        assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
     finally:
         journal.close()
     assert harness.save_calls == 1
@@ -742,6 +745,400 @@ def test_completed_recovery_is_idempotently_revalidated_without_journal_appends(
         journal.close()
     assert harness.save_calls == 1
     assert harness.fetch_calls == 2
+
+
+@pytest.mark.parametrize("failure", ("missing", "tampered", "timeout"))
+def test_completed_recovery_fresh_failure_reblocks_across_journal_reopen(
+    tmp_path, monkeypatch, failure
+):
+    checkpoint = _checkpoint()
+    exchange, _store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    try:
+        publication = _durable_publication(exchange, journal, checkpoint)
+        exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        journal, owner = _resume_journal(journal, owner)
+        if failure == "missing":
+            harness.fetch_result = ProcessResult(ProcessStatus.EXIT, 0, canonical_json({
+                "ok": True, "operation": "fetch", "result": [],
+                "schema_version": memory.CONTROLLER_SCHEMA}), b"")
+        elif failure == "tampered":
+            harness.mutate = lambda row: {**row, "narrative": "tampered"}
+        else:
+            harness.fetch_result = ProcessResult(ProcessStatus.TIMEOUT, None, b"", b"")
+        with pytest.raises(CheckpointBlockedError, match="blocked-memory"):
+            exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.task_phases["work"] == "blocked-memory"
+        assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
+        assert journal.state.seat_phase("work", "claude", 1, 1) == "checkpoint-verified"
+        assert harness.save_calls == 1
+        harness.fetch_result = None
+        harness.mutate = None
+        exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        sequence = journal.state.seq
+        exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        assert journal.state.seq == sequence
+        assert journal.state.task_phases["work"] == "memory-recovered"
+        assert harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("failure", ("equivocation", "quota", "tamper", "intent-append"))
+def test_admitted_preintent_failures_block_without_a_save(tmp_path, monkeypatch, failure):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    try:
+        if failure == "quota":
+            store.close()
+            store = ArtifactStore(tmp_path / "tiny", limits=ArtifactLimits(
+                max_file_bytes=16, max_total_bytes=64))
+            exchange = MemoryCheckpointExchange(exchange.controller, store)
+        elif failure in {"equivocation", "tamper"}:
+            ref, _ = exchange._persist_intent(checkpoint)
+            if failure == "equivocation":
+                checkpoint = _checkpoint("another answer")
+            else:
+                (store.root / ref.path).write_bytes(b"tampered")
+        else:
+            original = RawRunJournal.append
+            def append(self, event, **kwargs):
+                if event == "publication-intent":
+                    raise RunStateError("synthetic failed intent append")
+                return original(self, event, **kwargs)
+            monkeypatch.setattr(RawRunJournal, "append", append)
+        with pytest.raises((MemoryEquivocationError, MemoryDurabilityError)):
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.task_phases["work"] == "blocked-memory"
+        assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
+        assert journal.state.seat_phase("work", "claude", 1, 1) == "artifacts-durable"
+        assert harness.save_calls == 0
+    finally:
+        journal.close()
+
+
+def test_block_append_failure_keeps_durable_publication_for_cold_recovery(tmp_path, monkeypatch):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    original = RawRunJournal.append
+    def append(self, event, **kwargs):
+        if event == "blocked-memory":
+            raise RunStateError("synthetic block append failure")
+        return original(self, event, **kwargs)
+    monkeypatch.setattr(RawRunJournal, "append", append)
+    harness.mutate = lambda row: {**row, "narrative": "tampered"}
+    try:
+        with pytest.raises(MemoryDurabilityError) as failure:
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        assert isinstance(failure.value.__cause__, CheckpointBlockedError)
+        publication = failure.value.__cause__.publication
+        assert publication is not None and publication.observation_id == 41
+        raw = store.read_bytes(publication.publication_ref)
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.task_phases.get("work") != "blocked-memory"
+        monkeypatch.setattr(RawRunJournal, "append", original)
+        harness.mutate = None
+        cold = CheckpointPublication.from_dict(json.loads(raw))
+        assert exchange.recover(checkpoint, cold, journal=journal, owner=owner).verified
+        assert store.read_bytes(cold.publication_ref) == raw
+        assert harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+def test_failed_verified_revalidation_preserves_another_seats_block(tmp_path, monkeypatch):
+    claude = _checkpoint()
+    codex = _checkpoint(seat_id="codex", provider_session_id="codex-thread")
+    exchange, _store, harness = _exchange(tmp_path, monkeypatch, claude)
+    harness.add(codex)
+    journal, owner = _journal(tmp_path, seats=("claude", "codex"))
+    try:
+        publication = _durable_publication(exchange, journal, claude)
+        exchange.recover(claude, publication, journal=journal, owner=owner)
+        journal.append("blocked-memory", task_id="work", seat_id="codex", attempt=1,
+                       round=1, owner=owner)
+        harness.mutate = lambda row: {**row, "narrative": "tampered"}
+        with pytest.raises(MemoryDurabilityError, match="another"):
+            exchange.recover(claude, publication, journal=journal, owner=owner)
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.memory_block_owners["work"] == ("codex", 1, 1)
+        assert harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+def test_publication_failure_preserves_another_seats_block_and_durable_bytes(tmp_path, monkeypatch):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path, seats=("claude", "codex"))
+    try:
+        journal.append("blocked-memory", task_id="work", seat_id="codex", attempt=1,
+                       round=1, owner=owner)
+        harness.mutate = lambda row: {**row, "narrative": "tampered"}
+        with pytest.raises(MemoryDurabilityError, match="another") as failure:
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        publication = failure.value.__cause__.publication
+        assert publication is not None and publication.observation_id == 41
+        raw = store.read_bytes(publication.publication_ref)
+        cold = CheckpointPublication.from_dict(json.loads(raw))
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.memory_block_owners["work"] == ("codex", 1, 1)
+        assert store.read_bytes(cold.publication_ref) == raw
+        assert harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+def test_unadmitted_publication_phase_is_not_a_new_memory_block(tmp_path, monkeypatch):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    try:
+        other = _checkpoint(seat_id="not-admitted")
+        with pytest.raises(MemoryDurabilityError, match="not ready"):
+            exchange.publish(other, journal=journal, owner=owner)
+        assert journal.state.task_phases.get("work") is None
+        assert not (store.root / exchange._prefix(other)).exists()
+        assert harness.save_calls == 0
+    finally:
+        journal.close()
+
+
+def _fail_artifact_sync_once(monkeypatch, store):
+    original = os.fsync
+    failures = []
+    temporary = store.root / ArtifactStore._TEMP_DIR
+    def fsync(fd):
+        info = os.fstat(fd)
+        if not failures and temporary.exists():
+            target = temporary.stat()
+            if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                failures.append("artifact-temp-fsync")
+                raise OSError("synthetic artifact fsync failure")
+        return original(fd)
+    monkeypatch.setattr(os, "fsync", fsync)
+    return failures
+
+
+def _fail_journal_write_once(monkeypatch, event_type, *, partial):
+    original = runstate._write_all
+    failures = []
+    def write(fd, data):
+        if not failures and json.loads(data).get("type") == event_type:
+            original(fd, data[:len(data) // 2] if partial else data)
+            failures.append(data)
+            raise OSError("synthetic journal write failure")
+        return original(fd, data)
+    monkeypatch.setattr(runstate, "_write_all", write)
+    return failures
+
+
+@pytest.mark.parametrize("seam", ("fsync", "write"))
+def test_real_artifact_io_preintent_failure_blocks_without_save(tmp_path, monkeypatch, seam):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    if seam == "fsync":
+        failures = _fail_artifact_sync_once(monkeypatch, store)
+    else:
+        failures = []
+        original = ArtifactStore._write_all
+        def write(fd, data):
+            if not failures:
+                original(fd, data[:1])
+                failures.append("artifact-partial-write")
+                raise OSError("synthetic artifact write failure")
+            return original(fd, data)
+        monkeypatch.setattr(ArtifactStore, "_write_all", staticmethod(write))
+    try:
+        with pytest.raises(MemoryDurabilityError):
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        assert len(failures) == 1 and journal._pending_authority is None
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
+        assert journal.state.task_phases["work"] == "blocked-memory"
+        assert journal.state.seat_phase("work", "claude", 1, 1) == "artifacts-durable"
+        assert harness.save_calls == 0
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("block_owner", ("claude", "codex"))
+def test_real_verification_io_failure_reblocks_or_preserves_other_owner(tmp_path, monkeypatch, block_owner):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path, seats=("claude", "codex"))
+    try:
+        publication = _durable_publication(exchange, journal, checkpoint)
+        receipt = exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        raw = store.read_bytes(publication.publication_ref)
+        if block_owner == "codex":
+            journal.append("blocked-memory", task_id="work", seat_id="codex",
+                           attempt=1, round=1, owner=owner)
+        failures = _fail_artifact_sync_once(monkeypatch, store)
+        error_type = CheckpointBlockedError if block_owner == "claude" else MemoryDurabilityError
+        with pytest.raises(error_type) as failure:
+            exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        assert len(failures) == 1
+        association = failure.value if block_owner == "claude" else failure.value.__cause__
+        assert association.publication == publication
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.memory_block_owners["work"] == (block_owner, 1, 1)
+        assert journal.state.task_phases["work"] == "blocked-memory"
+        assert store.read_bytes(publication.publication_ref) == raw
+        assert harness.save_calls == 1
+        if block_owner == "claude":
+            cold = CheckpointPublication.from_dict(json.loads(raw))
+            assert exchange.recover(checkpoint, cold, journal=journal, owner=owner) == receipt
+            sequence = journal.state.seq
+            exchange.recover(checkpoint, cold, journal=journal, owner=owner)
+            assert journal.state.seq == sequence and harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+def test_real_intent_prewrite_io_failure_blocks_usable_journal(tmp_path, monkeypatch):
+    checkpoint = _checkpoint()
+    exchange, _store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    original = os.fstat
+    identity = journal._journal_identity
+    failures = []
+    def fstat(fd):
+        info = original(fd)
+        if not failures and (info.st_dev, info.st_ino) == identity:
+            failures.append("journal-prewrite-stat")
+            raise OSError("synthetic intent prewrite I/O failure")
+        return info
+    monkeypatch.setattr(os, "fstat", fstat)
+    try:
+        with pytest.raises(MemoryDurabilityError):
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        assert len(failures) == 1 and journal._pending_authority is None
+        journal, owner = _resume_journal(journal, owner)
+        assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
+        assert journal.state.seat_phase("work", "claude", 1, 1) == "artifacts-durable"
+        assert harness.save_calls == 0
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_real_intent_pending_io_failure_never_claims_healthy_block_or_save(tmp_path, monkeypatch, partial):
+    checkpoint = _checkpoint()
+    exchange, _store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    failures = _fail_journal_write_once(monkeypatch, "publication-intent", partial=partial)
+    try:
+        with pytest.raises(MemoryDurabilityError):
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        assert len(failures) == 1
+        assert journal._pending_authority["pending"]["type"] == "publication-intent"
+        assert journal.state.task_phases.get("work") is None
+        assert harness.save_calls == 0
+        before = (journal.root / "events.jsonl").read_bytes()
+        journal, owner = _resume_journal(journal, owner)
+        assert (journal.root / "events.jsonl").read_bytes() == before
+        if partial:
+            assert journal._pending_authority["pending"]["type"] == "publication-intent"
+            with pytest.raises(MemoryDurabilityError):
+                exchange.publish(checkpoint, journal=journal, owner=owner)
+            assert journal.state.task_phases.get("work") is None
+        else:
+            assert journal.state.seat_phase("work", "claude", 1, 1) == "publication-intent"
+            with pytest.raises(CheckpointBlockedError) as failure:
+                exchange.publish(checkpoint, journal=journal, owner=owner)
+            assert failure.value.stage == "ambiguous-publication-intent"
+        assert harness.save_calls == 0
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_real_block_append_io_failure_keeps_publication_and_pending_authority(tmp_path, monkeypatch, partial):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    failures = _fail_journal_write_once(monkeypatch, "blocked-memory", partial=partial)
+    harness.mutate = lambda row: {**row, "narrative": "tampered"}
+    try:
+        with pytest.raises(MemoryDurabilityError) as failure:
+            exchange.publish(checkpoint, journal=journal, owner=owner)
+        publication = failure.value.__cause__.publication
+        assert publication.observation_id == 41 and len(failures) == 1
+        raw = store.read_bytes(publication.publication_ref)
+        assert journal.state.task_phases.get("work") is None
+        assert journal._pending_authority["pending"]["type"] == "blocked-memory"
+        before = (journal.root / "events.jsonl").read_bytes()
+        journal, owner = _resume_journal(journal, owner)
+        assert (journal.root / "events.jsonl").read_bytes() == before
+        assert store.read_bytes(publication.publication_ref) == raw
+        cold = CheckpointPublication.from_dict(json.loads(raw))
+        if partial:
+            assert journal.state.task_phases.get("work") is None
+            assert journal._pending_authority["pending"]["type"] == "blocked-memory"
+            with pytest.raises(MemoryDurabilityError):
+                exchange.recover(checkpoint, cold, journal=journal, owner=owner)
+            assert (journal.root / "events.jsonl").read_bytes() == before
+        else:
+            assert journal.state.memory_block_owners["work"] == ("claude", 1, 1)
+            harness.mutate = None
+            assert exchange.recover(checkpoint, cold, journal=journal, owner=owner).verified
+        assert harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+def test_real_recovered_transition_io_failure_keeps_exact_publication_cause(tmp_path, monkeypatch):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    try:
+        publication = _durable_publication(exchange, journal, checkpoint)
+        raw = store.read_bytes(publication.publication_ref)
+        failures = _fail_journal_write_once(monkeypatch, "checkpoint-verified", partial=False)
+        with pytest.raises(MemoryDurabilityError) as failure:
+            exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        assert failure.value.__cause__.publication == publication
+        assert len(failures) == 1
+        assert journal._pending_authority["pending"]["type"] == "checkpoint-verified"
+        journal, owner = _resume_journal(journal, owner)
+        cold = CheckpointPublication.from_dict(json.loads(raw))
+        assert exchange.recover(checkpoint, cold, journal=journal, owner=owner).verified
+        assert store.read_bytes(cold.publication_ref) == raw and harness.save_calls == 1
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_real_recovery_initial_block_io_failure_keeps_durable_publication(tmp_path, monkeypatch, partial):
+    checkpoint = _checkpoint()
+    exchange, store, harness = _exchange(tmp_path, monkeypatch, checkpoint)
+    journal, owner = _journal(tmp_path)
+    try:
+        publication = _durable_publication(exchange, journal, checkpoint)
+        raw = store.read_bytes(publication.publication_ref)
+        failures = _fail_journal_write_once(monkeypatch, "blocked-memory", partial=partial)
+        with pytest.raises(MemoryDurabilityError) as failure:
+            exchange.recover(checkpoint, publication, journal=journal, owner=owner)
+        assert failure.value.__cause__.publication == publication
+        assert len(failures) == 1 and harness.save_calls == 1
+        assert journal.state.task_phases.get("work") is None
+        assert journal._pending_authority["pending"]["type"] == "blocked-memory"
+        before = (journal.root / "events.jsonl").read_bytes()
+        journal, owner = _resume_journal(journal, owner)
+        assert (journal.root / "events.jsonl").read_bytes() == before
+        assert store.read_bytes(publication.publication_ref) == raw
+        if not partial:
+            cold = CheckpointPublication.from_dict(json.loads(raw))
+            assert exchange.recover(checkpoint, cold, journal=journal, owner=owner).verified
+            assert harness.save_calls == 1
+    finally:
+        journal.close()
 
 
 def test_two_durable_seats_recover_serially_without_resave(

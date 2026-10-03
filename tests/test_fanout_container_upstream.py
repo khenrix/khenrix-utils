@@ -187,7 +187,7 @@ def test_success_capture_refuses_normalized_stream_over_finite_budget(
     _, permit, route = _routed_sender(upstream_module, "codex")
     _, response = connection_factory
     response.headers["content-type"] = "text/event-stream"
-    response.chunks = [b"data: {}\n"]
+    response.chunks = [b"data:{}\n\n"]
     captured = []
     sender = upstream_module.HostUpstream(permit, route, max_response_bytes=9,
         deadline_seconds=2, success_sink=captured.append)

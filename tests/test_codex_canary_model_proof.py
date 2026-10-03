@@ -6,6 +6,7 @@ import http.client
 import importlib
 import json
 import os
+import socket
 import threading
 import sys
 from dataclasses import replace
@@ -175,6 +176,139 @@ def test_native_partial_stream_is_uncertain_and_fenced_without_guest_ack(tmp_pat
         ledger.require_permit(permit_id, 1, permit)
 
 
+@pytest.mark.parametrize("mime,failure", (
+    ("text/event-stream", "digest"), ("text/event-stream", "settle"),
+    ("text/event-stream", "committed-settle"), ("text/event-stream", "partial"),
+    ("application/json", "digest"), ("application/json", "settle"),
+    ("application/json", "committed-settle"),
+))
+def test_native_delivery_failure_emits_only_one_http_response(tmp_path, monkeypatch, mime, failure):
+    from shared.lib.fanout.container_broker import _DeliveryBody
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    ledger = PermitLedger(controller.root / "native-ledger", controller)
+    route = _route("codex")
+    permit = replace(_routed_permit(route, "/v1/responses"), max_response_bytes=4096)
+    permit_id = ledger.register(permit, 1)
+    completed = (_sse({"type": "response.completed", "response": _response()})
+                 if mime == "text/event-stream" else json.dumps(_response()).encode())
+    sent = []
+
+    class Sender:
+        def preview(self, method, path, headers, body):
+            return PreparedOutbound(route.profile.origin, path, body, MODEL, route.digest)
+
+        def __call__(self, *args):
+            sent.append(args)
+            def body():
+                yield completed
+                if failure == "partial":
+                    raise RuntimeError("synthetic delivery failure")
+            return BrokerResponse(200, {"content-type": mime},
+                                  body() if mime == "text/event-stream" else completed)
+
+    if failure == "digest":
+        def digest(self):
+            raise RuntimeError("synthetic digest failure")
+        monkeypatch.setattr(_DeliveryBody, "digest", property(digest))
+    elif failure in {"settle", "committed-settle"}:
+        original = ledger.settle
+        def settle(request_id, digest):
+            if failure == "committed-settle":
+                original(request_id, digest)
+            raise RuntimeError("synthetic settlement failure")
+        monkeypatch.setattr(ledger, "settle", settle)
+    listener = BrokerListener(Broker(permit, credential="fixture-only", send=Sender()),
+        ledger_binding=(ledger, permit_id, 1))
+    with listener:
+        body = json.dumps({"model": MODEL, "input": []}).encode()
+        request = (f"POST /v1/responses HTTP/1.1\r\nHost: {listener.host}:{listener.port}\r\n"
+                   f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n"
+                   f"x-fanout-seat: {permit.placeholder_key}\r\n\r\n").encode() + body
+        with socket.create_connection((listener.host, listener.port), timeout=3) as connection:
+            connection.sendall(request)
+            chunks = []
+            while piece := connection.recv(4096):
+                chunks.append(piece)
+            raw = b"".join(chunks)
+    assert raw.count(b"HTTP/1.1 ") == 1
+    assert raw.startswith(b"HTTP/1.1 200 ")
+    assert listener.native_failed is True and listener.native_deliveries == ()
+    rows = ledger.request_records(permit_id, 1)
+    assert len(rows) == 1
+    assert rows[0]["state"] == ("settled" if failure == "committed-settle" else "uncertain")
+    with pytest.raises(ValueError, match="fenced"):
+        ledger.require_permit(permit_id, 1, permit)
+    assert len(sent) == 1
+
+
+@pytest.mark.parametrize("terminal", (False, True))
+def test_complete_http_body_with_incomplete_sse_never_settles_or_proves_model(
+    tmp_path, upstream_module, connection_factory, terminal
+):
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    ledger = PermitLedger(controller.root / "native-ledger", controller)
+    route = _route("codex")
+    permit = replace(_routed_permit(route, "/v1/responses"), max_response_bytes=4096)
+    permit_id = ledger.register(permit, 1)
+    made, response = connection_factory
+    response.headers["content-type"] = "text/event-stream"
+    prefix = _sse({"type": "response.created", "response": {
+        "id": "resp_fixture", "status": "in_progress"}})
+    tail = (_sse({"type": "response.completed", "response": _response()})[:-2]
+            if terminal else b'data: [DONE]')
+    response.chunks = [prefix, tail]
+    response.length = 0
+    captured = []
+    sender = upstream_module.HostUpstream(permit, route, max_response_bytes=4096,
+        deadline_seconds=2, success_sink=captured.append)
+    listener = BrokerListener(Broker(permit, credential="fixture-only", send=sender),
+        ledger_binding=(ledger, permit_id, 1))
+    with listener:
+        connection = http.client.HTTPConnection(listener.host, listener.port, timeout=3)
+        connection.request("POST", "/v1/responses", json.dumps({"model": MODEL, "input": []}),
+            {"content-type": "application/json", "x-fanout-seat": permit.placeholder_key})
+        with pytest.raises(http.client.IncompleteRead):
+            connection.getresponse().read()
+        connection.close()
+    assert captured == []
+    assert len(made) == 1 and made[0].closed
+    assert response.chunks == [] and response.length == 0
+    assert listener.native_failed and listener.native_deliveries == ()
+    assert ledger.request_records(permit_id, 1)[0]["state"] == "uncertain"
+    with pytest.raises(ValueError, match="fenced"):
+        ledger.require_permit(permit_id, 1, permit)
+
+
+@pytest.mark.parametrize("value", (b'NaN', b'1e999', b'[' * 64 + b'0' + b']' * 64),
+                         ids=("nan", "overflow", "over-depth"))
+def test_native_invalid_request_has_no_reservation_preview_or_connection(tmp_path, value):
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    ledger = PermitLedger(controller.root / "native-ledger", controller)
+    route = _route("codex")
+    permit = _routed_permit(route, "/v1/responses")
+    permit_id = ledger.register(permit, 1)
+    external = []
+    class Sender:
+        def preview(self, *args):
+            external.append("preview")
+            raise AssertionError("invalid request reached preview")
+        def __call__(self, *args):
+            external.append("send")
+            raise AssertionError("invalid request connected")
+    listener = BrokerListener(Broker(permit, credential="fixture-only", send=Sender()),
+        ledger_binding=(ledger, permit_id, 1))
+    with listener:
+        connection = http.client.HTTPConnection(listener.host, listener.port, timeout=3)
+        body = b'{"model":"gpt-6.1-sol","max_output_tokens":16,"input":' + value + b'}'
+        connection.request("POST", "/v1/responses", body,
+            {"content-type": "application/json", "x-fanout-seat": permit.placeholder_key})
+        response = connection.getresponse()
+        assert response.status == 403
+        response.read()
+        connection.close()
+    assert external == [] and ledger.request_records(permit_id, 1) == ()
+
+
 def test_context_cannot_replay_a_settled_turn(turn_case):
     case = turn_case
     context = _issue(case)
@@ -184,6 +318,30 @@ def test_context_cannot_replay_a_settled_turn(turn_case):
         case.runtime.run_provider(request, registry=case.registry)
     assert len(case.made) == 1
     assert _proof().reopen_turn(case.coordinator, case.packet, case.seat, 1, result)["response_model"] == MODEL
+
+
+@pytest.mark.parametrize("committed", (False, True))
+def test_post_delivery_settlement_failure_cannot_issue_native_turn_proof(turn_case, monkeypatch, committed):
+    case = turn_case
+    original = PermitLedger.settle
+    def settle(self, request_id, digest):
+        if committed:
+            original(self, request_id, digest)
+        raise RuntimeError("synthetic settlement failure")
+    monkeypatch.setattr(PermitLedger, "settle", settle)
+    context = _issue(case)
+    request = replace(context.request, canary_capture=context)
+    with pytest.raises(case.runtime.ProviderRequestError, match="proof is incomplete"):
+        case.runtime.run_provider(request, registry=case.registry)
+    records = context._held["ledger"].request_records(context._held["permit_id"], 1)
+    assert len(records) == 1
+    assert records[0]["state"] == ("settled" if committed else "uncertain")
+    assert context._held["listener"].native_failed
+    assert context._held["listener"].native_deliveries == ()
+    assert not (case.artifacts.root / context.request.artifact_prefix / "codex-canary-proof.json").exists()
+    with pytest.raises(case.runtime.ProviderRequestError, match="consumed"):
+        case.runtime.run_provider(request, registry=case.registry)
+    assert len(case.made) == 1
 
 
 def test_resume_requires_original_persisted_first_barrier_and_peer(turn_case):

@@ -57,6 +57,81 @@ def _request(provider: str = "claude") -> tuple[str, dict[str, str], bytes]:
     )
 
 
+@pytest.mark.parametrize("iterable", (False, True))
+def test_sse_representations_reject_cross_frame_credential_text(iterable):
+    frames = (b'data: {"delta":{"text":"controller"}}\n\n',
+              b'data: {"delta":{"text":"-secret"}}\n\n')
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": "text/event-stream"},
+                                          frames if iterable else b"".join(frames)))
+    with pytest.raises(BrokerRejected, match="disclosure"):
+        response = broker.dispatch("POST", *_request())
+        if not isinstance(response.body, bytes):
+            b"".join(response.body)
+
+
+@pytest.mark.parametrize("iterable", (False, True))
+@pytest.mark.parametrize("tail", (b'data: [DONE]', b'data: {"ok":true}\n'))
+def test_sse_eof_never_completes_a_trailing_event(iterable, tail):
+    raw = b'data: {"ok":true}\n\n' + tail
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": "text/event-stream"},
+                                          (raw,) if iterable else raw))
+    with pytest.raises(BrokerRejected, match="incomplete"):
+        response = broker.dispatch("POST", *_request())
+        if not isinstance(response.body, bytes):
+            b"".join(response.body)
+
+
+@pytest.mark.parametrize("iterable", (False, True))
+def test_sse_representations_preserve_finite_crlf_heartbeat_and_terminal(iterable):
+    raw = b': heartbeat\r\n\r\nevent: delta\r\ndata: {"n":1.25}\r\n\r\ndata: [DONE]\r\n\r\n'
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": "text/event-stream"},
+                                          tuple(bytes((byte,)) for byte in raw) if iterable else raw))
+    response = broker.dispatch("POST", *_request())
+    delivered = response.body if isinstance(response.body, bytes) else b"".join(response.body)
+    assert delivered == b':\n\nevent: delta\ndata: {"n":1.25}\n\ndata: [DONE]\n\n'
+
+
+@pytest.mark.parametrize("mime", ("application/json", "text/event-stream"))
+@pytest.mark.parametrize("value", (b'NaN', b'Infinity', b'-Infinity', b'1e999',
+                                    b'[' * 80 + b'0' + b']' * 80),
+                         ids=("nan", "infinity", "negative-infinity", "overflow", "deep"))
+def test_nonfinite_and_deep_responses_are_typed_refusals(mime, value):
+    raw = b'{"value":' + value + b'}'
+    if mime == "text/event-stream":
+        raw = b'data: ' + raw + b'\n\n'
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": mime}, raw))
+    with pytest.raises(BrokerRejected):
+        broker.dispatch("POST", *_request())
+
+
+@pytest.mark.parametrize("mime", ("application/json", "text/event-stream"))
+@pytest.mark.parametrize("depth", (63, 64))
+def test_response_json_depth_boundary_keeps_finite_values(mime, depth):
+    raw = b'{"value":' + b'[' * depth + b'1.25' + b']' * depth + b'}'
+    body = raw if mime == "application/json" else b'data: ' + raw + b'\n\n'
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": mime}, body))
+    if depth == 64:
+        with pytest.raises(BrokerRejected):
+            broker.dispatch("POST", *_request())
+    else:
+        assert broker.dispatch("POST", *_request()).body == body
+
+
+@pytest.mark.parametrize("value", ('{"value":NaN}', '{"value":1e999}',
+                                    '[' * 80 + '0' + ']' * 80))
+def test_wrapped_json_response_values_have_the_same_finite_boundary(value):
+    raw = json.dumps({"text": value}).encode()
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": "application/json"}, raw))
+    with pytest.raises(BrokerRejected):
+        broker.dispatch("POST", *_request())
+
+
 @pytest.mark.parametrize("provider", ("claude", "codex", "agy"))
 def test_broker_passes_only_assigned_route_with_controller_held_credential(provider):
     sent = []
