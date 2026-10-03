@@ -3224,7 +3224,7 @@ class ExecutionService:
                 if getattr(source, "status", None) == "blocked-memory":
                     survivors = tuple(
                         seat for seat in preparation.seats
-                        if seat.seat_id in {item.seat_id for item in source.valid_terminals}
+                        if round_number == 1 or seat.seat_id in source.expected_seat_ids
                     )
                     if isinstance(self.scheduler.plan, FanoutPlanV2):
                         self.scheduler.assert_dispatchable(task.id)

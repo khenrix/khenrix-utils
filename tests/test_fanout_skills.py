@@ -4,9 +4,11 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import stat
 import sys
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +55,98 @@ def _root(identity: str, path: Path, precedence: int) -> SkillRoot:
 
 def _resolver(*roots: SkillRoot, **limits: int) -> SkillResolver:
     return SkillResolver(roots, limits=SkillLimits(**limits))
+
+
+def test_consumption_reads_only_exact_admitted_regular_bytes(tmp_path):
+    source = tmp_path / "source"
+    _write_skill(source, "bounded", "# Skill α\n\n[Reference](references/detail.md)\n",
+                 references={"references/detail.md": "Exact 雪 evidence\n"})
+    resolver = _resolver(_root("source", source, 0))
+    admission = resolver.admit(("bounded",), task_id="work", seat_id="seat", provider="codex", session_id="session")
+    admission = resolver.stage(admission, tmp_path / "staged")
+    skills_module.verify_staged_admission(admission)
+    for relative, digest, size, mode in admission.skills[0].manifest:
+        observed = skills_module._read_staged_file(admission.staged_root, f"bounded/{relative}",
+                                                   size=size, digest=digest, mode=mode)
+        assert observed == (source / "bounded" / relative).read_bytes()
+        assert len(observed) == size and hashlib.sha256(observed).hexdigest() == digest
+
+
+def test_consumption_refuses_directory_reassociation_after_read(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    _write_skill(source, "bounded")
+    resolver = _resolver(_root("source", source, 0))
+    admission = resolver.admit(("bounded",), task_id="work", seat_id="seat", provider="codex", session_id="session")
+    admission = resolver.stage(admission, tmp_path / "staged")
+    relative, digest, size, mode = admission.skills[0].manifest[0]
+    original = skills_module._read_regular
+
+    def swap(*args, **kwargs):
+        data = original(*args, **kwargs)
+        directory = admission.staged_root / "bounded"
+        directory.rename(admission.staged_root / "moved")
+        directory.mkdir(mode=0o700)
+        return data
+
+    monkeypatch.setattr(skills_module, "_read_regular", swap)
+    with pytest.raises(SkillAdmissionError, match="directory changed association"):
+        skills_module._read_staged_file(admission.staged_root, f"bounded/{relative}", size=size, digest=digest, mode=mode)
+
+
+@pytest.mark.parametrize("field", ["mode", "owner"])
+@pytest.mark.parametrize("phase", ["before-open", "during-read", "after-read"])
+def test_consumption_refuses_file_mode_or_owner_drift(tmp_path, monkeypatch, field, phase):
+    source = tmp_path / "source"
+    _write_skill(source, "bounded")
+    resolver = _resolver(_root("source", source, 0))
+    admission = resolver.admit(("bounded",), task_id="work", seat_id="seat", provider="codex", session_id="session")
+    admission = resolver.stage(admission, tmp_path / "staged")
+    relative, digest, size, mode = admission.skills[0].manifest[0]
+    leaf = admission.staged_root / "bounded" / relative
+    expected = leaf.stat()
+    original_fstat = os.fstat
+    original_stat = os.stat
+    reads = 0
+    changed = False
+
+    def snapshot(info):
+        nonlocal changed
+        changed = True
+        assert (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) == (
+            expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns,
+        )
+        if field == "mode":
+            leaf.chmod(0o600)
+            return original_stat(leaf, follow_symlinks=False)
+        # Owner changes are simulated at the FS observation boundary; no chown privilege is needed.
+        return SimpleNamespace(**{
+            name: info.st_uid + 1 if name == "st_uid" else getattr(info, name)
+            for name in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_mode", "st_nlink", "st_uid")
+        })
+
+    def observed_fstat(descriptor):
+        nonlocal reads
+        info = original_fstat(descriptor)
+        if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino):
+            reads += 1
+            if phase == "before-open" or phase == "during-read" and reads == 2:
+                return snapshot(info)
+        return info
+
+    def observed_stat(path, **kwargs):
+        info = original_stat(path, **kwargs)
+        if phase == "after-read" and reads == 2 and (info.st_dev, info.st_ino) == (
+            expected.st_dev, expected.st_ino,
+        ):
+            return snapshot(info)
+        return info
+
+    monkeypatch.setattr(skills_module.os, "fstat", observed_fstat)
+    monkeypatch.setattr(skills_module.os, "stat", observed_stat)
+    with pytest.raises(SkillAdmissionError, match="drift while reading"):
+        skills_module._read_staged_file(admission.staged_root, f"bounded/{relative}",
+                                       size=size, digest=digest, mode=mode)
+    assert changed
 
 
 @pytest.mark.parametrize("name", ["llm-council", "llm-forge"])

@@ -632,10 +632,11 @@ def _safe_existing_directory(path: Path | str, what: str) -> Path:
 
 
 def _read_regular(path: Path, *, max_bytes: int,
-                  expected: os.stat_result | None = None) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                  expected: os.stat_result | None = None,
+                  dir_fd: int | None = None) -> bytes:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        descriptor = os.open(path, flags)
+        descriptor = os.open(path, flags, dir_fd=dir_fd)
     except OSError as error:
         raise SkillAdmissionError(f"could not safely read skill file: {path}") from error
     try:
@@ -644,8 +645,10 @@ def _read_regular(path: Path, *, max_bytes: int,
             raise SkillAdmissionError(f"skill file changed type while reading: {path}")
         if info.st_size > max_bytes:
             raise SkillAdmissionError(f"skill file size exceeds read limit: {path}")
-        if expected is not None and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
-            expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns
+        if expected is not None and (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                                     info.st_mode, info.st_uid) != (
+            expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns,
+            expected.st_mode, expected.st_uid,
         ):
             raise SkillAdmissionError(f"skill file drift while reading: {path}")
         with os.fdopen(descriptor, "rb", closefd=False) as file:
@@ -653,14 +656,58 @@ def _read_regular(path: Path, *, max_bytes: int,
         if len(data) > max_bytes:
             raise SkillAdmissionError(f"skill file size exceeds read limit: {path}")
         final = os.fstat(descriptor)
+        associated = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
         if (not stat.S_ISREG(final.st_mode) or final.st_nlink != 1
-                or (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns) != (
-                    info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                or (associated.st_dev, associated.st_ino, associated.st_mode, associated.st_uid) != (
+                    final.st_dev, final.st_ino, final.st_mode, final.st_uid,
+                )
+                or (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns,
+                    final.st_mode, final.st_uid) != (
+                    info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, info.st_uid,
                 )):
             raise SkillAdmissionError(f"skill file drift while reading: {path}")
         return data
     finally:
         os.close(descriptor)
+
+
+def _read_staged_file(root: Path, relative: str, *, size: int, digest: str, mode: int) -> bytes:
+    """Consume one admitted file without following any substituted path component."""
+    path = root / relative
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    parts = path.parts[1:]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise SkillAdmissionError("staged skill file path is invalid")
+    descriptors: list[int] = []
+    associations: list[tuple[int, str, os.stat_result]] = []
+    try:
+        descriptors.append(os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+        for part in parts[:-1]:
+            parent = descriptors[-1]
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            descriptors.append(child)
+            associations.append((parent, part, os.fstat(child)))
+        info = os.stat(parts[-1], dir_fd=descriptors[-1], follow_symlinks=False)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.getuid() or info.st_size != size
+                or stat.S_IMODE(info.st_mode) != (0o500 if mode & 0o111 else 0o400)):
+            raise SkillAdmissionError("staged skill file changed association")
+        data = _read_regular(Path(parts[-1]), max_bytes=size, expected=info, dir_fd=descriptors[-1])
+        for parent, part, observed in associations:
+            current = os.stat(part, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (
+                observed.st_dev, observed.st_ino,
+            ):
+                raise SkillAdmissionError("staged skill directory changed association")
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise SkillAdmissionError("staged skill file changed content")
+        return data
+    except OSError as error:
+        raise SkillAdmissionError("staged skill file is unavailable") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _write_private_file(path: Path, data: bytes, *, executable: bool,

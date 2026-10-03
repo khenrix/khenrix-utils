@@ -54,7 +54,7 @@ from .scheduler_authority import (
     ReconciledResult as AuthenticatedReconciledResult,
     Scheduler as AuthenticatedScheduler,
 )
-from .skills import SkillAdmission, SkillLoadEvidence, verify_staged_admission
+from .skills import SkillAdmission, SkillLoadEvidence, _read_staged_file, verify_staged_admission
 from .targets import TargetBinding
 from .verification import CandidateBundle, create_candidate, source_candidate_artifact_path
 
@@ -1351,10 +1351,21 @@ class CollaborationCoordinator:
             )
         if recovery is not None:
             self._validate_barrier(recovery, packet, round)
-            if any(item.state == "uncertain-attempt" for item in recovery.terminals):
+            if any(
+                item.state == "uncertain-attempt"
+                and (packet.task_id, item.seat_id, packet.attempt, round)
+                not in self.journal.state.uncertainty_resolutions
+                for item in recovery.terminals
+            ):
                 raise CollaborationDurabilityError("uncertain provider attempt requires owner action")
+            if tuple(seat.seat_id for seat in seats) != recovery.expected_seat_ids:
+                raise CollaborationDurabilityError("recovery changed original seat assignments")
             if recovery.status == "round-complete":
-                self._exact_reread(recovery)
+                try:
+                    self._exact_reread(recovery)
+                except CollaborationDurabilityError:
+                    self._block_exact_batch(recovery)
+                    raise
                 self._clear_exact_batch_block(recovery)
                 return recovery
             if recovery.status == "failed-minimum":
@@ -1665,23 +1676,33 @@ class CollaborationCoordinator:
             assert exact is not None
             ref, _data = exact
             restored.append(self.restore_barrier(ref, packet=packet))
-        by_status: dict[str, BarrierResult] = {}
-        for barrier in restored:
+        def extends(later: BarrierResult, earlier: BarrierResult) -> bool:
+            cohort = lambda item: (
+                item.run_id, item.task_id, item.attempt, item.round, item.minimum_success,
+                item.expected_seat_ids, item.terminals, item.peer_packets, item.candidate_sources,
+            )
+            if cohort(later) != cohort(earlier):
+                return False
+            if later.status != earlier.status and (
+                earlier.status, later.status
+            ) != ("blocked-memory", "round-complete"):
+                return False
+            for old, new in ((earlier.publications, later.publications), (earlier.receipts, later.receipts)):
+                current = {item.identity.seat_id: item for item in new}
+                if any(current.get(item.identity.seat_id) != item for item in old):
+                    return False
+            return True
+
+        selected: BarrierResult | None = None
+        for index, barrier in enumerate(restored):
             if barrier.round != round:
                 raise CollaborationDurabilityError("discovered barrier changed round association")
-            previous = by_status.get(barrier.status)
-            if previous is not None and previous.barrier_ref != barrier.barrier_ref:
-                raise CollaborationDurabilityError("discovered barriers equivocate")
-            by_status[barrier.status] = barrier
-        if "round-complete" in by_status and "failed-minimum" in by_status:
-            raise CollaborationDurabilityError("discovered terminal barriers conflict")
-        if "round-complete" in by_status:
-            return by_status["round-complete"]
-        if "failed-minimum" in by_status:
-            if "blocked-memory" in by_status:
-                raise CollaborationDurabilityError("discovered terminal barriers conflict")
-            return by_status["failed-minimum"]
-        return by_status.get("blocked-memory")
+            for prior in restored[:index]:
+                if not extends(barrier, prior) and not extends(prior, barrier):
+                    raise CollaborationDurabilityError("discovered barriers equivocate or regress")
+            if selected is None or extends(barrier, selected):
+                selected = barrier
+        return selected
 
     def _preflight(
         self, packet: TaskPacket, seats: Sequence[SeatAssignment], policy: RoundPolicy, round: int,
@@ -2228,41 +2249,48 @@ class CollaborationCoordinator:
                     except BaseException as error:
                         outcomes[index] = error
 
+        settlement_errors: list[BaseException] = []
         for (seat, request, _workspace_evidence), outcome in zip(requests, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
-                if self.journal.state.seat_phase(
-                    packet.task_id, seat.seat_id, packet.attempt, round
-                ) == "dispatch-intent":
-                    raise CollaborationDurabilityError(
-                        "provider dispatch did not reach the process boundary"
-                    ) from outcome
-                had_uncertain = True
-                terminals_by_seat[seat.seat_id] = self._load_or_create_uncertain(
-                    packet, seat, round, request.session_id, "provider-boundary"
-                )
-                continue
             try:
-                terminal = self._terminal_from_provider(packet, seat, round, request, outcome)
-                if packet.execution_class == "repo-write" and round == policy.rounds and terminal.valid:
-                    self._persist_terminal_candidate(packet, seat, round, request=request, result=outcome,
-                        completion_evidence=getattr(outcome, "container_completion", None))
-            except (CollaborationDurabilityError, UnicodeError):
-                had_uncertain = True
-                terminals_by_seat[seat.seat_id] = self._load_or_create_uncertain(
-                    packet, seat, round, request.session_id, "artifact-boundary"
+                if isinstance(outcome, BaseException):
+                    if self.journal.state.seat_phase(
+                        packet.task_id, seat.seat_id, packet.attempt, round
+                    ) == "dispatch-intent":
+                        raise CollaborationDurabilityError(
+                            "provider dispatch did not reach the process boundary"
+                        ) from outcome
+                    had_uncertain = True
+                    terminals_by_seat[seat.seat_id] = self._load_or_create_uncertain(
+                        packet, seat, round, request.session_id, "provider-boundary"
+                    )
+                    continue
+                try:
+                    terminal = self._terminal_from_provider(packet, seat, round, request, outcome)
+                    if packet.execution_class == "repo-write" and round == policy.rounds and terminal.valid:
+                        self._persist_terminal_candidate(packet, seat, round, request=request, result=outcome,
+                            completion_evidence=getattr(outcome, "container_completion", None))
+                except (CollaborationDurabilityError, UnicodeError):
+                    had_uncertain = True
+                    terminals_by_seat[seat.seat_id] = self._load_or_create_uncertain(
+                        packet, seat, round, request.session_id, "artifact-boundary"
+                    )
+                    continue
+                terminal = self._persist_terminal(packet, terminal)
+                self.journal.append(
+                    "provider-terminal", task_id=packet.task_id, seat_id=seat.seat_id,
+                    attempt=packet.attempt, round=round,
+                    evidence_sha256=self._required_terminal_ref(terminal).digest,
                 )
-                continue
-            terminal = self._persist_terminal(packet, terminal)
-            self.journal.append(
-                "provider-terminal", task_id=packet.task_id, seat_id=seat.seat_id,
-                attempt=packet.attempt, round=round,
-                evidence_sha256=self._required_terminal_ref(terminal).digest,
-            )
-            self.journal.append(
-                "artifacts-durable", task_id=packet.task_id, seat_id=seat.seat_id,
-                attempt=packet.attempt, round=round,
-            )
-            terminals_by_seat[seat.seat_id] = terminal
+                self.journal.append(
+                    "artifacts-durable", task_id=packet.task_id, seat_id=seat.seat_id,
+                    attempt=packet.attempt, round=round,
+                )
+                terminals_by_seat[seat.seat_id] = terminal
+            except BaseException as error:
+                # Every worker has finished; retain authenticated siblings before surfacing failure.
+                settlement_errors.append(error)
+        if settlement_errors:
+            raise settlement_errors[0]
         if had_uncertain:
             self.journal.recover_uncertain(self.owner)
         return tuple(terminals_by_seat[seat.seat_id] for seat in seats)
@@ -2505,13 +2533,18 @@ class CollaborationCoordinator:
         total = 0
         for skill in admission.skills:
             for relative, digest, size, mode in skill.manifest:
+                total += size
+                if total > MAX_SKILL_BUNDLE_BYTES:
+                    raise CollaborationValidationError("staged skill delivery changed")
                 try:
-                    data = (seat.staged_root / skill.name / relative).read_bytes()
-                except OSError as error:
+                    data = _read_staged_file(
+                        seat.staged_root, f"{skill.name}/{relative}",
+                        size=size, digest=digest, mode=mode,
+                    )
+                except SkillAdmissionError as error:
                     raise CollaborationValidationError(
                         "staged skill delivery is unavailable"
                     ) from error
-                total += len(data)
                 if len(data) != size or _digest(data) != digest or total > MAX_SKILL_BUNDLE_BYTES:
                     raise CollaborationValidationError("staged skill delivery changed")
                 files.append({
@@ -2906,7 +2939,7 @@ class CollaborationCoordinator:
             sources.append((terminal.seat_id, ref))
         return dataclasses.replace(barrier, candidate_sources=tuple(sources))
 
-    def _persist_barrier(self, barrier: BarrierResult) -> BarrierResult:
+    def _barrier_bytes(self, barrier: BarrierResult) -> bytes:
         document = {
             "attempt": barrier.attempt,
             "expected_seat_ids": list(barrier.expected_seat_ids),
@@ -2929,7 +2962,10 @@ class CollaborationCoordinator:
                 {"seat_id": seat_id, "candidate": _artifact_dict(ref)}
                 for seat_id, ref in barrier.candidate_sources
             ]
-        encoded = canonical_json(document)
+        return canonical_json(document)
+
+    def _persist_barrier(self, barrier: BarrierResult) -> BarrierResult:
+        encoded = self._barrier_bytes(barrier)
         path = (
             f"{self._barrier_prefix(barrier)}/barrier-{barrier.status}-"
             f"{_digest(encoded)[:24]}.json"
@@ -2958,29 +2994,47 @@ class CollaborationCoordinator:
                 continue
             checkpoint = self._checkpoint(packet, terminal)
             receipt = receipts.get(terminal.seat_id)
+            publication = publications.get(terminal.seat_id)
+            phase = self.journal.state.seat_phase(
+                packet.task_id, terminal.seat_id, packet.attempt, barrier.round
+            )
+            if phase in {"publication-intent", "checkpoint-published", "checkpoint-verified"}:
+                durable_publication = self._load_checkpoint_publication(
+                    checkpoint, required=phase != "publication-intent",
+                )
+                if publication is not None and publication != durable_publication:
+                    raise CollaborationDurabilityError("checkpoint recovery publication changed")
+                publication = durable_publication
+            if phase == "checkpoint-verified":
+                durable_receipt = self._load_checkpoint_receipt(checkpoint)
+                if receipt is not None and receipt != durable_receipt:
+                    raise CollaborationDurabilityError("checkpoint recovery receipt changed")
+                receipt = durable_receipt
             if receipt is not None:
                 try:
-                    receipt = self.memory.verify_existing(checkpoint, receipt)
+                    block_owner = self.journal.state.memory_block_owners.get(packet.task_id)
+                    if block_owner == (terminal.seat_id, packet.attempt, barrier.round):
+                        receipt = self.memory.recover(
+                            checkpoint, receipt.publication, journal=self.journal, owner=self.owner,
+                        )
+                    else:
+                        receipt = self.memory.verify_existing(checkpoint, receipt)
                 except (MemoryError, ArtifactError, RunStateError, AssertionError) as error:
                     raise CollaborationDurabilityError(
                         "verified checkpoint recovery failed"
                     ) from error
             else:
-                publication = publications.get(terminal.seat_id)
                 try:
                     if publication is not None:
                         receipt = self.memory.recover(
                             checkpoint, publication, journal=self.journal, owner=self.owner
                         )
                     else:
-                        phase = self.journal.state.seat_phase(
-                            packet.task_id, terminal.seat_id, packet.attempt, barrier.round
-                        )
                         if self.journal.state.task_phases.get(packet.task_id) == "blocked-memory":
                             raise CollaborationDurabilityError(
                                 "blocked-memory has no durable observation identity; owner action is required"
                             )
-                        if phase != "artifacts-durable":
+                        if phase not in {"artifacts-durable", "publication-intent"}:
                             raise CollaborationDurabilityError(
                                 "checkpoint recovery lacks an exact durable publication"
                             )
@@ -3012,7 +3066,11 @@ class CollaborationCoordinator:
             publications=tuple(ordered_publications),
             barrier_ref=None,
         )
-        self._exact_reread(completed)
+        try:
+            self._exact_reread(completed)
+        except CollaborationDurabilityError:
+            self._block_exact_batch(completed)
+            raise
         self._clear_exact_batch_block(completed)
         return self._persist_barrier(self._with_final_repo_sources(packet, seats, policy, completed))
 
@@ -3125,6 +3183,17 @@ class CollaborationCoordinator:
             barrier.run_id, barrier.task_id, barrier.attempt, barrier.round
         ) != (packet.run_id, packet.task_id, packet.attempt, round):
             raise CollaborationValidationError("barrier belongs to another run, task, attempt, or round")
+        if barrier.barrier_ref is not None:
+            encoded = self._barrier_bytes(barrier)
+            expected = ArtifactRef(
+                f"{self._barrier_prefix(barrier)}/barrier-{barrier.status}-{_digest(encoded)[:24]}.json",
+                _digest(encoded), len(encoded),
+            )
+            try:
+                if barrier.barrier_ref != expected or self.artifacts.read_bytes(expected) != encoded:
+                    raise CollaborationDurabilityError("barrier artifact changed association")
+            except ArtifactError as error:
+                raise CollaborationDurabilityError("barrier artifact no longer verifies") from error
         final_repo = (
             packet.execution_class == "repo-write"
             and barrier.round == packet.provider_policy.rounds
@@ -3156,6 +3225,26 @@ class CollaborationCoordinator:
         elif barrier.candidate_sources:
             raise CollaborationValidationError("non-final barrier has candidate sources")
         for terminal in barrier.terminals:
+            ref = self._required_terminal_ref(terminal)
+            uncertain = terminal.state == "uncertain-attempt"
+            expected_path = (
+                f"{self._round_prefix(packet, round)}/seats/{_safe_fragment(terminal.seat_id)}"
+                f"/{'uncertain' if uncertain else 'terminal'}.json"
+            )
+            committed = self.journal.state.evidence_digest(
+                "provider-terminal", packet.task_id, terminal.seat_id, packet.attempt, round,
+            )
+            if ref.path != expected_path or (
+                not uncertain and committed != ref.digest
+            ) or (uncertain and self.journal.state.seat_phase(
+                packet.task_id, terminal.seat_id, packet.attempt, round,
+            ) != "uncertain-attempt"):
+                raise CollaborationDurabilityError("barrier terminal differs from authority-bound evidence")
+            try:
+                if self.artifacts.read_bytes(ref) != canonical_json(terminal.to_dict()):
+                    raise CollaborationDurabilityError("barrier terminal changed association")
+            except ArtifactError as error:
+                raise CollaborationDurabilityError("barrier terminal artifact no longer verifies") from error
             if (
                 terminal.run_id, terminal.task_id, terminal.attempt, terminal.round
             ) != (packet.run_id, packet.task_id, packet.attempt, round):
@@ -3169,6 +3258,25 @@ class CollaborationCoordinator:
                 raise CollaborationValidationError(
                     "barrier terminal context does not match the task packet"
                 )
+            if terminal.valid:
+                try:
+                    checkpoint = self._checkpoint(packet, terminal)
+                    for publication in barrier.publications:
+                        if publication.identity.seat_id == terminal.seat_id:
+                            phase = self.journal.state.seat_phase(
+                                packet.task_id, terminal.seat_id, packet.attempt, round,
+                            )
+                            durable = self._load_checkpoint_publication(
+                                checkpoint, required=phase != "publication-intent",
+                            )
+                            if publication != durable:
+                                raise CollaborationDurabilityError("barrier publication changed association")
+                    for receipt in barrier.receipts:
+                        if receipt.identity.seat_id == terminal.seat_id:
+                            if receipt != self._load_checkpoint_receipt(checkpoint):
+                                raise CollaborationDurabilityError("barrier receipt changed association")
+                except (MemoryError, ArtifactError) as error:
+                    raise CollaborationDurabilityError("barrier checkpoint evidence no longer verifies") from error
             profiled = self.journal.inputs.profile_shape == "class-tier"
             if profiled:
                 if not isinstance(self.registry, ProviderRegistry):

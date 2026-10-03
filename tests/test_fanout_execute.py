@@ -521,6 +521,7 @@ class _Barrier:
     valid_terminals: tuple[object, ...]
     context_sha256: str
     candidate_sources: tuple[tuple[str, object], ...] = ()
+    expected_seat_ids: tuple[str, ...] = ()
 
 
 class _Memory:
@@ -620,6 +621,7 @@ class _Coordinator:
                 recovery.valid_terminals,
                 packet.context_sha256,
                 sources,
+                tuple(seat.seat_id for seat in seats),
             )
             self.barriers[ref] = barrier
             return barrier
@@ -662,6 +664,7 @@ class _Coordinator:
             tuple(terminals),
             packet.context_sha256,
             sources,
+            tuple(seat.seat_id for seat in seats),
         )
         self.barriers[ref] = barrier
         return barrier
@@ -1089,6 +1092,111 @@ def test_resume_recovers_memory_barrier_without_repeating_provider_spend(tmp_pat
     assert recovered.tasks[0].phase == "reconciliation-pending"
     assert runtime.coordinator.provider_dispatches == [("work", 1)]
     assert runtime.backend.record.snapshot.tasks[0].barriers[0] != blocked_ref
+
+
+def test_round_one_recovery_caller_retains_original_three_seat_assignment(tmp_path, monkeypatch):
+    import test_fanout_collaboration as controls
+
+    task = _task("work")
+    task["provider_policy"]["executor_ids"] = ["claude", "codex", "agy"]
+    runtime = _runtime(tmp_path, _plan(task))
+    runstate = sys.modules[f"{SPEC.name}.runstate"]
+    anchor = controls._MemoryAnchor()
+    for name in ("create", "read", "compare_and_set"):
+        original = getattr(anchor, name)
+
+        def revision(*args, original=original):
+            result = original(*args)
+            return fanout.AnchorRevision(result.revision, result.value)
+
+        monkeypatch.setattr(anchor, name, revision)
+    authority = runstate._test_anchor_authority(anchor)
+    journal, owner = fanout.RunJournal._create_for_test(
+        tmp_path / "real-journal", runtime.inputs, anchor_store=authority, owner_capability=runtime.owner,
+    )
+    executable = tmp_path / "memory_exchange.py"
+    executable.write_bytes(b"#!/usr/bin/env python3\nraise SystemExit(99)\n")
+    executable.chmod(0o700)
+    transport = controls._DurableObservationTransport(tmp_path / "observations.json")
+    memory_module = sys.modules[f"{SPEC.name}.memory"]
+
+    def exchange(store, current_transport):
+        def command(*args, **kwargs):
+            result = current_transport(*args, **kwargs)
+            return fanout.ProcessResult(fanout.ProcessStatus(result.status.value), result.returncode,
+                                        result.stdout, result.stderr)
+        monkeypatch.setattr(memory_module, "run_command", command)
+        controller = fanout.MemoryController(executable, executable_sha256=_digest(executable.read_bytes()), timeout=2)
+        return fanout.MemoryCheckpointExchange(controller, store)
+
+    normal = controls._Provider()
+    dispatches = []
+
+    def provider(request, **kwargs):
+        dispatches.append(request.executor_id)
+        if request.executor_id == "agy":
+            raise RuntimeError("synthetic ambiguous provider start")
+        result = normal(request, **kwargs)
+        return fanout.ProviderResult(**{field.name: getattr(result, field.name) for field in dataclasses.fields(result)})
+
+    execute_module = sys.modules[f"{SPEC.name}.execute"]
+
+    class DurableBackend(_Backend):
+        path = tmp_path / "execution-record.json"
+
+        def read(self):
+            self.record = (execute_module._execution_record_from_dict(json.loads(self.path.read_bytes()))
+                           if self.path.exists() else None)
+            return self.record
+
+        def compare_and_set(self, *args, **kwargs):
+            self.read()
+            record = super().compare_and_set(*args, **kwargs)
+            self.path.write_bytes(record.canonical_bytes)
+            return record
+
+    def service(store, active_journal, active_owner, backend, transport):
+        runtime.scheduler.artifacts = store
+        coordinator = fanout.CollaborationCoordinator(
+            artifacts=store, journal=active_journal, owner=active_owner, memory=exchange(store, transport),
+            registry=runtime.registry, provider_runner=provider, lifecycle_controller=runtime.controller,
+            repository_baseline=runtime.baseline, slot_root=tmp_path / "slots",
+        )
+        caller = fanout.ExecutionService(
+            plan=runtime.scheduler.plan, inputs=runtime.inputs, preparations=runtime.preparations,
+            provider_profile_digests=dict(runtime.inputs.provider_profiles), budget=fanout.ExecutionBudget(max_provider_turns=64),
+            scheduler=runtime.scheduler, journal=active_journal, coordinator=coordinator, artifacts=store,
+            backend=backend, memory_preflight=coordinator.memory.preflight, baseline=runtime.baseline,
+            lifecycle_controller=runtime.controller,
+        )
+        return caller, coordinator
+
+    backend = DurableBackend(owner)
+    caller, coordinator = service(runtime.artifacts, journal, owner, backend, transport)
+    transport.fail_fetch = True
+    try:
+        caller.start(owner=owner)
+        assert caller.resume(owner=owner).tasks[0].phase == "active"
+        ref = backend.read().snapshot.tasks[0].barriers[0]
+        saved = coordinator.restore_barrier(ref, packet=runtime.preparations["work"].packet)
+        assert len(saved.valid_terminals) == 2 and len(saved.terminals) == 3
+        coordinator.resolve_uncertain_source(task_id="work", seat_id="agy", attempt=1, round=1)
+        journal.close()
+        runtime.artifacts.close()
+        owner = fanout.OwnerCapability.from_token(owner.export_token())
+        journal = fanout.RunJournal._resume_for_test(tmp_path / "real-journal", runtime.inputs, owner, anchor_store=authority)
+        store = fanout.ArtifactStore.open_existing(tmp_path / "artifacts")
+        backend = DurableBackend(owner)
+        transport = controls._DurableObservationTransport(tmp_path / "observations.json")
+        caller, coordinator = service(store, journal, owner, backend, transport)
+        assert caller.resume(owner=owner).tasks[0].phase == "reconciliation-pending"
+        assert sorted(dispatches) == ["agy", "claude", "codex"]
+        assert journal.state.uncertainty_resolutions[("work", "agy", 1, 1)] == "exclude"
+        saves = [command for command in json.loads(transport.path.read_bytes())["commands"] if command["operation"] == "save"]
+        assert len(saves) == 2 and len({command["text"] for command in saves}) == 2
+    finally:
+        journal.close()
+        coordinator.artifacts.close()
 
 
 def test_only_owner_can_submit_and_unverified_synthesis_stays_pending(tmp_path):
