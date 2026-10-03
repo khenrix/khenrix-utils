@@ -54,7 +54,7 @@ paths = [
   "components/maka/scripts/test.sh",
   "components/maka/install-files.txt",
 ]
-hash = "sha256:ac7009bf4054899e978fce95d925b5df2dca89aa30023424948b01bc5b7ed3ec"
+hash = "sha256:cfb517d5ae1ec5db8a5c23f9f55b3c07d3d2401a83bfb895cddaa4316fd5a71f"
 required_text = [
   { path = "components/maka/provenance.json", text = "0.2.0-dev.62.20260928" },
   { path = "components/maka/provenance.json", text = "sha512-s8SDp0RCo2B4f2wDrwxPa8HL3m4aby+JBKF+Ctq6vtNhjJTQgq6LRvT3aEeQ4e8TBI0mb3JO6oSA8l/uvGyqRQ==" },
