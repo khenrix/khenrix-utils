@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -1819,6 +1820,42 @@ def test_invalid_fresh_synthesis_verification_remains_reconciliation_pending(tmp
     assert runtime.journal.state.task_phases["write"] == "reconciliation-pending"
 
 
+def test_incorrect_multiseat_repo_synthesis_fails_declared_check_and_keeps_dependant_locked(tmp_path):
+    check = fanout.PlanCheckV1(
+        argv=(sys.executable, "-c", "from pathlib import Path; assert Path('changed.txt').read_text() == 'after\\n'"),
+        cwd="", env_allowlist=(), timeout=5, accepted_exit_codes=(0,), expected_artifacts=(),
+    )
+    plan = _plan(
+        _task("write", execution_class="repo-write", checks=(check,), owned_paths=("changed.txt",)),
+        _task("next", execution_class="orchestrator-action", depends_on=("write",)),
+    )
+    runtime = _repo_runtime(tmp_path, plan)
+    runtime.service.start(owner=runtime.owner)
+    runtime.service.resume(owner=runtime.owner)
+    sources = runtime.service.collect("write", owner=runtime.owner)
+    assert len(sources) == 2
+    synthesis = fanout.synthesize_candidate(
+        runtime.baseline, sources=tuple(item.candidate for item in sources),
+        entries=(fanout.CandidateEntry("changed.txt", "file", 0o644, b"incorrect\n"),),
+        deleted_paths=(),
+    )
+    receipt = runtime.service.verify_repo_synthesis("write", synthesis, owner=runtime.owner)
+    assert not receipt.valid
+    assert receipt.checks == (check,)
+    assert receipt.outcomes[0].returncode != 0
+    before = (runtime.scheduler.revision, dict(runtime.scheduler.results),
+              runtime.backend.record, copy.deepcopy(runtime.journal.state))
+    calls = tuple(runtime.coordinator.execute_calls)
+    with pytest.raises(fanout.ExecutionPendingError, match="verification"):
+        runtime.service.submit("write", receipt, owner=runtime.owner)
+    assert (runtime.scheduler.revision, runtime.scheduler.results,
+            runtime.backend.record, runtime.journal.state) == before
+    assert runtime.scheduler.task_phase("write") == "reconciliation-pending"
+    assert runtime.scheduler.task_phase("next") == "unscheduled"
+    assert tuple(runtime.coordinator.execute_calls) == calls
+    assert (runtime.repository / "changed.txt").read_bytes() == b"before\n"
+
+
 def test_valid_but_uncollected_candidate_without_source_provenance_stays_pending(tmp_path):
     runtime = _repo_runtime(tmp_path)
     runtime.service.start(owner=runtime.owner)
@@ -2000,6 +2037,460 @@ def test_submit_amendment_preflights_replacement_before_owner_acceptance(tmp_pat
     assert amendment.plan_revision == 2
     assert runtime.journal.state.amendments[2].phase == "plan-amendment-accepted"
     assert runtime.backend.record.snapshot.plan_sha256 == amended_inputs.compiled_plan_sha256
+
+
+def test_skill_only_amendment_rejects_stale_next_revision_before_publication(tmp_path):
+    plan = _plan(
+        _task("approve", execution_class="orchestrator-action"),
+        _task("later", depends_on=("approve",)),
+    )
+    runtime = _runtime(tmp_path, plan)
+    runtime.service.start(owner=runtime.owner)
+    manifests = dict(runtime.inputs.skill_manifests)
+    manifests["later"] = _digest("replacement skill manifest")
+    replacement_inputs = dataclasses.replace(runtime.inputs, skill_manifests=manifests)
+    stale = dataclasses.replace(runtime.preparations["later"], plan_revision=2)
+    before = runtime.backend.record
+    phases = dict(runtime.scheduler.phases)
+    artifacts = {path.relative_to(runtime.artifacts.root): path.read_bytes()
+                 for path in runtime.artifacts.root.rglob("*") if path.is_file()}
+
+    with pytest.raises(fanout.ExecutionPreflightError, match="preparation"):
+        runtime.service.submit_amendment(
+            plan, replacement_inputs, {"later": stale},
+            dict(replacement_inputs.provider_profiles),
+            expected_plan_revision=1, owner=runtime.owner,
+        )
+
+    assert runtime.backend.record == before
+    assert runtime.scheduler.phases == phases
+    assert runtime.scheduler.plan_revision == 1
+    assert runtime.journal.state.amendments == {}
+    assert runtime.coordinator.execute_calls == []
+    assert artifacts == {path.relative_to(runtime.artifacts.root): path.read_bytes()
+                         for path in runtime.artifacts.root.rglob("*") if path.is_file()}
+    rebuilt = _read_only_preparation(
+        tmp_path / "rebuilt", plan, replacement_inputs, plan.tasks[1],
+        runtime.artifacts, runtime=runtime,
+    )
+    amendment = runtime.service.submit_amendment(
+        plan, replacement_inputs, {"later": rebuilt},
+        dict(replacement_inputs.provider_profiles),
+        expected_plan_revision=1, owner=runtime.owner,
+    )
+    assert amendment.plan_revision == 2
+    assert runtime.backend.record.snapshot.tasks[1].decision_inputs_digest == replacement_inputs.digest
+
+
+def test_persisted_two_round_recovery_preserves_verifying_submission(tmp_path, monkeypatch):
+    from test_fanout_execute_skill import _question_packet, _registry, execute
+
+    cli = execute.__wrapped__()
+    runtime = sys.modules["fanout"]
+    spec = importlib.util.spec_from_file_location("execute_recovery_smoke", ROOT / "scripts/fanout_smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = smoke
+    spec.loader.exec_module(smoke)
+    smoke.fanout = runtime
+    packet, _ = _question_packet(tmp_path, executors=("claude", "codex"))
+    repository = _repository(tmp_path)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    def composition():
+        return dict(
+            runtime=runtime, registry=_registry(),
+            memory_factory=lambda artifacts, _health: smoke._FakeMemory(tmp_path, artifacts),
+            memory_preflight=lambda: True,
+            provider_runner=smoke._FakeProvider(tmp_path, poison_peer=False),
+        )
+    cli.prepare_run(
+        packet, repo_root=repository, run_root=tmp_path / "run",
+        authority_root=tmp_path / "authority", private_root=private,
+        skill_roots=(tmp_path / "skills",), budget=12, **composition(),
+    )
+
+    class ProcessLoss(BaseException):
+        pass
+
+    original_commit = runtime.FileExecutionBackend.compare_and_set
+
+    def lose_after_first_round(backend, expected_revision, snapshot, *, owner):
+        result = original_commit(backend, expected_revision, snapshot, owner=owner)
+        if len(snapshot.tasks[0].barriers) == 1:
+            raise ProcessLoss("after durable first round")
+        return result
+
+    with monkeypatch.context() as fault:
+        fault.setattr(runtime.FileExecutionBackend, "compare_and_set", lose_after_first_round)
+        with cli.open_run(private, **composition()) as first:
+            task_id = first.service.plan.tasks[0].id
+            assert first.service.preparations[task_id].policy.rounds == 2
+            with pytest.raises(ProcessLoss, match="first round"):
+                first.service.resume(owner=first.owner)
+    calls = sorted((tmp_path / "calls").glob("*.json"))
+    assert len(calls) == 2
+    assert {json.loads(path.read_bytes())["round"] for path in calls} == {1}
+
+    with cli.open_run(private, **composition()) as second:
+        first_state = second.service.backend.read().snapshot.tasks[0]
+        assert len(first_state.barriers) == 1
+        first_barrier_ref = first_state.barriers[0]
+        status = second.service.resume(owner=second.owner)
+        assert status.tasks[0].phase == "reconciliation-pending"
+        assert status.tasks[0].completed_rounds == 2
+        state = second.service.backend.read().snapshot.tasks[0]
+        assert state.barriers[0] == first_barrier_ref
+        final_ref = state.barriers[-1]
+    calls = sorted((tmp_path / "calls").glob("*.json"))
+    assert len(calls) == 4
+    for path in calls:
+        call = json.loads(path.read_bytes())
+        if call["round"] == 2:
+            assert call["resume"] is True
+            assert call["session_id"] == f"fake-session-{call['executor_id']}"
+            assert "BEGIN_UNTRUSTED_PEER_EVIDENCE" in call["prompt"]
+            assert "fact from" in call["prompt"]
+
+    with cli.open_run(private, **composition()) as final:
+        final.service.resume(owner=final.owner)
+        assert len(list((tmp_path / "calls").glob("*.json"))) == 4
+        assert final.service.backend.read().snapshot.tasks[0].barriers[-1] == final_ref
+        synthesis = final.service.verify_read_only_synthesis(
+            task_id, answer=b"The two final answers have been combined.\n",
+            source_seat_ids=tuple(seat.seat_id for seat in final.service.preparations[task_id].seats),
+            synthesizer_id="owner", owner=final.owner,
+        )
+        assert synthesis.valid
+        first_barrier = final.service.coordinator.restore_barrier(
+            first_barrier_ref, packet=final.service.preparations[task_id].packet,
+        )
+        assert {ref for _seat, ref in synthesis.source_answers}.isdisjoint(
+            terminal.answer_ref for terminal in first_barrier.valid_terminals
+        )
+        original_complete = type(final.service.scheduler).complete_reconciliation
+
+        def lose_before_completion(scheduler, task_id, receipt, *, owner):
+            assert final.journal.state.task_phases[task_id] == "reconciliation-verifying"
+            raise ProcessLoss("after verifying publication")
+
+        with monkeypatch.context() as fault:
+            fault.setattr(type(final.service.scheduler), "complete_reconciliation", lose_before_completion)
+            with pytest.raises(ProcessLoss, match="verifying"):
+                final.service.submit(task_id, synthesis, owner=final.owner)
+        assert final.service.scheduler.task_phase(task_id) == "reconciliation-pending"
+        assert original_complete is type(final.service.scheduler).complete_reconciliation
+
+    with cli.open_run(private, **composition()) as retry:
+        assert retry.journal.state.task_phases[task_id] == "reconciliation-verifying"
+        before_events = retry.journal.state.seq
+        retry.service.resume(owner=retry.owner)
+        assert retry.journal.state.task_phases[task_id] == "reconciliation-verifying"
+        assert retry.journal.state.seq == before_events
+        assert retry.service.scheduler.task_phase(task_id) == "reconciliation-pending"
+        assert len(list((tmp_path / "calls").glob("*.json"))) == 4
+        result = retry.service.submit(task_id, synthesis, owner=retry.owner)
+        assert result.artifact == synthesis.answer_ref
+        assert retry.service.scheduler.task_phase(task_id) == "completed"
+        assert retry.journal.state.task_phases[task_id] == "completed"
+
+
+def test_cold_pending_intent_fences_valid_handover_recovery_and_gc_claim(tmp_path, monkeypatch):
+    check = fanout.PlanCheckV1(
+        argv=(sys.executable, "-c", "from pathlib import Path; assert Path('changed.txt').read_text() == 'after\\n'"),
+        cwd="", env_allowlist=(), timeout=5, accepted_exit_codes=(0,), expected_artifacts=(),
+    )
+    plan = _plan(
+        _task("write", execution_class="repo-write", checks=(check,), owned_paths=("changed.txt",)),
+        _task("approve", execution_class="orchestrator-action"),
+        _task("later", execution_class="orchestrator-action", depends_on=("approve",)),
+    )
+    initial = _repo_runtime(tmp_path, plan)
+    initial.artifacts.close()
+    spec = importlib.util.spec_from_file_location("execute_pending_smoke", ROOT / "scripts/fanout_smoke.py")
+    assert spec and spec.loader
+    smoke = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = smoke
+    spec.loader.exec_module(smoke)
+    smoke.fanout = fanout
+    run_root, authority_root = tmp_path / "run", tmp_path / "authority"
+    authority = fanout.LocalAnchorAuthority.bootstrap(
+        authority_root, run_root=run_root, repo_root=initial.repository,
+    )
+    journal, owner = fanout.RunJournal.create(run_root, initial.inputs, anchor_store=authority)
+    fanout.FileSchedulerBackend.create(run_root, run_id=initial.inputs.run_id, owner=owner).close()
+    fanout.FileExecutionBackend.create(run_root, run_id=initial.inputs.run_id, owner=owner).close()
+    journal.close()
+
+    @contextmanager
+    def reopen(*, create=False):
+        anchor = fanout.LocalAnchorAuthority(authority_root, run_root=run_root, repo_root=initial.repository)
+        with fanout.RunJournal.resume(run_root, initial.inputs, owner, anchor_store=anchor) as journal, \
+                fanout.ArtifactStore.open_existing(tmp_path / "artifacts") as artifacts, \
+                fanout.FileSchedulerBackend.resume(run_root, run_id=initial.inputs.run_id, owner=owner) as scheduler_backend, \
+                fanout.FileExecutionBackend.resume(run_root, run_id=initial.inputs.run_id, owner=owner) as backend:
+            controller = fanout.resume_lifecycle_controller(initial.controller.root, initial.controller.capability)
+            scheduler = (fanout.Scheduler.create if create else fanout.Scheduler.resume)(
+                plan, initial.inputs, scheduler_backend, artifacts, owner=owner, anchor_store=anchor,
+            )
+            memory = smoke._FakeMemory(tmp_path, artifacts)
+            coordinator = fanout.CollaborationCoordinator(
+                artifacts=artifacts, journal=journal, owner=owner, memory=memory,
+                registry=_Registry(initial.inputs.provider_profiles),
+                provider_runner=smoke._FakeProvider(tmp_path, poison_peer=False),
+                lifecycle_controller=controller, repository_baseline=initial.baseline,
+            )
+            yield fanout.ExecutionService(
+                plan=plan, inputs=initial.inputs, preparations=initial.preparations,
+                provider_profile_digests=initial.inputs.provider_profiles,
+                budget=fanout.ExecutionBudget(8), scheduler=scheduler, journal=journal,
+                coordinator=coordinator, artifacts=artifacts, backend=backend,
+                memory_preflight=memory.preflight, baseline=initial.baseline,
+                lifecycle_controller=controller,
+            )
+
+    with reopen(create=True) as service:
+        service.start(owner=owner)
+        service.resume(owner=owner)
+        candidates = service.collect("write", owner=owner)
+        candidate = fanout.synthesize_candidate(
+            initial.baseline, sources=tuple(item.candidate for item in candidates),
+            entries=(fanout.CandidateEntry("changed.txt", "file", 0o644, b"after\n"),), deleted_paths=(),
+        )
+        receipt = service.verify_repo_synthesis("write", candidate, owner=owner)
+        assert receipt.valid
+        service.submit("write", receipt, owner=owner)
+        append = fanout.RunJournal.append
+
+        def lose_completion(journal, event_type, **kwargs):
+            if event_type == "handover-complete":
+                raise SystemExit("after committed transaction, before journal completion")
+            return append(journal, event_type, **kwargs)
+
+        with monkeypatch.context() as fault:
+            fault.setattr(fanout.RunJournal, "append", lose_completion)
+            with pytest.raises(SystemExit, match="committed transaction"):
+                service.handover("write", receipt, owner=owner)
+        binding = service.journal.state.handovers["write"]
+        transaction = Path(binding.transaction_root)
+        disposition = fanout.recover_handover(
+            service.lifecycle_controller, transaction, expected_task_id="write",
+            expected_baseline_digest=initial.baseline.digest,
+            expected_candidate_digest=receipt.candidate.digest,
+            expected_transaction_digest=binding.transaction_sha256,
+        )
+        assert disposition.status == "committed"
+        scratch = service.lifecycle_controller.root / "scratch"
+        scratch.mkdir(mode=0o700)
+        (scratch / "owned.txt").write_bytes(b"owned scratch\n")
+        assert service.claim_gc_path("scratch", owner=owner).path == "scratch"
+        replacement_data = plan.to_dict()
+        replacement_data["tasks"][-1]["objective"] = "Complete the amended later action."
+        replacement = fanout.FanoutPlanV1.from_dict(replacement_data)
+        inputs = _inputs(replacement, repo_digest=initial.baseline.digest)
+        append_amendment = fanout.RunJournal.append_amendment
+
+        def lose_intent(journal, event_type, **kwargs):
+            result = append_amendment(journal, event_type, **kwargs)
+            if event_type == "plan-amendment-intent":
+                raise SystemExit("after amendment intent")
+            return result
+
+        with monkeypatch.context() as fault:
+            fault.setattr(fanout.RunJournal, "append_amendment", lose_intent)
+            with pytest.raises(SystemExit, match="amendment intent"):
+                service.submit_amendment(
+                    replacement, inputs, {}, inputs.provider_profiles,
+                    expected_plan_revision=1, owner=owner,
+                )
+
+    def bytes_below(root):
+        return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+    with reopen() as cold:
+        assert cold.journal.state.amendments[2].phase == "plan-amendment-intent"
+        assert cold.scheduler.plan_revision == 1
+        assert cold.backend.read().snapshot.plan_revision == 1
+        state = (cold.scheduler.revision, cold.backend.read(), cold.journal.state.to_dict())
+        contents = {root: bytes_below(root) for root in (
+            cold.lifecycle_controller.root, initial.repository, run_root, authority_root,
+        )}
+        calls = bytes_below(tmp_path / "calls")
+        for command in (
+            lambda: cold.recover_handover("write", transaction, receipt, owner=owner),
+            lambda: cold.claim_gc_path("scratch", owner=owner),
+        ):
+            with pytest.raises(fanout.ExecutionPreflightError, match="amendment|transition"):
+                command()
+            assert (cold.scheduler.revision, cold.backend.read(), cold.journal.state.to_dict()) == state
+            assert {root: bytes_below(root) for root in contents} == contents
+            assert bytes_below(tmp_path / "calls") == calls
+
+
+def test_v2_partial_amendment_retains_authenticated_pending_context_after_cold_open(tmp_path, monkeypatch):
+    import test_fanout_collaboration as collaboration_cases
+
+    runtime = collaboration_cases.fanout
+    packet, live_seats, prototype, old_journal, _provider, old_store = collaboration_cases._v2_hermetic_round(
+        tmp_path, monkeypatch, execution_class="repo-write",
+    )
+    old_journal.close()
+    old_store.close()
+    document = prototype.dependency_scheduler.plan.to_dict()
+    for index, task in enumerate((
+        _task("approve", execution_class="orchestrator-action"), _task("later"),
+    ), start=2):
+        task.update(source_step_ids=[f"Task {index}/Step 1"], target_id="booking", dependency_modes={})
+        task["provider_policy"] = None
+        document["tasks"].append(task)
+        document["source_steps"].append({
+            "id": f"Task {index}/Step 1", "sha256": _digest(task["id"]), "target_id": "booking",
+        })
+    initial_plan = runtime.plan.FanoutPlanV2.from_dict(document)
+    initial_inputs = dataclasses.replace(
+        packet.run_inputs, compiled_plan_sha256=_digest(runtime.canonical_json(initial_plan.to_dict())),
+        skill_manifests={"booking-work": packet.skill_manifest_sha256, "later": packet.skill_manifest_sha256},
+    )
+    baseline = prototype.repository_baselines["booking"]
+    controller_root = prototype.lifecycle_controller.root
+    capability = prototype.lifecycle_controller.capability
+    profiles = tuple(prototype.registry._profiles.values())
+    versions = {profile.executor_id: profile.cli_version for profile in profiles}
+    source = tmp_path / "skill-source"
+    stages = tmp_path / "later-stages"
+    stages.mkdir(mode=0o700)
+    resolver = runtime.SkillResolver((runtime.SkillRoot("test", source, 0),))
+    with runtime.ArtifactStore.open_existing(tmp_path / "artifacts") as artifacts:
+        later_seats = []
+        for executor in initial_plan.defaults.executor_ids:
+            seat_id = f"later-{executor}"
+            workspace = runtime.create_seat_workspace(baseline, controller_root / "later-workspaces", seat_id)
+            verification = runtime.verify_seat_workspace(baseline, workspace, controller=prototype.lifecycle_controller)
+            admission = resolver.admit((), task_id="later", seat_id=seat_id, provider=executor,
+                                       session_id=f"later-session-{executor}")
+            admission = resolver.stage(admission, stages / seat_id)
+            admission = resolver.verify_engine_delivery(admission, ())
+            later_seats.append(runtime.SeatAssignment.from_admission(
+                admission, skill_bundle=packet.skill_bundle, artifacts=artifacts,
+                workspace_verification=verification,
+            ))
+
+    def preparation(plan, inputs, task_id, revision, registry, controller):
+        task = next(item for item in plan.tasks if item.id == task_id)
+        seats = live_seats if task_id == "booking-work" else tuple(later_seats)
+        values = dict(
+            run_id=inputs.run_id, task_id=task_id, attempt=1,
+            compiled_plan=runtime.canonical_json(plan.to_dict()), compiled_plan_sha256=inputs.compiled_plan_sha256,
+            source_markdown=packet.source_markdown, task=runtime.canonical_json(task.to_dict()),
+            task_sha256=_digest(runtime.canonical_json(task.to_dict())), skill_bundle=packet.skill_bundle,
+            skill_manifest_sha256=inputs.skill_manifests[task_id], dependency_artifacts=(),
+            execution_class=task.execution_class, cwd=baseline.repository,
+            target_binding=inputs.targets["booking"], run_inputs=inputs, dependency_records=(),
+        )
+        prepared_packet = (runtime.TaskPacket.for_repo_write(
+            workspace_verifications=tuple(seat.workspace_verification for seat in seats),
+            lifecycle_controller=controller, **values,
+        ) if task.execution_class == "repo-write" else runtime.TaskPacket(**values))
+        return runtime.TaskPreparation(
+            prepared_packet, seats, runtime.RoundPolicy.from_provider_policy(task.provider_policy or plan.defaults),
+            inputs, revision, registry=registry,
+        )
+
+    run_root, authority_root = tmp_path / "run", tmp_path / "authority"
+    anchor = runtime.LocalAnchorAuthority.bootstrap(authority_root, run_root=run_root, repo_root=baseline.repository)
+    journal, owner = runtime.RunJournal.create(run_root, initial_inputs, anchor_store=anchor)
+    (tmp_path / "artifacts").rename(run_root / "artifacts")
+    runtime.FileSchedulerBackend.create(run_root, run_id=initial_inputs.run_id, owner=owner).close()
+    runtime.FileExecutionBackend.create(run_root, run_id=initial_inputs.run_id, owner=owner).close()
+    journal.close()
+    smoke_spec = importlib.util.spec_from_file_location("execute_v2_amendment_smoke", ROOT / "scripts/fanout_smoke.py")
+    assert smoke_spec and smoke_spec.loader
+    smoke = importlib.util.module_from_spec(smoke_spec)
+    sys.modules[smoke_spec.name] = smoke
+    smoke_spec.loader.exec_module(smoke)
+    smoke.fanout = runtime
+
+    @contextmanager
+    def reopen(plan, inputs, *, create=False):
+        anchor = runtime.LocalAnchorAuthority(authority_root, run_root=run_root, repo_root=baseline.repository)
+        with runtime.RunJournal.resume(run_root, initial_inputs, owner, anchor_store=anchor) as journal, \
+                runtime.ArtifactStore.open_existing(run_root / "artifacts") as artifacts, \
+                runtime.FileSchedulerBackend.resume(run_root, run_id=initial_inputs.run_id, owner=owner) as scheduler_backend, \
+                runtime.FileExecutionBackend.resume(run_root, run_id=initial_inputs.run_id, owner=owner) as backend:
+            controller = runtime.resume_lifecycle_controller(controller_root, capability)
+            registry = runtime.ProviderRegistry(profiles, version_probe=versions.__getitem__)
+            scheduler = (runtime.Scheduler.create if create else runtime.Scheduler.resume)(
+                plan, inputs, scheduler_backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+            )
+            memory = smoke._FakeMemory(tmp_path, artifacts)
+            coordinator = runtime.CollaborationCoordinator(
+                artifacts=artifacts, journal=journal, owner=owner, memory=memory, registry=registry,
+                provider_runner=smoke._FakeProvider(tmp_path, poison_peer=False), lifecycle_controller=controller,
+                repository_baselines={"booking": baseline}, dependency_scheduler=scheduler,
+            )
+            preparations = {
+                "booking-work": preparation(initial_plan, initial_inputs, "booking-work", 1, registry, controller),
+                "later": preparation(plan, inputs, "later", scheduler.plan_revision, registry, controller),
+            }
+            yield runtime.ExecutionService(
+                plan=plan, inputs=inputs, preparations=preparations, provider_profile_digests=inputs.provider_profiles,
+                budget=runtime.ExecutionBudget(8), scheduler=scheduler, journal=journal, coordinator=coordinator,
+                artifacts=artifacts, backend=backend, memory_preflight=memory.preflight,
+                repository_baselines={"booking": baseline}, lifecycle_controller=controller,
+            )
+
+    with reopen(initial_plan, initial_inputs, create=True) as service:
+        service.start(owner=owner)
+        assert service.scheduler.task_phase("later") == "unscheduled"
+        service.resume(owner=owner)
+        assert service.scheduler.task_phase("booking-work") == "reconciliation-pending"
+        live_state = service.backend.read().snapshot.tasks[0]
+        live_preparation = service.preparations["booking-work"]
+        assert len(live_state.barriers) == 1
+        original_barrier = service.artifacts.read_bytes(live_state.barriers[0])
+        replacement_data = initial_plan.to_dict()
+        replacement_data["tasks"][-1]["objective"] = "Complete the revised later review."
+        replacement = runtime.plan.FanoutPlanV2.from_dict(replacement_data)
+        inputs = dataclasses.replace(initial_inputs, compiled_plan_sha256=_digest(runtime.canonical_json(replacement.to_dict())))
+        rebuilt = preparation(replacement, inputs, "later", 2, service.coordinator.registry, service.lifecycle_controller)
+        stale = dataclasses.replace(service.preparations["later"], plan_revision=2)
+        before = (service.scheduler.revision, service.backend.read(), service.journal.state.to_dict())
+        with pytest.raises(runtime.ExecutionPreflightError, match="preparation"):
+            service.submit_amendment(replacement, inputs, {"later": stale}, inputs.provider_profiles,
+                                     expected_plan_revision=1, owner=owner)
+        assert (service.scheduler.revision, service.backend.read(), service.journal.state.to_dict()) == before
+        assert not (service.artifacts.root / "amendments").exists()
+        amendment = service.submit_amendment(replacement, inputs, {"later": rebuilt}, inputs.provider_profiles,
+                                              expected_plan_revision=1, owner=owner)
+        assert amendment.affected_task_ids == ("later",)
+        assert service.preparations["booking-work"] is live_preparation
+        assert service.backend.read().snapshot.tasks[0] == live_state
+
+    with reopen(replacement, inputs) as cold:
+        assert cold.preparations["booking-work"].digest == live_preparation.digest
+        assert cold.preparations["booking-work"].packet.run_inputs == initial_inputs
+        assert cold.preparations["later"].inputs == inputs
+        assert cold.backend.read().snapshot.tasks[0] == live_state
+        cold.resume(owner=owner)
+        assert cold.journal.state.task_phases["booking-work"] == "reconciliation-pending"
+        assert cold.artifacts.read_bytes(live_state.barriers[0]) == original_barrier
+        assert len(list((tmp_path / "calls").glob("*.json"))) == 2
+        for altered_inputs in (
+            dataclasses.replace(initial_inputs, parser_sha256=_digest("foreign historical inputs")),
+            dataclasses.replace(initial_inputs, targets={"booking": dataclasses.replace(
+                initial_inputs.targets["booking"], common_inode=initial_inputs.targets["booking"].common_inode + 1,
+            )}),
+        ):
+            altered = dataclasses.replace(
+                cold.preparations["booking-work"], inputs=altered_inputs,
+                packet=dataclasses.replace(cold.preparations["booking-work"].packet,
+                                           run_inputs=altered_inputs, target_binding=altered_inputs.targets["booking"]),
+            )
+            invalid = cold._replacement(replacement, inputs, {**cold.preparations, "booking-work": altered}, inputs.provider_profiles)
+            with pytest.raises(runtime.ExecutionPreflightError, match="preparation"):
+                invalid.resume(owner=owner)
+        assert len(list((tmp_path / "calls").glob("*.json"))) == 2
 
 
 def _profile_amendment(tmp_path, *, profiled=False):
@@ -4190,3 +4681,66 @@ def test_execution_aggregate_byte_limits_fail_before_initialization(
         )
 
     assert runtime.backend.record is None
+
+
+@pytest.mark.parametrize("field", ("max_snapshot_bytes", "max_backend_record_bytes"))
+def test_execution_capacity_reserves_planned_round_references_before_start(tmp_path, field):
+    task = _task("work")
+    task["provider_policy"]["rounds"] = 2
+    runtime = _runtime(tmp_path, _plan(task))
+    runtime.service.start(owner=runtime.owner)
+    empty = runtime.backend.record
+    bound = (len(fanout.canonical_json(empty.snapshot.to_dict()))
+             if field == "max_snapshot_bytes" else len(empty.canonical_bytes))
+    runtime.backend.record = None
+    runtime.scheduler.phases["work"] = "unscheduled"
+    limits = dataclasses.replace(fanout.ExecutionLimits(), **{field: bound})
+
+    with pytest.raises(fanout.ExecutionValidationError, match="snapshot|backend.*record"):
+        fanout.ExecutionService(
+            plan=runtime.scheduler.plan, inputs=runtime.inputs,
+            preparations=runtime.preparations,
+            provider_profile_digests=dict(runtime.inputs.provider_profiles),
+            budget=fanout.ExecutionBudget(max_provider_turns=64),
+            scheduler=runtime.scheduler, journal=runtime.journal,
+            coordinator=runtime.coordinator, artifacts=runtime.artifacts,
+            backend=runtime.backend, memory_preflight=runtime.memory.preflight,
+            baseline=runtime.baseline, lifecycle_controller=runtime.controller,
+            limits=limits,
+        )
+
+    assert runtime.backend.record is None
+    assert runtime.coordinator.execute_calls == []
+
+
+def test_sufficient_reserved_capacity_completes_two_rounds_with_final_provenance(tmp_path):
+    task = _task("work")
+    task["provider_policy"]["rounds"] = 2
+    runtime = _runtime(tmp_path, _plan(task))
+    service = fanout.ExecutionService(
+        plan=runtime.scheduler.plan, inputs=runtime.inputs, preparations=runtime.preparations,
+        provider_profile_digests=runtime.inputs.provider_profiles, budget=fanout.ExecutionBudget(64),
+        scheduler=runtime.scheduler, journal=runtime.journal, coordinator=runtime.coordinator,
+        artifacts=runtime.artifacts, backend=runtime.backend, memory_preflight=runtime.memory.preflight,
+        baseline=runtime.baseline, lifecycle_controller=runtime.controller,
+        limits=dataclasses.replace(fanout.ExecutionLimits(), max_snapshot_bytes=65536, max_backend_record_bytes=65536),
+    )
+    service.start(owner=runtime.owner)
+    status = service.resume(owner=runtime.owner)
+    assert status.tasks[0].completed_rounds == 2
+    assert status.tasks[0].phase == "reconciliation-pending"
+    state = runtime.backend.record.snapshot.tasks[0]
+    assert len(state.barriers) == 2
+    first = service._restore_barrier(state.barriers[0], service.preparations["work"].packet)
+    final = service._restore_barrier(state.barriers[-1], service.preparations["work"].packet)
+    receipt = service.verify_read_only_synthesis(
+        "work", source_seat_ids=tuple(terminal.seat_id for terminal in final.valid_terminals),
+        synthesizer_id="owner", answer=b"Combined final answers.\n", owner=runtime.owner,
+    )
+    assert {ref for _seat, ref in receipt.source_answers} == {terminal.answer_ref for terminal in final.valid_terminals}
+    assert {ref for _seat, ref in receipt.source_answers}.isdisjoint(terminal.answer_ref for terminal in first.valid_terminals)
+    service.submit("work", receipt, owner=runtime.owner)
+    assert service.resume(owner=runtime.owner).tasks[0].phase == "completed"
+    assert runtime.coordinator.execute_calls == [
+        ("work", 1, ("claude", "codex")), ("work", 2, ("claude", "codex")),
+    ]

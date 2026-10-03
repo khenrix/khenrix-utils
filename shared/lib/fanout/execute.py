@@ -1593,6 +1593,14 @@ class ExecutionService:
                 raise ExecutionValidationError(
                     "affected amendment work lacks its exact revision preparation"
                 )
+            if (
+                preparation.inputs != new_inputs
+                or preparation.packet.compiled_plan_sha256 != anticipated.plan_sha256
+                or preparation.packet.task_sha256 != _digest(canonical_json(task.to_dict()))
+                or preparation.packet.skill_manifest_sha256
+                != new_inputs.skill_manifests.get(task.id)
+            ):
+                raise ExecutionPreflightError("affected amendment preparation changed binding")
             merged[task.id] = preparation
         candidate = self._replacement(
             replacement,
@@ -2364,6 +2372,17 @@ class ExecutionService:
         except Exception as error:
             errors.append(error)
         run_workspace_roots: set[Path] = set()
+        decision_bindings = self._decision_bindings()
+        if allow_journal_input_revision:
+            prospective_revision = self.scheduler.plan_revision + 1
+            current_amendment = self._journal_amendment(self.scheduler.plan_revision)
+            if (
+                current_amendment is not None
+                and current_amendment.phase == "plan-amendment-intent"
+                and current_amendment.binding[2:4] == (self._plan_digest, self.inputs.digest)
+            ):
+                prospective_revision = self.scheduler.plan_revision
+            decision_bindings[prospective_revision] = (self._plan_digest, self.inputs.digest)
         for task in self._work_tasks:
             preparation = self.preparations.get(task.id)
             try:
@@ -2381,6 +2400,8 @@ class ExecutionService:
                     != packet.skill_manifest_sha256
                     or preparation.plan_revision
                     > self.scheduler.plan_revision + int(allow_journal_input_revision)
+                    or decision_bindings.get(preparation.plan_revision)
+                    != (packet.compiled_plan_sha256, preparation.inputs.digest)
                     or any(seat.executor_id == "maka" for seat in preparation.seats)
                 ):
                     raise ExecutionPreflightError("task immutable preparation changed")
@@ -2393,7 +2414,10 @@ class ExecutionService:
                     controller = self._require_controller()
                     if v2 and (
                         packet.target_binding != self.inputs.targets.get(task.target_id)
-                        or packet.run_inputs != self.inputs
+                        or preparation.inputs.targets is None
+                        or packet.target_binding
+                        != preparation.inputs.targets.get(task.target_id)
+                        or packet.run_inputs != preparation.inputs
                     ):
                         raise ExecutionPreflightError("task target binding changed")
                     if packet.cwd.resolve() != baseline.repository:
@@ -3312,6 +3336,9 @@ class ExecutionService:
         phase = self._journal_phase(task_id)
         if phase in {None, "memory-recovered", "action-complete", "amendment-accepted"}:
             self.journal.append("reconciliation-pending", task_id=task_id, owner=owner)
+        elif phase == "reconciliation-verifying":
+            if self.scheduler.task_phase(task_id) != "reconciliation-pending":
+                raise ExecutionConflictError("reconciliation journal state changed")
         elif phase != "reconciliation-pending":
             raise ExecutionConflictError("reconciliation journal state changed")
 
@@ -3847,10 +3874,10 @@ class ExecutionService:
         tasks = tuple(task for task in self.plan.tasks if task.kind == "work")
         if len(tasks) > self.limits.max_tasks:
             raise ExecutionValidationError("execution task limit exceeded")
-        capacity_revision = max(
-            (preparation.plan_revision for preparation in self.preparations.values()),
-            default=max(1, getattr(self.scheduler, "plan_revision", 1)),
-        )
+        capacity_revision = max((
+            max(1, getattr(self.scheduler, "plan_revision", 1)),
+            *(preparation.plan_revision for preparation in self.preparations.values()),
+        ))
         states = tuple(
             self._new_task_state(
                 task,
@@ -3860,21 +3887,38 @@ class ExecutionService:
             )
             for task in tasks
         )
+        rounds = sum(preparation.policy.rounds for preparation in self.preparations.values())
+        current = self.backend.read()
+        capacity_backend_revision = (
+            current.revision if isinstance(current, ExecutionRecord) else 0
+        ) + 1 + 2 * rounds
         snapshot = ExecutionSnapshot(
             self.inputs.run_id,
             self._plan_digest,
             self.inputs.digest,
             self._backend_identity,
             self._backend_key,
-            1,
+            capacity_backend_revision,
             capacity_revision,
             states,
         )
         snapshot_bytes = canonical_json(snapshot.to_dict())
-        if len(snapshot_bytes) > self.limits.max_snapshot_bytes:
+        # A permitted path byte can occupy six JSON bytes. Reserve every round,
+        # including retained/replaceable refs, without publishing placeholder data.
+        reference_bytes = len(canonical_json({
+            "digest": "0" * 64,
+            "path": "\x01" * self.limits.max_artifact_path_bytes,
+            "size": self.artifacts.limits.max_file_bytes,
+        })) - 1
+        barrier_growth = sum(
+            preparation.policy.rounds * reference_bytes
+            + max(0, preparation.policy.rounds - 1)
+            for preparation in self.preparations.values()
+        )
+        if len(snapshot_bytes) + barrier_growth > self.limits.max_snapshot_bytes:
             raise ExecutionValidationError("execution snapshot byte limit exceeded")
-        record = ExecutionRecord(1, snapshot)
-        if len(record.canonical_bytes) > self.limits.max_backend_record_bytes:
+        record = ExecutionRecord(capacity_backend_revision, snapshot)
+        if len(record.canonical_bytes) + barrier_growth > self.limits.max_backend_record_bytes:
             raise ExecutionValidationError("execution backend record byte limit exceeded")
         status = ExecutionStatus(
             self.inputs.run_id,
