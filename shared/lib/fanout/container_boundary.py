@@ -66,8 +66,8 @@ _AGY_SETTINGS_BYTES = b'{"modelProvider":"gemini"}\n'
 _MAX_CLI_STDOUT = 4 * 1024 * 1024
 _MAX_CLI_STDERR = 512 * 1024
 _SSH_OPERATIONS = frozenset({"vm_mounts", "vm_nonce", "relay_directory_prepare", "relay_source_transfer", "socket_attestation", "relay_drain", "socket_closed_check"})
-_AGY_SETTINGS_SCRIPT = """import hashlib,os,stat,sys
-root=sys.argv[1]; uid=int(sys.argv[2]); data=b'{"modelProvider":"gemini"}\\n'
+_AGY_SETTINGS_SCRIPT = """import hashlib,json,os,stat,sys
+root=sys.argv[1]; uid=int(sys.argv[2]); data=b'{"modelProvider":"gemini"}\\n'; limit=4096
 def check_dir(fd):
  s=os.fstat(fd)
  if not stat.S_ISDIR(s.st_mode) or s.st_uid!=uid or stat.S_IMODE(s.st_mode)!=0o700:
@@ -90,9 +90,13 @@ try:
   item=os.open('settings.json',os.O_RDONLY|os.O_NOFOLLOW,dir_fd=fd)
  try:
   s=os.fstat(item)
-  if not stat.S_ISREG(s.st_mode) or s.st_uid!=uid or stat.S_IMODE(s.st_mode)!=0o600 or s.st_size!=len(data):
+  if not stat.S_ISREG(s.st_mode) or s.st_uid!=uid or stat.S_IMODE(s.st_mode)!=0o600 or s.st_nlink!=1 or s.st_size>limit:
    raise SystemExit(1)
-  if os.read(item,len(data)+1)!=data: raise SystemExit(1)
+  raw=os.read(item,limit+1)
+  if len(raw)>limit: raise SystemExit(1)
+  try: pairs=json.loads(raw.decode('utf-8'),object_pairs_hook=list)
+  except (ValueError,RecursionError): raise SystemExit(1)
+  if pairs!=[('modelProvider','gemini')]: raise SystemExit(1)
  finally: os.close(item)
  print(hashlib.sha256(data).hexdigest())
 finally: os.close(fd)

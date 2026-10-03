@@ -1846,3 +1846,103 @@ def test_agy_session_settings_are_exact_and_fail_closed(boundary_module, tmp_pat
     settings.unlink()
     settings.symlink_to(tmp_path / "other")
     assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+
+
+@pytest.fixture
+def agy_existing_settings(boundary_module, tmp_path):
+    root = tmp_path / "session"
+    root.mkdir(mode=0o700)
+    (root / ".gemini").mkdir(mode=0o700)
+    directory = root / ".gemini/antigravity-cli"
+    directory.mkdir(mode=0o700)
+    settings = directory / "settings.json"
+    settings.write_bytes(b'{"modelProvider":"gemini"}\n')
+    settings.chmod(0o600)
+    command = (sys.executable, "-c", boundary_module._AGY_SETTINGS_SCRIPT,
+               str(root), str(os.getuid()))
+    return root, settings, command
+
+
+@pytest.mark.parametrize("document", [
+    b'{\n  "modelProvider": "gemini"\n}\n',
+    b' \t{\r\n\t"modelProvider" \t: "gemini"\r\n}\t \n',
+], ids=["agy-pretty-json", "json-whitespace"])
+def test_agy_existing_settings_accept_whitespace_without_rewriting(
+    agy_existing_settings, document,
+):
+    root, settings, command = agy_existing_settings
+    settings.write_bytes(document)
+    session = root / "agy-conversation-1.json"
+    session.write_bytes(b'{"conversationId":"agy-conversation-1"}\n')
+    before = settings.stat()
+    session_before = session.stat()
+
+    result = subprocess.run(command, capture_output=True, check=False)
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert result.stdout == b"1727eda32c4479358fc61b7ee0963d0100a6a7b0c91adc208e6bc728a8bd8e86\n"
+    assert settings.read_bytes() == document
+    after = settings.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+        before.st_ino, before.st_mtime_ns, before.st_ctime_ns,
+    )
+    assert session.read_bytes() == b'{"conversationId":"agy-conversation-1"}\n'
+    session_after = session.stat()
+    assert (session_after.st_ino, session_after.st_mtime_ns, session_after.st_ctime_ns) == (
+        session_before.st_ino, session_before.st_mtime_ns, session_before.st_ctime_ns,
+    )
+
+
+@pytest.mark.parametrize("document", [
+    b'{\n  "modelProvider": "other"\n}\n',
+    b'{"modelProvider":"gemini","extra":true}\n',
+    b'{"modelProvider":"gemini","modelProvider":"gemini"}\n',
+    b'{"modelProvider":"other","modelProvider":"gemini"}\n',
+    b'{"modelProvider":"gemini","modelProvider":"other"}\n',
+    b'[["modelProvider","gemini"]]\n',
+    b'["gemini"]\n',
+    b'"gemini"\n',
+    b'null\n',
+    b'true\n',
+    b'42\n',
+    b'{"modelProvider":"gemini",}\n',
+    b'{"modelProvider":"gemini"}\n{}\n',
+    b'{"modelProvider":"gemini"}\xff',
+    b'{"modelProvider":"gemini"}' + b' ' * 4096,
+], ids=["wrong-provider", "extra-key", "duplicate-approved-key",
+        "duplicate-last-approved", "duplicate-last-wrong", "array-of-pairs",
+        "array", "string", "null", "boolean", "number", "malformed",
+        "trailing-document", "invalid-encoding", "oversized"])
+def test_agy_existing_settings_reject_unapproved_documents(
+    agy_existing_settings, document,
+):
+    _, settings, command = agy_existing_settings
+    settings.write_bytes(document)
+    assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+    assert settings.read_bytes() == document
+
+
+@pytest.mark.parametrize("unsafe", ["hardlink", "symlink", "directory", "mode", "owner"])
+def test_agy_existing_settings_reject_unsafe_files(agy_existing_settings, unsafe):
+    root, settings, command = agy_existing_settings
+    if unsafe == "hardlink":
+        os.link(settings, root / "settings-alias.json")
+    elif unsafe == "symlink":
+        target = root / "settings-target.json"
+        settings.rename(target)
+        settings.symlink_to(target)
+    elif unsafe == "directory":
+        settings.unlink()
+        settings.mkdir(mode=0o600)
+    elif unsafe == "mode":
+        settings.chmod(0o644)
+    else:
+        command = (*command[:-1], str(os.getuid() + 1))
+    assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+
+
+@pytest.mark.parametrize("directory", [".", ".gemini", ".gemini/antigravity-cli"])
+def test_agy_settings_reject_unsafe_directory_modes(agy_existing_settings, directory):
+    root, _, command = agy_existing_settings
+    (root / directory).chmod(0o755)
+    assert subprocess.run(command, capture_output=True, check=False).returncode != 0
