@@ -545,6 +545,192 @@ def test_capture_refuses_a_known_secret_signature_embedded_in_binary_bytes(tmp_p
         capture_repository_baseline(repo)
 
 
+def _baseline_candidate(tmp_path, payload, placement):
+    repo = _repo(tmp_path)
+    name = "candidate.data" if placement == "untracked" else "tracked.txt"
+    path = repo / name
+    path.write_bytes(payload)
+    if placement in {"head", "index"}:
+        _git(repo, "add", "--", name)
+        if placement == "head":
+            _git(repo, "commit", "-qm", "candidate bytes")
+            path.unlink()
+            _git(repo, "add", "-u", "--", name)
+        else:
+            path.write_bytes(b"harmless worktree bytes\n")
+    return repo, name
+
+
+@pytest.mark.parametrize("placement", ("head", "index", "worktree", "untracked"))
+@pytest.mark.parametrize("payload", (
+    pytest.param(
+        b"volumes:\n  secret:\n    external: true\n    name: ${FIXTURE_VOLUME:?}\n",
+        id="compose-mapping",
+    ),
+    pytest.param(
+        b"settings:\n  token:\n    subscription: false\n    lookup: op://Automation/example/credential\n",
+        id="different-long-child-key",
+    ),
+    pytest.param(b"PASSWORD:\n  enabled_flag: true\n", id="case-insensitive-mapping"),
+    pytest.param(b"secret:\n  external: bounded\n", id="short-child-scalar"),
+    pytest.param(
+        b'message: "short"\nsecret:\n  external: true\n', id="closed-inline-quote-before-mapping",
+    ),
+    pytest.param(
+        b"volumes:\r\n  secret:\r\n    external: true\r\n    name: ${FIXTURE_VOLUME:?}\r\n",
+        id="crlf-mapping",
+    ),
+))
+def test_baseline_admits_plain_sensitive_mapping_keys_in_each_namespace(tmp_path, payload, placement):
+    repo, name = _baseline_candidate(tmp_path, payload, placement)
+    before = _caller_state(repo)
+
+    baseline = capture_repository_baseline(repo)
+
+    entries = {
+        "head": baseline.head_entries, "index": baseline.index_entries,
+        "worktree": baseline.entries, "untracked": baseline.entries,
+    }[placement]
+    assert next(entry.data for entry in entries if entry.path == name) == payload
+    assert _caller_state(repo) == before
+
+
+@pytest.mark.parametrize("placement", ("head", "index", "worktree", "untracked"))
+@pytest.mark.parametrize("payload", (
+    pytest.param(b"password: ABCDEFGHIJKL\n", id="same-line-colon"),
+    pytest.param(b"api-key = ABCDEFGHIJKL\n", id="same-line-equals"),
+    pytest.param(b"token = 'ABCDEFGHIJKL'\n", id="single-quoted"),
+    pytest.param(b'password: "ABCDEFGHIJKL"\n', id="double-quoted"),
+    pytest.param(b"password:\n  ABCDEFGHIJKL\n", id="wrapped-literal"),
+    pytest.param(b"password:\n  'ABCDEFGHIJKL'\n", id="wrapped-single-quoted"),
+    pytest.param(b'password:\n  "ABCDEFGHIJKL"\n', id="wrapped-double-quoted"),
+    pytest.param(b"secret:\n  external\n", id="field-looking-scalar"),
+    pytest.param(b'secret:\n  "external: true"\n', id="quoted-colon-scalar"),
+    pytest.param(b"secret: external: true\n", id="same-line-colon-scalar"),
+    pytest.param(b"secret=\n  external: true\n", id="equals-not-mapping"),
+    pytest.param(b"secret:\n  password: ABCDEFGHIJKL\n", id="sensitive-child-literal"),
+    pytest.param(b"secret:\n  external: ABCDEFGHIJKL\n", id="nonsensitive-child-literal"),
+    pytest.param(b"secret:\n  external: external\n", id="eight-byte-child-literal"),
+    pytest.param(
+        b"secret:\n  external: true\n  label: ABCDEFGHIJKL\n", id="later-child-literal",
+    ),
+    pytest.param(b"secret:\n  external: 'ABCDEFGHIJKL'\n", id="quoted-child-literal"),
+    pytest.param(
+        b"secret:\n  external: true\npassword: ABCDEFGHIJKL\n", id="later-independent-literal",
+    ),
+    pytest.param(b"secret:\n  external:\n    ABCDEFGHIJKL\n", id="child-wrapped-literal"),
+    pytest.param(b"secret:\nexternal: true\n", id="equal-indentation"),
+    pytest.param(
+        b"secret:\n  external: true\n   enabled_flag: false\n", id="inconsistent-child-indentation",
+    ),
+    pytest.param(b"\tsecret:\n\t  external: true\n", id="tab-indentation"),
+    pytest.param(b"secret:\n  external:true\n", id="uncertain-colon-delimiter"),
+    pytest.param(b"secret:\n  external: 'short\n", id="unclosed-child-quote"),
+    pytest.param(b"secret:\n  external:\n    localvalue: true\n", id="nested-container"),
+    pytest.param(b"secret:\n  external: |\n    ABCDEFGHIJKL\n", id="block-scalar"),
+    pytest.param(b"secret:\n  external: {field: true}\n", id="flow-container"),
+    pytest.param(b"secret:\n  external: &fixture\n", id="anchor"),
+    pytest.param(b"message: |\n  secret:\n    external: true\n", id="enclosing-block-scalar"),
+    pytest.param(b"message: '\n  secret:\n    external: true\n'\n", id="enclosing-quoted-scalar"),
+    pytest.param(
+        b'password = """\nsecret:\n  external: true\n"""\n', id="python-triple-quoted-literal",
+    ),
+    pytest.param(
+        b"password = '''\nsecret:\n  external: true\n'''\n", id="python-triple-single-quoted-literal",
+    ),
+    pytest.param(
+        b'message: "\nsecret:\n  external: true\n"\n', id="root-enclosing-double-quote",
+    ),
+    pytest.param(
+        b"message: '\nsecret:\n  external: true\n'\n", id="root-enclosing-single-quote",
+    ),
+    pytest.param(
+        b'message: "\nsettings:\n  secret:\n    external: true\n"\n',
+        id="quote-before-intervening-ancestor",
+    ),
+    pytest.param(
+        b"message: |\nsecret:\n  external: true\n", id="uncertain-root-block-context",
+    ),
+    pytest.param(
+        b"message: {\nsecret:\n  external: true\n}\n", id="uncertain-root-flow-context",
+    ),
+    pytest.param(
+        b'unknown "prefix\nsettings:\n  token:\n    subscription: false\n',
+        id="unknown-quoted-prefix",
+    ),
+    pytest.param(
+        b"secret:\n  external: true\n  name: ${" + b"AK" + b"IA" + b"1234567890ABCDEF}\n",
+        id="aws-signature-in-mapping-reference",
+    ),
+    pytest.param(
+        b"secret:\n  external: true\n  lookup: op://" + b"gh" + b"p_" + b"ABCDEFGHIJKLMNOPQRST\n",
+        id="github-signature-in-mapping-reference",
+    ),
+))
+def test_baseline_refuses_literals_and_ambiguous_mapping_syntax_in_each_namespace(
+    tmp_path, payload, placement,
+):
+    repo, name = _baseline_candidate(tmp_path, payload, placement)
+    before = _caller_state(repo)
+
+    with pytest.raises(RepositorySecretError, match="possible secret") as caught:
+        baseline = capture_repository_baseline(repo)
+        create_seat_workspace(baseline, tmp_path / "run", "claude")
+
+    assert name in str(caught.value)
+    assert not (tmp_path / "run").exists()
+    assert _caller_state(repo) == before
+
+
+@pytest.mark.parametrize("placement", ("head", "index", "worktree", "untracked"))
+@pytest.mark.parametrize("payload", (
+    pytest.param(b"password: ABCDEFGHIJKL\n", id="binary-same-line"),
+    pytest.param(b"token: 'ABCDEFGHIJKL'\n", id="binary-quoted"),
+    pytest.param(b"password:\n  ABCDEFGHIJKL\n", id="binary-wrapped"),
+    pytest.param(b"AK" + b"IA" + b"1234567890ABCDEF", id="binary-aws"),
+    pytest.param(b"gh" + b"p_" + b"ABCDEFGHIJKLMNOPQRST", id="binary-github"),
+    pytest.param(
+        b"secret:\n  external: true\n  name: ${" + b"AK" + b"IA" + b"1234567890ABCDEF}\n",
+        id="signature-in-mapping-reference",
+    ),
+))
+def test_baseline_refuses_secret_matches_inside_binary_bytes_in_each_namespace(
+    tmp_path, payload, placement,
+):
+    repo, name = _baseline_candidate(tmp_path, b"\x00\xff" + payload + b"\x00\xfe", placement)
+
+    with pytest.raises(RepositorySecretError, match="possible secret") as caught:
+        baseline = capture_repository_baseline(repo)
+        create_seat_workspace(baseline, tmp_path / "run", "claude")
+
+    assert name in str(caught.value)
+    assert not (tmp_path / "run").exists()
+
+
+def test_repeated_safe_mappings_have_proportional_scanner_work():
+    """Doubling safe input must not quadruple Python scanner work."""
+    counts = []
+    previous_trace = sys.gettrace()
+    for mappings in (100, 200):
+        events = 0
+
+        def trace(frame, event, argument):
+            nonlocal events
+            if event == "line" and frame.f_code.co_filename == str(FANOUT_ROOT / "repo.py"):
+                events += 1
+            return trace
+
+        try:
+            sys.settrace(trace)
+            fanout.repo._reject_secret("candidate.data", b"secret:\n  external: true\n" * mappings)
+        finally:
+            sys.settrace(previous_trace)
+        counts.append(events)
+
+    assert counts[0] > 0
+    assert counts[1] <= 3 * counts[0], counts
+
+
 @pytest.mark.parametrize("placement", ("root", "descendant", "alias-descendant"))
 def test_workspace_rejects_a_run_root_at_or_below_the_caller_repository(tmp_path, placement):
     """A run root under the caller would create untracked seat files before handover."""

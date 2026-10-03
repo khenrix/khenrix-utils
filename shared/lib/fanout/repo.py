@@ -63,8 +63,8 @@ _SECRET_PATTERNS = (
     re.compile(rb"AKIA[0-9A-Z]{16}"),
     re.compile(rb"gh[pousr]_[A-Za-z0-9_]{20,}"),
     re.compile(
-        rb"(?i)\b(?:api[_-]?key|access[_-]?key|secret|token|password)\b\s*[:=]\s*"
-        rb"(?:['\"])?[A-Za-z0-9_./+=-]{8,}"
+        rb"(?i)\b(?P<key>api[_-]?key|access[_-]?key|secret|token|password)\b\s*"
+        rb"(?P<separator>[:=])\s*(?P<quote>['\"])?(?P<value>[A-Za-z0-9_./+=-]{8,})"
     ),
 )
 
@@ -986,12 +986,77 @@ def _reject_escaping_link(root: Path, path: str, data: bytes) -> None:
         raise RepositoryIsolationError(f"symlink escapes repository: {path}") from error
 
 
+def _plain_secret_mapping_offsets(data: bytes) -> set[int]:
+    """Prove flat mapping headers in one pass; never recover uncertain context."""
+    offsets = set()
+    ancestors = []
+    pending = None
+    child_indent = None
+    plain_children = False
+    certain_prefix = True
+    for physical in re.finditer(rb"[^\n]*(?:\n|$)", data):
+        line = physical[0].removesuffix(b"\n").removesuffix(b"\r")
+        if not line.strip(b" "):
+            continue
+        indent = len(line) - len(line.lstrip(b" "))
+        field = re.fullmatch(rb" *(?:[A-Za-z_][A-Za-z0-9_-]*: *(.*)|- +(.*))", line)
+        header = field is not None and field[1] == b""
+        if field is None:
+            certain_prefix = False
+        else:
+            scalar = field[1] if field[1] is not None else field[2]
+            if b"'" in scalar or b'"' in scalar:
+                if re.fullmatch(rb"(?:'[^'\r\n]*'|\"(?:[^\"\\\r\n]|\\[^\r\n])*\")", scalar) is None:
+                    certain_prefix = False
+            elif scalar not in (b"{}", b"[]"):
+                unreferenced = re.sub(rb"\$\{[^{}\r\n]*\}", b"", scalar)
+                if scalar.startswith((b"|", b">", b"&", b"*")) or any(
+                    marker in unreferenced for marker in (b"{", b"}", b"[", b"]")
+                ):
+                    certain_prefix = False
+        if pending is not None:
+            if indent <= pending[0]:
+                if certain_prefix and plain_children and child_indent is not None:
+                    offsets.add(pending[1])
+                pending = None
+            else:
+                child = re.fullmatch(rb"( +)[A-Za-z_][A-Za-z0-9_-]*: +(.+)", line)
+                if child is None or (child_indent is not None and indent != child_indent):
+                    plain_children = False
+                elif re.fullmatch(
+                    rb"(?:[A-Za-z0-9_./+=-]{1,7}|\$\{[A-Za-z_][A-Za-z0-9_]*(?::[-+?])?\}"
+                    rb"|op://[A-Za-z0-9_./+=-]+)", child[2],
+                ) is None:
+                    plain_children = False
+                if child_indent is None:
+                    child_indent = indent
+        while ancestors and ancestors[-1][0] >= indent:
+            ancestors.pop()
+        plain_ancestors = not ancestors or ancestors[-1][1]
+        if header and certain_prefix and plain_ancestors:
+            pending = (indent, physical.start() + indent)
+            child_indent = None
+            plain_children = True
+        ancestors.append((indent, header and plain_ancestors))
+    if pending is not None and certain_prefix and plain_children and child_indent is not None:
+        offsets.add(pending[1])
+    return offsets
+
+
 def _reject_secret(path: str, data: bytes) -> None:
     name = PurePosixPath(path).name
     if any(name == candidate or name.startswith(candidate + ".") for candidate in _HIGH_RISK_NAMES):
         raise RepositorySecretError(f"repository baseline contains a high-risk secret filename: {path}")
-    if any(pattern.search(data) for pattern in _SECRET_PATTERNS):
+    if any(pattern.search(data) for pattern in _SECRET_PATTERNS[:2]):
         raise RepositorySecretError(f"repository baseline contains a possible secret: {path}")
+    offset = 0
+    mapping_offsets = None
+    while candidate := _SECRET_PATTERNS[2].search(data, offset):
+        if mapping_offsets is None:
+            mapping_offsets = _plain_secret_mapping_offsets(data)
+        if candidate.start() not in mapping_offsets:
+            raise RepositorySecretError(f"repository baseline contains a possible secret: {path}")
+        offset = candidate.start("value")
 
 
 @dataclass(slots=True)
