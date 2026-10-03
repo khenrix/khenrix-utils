@@ -28,6 +28,7 @@ import re
 import secrets
 import stat
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlsplit
@@ -47,6 +48,7 @@ MAX_OPENAI_BODY_BYTES = 16 * 1024 * 1024
 OPENAI_RESPONSES_WEBSOCKET_PROTOCOL = "responses_websockets=2026-02-06"
 JUDGE_ONLY = os.environ.get("MAKA_EVAL_JUDGE_ONLY") == "1"
 JUDGE_MARKER = re.compile(r"^Judge receipt nonce: (maka:fanout-judge-[0-9a-f]{32})$")
+JUDGE_ENVIRONMENT_HEADER = "Runtime Host environment for this turn:\n"
 EGRESS_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 _OPENAI_API_KEY: str | None = None
 _OPENAI_REQUEST_COUNT = 0
@@ -564,6 +566,34 @@ def valid_tool_choice(choice: object) -> bool:
     )
 
 
+def valid_judge_environment(text: str) -> bool:
+    """Recognize bounded native context for removal, not authenticate its origin."""
+    if not text.startswith(JUDGE_ENVIRONMENT_HEADER):
+        return False
+    try:
+        if len(text.encode("utf-8")) > 4096:
+            return False
+        payload = text[len(JUDGE_ENVIRONMENT_HEADER):]
+        if not payload.startswith("{") or not payload.endswith("}") or not payload.isprintable():
+            return False
+        context = strict_json_object(payload.encode("utf-8"))
+        if set(context) != {"cwd", "platform", "sampledAt", "timeZone"} or any(
+            not isinstance(value, str) or not value or not value.isprintable()
+            for value in context.values()
+        ):
+            return False
+        if (context["platform"] != "linux" or not context["cwd"].startswith("/") or
+                len(context["cwd"].encode("utf-8")) > 1024 or
+                len(context["timeZone"]) > 128 or
+                re.fullmatch(r"[A-Za-z][A-Za-z0-9_+-]*(?:/[A-Za-z0-9_+-]+)*", context["timeZone"]) is None or
+                re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z", context["sampledAt"]) is None):
+            return False
+        datetime.fromisoformat(context["sampledAt"])
+    except ValueError:
+        return False
+    return True
+
+
 def prepare_judge_request(raw: bytes) -> tuple[bytes, dict[str, object]] | None:
     """Accept one fresh blind prompt and erase Host tools at the provider boundary."""
     try:
@@ -578,14 +608,15 @@ def prepare_judge_request(raw: bytes) -> tuple[bytes, dict[str, object]] | None:
     if not isinstance(items, list) or not items:
         return None
     users: list[str] = []
-    for item in items:
+    for index, item in enumerate(items):
         if not isinstance(item, dict) or item.get("role") not in {
             "system", "developer", "user"
         } or set(item) != {"role", "content"}:
             return None
         content = item["content"]
         if item["role"] != "user" and isinstance(content, str):
-            if not content.strip() or len(content.encode("utf-8")) > 48 * 1024:
+            if (content.startswith(JUDGE_ENVIRONMENT_HEADER) or not content.strip() or
+                    len(content.encode("utf-8")) > 48 * 1024):
                 return None
             continue
         if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
@@ -593,7 +624,12 @@ def prepare_judge_request(raw: bytes) -> tuple[bytes, dict[str, object]] | None:
         part = content[0]
         if set(part) != {"type", "text"} or part.get("type") != "input_text" or not isinstance(part.get("text"), str):
             return None
-        if item["role"] == "user":
+        if part["text"].startswith(JUDGE_ENVIRONMENT_HEADER):
+            if (item["role"] != "user" or index != len(items) - 1 or len(users) != 1 or
+                    not valid_judge_environment(part["text"])):
+                return None
+            body["input"] = items[:-1]
+        elif item["role"] == "user":
             users.append(part["text"])
     if len(users) != 1 or len(users[0].encode("utf-8")) > 48 * 1024:
         return None

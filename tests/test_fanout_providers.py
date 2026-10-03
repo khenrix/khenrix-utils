@@ -1275,6 +1275,132 @@ def test_run_provider_parses_fixture_usage_identity_and_raw_artifacts(
         assert seen[0].stdin == b"secret prompt only in stdin"
 
 
+@pytest.fixture
+def codex_model_metadata_warning_events():
+    events = [json.loads(line) for line in (FIXTURES / "codex-success.ndjson").read_bytes().splitlines()]
+    events.insert(1, {
+        "type": "item.completed",
+        "item": {
+            "type": "error",
+            "message": "Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+        },
+    })
+    return events
+
+
+def test_codex_model_metadata_warning_preserves_success_and_raw_evidence(
+    tmp_path, _mock_clean_codex_host, codex_model_metadata_warning_events,
+):
+    stdout = b"\n".join(json.dumps(event).encode() for event in codex_model_metadata_warning_events)
+    request = _request("codex", tmp_path)
+
+    result = _fake_provider(request, lambda _command: _result(stdout=stdout))
+
+    assert result.valid is True
+    assert result.reason == "ok"
+    assert result.hint is None
+    assert result.session_id == "codex-thread-1"
+    assert result.answer == "Codex answer"
+    assert result.usage == {"input": 13, "output": 8, "cache_read": 5}
+    assert result.observed_model is None
+    assert result.stdout == stdout
+    assert request.artifact_store.read_bytes(result.stdout_ref) == stdout
+    assert result.stdout_digest == hashlib.sha256(stdout).hexdigest()
+
+
+@pytest.mark.parametrize("message", [
+    "quota exhausted",
+    "model rerouted: gpt-6.1-sol -> another-model",
+    "Model metadata for `gpt-6.1-sol` not found.",
+    "prefix Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+    "Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues. suffix",
+    "Model metadata for `` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+    "Model metadata for `gpt-6.1-sol\nother` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+    "Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\n",
+    None,
+    7,
+])
+def test_codex_model_metadata_warning_does_not_accept_other_item_errors(
+    message, tmp_path, _mock_clean_codex_host, codex_model_metadata_warning_events,
+):
+    events = codex_model_metadata_warning_events
+    events[1]["item"]["message"] = message
+    stdout = b"\n".join(json.dumps(event).encode() for event in events)
+
+    result = _fake_provider(_request("codex", tmp_path), lambda _command: _result(stdout=stdout))
+
+    assert result.valid is False
+    assert result.reason == "provider-error"
+
+
+@pytest.mark.parametrize("error_kind", ["item.completed", "error", "turn.failed"])
+@pytest.mark.parametrize("before_warning", [True, False])
+def test_codex_model_metadata_warning_cannot_hide_fatal_events(
+    error_kind, before_warning, tmp_path, _mock_clean_codex_host,
+    codex_model_metadata_warning_events,
+):
+    events = codex_model_metadata_warning_events
+    message = "quota exhausted" if error_kind == "item.completed" else events[1]["item"]["message"]
+    fatal = {"type": error_kind}
+    if error_kind == "item.completed":
+        fatal["item"] = {"type": "error", "message": message}
+    elif error_kind == "turn.failed":
+        fatal["error"] = {"message": message}
+    else:
+        fatal["message"] = message
+    events.insert(1 if before_warning else 2, fatal)
+    stdout = b"\n".join(json.dumps(event).encode() for event in events)
+
+    result = _fake_provider(_request("codex", tmp_path), lambda _command: _result(stdout=stdout))
+
+    assert result.valid is False
+    assert result.reason == "provider-error"
+    assert result.hint == message
+
+
+@pytest.mark.parametrize("guard,reason", [
+    ("missing-session", "protocol-error"),
+    ("conflicting-session", "protocol-error"),
+    ("missing-terminal", "protocol-error"),
+    ("missing-answer", "protocol-error"),
+    ("model-mismatch", "model-drift"),
+    ("process-exit", "process-error"),
+    ("timeout", "timeout"),
+    ("spawn-error", "spawn-error"),
+    ("closed-artifacts", "artifact-storage-error"),
+])
+def test_codex_model_metadata_warning_preserves_failure_guards(
+    guard, reason, tmp_path, _mock_clean_codex_host, codex_model_metadata_warning_events,
+):
+    events = codex_model_metadata_warning_events
+    request = _request("codex", tmp_path)
+    status, code = ProcessStatus.EXIT, 0
+    if guard == "missing-session":
+        events.pop(0)
+    elif guard == "conflicting-session":
+        events.insert(1, {"type": "thread.started", "thread_id": "other-thread"})
+    elif guard == "missing-terminal":
+        events.pop()
+    elif guard == "missing-answer":
+        events.pop(2)
+    elif guard == "model-mismatch":
+        events[-1]["model"] = "another-model"
+    elif guard == "process-exit":
+        code = 1
+    elif guard == "timeout":
+        status = ProcessStatus.TIMEOUT
+    elif guard == "spawn-error":
+        status = ProcessStatus.SPAWN_ERROR
+    elif guard == "closed-artifacts":
+        request.artifact_store.close()
+    stdout = b"\n".join(json.dumps(event).encode() for event in events)
+
+    result = _fake_provider(request, lambda _command: _result(stdout=stdout, status=status, code=code))
+
+    assert result.valid is False
+    assert result.reason == reason
+
+
 def test_structured_error_precedes_nonzero_exit_and_preserves_provider_identity(
     tmp_path, _mock_clean_codex_host,
 ):

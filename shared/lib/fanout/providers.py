@@ -542,7 +542,13 @@ class CodexAdapter(ProviderAdapter):
                 if isinstance(item, dict) and item.get("type") == "agent_message":
                     answer = item["text"] if isinstance(item.get("text"), str) else ""
                 elif isinstance(item, dict) and item.get("type") == "error":
-                    error = error or _optional_string(item.get("message")) or "Codex reported a structured error item"
+                    message = _optional_string(item.get("message"))
+                    # Codex exec serializes this nonfatal metadata warning as an error item.
+                    if message is None or not re.fullmatch(
+                        r"Model metadata for `[^`\s]+` not found\. Defaulting to fallback metadata; "
+                        r"this can degrade performance and cause issues\.", message,
+                    ):
+                        error = error or message or "Codex reported a structured error item"
             elif kind == "turn.completed":
                 final = True
                 observed_model = _optional_string(event.get("model"))
