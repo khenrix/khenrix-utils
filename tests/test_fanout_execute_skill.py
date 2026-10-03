@@ -465,6 +465,132 @@ helper._runtime()
     assert "unrelated runtime executed" not in result.stderr
 
 
+@pytest.mark.parametrize("source_cli", (PLANNER, CLI))
+@pytest.mark.parametrize("relative", ("shared", "shared/lib", "shared/lib/fanout",
+                                      "shared/lib/fanout/__init__.py",
+                                      "shared/lib/fanout/container_source.py",
+                                      "shared/lib/fanout/compiler.py"))
+def test_cold_helper_refuses_linked_runtime_before_external_code(tmp_path, source_cli, relative):
+    spec = importlib.util.spec_from_file_location("_import_boundary_delivery", ROOT / "components/skills/skillctl.py")
+    delivery = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = delivery
+    spec.loader.exec_module(delivery)
+    config = delivery.load_configuration(ROOT, tmp_path / "home", None)
+    marker = tmp_path / "external-imported"
+    external = tmp_path / "external"
+    shutil.copytree(ROOT / "shared/lib/fanout", external / "shared/lib/fanout",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    leaf = external / (relative if relative.endswith(".py") else "shared/lib/fanout/__init__.py")
+    code = leaf.read_text()
+    mark = f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+    if "from __future__ import annotations\n" in code:
+        code = code.replace("from __future__ import annotations\n", "from __future__ import annotations\n" + mark, 1)
+    else:
+        code = mark + code
+    leaf.write_text(code)
+    with delivery.staged_skill_sources(config) as staged:
+        installed = staged[source_cli.parent.parent.name]
+        selected = installed / relative
+        if selected.is_dir():
+            shutil.rmtree(selected)
+        else:
+            selected.unlink()
+        selected.symlink_to(external / relative, target_is_directory=not relative.endswith(".py"))
+        command = '''
+import importlib, importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+runtime = helper._runtime()
+importlib.import_module(runtime.__name__ + ".container_source").release_source_binding()
+'''
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                                 str(installed / "scripts" / source_cli.name)],
+                                cwd=tmp_path, capture_output=True, text=True)
+    assert not marker.exists(), result.stderr
+    assert result.returncode != 0
+    assert "unsafe" in result.stderr
+
+
+def test_cold_memory_loader_refuses_linked_components_before_external_code(tmp_path):
+    installed = tmp_path / "installed"
+    (installed / "shared").mkdir(parents=True)
+    (installed / "scripts").mkdir()
+    shutil.copy2(CLI, installed / "scripts/execute.py")
+    external = tmp_path / "external"
+    shutil.copytree(ROOT / "components/memory", external / "memory",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    marker = tmp_path / "external-memory-imported"
+    ingress = external / "memory/memory_ingress.py"
+    ingress.write_text(ingress.read_text().replace("from __future__ import annotations\n",
+        f"from __future__ import annotations\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n", 1))
+    (installed / "components").symlink_to(external, target_is_directory=True)
+    command = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+helper._memory_modules()
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(installed / "scripts/execute.py")],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert not marker.exists(), result.stderr
+    assert result.returncode != 0 and "unsafe" in result.stderr
+
+
+@pytest.mark.parametrize("source_cli", (PLANNER, CLI))
+def test_cold_helper_preserves_host_parent_alias(tmp_path, source_cli):
+    installed = tmp_path / "owner/installed"
+    (installed / "scripts").mkdir(parents=True)
+    shutil.copy2(source_cli, installed / "scripts" / source_cli.name)
+    shutil.copytree(ROOT / "shared/lib/fanout", installed / "shared/lib/fanout",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    alias = tmp_path / "owner-alias"
+    alias.symlink_to(installed.parent, target_is_directory=True)
+    command = '''
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+runtime = helper._runtime()
+assert pathlib.Path(runtime.__file__) == pathlib.Path(sys.argv[2])
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(alias / "installed/scripts" / source_cli.name),
+                             str(installed / "shared/lib/fanout/__init__.py")],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("source_cli", (PLANNER, CLI))
+def test_broken_canonical_layout_cannot_execute_flat_fallback(tmp_path, source_cli):
+    installed = tmp_path / "installed"
+    (installed / "scripts").mkdir(parents=True)
+    shutil.copy2(source_cli, installed / "scripts" / source_cli.name)
+    (installed / "shared").symlink_to(tmp_path / "missing-shared", target_is_directory=True)
+    legacy = installed / "lib/fanout"
+    legacy.mkdir(parents=True)
+    marker = tmp_path / "fallback-imported"
+    (legacy / "__init__.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n")
+    command = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("helper", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = helper
+spec.loader.exec_module(helper)
+helper._runtime()
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", command,
+                             str(installed / "scripts" / source_cli.name)],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert not marker.exists(), result.stderr
+    assert result.returncode != 0
+
+
 def test_execute_receipt_stales_on_runtime_memory_or_bundle_mapping(tmp_path: Path):
     spec = importlib.util.spec_from_file_location("_fanout_execute_hash_checks",
                                                   ROOT / "scripts/lib/checks.py")

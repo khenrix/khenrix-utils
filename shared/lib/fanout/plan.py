@@ -36,7 +36,7 @@ _ORCHESTRATOR_CONTROL_SKILLS = frozenset({
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SOURCE_STEP_ID = re.compile(r"Task [1-9][0-9]*/Step [1-9][0-9]*\Z")
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_POSIX_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh"})
+_POSIX_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "csh", "tcsh"})
 _WINDOWS_COMMAND_SHELLS = frozenset({"cmd", "cmd.exe"})
 _POWERSHELLS = frozenset({"powershell", "powershell.exe", "pwsh", "pwsh.exe"})
 
@@ -853,7 +853,7 @@ def _reject_shell_command_string(argv: tuple[str, ...]) -> None:
                 raise PlanValidationError("check argv uses an unsupported timeout form")
             argv = argv[2:]
             continue
-        if executable == "mise" and len(argv) > 1 and argv[1] == "exec":
+        if executable == "mise" and len(argv) > 1 and argv[1] in {"exec", "x"}:
             try:
                 separator = argv.index("--", 2)
             except ValueError as error:
@@ -863,6 +863,39 @@ def _reject_shell_command_string(argv: tuple[str, ...]) -> None:
                     for selector in argv[2:separator])):
                 raise PlanValidationError("check argv uses an unsupported mise exec form")
             argv = argv[separator + 1:]
+            continue
+        if executable == "nice":
+            index = 1
+            if len(argv) > index and argv[index] == "-n":
+                if len(argv) <= index + 1 or not re.fullmatch(r"[+-]?[0-9]+", argv[index + 1]):
+                    raise PlanValidationError("check argv uses an unsupported nice form")
+                index += 2
+            elif len(argv) > index and re.fullmatch(r"-[0-9]+", argv[index]):
+                index += 1
+            if len(argv) > index and argv[index].startswith("-"):
+                raise PlanValidationError("check argv uses an unsupported nice form")
+            argv = argv[index:]
+            continue
+        if executable in {"nohup", "xargs", "busybox"}:
+            index = 2 if executable == "nohup" and len(argv) > 1 and argv[1] == "--" else 1
+            if len(argv) <= index or argv[index].startswith("-"):
+                raise PlanValidationError(f"check argv uses an unsupported {executable} form")
+            argv = argv[index:]
+            continue
+        if executable == "stdbuf":
+            index = 1
+            while index < len(argv) and argv[index].startswith("-"):
+                option = argv[index]
+                if option[:2] not in {"-i", "-o", "-e"}:
+                    raise PlanValidationError("check argv uses an unsupported stdbuf form")
+                mode = option[2:]
+                index += 1
+                if not mode and index < len(argv):
+                    mode = argv[index]
+                    index += 1
+                if mode not in {"0", "L", "B"} and not re.fullmatch(r"[0-9]+[kM]?", mode):
+                    raise PlanValidationError("check argv uses an unsupported stdbuf form")
+            argv = argv[index:]
             continue
         break
     if not argv:

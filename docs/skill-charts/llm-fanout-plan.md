@@ -24,7 +24,7 @@ flowchart TD
     V --> D[Validated fanout DAG]
     D --> G_V2_START{V2 target registry?}
     G_V2_START -->|yes| DORMANT[Dormant v2 owner start;<br/>public resume refused]
-    G_V2_START -->|no, v1| E{Profiles characterized<br/>and installed CLIs match?}
+    G_V2_START -->|no, v1| E{Required profile capabilities<br/>admitted?}
     E -->|yes| RUN[V1 execution preflight]
     E -->|no| BLOCK[Block before provider spend]
 ```
@@ -55,6 +55,8 @@ flowchart TD
 
 Source and bundle tiers bind plan defaults; normal defaults may contain a read-only deep task. A top-level deep plan contains only read-only deep work. A source Task declaring `Create`/`Modify` paths has one repo-write owner; separate owners for those paths need separate approved source Tasks. Read-only source Steps may join distinct writers whose write paths come from other source Tasks. The chart's execution preflight is a separate admission gate; compilation does not characterize an installed CLI or approve provider spend. Owner review is a digest-bound attestation, not cryptographic identity proof.
 
+Admit required capabilities, not blanket equality with a development-time CLI version. A compatible host update alone does not block discovery or ordinary unchanged-skill use or trigger paid characterization. New runs record their observed CLI identity; existing and recovered sessions remain bound to saved inputs. Required deep-profile characterization and missing-capability refusals remain. Certified container executable, image, route or boundary changes still require exact revalidation, and public v2 provider execution remains closed pending native authority.
+
 Bundle write admission uses `from-bundle` with a separate `--owner-review-file`. The `compile` and `validate` commands do not accept that option. Changing declared bundle values after review requires a new review bound to the new canonical digest.
 
-For v2, `Target` metadata and dependency modes are part of the approved source plan. An `artifact` edge may unlock after verified reconciliation; a `handover` edge waits for an authenticated local branch terminal. An orchestrator-only integration barrier may consume both targets without giving a seat access to both repositories. The deterministic Task11 scenario manifest is `evals/llm-fanout/multirepo-deterministic-cases.json`; it does not modify the sealed quality campaign. Public v2 provider execution remains closed until live native certification; a valid plan permits only a dormant owner run today.
+For v2, `Target` metadata and dependency modes are part of the approved source plan. Every compiled task dependency, including a same-target edge, declares a mode aligned with source cross-Task declarations. An `artifact` edge may unlock after verified reconciliation; a `handover` edge requires a repo-write predecessor and waits for an authenticated local branch terminal. An orchestrator-only integration barrier may consume both targets without giving a seat access to both repositories. The deterministic Task11 scenario manifest is `evals/llm-fanout/multirepo-deterministic-cases.json`; it does not modify the sealed quality campaign. Public v2 provider execution remains closed until live native certification; a valid plan permits only a dormant owner run today.

@@ -436,6 +436,7 @@ def two_repo_fixture(tmp_path: Path, request):
         cases._git(root, "config", "remote.origin.url",
                    f"https://github.com/example/{target_id}-service.git")
         (root / "README.md").write_text("shared initial bytes\n")
+        (root / "README.md").chmod(0o644)
         cases._git(root, "add", "README.md")
         cases._git(root, "commit", "-qm", "initial")
         repositories[target_id] = root

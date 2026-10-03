@@ -57,6 +57,8 @@ def _v2_data() -> dict[str, object]:
 
 def test_v2_same_relative_path_in_different_targets_does_not_overlap():
     data = _v2_data()
+    data["tasks"][1]["depends_on"] = []
+    data["tasks"][1]["dependency_modes"] = {}
     data["tasks"][0]["owned_paths"] = ["src/shared.py"]
     data["tasks"][1]["owned_paths"] = ["src/shared.py"]
 
@@ -65,6 +67,20 @@ def test_v2_same_relative_path_in_different_targets_does_not_overlap():
     assert plan.schema_version == "v2"
     assert plan.tasks[0].target_id == "address"
     assert plan.tasks[1].target_id == "booking"
+
+
+@pytest.mark.parametrize("other_path", ("src/shared.py", "src/shared.py/child", "src"))
+def test_v2_unordered_same_target_paths_refuse_equal_or_ancestor_overlap(other_path):
+    data = _v2_data()
+    data["source_steps"][1]["target_id"] = "address"
+    data["tasks"][1]["target_id"] = "address"
+    data["tasks"][1]["execution_class"] = "read-only"
+    data["tasks"][1]["depends_on"] = []
+    data["tasks"][1]["dependency_modes"] = {}
+    data["tasks"][0]["owned_paths"] = ["src/shared.py"]
+    data["tasks"][1]["owned_paths"] = [other_path]
+    with pytest.raises(PlanValidationError, match="overlap"):
+        plan_module.load_fanout_plan(data)
 
 
 def test_v2_writer_cannot_mix_source_steps_from_two_targets():
@@ -563,6 +579,14 @@ def test_checks_require_structured_contained_secret_free_values(field, value):
     ["timeout", "5", "bash", "-c", "echo unsafe"],
     ["mise", "exec", "--", "bash", "-c", "echo unsafe"],
     ["mise", "exec", "python@3.12.14", "--", "bash", "-c", "echo unsafe"],
+    ["mise", "x", "--", "bash", "-c", "echo unsafe"],
+    ["nice", "sh", "-c", "echo unsafe"],
+    ["nice", "-n", "5", "sh", "-c", "echo unsafe"],
+    ["nohup", "bash", "-c", "echo unsafe"],
+    ["xargs", "sh", "-c", "echo unsafe"],
+    ["stdbuf", "-oL", "bash", "-c", "echo unsafe"],
+    ["busybox", "sh", "-c", "echo unsafe"],
+    ["mksh", "-c", "echo unsafe"],
 ])
 def test_checks_reject_shell_command_strings_even_as_argv(argv):
     """An argv-wrapped command string still invokes a shell parser and is unsafe."""
@@ -585,6 +609,16 @@ def test_checks_allow_mise_tool_selectors_for_direct_program():
     command = ("mise", "exec", "python@3.12.14", "--", "python", "-m", "pytest", "-q")
     data["tasks"][0]["checks"][0]["argv"] = list(command)  # type: ignore[index]
 
+    assert _plan(data).tasks[0].checks[0].argv == command
+
+
+@pytest.mark.parametrize("prefix", ((), ("mise", "x", "--"), ("nice",),
+                                    ("nice", "-n", "5"), ("nohup",), ("xargs",),
+                                    ("stdbuf", "-oL"), ("busybox",)))
+def test_checks_keep_shell_words_as_literal_direct_program_arguments(prefix):
+    data = _data()
+    command = (*prefix, "printf", "%s", "bash", "-c")
+    data["tasks"][0]["checks"][0]["argv"] = list(command)
     assert _plan(data).tasks[0].checks[0].argv == command
 
 

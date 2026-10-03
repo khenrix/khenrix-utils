@@ -6,16 +6,31 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import stat
 import sys
 from pathlib import Path
 from types import ModuleType
+
+
+def _require_import_path(root: Path, path: Path, *, directory: bool = False) -> None:
+    current = root
+    try:
+        for part in path.relative_to(root).parts:
+            current /= part
+            mode = current.lstat().st_mode
+            is_directory = current != path or directory
+            if not (stat.S_ISDIR(mode) if is_directory else stat.S_ISREG(mode)):
+                raise ValueError(f"bundled import source is unsafe: {current}")
+    except OSError as error:
+        raise ValueError(f"bundled import source is missing or unsafe: {current}") from error
 
 
 def _runtime():
     skill_root = Path(__file__).resolve().parents[1]
     candidates = (skill_root / "shared/lib/fanout", skill_root.parent.parent / "lib/fanout",
                   skill_root / "lib/fanout")
-    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+    if any(path.exists() or path.is_symlink() for path in
+           (skill_root / "shared", skill_root / "components")):
         runtime_root = candidates[0]
     elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
         runtime_root = candidates[1]
@@ -23,7 +38,12 @@ def _runtime():
         runtime_root = candidates[2]
     if not (runtime_root / "__init__.py").is_file():
         raise ValueError("bundled fanout runtime is missing")
+    source_root = skill_root if runtime_root == candidates[2] else runtime_root.parents[2]
+    _require_import_path(source_root, runtime_root, directory=True)
+    for path in runtime_root.rglob("*"):
+        _require_import_path(source_root, path, directory=path.is_dir())
     if runtime_root != candidates[2]:
+        _require_import_path(source_root, source_root / "scripts", directory=True)
         for name, root in (("shared", runtime_root.parents[1]),
                            ("shared.lib", runtime_root.parent),
                            ("scripts", runtime_root.parents[2] / "scripts")):
@@ -223,17 +243,12 @@ def _from_bundle(args: argparse.Namespace, runtime) -> None:
                        for task in tasks)
     if packet["quality_tier"] == "deep" and needs_review:
         raise ValueError("quality_tier=deep requires read-only work throughout the bundle")
-    if needs_review:
+    if needs_review or args.owner_review_file is not None:
         if (not isinstance(review, dict) or set(review) != {"schema_version", "reviewer", "binding_sha256"}
                 or review["schema_version"] != review_schema
                 or not isinstance(review["reviewer"], str) or not review["reviewer"].strip()
                 or review["binding_sha256"] != binding):
-            raise ValueError("owner review file must explicitly bind the exact repository-writing bundle")
-    elif review is not None:
-        if (not isinstance(review, dict) or set(review) != {"schema_version", "reviewer", "binding_sha256"}
-                or review["schema_version"] != review_schema
-                or review["binding_sha256"] != binding):
-            raise ValueError("owner review binding is invalid")
+            raise ValueError("owner review file must explicitly bind the exact bundle and name a reviewer")
     compiled = _compile(runtime, source.encode("utf-8"), source_path,
                         runtime.canonical_json(draft), args.skill_root)
     if compiled.plan.schema_version != version:

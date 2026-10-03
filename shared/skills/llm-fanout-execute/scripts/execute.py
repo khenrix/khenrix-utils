@@ -58,11 +58,25 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _require_import_path(root: Path, path: Path, *, directory: bool = False) -> None:
+    current = root
+    try:
+        for part in path.relative_to(root).parts:
+            current /= part
+            mode = current.lstat().st_mode
+            is_directory = current != path or directory
+            if not (stat.S_ISDIR(mode) if is_directory else stat.S_ISREG(mode)):
+                raise ValueError(f"bundled import source is unsafe: {current}")
+    except OSError as error:
+        raise ValueError(f"bundled import source is missing or unsafe: {current}") from error
+
+
 def _runtime():
     skill_root = Path(__file__).resolve().parents[1]
     candidates = (skill_root / "shared/lib/fanout", skill_root.parent.parent / "lib/fanout",
                   skill_root / "lib/fanout")
-    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+    if any(path.exists() or path.is_symlink() for path in
+           (skill_root / "shared", skill_root / "components")):
         runtime_root = candidates[0]
     elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
         runtime_root = candidates[1]
@@ -70,7 +84,12 @@ def _runtime():
         runtime_root = candidates[2]
     if not (runtime_root / "__init__.py").is_file():
         raise ValueError("bundled fanout runtime is missing")
+    source_root = skill_root if runtime_root == candidates[2] else runtime_root.parents[2]
+    _require_import_path(source_root, runtime_root, directory=True)
+    for path in runtime_root.rglob("*"):
+        _require_import_path(source_root, path, directory=path.is_dir())
     if runtime_root != candidates[2]:
+        _require_import_path(source_root, source_root / "scripts", directory=True)
         # The certificate authority and its fixed producer share this package.
         for name, root in (("shared", runtime_root.parents[1]),
                            ("shared.lib", runtime_root.parent),
@@ -116,7 +135,8 @@ def _memory_modules():
     candidates = (skill_root / "components/memory", skill_root / "memory",
                   skill_root.parent.parent.parent / "components/memory")
     names = ("memory_ingress.py", "memoryctl.py", "memory_exchange.py")
-    if (skill_root / "shared").exists() or (skill_root / "components").exists():
+    if any(path.exists() or path.is_symlink() for path in
+           (skill_root / "shared", skill_root / "components")):
         source = candidates[0]
     elif skill_root.parent.name == "skills" and skill_root.parent.parent.name == "shared":
         source = candidates[2]
@@ -126,6 +146,10 @@ def _memory_modules():
         raise ValueError("bundled memory controller is missing")
     if source.is_symlink() or any((source / name).is_symlink() for name in names):
         raise ValueError("bundled memory controller is unsafe")
+    source_root = skill_root if source != candidates[2] else skill_root.parent.parent.parent
+    _require_import_path(source_root, source, directory=True)
+    for name in names:
+        _require_import_path(source_root, source / name)
 
     def load(name: str, path: Path):
         spec = importlib.util.spec_from_file_location(name, path)

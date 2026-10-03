@@ -297,6 +297,61 @@ def test_write_bundle_requires_digest_bound_owner_review(tmp_path: Path):
     assert "owner review" in stale.stderr.lower()
 
 
+@pytest.mark.parametrize("version", ("v1", "v2"))
+@pytest.mark.parametrize("reviewer", (None, "", {}, 17, "whole-file-null"))
+def test_read_only_bundle_refuses_malformed_supplied_owner_review(tmp_path, version, reviewer):
+    bundle, skill_root, review = _read_only_review_bundle(tmp_path, version)
+    value = json.loads(review.read_text())
+    value["reviewer"] = reviewer
+    review.write_text(json.dumps(None if reviewer == "whole-file-null" else value))
+    result = _run("from-bundle", "--bundle", str(bundle), "--skill-root", str(skill_root),
+                  "--owner-review-file", str(review))
+    assert result.returncode != 0 and not result.stdout
+    assert "owner review" in result.stderr.lower()
+
+
+def _read_only_review_bundle(tmp_path, version):
+    bundle, skill_root, review = (_bundle if version == "v1" else _v2_bundle)(tmp_path)
+    packet = json.loads(bundle.read_text())
+    packet["source_markdown"] = packet["source_markdown"].replace(
+        "- Modify: `src/change.py`", "- Test: `src/change.py`")
+    packet["source_markdown"] = packet["source_markdown"].replace("bounded example", "bounded Å example")
+    packet["draft"]["source_sha256"] = hashlib.sha256(packet["source_markdown"].encode("utf-8")).hexdigest()
+    packet["draft"]["tasks"][0].update({"execution_class": "read-only", "owned_paths": [], "checks": []})
+    payload = packet if version == "v1" else {"schema_version": "fanout-owner-review-binding-v2", "bundle": packet}
+    binding = hashlib.sha256((json.dumps(payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")).hexdigest()
+    bundle.write_text(json.dumps(packet, ensure_ascii=False))
+    review.write_text(json.dumps({"schema_version": f"fanout-owner-review-{version}",
+                                  "reviewer": "Owner Å", "binding_sha256": binding}, ensure_ascii=False))
+    return bundle, skill_root, review
+
+
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_read_only_bundle_optional_review_matches_execution_admission(tmp_path, version):
+    bundle, skill_root, review = _read_only_review_bundle(tmp_path, version)
+    for supplied in (False, True):
+        extra = ("--owner-review-file", str(review)) if supplied else ()
+        result = _run("from-bundle", "--bundle", str(bundle), "--skill-root", str(skill_root), *extra)
+        assert result.returncode == 0, result.stderr
+        packet = json.loads(result.stdout)
+        assert packet["admission"]["owner_review"] == (json.loads(review.read_text()) if supplied else None)
+        execution = ROOT / "shared/skills/llm-fanout-execute/scripts/execute.py"
+        command = '''
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location("execute", sys.argv[1])
+execute = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = execute
+spec.loader.exec_module(execute)
+runtime = execute._runtime()
+resolver = runtime.SkillResolver((runtime.SkillRoot("root-0", pathlib.Path(sys.argv[2]), 0),))
+execute.verify_admission(json.load(sys.stdin), runtime, resolver)
+'''
+        admitted = subprocess.run([sys.executable, "-I", "-B", "-c", command, str(execution), str(skill_root)],
+                                   input=result.stdout, cwd=tmp_path, capture_output=True, text=True)
+        assert admitted.returncode == 0, admitted.stderr
+
+
 def test_bundle_cannot_self_assert_its_owner_review(tmp_path: Path):
     """A model-produced bundle carrying its own review must be refused."""
     bundle, skill_root, review = _bundle(tmp_path)
