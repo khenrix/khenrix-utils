@@ -39,6 +39,7 @@ _MAX_DOCKER_OUTPUT = 1024 * 1024
 # A full ID consumes 64 bytes plus its listing separator; seven fixed
 # observations cover image, volumes, running inspect, info, network and listing.
 _MAX_INVENTORY_IDS = (_MAX_DOCKER_OUTPUT + 1) // 65
+_MAX_ACTIVE_SEATS = 6  # The coordinator's admitted seat cap.
 _MAX_RUNTIME_OBSERVATIONS = _MAX_INVENTORY_IDS + 7
 _MAX_RUNTIME_PROOF_BYTES = ArtifactLimits().max_file_bytes
 _MEMORY = 4 * 1024**3
@@ -79,6 +80,14 @@ class _RecoveryAssociation:
     predecessors: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _InventoryScope:
+    """Frozen associations supplied only after coordinator snapshot authentication."""
+
+    stopped: tuple[tuple[str, str], ...]
+    active: tuple[tuple[ContainerSpec, ContainerHandle], ...]
+
+
 def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHandle,
                          *, recover: bool) -> _RecoveryAssociation | None:
     """Decode an already controller-authenticated exact launch association."""
@@ -116,14 +125,17 @@ def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHa
 class RuntimeTranscript:
     """Bound complete Docker observations and consume them in their recorded order."""
 
-    def __init__(self, observations: object = None):
+    def __init__(self, observations: object = None, *, active_peers: int = 0):
+        if type(active_peers) is not int or not 0 <= active_peers < _MAX_ACTIVE_SEATS:
+            raise ProviderRequestError("container runtime peer count is invalid")
+        self._max_observations = _MAX_RUNTIME_OBSERVATIONS + 2 * active_peers
         self.observations: list[dict[str, object]] = []
         self._commands: set[tuple[str, ...]] = set()
         self._outputs: list[bytes] = []
         self._bytes = 2  # Canonical JSON list brackets.
         self._position = 0
         if observations is not None:
-            if not isinstance(observations, list) or not 1 <= len(observations) <= _MAX_RUNTIME_OBSERVATIONS:
+            if not isinstance(observations, list) or not 1 <= len(observations) <= self._max_observations:
                 raise ProviderRequestError("container runtime observations are invalid")
             for item in observations:
                 if (not isinstance(item, dict) or set(item) != {"argv", "stdout"}
@@ -146,7 +158,7 @@ class RuntimeTranscript:
             raise ProviderRequestError("container runtime observation command is ambiguous")
         item = {"argv": list(argv), "stdout": base64.b64encode(raw).decode("ascii")}
         size = len(canonical_json(item)) + bool(self.observations)
-        if (len(self.observations) >= _MAX_RUNTIME_OBSERVATIONS
+        if (len(self.observations) >= self._max_observations
                 or self._bytes + size > _MAX_RUNTIME_PROOF_BYTES):
             raise ProviderRequestError("container runtime observation exceeds proof budget")
         self._bytes += size
@@ -365,9 +377,12 @@ class ContainerLauncher:
 
     def _inspect(self, container_id: str, spec: ContainerSpec, name: str | None,
                  image_id: str, volume_sources: tuple[str, str], *,
-                 expected_state: str = "created") -> str:
-        item = _json_one(self._run("inspect", "--type", "container", container_id),
-                         "container inspect")
+                 expected_state: str = "created", item: dict | None = None,
+                 shared: dict | None = None) -> str:
+        if item is None:
+            item = _json_one(self._run("inspect", "--type", "container", container_id),
+                             "container inspect")
+        shared = {} if shared is None else shared
         actual_name = item.get("Name")
         if name is None:
             prefix = "/fanout-seat-" + spec.workspace_volume.removeprefix("fanout-workspace-") + "-"
@@ -510,7 +525,9 @@ class ContainerLauncher:
             raise ProviderRequestError("container state differs")
         if expected_state == "running" and oom_kill_disable is None:
             try:
-                docker_info = json.loads(self._run("info", "--format", "{{json .}}"))
+                if "info" not in shared:
+                    shared["info"] = json.loads(self._run("info", "--format", "{{json .}}"))
+                docker_info = shared["info"]
             except (UnicodeDecodeError, ValueError) as error:
                 raise ProviderRequestError("Docker info returned invalid JSON") from error
             if (not isinstance(docker_info, dict)
@@ -518,8 +535,9 @@ class ContainerLauncher:
                     or docker_info.get("OomKillDisable") is not False):
                 raise ProviderRequestError("container OOM capability differs")
         if expected_state == "running":
-            none_network = _json_one(self._run("network", "inspect", "none"),
-                                     "network inspect")
+            if "network" not in shared:
+                shared["network"] = _json_one(self._run("network", "inspect", "none"), "network inspect")
+            none_network = shared["network"]
             members = none_network.get("Containers")
             member = members.get(container_id) if isinstance(members, dict) else None
             if (none_network.get("Name") != "none"
@@ -692,7 +710,52 @@ class ContainerLauncher:
 
     def _inventory(self, spec: ContainerSpec, volume_sources: tuple[str, str], *,
                    fence_owned: bool, exclude_id: str | None = None,
-                   predecessors: tuple[tuple[str, str], ...] | None = None) -> tuple[tuple[str, str], ...]:
+                   predecessors: tuple[tuple[str, str], ...] | None = None,
+                   scope: _InventoryScope | None = None,
+                   shared: dict | None = None, image_id: str | None = None) -> tuple[tuple[str, str], ...]:
+        active = {}
+        shared = {} if shared is None else shared
+        if scope is not None:
+            if (type(scope) is not _InventoryScope or not isinstance(scope.stopped, tuple)
+                    or not isinstance(scope.active, tuple) or len(scope.stopped) > _MAX_INVENTORY_IDS
+                    or len(scope.active) > _MAX_ACTIVE_SEATS or fence_owned):
+                raise ProviderRequestError("container inventory scope is invalid")
+            if (any(not isinstance(entry, tuple) or len(entry) != 2
+                    or not isinstance(entry[0], str) or _CONTAINER_ID.fullmatch(entry[0]) is None
+                    or not isinstance(entry[1], str) or _SHA.fullmatch(entry[1]) is None
+                    for entry in scope.stopped)
+                    or len(dict(scope.stopped)) != len(scope.stopped)):
+                raise ProviderRequestError("container inventory stopped association is invalid")
+            predecessors = scope.stopped
+            active_ids = set()
+            for entry in scope.active:
+                if not isinstance(entry, tuple) or len(entry) != 2:
+                    raise ProviderRequestError("container inventory active association is invalid")
+                peer_spec, peer_handle = entry
+                self._validate_spec(peer_spec)
+                if (not isinstance(peer_handle, ContainerHandle)
+                        or not isinstance(peer_handle.container_id, str)
+                        or _CONTAINER_ID.fullmatch(peer_handle.container_id) is None
+                        or not isinstance(peer_handle.inspect_sha256, str)
+                        or _SHA.fullmatch(peer_handle.inspect_sha256) is None
+                        or (peer_handle.workspace_volume, peer_handle.session_volume) != (
+                            peer_spec.workspace_volume, peer_spec.session_volume)
+                        or peer_spec.run_id != spec.run_id or peer_spec.image_digest != spec.image_digest
+                        or peer_handle.container_id in active_ids or peer_handle.container_id in dict(predecessors)):
+                    raise ProviderRequestError("container inventory active association is invalid")
+                active_ids.add(peer_handle.container_id)
+                if peer_handle.container_id == exclude_id:
+                    continue
+                sources = (self._volume(peer_spec, "workspace", create=False),
+                           self._volume(peer_spec, "session", create=False))
+                if self._resource_conflict(spec, {"Mounts": [], "HostConfig": {"Mounts": []}},
+                                           self._labels(peer_spec), volume_sources):
+                    raise ProviderRequestError("active sibling resource conflict")
+                for existing_spec, _, existing_sources in active.values():
+                    if self._resource_conflict(existing_spec, {"Mounts": [], "HostConfig": {"Mounts": []}},
+                                               self._labels(peer_spec), existing_sources):
+                        raise ProviderRequestError("active sibling resource conflict")
+                active[peer_handle.container_id] = peer_spec, peer_handle, sources
         output = self._run(
             "container", "ls", "-a", "--no-trunc",
             "--format", "{{.ID}}",
@@ -706,6 +769,7 @@ class ContainerLauncher:
         owned: list[tuple[str, bool]] = []
         expected_predecessors = dict(predecessors or ())
         seen_predecessors: set[str] = set()
+        seen_active: set[str] = set()
         stopped_observations: list[tuple[str, str]] = []
         foreign_conflict = False
         owned_conflict = False
@@ -716,6 +780,16 @@ class ContainerLauncher:
                              "orphan inspect")
             if item.get("Id") != container_id:
                 raise ProviderRequestError("recovery container identity differs")
+            if container_id in active:
+                peer_spec, peer_handle, peer_sources = active[container_id]
+                observed = self._inspect(container_id, peer_spec, None, image_id, peer_sources,
+                                         expected_state="running", item=item, shared=shared)
+                if observed != peer_handle.inspect_sha256:
+                    raise ProviderRequestError("active sibling security digest differs")
+                if self._resource_conflict(spec, item, self._labels(peer_spec), volume_sources):
+                    raise ProviderRequestError("active sibling resource conflict")
+                seen_active.add(container_id)
+                continue
             if container_id in expected_predecessors:
                 if self._stopped_observation(container_id, spec, item) != expected_predecessors[container_id]:
                     raise ProviderRequestError("recovery predecessor observation changed")
@@ -728,6 +802,8 @@ class ContainerLauncher:
             if not exact_owner:
                 foreign_conflict |= self._resource_conflict(spec, item, labels,
                                                             volume_sources)
+                for peer_spec, _, peer_sources in active.values():
+                    foreign_conflict |= self._resource_conflict(peer_spec, item, labels, peer_sources)
                 continue
             if not fence_owned:
                 if predecessors is not None:
@@ -755,6 +831,8 @@ class ContainerLauncher:
                 container_id, spec, stopped)))
         if seen_predecessors != set(expected_predecessors):
             raise ProviderRequestError("recovery predecessor inventory differs")
+        if seen_active != set(active):
+            raise ProviderRequestError("active sibling inventory differs")
         if foreign_conflict:
             raise ProviderRequestError("foreign run resource conflict in recovery inventory")
         if owned_conflict:
@@ -873,14 +951,18 @@ class ContainerLauncher:
             raise ProviderRequestError("failed launch container stop was not verified")
         return container_id
 
-    def _launch(self, spec: ContainerSpec, *, recover: bool) -> ContainerHandle:
+    def _launch(self, spec: ContainerSpec, *, recover: bool,
+                scope: _InventoryScope | None = None) -> ContainerHandle:
         if self._socket_attestor is None:
             raise ProviderRequestError("authenticated guest socket attestor is required")
         image_id = self._image_id(spec)
         workspace_source = self._volume(spec, "workspace", create=True)
         session_source = self._volume(spec, "session", create=True)
         sources = (workspace_source, session_source)
-        predecessors = self._inventory(spec, sources, fence_owned=recover)
+        predecessors = self._inventory(spec, sources, fence_owned=recover and scope is None,
+                                       scope=scope, image_id=image_id)
+        if scope is not None:
+            predecessors = scope.stopped
         proof = self._socket_proof(spec)
         name = self._name(spec)
         argv = ["create", "--name", name]
@@ -922,17 +1004,18 @@ class ContainerLauncher:
                                  "private volumes retained")
             raise
 
-    def start(self, spec: ContainerSpec) -> ContainerHandle:
+    def start(self, spec: ContainerSpec, *, scope: _InventoryScope | None = None) -> ContainerHandle:
         self._recovery = None
         self._validate_spec(spec)
-        return self._launch(spec, recover=False)
+        return self._launch(spec, recover=False, scope=scope)
 
-    def recover(self, spec: ContainerSpec) -> ContainerHandle:
+    def recover(self, spec: ContainerSpec, *, scope: _InventoryScope | None = None) -> ContainerHandle:
         self._recovery = None
         self._validate_spec(spec)
-        return self._launch(spec, recover=True)
+        return self._launch(spec, recover=True, scope=scope)
 
-    def attest_running(self, spec: ContainerSpec, handle: ContainerHandle) -> ContainerHandle:
+    def attest_running(self, spec: ContainerSpec, handle: ContainerHandle, *,
+                       scope: _InventoryScope | None = None) -> ContainerHandle:
         self._validate_spec(spec)
         if (not isinstance(handle, ContainerHandle)
                 or not isinstance(handle.container_id, str)
@@ -947,8 +1030,9 @@ class ContainerLauncher:
         image_id = self._image_id(spec)
         sources = (self._volume(spec, "workspace", create=False),
                    self._volume(spec, "session", create=False))
+        shared = {}
         observed = self._inspect(handle.container_id, spec, None, image_id, sources,
-                                 expected_state="running")
+                                 expected_state="running", shared=shared)
         if observed != handle.inspect_sha256:
             raise ProviderRequestError("container security digest differs")
         predecessors = None
@@ -956,7 +1040,11 @@ class ContainerLauncher:
             if self._recovery.spec != spec or self._recovery.handle != handle:
                 raise ProviderRequestError("container recovery association differs")
             predecessors = self._recovery.predecessors
+        if scope is not None:
+            if (type(scope) is not _InventoryScope or (spec, handle) not in scope.active
+                    or any(dict(scope.stopped).get(cid) != digest for cid, digest in predecessors or ())):
+                raise ProviderRequestError("container inventory scope changed launch association")
         self._inventory(spec, sources, fence_owned=False, exclude_id=handle.container_id,
-                        predecessors=predecessors)
+                        predecessors=predecessors, scope=scope, shared=shared, image_id=image_id)
         self._socket_proof(spec)
         return handle

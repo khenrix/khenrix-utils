@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 from types import SimpleNamespace
 from dataclasses import asdict, replace
@@ -19,6 +20,340 @@ from .container_transfer import TransferIdentity, snapshot_manifest
 
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _scope_material(controller, value):
+    raw = canonical_json(value)
+    with ArtifactStore(controller_directory(controller, "quarantine") / "runtime-proofs") as store:
+        ref = ArtifactRef(f"scope/{_sha(raw)}.json", _sha(raw), len(raw))
+        try:
+            return store.write_bytes(ref.path, raw)
+        except ArtifactExistsError:
+            store.read_bytes(ref)
+            return ref
+
+
+def _read_scope_material(controller, value, *, canonical=True):
+    ref = ArtifactRef(**value)
+    with ArtifactStore.open_existing(controller_directory(controller, "quarantine") / "runtime-proofs") as store:
+        raw = store.read_bytes(ref)
+    decoded = json.loads(raw)
+    if canonical and canonical_json(decoded) != raw:
+        raise ValueError("canonical lifecycle material")
+    return decoded
+
+
+def _scope_context(controller, ref, spec, inputs_digest, source, permit):
+    context = read_evidence(controller, "container-coordinator-context", *ref)
+    if (context["schema_version"] != "fanout-container-coordinator-context-v1"
+            or context["release_source_binding"] != source
+            or context["inputs_digest"] != inputs_digest
+            or tuple(context[field] for field in ("run_id", "task_id", "target_id", "seat_id")) != (
+                spec.run_id, spec.task_id, spec.target_id, spec.seat_id)
+            or any(getattr(permit, field) != context["request"][field] for field in (
+                "run_id", "task_id", "target_id", "seat_id", "inputs_digest", "session_id"))
+            or permit.provider != context["request"]["executor_id"]
+            or permit.route != ("resume" if context["request"]["resume"] else "initial")
+            or permit.upstream_route_digest is None):
+        raise ValueError("exact lifecycle turn context")
+    return context
+
+
+def _read_scope_member(controller, ref, opening_ref, opening):
+    from .broker import BrokerPermit
+    from .container_runtime import ContainerHandle, ContainerSpec, decode_launch_record
+    member = read_evidence(controller, "container-coordinator-member", *ref)
+    if (set(member) != {"schema_version", "opening", "spec", "handle", "launch", "context",
+                       "permit", "permit_id", "permit_epoch", "lease"}
+            or member["schema_version"] != "fanout-container-coordinator-member-v1"
+            or member["opening"] != list(opening_ref)):
+        raise ValueError("original lifecycle member")
+    spec, handle = ContainerSpec(**member["spec"]), ContainerHandle(**member["handle"])
+    permit = BrokerPermit(**member["permit"])
+    context = _scope_context(controller, member["context"], spec, opening["inputs_digest"],
+                             opening["release_source_binding"], permit)
+    launch = read_evidence(controller, "container-seat-launch", *member["launch"])
+    recovery = decode_launch_record(launch, spec, handle, recover=context["request"]["resume"])
+    lease = member["lease"]
+    expected_lease = controller_directory(controller, "locks") / (
+        f"relay-{member['permit_id']}-{member['permit_epoch']}.lock")
+    if (spec.run_id != opening["run_id"] or set(lease) != {"path", "device", "inode"}
+            or lease["path"] != str(expected_lease)
+            or any(type(lease[field]) is not int or lease[field] <= 0 for field in ("device", "inode"))
+            or type(member["permit_epoch"]) is not int
+            or member["permit_epoch"] != (context["attempt"] - 1) * 3 + context["round"]
+            or len(member["permit_id"]) != 64
+            or any(char not in "0123456789abcdef" for char in member["permit_id"])):
+        raise ValueError("original lifecycle lease association")
+    return member, spec, handle, recovery
+
+
+def _completed_scope_member(controller, member_ref, stop_ref, opening_ref, opening):
+    from .container_runtime import ContainerLauncher
+    from .container_transfer_transport import reopen_stopped_seat
+    member, spec, handle, _ = _read_scope_member(controller, member_ref, opening_ref, opening)
+    reopen_stopped_seat(controller, tuple(stop_ref), spec=spec, handle=handle)
+    proof = read_evidence(controller, "container-seat-stopped", *stop_ref)
+    if [proof["launch_evidence_name"], proof["launch_evidence_digest"]] != member["launch"]:
+        raise ValueError("exact completed lifecycle launch")
+    raw = _read_scope_material(controller, proof["raw_inspect"], canonical=False)
+    if not isinstance(raw, list) or len(raw) != 1:
+        raise ValueError("complete stopped lifecycle observation")
+    return handle.container_id, ContainerLauncher._stopped_observation(handle.container_id, spec, raw[0])
+
+
+def _read_lifecycle_snapshot(controller, ref, *, spec, handle, context_ref):
+    from .container_source import release_source_binding
+    from .container_runtime import _InventoryScope, _MAX_ACTIVE_SEATS, _MAX_INVENTORY_IDS
+    snapshot = read_evidence(controller, "container-coordinator-snapshot", *ref)
+    if (set(snapshot) != {"schema_version", "opening", "subject", "members"}
+            or snapshot["schema_version"] != "fanout-container-coordinator-snapshot-v1"):
+        raise ValueError("complete lifecycle snapshot")
+    opening_ref = tuple(snapshot["opening"])
+    opening = read_evidence(controller, "container-coordinator-opening", *opening_ref)
+    if (set(opening) != {"schema_version", "session_id", "run_id", "inputs_digest",
+                        "release_source_binding", "cold_baseline"}
+            or opening["schema_version"] != "fanout-container-coordinator-opening-v1"
+            or opening["run_id"] != spec.run_id
+            or opening["release_source_binding"] != release_source_binding().to_dict()
+            or not isinstance(opening["session_id"], str) or len(opening["session_id"]) != 64
+            or any(char not in "0123456789abcdef" for char in opening["session_id"])):
+        raise ValueError("original lifecycle opening")
+    baseline = _read_scope_material(controller, opening["cold_baseline"])
+    members = _read_scope_material(controller, snapshot["members"])
+    if (not isinstance(baseline, list) or len(baseline) > _MAX_INVENTORY_IDS
+            or set(members) != {"active", "completed"}
+            or not isinstance(members["active"], list) or not 1 <= len(members["active"]) <= _MAX_ACTIVE_SEATS
+            or not isinstance(members["completed"], list)
+            or len(baseline) + len(members["completed"]) > _MAX_INVENTORY_IDS):
+        raise ValueError("bounded lifecycle members")
+    stopped = [tuple(entry) for entry in baseline]
+    active = []
+    subject = None
+    seen_refs = set()
+    for member_ref in members["active"]:
+        if tuple(member_ref) in seen_refs:
+            raise ValueError("duplicate lifecycle member")
+        seen_refs.add(tuple(member_ref))
+        member, peer_spec, peer_handle, _ = _read_scope_member(controller, member_ref, opening_ref, opening)
+        active.append((peer_spec, peer_handle))
+        if member_ref == snapshot["subject"]:
+            if (peer_spec != spec or peer_handle != handle or member["context"] != list(context_ref)):
+                raise ValueError("exact lifecycle subject")
+            subject = member
+    for member_ref, stop_ref in members["completed"]:
+        if tuple(member_ref) in seen_refs:
+            raise ValueError("duplicate lifecycle member")
+        seen_refs.add(tuple(member_ref))
+        stopped.append(_completed_scope_member(controller, member_ref, stop_ref, opening_ref, opening))
+    if subject is None:
+        raise ValueError("missing lifecycle subject")
+    return _InventoryScope(tuple(stopped), tuple(active)), subject
+
+
+def _replay_lifecycle_runtime(controller, snapshot_ref, runtime_ref, *, spec, handle, context_ref, socket):
+    from .container_runtime import ContainerLauncher, RuntimeTranscript, decode_launch_record
+    scope, subject = _read_lifecycle_snapshot(controller, snapshot_ref,
+        spec=spec, handle=handle, context_ref=context_ref)
+    observations = RuntimeTranscript(_read_scope_material(controller, runtime_ref), active_peers=len(scope.active) - 1)
+    launcher = ContainerLauncher(guest_socket_attestor=lambda _: socket)
+    launcher._run = observations.replay
+    launch = read_evidence(controller, "container-seat-launch", *subject["launch"])
+    launcher._recovery = decode_launch_record(launch, spec, handle, recover=launch["route"] == "recover")
+    launcher.attest_running(spec, handle, scope=scope)
+    observations.require_complete()
+    return subject
+
+
+class _CoordinatorLifecycle:
+    """Current journal ownership only; archived snapshots never repopulate this registry."""
+
+    def __init__(self, coordinator):
+        from .container_source import release_source_binding
+        self.coordinator = coordinator
+        self.journal = coordinator.journal
+        self.controller = coordinator.lifecycle_controller
+        self.guard = coordinator._journal_guard
+        self.session_id = secrets.token_hex(32)
+        self.source = release_source_binding().to_dict()
+        self.opening = self.opening_ref = None
+        self.active = {}
+        self.completed = {}
+        self.pending = {}
+        self.blocked = False
+
+    def authorize(self, *, cleanup=False):
+        from .container_source import release_source_binding
+        self.journal.authorize_owner(self.coordinator.owner)
+        stored = RunInputs.from_dict(_read_json_file(
+            self.journal._root_fd, self.journal._INPUTS_FILE, self.journal.limits.max_snapshot_bytes))
+        if (self.coordinator.journal is not self.journal or self.coordinator._journal_guard is not self.guard
+                or self.coordinator.lifecycle_controller is not self.controller
+                or getattr(self.journal, "_container_lifecycle", None) is not self
+                or stored != self.journal.inputs or release_source_binding().to_dict() != self.source
+                or self.blocked and not cleanup):
+            raise CollaborationDurabilityError("current container lifecycle owner is unavailable")
+        if self.opening_ref is not None and read_evidence(self.controller, "container-coordinator-opening",
+                                                        *self.opening_ref) != self.opening:
+            raise CollaborationDurabilityError("current container lifecycle opening changed")
+
+    def reserve(self, context_ref, spec, ledger, permit, epoch):
+        from .container_runtime import ContainerLauncher, _MAX_ACTIVE_SEATS
+        with self.guard:
+            self.authorize()
+            ContainerLauncher._validate_spec(spec)
+            context = _scope_context(self.controller, context_ref, spec, self.journal.inputs.digest, self.source, permit)
+            if (ledger.controller is not self.controller or ledger.root != self.controller.root / "locks/spend"
+                    or epoch != (context["attempt"] - 1) * 3 + context["round"]):
+                raise CollaborationDurabilityError("exact lifecycle permit epoch changed")
+            if len(self.active) + len(self.pending) >= _MAX_ACTIVE_SEATS:
+                raise CollaborationDurabilityError("current container lifecycle seat budget exceeded")
+            if any(entry["spec"] == spec for entry in self.active.values()) or any(
+                    entry[0] == spec for entry in self.pending.values()):
+                raise CollaborationDurabilityError("container lifecycle seat is already active")
+            try:
+                permit_id = ledger.register(permit, epoch)
+            except BaseException as error:
+                self.fail(spec, None, None, error)
+                raise
+            self.pending[(permit_id, epoch)] = spec, tuple(context_ref), permit, ledger
+            return permit_id
+
+    def _control(self, spec, context_ref, control):
+        from .container_boundary import HostSessionLease, PinnedSSHSeatControl
+        from .container_broker import PermitLedger
+        if (type(control) is not PinnedSSHSeatControl or control.controller is not self.controller
+                or control.spec != spec or type(control._lease) is not HostSessionLease
+                or not isinstance(control.ledger, PermitLedger)
+                or control.ledger.controller is not self.controller
+                or control.ledger.root != self.controller.root / "locks/spend"):
+            raise CollaborationDurabilityError("container lifecycle relay association changed")
+        expected = self.pending.get((control.permit_id, control.epoch))
+        if expected is not None and expected != (spec, tuple(context_ref), control.broker.permit, control.ledger):
+            raise CollaborationDurabilityError("container lifecycle pending association changed")
+        _scope_context(self.controller, context_ref, spec, self.journal.inputs.digest, self.source, control.broker.permit)
+        control.ledger.require_permit(control.permit_id, control.epoch, control.broker.permit)
+        return control._lease.require_held()
+
+    def _inventory(self):
+        from .container_runtime import _InventoryScope
+        for entry in self.active.values():
+            member, _, _, _ = _read_scope_member(self.controller, entry["ref"], self.opening_ref, self.opening)
+            transport = entry["transport"]
+            lease = self._control(entry["spec"], member["context"], getattr(transport, "_control", None))
+            if (member != entry["member"] or transport.spec != entry["spec"] or transport.handle != entry["handle"]
+                    or [transport.handle_evidence_name, transport.handle_evidence_digest] != member["launch"]
+                    or lease != member["lease"]):
+                raise CollaborationDurabilityError("live container lifecycle member changed")
+        baseline = _read_scope_material(self.controller, self.opening["cold_baseline"])
+        completed = []
+        for cid, entry in self.completed.items():
+            observed = _completed_scope_member(self.controller, entry["ref"], entry["stop"], self.opening_ref, self.opening)
+            if observed != (cid, entry["digest"]):
+                raise CollaborationDurabilityError("completed lifecycle proof changed")
+            completed.append(observed)
+        stopped = tuple(tuple(entry) for entry in baseline) + tuple(completed)
+        return _InventoryScope(stopped, tuple((entry["spec"], entry["handle"]) for entry in self.active.values()))
+
+    def prepare(self, launcher, spec, context_ref, control):
+        self.authorize()
+        self._control(spec, context_ref, control)
+        if (control.permit_id, control.epoch) not in self.pending:
+            raise CollaborationDurabilityError("container lifecycle lacks exact pending permit")
+        if self.opening is None:
+            launcher._validate_spec(spec)
+            launcher._image_id(spec)
+            sources = (launcher._volume(spec, "workspace", create=True), launcher._volume(spec, "session", create=True))
+            baseline = launcher._inventory(spec, sources, fence_owned=True)
+            # The ledger lock is released before every Docker operation above.
+            with control.ledger._locked() as state:
+                abandoned = [(permit_id, entry["epoch"]) for permit_id, entry in state["permits"].items()
+                             if (permit_id, entry["epoch"]) not in self.pending and not entry["fenced"]]
+            for permit_id, epoch in abandoned:
+                control.ledger.fence_epoch(permit_id, epoch)
+            baseline_ref = _scope_material(self.controller, list(baseline))
+            self.opening = {"schema_version": "fanout-container-coordinator-opening-v1",
+                "session_id": self.session_id, "run_id": self.journal.inputs.run_id,
+                "inputs_digest": self.journal.inputs.digest, "release_source_binding": self.source,
+                "cold_baseline": asdict(baseline_ref)}
+            self.opening_ref = write_evidence(self.controller, "container-coordinator-opening", self.opening)
+        return self._inventory()
+
+    def register(self, transport, context_ref):
+        self.authorize()
+        control = transport._control
+        lease = self._control(transport.spec, context_ref, control)
+        member = {"schema_version": "fanout-container-coordinator-member-v1", "opening": list(self.opening_ref),
+            "spec": asdict(transport.spec), "handle": asdict(transport.handle),
+            "launch": [transport.handle_evidence_name, transport.handle_evidence_digest], "context": list(context_ref),
+            "permit": asdict(control.broker.permit), "permit_id": control.permit_id,
+            "permit_epoch": control.epoch, "lease": lease}
+        ref = write_evidence(self.controller, "container-coordinator-member", member)
+        decoded, _, _, _ = _read_scope_member(self.controller, ref, self.opening_ref, self.opening)
+        if decoded != member or transport.handle.container_id in self.active:
+            raise CollaborationDurabilityError("container lifecycle registration changed")
+        self.active[transport.handle.container_id] = {"ref": ref, "member": member, "spec": transport.spec,
+                                                    "handle": transport.handle, "transport": transport}
+        del self.pending[(control.permit_id, control.epoch)]
+
+    def snapshot(self, transport):
+        self.authorize()
+        self._inventory()
+        entry = self.active.get(transport.handle.container_id)
+        if entry is None or entry["transport"] is not transport:
+            raise CollaborationDurabilityError("container lifecycle subject is not active")
+        members = _scope_material(self.controller, {
+            "active": [list(entry["ref"]) for entry in self.active.values()],
+            "completed": [[list(entry["ref"]), list(entry["stop"])] for entry in self.completed.values()],
+        })
+        ref = write_evidence(self.controller, "container-coordinator-snapshot", {
+            "schema_version": "fanout-container-coordinator-snapshot-v1", "opening": list(self.opening_ref),
+            "subject": list(entry["ref"]), "members": asdict(members),
+        })
+        inventory, _ = _read_lifecycle_snapshot(self.controller, ref, spec=transport.spec, handle=transport.handle,
+                                               context_ref=entry["member"]["context"])
+        return ref, inventory
+
+    def complete(self, transport):
+        cid = transport.handle.container_id
+        if cid in self.completed:
+            if self.completed[cid]["stop"] != transport.stop_evidence:
+                raise CollaborationDurabilityError("completed container lifecycle stop changed")
+            return
+        entry = self.active.get(cid)
+        if entry is None or entry["transport"] is not transport or transport.stop_evidence is None:
+            raise CollaborationDurabilityError("container lifecycle stop is not registered")
+        observed_cid, digest = _completed_scope_member(self.controller, entry["ref"], transport.stop_evidence,
+                                                       self.opening_ref, self.opening)
+        if observed_cid != cid:
+            raise CollaborationDurabilityError("exact completed lifecycle container changed")
+        transport._control.ledger.fence_epoch(entry["member"]["permit_id"], entry["member"]["permit_epoch"])
+        self.completed[cid] = {"ref": entry["ref"], "stop": transport.stop_evidence, "digest": digest}
+        del self.active[cid]
+
+    def fail(self, spec, handle, control, error):
+        from .container_boundary import SessionStore, _cleanup_failure_note
+        self.blocked = True
+        store = None
+        provider = permit_id = None
+        if control is not None:
+            provider, permit_id = control.broker.permit.provider, control.permit_id
+            store = SessionStore(self.controller, spec.run_id, spec.task_id, spec.target_id, spec.seat_id, spec.session_volume)
+        error.add_note(_cleanup_failure_note(self.controller, "coordinator-lifecycle", error,
+            spec=spec, handle=handle, permit_id=permit_id, provider=provider, store=store))
+
+
+def _coordinator_lifecycle(coordinator):
+    with coordinator._journal_guard:
+        coordinator.journal.authorize_owner(coordinator.owner)
+        scope = getattr(coordinator.journal, "_container_lifecycle", None)
+        if scope is None:
+            scope = _CoordinatorLifecycle(coordinator)
+            coordinator.journal._container_lifecycle = scope
+        if type(scope) is not _CoordinatorLifecycle or scope.coordinator is not coordinator:
+            raise CollaborationDurabilityError("journal already has another container lifecycle owner")
+        scope.authorize()
+        return scope
 
 
 def authenticate_inputs(coordinator, packet):
@@ -432,6 +767,15 @@ def reopen_turn_completion(coordinator, packet, seat, terminal, peer):
     spec = ContainerSpec(request.run_id, request.task_id, request.target_id, request.seat_id,
         boundary["image_digest"], handle.workspace_volume, handle.session_volume, boundary["socket_path"], boundary["cli_digest"])
     _authenticated_launch(controller, request, handle, SimpleNamespace(**boundary))
+    from .container_runtime import GuestSocketAttestation
+    member = _replay_lifecycle_runtime(controller, proof["lifecycle_snapshot"], proof["runtime_proof"],
+        spec=spec, handle=handle, context_ref=proof["context"],
+        socket=GuestSocketAttestation(boundary["socket_path"], boundary["socket_uid"], boundary["socket_mode"],
+                                      boundary["socket_device"], boundary["socket_inode"], boundary["socket_ctime_ns"]))
+    if (member["permit"] != proof["permit"] or member["permit_id"] != proof["permit_id"]
+            or member["permit_epoch"] != proof["permit_epoch"]
+            or member["launch"] != [boundary["handle_evidence_name"], boundary["handle_evidence_digest"]]):
+        raise ValueError("original runtime lifecycle admission")
     stopped = read_evidence(controller, "container-seat-stopped", *proof["stop"])
     if (stopped["launch_evidence_name"], stopped["launch_evidence_digest"]) != (
             boundary["handle_evidence_name"], boundary["handle_evidence_digest"]):
@@ -564,7 +908,11 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
         upstream_path=probe._effective_route_path(route.profile, stream=True))
     ledger = PermitLedger(controller.root / "locks" / "spend", controller)
     epoch = (packet.attempt - 1) * 3 + round
-    permit_id = ledger.register(permit, epoch)
+    spec = ContainerSpec(request.run_id, request.task_id, request.target_id, request.seat_id,
+        bound["image_digest"], workspace, session, f"/run/fanout/{request.seat_id}.sock",
+        bound["cli_digests"][request.executor_id])
+    lifecycle = _coordinator_lifecycle(coordinator)
+    permit_id = lifecycle.reserve(context, spec, ledger, permit, epoch)
     captures = {}
     def capture(payload):
         item = probe._capture_private_wire(ledger, permit_id, epoch, request.artifact_store.root,
@@ -573,13 +921,11 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
     broker = Broker(permit, credential=credential, send=HostUpstream(permit, route,
         max_response_bytes=permit.max_response_bytes, deadline_seconds=permit.response_deadline,
         success_sink=capture))
-    spec = ContainerSpec(request.run_id, request.task_id, request.target_id, request.seat_id,
-        bound["image_digest"], workspace, session, f"/run/fanout/{request.seat_id}.sock",
-        bound["cli_digests"][request.executor_id])
     transport = None
     try:
         transport = PinnedDockerTransport.start_live(controller, spec, ledger=ledger, broker=broker,
-            permit_id=permit_id, epoch=epoch, recover=request.resume)
+            permit_id=permit_id, epoch=epoch, recover=request.resume,
+            lifecycle_scope=lifecycle, context_ref=context)
         admission = ContainerAdmission(permit, permit_id, epoch, ledger, spec.image_digest, spec.cli_digest,
             transport.attest_socket(), transport, sessions,
             transport.handle_evidence_name, transport.handle_evidence_digest)
@@ -598,6 +944,8 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
             raise CollaborationDurabilityError("container fixed process capture is unavailable")
         if transport.stop_evidence is None:
             raise CollaborationDurabilityError("container stopped-seat proof is unavailable")
+        if transport.lifecycle_snapshot is None or transport.runtime_proof is None:
+            raise CollaborationDurabilityError("container runtime lifecycle proof is unavailable")
         fence_stopped_turn(controller, ledger, transport, permit_id, epoch)
         completed = write_evidence(controller, "container-coordinator-turn", {
             "schema_version": "fanout-container-coordinator-turn-v1",
@@ -605,6 +953,7 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
             "task_packet_sha256": _sha(canonical_json(packet.to_dict())),
             "release_source_binding": release_source_binding().to_dict(),
             "context": list(context), "boundary": [boundary.evidence_name, boundary.evidence_digest],
+            "lifecycle_snapshot": list(transport.lifecycle_snapshot), "runtime_proof": asdict(transport.runtime_proof),
             "export": ([result.candidate_export.evidence_name, result.candidate_export.evidence_digest]
                        if result.candidate_export is not None else None),
             "stop": list(transport.stop_evidence), "turn_digest": _turn_digest(request, boundary),

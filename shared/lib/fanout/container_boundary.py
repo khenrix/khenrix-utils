@@ -249,6 +249,10 @@ class PinnedDockerTransport:
         self._stopped_inspect: bytes | None = None
         self.process_result: ProcessResult | None = None
         self.runtime_observation: list[dict[str, object]] = []
+        self._lifecycle_scope = None
+        self._retained_lifecycle_scope = None
+        self.lifecycle_snapshot = None
+        self.runtime_proof = None
 
     def stage_inputs(self, request: ProviderRequest,
                      source_grant: InputSourceGrant) -> InputTransferReceipt:
@@ -271,9 +275,41 @@ class PinnedDockerTransport:
               image_attestor: Callable[[], str],
               cli_attestor: Callable[[str], str],
               process_runner: Callable[[ProcessCommand], ProcessResult],
-              recover: bool = False) -> "PinnedDockerTransport":
+              recover: bool = False, lifecycle_scope=None,
+              context_ref=None, session_control=None) -> "PinnedDockerTransport":
+        if lifecycle_scope is not None:
+            from .container_coordinator import _CoordinatorLifecycle
+            if type(lifecycle_scope) is not _CoordinatorLifecycle or lifecycle_scope.controller is not controller:
+                raise ProviderRequestError("container lifecycle owner is invalid")
+            with lifecycle_scope.guard:
+                try:
+                    scope = lifecycle_scope.prepare(launcher, spec, context_ref, session_control)
+                    return cls._start_guarded(controller, spec, launcher=launcher,
+                        vm_attestor=vm_attestor, socket_attestor=socket_attestor,
+                        image_attestor=image_attestor, cli_attestor=cli_attestor,
+                        process_runner=process_runner, recover=recover, scope=scope,
+                        lifecycle_scope=lifecycle_scope, context_ref=context_ref,
+                        session_control=session_control)
+                except BaseException as primary:
+                    if not lifecycle_scope.blocked:
+                        lifecycle_scope.fail(spec, None, session_control, primary)
+                    raise
+        return cls._start_guarded(controller, spec, launcher=launcher,
+            vm_attestor=vm_attestor, socket_attestor=socket_attestor,
+            image_attestor=image_attestor, cli_attestor=cli_attestor,
+            process_runner=process_runner, recover=recover)
+
+    @classmethod
+    def _start_guarded(cls, controller, spec, *, launcher, vm_attestor,
+                       socket_attestor, image_attestor, cli_attestor,
+                       process_runner, recover, scope=None, lifecycle_scope=None,
+                       context_ref=None, session_control=None):
         assert_controller(controller)
-        handle = launcher.recover(spec) if recover else launcher.start(spec)
+        if scope is None:
+            handle = launcher.recover(spec) if recover else launcher.start(spec)
+        else:
+            handle = launcher.recover(spec, scope=scope) if recover else launcher.start(spec, scope=scope)
+        transport = None
         try:
             record = {
                 "spec": asdict(spec), "handle": asdict(handle),
@@ -283,6 +319,14 @@ class PinnedDockerTransport:
                 record["recovery"] = json.loads(canonical_json(asdict(launcher._recovery)))
             decode_launch_record(record, spec, handle, recover=recover)
             origin = write_evidence(controller, _HANDLE_CATEGORY, record)
+            transport = cls(controller, spec, handle, launcher, vm_attestor,
+                            socket_attestor, image_attestor, cli_attestor,
+                            process_runner, origin)
+            if lifecycle_scope is not None:
+                transport._control = session_control
+                transport._lifecycle_scope = lifecycle_scope
+                transport._retained_lifecycle_scope = lifecycle_scope
+                lifecycle_scope.register(transport, context_ref)
         except BaseException as primary:
             try:
                 cls._quarantine_handle(spec, handle, launcher)
@@ -290,19 +334,28 @@ class PinnedDockerTransport:
                 primary.add_note(_cleanup_failure_note(
                     controller, "launch-receipt", cleanup, primary=primary,
                     spec=spec, handle=handle))
+            if lifecycle_scope is not None:
+                lifecycle_scope.fail(spec, handle, session_control, primary)
             raise
-        return cls(controller, spec, handle, launcher, vm_attestor,
-                   socket_attestor, image_attestor, cli_attestor,
-                   process_runner, origin)
+        return transport
 
     @classmethod
     def start_live(cls, controller: LifecycleController, spec: ContainerSpec, *,
                    ledger: PermitLedger, broker: Broker, permit_id: str,
-                   epoch: int, recover: bool = False) -> "PinnedDockerTransport":
+                   epoch: int, recover: bool = False, lifecycle_scope=None,
+                   context_ref=None) -> "PinnedDockerTransport":
         """Open the owner-pinned relay, then create one inspected seat."""
         if (not isinstance(broker, Broker)
                 or broker.permit.upstream_route_digest is None):
             raise ProviderRequestError("container live upstream route is absent")
+        if lifecycle_scope is not None:
+            from .container_coordinator import _CoordinatorLifecycle
+            if type(lifecycle_scope) is not _CoordinatorLifecycle or lifecycle_scope.controller is not controller:
+                raise ProviderRequestError("container lifecycle owner is invalid")
+            with lifecycle_scope.guard:
+                lifecycle_scope.authorize()
+                if lifecycle_scope.pending.get((permit_id, epoch)) != (spec, tuple(context_ref), broker.permit, ledger):
+                    raise ProviderRequestError("container lifecycle pending permit changed")
         control = PinnedSSHSeatControl(controller, spec, ledger, broker,
                                        permit_id, epoch)
         try:
@@ -319,11 +372,16 @@ class PinnedDockerTransport:
                 process_runner=lambda command: cls._docker_exec(
                     transport.handle, command, transport._model_workdir),
                 recover=recover,
+                lifecycle_scope=lifecycle_scope, context_ref=context_ref,
+                session_control=control,
             )
             transport._control = control
             transport._production_edge = True
             return transport
         except BaseException as primary:
+            if lifecycle_scope is not None and not lifecycle_scope.blocked:
+                with lifecycle_scope.guard:
+                    lifecycle_scope.fail(spec, None, control, primary)
             try:
                 control.close()
             except BaseException as cleanup:
@@ -395,17 +453,47 @@ class PinnedDockerTransport:
         return self._vm_attestor()
 
     def attest_container(self) -> ContainerHandle:
+        scope = self._scope()
+        if scope is not None:
+            with scope.guard:
+                snapshot, inventory = scope.snapshot(self)
+                handle = self._attest_container(inventory)
+                raw = canonical_json(self.runtime_observation)
+                with ArtifactStore(controller_directory(self.controller, "quarantine") /
+                                   "runtime-proofs") as store:
+                    ref = ArtifactRef(f"runtime/{self.handle.container_id}/{hashlib.sha256(raw).hexdigest()}.json",
+                                      hashlib.sha256(raw).hexdigest(), len(raw))
+                    try:
+                        store.write_bytes(ref.path, raw)
+                    except ArtifactExistsError:
+                        store.read_bytes(ref)
+                    self.runtime_proof = ref
+                self.lifecycle_snapshot = snapshot
+                return handle
+        return self._attest_container()
+
+    def _scope(self):
+        from .container_coordinator import _CoordinatorLifecycle
+        scope = self._lifecycle_scope
+        if (scope is not self._retained_lifecycle_scope
+                or scope is not None and (type(scope) is not _CoordinatorLifecycle
+                                         or scope.controller is not self.controller)):
+            raise ProviderRequestError("container lifecycle association changed")
+        return scope
+
+    def _attest_container(self, scope=None) -> ContainerHandle:
         if type(self.launcher) is not ContainerLauncher:
             return self.launcher.attest_running(self.spec, self.handle)
         original = self.launcher._run
-        observations = RuntimeTranscript()
+        observations = RuntimeTranscript(active_peers=0 if scope is None else len(scope.active) - 1)
         def capture(*argv):
             raw = original(*argv)
             observations.append(argv, raw)
             return raw
         self.launcher._run = capture
         try:
-            handle = self.launcher.attest_running(self.spec, self.handle)
+            handle = (self.launcher.attest_running(self.spec, self.handle) if scope is None
+                      else self.launcher.attest_running(self.spec, self.handle, scope=scope))
         finally:
             self.launcher._run = original
         self.runtime_observation = observations.observations
@@ -441,6 +529,35 @@ class PinnedDockerTransport:
         return result
 
     def close(self) -> None:
+        scope = self._scope()
+        if scope is None:
+            return self._close()
+        primary = None
+        try:
+            with scope.guard:
+                scope.authorize(cleanup=True)
+                self._close(retain_control=True)
+                scope.complete(self)
+        except BaseException as error:
+            primary = error
+            with scope.guard:
+                scope.fail(self.spec, self.handle, getattr(self, "_control", None), error)
+            raise
+        finally:
+            control = getattr(self, "_control", None)
+            if control is not None:
+                try:
+                    control.close()
+                except BaseException as error:
+                    with scope.guard:
+                        scope.fail(self.spec, self.handle, control, error)
+                    if primary is None:
+                        raise
+                    primary.add_note(f"Guest relay cleanup also failed: {type(error).__name__}")
+                else:
+                    self._control = None
+
+    def _close(self, *, retain_control=False) -> None:
         control = getattr(self, "_control", None)
         shutdown_error: BaseException | None = None
         try:
@@ -473,7 +590,7 @@ class PinnedDockerTransport:
         except BaseException as error:
             shutdown_error = error
         relay_error: BaseException | None = None
-        if control is not None:
+        if control is not None and not retain_control:
             try:
                 control.close()
             except BaseException as error:
@@ -861,10 +978,27 @@ class HostSessionLease(AbstractContextManager["HostSessionLease"]):
             except BlockingIOError as error:
                 raise ProviderRequestError("host relay lease is already live") from error
             self._fd = fd
+            self._identity = info.st_dev, info.st_ino
             return self
         except BaseException:
             os.close(fd)
             raise
+
+    def require_held(self) -> dict:
+        if self._fd is None:
+            raise ProviderRequestError("host relay lease is not held")
+        try:
+            info = os.fstat(self._fd)
+            path = os.stat(self.path, follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or (info.st_dev, info.st_ino) != self._identity
+                    or (path.st_dev, path.st_ino) != self._identity):
+                raise ProviderRequestError("host relay lease changed association")
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise ProviderRequestError("host relay lease is unavailable") from error
+        return {"path": str(self.path), "device": info.st_dev, "inode": info.st_ino}
 
     def __exit__(self, *_: object) -> None:
         if self._fd is not None:

@@ -50,6 +50,12 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
     monkeypatch.setattr(helper, "authenticate_inputs", lambda *_: (SimpleNamespace(digest=request.inputs_digest), None))
     context = write_evidence(controller, "container-coordinator-context", {"fixture": "lifetime only"})
     monkeypatch.setattr(helper, "bind_turn_context", lambda *_: context)
+    lifecycle = SimpleNamespace(reserve=lambda _context, _spec, ledger, permit, epoch: ledger.register(permit, epoch))
+    monkeypatch.setattr(helper, "_coordinator_lifecycle", lambda _: lifecycle)
+    # These refs are inert lifetime-fixture setup, not claimed runtime admission.
+    transport.lifecycle_snapshot = context
+    with runtime.ArtifactStore(controller.root / "quarantine/runtime-proofs") as proofs:
+        transport.runtime_proof = proofs.write_json("lifetime-only.json", [])
     monkeypatch.setattr(helper, "admit_profile", lambda *_: request.profile)
     monkeypatch.setattr(helper, "_certificate", lambda *_: certificate)
     monkeypatch.setattr(probe, "_read_private_receipt", lambda _: {"manifest_path": str(path), "policy_path": str(policy),
@@ -61,6 +67,7 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
     monkeypatch.setattr(transport, "stage_inputs", lambda *_: receipt)
     def existing_owned_seat(_cls, admitted_controller, spec, **kwargs):
         assert admitted_controller is controller and spec == transport.spec
+        assert kwargs["lifecycle_scope"] is lifecycle and kwargs["context_ref"] == context
         broker = kwargs["broker"]
         assert broker.permit.max_requests == 4
         assert broker.permit.max_request_bytes == 1048576
@@ -574,6 +581,41 @@ def test_trial_consumer_paid_gate_refuses_before_authority_or_state(tmp_path, mo
     assert not tuple(root.iterdir())
 
 
+def _synthetic_lifecycle_proof(controller, spec, handle, launch, context, permit, permit_id, epoch, launcher):
+    """Complete fake-daemon bytes for codec/CAS coverage, never live Docker evidence."""
+    from dataclasses import asdict
+    from shared.lib.fanout import container_coordinator as helper
+    from shared.lib.fanout.controller import write_evidence
+    from shared.lib.fanout.container_runtime import _InventoryScope, RuntimeTranscript
+    from shared.lib.fanout.container_boundary import HostSessionLease
+    from shared.lib.fanout.container_source import release_source_binding
+    with HostSessionLease(controller, permit_id, epoch) as lease:
+        opening = write_evidence(controller, "container-coordinator-opening", {
+            "schema_version": "fanout-container-coordinator-opening-v1", "session_id": "0" * 64,
+            "run_id": spec.run_id, "inputs_digest": permit.inputs_digest,
+            "release_source_binding": release_source_binding().to_dict(),
+            "cold_baseline": asdict(helper._scope_material(controller, []))})
+        member = write_evidence(controller, "container-coordinator-member", {
+            "schema_version": "fanout-container-coordinator-member-v1", "opening": list(opening),
+            "spec": asdict(spec), "handle": asdict(handle), "launch": list(launch), "context": list(context),
+            "permit": asdict(permit), "permit_id": permit_id, "permit_epoch": epoch, "lease": lease.require_held()})
+        snapshot = write_evidence(controller, "container-coordinator-snapshot", {
+            "schema_version": "fanout-container-coordinator-snapshot-v1", "opening": list(opening), "subject": list(member),
+            "members": asdict(helper._scope_material(controller, {"active": [list(member)], "completed": []}))})
+        observations, original = RuntimeTranscript(), launcher._run
+        def capture(*argv):
+            raw = original(*argv)
+            observations.append(argv, raw)
+            return raw
+        launcher._run = capture
+        try:
+            launcher.attest_running(spec, handle, scope=_InventoryScope((), ((spec, handle),)))
+        finally:
+            launcher._run = original
+        runtime = helper._scope_material(controller, observations.observations)
+    return snapshot, runtime
+
+
 def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, trial_controller, raw, *, partial):
     """Retain complete synthetic protocol bytes using the actual private codecs."""
     from dataclasses import asdict, replace
@@ -597,6 +639,7 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
     from scripts import fanout_container_certify as probe
     from test_fanout_container_boundary import _terminal, SESSION_IDS
     from test_fanout_container_certify import _refuse_auxiliary
+    from test_fanout_container_runtime import SharedDocker
     canonical = runtime.canonical_json
     sha = lambda data: hashlib.sha256(data).hexdigest()
     service, coordinator = opened.service, opened.service.coordinator
@@ -643,7 +686,10 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             workspace, volume = private_volume_names(packet.run_id, task.id, task.target_id, seat.seat_id)
             spec = ContainerSpec(packet.run_id, task.id, task.target_id, seat.seat_id,
                 probe_receipt["image_digest"], workspace, volume, f"/run/fanout/{seat.seat_id}.sock", probe_receipt["cli_digests"][provider])
-            handle = ContainerHandle(sha(f"{task.id}/{provider}/{number}".encode()), "d" * 64, workspace, volume)
+            daemon = SharedDocker()
+            synthetic = daemon.seat(seat.seat_id, sha(f"{task.id}/{provider}/{number}".encode()), spec=spec)
+            launcher = synthetic[1]
+            handle = launcher.recover(spec) if number == 2 else launcher.start(spec)
             launch_value = {"spec": asdict(spec), "handle": asdict(handle),
                             "route": "start" if number == 1 else "recover"}
             if number == 2:
@@ -656,6 +702,9 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
                 upstream_route_digest=routes[provider].digest, upstream_origin=routes[provider].profile.origin,
                 upstream_model=routes[provider].profile.effective_model, upstream_path=probe_receipt["machine_routes"][provider]["path"])
             permit_id = ledger.register(permit, number)
+            lifecycle_snapshot, runtime_proof = _synthetic_lifecycle_proof(
+                controller, spec, handle, launch, context, permit, permit_id, number, launcher)
+            socket = launcher._socket_attestor(spec.socket_path)
             identity = TransferIdentity(packet.run_id, task.id, task.target_id, seat.seat_id, service.inputs.digest)
             if number == 1:
                 source, material_name, material_digest = helper.stage_input_material(coordinator, packet, seat, request, handle)
@@ -686,8 +735,8 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
                 "vm_effective_mounts_sha256": vm.effective_mounts_sha256, "vm_guest_mounts_sha256": vm.guest_mounts_sha256,
                 "image_digest": spec.image_digest, "cli_digest": spec.cli_digest,
                 "container_id": handle.container_id, "container_inspect_sha256": handle.inspect_sha256,
-                "session_volume": volume, "socket_path": spec.socket_path, "socket_uid": 65532,
-                "socket_mode": 0o140600, "socket_device": 1, "socket_inode": number, "socket_ctime_ns": number,
+                "session_volume": volume, "socket_path": spec.socket_path, "socket_uid": socket.uid,
+                "socket_mode": socket.mode, "socket_device": socket.device, "socket_inode": socket.inode, "socket_ctime_ns": socket.ctime_ns,
                 "session_id": request.session_id, "admission_identity": number,
                 "handle_evidence_name": launch[0], "handle_evidence_digest": launch[1],
                 "input_manifest_sha256": input_payload["manifest_sha256"], "input_workdir": input_payload["workdir"],
@@ -713,11 +762,8 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             export_ref = write_evidence(controller, "container-candidate-export", export_payload)
             export = CandidateExportReceipt(identity, turn, export_payload["manifest_sha256"], exported,
                 handle.container_id, handle.inspect_sha256, workspace, volume, *export_ref)
-            inspect = [{"Id": handle.container_id, "Config": {"Labels": ContainerLauncher._labels(spec), "Image": spec.image_digest},
-                "State": {"Running": False}, "HostConfig": {"RestartPolicy": {"Name": "no"}}, "Mounts": [
-                {"Destination": "/workspace", "Type": "volume", "Name": workspace},
-                {"Destination": "/session", "Type": "volume", "Name": volume},
-                {"Destination": "/run/fanout/broker.sock", "Type": "bind", "Source": spec.socket_path}]}]
+            synthetic[3]["_stopped_inspect"](synthetic[2].inspect)
+            inspect = [synthetic[2].inspect]
             with runtime.ArtifactStore(controller.root / "quarantine/runtime-proofs") as stops:
                 stopped_raw = stops.write_json(f"stopped/{handle.container_id}.json", inspect)
             stopped = write_evidence(controller, "container-seat-stopped", {"spec": asdict(spec), "handle": asdict(handle),
@@ -766,6 +812,7 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
                 "schema_version": "fanout-container-coordinator-turn-v1", "request_digest": admitted_request_digest(request),
                 "task_packet_sha256": sha(canonical(packet.to_dict())), "release_source_binding": release_source_binding().to_dict(),
                 "context": list(context), "boundary": list(boundary), "export": list(export_ref), "stop": list(stopped), "turn_digest": turn,
+                "lifecycle_snapshot": list(lifecycle_snapshot), "runtime_proof": asdict(runtime_proof),
                 "process": {"status": "exit", "returncode": 0, "capture_complete": True,
                     "stdout": asdict(result.stdout_ref), "stderr": asdict(result.stderr_ref), "answer": asdict(result.answer_ref)},
                 "permit": asdict(permit), "permit_id": permit_id, "permit_epoch": number,

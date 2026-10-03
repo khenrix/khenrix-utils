@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import copy
+import ast
 import json
 import posixpath
 import stat
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from contextlib import ExitStack
+from types import SimpleNamespace
 from itertools import permutations
 from pathlib import Path
 
@@ -36,6 +41,612 @@ CLI = "b" * 64
 SOCKET = "/run/fanout/seat-claude.sock"
 DOCKER = ("docker", "--context", "colima-fanout-isolated")
 BOUNDARY = "io.khenrix.fanout."
+
+
+class SharedDocker:
+    """Independent complete seat fixtures sharing one deterministic daemon inventory."""
+
+    def __init__(self, *, create_gate=None):
+        self.items = {}
+        self.members = []
+        self.guard = threading.RLock()
+        self.create_gate = create_gate
+        self.mutations = []
+
+    def seat(self, label, current, *, spec=None):
+        workspace, session = private_volume_names("run-synthetic", "task-plan", "target-one", label)
+        spec = spec or ContainerSpec("run-synthetic", "task-plan", "target-one", label,
+                                    IMAGE, workspace, session, f"/run/fanout/{label}.sock", CLI)
+        workspace, session = spec.workspace_volume, spec.session_volume
+        names = {"_labels", "_volume_labels", "_mounts", "_host_mounts", "_inspect",
+                 "_no_spend_running_inspect", "_stopped_inspect", "FakeDocker"}
+        source = ast.parse(Path(__file__).read_text())
+        nodes = [node for node in source.body if isinstance(node, ast.Assign)
+                 or isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
+        namespace = {"copy": copy, "json": json, "stat": stat, "subprocess": subprocess,
+                     "ContainerSpec": ContainerSpec}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), __file__, "exec"), namespace)
+        namespace.update(WORKSPACE=workspace, SESSION=session, SOCKET=spec.socket_path,
+                         CONTAINER_ID=current, IMAGE=spec.image_digest,
+                         IMAGE_ID=spec.image_digest[7:] if spec.image_digest.startswith("sha256:") else IMAGE_ID,
+                         IDENTITY_HASH=workspace.removeprefix("fanout-workspace-"))
+        docker = namespace["FakeDocker"](spec)
+        self.members.append(docker)
+
+        def run(argv, stdin):
+            args = argv[3:]
+            if self.create_gate is not None and args[0] == "create":
+                self.create_gate.wait(timeout=5)
+            with self.guard:
+                docker.old = {cid: item for cid, item in self.items.items() if cid != current}
+                if args[:2] == ("volume", "inspect"):
+                    volume = next((item for member in self.members for item in member.volumes.values()
+                                   if item["Name"] == args[2]), None)
+                    return docker._ok([volume] if volume else [])
+                if args[:2] == ("network", "inspect"):
+                    network = copy.deepcopy(docker.none_network)
+                    network["Containers"] = {
+                        cid: {"Name": item["Name"].removeprefix("/"),
+                              "EndpointID": item["NetworkSettings"]["Networks"]["none"]["EndpointID"],
+                              "MacAddress": "", "IPv4Address": "", "IPv6Address": ""}
+                        for cid, item in self.items.items() if item["State"]["Running"]
+                    }
+                    return docker._ok([network])
+                result = docker(argv, stdin)
+                if args[0] == "create":
+                    self.items[current] = docker.inspect
+                if args[0] in ("update", "stop"):
+                    self.mutations.append((label, args[0], args[-1]))
+                return result
+
+        socket = GuestSocketAttestation(spec.socket_path, 65532, stat.S_IFSOCK | 0o600, 4, 17, 12345)
+        launcher = ContainerLauncher(run, guest_socket_attestor=lambda _: socket)
+        return spec, launcher, docker, namespace
+
+    def previous(self, seat, container_id):
+        item = copy.deepcopy(seat[2].inspect)
+        item["Id"] = container_id
+        seat[3]["_stopped_inspect"](item)
+        self.items[container_id] = item
+
+
+def _shared_resume_fixture(*, create_gate=None):
+    daemon = SharedDocker(create_gate=create_gate)
+    first = daemon.seat("seat-claude", "c" * 64)
+    second = daemon.seat("seat-codex", "d" * 64)
+    daemon.previous(first, "1" * 64)
+    daemon.previous(second, "2" * 64)
+    return daemon, first, second
+
+
+class LifecycleHarness:
+    """Real journal/ledger/lease/transport ownership; only daemon and relay I/O are synthetic."""
+
+    def __init__(self, tmp_path):
+        from shared.lib.fanout import runstate, container_coordinator as helper
+        from shared.lib.fanout.controller import create_lifecycle_controller
+        from shared.lib.fanout.container_broker import PermitLedger
+        class Anchor:
+            identity = "synthetic-external-anchor"
+            records = {}
+            def create(self, key, value):
+                assert key not in self.records
+                self.records[key] = runstate.AnchorRevision(1, value)
+                return self.records[key]
+            def read(self, key):
+                return self.records[key]
+            def compare_and_set(self, key, revision, value):
+                assert self.records[key].revision == revision
+                self.records[key] = runstate.AnchorRevision(revision + 1, value)
+                return self.records[key]
+        self.authority = runstate._test_anchor_authority(Anchor())
+        self.inputs = runstate.RunInputs(run_id="run-synthetic", compiled_plan_sha256="a" * 64,
+            source_sha256="b" * 64, draft_sha256="c" * 64, compiler_sha256="d" * 64,
+            parser_sha256="e" * 64, provider_profiles={"claude": "f" * 64},
+            skill_manifests={"task-plan": "1" * 64}, repo_baseline_sha256="2" * 64)
+        self.journal, self.owner = runstate.RunJournal._create_for_test(
+            tmp_path / "run", self.inputs, anchor_store=self.authority)
+        self.controller = create_lifecycle_controller(tmp_path / "controller")
+        self.ledger = PermitLedger(self.controller.root / "locks/spend", self.controller)
+        self.stack = ExitStack()
+        self.coordinator = SimpleNamespace(journal=self.journal, owner=self.owner,
+            lifecycle_controller=self.controller, _journal_guard=threading.Lock())
+        self.scope = helper._coordinator_lifecycle(self.coordinator)
+
+    def start(self, seat, *, process_runner=lambda _: None, epoch=2):
+        from shared.lib.fanout.broker import BrokerPermit
+        from shared.lib.fanout.container_boundary import PinnedDockerTransport, PinnedSSHSeatControl, HostSessionLease
+        from shared.lib.fanout.controller import write_evidence
+        spec, launcher, _, _ = seat
+        provider = "codex" if spec.seat_id == "seat-codex" else "claude"
+        permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+            "resume", "synthetic-model", "disposable-placeholder", 4, 1048576, 8388608, 8192,
+            inputs_digest=self.inputs.digest, session_id="synthetic-session", upstream_route_digest="3" * 64,
+            upstream_origin="synthetic.invalid", upstream_model="synthetic-model", upstream_path="/v1/messages")
+        context = write_evidence(self.controller, "container-coordinator-context", {
+            "schema_version": "fanout-container-coordinator-context-v1", "release_source_binding": self.scope.source,
+            "inputs_digest": self.inputs.digest, "run_id": spec.run_id, "task_id": spec.task_id,
+            "target_id": spec.target_id, "seat_id": spec.seat_id,
+            "attempt": (epoch - 1) // 3 + 1, "round": (epoch - 1) % 3 + 1,
+            "request": {"run_id": spec.run_id, "task_id": spec.task_id, "target_id": spec.target_id,
+                "seat_id": spec.seat_id, "inputs_digest": self.inputs.digest, "session_id": permit.session_id,
+                "executor_id": provider, "resume": True}})
+        permit_id = self.scope.reserve(context, spec, self.ledger, permit, epoch)
+        control = object.__new__(PinnedSSHSeatControl)
+        control.controller, control.spec, control.ledger = self.controller, spec, self.ledger
+        control.permit_id, control.epoch, control.broker = permit_id, epoch, SimpleNamespace(permit=permit)
+        control._lease = self.stack.enter_context(HostSessionLease(self.controller, permit_id, epoch))
+        control.close = lambda: control._lease.__exit__()
+        transport = PinnedDockerTransport.start(self.controller, spec, launcher=launcher,
+            vm_attestor=lambda: None, socket_attestor=launcher._socket_attestor,
+            image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
+            process_runner=process_runner, recover=True, lifecycle_scope=self.scope,
+            context_ref=context, session_control=control)
+        self.stack.callback(transport.close)
+        return transport, context
+
+    def close(self):
+        try:
+            self.stack.close()
+        finally:
+            self.journal.close()
+
+
+def test_shared_daemon_later_resume_never_stops_active_sibling(tmp_path):
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def first_turn():
+        transport, _ = harness.start(first)
+        transport.attest_container()
+        entered.set()
+        assert finished.wait(5)
+        assert first[2].inspect["State"]["Running"] is True
+        return transport.attest_container()
+
+    def second_turn():
+        assert entered.wait(5)
+        try:
+            transport, _ = harness.start(second)
+            return transport.attest_container()
+        finally:
+            finished.set()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(first_turn), pool.submit(second_turn)
+            a.result(timeout=10)
+            b.result(timeout=10)
+        assert ("seat-codex", "stop", "c" * 64) not in daemon.mutations
+    finally:
+        harness.close()
+
+
+def test_shared_daemon_simultaneous_resumes_attest_both_new_siblings(tmp_path):
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a, b = pool.submit(harness.start, first), pool.submit(harness.start, second)
+            first_transport, second_transport = a.result(timeout=10)[0], b.result(timeout=10)[0]
+        assert first[2].inspect["State"]["Running"] is second[2].inspect["State"]["Running"] is True
+        assert not any(cid in ("c" * 64, "d" * 64) for _, operation, cid in daemon.mutations if operation == "stop")
+        assert first_transport.attest_container() == first_transport.handle
+        assert second_transport.attest_container() == second_transport.handle
+    finally:
+        harness.close()
+
+
+def test_scoped_model_turns_overlap_and_completed_sibling_stays_stopped(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as boundary
+    from shared.lib.fanout.process import ProcessCommand, ProcessResult, ProcessStatus
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    overlap = threading.Barrier(2)
+    completed = threading.Event()
+    def model_a(_):
+        overlap.wait(5)
+        return ProcessResult(ProcessStatus.EXIT, 0, b"synthetic model A", b"")
+    def model_b(_):
+        overlap.wait(5)
+        assert completed.wait(5)
+        assert second[2].inspect["State"]["Running"] is True
+        return ProcessResult(ProcessStatus.EXIT, 0, b"synthetic model B", b"")
+    # This guard-focused test replaces only unrelated full admission setup.
+    monkeypatch.setattr(boundary, "_check_live", lambda admitted: admitted.transport.attest_container())
+    try:
+        a, _ = harness.start(first, process_runner=model_a)
+        b, _ = harness.start(second, process_runner=model_b)
+        command = ProcessCommand(("claude",), b"synthetic prompt")
+        def turn_a():
+            result = a.run(command, SimpleNamespace(transport=a, input_workdir="/workspace"))
+            a.close()
+            completed.set()
+            return result
+        def turn_b():
+            result = b.run(command, SimpleNamespace(transport=b, input_workdir="/workspace"))
+            assert b.attest_container() == b.handle
+            assert not first[2].inspect["State"]["Running"]
+            return result
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            aa, bb = pool.submit(turn_a), pool.submit(turn_b)
+            assert aa.result(10).stdout == b"synthetic model A"
+            assert bb.result(10).stdout == b"synthetic model B"
+        assert a.handle.container_id in harness.scope.completed
+        assert b.handle.container_id in harness.scope.active
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "reordered", "extra"])
+def test_scoped_saved_runtime_replay_without_docker_or_live_leases(tmp_path, monkeypatch, mutation):
+    from dataclasses import asdict
+    from shared.lib.fanout import container_coordinator as helper
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, _ = harness.start(first)
+        b, context = harness.start(second)
+        a.close()
+        b.attest_container()
+        snapshot, runtime = b.lifecycle_snapshot, asdict(b.runtime_proof)
+        observations = copy.deepcopy(b.runtime_observation)
+        if mutation == "missing":
+            observations.pop()
+        elif mutation == "reordered":
+            observations[0], observations[1] = observations[1], observations[0]
+        elif mutation == "extra":
+            observations.append({"argv": ["unexpected"], "stdout": "eA=="})
+        if mutation:
+            runtime = asdict(helper._scope_material(harness.controller, observations))
+        socket = b.attest_socket()
+        harness.close()
+        monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("ambient Docker reached"))
+        if mutation:
+            with pytest.raises(ProviderRequestError):
+                helper._replay_lifecycle_runtime(harness.controller, snapshot, runtime,
+                    spec=b.spec, handle=b.handle, context_ref=context, socket=socket)
+        else:
+            member = helper._replay_lifecycle_runtime(harness.controller, snapshot, runtime,
+                spec=b.spec, handle=b.handle, context_ref=context, socket=socket)
+            assert member["handle"] == asdict(b.handle)
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "predecessor-changed", "predecessor-missing",
+    "unsafe-peer", "foreign-overlap", "permit-epoch", "lease-lost", "owner", "lock", "member", "opening", "scope-cleared"])
+def test_scoped_live_authority_refuses_drift(tmp_path, monkeypatch, mutation):
+    from shared.lib.fanout import runstate, container_coordinator as helper
+    from shared.lib.fanout.controller import write_evidence
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, _ = harness.start(first)
+        b, _ = harness.start(second)
+        a.attest_container()
+        with monkeypatch.context() as patch:
+            if mutation == "unknown":
+                patch.setitem(daemon.items, "9" * 64, {**copy.deepcopy(second[2].inspect), "Id": "9" * 64})
+            elif mutation == "predecessor-changed":
+                patch.setitem(daemon.items["1" * 64]["Config"], "Env", ["changed=true"])
+            elif mutation == "predecessor-missing":
+                patch.delitem(daemon.items, "1" * 64)
+            elif mutation == "unsafe-peer":
+                patch.setitem(second[2].inspect["HostConfig"], "Privileged", True)
+            elif mutation == "foreign-overlap":
+                foreign = copy.deepcopy(second[2].inspect)
+                foreign["Id"], foreign["Config"]["Labels"] = "9" * 64, {}
+                patch.setitem(daemon.items, "9" * 64, foreign)
+            elif mutation == "permit-epoch":
+                patch.setattr(b._control, "epoch", 3)
+            elif mutation == "lease-lost":
+                patch.setattr(b._control._lease, "_fd", None)
+            elif mutation == "owner":
+                patch.setattr(harness.coordinator, "owner", runstate.OwnerCapability("invalid-owner-capability" * 2))
+            elif mutation == "lock":
+                patch.setattr(harness.journal, "_lock_identity", (0, 0))
+            elif mutation == "member":
+                entry = harness.scope.active[b.handle.container_id]
+                member = {**entry["member"], "permit_epoch": 3}
+                patch.setitem(entry, "ref", write_evidence(harness.controller, "container-coordinator-member", member))
+            elif mutation == "scope-cleared":
+                patch.setattr(a, "_lifecycle_scope", None)
+            else:
+                patch.setattr(harness.scope, "opening", {**harness.scope.opening, "session_id": "0" * 64})
+            with pytest.raises(Exception):
+                a.attest_container()
+        assert first[2].inspect["State"]["Running"] is second[2].inspect["State"]["Running"] is True
+    finally:
+        harness.close()
+
+
+def test_same_journal_second_coordinator_is_refused_before_fencing(tmp_path):
+    from shared.lib.fanout import container_coordinator as helper
+    harness = LifecycleHarness(tmp_path)
+    try:
+        duplicate = SimpleNamespace(**vars(harness.coordinator))
+        with pytest.raises(Exception, match="another container lifecycle owner"):
+            helper._coordinator_lifecycle(duplicate)
+        assert helper._coordinator_lifecycle(harness.coordinator) is harness.scope
+        assert harness.scope.opening is None
+    finally:
+        harness.close()
+
+
+def test_cold_journal_lifetime_fences_disposed_resurrected_orphan_not_old_registry(tmp_path):
+    from shared.lib.fanout import runstate, container_coordinator as helper
+    daemon, first, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, _ = harness.start(first)
+        a.attest_container()
+        a.close()
+        original_scope = harness.scope
+        harness.stack.close()
+        harness.journal.close()
+        # The old epoch has a real exact stop disposition; Docker later resurrects it.
+        first[3]["_no_spend_running_inspect"](first[2].inspect)
+        harness.journal = runstate.RunJournal._resume_for_test(
+            tmp_path / "run", harness.inputs, harness.owner, anchor_store=harness.authority)
+        harness.coordinator = SimpleNamespace(journal=harness.journal, owner=harness.owner,
+            lifecycle_controller=harness.controller, _journal_guard=threading.Lock())
+        harness.scope = helper._coordinator_lifecycle(harness.coordinator)
+        assert harness.scope.session_id != original_scope.session_id and not harness.scope.active
+        new = daemon.seat("seat-claude", "8" * 64)
+        b, _ = harness.start(new, epoch=3)
+        assert b.attest_container() == b.handle
+        assert not first[2].inspect["State"]["Running"]
+        assert ("seat-claude", "stop", a.handle.container_id) in daemon.mutations
+        assert a.handle.container_id not in harness.scope.active
+    finally:
+        harness.close()
+
+
+def test_cold_unfenced_same_seat_stays_uncertain_without_launch_or_provider(tmp_path):
+    from shared.lib.fanout import runstate, container_coordinator as helper
+    from shared.lib.fanout.broker import BrokerRejected
+    from shared.lib.fanout.errors import RunStateError
+    daemon, first, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, _ = harness.start(first, process_runner=lambda _: pytest.fail("provider called"))
+        a.attest_container()
+        for event in ("dispatch-intent", "process-started", "provider-terminal", "artifacts-durable",
+                      "publication-intent", "checkpoint-published", "checkpoint-verified"):
+            harness.journal.append(event, task_id=first[0].task_id, seat_id=first[0].seat_id,
+                attempt=1, round=1, owner=harness.owner)
+        for event in ("dispatch-intent", "process-started"):
+            harness.journal.append(event, task_id=first[0].task_id, seat_id=first[0].seat_id,
+                attempt=1, round=3, owner=harness.owner)
+        # Lose the old owner lifetime without falsely publishing a stopped terminal.
+        a._control.close()
+        harness.stack.pop_all()
+        harness.journal.close()
+        harness.journal = runstate.RunJournal._resume_for_test(
+            tmp_path / "run", harness.inputs, harness.owner, anchor_store=harness.authority)
+        harness.coordinator = SimpleNamespace(journal=harness.journal, owner=harness.owner,
+            lifecycle_controller=harness.controller, _journal_guard=threading.Lock())
+        harness.scope = helper._coordinator_lifecycle(harness.coordinator)
+        new = daemon.seat("seat-claude", "8" * 64)
+        before = list(daemon.mutations)
+        with pytest.raises(BrokerRejected, match="prior seat epoch must be fenced"):
+            harness.start(new, epoch=3)
+        assert harness.scope.blocked
+        assert daemon.mutations == before and not new[2].created
+        with harness.ledger._locked() as state:
+            assert state["permits"][a._control.permit_id]["fenced"] is False
+        assert harness.journal.recover_uncertain(harness.owner) == 1
+        assert harness.journal.state.seat_phase(first[0].task_id, first[0].seat_id, 1, 3) == "uncertain-attempt"
+        with pytest.raises(RunStateError, match="uncertain"):
+            harness.journal.append("dispatch-intent", task_id=first[0].task_id, seat_id=first[0].seat_id,
+                attempt=2, round=3, owner=harness.owner)
+        # Teardown stops the exact old synthetic seat without fabricating an owner terminal.
+        a._close()
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("failure", ["registration", "stop", "publication"])
+def test_scoped_lifecycle_failure_has_durable_quarantine_and_owner_block(tmp_path, monkeypatch, failure):
+    from shared.lib.fanout import container_coordinator as helper, container_boundary as boundary
+    daemon, first, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        with monkeypatch.context() as patch:
+            if failure == "registration":
+                original = helper.write_evidence
+                def fail_member(controller, category, value):
+                    if category == "container-coordinator-member":
+                        raise OSError("synthetic registration failed")
+                    return original(controller, category, value)
+                patch.setattr(helper, "write_evidence", fail_member)
+                with pytest.raises(OSError, match="registration failed") as raised:
+                    harness.start(first)
+                assert first[2].inspect["State"]["Running"] is False
+            else:
+                a, _ = harness.start(first)
+                if failure == "stop":
+                    patch.setattr(first[2], "stop_noop", True)
+                else:
+                    original = boundary.write_evidence
+                    def fail_stop(controller, category, value):
+                        if category == "container-seat-stopped":
+                            raise OSError("synthetic stop publication failed")
+                        return original(controller, category, value)
+                    patch.setattr(boundary, "write_evidence", fail_stop)
+                with pytest.raises((ProviderRequestError, OSError)) as raised:
+                    a.close()
+                assert a.handle.container_id not in harness.scope.completed
+            assert harness.scope.blocked
+            assert any("receipt=" in note for note in raised.value.__notes__)
+            store = boundary.SessionStore(harness.controller, first[0].run_id, first[0].task_id,
+                first[0].target_id, first[0].seat_id, first[0].session_volume)
+            assert any(entry == {"provider": "claude", "state": "uncertain"} for entry in store._read()["turns"].values())
+            with pytest.raises(Exception, match="unavailable"):
+                helper._coordinator_lifecycle(harness.coordinator)
+        if failure != "registration":
+            # Failed relay ownership is not reused; test teardown stops the exact seat directly.
+            harness.stack.pop_all()
+            a._close()
+    finally:
+        harness.close()
+
+
+def test_same_launcher_scoped_captures_cannot_interleave_save_restore(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    from shared.lib.fanout import container_coordinator as helper
+    daemon, first, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    try:
+        a, context = harness.start(first)
+        original = a.launcher._run
+        def held(*argv):
+            if argv[:2] == ("image", "inspect") and not entered.is_set():
+                entered.set()
+                assert release.wait(5)
+            return original(*argv)
+        monkeypatch.setattr(a.launcher, "_run", held)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_capture = pool.submit(a.attest_container)
+            assert entered.wait(5)
+            second_capture = pool.submit(a.attest_container)
+            assert not second_capture.done()
+            release.set()
+            assert first_capture.result(10) == second_capture.result(10) == a.handle
+        assert a.launcher._run is held
+        helper._replay_lifecycle_runtime(harness.controller, a.lifecycle_snapshot, asdict(a.runtime_proof),
+            spec=a.spec, handle=a.handle, context_ref=context, socket=a.attest_socket())
+    finally:
+        release.set()
+        harness.close()
+
+
+def test_transport_refuses_counterfeit_lifecycle_scope_before_docker(tmp_path):
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport
+    from shared.lib.fanout.container_runtime import _InventoryScope
+    from shared.lib.fanout.controller import create_lifecycle_controller
+    daemon = SharedDocker()
+    spec, launcher, docker, _ = daemon.seat("seat-claude", "c" * 64)
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    counterfeit = SimpleNamespace(guard=threading.Lock(), blocked=False,
+        prepare=lambda *_: _InventoryScope((), ()), register=lambda *_: None,
+        fail=lambda *_: None)
+    try:
+        with pytest.raises(ProviderRequestError, match="lifecycle"):
+            PinnedDockerTransport.start(controller, spec, launcher=launcher,
+                vm_attestor=lambda: None, socket_attestor=launcher._socket_attestor,
+                image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
+                process_runner=lambda _: pytest.fail("provider called"), recover=True,
+                lifecycle_scope=counterfeit, context_ref=("absent", "0" * 64), session_control=object())
+        assert not docker.created
+    finally:
+        if docker.created:
+            PinnedDockerTransport._quarantine_handle(spec, launcher._recovery.handle, launcher)
+
+
+@pytest.mark.parametrize("mutation", ["missing-snapshot", "forged-snapshot", "opening-source", "opening-inputs",
+    "subject", "member-missing", "member-spec", "member-handle", "member-epoch", "peer-launch", "peer-context", "peer-stop"])
+def test_saved_lifecycle_refuses_incomplete_or_changed_signed_associations(tmp_path, mutation):
+    from dataclasses import asdict
+    from shared.lib.fanout import container_coordinator as helper
+    from shared.lib.fanout.controller import read_evidence, write_evidence
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, _ = harness.start(first)
+        b, context = harness.start(second)
+        a.close()
+        b.attest_container()
+        snapshot_ref, runtime_ref, socket = b.lifecycle_snapshot, asdict(b.runtime_proof), b.attest_socket()
+        snapshot = read_evidence(harness.controller, "container-coordinator-snapshot", *snapshot_ref)
+        members = helper._read_scope_material(harness.controller, snapshot["members"])
+        if mutation == "missing-snapshot":
+            snapshot_ref = ("absent.json", "0" * 64)
+        elif mutation == "forged-snapshot":
+            snapshot_ref = (snapshot_ref[0], "0" * 64)
+        else:
+            if mutation.startswith("opening-"):
+                opening = read_evidence(harness.controller, "container-coordinator-opening", *snapshot["opening"])
+                if mutation == "opening-source":
+                    opening["release_source_binding"]["runtime_sha256"] = "0" * 64
+                else:
+                    opening["inputs_digest"] = "0" * 64
+                snapshot["opening"] = list(write_evidence(harness.controller, "container-coordinator-opening", opening))
+            elif mutation == "subject":
+                snapshot["subject"] = members["completed"][0][0]
+            elif mutation == "member-missing":
+                members["active"] = []
+            elif mutation.startswith("member-"):
+                member = read_evidence(harness.controller, "container-coordinator-member", *members["active"][0])
+                if mutation == "member-spec":
+                    member["spec"]["socket_path"] = "/run/fanout/wrong.sock"
+                elif mutation == "member-handle":
+                    member["handle"]["container_id"] = "9" * 64
+                else:
+                    member["permit_epoch"] = 3
+                ref = list(write_evidence(harness.controller, "container-coordinator-member", member))
+                snapshot["subject"], members["active"] = ref, [ref]
+            elif mutation in ("peer-launch", "peer-context"):
+                member = read_evidence(harness.controller, "container-coordinator-member", *members["completed"][0][0])
+                member["launch" if mutation == "peer-launch" else "context"] = ["absent.json", "0" * 64]
+                members["completed"][0][0] = list(write_evidence(harness.controller, "container-coordinator-member", member))
+            else:
+                members["completed"][0][1] = ["absent.json", "0" * 64]
+            snapshot["members"] = asdict(helper._scope_material(harness.controller, members))
+            snapshot_ref = write_evidence(harness.controller, "container-coordinator-snapshot", snapshot)
+        harness.close()
+        with pytest.raises(Exception):
+            helper._replay_lifecycle_runtime(harness.controller, snapshot_ref, runtime_ref,
+                spec=b.spec, handle=b.handle, context_ref=context, socket=socket)
+    finally:
+        harness.close()
+
+
+def test_live_relay_open_failure_blocks_pending_owner_with_signed_cleanup(tmp_path, monkeypatch):
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport, PinnedSSHSeatControl
+    from shared.lib.fanout.controller import read_evidence, write_evidence
+    daemon, first, second = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        a, context_ref = harness.start(first)
+        context = read_evidence(harness.controller, "container-coordinator-context", *context_ref)
+        context["seat_id"] = context["request"]["seat_id"] = second[0].seat_id
+        context["request"]["executor_id"] = "codex"
+        context_ref = write_evidence(harness.controller, "container-coordinator-context", context)
+        permit = replace(a._control.broker.permit, provider="codex", seat_id=second[0].seat_id)
+        permit_id = harness.scope.reserve(context_ref, second[0], harness.ledger, permit, 2)
+        broker = Broker(permit, credential="synthetic-only-credential", send=lambda *_: pytest.fail("provider called"))
+        def fail_open(_):
+            raise OSError("synthetic relay open failed")
+        monkeypatch.setattr(PinnedSSHSeatControl, "open", fail_open)
+        with pytest.raises(OSError, match="relay open failed") as raised:
+            PinnedDockerTransport.start_live(harness.controller, second[0], ledger=harness.ledger,
+                broker=broker, permit_id=permit_id, epoch=2, recover=True,
+                lifecycle_scope=harness.scope, context_ref=context_ref)
+        assert harness.scope.blocked
+        assert any("receipt=" in note for note in raised.value.__notes__)
+        assert not second[2].created
+        with harness.ledger._locked() as state:
+            assert state["permits"][permit_id]["fenced"] is False
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("peers", [1, 5])
+def test_scoped_transcript_overhead_is_finite_and_derived_from_peer_count(peers):
+    from shared.lib.fanout.container_runtime import RuntimeTranscript, _MAX_RUNTIME_OBSERVATIONS
+    observations = [{"argv": ["observation", str(index)], "stdout": ""}
+                    for index in range(_MAX_RUNTIME_OBSERVATIONS + 2 * peers)]
+    transcript = RuntimeTranscript(observations, active_peers=peers)
+    with pytest.raises(ProviderRequestError, match="budget"):
+        transcript.append(("overflow",), b"")
+    with pytest.raises(ProviderRequestError, match="peer count"):
+        RuntimeTranscript(observations, active_peers=6)
 
 
 @pytest.fixture

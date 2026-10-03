@@ -597,6 +597,32 @@ def test_transport_flag_cannot_bypass_live_host_lease(boundary_module, tmp_path)
     assert transport.calls == []
 
 
+@pytest.mark.parametrize("mutation", [None, "closed", "mode", "replacement", "owner"])
+def test_host_session_lease_requires_current_exact_held_file(boundary_module, tmp_path, monkeypatch, mutation):
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    with boundary_module.HostSessionLease(controller, "a" * 64, 1) as lease:
+        original = lease.require_held()
+        with monkeypatch.context() as patch:
+            if mutation == "closed":
+                patch.setattr(lease, "_fd", None)
+            elif mutation == "mode":
+                lease.path.chmod(0o644)
+            elif mutation == "replacement":
+                saved = lease.path.with_suffix(".held")
+                lease.path.rename(saved)
+                lease.path.touch(mode=0o600)
+            elif mutation == "owner":
+                native = os.fstat
+                def changed_owner(fd):
+                    info = native(fd)
+                    return SimpleNamespace(**{field: getattr(info, field) for field in (
+                        "st_mode", "st_dev", "st_ino", "st_nlink")}, st_uid=os.getuid() + 1)
+                patch.setattr(os, "fstat", changed_owner)
+            if mutation:
+                with pytest.raises(ProviderRequestError, match="lease"):
+                    lease.require_held()
+            else:
+                assert lease.require_held() == original
 @pytest.mark.parametrize("provider", ("codex", "agy"))
 def test_success_without_observed_id_cannot_resume(boundary_module, tmp_path, provider):
     request, boundary, transport, store, *_ = _seat(
