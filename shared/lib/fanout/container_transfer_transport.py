@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator
 
 from .artifacts import ArtifactLimits, ArtifactRef, ArtifactStore, canonical_json
-from .container_runtime import ContainerHandle, DOCKER, private_volume_names
+from .container_runtime import ContainerHandle, DOCKER, decode_launch_record, private_volume_names
 from .container_transfer import (
     MAX_ENTRIES, MAX_FRAME, MAX_MANIFEST, MAX_TOTAL, TransferEntry, TransferIdentity,
     TransferManifest, TransferRejected, _decode_manifest, _import_content,
@@ -951,9 +951,8 @@ def reopen_candidate_export(controller: LifecycleController,
         spec, handle = ContainerSpec(**stopped["spec"]), ContainerHandle(**stopped["handle"])
         launch = read_evidence(controller, "container-seat-launch",
             stopped["launch_evidence_name"], stopped["launch_evidence_digest"])
-        if (launch != {"spec": asdict(spec), "handle": asdict(handle), "route": launch.get("route")}
-                or launch["route"] not in {"start", "recover"}
-                or (spec.run_id, spec.task_id, spec.target_id, spec.seat_id) !=
+        decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
+        if ((spec.run_id, spec.task_id, spec.target_id, spec.seat_id) !=
                    (identity.run_id, identity.task_id, identity.target_id, identity.seat_id)
                 or (handle.container_id, handle.inspect_sha256, handle.workspace_volume,
                     handle.session_volume) != (receipt.container_id,
@@ -979,9 +978,7 @@ def reopen_stopped_seat(controller, stop_evidence, *, spec, handle):
                    private_volume_names(spec.run_id, spec.task_id, spec.target_id, spec.seat_id)):
             raise ValueError("exact stopped seat")
         launch = read_evidence(controller, "container-seat-launch", stopped["launch_evidence_name"], stopped["launch_evidence_digest"])
-        if launch not in ({"spec": asdict(spec), "handle": asdict(handle), "route": "start"},
-                          {"spec": asdict(spec), "handle": asdict(handle), "route": "recover"}):
-            raise ValueError("exact stopped launch")
+        decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
         ref = ArtifactRef(**stopped["raw_inspect"])
         if ref.path != f"stopped/{handle.container_id}.json":
             raise ValueError("stopped artifact path")

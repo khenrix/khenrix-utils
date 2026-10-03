@@ -770,7 +770,7 @@ def test_recovery_rechecks_socket_and_inspect_before_start(spec, fake_docker, at
 
 
 @pytest.mark.parametrize("already_stopped", [False, True])
-@pytest.mark.parametrize("predecessor_count", [1, 2])
+@pytest.mark.parametrize("predecessor_count", [1, 3, 5])
 def test_recovery_attestation_retains_only_fenced_stopped_predecessors(
         spec, fake_docker, attestor, already_stopped, predecessor_count):
     old_ids = [fake_docker.add_orphan() for _ in range(predecessor_count)]
@@ -1244,6 +1244,23 @@ def test_recovery_attestation_refuses_missing_predecessor(spec, fake_docker, att
     del fake_docker.old[old_id]
     with pytest.raises(ProviderRequestError, match="predecessor"):
         launcher.attest_running(spec, handle)
+
+
+def test_recovery_attestation_requires_proof_for_new_nonoverlapping_same_run_seat(spec, fake_docker, attestor):
+    launcher = _launcher(fake_docker, attestor)
+    handle = launcher.recover(spec)
+    old_id = _foreign_orphan(fake_docker, spec)
+    fake_docker.old[old_id]["Config"]["Labels"][BOUNDARY + "run"] = spec.run_id
+    with pytest.raises(ProviderRequestError, match="predecessor"):
+        launcher.attest_running(spec, handle)
+
+
+def test_runtime_transcript_refuses_count_beyond_complete_inventory_bound():
+    from shared.lib.fanout.container_runtime import RuntimeTranscript
+    observations = [{"argv": ["inspect", "--type", "container", f"{index:064x}"], "stdout": ""}
+                    for index in range(16_139)]
+    with pytest.raises(ProviderRequestError, match="observations"):
+        RuntimeTranscript(observations)
 
 
 def test_new_start_clears_successful_recovery_association(spec, fake_docker, attestor):

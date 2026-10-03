@@ -6,16 +6,18 @@ authenticated guest route. This module never resolves a guest path on macOS.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import posixpath
 import re
 import secrets
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Callable
 
 from .errors import ProviderRequestError
+from .artifacts import ArtifactLimits, canonical_json
 
 
 DOCKER = ("docker", "--context", "colima-fanout-isolated")
@@ -34,6 +36,11 @@ _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9._:/-]*@)?sha256:[0-9a-f]{64}\Z")
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_DOCKER_OUTPUT = 1024 * 1024
+# A full ID consumes 64 bytes plus its listing separator; seven fixed
+# observations cover image, volumes, running inspect, info, network and listing.
+_MAX_INVENTORY_IDS = (_MAX_DOCKER_OUTPUT + 1) // 65
+_MAX_RUNTIME_OBSERVATIONS = _MAX_INVENTORY_IDS + 7
+_MAX_RUNTIME_PROOF_BYTES = ArtifactLimits().max_file_bytes
 _MEMORY = 4 * 1024**3
 _NETWORK_ADDRESS_FIELDS = (
     "IPAddress", "Gateway", "GlobalIPv6Address", "IPv6Gateway",
@@ -70,6 +77,94 @@ class _RecoveryAssociation:
     spec: ContainerSpec
     handle: ContainerHandle
     predecessors: tuple[tuple[str, str], ...]
+
+
+def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHandle,
+                         *, recover: bool) -> _RecoveryAssociation | None:
+    """Decode an already controller-authenticated exact launch association."""
+    ContainerLauncher._validate_spec(spec)
+    if (not isinstance(handle, ContainerHandle)
+            or not isinstance(handle.container_id, str) or _CONTAINER_ID.fullmatch(handle.container_id) is None
+            or not isinstance(handle.inspect_sha256, str) or _SHA.fullmatch(handle.inspect_sha256) is None
+            or (handle.workspace_volume, handle.session_volume) != (spec.workspace_volume, spec.session_volume)):
+        raise ProviderRequestError("container launch handle differs")
+    keys = {"spec", "handle", "route"} | ({"recovery"} if recover else set())
+    if (not isinstance(value, dict) or set(value) != keys
+            or value["spec"] != asdict(spec) or value["handle"] != asdict(handle)
+            or value["route"] != ("recover" if recover else "start")):
+        raise ProviderRequestError("container launch association differs")
+    if not recover:
+        return None
+    recovery = value["recovery"]
+    if (not isinstance(recovery, dict) or set(recovery) != {"spec", "handle", "predecessors"}
+            or recovery["spec"] != asdict(spec) or recovery["handle"] != asdict(handle)
+            or not isinstance(recovery["predecessors"], list)
+            or len(recovery["predecessors"]) > _MAX_INVENTORY_IDS):
+        raise ProviderRequestError("container recovery association differs")
+    predecessors = recovery["predecessors"]
+    if any(not isinstance(entry, list) or len(entry) != 2
+           or not isinstance(entry[0], str) or _CONTAINER_ID.fullmatch(entry[0]) is None
+           or entry[0] == handle.container_id
+           or not isinstance(entry[1], str) or _SHA.fullmatch(entry[1]) is None
+           for entry in predecessors):
+        raise ProviderRequestError("container recovery predecessor proof is invalid")
+    if len({entry[0] for entry in predecessors}) != len(predecessors):
+        raise ProviderRequestError("container recovery predecessor proof is ambiguous")
+    return _RecoveryAssociation(spec, handle, tuple(tuple(entry) for entry in predecessors))
+
+
+class RuntimeTranscript:
+    """Bound complete Docker observations and consume them in their recorded order."""
+
+    def __init__(self, observations: object = None):
+        self.observations: list[dict[str, object]] = []
+        self._commands: set[tuple[str, ...]] = set()
+        self._outputs: list[bytes] = []
+        self._bytes = 2  # Canonical JSON list brackets.
+        self._position = 0
+        if observations is not None:
+            if not isinstance(observations, list) or not 1 <= len(observations) <= _MAX_RUNTIME_OBSERVATIONS:
+                raise ProviderRequestError("container runtime observations are invalid")
+            for item in observations:
+                if (not isinstance(item, dict) or set(item) != {"argv", "stdout"}
+                        or not isinstance(item["argv"], list) or not isinstance(item["stdout"], str)
+                        or len(item["stdout"]) > 4 * ((_MAX_DOCKER_OUTPUT + 2) // 3)):
+                    raise ProviderRequestError("container runtime observation is invalid")
+                try:
+                    raw = base64.b64decode(item["stdout"], validate=True)
+                except (ValueError, UnicodeError) as error:
+                    raise ProviderRequestError("container runtime observation is invalid") from error
+                if base64.b64encode(raw).decode("ascii") != item["stdout"]:
+                    raise ProviderRequestError("container runtime observation encoding differs")
+                self.append(tuple(item["argv"]), raw)
+
+    def append(self, argv: tuple[str, ...], raw: bytes) -> None:
+        if (not argv or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in argv)
+                or not isinstance(raw, bytes) or len(raw) > _MAX_DOCKER_OUTPUT):
+            raise ProviderRequestError("container runtime observation exceeds proof budget or is invalid")
+        if argv in self._commands:
+            raise ProviderRequestError("container runtime observation command is ambiguous")
+        item = {"argv": list(argv), "stdout": base64.b64encode(raw).decode("ascii")}
+        size = len(canonical_json(item)) + bool(self.observations)
+        if (len(self.observations) >= _MAX_RUNTIME_OBSERVATIONS
+                or self._bytes + size > _MAX_RUNTIME_PROOF_BYTES):
+            raise ProviderRequestError("container runtime observation exceeds proof budget")
+        self._bytes += size
+        self._commands.add(argv)
+        self.observations.append(item)
+        self._outputs.append(raw)
+
+    def replay(self, *argv: str) -> bytes:
+        if (self._position >= len(self.observations)
+                or self.observations[self._position]["argv"] != list(argv)):
+            raise ProviderRequestError("container runtime observation command is missing or reordered")
+        raw = self._outputs[self._position]
+        self._position += 1
+        return raw
+
+    def require_complete(self) -> None:
+        if self._position != len(self.observations):
+            raise ProviderRequestError("container runtime observations were not fully consumed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -597,7 +692,7 @@ class ContainerLauncher:
 
     def _inventory(self, spec: ContainerSpec, volume_sources: tuple[str, str], *,
                    fence_owned: bool, exclude_id: str | None = None,
-                   predecessors: tuple[tuple[str, str], ...] = ()) -> tuple[tuple[str, str], ...]:
+                   predecessors: tuple[tuple[str, str], ...] | None = None) -> tuple[tuple[str, str], ...]:
         output = self._run(
             "container", "ls", "-a", "--no-trunc",
             "--format", "{{.ID}}",
@@ -609,7 +704,7 @@ class ContainerLauncher:
         if len(ids) != len(set(ids)) or any(_CONTAINER_ID.fullmatch(value) is None for value in ids):
             raise ProviderRequestError("Docker recovery inventory is invalid")
         owned: list[tuple[str, bool]] = []
-        expected_predecessors = dict(predecessors)
+        expected_predecessors = dict(predecessors or ())
         seen_predecessors: set[str] = set()
         stopped_observations: list[tuple[str, str]] = []
         foreign_conflict = False
@@ -635,6 +730,8 @@ class ContainerLauncher:
                                                             volume_sources)
                 continue
             if not fence_owned:
+                if predecessors is not None:
+                    raise ProviderRequestError("existing seat resource conflict in recovery predecessor inventory")
                 owned_conflict |= self._resource_conflict(spec, item, labels,
                                                           volume_sources)
                 continue
@@ -854,7 +951,7 @@ class ContainerLauncher:
                                  expected_state="running")
         if observed != handle.inspect_sha256:
             raise ProviderRequestError("container security digest differs")
-        predecessors = ()
+        predecessors = None
         if self._recovery is not None:
             if self._recovery.spec != spec or self._recovery.handle != handle:
                 raise ProviderRequestError("container recovery association differs")

@@ -644,8 +644,12 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             spec = ContainerSpec(packet.run_id, task.id, task.target_id, seat.seat_id,
                 probe_receipt["image_digest"], workspace, volume, f"/run/fanout/{seat.seat_id}.sock", probe_receipt["cli_digests"][provider])
             handle = ContainerHandle(sha(f"{task.id}/{provider}/{number}".encode()), "d" * 64, workspace, volume)
-            launch = write_evidence(controller, "container-seat-launch", {"spec": asdict(spec), "handle": asdict(handle),
-                "route": "start" if number == 1 else "recover"})
+            launch_value = {"spec": asdict(spec), "handle": asdict(handle),
+                            "route": "start" if number == 1 else "recover"}
+            if number == 2:
+                # This coordinator codec fixture has no Docker recovery inventory.
+                launch_value["recovery"] = {"spec": asdict(spec), "handle": asdict(handle), "predecessors": []}
+            launch = write_evidence(controller, "container-seat-launch", launch_value)
             permit = BrokerPermit(provider, packet.run_id, task.id, task.target_id, seat.seat_id,
                 "initial" if number == 1 else "resume", profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
                 session_id=request.session_id, inputs_digest=service.inputs.digest,

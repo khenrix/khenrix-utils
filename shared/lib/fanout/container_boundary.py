@@ -29,7 +29,7 @@ from .container_broker import FrameStream, HostRelay, PermitLedger, attempt_limi
 from .container_source import runtime_source_digest
 from .container_runtime import (ContainerHandle, ContainerLauncher, ContainerSpec,
                                 DOCKER, GuestSocketAttestation,
-                                private_volume_names)
+                                RuntimeTranscript, decode_launch_record, private_volume_names)
 from .container_transfer_transport import (
     CandidateExportReceipt, InputSourceGrant, InputTransferReceipt,
     abandon_input_claim, admitted_request_digest,
@@ -275,10 +275,14 @@ class PinnedDockerTransport:
         assert_controller(controller)
         handle = launcher.recover(spec) if recover else launcher.start(spec)
         try:
-            origin = write_evidence(controller, _HANDLE_CATEGORY, {
+            record = {
                 "spec": asdict(spec), "handle": asdict(handle),
                 "route": "recover" if recover else "start",
-            })
+            }
+            if recover:
+                record["recovery"] = json.loads(canonical_json(asdict(launcher._recovery)))
+            decode_launch_record(record, spec, handle, recover=recover)
+            origin = write_evidence(controller, _HANDLE_CATEGORY, record)
         except BaseException as primary:
             try:
                 cls._quarantine_handle(spec, handle, launcher)
@@ -394,19 +398,17 @@ class PinnedDockerTransport:
         if type(self.launcher) is not ContainerLauncher:
             return self.launcher.attest_running(self.spec, self.handle)
         original = self.launcher._run
-        observations = []
+        observations = RuntimeTranscript()
         def capture(*argv):
             raw = original(*argv)
-            if not isinstance(raw, bytes) or len(raw) > 1024 * 1024:
-                raise ProviderRequestError("container runtime observation exceeds proof budget")
-            observations.append({"argv": list(argv), "stdout": base64.b64encode(raw).decode("ascii")})
+            observations.append(argv, raw)
             return raw
         self.launcher._run = capture
         try:
             handle = self.launcher.attest_running(self.spec, self.handle)
         finally:
             self.launcher._run = original
-        self.runtime_observation = observations
+        self.runtime_observation = observations.observations
         return handle
 
     def attest_socket(self) -> GuestSocketAttestation:
@@ -446,10 +448,8 @@ class PinnedDockerTransport:
                 origin = read_evidence(self.controller, _HANDLE_CATEGORY,
                                        self.handle_evidence_name,
                                        self.handle_evidence_digest)
-                if (origin.get("spec") != asdict(self.spec)
-                        or origin.get("handle") != asdict(self.handle)
-                        or origin.get("route") not in ("start", "recover")):
-                    raise ProviderRequestError("container shutdown handle provenance differs")
+                decode_launch_record(origin, self.spec, self.handle,
+                                     recover=origin.get("route") == "recover")
                 self._stopped_inspect = self._quarantine_handle(self.spec, self.handle, self.launcher)
                 self._quarantined = True
             if self.stop_evidence is None:
@@ -1339,9 +1339,7 @@ def _authenticated_launch(controller: LifecycleController,
         admission.image_digest, handle.workspace_volume, handle.session_volume,
         f"/run/fanout/{request.seat_id}.sock", admission.cli_digest,
     )
-    if (origin != {"spec": asdict(expected), "handle": asdict(handle),
-                   "route": "recover" if request.resume else "start"}):
-        raise ProviderRequestError("container original handle provenance differs")
+    decode_launch_record(origin, expected, handle, recover=request.resume)
 
 
 def _check_association(request: ProviderRequest, admission: ContainerAdmission) -> None:

@@ -612,6 +612,7 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
     origin = write_evidence(controller, "container-seat-launch", {
         "spec": asdict(recovered_spec), "handle": asdict(recovered_handle),
         "route": "recover",
+        "recovery": {"spec": asdict(recovered_spec), "handle": asdict(recovered_handle), "predecessors": []},
     })
     recovered = PinnedDockerTransport(
         controller, recovered_spec, recovered_handle,
@@ -739,7 +740,9 @@ def test_grant_refuses_prompt_substitution_before_import(seat):
     assert calls == []
 
 
-@pytest.mark.parametrize("changed", [None, "receipt", "root", "tree", "stop", "target"])
+@pytest.mark.parametrize("changed", [None, "receipt", "root", "tree", "stop", "target",
+    "recovery", "recovery-missing", "recovery-extra", "recovery-spec", "recovery-handle",
+    "start-recovery"])
 def test_export_reopen_authenticates_persisted_tree_and_stopped_seat(seat, changed):
     from shared.lib.fanout import container_transfer_transport as transfer
     from shared.lib.fanout.container_boundary import issue_container_boundary, _turn_digest
@@ -770,10 +773,26 @@ def test_export_reopen_authenticates_persisted_tree_and_stopped_seat(seat, chang
     }]
     with ArtifactStore(controller.root / "quarantine" / "runtime-proofs") as proof_store:
         raw_ref = proof_store.write_json(f"stopped/{transport.handle.container_id}.json", inspect)
+    launch_name, launch_digest = transport.handle_evidence_name, transport.handle_evidence_digest
+    if changed is not None and (changed.startswith("recovery") or changed == "start-recovery"):
+        recovery = {"spec": asdict(transport.spec), "handle": asdict(transport.handle), "predecessors": []}
+        launch = {"spec": asdict(transport.spec), "handle": asdict(transport.handle),
+                  "route": "recover", "recovery": recovery}
+        if changed == "recovery-missing":
+            launch.pop("recovery")
+        elif changed == "recovery-extra":
+            recovery["extra"] = True
+        elif changed == "recovery-spec":
+            recovery["spec"]["cli_digest"] = "f" * 64
+        elif changed == "recovery-handle":
+            recovery["handle"]["inspect_sha256"] = "f" * 64
+        elif changed == "start-recovery":
+            launch["route"] = "start"
+        launch_name, launch_digest = write_evidence(controller, "container-seat-launch", launch)
     stop = write_evidence(controller, "container-seat-stopped", {
         "spec": asdict(transport.spec), "handle": asdict(transport.handle),
-        "launch_evidence_name": transport.handle_evidence_name,
-        "launch_evidence_digest": transport.handle_evidence_digest,
+        "launch_evidence_name": launch_name,
+        "launch_evidence_digest": launch_digest,
         "raw_inspect": asdict(raw_ref),
     })
     identity = exported.identity
@@ -791,7 +810,7 @@ def test_export_reopen_authenticates_persisted_tree_and_stopped_seat(seat, chang
     cold = resume_lifecycle_controller(controller.root, controller.capability)
     reopen = getattr(transfer, "reopen_candidate_export", None)
     assert callable(reopen), "authenticated exported candidate recovery is missing"
-    if changed is None:
+    if changed in (None, "recovery"):
         reopened = reopen(cold, exported, identity=identity,
             turn_digest=_turn_digest(request, boundary), stop_evidence=stop)
         assert (reopened.root / "base.txt").read_text() == "container edit\n"

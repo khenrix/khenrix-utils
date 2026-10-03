@@ -26,7 +26,7 @@ import test_fanout_container_runtime as runtime_tests
 from shared.lib.fanout.artifacts import ArtifactRef, ArtifactStore, canonical_json
 from shared.lib.fanout.broker import Broker, BrokerPermit, BrokerRejected
 from shared.lib.fanout.container_broker import OutboundRequestIdentity, PermitLedger, RelayRequest, dispatch_once
-from shared.lib.fanout.container_boundary import _turn_digest
+from shared.lib.fanout.container_boundary import PinnedDockerTransport, _turn_digest
 from shared.lib.fanout.container_runtime import ContainerLauncher, ContainerSpec, private_volume_names
 from shared.lib.fanout.container_source import release_source_binding
 from shared.lib.fanout.container_transfer import TransferIdentity, snapshot_manifest, encode_manifest
@@ -59,9 +59,15 @@ def persisted_probe(certifier, complete_receipt, company_manifest, tmp_path, mon
 
 
 @pytest.fixture
-def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch):
+def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, request):
     """Real HMAC records and full bytes; only Docker/provider I/O is synthetic."""
     root, controller, ledger, manifest = persisted_probe
+    foreign_count = getattr(request, "param", 20)
+    retained = {}
+    for index in range(foreign_count):
+        container_id = f"{index + 1000:064x}"
+        retained[container_id] = {"Id": container_id, "Config": {"Labels": {}},
+                                  "HostConfig": {"Mounts": []}, "Mounts": []}
     receipt = copy.deepcopy(certifier._read_private_receipt(root))
     receipt["release_source_binding"] = release_source_binding().to_dict()
     raw_root = root / "raw"
@@ -137,20 +143,17 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch):
                     "IMAGE": spec.image_digest, "IDENTITY_HASH": workspace.removeprefix("fanout-workspace-")}.items():
                     monkeypatch.setattr(runtime_tests, name, value)
                 docker = runtime_tests.FakeDocker(spec)
+                docker.old = copy.deepcopy(retained)
                 socket = runtime_tests.FakeAttestor().proof
                 launcher = ContainerLauncher(docker, guest_socket_attestor=lambda _: socket)
-                handle = launcher.start(spec)
-                launch_ref = write_evidence(controller, "container-seat-launch", {
-                    "spec": asdict(spec), "handle": asdict(handle), "route": "recover" if route == "resume" else "start"})
-                observed = []
-                original = launcher._run
-                def record(*argv):
-                    data = original(*argv)
-                    observed.append({"argv": list(argv), "stdout": base64.b64encode(data).decode()})
-                    return data
-                launcher._run = record
-                launcher.attest_running(spec, handle)
-                launcher._run = original
+                transport = PinnedDockerTransport.start(controller, spec, launcher=launcher,
+                    vm_attestor=lambda: vm, socket_attestor=lambda _: socket,
+                    image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
+                    process_runner=lambda _: None, recover=route == "resume")
+                handle = transport.handle
+                launch_ref = (transport.handle_evidence_name, transport.handle_evidence_digest)
+                transport.attest_container()
+                observed = transport.runtime_observation
                 if route == "initial":
                     source = controller.root / "quarantine" / f"source-{provider}"
                     source.mkdir(mode=0o700)
@@ -249,14 +252,10 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch):
                 ledger.settle(request_id, hashlib.sha256(response).hexdigest())
                 ledger.fence_epoch(permit_id, epoch)
                 records = list(ledger.request_records(permit_id, epoch))
-                stopped = copy.deepcopy(docker.inspect)
-                stopped["State"]["Running"] = False
-                stopped["State"]["Status"] = "exited"
-                with ArtifactStore(controller.root / "quarantine" / "runtime-proofs") as stops:
-                    stop_raw = stops.write_json(f"stopped/{handle.container_id}.json", [stopped])
-                stopped_ref = write_evidence(controller, "container-seat-stopped", {
-                    "spec": asdict(spec), "handle": asdict(handle),
-                    "launch_evidence_name": launch_ref[0], "launch_evidence_digest": launch_ref[1], "raw_inspect": asdict(stop_raw)})
+                transport.close()
+                stopped_ref = transport.stop_evidence
+                retained = copy.deepcopy(docker.old)
+                retained[handle.container_id] = copy.deepcopy(docker.inspect)
                 payload = {"schema_version": "fanout-private-cell-attestation-v1",
                     "release_source_binding": receipt["release_source_binding"], "host_runtime": receipt["host_runtime"],
                     "request": {"executor_id": provider, "prompt": request.prompt, "cwd": str(request.cwd),
@@ -292,11 +291,169 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch):
     return root, controller, ledger, manifest
 
 
-def test_complete_persisted_attestations_are_reopened(complete_private_probe):
+@pytest.mark.parametrize("complete_private_probe", [0, 20], indirect=True)
+def test_complete_persisted_attestations_are_reopened(complete_private_probe, monkeypatch):
     api = certification()
+    def refuse_docker(*_):
+        pytest.fail("saved runtime replay attempted Docker")
+    monkeypatch.setattr("shared.lib.fanout.container_runtime._default_docker", refuse_docker)
     root, _, _, manifest = complete_private_probe
     proof = api.read_private_route_evidence(root, manifest, require_attestations=True)
     assert proof.attestations_complete
+    receipt = proof.receipt
+    for provider, count in (("claude", 1), ("codex", 3), ("agy", 5)):
+        cell = receipt["providers"][provider]["resume"]
+        value = read_evidence(complete_private_probe[1], "container-private-cell-attestation",
+                              cell["attestation_evidence_name"], cell["attestation_evidence_digest"])
+        boundary = read_evidence(complete_private_probe[1], "container-seat-admission",
+                                 value["boundary_evidence_name"], value["boundary_evidence_digest"])
+        launch = read_evidence(complete_private_probe[1], "container-seat-launch",
+                               boundary["handle_evidence_name"], boundary["handle_evidence_digest"])
+        assert len(launch["recovery"]["predecessors"]) == count
+
+
+def _edit_complete_cell(complete_private_probe, certifier, provider, route, *, runtime=None, launch=None):
+    root, controller, _, _ = complete_private_probe
+    receipt = copy.deepcopy(certifier._read_private_receipt(root))
+    cell = receipt["providers"][provider][route]
+    value = read_evidence(controller, "container-private-cell-attestation",
+                          cell["attestation_evidence_name"], cell["attestation_evidence_digest"])
+    if runtime is not None:
+        with ArtifactStore.open_existing(root / "raw") as store:
+            observations = json.loads(store.read_bytes(ArtifactRef(**value["runtime"])))
+            runtime(observations)
+            value["runtime"] = asdict(store.write_json(f"{provider}-{route}-edited-runtime.json", observations))
+    if launch is not None:
+        boundary = read_evidence(controller, "container-seat-admission",
+                                 value["boundary_evidence_name"], value["boundary_evidence_digest"])
+        origin = read_evidence(controller, "container-seat-launch",
+                               boundary["handle_evidence_name"], boundary["handle_evidence_digest"])
+        launch(origin)
+        name, digest = write_evidence(controller, "container-seat-launch", origin)
+        boundary.update(handle_evidence_name=name, handle_evidence_digest=digest)
+        value["boundary_evidence_name"], value["boundary_evidence_digest"] = write_evidence(
+            controller, "container-seat-admission", boundary)
+        stopped = read_evidence(controller, "container-seat-stopped",
+                                value["stop_evidence_name"], value["stop_evidence_digest"])
+        stopped.update(launch_evidence_name=name, launch_evidence_digest=digest)
+        value["stop_evidence_name"], value["stop_evidence_digest"] = write_evidence(
+            controller, "container-seat-stopped", stopped)
+    cell["attestation_evidence_name"], cell["attestation_evidence_digest"] = write_evidence(
+        controller, "container-private-cell-attestation", value)
+    _reseal_completed_receipt(certifier, root, controller, receipt)
+
+
+@pytest.mark.parametrize("changed", ["missing", "duplicate", "extra", "reordered", "shape",
+    "argument", "base64", "noncanonical-base64", "oversized", "changed", "foreign-overlap"])
+def test_signed_runtime_transcript_refuses_incomplete_or_unsafe_observations(
+        complete_private_probe, certifier, changed):
+    def edit(items):
+        if changed == "missing":
+            items.pop()
+        elif changed == "duplicate":
+            items.append(copy.deepcopy(items[0]))
+        elif changed == "extra":
+            items.append({"argv": ["info", "unused"], "stdout": ""})
+        elif changed == "reordered":
+            items[0], items[1] = items[1], items[0]
+        elif changed == "shape":
+            items[0]["extra"] = True
+        elif changed == "argument":
+            items[0]["argv"][0] = 1
+        elif changed == "base64":
+            items[0]["stdout"] += "!"
+        elif changed == "noncanonical-base64":
+            item = next(item for item in items if item["stdout"].endswith("="))
+            encoded = item["stdout"]
+            index = len(encoded.rstrip("=")) - 1
+            alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            item["stdout"] = encoded[:index] + alphabet[alphabet.index(encoded[index]) + 1] + encoded[index + 1:]
+            assert base64.b64decode(item["stdout"]) == base64.b64decode(encoded)
+        elif changed == "oversized":
+            items[0]["stdout"] = base64.b64encode(b"x" * (1024 * 1024 + 1)).decode()
+        elif changed == "changed":
+            running = next(item for item in items if item["argv"][:3] == ["inspect", "--type", "container"])
+            body = json.loads(base64.b64decode(running["stdout"]))
+            body[0]["HostConfig"]["Privileged"] = True
+            running["stdout"] = base64.b64encode(canonical_json(body)).decode()
+        elif changed == "foreign-overlap":
+            foreign = items[-1]
+            body = json.loads(base64.b64decode(foreign["stdout"]))
+            body[0]["Mounts"] = [{"Type": "bind", "Source": "/run/fanout"}]
+            foreign["stdout"] = base64.b64encode(canonical_json(body)).decode()
+    _edit_complete_cell(complete_private_probe, certifier, "claude", "initial", runtime=edit)
+    with pytest.raises(certification().CertificationRejected):
+        certification().read_private_route_evidence(complete_private_probe[0], complete_private_probe[3],
+                                                   require_attestations=True)
+
+
+@pytest.mark.parametrize("changed", ["missing", "empty", "duplicate", "incomplete", "incomplete-unrelated", "substituted",
+    "digest", "shape", "spec", "handle", "initial", "id", "self", "entry", "type"])
+def test_signed_recovery_association_is_exact_and_complete(complete_private_probe, certifier, changed):
+    def edit(origin):
+        if changed == "missing":
+            origin.pop("recovery")
+        elif changed == "empty":
+            origin["recovery"] = None
+        elif changed == "duplicate":
+            origin["recovery"]["predecessors"].append(origin["recovery"]["predecessors"][0])
+        elif changed == "incomplete":
+            origin["recovery"]["predecessors"].pop()
+        elif changed == "incomplete-unrelated":
+            origin["recovery"]["predecessors"].pop(0)
+        elif changed == "substituted":
+            origin["recovery"]["predecessors"][0][0] = "f" * 64
+        elif changed == "digest":
+            origin["recovery"]["predecessors"][0][1] = "0" * 64
+        elif changed == "shape":
+            origin["recovery"]["extra"] = True
+        elif changed == "spec":
+            origin["recovery"]["spec"]["cli_digest"] = "f" * 64
+        elif changed == "handle":
+            origin["recovery"]["handle"]["inspect_sha256"] = "f" * 64
+        elif changed == "initial":
+            origin["route"] = "start"
+        elif changed == "id":
+            origin["recovery"]["predecessors"][0][0] = "not-a-container-id"
+        elif changed == "self":
+            origin["recovery"]["predecessors"][0][0] = origin["handle"]["container_id"]
+        elif changed == "entry":
+            origin["recovery"]["predecessors"][0].pop()
+        elif changed == "type":
+            origin["recovery"]["predecessors"] = {}
+    _edit_complete_cell(complete_private_probe, certifier, "agy", "resume", launch=edit)
+    with pytest.raises(certification().CertificationRejected):
+        certification().read_private_route_evidence(complete_private_probe[0], complete_private_probe[3],
+                                                   require_attestations=True)
+
+
+@pytest.mark.parametrize("changed", ["missing", "digest", "running", "new-overlap"])
+def test_cold_replay_revalidates_every_stopped_predecessor(complete_private_probe, certifier, changed):
+    def edit(items):
+        inspect = items[-1]
+        if changed == "missing":
+            inventory = next(item for item in items if item["argv"][:2] == ["container", "ls"])
+            ids = base64.b64decode(inventory["stdout"]).decode().splitlines()
+            inventory["stdout"] = base64.b64encode("".join(value + "\n" for value in ids if value != inspect["argv"][-1]).encode()).decode()
+            items.pop()
+        else:
+            body = json.loads(base64.b64decode(inspect["stdout"]))
+            if changed == "digest":
+                body[0]["HostConfig"]["Privileged"] = True
+            elif changed == "running":
+                body[0]["State"]["Running"] = True
+            elif changed == "new-overlap":
+                new_id = "f" * 64
+                body[0]["Id"] = new_id
+                inventory = next(item for item in items if item["argv"][:2] == ["container", "ls"])
+                inventory["stdout"] = base64.b64encode(base64.b64decode(inventory["stdout"]) + (new_id + "\n").encode()).decode()
+                inspect = {"argv": ["inspect", "--type", "container", new_id]}
+                items.append(inspect)
+            inspect["stdout"] = base64.b64encode(canonical_json(body)).decode()
+    _edit_complete_cell(complete_private_probe, certifier, "agy", "resume", runtime=edit)
+    with pytest.raises(certification().CertificationRejected):
+        certification().read_private_route_evidence(complete_private_probe[0], complete_private_probe[3],
+                                                   require_attestations=True)
 
 
 @pytest.mark.parametrize("artifact", ["vm.json", "runtime.json", "stdout.bin", "response.bin"])

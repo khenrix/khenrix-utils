@@ -130,7 +130,8 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
     from .broker import BrokerPermit, _safe_response_body, _safe_stream_body
     from .container_boundary import PinnedDockerTransport, _turn_digest
     from .container_broker import OutboundRequestIdentity, PermitLedger, _digest
-    from .container_runtime import ContainerHandle, ContainerLauncher, ContainerSpec, GuestSocketAttestation
+    from .container_runtime import (ContainerHandle, ContainerLauncher, ContainerSpec,
+                                    GuestSocketAttestation, RuntimeTranscript, decode_launch_record)
     from .container_transfer import TransferIdentity
     from .container_transfer_transport import (
         CandidateExportReceipt, InputTransferReceipt, admitted_request_digest,
@@ -195,6 +196,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                     launch = read_evidence(controller, "container-seat-launch",
                         boundary["handle_evidence_name"], boundary["handle_evidence_digest"])
                     spec, handle = ContainerSpec(**launch["spec"]), ContainerHandle(**launch["handle"])
+                    recovery = decode_launch_record(launch, spec, handle, recover=request.resume)
                     if (handle.container_id != cell["container_id"] or handle.inspect_sha256 != cell["container_inspect_sha256"]
                             or any(getattr(spec, name) != getattr(request, name) for name in ("run_id", "task_id", "target_id", "seat_id"))
                             or spec.image_digest != cell["image_digest"] or spec.cli_digest != cell["cli_digest"]
@@ -211,15 +213,13 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                                 ("vm_docker_endpoint", "docker_endpoint"), ("vm_ssh_host_key_sha256", "ssh_host_key_sha256"),
                                 ("vm_effective_mounts_sha256", "effective_mounts_sha256"), ("vm_guest_mounts_sha256", "guest_mounts_sha256")))):
                         raise ValueError("cell VM")
-                    observations = _artifact_json(store, value["runtime"])
-                    if not isinstance(observations, list) or not 1 <= len(observations) <= 16:
-                        raise ValueError("runtime observations")
-                    recorded = {tuple(item["argv"]): base64.b64decode(item["stdout"], validate=True)
-                                for item in observations}
+                    observations = RuntimeTranscript(_artifact_json(store, value["runtime"]))
                     launcher = ContainerLauncher(guest_socket_attestor=lambda _: socket)
-                    launcher._run = lambda *argv: recorded[argv]
+                    launcher._recovery = recovery
+                    launcher._run = observations.replay
                     if launcher.attest_running(spec, handle) != handle:
                         raise ValueError("cell running container")
+                    observations.require_complete()
                     input_payload = read_evidence(controller, "container-input-transfer",
                         boundary["input_receipt_name"], boundary["input_receipt_digest"])
                     imported = InputTransferReceipt(

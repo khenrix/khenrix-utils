@@ -261,11 +261,14 @@ def _seat(module, tmp_path: Path, provider: str, *, controller=None,
                               _terminal(provider, session_id=terminal_id))
     spec = ContainerSpec(request.run_id, request.task_id, request.target_id,
                          request.seat_id, IMAGE, workspace, volume, socket.path, CLI)
-    name, digest = write_evidence(controller, "container-seat-launch", {
+    launch = {
         "spec": {field: getattr(spec, field) for field in spec.__dataclass_fields__},
         "handle": {field: getattr(handle, field) for field in handle.__dataclass_fields__},
         "route": "recover" if resume else "start",
-    })
+    }
+    if resume:
+        launch["recovery"] = {"spec": dict(launch["spec"]), "handle": dict(launch["handle"]), "predecessors": []}
+    name, digest = write_evidence(controller, "container-seat-launch", launch)
     admission = module.ContainerAdmission(
         broker_permit=broker_permit, permit_id=permit_id, epoch=epoch,
         ledger=ledger, image_digest=IMAGE, cli_digest=CLI,
@@ -847,6 +850,18 @@ def test_running_attestation_retains_exact_raw_validation_observations(boundary_
     raw = next(base64.b64decode(item["stdout"]) for item in observations
                if item["argv"] == ["inspect", "--type", "container", transport.handle.container_id])
     assert json.loads(raw)[0] == docker.inspect
+
+
+def test_running_attestation_refuses_complete_transcript_over_artifact_budget(boundary_module, tmp_path):
+    def retained_inventory(docker):
+        for index in range(51):
+            container_id = f"{index + 1000:064x}"
+            docker.old[container_id] = {"Id": container_id, "Config": {"Labels": {}},
+                "HostConfig": {"Mounts": []}, "Mounts": [], "Padding": "x" * 990_000}
+    with pytest.raises(ProviderRequestError) as failure:
+        _launched_seat(boundary_module, tmp_path, before_start=retained_inventory)
+    assert "runtime" in str(failure.value.__cause__)
+    assert "budget" in str(failure.value.__cause__)
 
 
 def test_vm_attestation_retains_complete_observed_bytes(boundary_module, tmp_path, monkeypatch):
@@ -1778,7 +1793,7 @@ def test_same_metadata_socket_replacement_is_refused_before_spawn(boundary_modul
 def test_unissued_handle_is_not_admitted(boundary_module, tmp_path):
     request, boundary, transport, docker, _, sent = _launched_seat(boundary_module, tmp_path)
     forged = replace(transport.handle, inspect_sha256="e" * 64)
-    with pytest.raises(ProviderRequestError, match="handle|provenance"):
+    with pytest.raises(ProviderRequestError, match="handle|provenance|association"):
         boundary_module.issue_container_boundary(
             boundary.controller, request, transport.attest_vm(), forged,
             boundary.admission,
