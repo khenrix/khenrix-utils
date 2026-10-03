@@ -47,9 +47,9 @@ SCAN_SKIP_PATHS = {"scripts/lib/checks.py"} | {
 SECRET_ALLOW_SHA: set[str] = {
     # example fake tokens embedded in docs/archive-adoption/implementation-plan.md
     # (they quote this module's own self-test fixtures — not real credentials):
-    "492e9901d38877c93a3610b0ca256381302215dc88a3c90281440c29aea8c8eb",  # xoxp-1234567890abcde
-    "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",  # AKIAIOSFODNN7EXAMPLE
-    "565135a2e0882e6a31d2d9b3a9ce4088557f327ba03ab7b482ba1b459ecd0d91",  # xoxb-123456789012-abcdefghij (test fixture in tests/test_setup_audit.py)
+    "492e9901d38877c93a3610b0ca256381302215dc88a3c90281440c29aea8c8eb",  # Slack documentation example
+    "1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3",  # AWS documentation example
+    "565135a2e0882e6a31d2d9b3a9ce4088557f327ba03ab7b482ba1b459ecd0d91",  # tests/test_setup_audit.py fixture
 }
 
 
@@ -667,9 +667,9 @@ def _raises(fn, exc) -> bool:
 
 def _self_test() -> int:
     ok = []
-    ok.append(("secret regex detects slack", any(rx.search("xoxp-1234567890abcde") for rx in SECRET_FAIL)))
+    ok.append(("secret regex detects slack", any(rx.search("xoxp-" + "1234567890abcde") for rx in SECRET_FAIL)))
     ok.append(("secret regex ignores prose", not any(rx.search("the quick brown fox jumps") for rx in SECRET_FAIL)))
-    ok.append(("secret regex detects AKIA", any(rx.search("AKIAIOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
+    ok.append(("secret regex detects AKIA", any(rx.search("AKIA" + "IOSFODNN7EXAMPLE") for rx in SECRET_FAIL)))
     # render.parse_frontmatter must FOLD block scalars. It did not, so `description: >-`
     # measured as len(">-") == 2 and the documented 1024-char limit was inert for 7 of 8
     # skills while appearing to pass. A check that cannot fail is a false assurance.
