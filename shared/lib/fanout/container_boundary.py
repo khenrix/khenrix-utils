@@ -1715,20 +1715,25 @@ def _route_command(request: ProviderRequest, command: ProcessCommand) -> Process
     template = request.profile.resume_argv if request.resume else request.profile.initial_argv
     if command.argv != _render_profile_argv(template, request.session_id):
         raise ProviderRequestError("container Codex command grammar differs")
+    overrides = (
+        "-c", 'model_provider="fanout"', "-c", _CODEX_LOOPBACK_PROVIDER,
+        "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
+        # Login startup drops Codex's native apply_patch helper from PATH.
+        "-c", "allow_login_shell=false",
+    )
     # The attested outer container supplies isolation; nested namespaces are unavailable.
     if request.resume:
         if command.argv[:5] != ("codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"'):
             raise ProviderRequestError("container Codex resume sandbox grammar differs")
-        routed = ("resume", "-c", 'sandbox_mode="danger-full-access"', *command.argv[5:])
+        # Resume's overrides must share its command level, not the parent exec level.
+        routed = ("resume", *overrides, "-c", 'sandbox_mode="danger-full-access"', *command.argv[5:])
     else:
         if command.argv[:6] != ("codex", "exec", "-", "--json", "--sandbox", "workspace-write"):
             raise ProviderRequestError("container Codex initial sandbox grammar differs")
-        routed = ("-", "--json", "--sandbox", "danger-full-access", *command.argv[6:])
+        routed = (*overrides, "-", "--json", "--sandbox", "danger-full-access", *command.argv[6:])
     return replace(command, argv=(
         "codex", "exec", "--ignore-user-config", "--strict-config",
         "--skip-git-repo-check",
-        "-c", 'model_provider="fanout"', "-c", _CODEX_LOOPBACK_PROVIDER,
-        "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
         *routed,
     ))
 

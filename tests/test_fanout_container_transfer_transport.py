@@ -560,10 +560,13 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                     "--skip-git-repo-check",
                 )
                 assert command.argv.count("--skip-git-repo-check") == 1
-                assert command.argv[5:8] == ("-c", 'model_provider="fanout"', "-c")
-                assert 'base_url="http://127.0.0.1:43187/v1"' in command.argv[8]
-                assert 'x-fanout-seat="disposable-placeholder"' in command.argv[8]
-                assert command.argv[9:13] == (
+                if turn_request.resume:
+                    assert command.argv[5] == "resume"
+                overrides_and_route = command.argv[6:] if turn_request.resume else command.argv[5:]
+                assert overrides_and_route[:3] == ("-c", 'model_provider="fanout"', "-c")
+                assert 'base_url="http://127.0.0.1:43187/v1"' in overrides_and_route[3]
+                assert 'x-fanout-seat="disposable-placeholder"' in overrides_and_route[3]
+                assert overrides_and_route[4:8] == (
                     "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
                 )
                 if turn_request.resume:
@@ -573,7 +576,7 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                         "--json", "codex-thread-1", "-",
                     )
                     routed_argv = (
-                        "resume", "-c", 'sandbox_mode="danger-full-access"',
+                        "-c", 'sandbox_mode="danger-full-access"',
                         "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"',
                         "--json", "codex-thread-1", "-",
                     )
@@ -588,7 +591,8 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
                     )
                 native = ProviderRegistry.default().require("codex").build_command(turn_request)
                 assert native.argv == native_argv
-                assert command.argv[13:] == routed_argv
+                assert overrides_and_route[8:10] == ("-c", "allow_login_shell=false")
+                assert overrides_and_route[10:] == routed_argv
                 assert command.stdin == turn_request.prompt_bytes
                 assert command.cwd == turn_request.cwd
             return ProcessResult(ProcessStatus.EXIT, 0, stdout, b"")

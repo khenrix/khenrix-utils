@@ -380,18 +380,22 @@ def test_codex_admitted_container_uses_outer_sandbox_on_exact_turn(
         assert command.argv[command.argv.index("--sandbox") + 1] == "danger-full-access"
     prefix = (
         "codex", "exec", "--ignore-user-config", "--strict-config",
-        "--skip-git-repo-check", "-c", 'model_provider="fanout"', "-c",
+        "--skip-git-repo-check",
+    )
+    overrides = (
+        "-c", 'model_provider="fanout"', "-c",
         'model_providers.fanout={name="Fanout",'
         'base_url="http://127.0.0.1:43187/v1",wire_api="responses",'
         'http_headers={x-fanout-seat="disposable-placeholder"},'
         'request_max_retries=0,stream_max_retries=0}',
         "-c", 'approval_policy="never"', "-c", 'approvals_reviewer="user"',
+        "-c", "allow_login_shell=false",
     )
     tail = (
-        ("resume", "-c", 'sandbox_mode="danger-full-access"', "-m", "gpt-6.1-sol",
+        ("resume", *overrides, "-c", 'sandbox_mode="danger-full-access"', "-m", "gpt-6.1-sol",
          "-c", 'model_reasoning_effort="xhigh"', "--json", "codex-thread-1", "-")
         if route == "resume" else
-        ("-", "--json", "--sandbox", "danger-full-access", "-m", "gpt-6.1-sol",
+        (*overrides, "-", "--json", "--sandbox", "danger-full-access", "-m", "gpt-6.1-sol",
          "-c", 'model_reasoning_effort="xhigh"')
     )
     assert command.argv == prefix + tail
