@@ -68,6 +68,11 @@ def _request_record(request):
 
 
 def _expected_request(coordinator, packet, seat, round_number, prior=None, peer=None):
+    with coordinator._journal_guard:
+        return _expected_request_guarded(coordinator, packet, seat, round_number, prior, peer)
+
+
+def _expected_request_guarded(coordinator, packet, seat, round_number, prior=None, peer=None):
     from scripts import fanout_smoke as smoke
     from .collaboration import MAX_SEATS, PeerPacket, TerminalSeatResult
     coordinator.journal.authorize_owner(coordinator.owner)

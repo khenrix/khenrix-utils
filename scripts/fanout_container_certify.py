@@ -55,7 +55,7 @@ from shared.lib.fanout.container_routes import (
 )
 from shared.lib.fanout.container_runtime import (
     ContainerHandle, ContainerLauncher, ContainerSpec, GuestSocketAttestation,
-    private_volume_names,
+    _RecoveryAssociation, decode_launch_record, private_volume_names,
 )
 from shared.lib.fanout.container_source import (
     HostRuntimeIdentity, RuntimeIdentityError, SourceClosureError,
@@ -905,6 +905,7 @@ class _FakeLauncher(ContainerLauncher):
         self.controller = controller
         self.ledger = ledger
         self.previous = previous
+        self._recovery = None
         self.recovered_prior_container_id = None
         self.handle = ContainerHandle(
             hashlib.sha256(f"{spec.seat_id}:{route}".encode()).hexdigest(),
@@ -913,11 +914,17 @@ class _FakeLauncher(ContainerLauncher):
         )
 
     def start(self, spec: ContainerSpec) -> ContainerHandle:
+        self._recovery = None
+        self.recovered_prior_container_id = None
         if spec != self.spec:
             raise CertificationRejected("fake launcher target differs")
         return self.handle
 
     def recover(self, spec: ContainerSpec) -> ContainerHandle:
+        self._recovery = None
+        self.recovered_prior_container_id = None
+        if spec != self.spec:
+            raise CertificationRejected("fake launcher target differs")
         if (self.controller is None or self.ledger is None
                 or not isinstance(self.previous, Mapping)):
             raise CertificationRejected("fake cold recovery has no prior seat")
@@ -933,15 +940,48 @@ class _FakeLauncher(ContainerLauncher):
                 or stopped.get("session_volume") != spec.session_volume
                 or stopped.get("seat_id") != spec.seat_id
                 or stopped.get("permit_id") != prior.get("permit_id")
+                or stopped.get("permit_epoch") != prior.get("permit_epoch")
                 or stopped.get("stopped") is not True
                 or stopped.get("broker_state") != "settled"):
             raise CertificationRejected("fake prior seat was not safely stopped")
+        try:
+            native = read_evidence(
+                self.controller, "container-seat-stopped",
+                stopped["native_stop_evidence_name"], stopped["native_stop_evidence_digest"])
+            prior_spec = ContainerSpec(**native["spec"])
+            prior_handle = ContainerHandle(**native["handle"])
+            launch = read_evidence(
+                self.controller, "container-seat-launch",
+                native["launch_evidence_name"], native["launch_evidence_digest"])
+            decode_launch_record(launch, prior_spec, prior_handle,
+                                 recover=launch.get("route") == "recover")
+            ref = ArtifactRef(**native["raw_inspect"])
+            with ArtifactStore.open_existing(
+                    self.controller.root / "quarantine" / "runtime-proofs") as store:
+                raw = store.read_bytes(ref)
+            if (prior_spec != spec or prior_handle.container_id != prior["container_id"]
+                    or raw != self._fake_inspect(prior_spec, prior_handle, False)):
+                raise CertificationRejected("fake retained predecessor differs")
+        except Exception as error:
+            raise CertificationRejected("fake native predecessor proof is invalid") from error
         with self.ledger._locked() as durable:
             permit = durable["permits"].get(prior["permit_id"])
-            if not isinstance(permit, dict) or permit.get("fenced") is not True:
+            if (not isinstance(permit, dict) or permit.get("fenced") is not True
+                    or permit.get("epoch") != prior.get("permit_epoch")
+                    or permit.get("seat_scope") != hashlib.sha256(canonical_json({
+                        key: getattr(prior_spec, key) for key in (
+                            "run_id", "task_id", "target_id", "seat_id")
+                    })).hexdigest()):
                 raise CertificationRejected("fake prior broker epoch was not fenced")
+        recovery = _RecoveryAssociation(
+            spec, self.handle, ((prior_handle.container_id, ref.digest),))
+        decode_launch_record({"spec": asdict(spec), "handle": asdict(self.handle),
+                              "route": "recover", "recovery": json.loads(
+                                  canonical_json(asdict(recovery)))},
+                             spec, self.handle, recover=True)
+        self._recovery = recovery
         self.recovered_prior_container_id = stopped["container_id"]
-        return self.start(spec)
+        return self.handle
 
     def attest_running(self, spec: ContainerSpec,
                        handle: ContainerHandle) -> ContainerHandle:
@@ -949,24 +989,27 @@ class _FakeLauncher(ContainerLauncher):
             raise CertificationRejected("fake launcher seat is not running")
         return handle
 
+    @staticmethod
+    def _fake_inspect(spec: ContainerSpec, handle: ContainerHandle, running: bool) -> bytes:
+        item = {
+            "Id": handle.container_id,
+            "Config": {"Labels": ContainerLauncher._labels(spec), "Image": spec.image_digest},
+            "HostConfig": {"RestartPolicy": {"Name": "no"}},
+            "Mounts": [
+                {"Destination": "/workspace", "Type": "volume",
+                 "Name": spec.workspace_volume},
+                {"Destination": "/session", "Type": "volume",
+                 "Name": spec.session_volume},
+                {"Destination": "/run/fanout/broker.sock", "Type": "bind",
+                 "Source": spec.socket_path},
+            ],
+            "State": {"Running": running},
+        }
+        return json.dumps([item]).encode()
+
     def _run(self, *args: str) -> bytes:
         if args == ("inspect", "--type", "container", self.handle.container_id):
-            spec = self.spec
-            item = {
-                "Id": self.handle.container_id,
-                "Config": {"Labels": self._labels(spec), "Image": spec.image_digest},
-                "HostConfig": {"RestartPolicy": {"Name": "no"}},
-                "Mounts": [
-                    {"Destination": "/workspace", "Type": "volume",
-                     "Name": spec.workspace_volume},
-                    {"Destination": "/session", "Type": "volume",
-                     "Name": spec.session_volume},
-                    {"Destination": "/run/fanout/broker.sock", "Type": "bind",
-                     "Source": spec.socket_path},
-                ],
-                "State": {"Running": self.running},
-            }
-            return json.dumps([item]).encode()
+            return self._fake_inspect(self.spec, self.handle, self.running)
         if args == ("update", "--restart", "no", self.handle.container_id):
             return b""
         if args == ("stop", "--time", "0", self.handle.container_id):
@@ -1357,8 +1400,11 @@ def _fake_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
         controller, "container-fake-stopped", {
             "container_id": transport.handle.container_id,
             "seat_id": seat_id, "session_volume": session_volume,
-            "permit_id": permit_id, "stopped": not launcher.running,
+            "permit_id": permit_id, "permit_epoch": epoch,
+            "stopped": not launcher.running,
             "broker_state": state,
+            "native_stop_evidence_name": transport.stop_evidence[0],
+            "native_stop_evidence_digest": transport.stop_evidence[1],
         },
     )
     raw_artifacts = {}

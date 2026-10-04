@@ -57,6 +57,29 @@ def _request(provider: str = "claude") -> tuple[str, dict[str, str], bytes]:
     )
 
 
+def test_closing_unstarted_safe_stream_closes_original_source_without_iteration():
+    class Source:
+        def __init__(self):
+            self.iterations = 0
+            self.closes = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            pytest.fail("closing an unstarted stream must not consume the source")
+
+        def close(self):
+            self.closes += 1
+
+    source = Source()
+    broker = Broker(_permit(), credential="controller-secret",
+        send=lambda *_args: BrokerResponse(200, {"content-type": "text/event-stream"}, source))
+    response = broker.dispatch("POST", *_request())
+    response.body.close()
+    response.body.close()
+    assert source.iterations == 0
+    assert source.closes == 1
+
+
 @pytest.mark.parametrize("iterable", (False, True))
 def test_sse_representations_reject_cross_frame_credential_text(iterable):
     frames = (b'data: {"delta":{"text":"controller"}}\n\n',

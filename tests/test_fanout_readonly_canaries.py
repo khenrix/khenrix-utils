@@ -7,6 +7,7 @@ import http.client
 import importlib.util
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,228 @@ def canaries(tmp_path, monkeypatch, request, connection_factory):
         smoke.prepare_live(root, authorized=True, quality_tier=tier, **dependencies)
         receipts.append(smoke.resume_live(root, authorized=True, **dependencies))
     return helper, receipts
+
+
+@pytest.fixture
+def canary_journal(canaries, monkeypatch):
+    from shared.lib.fanout import canary_proof
+    from test_fanout_container_upstream import _route
+    helper, (standard, _) = canaries
+    smoke, runtime = helper.smoke, helper.smoke.fanout
+    root = Path(standard["private_run_root"])
+    state = json.loads((root / "state.json").read_bytes())
+    controller = runtime.resume_lifecycle_controller(root / "controller",
+        runtime.LifecycleCapability(state["controller_token"]))
+    route = _route("codex")
+    inputs = runtime.RunInputs.from_dict(state["inputs"])
+    inputs = dataclasses.replace(inputs,
+        skill_manifests={**inputs.skill_manifests, "codex-canary-route": route.digest})
+    authority = runtime.LocalAnchorAuthority.bootstrap(root / "concurrency-authority",
+        run_root=root / "concurrency-journal", repo_root=root / "repo")
+    journal, owner = runtime.RunJournal.create(root / "concurrency-journal", inputs,
+        anchor_store=authority)
+    packet = smoke._packet(root / "repo", smoke._plan(live=True), run_id=state["run_id"])
+    catalog = runtime.ProviderRegistry.default()
+    profiles = [runtime.ExecutorProfile.from_dict(value,
+        adapter=catalog.require(value["executor_id"])) for value in state["provider_profile_descriptors"]]
+    registry = runtime.ProviderRegistry(profiles)
+    executable = root / "fixture-codex"
+    executable.write_bytes(b"\x7fELF inert canary fixture")
+    executable.chmod(0o700)
+    monkeypatch.setattr(canary_proof, "_executable", lambda _: executable)
+    with runtime.ArtifactStore.open_existing(root / "artifacts") as store:
+        baseline = runtime.capture_repository_baseline(root / "repo")
+        memory = smoke._live_memory(store, Path(state["memory_controller_path"]),
+            state["memory_controller_sha256"])
+        coordinator = smoke._live_coordinator(root, store, journal, owner, controller,
+            baseline, registry, memory, runtime.run_provider)
+        try:
+            seats, _ = smoke._seats(root, baseline, controller, store, restore=True,
+                workspace_evidence=state["workspace_evidence"], registry=registry)
+            seat = next(item for item in seats if item.executor_id == "codex")
+            turn = canary_proof.issue_turn(coordinator, packet, seat, 1, route)
+            yield runtime, coordinator, packet, turn, authority
+        finally:
+            coordinator.journal.close()
+
+
+def test_canary_validation_waits_for_sibling_pending_append(canary_journal, monkeypatch):
+    runtime, coordinator, packet, turn, _ = canary_journal
+    journal = coordinator.journal
+    journal.append("dispatch-intent", task_id=packet.task_id,
+                   seat_id="seat-claude", attempt=1, round=1)
+    prepared, attempted, finish_append = threading.Event(), threading.Event(), threading.Event()
+    guard = coordinator._journal_guard
+    pending = journal._anchor_pending
+    authorize = journal.authorize_owner
+    failures, validated = [], []
+    guard_holder = [None]
+
+    class ObservedGuard:
+        def __enter__(self):
+            if threading.current_thread() is reader:
+                attempted.set()
+            result = guard.__enter__()
+            guard_holder[0] = threading.current_thread()
+            return result
+
+        def __exit__(self, *args):
+            guard_holder[0] = None
+            return guard.__exit__(*args)
+
+    def pause_after_prepare(record, offset):
+        pending(record, offset)
+        assert journal._pending_authority is not None
+        prepared.set()
+        assert finish_append.wait(5), "canary validation never reached the held guard"
+
+    def observed_authorize(owner):
+        try:
+            return authorize(owner)
+        finally:
+            attempted.set()
+
+    def inert_provider(request, *, registry):
+        assert guard_holder[0] is not threading.current_thread(), "provider retained journal guard"
+        assert request.executor_id == "claude"
+
+    def sibling():
+        try:
+            coordinator._provider_turn(runtime.ProviderRequest("claude", "inert sibling"),
+                start_identity=(packet.task_id, "seat-claude", 1, 1))
+        except BaseException as error:
+            failures.append(error)
+
+    def validate():
+        try:
+            validated.append(turn.validate(turn.request))
+        except BaseException as error:
+            failures.append(error)
+
+    writer = threading.Thread(target=sibling, daemon=True)
+    reader = threading.Thread(target=validate, daemon=True)
+    monkeypatch.setattr(coordinator, "_journal_guard", ObservedGuard())
+    monkeypatch.setattr(coordinator, "provider_runner", inert_provider)
+    monkeypatch.setattr(journal, "_anchor_pending", pause_after_prepare)
+    monkeypatch.setattr(journal, "authorize_owner", observed_authorize)
+    writer.start()
+    try:
+        assert prepared.wait(5), "sibling append never prepared real pending authority"
+        reader.start()
+        assert attempted.wait(5), "canary validation never attempted owner validation"
+    finally:
+        finish_append.set()
+        writer.join(5)
+        if reader.ident is not None:
+            reader.join(5)
+    assert not writer.is_alive() and not reader.is_alive(), "journal validation deadlocked"
+    if failures:
+        raise failures[0]
+    assert len(validated) == 1
+    assert journal._pending_authority is None
+    assert journal.state.seat_phase(packet.task_id, "seat-claude", 1, 1) == "process-started"
+
+
+@pytest.mark.parametrize("invalid", ["pending_reopen", "failed", "closed", "wrong_owner"])
+def test_canary_guard_preserves_real_owner_recovery_refusals(
+    canary_journal, monkeypatch, invalid,
+):
+    runtime, coordinator, packet, turn, authority = canary_journal
+    journal = coordinator.journal
+    journal.append("dispatch-intent", task_id=packet.task_id,
+                   seat_id="seat-claude", attempt=1, round=1)
+    if invalid == "pending_reopen":
+        prepare = journal._anchor_pending
+
+        def interrupt_after_prepare(record, offset):
+            prepare(record, offset)
+            raise OSError("injected crash after durable authority preparation")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(journal, "_anchor_pending", interrupt_after_prepare)
+            with pytest.raises(OSError, match="durable authority"):
+                journal.append("process-started", task_id=packet.task_id,
+                               seat_id="seat-claude", attempt=1, round=1)
+        journal.close()
+        journal = runtime.RunJournal.resume(journal.root, journal.inputs,
+            coordinator.owner, anchor_store=authority)
+        coordinator.journal = journal
+        assert journal._pending_authority is not None
+        error, reason = runtime.RunStateError, "pending event"
+    elif invalid == "failed":
+        def fail_cas(*args):
+            raise RuntimeError("injected authority failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(type(authority), "compare_and_set", fail_cas)
+            with pytest.raises(runtime.RunStateError):
+                journal.append("process-started", task_id=packet.task_id,
+                               seat_id="seat-claude", attempt=1, round=1)
+        assert journal._failed is True
+        error, reason = runtime.RunStateError, "requires owner recovery"
+    elif invalid == "closed":
+        journal.close()
+        error, reason = ValueError, "journal is closed"
+    else:
+        coordinator.owner = runtime.OwnerCapability("unrelated-synthetic-owner-" + "x" * 32)
+        error, reason = runtime.RunAuthorizationError, "owner capability is invalid"
+    before = (journal.root / "events.jsonl").read_bytes(), journal.state.seq
+    with pytest.raises(error, match=reason):
+        turn.validate(turn.request)
+    assert ((journal.root / "events.jsonl").read_bytes(), journal.state.seq) == before
+    if invalid == "pending_reopen":
+        assert journal._pending_authority is not None
+        assert journal.recover_pending(coordinator.owner) == "uncertain-attempt"
+        assert journal.state.seat_phase(packet.task_id, "seat-claude", 1, 1) == "uncertain-attempt"
+
+
+def test_canary_launch_releases_journal_guard_before_inert_http(
+    canary_journal, monkeypatch, connection_factory,
+):
+    from shared.lib.fanout import container_credentials
+    from test_fanout_container_upstream import FakeConnection
+    _, coordinator, _, turn, _ = canary_journal
+    guard = coordinator._journal_guard
+
+    def require_released():
+        assert guard.acquire(blocking=False), "journal guard held through external-call seam"
+        guard.release()
+
+    class FixtureCredential:
+        fingerprint = "c" * 64
+
+        def __init__(self, profile):
+            require_released()
+
+        def load(self):
+            require_released()
+            return "fixture-host-only"
+
+    send = FakeConnection.request
+
+    def checked_send(connection, *args, **kwargs):
+        require_released()
+        return send(connection, *args, **kwargs)
+
+    monkeypatch.setattr(container_credentials, "HostCredentialSource", FixtureCredential)
+    monkeypatch.setattr(FakeConnection, "request", checked_send)
+    made, response = connection_factory
+    response.chunks = [b'{"id":"resp_fixture","object":"response","status":"completed",'
+                       b'"model":"gpt-6.1-sol","error":null,"incomplete_details":null}']
+    command = turn.request.profile.adapter.build_command(turn.request)
+    with turn.launch(turn.request, command):
+        require_released()
+        listener = turn._held["listener"]
+        connection = http.client.HTTPConnection("127.0.0.1", listener.port, timeout=3)
+        try:
+            connection.request("POST", "/v1/responses", b'{"model":"gpt-6.1-sol","input":[]}',
+                {"content-type": "application/json", "x-fanout-seat": turn._held["permit"].placeholder_key})
+            reply = connection.getresponse()
+            assert reply.status == 200
+            assert json.loads(reply.read())["model"] == "gpt-6.1-sol"
+        finally:
+            connection.close()
+    assert len(made) == 1 and len(made[0].requests) == 1
 
 
 @pytest.mark.parametrize("canaries", ["body-observed"], indirect=True)

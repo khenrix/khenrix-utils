@@ -600,6 +600,69 @@ def test_failed_byte_response_frame_never_settles(tmp_path, fail_type):
     assert ledger.disposition("request-a")[0] == "uncertain"
 
 
+def test_failed_response_start_closes_unstarted_original_stream_and_cannot_replay(tmp_path):
+    class Source:
+        def __init__(self):
+            self.iterations = 0
+            self.closes = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            pytest.fail("failed headers must not start or consume upstream body")
+
+        def close(self):
+            self.closes += 1
+
+    permit = _permit()
+    controller, ledger, permit_id = _ledger(tmp_path, permit)
+    source = Source()
+    sent = []
+    response = BrokerResponse(200, {"content-type": "text/event-stream"}, source)
+    frames = _FailingFrames([{"type": "ready", "seat_id": "seat-1",
+                              "permit_id": permit_id, "epoch": 1},
+                             _request_frame(permit_id)], "response_start")
+    with pytest.raises(BrokerRejected):
+        HostRelay(ledger, _broker(permit, response=response, sends=sent)).serve(frames)
+    assert len(sent) == 1
+    assert source.iterations == 0
+    assert source.closes == 1
+    canonical = ledger._record.read_bytes()
+    reopened = PermitLedger(tmp_path / "spend", resume_lifecycle_controller(
+        controller.root, controller.capability))
+    assert reopened.disposition("request-a") == ("uncertain", None)
+    replay_sends = []
+    with pytest.raises(BrokerRejected, match="uncertain|attempt|budget"):
+        dispatch_once(_request(permit_id), reopened, _broker(permit, sends=replay_sends))
+    assert replay_sends == []
+    assert reopened._record.read_bytes() == canonical
+
+
+def test_delivery_close_before_iteration_closes_source_once_and_cannot_settle(tmp_path):
+    class Source:
+        def __init__(self):
+            self.closes = 0
+
+        def __iter__(self):
+            pytest.fail("unstarted delivery must not consume its source")
+
+        def close(self):
+            self.closes += 1
+
+    _, ledger, permit_id = _ledger(tmp_path)
+    ledger.record_attempt(permit_id, 1)
+    ledger.reserve(permit_id, 1, "request-a", _identity())
+    source = Source()
+    body = stream_and_settle(BrokerResponse(200, {}, source), ledger, "request-a").body
+    body.close()
+    body.close()
+    assert source.closes == 1
+    with pytest.raises(BrokerRejected, match="replayed"):
+        iter(body)
+    with pytest.raises(BrokerRejected, match="incomplete"):
+        body.acknowledge("a" * 64)
+    assert ledger.disposition("request-a") == ("uncertain", None)
+
+
 def test_missing_guest_completion_ack_leaves_stream_uncertain(tmp_path):
     permit = _permit()
     _, ledger, permit_id = _ledger(tmp_path, permit)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from dataclasses import FrozenInstanceError, asdict
 from pathlib import Path
@@ -13,6 +14,55 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shared.lib.fanout.container_routes import RouteRejected, read_machine_routes, select_route
+
+
+def _fixture_git(root, *args):
+    argv = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+            "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *args]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    print(json.dumps({"argv": argv, "returncode": result.returncode,
+                      "stdout": result.stdout, "stderr": result.stderr}, sort_keys=True))
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+@pytest.mark.parametrize("layout", ("normal", "linked", "bare"))
+def test_manifest_admission_refuses_actual_git_ancestry(tmp_path, documents, layout):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _fixture_git(repository, "init", "-q", *(('--bare',) if layout == "bare" else ('-b', 'main')))
+    root = repository
+    if layout != "bare":
+        _fixture_git(repository, "commit", "-q", "--allow-empty", "-m", "fixture")
+    if layout == "linked":
+        root = tmp_path / "linked"
+        _fixture_git(repository, "worktree", "add", "-q", "-b", "fixture-linked", str(root))
+        assert (root / ".git").is_file()
+    nested = root / "owner" / "nested"
+    nested.mkdir(parents=True)
+    assert _fixture_git(nested, "rev-parse", "--absolute-git-dir")
+    manifest, _ = _write_pair(nested, documents)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _, policy = _write_pair(outside, documents)
+    with pytest.raises(RouteRejected, match="manifest.*repository"):
+        read_machine_routes(manifest, policy)
+
+
+def test_manifest_outside_git_does_not_broaden_placement_to_policy_or_path_names(
+    tmp_path, documents, monkeypatch,
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _fixture_git(repository, "init", "-q")
+    _, policy = _write_pair(repository, documents)
+    outside = tmp_path / "git" / "workspace"
+    outside.mkdir(parents=True)
+    manifest, _ = _write_pair(outside, documents)
+    monkeypatch.setenv("GIT_DIR", str(repository / ".git"))
+    admitted = read_machine_routes(manifest, policy)
+    assert len(admitted.routes) == 4
+    assert admitted.manifest_digest == hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
 def _json(value):

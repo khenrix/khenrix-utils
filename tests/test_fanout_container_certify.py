@@ -1269,6 +1269,7 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
     monkeypatch.setattr(certifier, "_attest_image_platform", lambda _: None)
     sends = []
     scopes, before_failure, retained, normal_fence_attempts = {}, {}, [], []
+    initial_transports = {}
     primary = certifier.ProviderRequestError("SYNTHETIC_PRIMARY_VALUE")
     cleanup_error = certifier.ProviderRequestError("SYNTHETIC_CLEANUP_VALUE")
     original_retain = certifier._retain_cell_failure
@@ -1364,9 +1365,6 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
             workspace.mkdir()
 
         class Launcher(certifier._FakeLauncher):
-            def recover(self, recovered_spec):
-                return self.start(recovered_spec)
-
             def _run(self, *args):
                 if (outcome in ("turn_cleanup_failure", "stop_failure",
                                 "turn_cleanup_fence_failure", "probe_cleanup_failure")
@@ -1378,7 +1376,27 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
                     raise cleanup_error
                 return super()._run(*args)
 
-        launcher = Launcher(spec, route)
+        previous = None
+        if recover:
+            initial = initial_transports[provider]
+            _, _, prior_permit_id, prior_epoch = scopes[provider, "initial"]
+            records = ledger.request_records(prior_permit_id, prior_epoch)
+            assert records and all(record["state"] == "settled" for record in records)
+            native = read_evidence(controller, "container-seat-stopped", *initial.stop_evidence)
+            assert native["handle"] == asdict(initial.handle)
+            name, digest = write_evidence(controller, "container-fake-stopped", {
+                "container_id": initial.handle.container_id, "seat_id": initial.spec.seat_id,
+                "session_volume": initial.spec.session_volume,
+                "permit_id": prior_permit_id, "permit_epoch": prior_epoch,
+                "stopped": not initial.launcher.running, "broker_state": "settled",
+                "native_stop_evidence_name": initial.stop_evidence[0],
+                "native_stop_evidence_digest": initial.stop_evidence[1],
+            })
+            previous = {"container_id": initial.handle.container_id,
+                        "permit_id": prior_permit_id, "permit_epoch": prior_epoch,
+                        "stop_evidence_name": name, "stop_evidence_digest": digest}
+        launcher = Launcher(spec, route, controller=controller, ledger=ledger,
+                            previous=previous)
         vm = VMProbe("fanout-isolated", "unix:///private/fake/docker.sock",
                      "2" * 64, "3" * 64, "4" * 64, "5" * 64)
         socket = GuestSocketAttestation(spec.socket_path, 65532,
@@ -1436,6 +1454,8 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
         transport._transfer_popen = certifier._fake_transfer_popen(
             workspace, transport.handle.container_id)
         transport.ledger = ledger
+        if not recover:
+            initial_transports[provider] = transport
         if outcome == "postturn_close_failure":
             original_close = transport.close
             close_calls = []
@@ -2432,6 +2452,116 @@ def test_fake_turn_reads_published_alpha_and_exposes_sibling_limit(certifier, tm
                 sibling.read_bytes()
             ).hexdigest()
             assert cell["isolation"]["sibling"]["read_denied"] is False
+
+
+def _stopped_fake_predecessor(certifier, tmp_path):
+    controller = create_lifecycle_controller(tmp_path / "controller")
+    ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+    identity = ("fake-recovery", "task", "target", "seat-claude")
+    workspace, session = certifier.private_volume_names(*identity)
+    spec = certifier.ContainerSpec(*identity, "sha256:" + "1" * 64,
+                                   workspace, session, "/run/fanout/seat-claude.sock",
+                                   "2" * 64)
+    permit = BrokerPermit("claude", *identity, "initial", "claude-opus-5-5",
+                          "disposable-placeholder", 1, 100_000, 100_000, 1024)
+    permit_id = ledger.register(permit, 1)
+    launcher = certifier._FakeLauncher(spec, "initial")
+    transport = certifier.PinnedDockerTransport.start(
+        controller, spec, launcher=launcher, vm_attestor=lambda: None,
+        socket_attestor=lambda _: None, image_attestor=lambda: spec.image_digest,
+        cli_attestor=lambda _: spec.cli_digest, process_runner=lambda _: None)
+    transport.close()
+    ledger.fence_epoch(permit_id, 1)
+    name, digest = write_evidence(controller, "container-fake-stopped", {
+        "container_id": transport.handle.container_id, "seat_id": spec.seat_id,
+        "session_volume": session, "permit_id": permit_id, "permit_epoch": 1,
+        "stopped": not launcher.running, "broker_state": "settled",
+        "native_stop_evidence_name": transport.stop_evidence[0],
+        "native_stop_evidence_digest": transport.stop_evidence[1],
+    })
+    previous = {"container_id": transport.handle.container_id,
+                "permit_id": permit_id, "permit_epoch": 1, "stop_evidence_name": name,
+                "stop_evidence_digest": digest}
+    return controller, ledger, spec, previous, transport
+
+
+def test_fake_recovery_binds_native_retained_predecessor(certifier, tmp_path):
+    from shared.lib.fanout.container_runtime import _RecoveryAssociation, decode_launch_record
+    controller, ledger, spec, previous, initial = _stopped_fake_predecessor(
+        certifier, tmp_path)
+    stopped = read_evidence(controller, "container-seat-stopped", *initial.stop_evidence)
+    launcher = certifier._FakeLauncher(spec, "resume", controller=controller,
+                                       ledger=ledger, previous=previous)
+    resumed = certifier.PinnedDockerTransport.start(
+        controller, spec, launcher=launcher, vm_attestor=lambda: None,
+        socket_attestor=lambda _: None, image_attestor=lambda: spec.image_digest,
+        cli_attestor=lambda _: spec.cli_digest, process_runner=lambda _: None,
+        recover=True)
+    assert resumed.handle.container_id != initial.handle.container_id
+    assert type(launcher._recovery) is _RecoveryAssociation
+    assert launcher._recovery.predecessors == (
+        (initial.handle.container_id, stopped["raw_inspect"]["digest"]),)
+    launch = read_evidence(controller, "container-seat-launch",
+                           resumed.handle_evidence_name, resumed.handle_evidence_digest)
+    assert decode_launch_record(launch, spec, resumed.handle, recover=True) == launcher._recovery
+    resumed.close()
+    launcher.start(spec)
+    assert launcher._recovery is None
+    assert launcher.recovered_prior_container_id is None
+
+
+@pytest.mark.parametrize("changed", ("stop_auth", "launch_auth", "launch_handle",
+                                      "raw_inspect", "seat", "session", "permit",
+                                      "stopped", "settled", "fenced", "epoch",
+                                      "other_permit"))
+def test_fake_recovery_refuses_changed_retained_predecessor(
+    certifier, tmp_path, changed,
+):
+    controller, ledger, spec, previous, initial = _stopped_fake_predecessor(
+        certifier, tmp_path)
+    stopped = read_evidence(controller, "container-fake-stopped",
+                            previous["stop_evidence_name"], previous["stop_evidence_digest"])
+    native = read_evidence(controller, "container-seat-stopped", *initial.stop_evidence)
+    if changed == "stop_auth":
+        stopped["native_stop_evidence_digest"] = "0" * 64
+    elif changed == "launch_auth":
+        native["launch_evidence_digest"] = "0" * 64
+    elif changed == "launch_handle":
+        native["handle"]["container_id"] = "0" * 64
+    elif changed == "raw_inspect":
+        path = controller.root / "quarantine" / "runtime-proofs" / native["raw_inspect"]["path"]
+        path.write_bytes(path.read_bytes().replace(b'"Running": false', b'"Running": true'))
+    elif changed in ("seat", "session", "permit"):
+        stopped[{"seat": "seat_id", "session": "session_volume", "permit": "permit_id"}[changed]] = "other"
+    elif changed == "stopped":
+        stopped["stopped"] = False
+    elif changed == "settled":
+        stopped["broker_state"] = "uncertain"
+    elif changed == "fenced":
+        with ledger._locked() as durable:
+            durable["permits"][previous["permit_id"]]["fenced"] = False
+            ledger._save(durable)
+    elif changed == "epoch":
+        previous["permit_epoch"] = stopped["permit_epoch"] = 2
+    elif changed == "other_permit":
+        other = BrokerPermit("claude", spec.run_id, spec.task_id, spec.target_id,
+                             "seat-other", "initial", "claude-opus-5-5",
+                             "disposable-placeholder", 1, 100_000, 100_000, 1024)
+        other_id = ledger.register(other, 1)
+        ledger.fence_epoch(other_id, 1)
+        previous["permit_id"] = stopped["permit_id"] = other_id
+    if changed in ("launch_auth", "launch_handle"):
+        stopped["native_stop_evidence_name"], stopped["native_stop_evidence_digest"] = write_evidence(
+            controller, "container-seat-stopped", native)
+    previous["stop_evidence_name"], previous["stop_evidence_digest"] = write_evidence(
+        controller, "container-fake-stopped", stopped)
+    launcher = certifier._FakeLauncher(spec, "resume", controller=controller,
+                                       ledger=ledger, previous=previous)
+    launcher._recovery = object()
+    with pytest.raises(certifier.CertificationRejected):
+        launcher.recover(spec)
+    assert launcher._recovery is None
+    assert launcher.recovered_prior_container_id is None
 
 
 def test_fake_resume_reopens_controller_and_attests_stopped_prior_seat(certifier, tmp_path):

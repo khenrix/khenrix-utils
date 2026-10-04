@@ -685,6 +685,8 @@ class _DeliveryBody:
         self._request_id = request_id
         self._limit = limit
         self._started = False
+        self._closed = False
+        self._source_closed = False
         self._complete = False
         self._digest: str | None = None
         self._iterator: Iterator[bytes] | None = None
@@ -712,9 +714,13 @@ class _DeliveryBody:
             self._digest = digest.hexdigest()
             self._complete = True
         finally:
-            close = getattr(source, "close", None)
-            if callable(close):
-                close()
+            try:
+                if source is not self._source:
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
+            finally:
+                self._close_source()
 
     @property
     def digest(self) -> str:
@@ -728,10 +734,23 @@ class _DeliveryBody:
         self._ledger.settle(self._request_id, digest)
 
     def close(self) -> None:
-        if self._iterator is not None:
-            close = getattr(self._iterator, "close", None)
-            if callable(close):
-                close()
+        if self._closed:
+            return
+        self._closed = True
+        self._started = True
+        try:
+            if self._iterator is not None:
+                self._iterator.close()
+        finally:
+            self._close_source()
+
+    def _close_source(self) -> None:
+        if self._source_closed:
+            return
+        self._source_closed = True
+        close = getattr(self._source, "close", None)
+        if callable(close):
+            close()
 
 
 def stream_and_settle(response: BrokerResponse, ledger: PermitLedger,

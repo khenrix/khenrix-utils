@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -261,6 +262,7 @@ def read_machine_routes(path: Path, policy_path: Path) -> MachineRoutes:
     """Read an exact owner-held manifest and bind every route to policy bytes."""
     policy, policy_raw = _read_owned_json(Path(policy_path))
     manifest, manifest_raw = _read_owned_json(Path(path))
+    _require_outside_repository(Path(path))
     _require_keys(policy, frozenset({"schema", "machine_id", "routes"}), "policy")
     _require_keys(manifest, frozenset({"schema", "machine_id", "policy_digest", "routes"}),
                   "manifest")
@@ -300,6 +302,24 @@ def read_machine_routes(path: Path, policy_path: Path) -> MachineRoutes:
             raise RouteRejected("route differs from policy")
     return MachineRoutes(machine_id, policy_digest,
                          hashlib.sha256(manifest_raw).hexdigest(), routes)
+
+
+def _require_outside_repository(path: Path) -> None:
+    from .targets import _git_environment
+
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(path.parent), "-c", "core.fsmonitor=false",
+             "-c", f"core.hooksPath={os.devnull}", "rev-parse", "--absolute-git-dir"),
+            env=_git_environment(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5, check=False)
+        if result.returncode == 0:
+            raise RouteRejected("machine manifest must be outside a Git repository")
+        if result.returncode != 128 or any(
+                os.path.lexists(parent / ".git") for parent in path.parents):
+            raise RouteRejected("machine manifest repository ancestry is unavailable")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RouteRejected("machine manifest repository ancestry is unavailable") from error
 
 
 def select_route(manifest: MachineRoutes, *, route_id: str, provider: str,

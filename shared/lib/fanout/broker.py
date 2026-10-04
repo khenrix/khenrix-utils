@@ -14,7 +14,7 @@ import secrets
 import socket
 import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
 from queue import Empty, Full, Queue
@@ -227,8 +227,46 @@ def _safe_response_body(body: bytes, mime: str, credential: str) -> bytes:
     return safe
 
 
+class _OwnedStream:
+    def __init__(self, iterator: Iterator[bytes], source: Iterable[bytes]):
+        self._iterator = iterator
+        self._source = source
+        self._closed = False
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._closed:
+            raise StopIteration
+        try:
+            return next(self._iterator)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._iterator.close()
+        finally:
+            close = getattr(self._source, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except (OSError, ValueError):
+                    pass
+
+
 def _safe_stream_body(chunks: Iterable[bytes], credential: str,
                       max_bytes: int, expires: float) -> Iterable[bytes]:
+    return _OwnedStream(_safe_stream_chunks(chunks, credential, max_bytes, expires), chunks)
+
+
+def _safe_stream_chunks(chunks: Iterable[bytes], credential: str,
+                        max_bytes: int, expires: float) -> Iterator[bytes]:
     pending: Queue[tuple[str, object]] = Queue(maxsize=1)
     stopped = threading.Event()
 
@@ -316,12 +354,6 @@ def _safe_stream_body(chunks: Iterable[bytes], credential: str,
                     yield safe
     finally:
         stopped.set()
-        close = getattr(chunks, "close", None)
-        if callable(close):
-            try:
-                close()
-            except (OSError, ValueError):
-                pass
 
 
 def _unique_headers(headers: Mapping[str, str]) -> dict[str, str]:
