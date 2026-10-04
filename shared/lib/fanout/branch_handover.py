@@ -4,8 +4,11 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import os
+import select
+import stat
 import subprocess
-from contextlib import ExitStack, contextmanager
+import time
+from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,10 +23,11 @@ from .lifecycle import (
     handover_candidate, prepare_handover_transaction,
 )
 from .plan import FanoutPlanV2
+from .process import _cleanup_group
 from .repo import _capture_directory_entries, capture_repository_baseline
 from .runstate import BranchHandoverIntentV2, HandoverTerminalV2, OwnerCapability, RunInputs, RunJournal
 from .scheduler_authority import Scheduler
-from .targets import TargetBinding, _git_environment, resolve_target
+from .targets import TargetBinding, _direct_branch_ref, _git_environment, resolve_target
 from .verification import TargetEvidenceEnvelope, load_target_candidate, load_target_verification
 from .verification import _assert_candidate_applied, _read_entry
 
@@ -115,17 +119,12 @@ def _git(root: Path, *args: str, input_bytes: bytes | None = None,
 
 
 def _optional_ref(root: Path, ref: str) -> str | None:
-    direct = _git_process(root, "symbolic-ref", "-q", "--no-recurse", ref)
-    if direct.returncode == 0:
-        raise HandoverError("branch ref is symbolic")
-    if direct.returncode != 1 or direct.stderr:
-        raise HandoverError("branch ref type cannot be read")
-    result = _git_process(root, "rev-parse", "-q", "--verify", ref)
-    if result.returncode == 1 and not result.stderr:
-        return None
-    if result.returncode:
-        raise HandoverError("branch ref cannot be read")
-    return result.stdout.decode("ascii").strip()
+    def run(path, *args):
+        return _git_process(root, *args)
+    try:
+        return _direct_branch_ref(root, ref, run=run)
+    except Exception as error:
+        raise HandoverError(str(error)) from error
 
 
 def _index_digest(root: Path) -> str:
@@ -163,7 +162,7 @@ def _raw_blob_oid(root: Path, data: bytes, *, write: bool) -> str:
     return _git(root, *args, input_bytes=data).decode("ascii")
 
 
-def _candidate_tree(root: Path, baseline, candidate) -> tuple[str, dict[str, tuple[int, str]]]:
+def _candidate_git_entries(root: Path, baseline, candidate) -> dict[str, tuple[int, str]]:
     original = _git_entry_map(root, "ls-tree", "-rz", "--full-tree", baseline.head)
     if original != {
         entry.path: (entry.mode, _raw_blob_oid(root, entry.data, write=False))
@@ -176,7 +175,6 @@ def _candidate_tree(root: Path, baseline, candidate) -> tuple[str, dict[str, tup
         if not removed:
             raise HandoverError("candidate deletion has no Git representation")
         for item in removed:
-            _git(root, "update-index", "--force-remove", "--", item)
             del expected[item]
     baseline_directories = {item.path: item.mode for item in baseline.directories}
     for entry in candidate.entries:
@@ -188,8 +186,7 @@ def _candidate_tree(root: Path, baseline, candidate) -> tuple[str, dict[str, tup
             mode = 0o120000
         else:
             raise HandoverError("candidate entry mode has no Git representation")
-        oid = _raw_blob_oid(root, entry.data, write=True)
-        _git(root, "update-index", "--add", "--cacheinfo", f"{mode:o},{oid},{entry.path}")
+        oid = _raw_blob_oid(root, entry.data, write=False)
         expected[entry.path] = (mode, oid)
     for entry in candidate.entries:
         if entry.kind == "directory" and (
@@ -200,6 +197,23 @@ def _candidate_tree(root: Path, baseline, candidate) -> tuple[str, dict[str, tup
             raise HandoverError("candidate directory has no Git representation")
     if (candidate.entries or candidate.deleted_paths) and expected == original:
         raise HandoverError("candidate has no Git tree change")
+    _candidate_worktree_modes(baseline, candidate, expected)
+    _candidate_directory_modes(baseline, candidate, expected)
+    return expected
+
+
+def _candidate_tree(root: Path, baseline, candidate,
+                    expected: dict[str, tuple[int, str]]) -> tuple[str, dict[str, tuple[int, str]]]:
+    for entry in baseline.head_entries:
+        if entry.path not in expected:
+            _git(root, "update-index", "--force-remove", "--", entry.path)
+    for entry in candidate.entries:
+        if entry.kind == "directory":
+            continue
+        mode, oid = expected[entry.path]
+        if _raw_blob_oid(root, entry.data, write=True) != oid:
+            raise HandoverError("candidate blob differs from Git preflight")
+        _git(root, "update-index", "--add", "--cacheinfo", f"{mode:o},{oid},{entry.path}")
     tree = _git(root, "write-tree").decode("ascii")
     _assert_staged_tree(root, tree, expected)
     return tree, expected
@@ -653,7 +667,201 @@ def _block(intent: BranchHandoverIntentV2, journal: RunJournal,
            owner: OwnerCapability, reason: str) -> BlockedHandover:
     if intent.task_id not in journal.state.branch_blocked:
         journal.append_branch_blocked(intent.task_id, reason, owner=owner)
-    return BlockedHandover(intent.sha256, reason)
+    return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
+
+
+def _current_intent(intent, scheduler, journal, owner) -> None:
+    _settled_scheduler(scheduler, owner)
+    if journal.branch_handover_state(intent.task_id) != (intent, None):
+        raise HandoverError("branch handover is completed or changed")
+    if intent.task_id in journal.state.branch_blocked:
+        raise HandoverError("branch handover was withdrawn")
+    _source(scheduler, intent.task_id, intent)
+
+
+class _UnresolvedGitLocks(HandoverError):
+    """Native child or lock ownership is unavailable to this controller."""
+
+
+def _assert_no_switch_residue(binding, original_ref) -> None:
+    pinned = _PINNED_GIT.get()
+    if pinned is None:
+        raise HandoverError("Git target metadata is not pinned")
+    for path in (pinned.common_dir / (original_ref + ".lock"),
+                 pinned.common_dir / (binding.spec.branch_ref + ".lock"),
+                 pinned.git_dir / "HEAD.lock"):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise _UnresolvedGitLocks("native switch lock ownership is unavailable") from error
+        raise _UnresolvedGitLocks("native switch lock residue requires owner inspection")
+
+
+@dataclass(slots=True)
+class _OriginalGuard:
+    parent_fd: int
+    descriptor: int
+    name: str
+    identity: tuple[int, int]
+    reaped: bool = True
+
+    def authenticate(self) -> None:
+        opened = os.fstat(self.descriptor)
+        current = os.stat(self.name, dir_fd=self.parent_fd, follow_symlinks=False)
+        if any(not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+               or (info.st_dev, info.st_ino) != self.identity
+               for info in (opened, current)):
+            raise _UnresolvedGitLocks("owned original guard identity changed")
+
+
+@contextmanager
+def _original_guard(binding, original_ref):
+    pinned = _PINNED_GIT.get()
+    if pinned is None or _git(binding.root, "rev-parse", "--show-ref-format") != b"files":
+        raise HandoverError("absent writable ticket requires the Git files backend")
+    _assert_git_target(binding)
+    _git(binding.root, "check-ref-format", original_ref)
+    expected_path = pinned.common_dir / original_ref
+    actual_path = Path(_git(binding.root, "rev-parse", "--path-format=absolute",
+                            "--git-path", original_ref).decode())
+    if not original_ref.startswith("refs/heads/") or actual_path != expected_path:
+        raise HandoverError("original branch lock is outside pinned common metadata")
+    _assert_no_switch_residue(binding, original_ref)
+    descriptors = []
+    guard = None
+    acquired = False
+    try:
+        parent = os.open(pinned.common_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(parent)
+        info = os.fstat(parent)
+        if (info.st_dev, info.st_ino) != pinned.common_identity:
+            raise HandoverError("original branch common metadata changed")
+        parts = original_ref.split("/")
+        for part in parts[:-1]:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            except FileNotFoundError:
+                os.mkdir(part, mode=0o755, dir_fd=parent)
+                os.fsync(parent)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            descriptors.append(child)
+            parent = child
+        name = parts[-1] + ".lock"
+        descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                             0o600, dir_fd=parent)
+        descriptors.append(descriptor)
+        info = os.fstat(descriptor)
+        guard = _OriginalGuard(parent, descriptor, name, (info.st_dev, info.st_ino))
+        guard.authenticate()
+        os.fsync(descriptor)
+        os.fsync(parent)
+        acquired = True
+        yield guard
+    except OSError as error:
+        if acquired:
+            raise HandoverError("native HEAD transaction I/O requires exact recovery") from error
+        raise _UnresolvedGitLocks("original branch guard is unavailable or unsafe") from error
+    finally:
+        try:
+            if guard is not None and guard.reaped:
+                guard.authenticate()
+                os.unlink(guard.name, dir_fd=guard.parent_fd)
+                os.fsync(guard.parent_fd)
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+
+def _ref_ack(process, expected: bytes) -> None:
+    deadline = time.monotonic() + 5.0
+    line = b""
+    while len(line) <= len(expected):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select((process.stdout,), (), (), remaining)[0]:
+            raise HandoverError("native HEAD transaction acknowledgment timed out")
+        byte = os.read(process.stdout.fileno(), 1)
+        if not byte:
+            break
+        line += byte
+        if byte == b"\n":
+            break
+    if line != expected:
+        raise HandoverError("native HEAD transaction acknowledgment is unavailable")
+
+
+def _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner):
+    original_ref = _associated_head_ref(intent, journal, controller)
+    _current_intent(intent, scheduler, journal, owner)
+    with _original_guard(binding, original_ref) as guard:
+        pinned = _PINNED_GIT.get()
+        environment = _git_env()
+        environment.update({"GIT_DIR": str(pinned.git_dir), "GIT_COMMON_DIR": str(pinned.common_dir),
+                            "GIT_WORK_TREE": str(binding.root)})
+        process = None
+        try:
+            process = subprocess.Popen(
+                ("git", "-C", str(binding.root), "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null", "-c", "core.preferSymlinkRefs=false",
+                 "update-ref", "--stdin", "--no-deref"),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=environment, start_new_session=True,
+            )
+            guard.reaped = False
+            process.stdin.write((f"start\nverify {intent.branch_ref} {record['commit_oid']}\n"
+                                 f"symref-update HEAD {intent.branch_ref} ref {original_ref}\nprepare\n").encode())
+            process.stdin.flush()
+            _ref_ack(process, b"start: ok\n")
+            _ref_ack(process, b"prepare: ok\n")
+            _checkpoint("after-head-prepare")
+            _checkpoint("before-head-commit")
+            guard.authenticate()
+            _assert_git_target(binding)
+            if (_optional_ref(binding.root, original_ref) != intent.expected_head_oid
+                    or _optional_ref(binding.root, intent.branch_ref) != record["commit_oid"]
+                    or _head_ref(binding.root) != original_ref):
+                raise HandoverError("original branch, ticket, or HEAD changed before switch")
+            state = _require_association(intent, journal, controller)
+            if state.status != "committed" or _prepared_commit(
+                intent, journal, controller, scheduler.artifacts,
+            ) != record:
+                raise HandoverError("prepared handover changed before HEAD switch")
+            _envelopes(intent, binding, scheduler.plan, scheduler.inputs, scheduler.artifacts, controller)
+            _assert_raw_checkout(binding.root, record["tree_oid"],
+                                 exact_modes=record["worktree_modes"],
+                                 directory_modes=record["directory_modes"])
+            _current_intent(intent, scheduler, journal, owner)
+            process.stdin.write(b"commit\n")
+            process.stdin.flush()
+            _checkpoint("after-head-commit-request")
+            _ref_ack(process, b"commit: ok\n")
+            process.stdin.close()
+            if process.wait(timeout=5.0):
+                raise HandoverError("native HEAD commit requires exact recovery")
+            guard.reaped = True
+        finally:
+            if process is not None:
+                try:
+                    if not guard.reaped:
+                        if process.stdin is not None and not process.stdin.closed:
+                            with suppress(OSError):
+                                process.stdin.close()
+                        try:
+                            process.wait(timeout=2.0)
+                            guard.reaped = True
+                        except BaseException:
+                            try:
+                                guard.reaped = _cleanup_group(process, 0.5, 2.0)[2]
+                            except BaseException as error:
+                                raise _UnresolvedGitLocks("native HEAD child reap is unavailable") from error
+                finally:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            with suppress(OSError):
+                                stream.close()
+                if not guard.reaped:
+                    raise _UnresolvedGitLocks("native HEAD child was not conclusively reaped")
 
 
 def deliver_branch_candidate(
@@ -683,6 +891,7 @@ def deliver_branch_candidate(
             return _block(intent, journal, owner, "delivery-failed")
         _settled_scheduler(scheduler, owner)
         try:
+            _current_intent(intent, scheduler, journal, owner)
             state = _require_association(
                 intent, journal, controller, transaction, prepared.expected_head_ref,
             )
@@ -691,6 +900,8 @@ def deliver_branch_candidate(
             baseline = _initial_git(intent, binding, prepared.expected_head_ref)
             candidate, verification = _envelopes(intent, binding, plan, inputs, artifacts, controller)
             _source(scheduler, intent.task_id, intent)
+            expected_tree = _candidate_git_entries(binding.root, baseline, candidate)
+            _current_intent(intent, scheduler, journal, owner)
             disposition = handover_candidate(
                 capture_repository_baseline(binding.root), verification,
                 controller=controller, task_id=intent.task_id,
@@ -707,7 +918,7 @@ def deliver_branch_candidate(
             ).split(b"\0")))
             if not untracked <= {path.encode("utf-8") for path in candidate_files}:
                 raise HandoverError("checkout contains a file outside candidate-owned paths")
-            tree, expected_tree = _candidate_tree(binding.root, baseline, candidate)
+            tree, expected_tree = _candidate_tree(binding.root, baseline, candidate, expected_tree)
             worktree_modes = _candidate_worktree_modes(baseline, candidate, expected_tree)
             directory_modes = _candidate_directory_modes(baseline, candidate, expected_tree)
             _assert_candidate_applied(pinned.descriptor, candidate)
@@ -737,17 +948,19 @@ def deliver_branch_candidate(
             _assert_candidate_applied(pinned.descriptor, candidate)
             _assert_staged_tree(binding.root, tree, expected_tree)
             _assert_git_target(binding)
+            _current_intent(intent, scheduler, journal, owner)
             _git(binding.root, "update-ref", "--no-deref", intent.branch_ref, oid, intent.old_ref_oid)
             _checkpoint("after-ref-cas")
             if intent.old_ref_oid == _ZERO_OID:
-                _assert_git_target(binding)
-                if _head_ref(binding.root) != prepared.expected_head_ref:
-                    raise HandoverError("target HEAD branch changed after ref CAS")
-                _git(binding.root, "symbolic-ref", "HEAD", intent.branch_ref)
+                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner)
             _checkpoint("after-head-switch")
             return _finish(intent, binding, record, plan, inputs, artifacts,
                            scheduler, controller, journal, owner)
         except Exception as error:
+            if intent.task_id in journal.state.branch_blocked:
+                return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
+            if isinstance(error, _UnresolvedGitLocks):
+                return _block(intent, journal, owner, "delivery-failed")
             try:
                 current_ref = _optional_ref(binding.root, intent.branch_ref)
             except Exception:
@@ -783,6 +996,9 @@ def _pre_cas_checkout(intent: BranchHandoverIntentV2, binding: TargetBinding,
 
 
 def _finish(intent, binding, record, plan, inputs, artifacts, scheduler, controller, journal, owner):
+    _current_intent(intent, scheduler, journal, owner)
+    if intent.old_ref_oid == _ZERO_OID:
+        _assert_no_switch_residue(binding, _associated_head_ref(intent, journal, controller))
     proof = _proof_bytes(intent, binding, record)
     path = f"branch-proof/{intent.target_id}/{intent.sha256}.json"
     try:
@@ -797,6 +1013,7 @@ def _finish(intent, binding, record, plan, inputs, artifacts, scheduler, control
                 "candidate_sha256": record["candidate_sha256"]}
     terminal = HandoverTerminalV2(intent.sha256, record["commit_oid"], evidence,
                                   record["candidate_sha256"], hashlib.sha256(canonical_json(unsigned)).hexdigest())
+    _current_intent(intent, scheduler, journal, owner)
     if journal.branch_handover_state(intent.task_id)[1] is None:
         journal.append_branch_terminal(intent.task_id, terminal, owner=owner)
     _checkpoint("after-journal-terminal")
@@ -883,6 +1100,11 @@ def recover_branch_handover(
             _settled_scheduler(scheduler, owner)
             return _block(intent, journal, owner, "delivery-failed")
         _settled_scheduler(scheduler, owner)
+        recorded, terminal = journal.branch_handover_state(intent.task_id)
+        if recorded != intent:
+            raise HandoverError("recovery intent changed during lock acquisition")
+        if intent.task_id in journal.state.branch_blocked:
+            return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
         try:
             _require_association(intent, journal, controller)
         except Exception:
@@ -896,6 +1118,7 @@ def recover_branch_handover(
             scheduler.mark_handover_terminal(intent.task_id, terminal, owner=owner)
             return terminal
         try:
+            _current_intent(intent, scheduler, journal, owner)
             record = _prepared_commit(intent, journal, controller, artifacts)
         except Exception:
             try:
@@ -919,6 +1142,8 @@ def recover_branch_handover(
             return _block(intent, journal, owner,
                           "pre-cas-interrupted" if current_ref == old_ref else "ref-changed")
         try:
+            if intent.old_ref_oid == _ZERO_OID:
+                _assert_no_switch_residue(binding, _associated_head_ref(intent, journal, controller))
             _envelopes(intent, binding, plan, inputs, artifacts, controller)
             _source(scheduler, intent.task_id, intent)
             _assert_raw_checkout(
@@ -929,10 +1154,14 @@ def recover_branch_handover(
                     and _head_ref(binding.root) == _associated_head_ref(intent, journal, controller)
                     and _git(binding.root, "rev-parse", "HEAD").decode() == intent.base_oid):
                 _assert_git_target(binding)
-                _git(binding.root, "symbolic-ref", "HEAD", intent.branch_ref)
+                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner)
             return _finish(intent, binding, record, plan, inputs, artifacts,
                            scheduler, controller, journal, owner)
-        except Exception:
+        except Exception as error:
+            if intent.task_id in journal.state.branch_blocked:
+                return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
+            if isinstance(error, _UnresolvedGitLocks):
+                return _block(intent, journal, owner, "delivery-failed")
             recorded_terminal = journal.branch_handover_state(intent.task_id)[1]
             if recorded_terminal is not None:
                 try:

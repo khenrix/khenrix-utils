@@ -581,6 +581,7 @@ def test_export_candidate_captures_edits_additions_and_all_baseline_deletions(tm
 def test_export_candidate_captures_directory_modes_and_symlink_changes(tmp_path):
     repository = _repository(tmp_path)
     (repository / "nested").mkdir()
+    (repository / "nested").chmod(0o755)
     (repository / "nested" / "keep.txt").write_bytes(b"nested\n")
     (repository / "link").symlink_to("keep.txt")
     _git(repository, "add", ".")

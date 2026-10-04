@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import dataclasses
 import hashlib
+import json
 import os
 import subprocess
 from contextlib import contextmanager
@@ -16,6 +17,444 @@ import test_fanout_scheduler as cases
 
 
 fanout = cases.fanout
+
+
+def _branch_call(operation, prepared, fixture):
+    scheduler, backend, journal, controller, owner, _candidate, _verification = fixture
+    return operation(
+        prepared, plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
+        scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+    )
+
+
+def _prepare_join(fixture):
+    scheduler, backend, journal, controller, owner, candidate, verification = fixture
+    handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
+    return handover, handover.prepare_branch_handover(
+        scheduler.inputs.targets["address"], candidate, verification,
+        plan=scheduler.plan, inputs=scheduler.inputs, artifacts=backend.artifacts,
+        scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+        task_id="address",
+    )
+
+
+def _observe_native(handover, monkeypatch):
+    children = []
+    real_popen, real_ack = handover.subprocess.Popen, handover._ref_ack
+    class RecordedInput:
+        def __init__(self, stream, record):
+            self.stream, self.record = stream, record
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+        def write(self, data):
+            written = self.stream.write(data)
+            self.record["stdin"].append(data[:written].decode())
+            return written
+    def capture(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        if "--stdin" in args[0] and "update-ref" in args[0]:
+            process.observation = {"argv": list(process.args), "stdin": [], "acks": []}
+            process.stdin = RecordedInput(process.stdin, process.observation)
+            children.append(process)
+        return process
+    def ack(process, expected):
+        real_ack(process, expected)
+        process.observation["acks"].append(expected.decode())
+    monkeypatch.setattr(handover.subprocess, "Popen", capture)
+    monkeypatch.setattr(handover, "_ref_ack", ack)
+    return children
+
+
+def _native_result(children, **state):
+    print(json.dumps({"native": [dict(process.observation, returncode=process.returncode)
+                                for process in children], **state}, sort_keys=True))
+
+
+@pytest.mark.parametrize("entries", (
+    (fanout.CandidateEntry("README.md", "file", 0o600, b"unsupported change\n"),),
+    (fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
+     fanout.CandidateEntry("empty", "directory", 0o755, b"")),
+    (fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
+     fanout.CandidateEntry("notes", "directory", 0o700, b"")),
+))
+def test_representation_refusal_precedes_caller_mutation(tmp_path, entries):
+    fixture = _settled_writer(tmp_path, candidate_entries=entries, baseline_mode=0o644)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    readme = (root / "README.md").read_bytes()
+    index = (root / ".git/index").read_bytes()
+    objects = _loose_object_count(root)
+    result = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert isinstance(result, handover.BlockedHandover)
+    assert (root / "README.md").read_bytes() == readme
+    assert (root / "README.md").stat().st_mode & 0o777 == 0o644
+    assert (root / ".git/index").read_bytes() == index
+    assert _loose_object_count(root) == objects
+    assert not (root / "empty").exists()
+    assert not (root / "notes").exists()
+    assert cases._git(root, "symbolic-ref", "HEAD") == "refs/heads/main"
+
+
+@pytest.mark.parametrize("recovery", (False, True))
+def test_original_drift_after_ticket_cas_preserves_head_and_external_ref(tmp_path, monkeypatch, recovery):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    external = cases._git(root, "commit-tree", cases._git(root, "rev-parse", "HEAD^{tree}"),
+                          "-p", "HEAD", "-m", "external writer")
+    def drift(at):
+        if at == "after-ref-cas":
+            cases._git(root, "update-ref", "refs/heads/main", external)
+            if recovery:
+                raise SimulatedCrash()
+    monkeypatch.setattr(handover, "_checkpoint", drift)
+    if recovery:
+        with pytest.raises(SimulatedCrash):
+            _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+        monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+        result = _branch_call(handover.recover_branch_handover, prepared.intent, fixture)
+        assert isinstance(result, handover.BlockedHandover)
+    else:
+        with pytest.raises(fanout.HandoverError, match="recovery"):
+            _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert cases._git(root, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert cases._git(root, "show-ref", "--verify", "--hash", "refs/heads/main") == external
+    assert fixture[2].branch_handover_state("address")[1] is None
+    assert fixture[0].handover_terminal_for("address") is None
+
+
+@pytest.mark.parametrize("recovery", (False, True))
+def test_withdrawal_during_lock_acquisition_prevents_fresh_mutation(tmp_path, monkeypatch, recovery):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    if recovery:
+        monkeypatch.setattr(handover, "_checkpoint", lambda at: (_ for _ in ()).throw(
+            SimulatedCrash()) if at == "after-ref-cas" else None)
+        with pytest.raises(SimulatedCrash):
+            _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+        monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    before = ((root / "README.md").read_bytes(), (root / ".git/index").read_bytes(),
+              (root / ".git/HEAD").read_bytes(), _loose_object_count(root))
+    real_lock = handover._handover_lock
+    @contextmanager
+    def withdraw(binding):
+        with real_lock(binding) as pinned:
+            fixture[2].append_branch_blocked("address", "pre-cas-interrupted", owner=fixture[4])
+            yield pinned
+    monkeypatch.setattr(handover, "_handover_lock", withdraw)
+    result = _branch_call(handover.recover_branch_handover if recovery else
+                          handover.deliver_branch_candidate,
+                          prepared.intent if recovery else prepared, fixture)
+    assert result == handover.BlockedHandover(prepared.intent.sha256, "pre-cas-interrupted")
+    assert ((root / "README.md").read_bytes(), (root / ".git/index").read_bytes(),
+            (root / ".git/HEAD").read_bytes(), _loose_object_count(root)) == before
+    assert fixture[2].branch_handover_state("address")[1] is None
+
+
+@pytest.mark.parametrize("layout", ("normal", "linked", "packed", "linked-packed"))
+def test_conditional_native_handover_joins_candidate_modes_proof_and_dependencies(tmp_path, monkeypatch, layout):
+    real_git = cases._git
+    def setup_after_commit(root, *args):
+        result = real_git(root, *args)
+        if args[:1] == ("commit",):
+            if "linked" in layout:
+                common_root = tmp_path / "address-common"
+                root.rename(common_root)
+                real_git(common_root, "worktree", "add", "-q", "-b", "base/nested/original",
+                         str(root), "HEAD")
+            else:
+                real_git(root, "branch", "-m", "base/nested/original")
+            if "packed" in layout:
+                real_git(root, "pack-refs", "--all", "--prune")
+                common = Path(real_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+                assert not (common / "refs/heads/base/nested").exists()
+            real_git(root, "config", "core.preferSymlinkRefs", "true")
+        return result
+    with monkeypatch.context() as patch:
+        patch.setattr(cases, "_git", setup_after_commit)
+        fixture = _settled_writer(tmp_path, baseline_mode=0o600, candidate_entries=(
+            fanout.CandidateEntry("newdir", "directory", 0o755, b""),
+            fanout.CandidateEntry("newdir/run", "file", 0o755, b"#!/bin/sh\nexit 0\n"),
+            fanout.CandidateEntry("newdir/link", "symlink", 0o777, b"run"),
+        ))
+    handover, prepared = _prepare_join(fixture)
+    children = _observe_native(handover, monkeypatch)
+    root = prepared.binding.root
+    held = []
+    def contend(at):
+        if at != "after-head-prepare":
+            return
+        gitdir = Path(real_git(root, "rev-parse", "--absolute-git-dir"))
+        guard = prepared.binding.common_dir / "refs/heads/base/nested/original.lock"
+        assert guard.stat().st_mode & 0o777 == 0o600
+        assert guard.read_bytes() == b""
+        assert (gitdir / "HEAD.lock").exists()
+        assert (prepared.binding.common_dir / (prepared.intent.branch_ref + ".lock")).exists()
+        for args in (("update-ref", "refs/heads/base/nested/original", prepared.intent.base_oid),
+                     ("update-ref", prepared.intent.branch_ref, prepared.intent.base_oid),
+                     ("symbolic-ref", "HEAD", "refs/heads/main")):
+            with pytest.raises(subprocess.CalledProcessError):
+                real_git(root, *args)
+        real_git(root, "update-ref", "refs/heads/unrelated", prepared.intent.base_oid)
+        real_git(root, "pack-refs", "--all", "--prune")
+        held.append(guard.stat().st_ino)
+    monkeypatch.setattr(handover, "_checkpoint", contend)
+    terminal = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert isinstance(terminal, fanout.HandoverTerminalV2)
+    assert len(held) == 1
+    assert (root / "README.md").stat().st_mode & 0o777 == 0o600
+    assert (root / "newdir/run").stat().st_mode & 0o777 == 0o755
+    assert (root / "newdir/link").is_symlink()
+    assert real_git(root, "show", "HEAD:newdir/run") == "#!/bin/sh\nexit 0"
+    assert real_git(root, "rev-parse", "HEAD^") == prepared.intent.base_oid
+    assert real_git(root, "config", "core.preferSymlinkRefs") == "true"
+    assert real_git(root, "reflog", "show", "-1", "--format=%H", "HEAD") == terminal.commit_oid
+    assert not Path(real_git(root, "rev-parse", "--absolute-git-dir"), "HEAD").is_symlink()
+    assert not (prepared.binding.common_dir / "refs/heads/base/nested/original.lock").exists()
+    handover.verify_git_handover_proof(prepared.intent, terminal, inputs=fixture[0].inputs,
+                                     artifacts=fixture[1].artifacts, controller=fixture[3], journal=fixture[2])
+    assert fixture[0].handover_terminal_for("address") == terminal
+    dispatches = fixture[0].schedule_ready(owner=fixture[4])
+    assert tuple(dispatch.task_id for dispatch in dispatches) == ("booking",)
+    assert dispatches[0].dependencies[0].artifact == terminal.evidence
+    _native_result(children, layout=layout, commit=terminal.commit_oid, guard_inodes=held,
+                   index_sha256=hashlib.sha256((Path(real_git(root, "rev-parse", "--absolute-git-dir")) / "index").read_bytes()).hexdigest(),
+                   head=real_git(root, "symbolic-ref", "HEAD"), dependency="booking")
+
+
+@pytest.mark.parametrize("phase", ("after-ref-cas", "before-head-commit", "after-head-switch"))
+def test_withdrawal_before_finalization_retains_reason_and_locks_dependencies(tmp_path, monkeypatch, phase):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    def withdraw(at):
+        if at == phase:
+            fixture[2].append_branch_blocked("address", "pre-cas-interrupted", owner=fixture[4])
+    monkeypatch.setattr(handover, "_checkpoint", withdraw)
+    result = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert result == handover.BlockedHandover(prepared.intent.sha256, "pre-cas-interrupted")
+    expected = prepared.intent.branch_ref if phase == "after-head-switch" else "refs/heads/main"
+    assert cases._git(prepared.binding.root, "symbolic-ref", "HEAD") == expected
+    assert fixture[2].branch_handover_state("address")[1] is None
+    assert fixture[0].handover_terminal_for("address") is None
+    assert fixture[0].schedule_ready(owner=fixture[4]) == ()
+
+
+@pytest.mark.parametrize("lock", ("original", "ticket", "HEAD", "symlink"))
+def test_foreign_native_switch_lock_is_retained_and_durably_blocks(tmp_path, monkeypatch, lock):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    path = (root / ".git/HEAD.lock" if lock == "HEAD" else
+            prepared.binding.common_dir / ((prepared.intent.branch_ref if lock == "ticket" else
+                                           "refs/heads/main") + ".lock"))
+    def create_foreign(at):
+        if at == "after-ref-cas":
+            if lock == "symlink":
+                path.symlink_to(root / "README.md")
+            else:
+                path.write_bytes(b"foreign lock\n")
+    monkeypatch.setattr(handover, "_checkpoint", create_foreign)
+    result = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert result == handover.BlockedHandover(prepared.intent.sha256, "delivery-failed")
+    identity = path.lstat().st_ino
+    assert path.is_symlink() if lock == "symlink" else path.read_bytes() == b"foreign lock\n"
+    assert cases._git(root, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert _branch_call(handover.recover_branch_handover, prepared.intent, fixture) == result
+    assert path.lstat().st_ino == identity
+
+
+@pytest.mark.parametrize("linked", (False, True))
+def test_actual_lost_native_commit_ack_recovers_one_changed_candidate(tmp_path, monkeypatch, linked):
+    fixture = (_settled_gitfile_writer(tmp_path, monkeypatch, linked=True) if linked else
+               _settled_writer(tmp_path, changed=True))
+    handover, prepared = _prepare_join(fixture)
+    children = _observe_native(handover, monkeypatch)
+    def lose_ack(at):
+        if at == "before-head-commit":
+            children[-1].stdout.close()
+    monkeypatch.setattr(handover, "_checkpoint", lose_ack)
+    with pytest.raises(fanout.HandoverError, match="exact recovery"):
+        _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert len(children) == 1 and children[0].returncode == -13
+    root = prepared.binding.root
+    commit = cases._git(root, "rev-parse", "HEAD")
+    assert cases._git(root, "symbolic-ref", "HEAD") == prepared.intent.branch_ref
+    assert (root / "README.md").read_bytes() == b"verified change\n"
+    assert fixture[2].branch_handover_state("address")[1] is None
+    assert "address" not in fixture[2].state.branch_blocked
+    assert not (prepared.binding.common_dir / (prepared.expected_head_ref + ".lock")).exists()
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    terminal = _branch_call(handover.recover_branch_handover, prepared.intent, fixture)
+    assert isinstance(terminal, fanout.HandoverTerminalV2)
+    assert terminal.commit_oid == commit
+    assert cases._git(root, "rev-list", "--count", f"{prepared.intent.base_oid}..HEAD") == "1"
+    assert len(children) == 1
+    assert tuple(dispatch.task_id for dispatch in fixture[0].schedule_ready(owner=fixture[4])) == ("booking",)
+    _native_result(children, linked=linked, commit=commit, stdout_reader_closed=True,
+                   guard_removed_after_owned_reap=True, commit_count=1, dependency="booking")
+
+
+@pytest.mark.parametrize("lock", ("original", "ticket", "HEAD"))
+def test_cold_lock_residue_blocks_fresh_terminal_even_at_prepared_ticket_head(tmp_path, monkeypatch, lock):
+    fixture = _settled_writer(tmp_path, changed=True, file_backend=True)
+    handover, prepared = _prepare_join(fixture)
+    monkeypatch.setattr(handover, "_checkpoint", lambda at: (_ for _ in ()).throw(
+        SimulatedCrash()) if at == "after-head-switch" else None)
+    with pytest.raises(SimulatedCrash):
+        _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    root = prepared.binding.root
+    path = (root / ".git/HEAD.lock" if lock == "HEAD" else
+            prepared.binding.common_dir / ((prepared.intent.branch_ref if lock == "ticket" else
+                                           prepared.expected_head_ref) + ".lock"))
+    path.write_bytes(b"unknown owner\n")
+    identity = path.stat().st_ino
+    monkeypatch.setattr(handover, "_checkpoint", lambda _at: None)
+    scheduler, backend, journal, controller, owner, candidate, verification = fixture
+    anchor = journal._anchor_store
+    journal.close()
+    cold_journal = fanout.RunJournal._resume_for_test(journal.root, scheduler.inputs, owner,
+                                                    anchor_store=anchor)
+    cold_controller = fanout.resume_lifecycle_controller(controller.root, controller.capability)
+    cold_scheduler = fanout.Scheduler._resume_for_test(
+        scheduler.plan, scheduler.inputs, backend, backend.artifacts, owner=owner,
+        anchor_store=scheduler._authority, journal=cold_journal, lifecycle_controller=cold_controller,
+    )
+    cold = (cold_scheduler, backend, cold_journal, cold_controller, owner, candidate, verification)
+    result = _branch_call(handover.recover_branch_handover, prepared.intent, cold)
+    assert result == handover.BlockedHandover(prepared.intent.sha256, "delivery-failed")
+    assert path.stat().st_ino == identity and path.read_bytes() == b"unknown owner\n"
+    assert cold_journal.branch_handover_state("address")[1] is None
+    assert cases._git(root, "symbolic-ref", "HEAD") == prepared.intent.branch_ref
+    cold_journal.close()
+
+
+@pytest.mark.parametrize("fault", ("eof", "invalid-command", "term", "unavailable-reap"))
+def test_native_child_failure_preserves_prepared_state_and_exact_cleanup(tmp_path, monkeypatch, fault):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    children = _observe_native(handover, monkeypatch)
+    real_wait = None
+    def fail(at):
+        nonlocal real_wait
+        if at != "after-head-prepare":
+            return
+        process = children[-1]
+        if fault == "invalid-command":
+            process.stdin.write(b"unsupported-transaction-command\n")
+            process.stdin.flush()
+        elif fault == "term":
+            process.terminate()
+        if fault == "unavailable-reap":
+            real_wait = process.wait
+            def unavailable(timeout=None):
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            monkeypatch.setattr(process, "wait", unavailable)
+        process.stdin.close()
+        raise RuntimeError("interrupted before commit")
+    monkeypatch.setattr(handover, "_checkpoint", fail)
+    guard = prepared.binding.common_dir / (prepared.expected_head_ref + ".lock")
+    if fault == "unavailable-reap":
+        result = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+        assert result == handover.BlockedHandover(prepared.intent.sha256, "delivery-failed")
+        assert guard.exists() and guard.read_bytes() == b""
+        real_wait(timeout=5)
+        assert _branch_call(handover.recover_branch_handover, prepared.intent, fixture) == result
+        assert guard.exists()
+    else:
+        with pytest.raises(fanout.HandoverError, match="exact recovery"):
+            _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+        assert children[0].returncode is not None
+        assert not guard.exists()
+    root = prepared.binding.root
+    assert cases._git(root, "symbolic-ref", "HEAD") == prepared.expected_head_ref
+    assert cases._git(root, "rev-parse", "HEAD") == prepared.intent.base_oid
+    assert (root / "README.md").read_bytes() == b"verified change\n"
+    assert fixture[2].branch_handover_state("address")[1] is None
+    _native_result(children, fault=fault, head=cases._git(root, "symbolic-ref", "HEAD"),
+                   guard_exists=guard.exists(), terminal=None)
+
+
+@pytest.mark.parametrize("drift", ("original-alias", "ticket-alias", "head-retarget", "head-detach"))
+def test_native_switch_preserves_external_immediate_ref_type(tmp_path, monkeypatch, drift):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    root = prepared.binding.root
+    snapshots = []
+    def replace(at):
+        if at != "after-ref-cas":
+            return
+        if drift.endswith("alias"):
+            ref = prepared.expected_head_ref if drift == "original-alias" else prepared.intent.branch_ref
+            oid = cases._git(root, "show-ref", "--verify", "--hash", ref)
+            cases._git(root, "update-ref", "refs/heads/external-alias", oid)
+            cases._git(root, "symbolic-ref", ref, "refs/heads/external-alias")
+        elif drift == "head-retarget":
+            cases._git(root, "update-ref", "refs/heads/external", prepared.intent.base_oid)
+            cases._git(root, "symbolic-ref", "HEAD", "refs/heads/external")
+        else:
+            cases._git(root, "update-ref", "--no-deref", "HEAD", prepared.intent.base_oid)
+        snapshots.append(((root / ".git/HEAD").read_bytes(),
+                          cases._git(root, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")))
+    monkeypatch.setattr(handover, "_checkpoint", replace)
+    if drift == "ticket-alias":
+        result = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+        assert isinstance(result, handover.BlockedHandover)
+    else:
+        with pytest.raises(fanout.HandoverError, match="exact recovery"):
+            _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    assert len(snapshots) == 1
+    assert ((root / ".git/HEAD").read_bytes(),
+            cases._git(root, "for-each-ref", "--format=%(refname) %(objectname) %(symref)")) == snapshots[0]
+    assert not (prepared.binding.common_dir / (prepared.expected_head_ref + ".lock")).exists()
+    assert fixture[2].branch_handover_state("address")[1] is None
+
+
+@pytest.mark.parametrize("phase", ("during-lock", "before-head-commit", "after-head-switch"))
+def test_settled_amendment_authority_is_rechecked_at_mutation_boundaries(tmp_path, monkeypatch, phase):
+    fixture = _settled_writer(tmp_path, changed=True, recoverable_amendments=True)
+    handover, prepared = _prepare_join(fixture)
+    scheduler, backend, journal, _controller, owner, _candidate, _verification = fixture
+    root = prepared.binding.root
+    before = ((root / "README.md").read_bytes(), (root / ".git/index").read_bytes(),
+              _loose_object_count(root))
+    if phase == "during-lock":
+        real_lock = handover._handover_lock
+        @contextmanager
+        def amend(binding):
+            with real_lock(binding) as pinned:
+                _persist_amendment_intent(scheduler, backend, journal, owner)
+                yield pinned
+        monkeypatch.setattr(handover, "_handover_lock", amend)
+    else:
+        monkeypatch.setattr(handover, "_checkpoint", lambda at:
+                            _persist_amendment_intent(scheduler, backend, journal, owner)
+                            if at == phase else None)
+    with pytest.raises(fanout.HandoverError, match="settled|exact recovery"):
+        _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    if phase == "during-lock":
+        assert ((root / "README.md").read_bytes(), (root / ".git/index").read_bytes(),
+                _loose_object_count(root)) == before
+    expected = prepared.intent.branch_ref if phase == "after-head-switch" else prepared.expected_head_ref
+    assert cases._git(root, "symbolic-ref", "HEAD") == expected
+    assert journal.branch_handover_state("address")[1] is None
+    assert any(amendment.phase == "plan-amendment-intent" for amendment in journal.state.amendments.values())
+
+
+def test_immutable_terminal_proof_does_not_authorize_foreign_lock_cleanup(tmp_path):
+    fixture = _settled_writer(tmp_path, changed=True)
+    handover, prepared = _prepare_join(fixture)
+    terminal = _branch_call(handover.deliver_branch_candidate, prepared, fixture)
+    path = prepared.binding.common_dir / (prepared.expected_head_ref + ".lock")
+    path.write_bytes(b"foreign retained owner\n")
+    identity = path.stat().st_ino
+    scheduler, backend, journal, controller, _owner, _candidate, _verification = fixture
+    sequence = journal.state.seq
+    handover.verify_git_handover_proof(prepared.intent, terminal, inputs=scheduler.inputs,
+                                     artifacts=backend.artifacts, controller=controller, journal=journal)
+    assert _branch_call(handover.recover_branch_handover, prepared.intent, fixture) == terminal
+    assert journal.state.seq == sequence
+    assert path.stat().st_ino == identity and path.read_bytes() == b"foreign retained owner\n"
 
 
 def _settled_writer(tmp_path, *, changed: bool = False, candidate_entries=None,

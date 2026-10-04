@@ -36,10 +36,10 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _repo(tmp_path: Path, name: str, repository: str = "address-service") -> Path:
+def _repo(tmp_path: Path, name: str, repository: str = "address-service", *, ref_format="files") -> Path:
     root = tmp_path / name
     root.mkdir()
-    _git(root, "init", "-q", "-b", "main")
+    _git(root, "init", "-q", "-b", "main", "--ref-format=" + ref_format)
     _git(root, "config", "user.name", "Fixture")
     _git(root, "config", "user.email", "fixture@example.invalid")
     (root / "tracked.txt").write_text("fixture\n")
@@ -94,6 +94,43 @@ def test_ticket_branch_symbolic_ref_is_not_admitted(tmp_path, alias):
 
     with pytest.raises(RepositoryValidationError, match="symbolic"):
         fanout.resolve_target(spec, root)
+
+
+def test_absent_exact_ticket_does_not_resolve_a_revision_lookalike(tmp_path):
+    root = _repo(tmp_path, "address")
+    spec = _spec()
+    _git(root, "update-ref", "refs/tags/" + spec.branch_ref, "HEAD")
+    assert fanout.resolve_target(spec, root).branch_oid is None
+
+
+def test_physical_branch_symlink_is_not_a_direct_ticket(tmp_path):
+    root = _repo(tmp_path, "address")
+    spec = _spec()
+    ticket = root / ".git" / spec.branch_ref
+    ticket.parent.mkdir(parents=True)
+    ticket.symlink_to(root / ".git" / "refs/heads/main")
+    with pytest.raises(RepositoryValidationError, match="symlink|unsafe"):
+        fanout.resolve_target(spec, root)
+
+
+def test_symbolic_original_head_branch_is_not_a_direct_writable_target(tmp_path):
+    root = _repo(tmp_path, "address")
+    _git(root, "update-ref", "refs/heads/alias", "HEAD")
+    _git(root, "symbolic-ref", "refs/heads/main", "refs/heads/alias")
+    with pytest.raises(RepositoryValidationError, match="symbolic|direct"):
+        fanout.resolve_target(_spec(), root)
+
+
+def test_absent_writable_ticket_backend_gate_keeps_read_only_and_existing_targets(tmp_path):
+    root = _repo(tmp_path, "address", ref_format="reftable")
+    spec = _spec()
+    binding = fanout.resolve_target(spec, root)
+    fanout.validate_target_bindings({"address": binding}, writable_ids=set())
+    with pytest.raises(RepositoryValidationError, match="files backend"):
+        fanout.validate_target_bindings({"address": binding}, writable_ids={"address"})
+    _git(root, "update-ref", spec.branch_ref, "HEAD")
+    existing = fanout.resolve_target(spec, root)
+    fanout.validate_target_bindings({"address": existing}, writable_ids={"address"})
 
 
 def test_ticket_must_be_an_exact_branch_token():

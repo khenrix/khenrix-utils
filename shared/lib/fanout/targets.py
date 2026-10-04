@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -195,9 +196,12 @@ def resolve_target(spec: TargetSpec, root: Path) -> TargetBinding:
         raise RepositoryValidationError("target common Git directory is missing") from error
     base = _git_local(root, "rev-parse", "HEAD")
     head_ref = _git_local_optional(root, "symbolic-ref", "-q", "--no-recurse", "HEAD")
-    if _git_local_optional(root, "symbolic-ref", "-q", "--no-recurse", spec.branch_ref) is not None:
-        raise RepositoryValidationError("target ticket branch is a symbolic ref")
-    branch = _git_local_optional(root, "rev-parse", "-q", "--verify", spec.branch_ref)
+    try:
+        if head_ref is not None and _direct_branch_ref(root, head_ref) != base:
+            raise RepositoryValidationError("target HEAD requires an exact direct branch")
+    except RepositoryValidationError as error:
+        raise RepositoryValidationError(f"target current HEAD: {error}") from error
+    branch = _direct_branch_ref(root, spec.branch_ref)
     return TargetBinding(spec, root, common, info.st_dev, info.st_ino, base, branch, None, head_ref)
 
 
@@ -243,6 +247,8 @@ def validate_target_bindings(
         if target_id in writable_ids:
             if binding.head_ref is None:
                 raise RepositoryValidationError("writable target requires a direct symbolic HEAD")
+            if binding.branch_oid is None and _git_local(root, "rev-parse", "--show-ref-format") != "files":
+                raise RepositoryValidationError("absent writable ticket requires the Git files backend")
             if binding.spec.repository in writable_origins:
                 raise RepositoryValidationError("duplicate writable repository identity")
             writable_origins.add(binding.spec.repository)
@@ -280,6 +286,46 @@ def _git_environment() -> dict[str, str]:
 def _git_run(root: Path | None, *args: str) -> subprocess.CompletedProcess[str]:
     argv = ("git", "-C", str(root), *args) if root is not None else ("git", *args)
     return subprocess.run(argv, capture_output=True, text=True, env=_git_environment(), check=False)
+
+
+def _direct_branch_ref(root: Path, ref: str, *, run=None) -> str | None:
+    """Read an exact immediate branch, including packed refs, without DWIM lookup."""
+    run = _git_run if run is None else run
+    if not ref.startswith("refs/heads/") or run(None, "check-ref-format", ref).returncode:
+        raise RepositoryValidationError("branch ref name is invalid")
+    backend = run(root, "rev-parse", "--show-ref-format")
+    if backend.returncode:
+        raise RepositoryValidationError("branch ref backend is unavailable")
+    if backend.stdout.strip() in ("files", b"files"):
+        path_result = run(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        if path_result.returncode:
+            raise RepositoryValidationError("branch physical path is unavailable")
+        raw_path = path_result.stdout
+        path = Path(raw_path.decode().strip() if isinstance(raw_path, bytes) else raw_path.strip()) / ref
+        _reject_symlink_path_components(path)
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise RepositoryValidationError("branch physical path is unsafe")
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise RepositoryValidationError("branch physical path is unsafe") from error
+    symbolic = run(root, "symbolic-ref", "-q", "--no-recurse", ref)
+    if symbolic.returncode == 0:
+        raise RepositoryValidationError("branch ref is symbolic")
+    if symbolic.returncode != 1 or symbolic.stderr:
+        raise RepositoryValidationError("branch ref type cannot be read")
+    exists = run(root, "show-ref", "--exists", ref)
+    if exists.returncode == 2:
+        return None
+    if exists.returncode:
+        raise RepositoryValidationError("exact branch ref cannot be read")
+    result = run(root, "show-ref", "--verify", "--hash", ref)
+    raw = result.stdout
+    oid = raw.decode("ascii").strip() if isinstance(raw, bytes) else raw.strip()
+    if result.returncode or not _OID.fullmatch(oid):
+        raise RepositoryValidationError("exact branch ref is malformed")
+    return oid
 
 
 def _git_local(root: Path, *args: str) -> str:
