@@ -365,7 +365,7 @@ def _changed_registry(old):
 
 
 def _version_probe(executor):
-    return {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}[executor]
+    return {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}[executor]
 
 
 def _synthetic_registry():

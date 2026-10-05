@@ -23,14 +23,14 @@ url = "https://github.com/anthropics/claude-code/releases/download/v2.1.284/clau
 url_api = "https://api.github.com/repos/anthropics/claude-code/releases/assets/595944060"
 
 [[tools.codex]]
-version = "0.159.0"
+version = "0.160.0"
 backend = "aqua:openai/codex"
-specifiers = ["0.159.0"]
+specifiers = ["0.160.0"]
 
 [tools.codex."platforms.linux-x64"]
-checksum = "sha256:35da65d7e8644e28ea0a4d4e3d8c15b40c6b492356d4cf21986c7e341f83a24e"
-url = "https://github.com/openai/codex/releases/download/rust-v0.159.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/openai/codex/releases/assets/597628463"
+checksum = "sha256:4fcc47ab57f52ff75363951a8761146cd10c8288bd86fed45487dbb204a16b71"
+url = "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-package-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/openai/codex/releases/assets/604048102"
 
 [[tools.python]]
 version = "3.12.14"

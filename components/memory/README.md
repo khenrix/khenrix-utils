@@ -33,6 +33,7 @@ instead of reassociating the capture. JSON-encoded tool strings are decoded befo
 redaction and malformed JSON-shaped strings are rejected. Wholly private captures
 are skipped before route resolution, worker startup, logging, storage or provider use; empty
 sanitized turns cannot fall back to media text or an earlier transcript turn.
+The latest matching role owns capture even if its content is empty or media-only.
 
 Hook JSON is limited to 1 MiB, with 32 levels of nesting and 100,000 nodes across
 the capture. Transcript input and its sanitized snapshot are limited to 16 MiB,
@@ -47,9 +48,11 @@ nonempty inline assistant text uses the bounded transcript fallback.
 Transcript sources are opened through no-follow descriptors and
 never modified. The child receives only a sanitized temporary snapshot in a
 0700 directory with a 0600 file, removed when the hook finishes. Text blocks use
-one joined-message tag state, matching the upstream transcript reader, while
+one joined-message tag state for inline and transcript content, while
 retaining their original structure and safe fields. Tags spanning blocks cannot
 expose the enclosed text; retained tool-block input is also sanitized.
+Nested message, record and tool-use identities are preserved or rejected;
+ordinary tool argument keys named `id`, `model` or `name` remain sanitizable.
 
 Sanitized prompts and tool events are stored in local SQLite. Text used to
 compress a session is sent only to the provider selected in `route.json`. Route
@@ -83,6 +86,9 @@ reviewed package, version, artifact integrity, and source commit. Receipt v2 add
 `memory_ingress.py`, checked against the installed controller inventory.
 `controller_sha256` continues to mean the `memory_exchange.py` digest. Historical
 v1 receipts remain unchanged and are stale for the new capture implementation.
+A matching receipt also requires the complete safe installed controller; checkout
+source is not an installed fallback. Controller and token files are opened
+nonblocking before regular-file validation so FIFO substitution cannot hang.
 A failed apply leaves an older receipt byte-for-byte unchanged or creates no
 receipt on a first install.
 

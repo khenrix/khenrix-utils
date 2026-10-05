@@ -2057,7 +2057,7 @@ class _NeverMemory:
 
 def _registry(*, write_characterized: bool = False):
     """Synthetic admission for fake transports; not live 6.1 proof."""
-    pins = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+    pins = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
     registry = fanout.ProviderRegistry.default(version_probe=lambda executor: pins[executor])
     return fanout.ProviderRegistry((
         dataclasses.replace(profile, characterized=True, profile_sha256=None)
@@ -2314,7 +2314,7 @@ def test_fresh_process_v1_status_authenticates_accepted_amendment_and_runtime_fe
     private, run, authority = (tmp_path / name for name in ("private", "run", "authority"))
     private.mkdir(mode=0o700)
     defaults = runtime.ProviderRegistry.default(version_probe=lambda executor: {
-        "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+        "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
     }[executor])
     registry = runtime.ProviderRegistry((
         dataclasses.replace(profile, characterized=True, profile_sha256=None)
@@ -2862,7 +2862,7 @@ def test_accepted_profile_transition_cold_reopens_pinned_registry(execute, tmp_p
         if profile.key == ("claude", "read-only", "standard") else profile
         for profile in old_registry._profiles.values()
     )
-    pins = {"claude": "2.1.282", "codex": "0.159.0", "agy": "1.2.13"}
+    pins = {"claude": "2.1.282", "codex": "0.160.0", "agy": "1.2.13"}
     updated_registry = fanout.ProviderRegistry(
         profiles, version_probe=lambda executor: pins[executor],
     )
@@ -2975,7 +2975,7 @@ def test_cli_recovers_pending_profile_transition_from_durable_descriptors(
         if profile.key == ("claude", "read-only", "standard") else profile
         for profile in original_registry._profiles.values()
     )
-    versions = {"claude": "2.1.282", "codex": "0.159.0", "agy": "1.2.13"}
+    versions = {"claude": "2.1.282", "codex": "0.160.0", "agy": "1.2.13"}
     replacement_registry = fanout.ProviderRegistry(
         profiles, version_probe=lambda executor: versions[executor],
     )

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pathlib
 import stat
+import subprocess
 import sys
 import tarfile
 import threading
@@ -175,7 +177,8 @@ def test_successful_setup_publishes_private_reviewed_install_receipt_last(
     private_home: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[str] = []
-    monkeypatch.setattr(memoryctl, "install_controller", lambda: events.append("controller") or private_home)
+    install = memoryctl.install_controller
+    monkeypatch.setattr(memoryctl, "install_controller", lambda: events.append("controller") or install())
     monkeypatch.setattr(memoryctl, "stage_runtime", lambda: events.append("runtime") or private_home)
     monkeypatch.setattr(
         memoryctl,
@@ -818,6 +821,7 @@ def test_memory_doctor_rejects_missing_or_mismatched_install_receipt(
     assert "memory install receipt is unavailable" in memoryctl.health_document(
         require_running=False
     )["problems"]
+    memoryctl.install_controller()
     memoryctl._atomic_private_json(
         memoryctl.install_receipt_path(),
         memoryctl.expected_install_receipt(),
@@ -860,6 +864,56 @@ def test_install_receipt_detects_changed_installed_exchange_controller(
     assert memoryctl.install_receipt_problem() == (
         "installed memory controller does not match the reviewed pin"
     )
+
+
+@pytest.mark.parametrize("fault", ["missing-root", "missing-file", "mode", "symlink"])
+def test_matching_v2_receipt_requires_complete_actual_installed_controller(private_home, fault):
+    controller = memoryctl.install_controller()
+    memoryctl._publish_install_receipt()
+    assert memoryctl.install_receipt_problem() is None
+    receipt = memoryctl.install_receipt_path().read_bytes()
+    if fault == "missing-root":
+        controller.rename(controller.with_name("displaced-controller"))
+    else:
+        path = controller / "memory_ingress.py"
+        if fault == "missing-file":
+            path.unlink()
+        elif fault == "mode":
+            path.chmod(0o600)
+        else:
+            original = controller / "displaced-ingress.py"
+            path.rename(original)
+            path.symlink_to(original)
+    assert memoryctl.install_receipt_problem() == "installed memory controller is incomplete or unsafe"
+    assert memoryctl.install_receipt_path().read_bytes() == receipt
+
+
+def test_native_controller_fifo_substitution_refuses_with_outer_bound(private_home):
+    controller = memoryctl.install_controller()
+    memoryctl._publish_install_receipt()
+    code = """
+import os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import memoryctl
+original = os.open
+def substitute(name, flags, *args, **kwargs):
+    if name == 'memory_ingress.py':
+        path = memoryctl.installed_controller_root() / name
+        path.unlink()
+        os.mkfifo(path, 0o700)
+    return original(name, flags, *args, **kwargs)
+memoryctl.os.open = substitute
+print(memoryctl.install_receipt_problem())
+"""
+    try:
+        result = subprocess.run([sys.executable, "-c", code, str(MEMORY_ROOT)], capture_output=True,
+                                env={"PATH": os.environ.get("PATH", ""), "AGENTIC_MEMORY_HOME": str(private_home),
+                                     "PYTHONDONTWRITEBYTECODE": "1"}, timeout=1, check=False)
+    except subprocess.TimeoutExpired:
+        pytest.fail("installed-controller FIFO blocked before regular-file validation")
+    assert result.returncode == 0 and result.stderr == b""
+    assert result.stdout == b"installed memory controller is incomplete or unsafe\n"
+    assert str(controller).encode() not in result.stdout
 
 
 @pytest.mark.parametrize("name", ["memoryctl.py", "memory_ingress.py"])

@@ -122,7 +122,7 @@ def _encoded_json(text: str) -> Any:
     return None
 
 
-def _sanitize(value: Any, budget: list[int], depth: int = 0) -> Any:
+def _sanitize(value: Any, budget: list[int], depth: int = 0, *, message_content: bool = False) -> Any:
     budget[0] += 1
     if budget[0] > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
         _reject()
@@ -130,19 +130,22 @@ def _sanitize(value: Any, budget: list[int], depth: int = 0) -> Any:
         value.encode("utf-8")
         encoded = _encoded_json(value)
         if encoded is not None:
-            clean = _sanitize(encoded, budget, depth + 1)
+            clean = _sanitize(encoded, budget, depth + 1, message_content=message_content)
             return value if clean == encoded else json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
         return _strip_tags(value)
     if isinstance(value, dict):
+        value = _logical_message(value)
         result = {}
         for key, child in value.items():
             key.encode("utf-8")
             # Stripping keys can create collisions or change hook identity.
             if _strip_tags(key) != key:
                 _reject()
-            result[key] = _sanitize(child, budget, depth + 1)
+            result[key] = _sanitize(child, budget, depth + 1, message_content=key in {"message", "tool_response"})
         return result
     if isinstance(value, list):
+        if message_content:
+            value = _logical_message({"content": value})["content"]
         return [_sanitize(child, budget, depth + 1) for child in value]
     if isinstance(value, float) and not math.isfinite(value):
         _reject()
@@ -212,14 +215,18 @@ def _read_transcript(path: str) -> bytes:
         return content
 
 
-def _message_text(entry: dict[str, Any], role: str) -> str:
+def _message_role(entry: dict[str, Any]) -> str | None:
     entry_type = entry.get("type")
     if entry_type is not None and not isinstance(entry_type, str):
         _reject()
     agy_role = {"USER_INPUT": "user", "PLANNER_RESPONSE": "assistant"}.get(entry_type)
-    if (agy_role or entry.get("type", entry.get("role"))) != role:
+    return agy_role or entry.get("type", entry.get("role"))
+
+
+def _message_text(entry: dict[str, Any], role: str) -> str:
+    if _message_role(entry) != role:
         return ""
-    if agy_role:
+    if entry.get("type") in {"USER_INPUT", "PLANNER_RESPONSE"}:
         content = entry.get("content")
     else:
         message = entry.get("message")
@@ -234,10 +241,8 @@ def _message_text(entry: dict[str, Any], role: str) -> str:
     return ""
 
 
-def _sanitize_transcript(entry: dict[str, Any], budget: list[int]) -> dict[str, Any]:
-    message = entry.get("message")
-    container = message if isinstance(message, dict) else entry
-    content = container.get("content")
+def _logical_message(value: dict[str, Any]) -> dict[str, Any]:
+    content = value.get("content")
     if isinstance(content, list):
         blocks = [
             (index, block["text"]) for index, block in enumerate(content) if isinstance(block, dict)
@@ -264,9 +269,36 @@ def _sanitize_transcript(entry: dict[str, Any], budget: list[int]) -> dict[str, 
                     range_index += 1
                 normalized_content[index] = {**content[index], "text": "".join(pieces)}
                 position = end + 1
-            normalized = {**container, "content": normalized_content}
-            entry = {**entry, "message": normalized} if container is message else normalized
-    return _sanitize(entry, budget)
+            return {**value, "content": normalized_content}
+    return value
+
+
+def _check_identity(original: Any, clean: Any) -> None:
+    if isinstance(original, str):
+        original, clean = _encoded_json(original), _encoded_json(clean)
+    if isinstance(original, list):
+        for block, safe in zip(original, clean):
+            _check_identity(block, safe)
+        return
+    if not isinstance(original, dict):
+        return
+    keys = (*IDENTITY_KEYS, "uuid", "parentUuid", "type", "role")
+    if any(original.get(key) != clean.get(key) for key in keys):
+        _reject()
+    if original.get("type") == "tool_use" and original.get("name") != clean.get("name"):
+        _reject()
+    for key in ("message", "tool_response"):
+        _check_identity(original.get(key), clean.get(key))
+    tool = original.get("toolCall")
+    if isinstance(tool, dict) and any(tool.get(key) != clean["toolCall"].get(key) for key in ("id", "name")):
+        _reject()
+    content = original.get("content")
+    if isinstance(content, list):
+        for block, safe in zip(content, clean["content"]):
+            _check_identity(block, safe)
+            if isinstance(block, dict) and isinstance(block.get("citations"), list):
+                for citation, safe_citation in zip(block["citations"], safe["citations"]):
+                    _check_identity(citation, safe_citation)
 
 
 def _unwrap_agy(text: str) -> str:
@@ -278,9 +310,8 @@ def _unwrap_agy(text: str) -> str:
 
 def _last_text(original: list[dict[str, Any]], clean: list[dict[str, Any]], role: str, *, agy: bool) -> str:
     for raw, safe in zip(reversed(original), reversed(clean)):
-        # Select before stripping. Upstream scans past empty turns, which must
-        # not resurrect a previous turn when the actual last text was private.
-        if _message_text(raw, role).strip():
+        # The latest matching turn owns capture even when it has no usable text.
+        if _message_role(raw) == role:
             text = _message_text(safe, role)
             return _unwrap_agy(text) if agy and role == "user" else text
     return ""
@@ -313,10 +344,7 @@ def prepare_hook(stream: BinaryIO, platform: str, event: str) -> Iterator[bytes 
                 document.pop(key, None)
         budget = [0]
         safe = _sanitize(document, budget)
-        if any(document.get(key) != safe.get(key) for key in IDENTITY_KEYS):
-            _reject()
-        if isinstance(document.get("toolCall"), dict) and document["toolCall"].get("name") != safe["toolCall"].get("name"):
-            _reject()
+        _check_identity(document, safe)
         original_entries: list[dict[str, Any]] = []
         safe_entries: list[dict[str, Any]] = []
         paths = {document[key] for key in TRANSCRIPT_KEYS if document.get(key)}
@@ -339,7 +367,9 @@ def prepare_hook(stream: BinaryIO, platform: str, event: str) -> Iterator[bytes 
                 if not isinstance(entry, dict):
                     _reject()
                 original_entries.append(entry)
-                safe_entries.append(_sanitize_transcript(entry, budget))
+                sanitized = _sanitize(entry, budget)
+                _check_identity(entry, sanitized)
+                safe_entries.append(sanitized)
         agy = platform == "antigravity-cli"
         assistant = _last_text(original_entries, safe_entries, "assistant", agy=agy)
         prompt = safe.get("prompt")

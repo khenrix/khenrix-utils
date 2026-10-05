@@ -83,7 +83,7 @@ def ingress(tmp_path: pathlib.Path):
         result = subprocess.run(
             [sys.executable, "-c", LAUNCHER, str(MEMORY_ROOT), str(worker),
              str(trace), "hook", platform, event],
-            input=raw, capture_output=True, env={**environment, **env}, check=False,
+            input=raw, capture_output=True, env={**environment, **env}, check=False, timeout=5,
         )
         captured = json.loads(sink.read_text()) if sink.exists() else None
         return result, captured, trace.exists()
@@ -396,6 +396,136 @@ def test_transcript_tags_spanning_text_blocks_are_stripped_as_one_message(ingres
     ]
     assert "\n".join(block["text"] for block in content) == "keep \n\n end"
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("field", ["message", "tool_response", "encoded-response", "response-array", "encoded-array"])
+@pytest.mark.parametrize("closed", [False, True])
+def test_inline_logical_message_privacy_spans_blocks_without_joining_arguments(ingress, field, closed):
+    content = [
+        {"type": "text", "text": "keep <private>", "citations": [{"id": "citation-20"}]},
+        {"type": "text", "text": "synthetic-secret"},
+        {"type": "text", "text": "</private> end" if closed else "also-private"},
+        {"type": "tool_use", "id": "tool-20", "name": "synthetic-tool", "input": {"command": "safe"}},
+    ]
+    response = {"id": "message-20", "model": "synthetic-model", "content": content}
+    key = "message" if field == "message" else "tool_response"
+    if field in {"response-array", "encoded-array"}:
+        response = content
+    payload = _hook(tool_name="synthetic-tool", tool_input={"command": "unrelated safe argument"},
+                    **{key: json.dumps(response) if field in {"encoded-response", "encoded-array"} else response})
+    result, captured, routed = ingress(payload, event="observation")
+    assert result.returncode == 0, result.stderr.decode()
+    assert routed and captured is not None
+    safe = captured["payload"][key]
+    if field in {"encoded-response", "encoded-array"}:
+        safe = json.loads(safe)
+    expected = [
+        {"type": "text", "text": "keep ", "citations": [{"id": "citation-20"}]},
+        {"type": "text", "text": ""},
+        {"type": "text", "text": " end" if closed else ""},
+        {"type": "tool_use", "id": "tool-20", "name": "synthetic-tool", "input": {"command": "safe"}},
+    ]
+    assert safe == (expected if field in {"response-array", "encoded-array"} else
+                    {"id": "message-20", "model": "synthetic-model", "content": expected})
+    assert captured["payload"]["tool_input"] == {"command": "unrelated safe argument"}
+    assert "synthetic-secret" not in captured["raw"]
+
+
+@pytest.mark.parametrize("position", ["uuid", "message-id", "message-model", "tool-id", "tool-name",
+                                      "inline-model", "inline-tool-id", "inline-array-id", "inline-encoded-array-id", "agy-tool-name"])
+def test_known_nested_identity_cannot_be_changed_by_redaction(ingress, tmp_path, position):
+    entry = {"type": "assistant", "uuid": "record-21", "message": {
+        "id": "message-21", "model": "synthetic-model", "content": [
+            {"type": "text", "text": "safe answer"},
+            {"type": "tool_use", "id": "tool-21", "name": "synthetic-tool", "input": {"command": "safe"}},
+        ]}}
+    private = "identity-<private>synthetic-secret</private>"
+    if position == "uuid":
+        entry["uuid"] = private
+    elif position in {"message-id", "message-model", "inline-model"}:
+        entry["message"]["model" if "model" in position else "id"] = private
+    elif position != "agy-tool-name":
+        entry["message"]["content"][1]["name" if position == "tool-name" else "id"] = private
+    platform, event = "claude-code", "summarize"
+    if position.startswith("inline"):
+        response = entry["message"]
+        if "array" in position:
+            response = response["content"]
+            if "encoded" in position:
+                response = json.dumps(response)
+        payload = _hook(tool_input={"command": "safe"}, tool_response=response)
+        event = "observation"
+    elif position == "agy-tool-name":
+        payload = {"conversationId": "session-21", "workspacePaths": ["/synthetic/project"],
+                   "toolCall": {"name": private, "args": {"command": "safe"}}}
+        platform, event = "antigravity-cli", "observation"
+    else:
+        payload = _hook(transcript_path=str(_transcript(tmp_path, [entry])))
+    result, captured, routed = ingress(payload, platform, event)
+    assert result.returncode != 0
+    assert captured is None and not routed
+    assert result.stdout == b""
+    assert b"synthetic-secret" not in result.stderr
+
+
+def test_ordinary_argument_identity_named_keys_are_still_sanitizable(ingress):
+    payload = _hook(tool_name="synthetic-tool", tool_input={
+        "id": "id-<private>secret</private>", "model": "model-<private>secret</private>",
+        "name": "name-<private>secret</private>", "nested": {"id": "nested-<private>secret</private>"}})
+    result, captured, routed = ingress(payload, event="observation")
+    assert result.returncode == 0, result.stderr.decode()
+    assert routed
+    assert captured["payload"]["tool_input"] == {
+        "id": "id-", "model": "model-", "name": "name-", "nested": {"id": "nested-"}}
+
+
+@pytest.mark.parametrize("platform", ["claude-code", "codex", "antigravity-cli"])
+@pytest.mark.parametrize("latest", ["", [], [{"type": "image", "source": {"data": "synthetic-media"}}]])
+def test_latest_matching_empty_or_media_turn_does_not_resurrect_old_answer(ingress, tmp_path, platform, latest):
+    entries = ([{"type": "PLANNER_RESPONSE", "content": "earlier safe answer"},
+                {"type": "PLANNER_RESPONSE", "content": latest}, {"type": "metadata", "content": "ignored"}]
+               if platform == "antigravity-cli" else [
+                   {"type": "assistant", "message": {"content": "earlier safe answer"}},
+                   {"type": "assistant", "message": {"content": latest}},
+                   {"type": "user", "message": {"content": "unrelated user"}}])
+    path = _transcript(tmp_path, entries)
+    payload = ({"conversationId": "session-22", "workspacePaths": ["/synthetic/project"], "transcriptPath": str(path)}
+               if platform == "antigravity-cli" else _hook(transcript_path=str(path)))
+    result, captured, routed = ingress(payload, platform, "summarize")
+    assert result.returncode == 0, result.stderr.decode()
+    assert captured is None and not routed
+
+
+@pytest.mark.parametrize("latest", ["", "<USER_REQUEST></USER_REQUEST>", "<USER_REQUEST><private>secret</private></USER_REQUEST>"])
+def test_agy_latest_matching_user_turn_cannot_resurrect_old_request(ingress, tmp_path, latest):
+    path = _transcript(tmp_path, [
+        {"type": "USER_INPUT", "content": "<USER_REQUEST>earlier safe question</USER_REQUEST>"},
+        {"type": "USER_INPUT", "content": latest}, {"type": "PLANNER_RESPONSE", "content": "safe answer"}])
+    payload = {"conversationId": "session-23", "workspacePaths": ["/synthetic/project"],
+               "transcriptPath": str(path), "invocationNum": 3}
+    result, captured, routed = ingress(payload, "antigravity-cli", "observation")
+    assert result.returncode == 0, result.stderr.decode()
+    assert captured is None and not routed
+
+
+@pytest.mark.parametrize("limit,extra", [("lines", 0), ("lines", 1), ("record-bytes", 0),
+                                       ("record-bytes", 1), ("nodes", 0), ("nodes", 1)])
+def test_transcript_exact_limits_keep_at_limit_or_refuse_before_dispatch(ingress, tmp_path, limit, extra):
+    if limit == "lines":
+        raw = b"{}\n" * (9999 + extra) + b'{"type":"assistant","message":{"content":"safe answer"}}\n'
+    elif limit == "record-bytes":
+        prefix, suffix = b'{"type":"assistant","message":{"content":"', b'"}}'
+        raw = prefix + b"s" * (1024 * 1024 - len(prefix) - len(suffix) + extra) + suffix + b"\n"
+    else:
+        entry = {"type": "assistant", "message": {"content": "safe answer"}, "padding": [None] * (99991 + extra)}
+        raw = json.dumps(entry).encode() + b"\n"
+    path = tmp_path / "bounded-transcript.jsonl"
+    path.write_bytes(raw)
+    result, captured, routed = ingress(_hook(transcript_path=str(path)), event="summarize")
+    assert (result.returncode == 0) is (extra == 0), result.stderr.decode()
+    assert routed is (extra == 0)
+    assert (captured is not None) is (extra == 0)
+    assert path.read_bytes() == raw
 
 
 def test_private_tool_text_block_does_not_count_type_metadata_as_safe_text(ingress):

@@ -274,22 +274,20 @@ def install_receipt_problem() -> str | None:
         return str(error)
     if observed != expected_install_receipt():
         return "memory install receipt does not match the reviewed pin"
-    installed = installed_controller_root()
-    if installed.exists() or installed.is_symlink():
-        inventory = controller_inventory()
-        if not inventory["complete"]:
-            return "installed memory controller is incomplete or unsafe"
-        exchange = next(
-            item for item in inventory["files"] if item["name"] == "memory_exchange.py"
-        )
-        if exchange["sha256"] != observed["controller_sha256"]:
-            return "installed memory controller does not match the reviewed pin"
-        capture = {
-            item["name"]: (item["bytes"], item["sha256"])
-            for item in inventory["files"] if item["name"] in CAPTURE_FILES
-        }
-        if _capture_digest(capture) != observed["capture_sha256"]:
-            return "installed memory capture does not match the reviewed pin"
+    inventory = controller_inventory()
+    if not inventory["complete"]:
+        return "installed memory controller is incomplete or unsafe"
+    exchange = next(
+        item for item in inventory["files"] if item["name"] == "memory_exchange.py"
+    )
+    if exchange["sha256"] != observed["controller_sha256"]:
+        return "installed memory controller does not match the reviewed pin"
+    capture = {
+        item["name"]: (item["bytes"], item["sha256"])
+        for item in inventory["files"] if item["name"] in CAPTURE_FILES
+    }
+    if _capture_digest(capture) != observed["capture_sha256"]:
+        return "installed memory capture does not match the reviewed pin"
     return None
 
 
@@ -706,7 +704,7 @@ def controller_inventory() -> dict[str, Any]:
             }
             if root_fd is not None:
                 try:
-                    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd)
+                    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root_fd)
                     try:
                         metadata = os.fstat(descriptor)
                         safe = (

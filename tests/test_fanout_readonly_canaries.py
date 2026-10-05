@@ -39,7 +39,7 @@ def canaries(tmp_path, monkeypatch, request, connection_factory):
     registry = runtime.ProviderRegistry.for_installed(smoke.EXECUTORS,
         version_probe=lambda executor: {
             "claude": "2.1.284" if observed == "template" else "2.1.999",
-            "codex": "0.159.0" if observed == "template" else "0.160.0",
+            "codex": "0.160.0" if observed == "template" else "0.159.0",
             "agy": "1.2.13" if observed == "template" else "1.2.999",
         }[executor])
     # Synthetic telemetry does not characterize a binary or prove a served model.

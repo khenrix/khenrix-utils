@@ -42,7 +42,7 @@ def _allow_hermetic_forge_turns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         campaign.live, "_sealed_version_probe",
         lambda _boundary, executor: {
-            "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+            "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
         }[executor], raising=False,
     )
 

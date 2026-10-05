@@ -227,7 +227,7 @@ def _read_gateway_token(path: pathlib.Path) -> str:
             parent_metadata.st_ino,
         ):
             raise OSError("gateway token directory changed")
-        token_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        token_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
         metadata = os.fstat(token_fd)
         entry = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
         if (

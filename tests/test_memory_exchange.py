@@ -146,6 +146,7 @@ def token_path(private_home: pathlib.Path) -> pathlib.Path:
     path.parent.mkdir(parents=True, mode=0o700)
     path.write_text("t" * 43 + "\n", encoding="ascii")
     path.chmod(0o600)
+    memoryctl.install_controller()
     memoryctl._atomic_private_json(
         memoryctl.install_receipt_path(), memoryctl.expected_install_receipt()
     )
@@ -244,6 +245,33 @@ def test_executable_sends_checkpoint_only_in_authenticated_stdin_body(
     response = json.loads(result.stdout)
     assert response["result"]["id"] == 41
     assert result.stdout == _canonical(response)
+
+
+def test_matching_receipt_without_actual_controller_refuses_before_exchange(token_path):
+    controller = memoryctl.installed_controller_root()
+    controller.rename(controller.with_name("displaced-controller"))
+    with _gateway((200, _canonical({"success": True, "id": 41, "title": "fanout checkpoint sha256:abc",
+                                  "project": "fanout/run/task/seat", "message": "Memory saved as observation #41"}), {})) as gateway:
+        status, encoded, response = _run(_canonical(_save_request()), gateway, token_path=token_path)
+        assert status == 1
+        assert response["error"]["code"] == "install-unverified"
+        assert gateway.requests == []
+        assert b"checkpoint" not in encoded and b"t" * 43 not in encoded
+
+
+def test_native_fifo_gateway_token_refuses_with_outer_bound(private_home, token_path):
+    token_path.unlink()
+    os.mkfifo(token_path, 0o600)
+    command = [sys.executable, str(memoryctl.installed_controller_root() / "memory_exchange.py")]
+    try:
+        result = subprocess.run(command, input=_canonical(_save_request()), capture_output=True,
+                                env={"PATH": os.environ.get("PATH", ""), "AGENTIC_MEMORY_HOME": str(private_home),
+                                     "PYTHONDONTWRITEBYTECODE": "1"}, timeout=1, check=False)
+    except subprocess.TimeoutExpired:
+        pytest.fail("gateway-token FIFO blocked before regular-file validation")
+    assert result.returncode == 1 and result.stderr == b""
+    assert json.loads(result.stdout)["error"]["code"] == "gateway-unavailable"
+    assert b"checkpoint" not in result.stdout and str(token_path).encode() not in result.stdout
 
 
 def test_exchange_rejects_mismatched_install_receipt_before_network(
@@ -482,6 +510,7 @@ def test_gateway_token_must_be_owner_private_and_single_link(
     private_home: pathlib.Path,
     kind: str,
 ) -> None:
+    memoryctl.install_controller()
     memoryctl._atomic_private_json(
         memoryctl.install_receipt_path(), memoryctl.expected_install_receipt()
     )

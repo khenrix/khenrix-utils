@@ -833,7 +833,7 @@ class ProviderRegistry:
     @classmethod
     def default(cls, *, version_probe: Callable[[str], str] | None = None) -> "ProviderRegistry":
         adapters = (ClaudeAdapter(), CodexAdapter(), AgyAdapter())
-        versions = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+        versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
         models = {
             "claude": ("claude-opus-5-5", "max", "xhigh", "ultracode"),
             "codex": ("gpt-6.1-sol", "xhigh", "xhigh", "ultra"),

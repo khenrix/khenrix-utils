@@ -55,7 +55,7 @@ FIXTURES = ROOT / "tests" / "fixtures" / "fanout_providers"
 @pytest.fixture(autouse=True)
 def _pin_fixture_cli_versions(monkeypatch):
     # Deterministic provider tests never invoke installed CLIs.
-    versions = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+    versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
     monkeypatch.setattr(providers, "_installed_cli_version", lambda executor: versions[executor])
 
 
@@ -278,7 +278,8 @@ def test_new_readonly_profile_binds_installed_codex_without_version_allowlist():
 
 
 @pytest.mark.parametrize("executor,version", [
-    ("claude", "2.2.0"), ("codex", "0.160.0"), ("agy", "1.3.0"),
+    ("claude", "2.2.0"), ("codex", "0.159.0"), ("codex", "0.160.0"),
+    ("codex", "0.161.0"), ("agy", "1.3.0"),
 ])
 @pytest.mark.parametrize("tier", ("standard", "deep"))
 def test_installed_readonly_admission_preserves_invocation_and_historical_evidence(

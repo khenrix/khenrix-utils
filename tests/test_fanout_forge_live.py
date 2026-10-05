@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 
-VERSIONS = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+VERSIONS = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
 CLAUDE_SESSION = "11111111-1111-4111-8111-111111111111"
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -199,7 +199,7 @@ def test_pinned_version_probe_uses_the_same_sealed_seat_and_private_environment(
         observed.append(("run", tuple(argv), kwargs))
         lines = {
             "claude": b"2.1.284 (Claude Code)\n",
-            "codex": b"codex-cli 0.159.0\n",
+            "codex": b"codex-cli 0.160.0\n",
             "agy": b"1.2.13\n",
         }
         return subprocess.CompletedProcess(argv, 0, stdout=lines[executor_id], stderr=b"")

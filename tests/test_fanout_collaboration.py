@@ -573,7 +573,7 @@ def _v2_hermetic_round(
         base_oid=baseline.head, baseline_sha256=baseline.digest,
     )
     registry = _synthetic_registry(version_probe=lambda name: {
-        "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+        "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
     }[name])
     if execution_class == "repo-write":
         registry = fanout.ProviderRegistry((
@@ -581,7 +581,7 @@ def _v2_hermetic_round(
             if profile.execution_class == "repo-write" else profile
             for profile in registry._profiles.values()
         ), version_probe=lambda name: {
-            "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+            "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
         }[name])
     inputs = dataclasses.replace(
         inputs, targets={"booking": binding},
@@ -1558,7 +1558,7 @@ def test_profiled_dispatch_binds_selected_digest_and_timeout_before_process_star
     """A restarted dispatch must not swap model profile or deadline after intent."""
     store = ArtifactStore(tmp_path / "artifacts")
     registry = _synthetic_registry(version_probe=lambda name: {
-        "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+        "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
     }[name])
     executors = ("claude", "codex")
     packet = _packet(store, tmp_path, executors=executors, timeout=None)
@@ -1663,7 +1663,7 @@ def test_real_registry_cannot_execute_with_legacy_flat_run_input_shape(tmp_path:
 def test_cli_version_drift_blocks_profiled_resume_before_any_second_turn(tmp_path: Path) -> None:
     """A settled first round cannot resume through a changed installed CLI."""
     store = ArtifactStore(tmp_path / "artifacts")
-    versions = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+    versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
     registry = _synthetic_registry(version_probe=lambda name: versions[name])
     executors = ("claude", "codex")
     packet = _packet(store, tmp_path, executors=executors, rounds=2, timeout=None)
@@ -1691,7 +1691,7 @@ def test_cli_version_drift_blocks_profiled_resume_before_any_second_turn(tmp_pat
 def test_reviewed_timeout_is_bound_to_intent_and_resumed_turn(tmp_path: Path) -> None:
     """A reviewed extension must survive both durable dispatch and exact-session resume."""
     store = ArtifactStore(tmp_path / "artifacts")
-    versions = {"claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13"}
+    versions = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
     registry = _synthetic_registry(version_probe=lambda name: versions[name])
     review = "a" * 64
     packet = _packet(
@@ -2454,7 +2454,7 @@ def test_ambiguous_provider_start_is_uncertain_and_never_automatically_rerun(
     executors = ("claude", "codex")
     seats = tuple(_seat(tmp_path, name) for name in executors)
     registry = _synthetic_registry(version_probe=lambda name: {
-        "claude": "2.1.284", "codex": "0.159.0", "agy": "1.2.13",
+        "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13",
     }[name]) if profiled else None
     policy = (RoundPolicy.from_provider_policy(packet.provider_policy) if profiled
               else _round_policy(rounds=1, minimum_success=2, max_workers=2))
@@ -4033,6 +4033,7 @@ def test_trial_core_validator_refuses_scalar_claimed_success(tmp_path):
                                       "cold-tree", "cold-authority", "cold-inputs"])
 def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_path, monkeypatch, changed):
     from types import SimpleNamespace
+    from test_fanout_container_runtime import _volumes
     packet, seats, coordinator, journal, _, store = _v2_hermetic_round(
         tmp_path, monkeypatch, execution_class="repo-write")
     try:
@@ -4055,7 +4056,8 @@ def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_
         handle = runtime.ContainerHandle("c" * 64, "d" * 64, workspace, session)
         controller = coordinator.lifecycle_controller
         launch = controller_module.write_evidence(controller, "container-seat-launch", {
-            "spec": dataclasses.asdict(spec), "handle": dataclasses.asdict(handle), "route": "start"})
+            "spec": dataclasses.asdict(spec), "handle": dataclasses.asdict(handle), "route": "start",
+            "volumes": _volumes(spec)})
         boundary = {"route": "initial", "upstream_route_digest": "e" * 64,
                     "permit_id": "f" * 64, "permit_epoch": 1,
                     "request_digest": transport_module.admitted_request_digest(request)}
@@ -4096,6 +4098,8 @@ def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_
             "release_source_binding": source_module.release_source_binding().to_dict(),
             "boundary": list(boundary_ref), "export": list(export_ref), "stop": list(stop_ref),
             "turn_digest": turn_digest})
+        assert transport_module.reopen_candidate_export(controller, receipt, identity=identity,
+            turn_digest=turn_digest, stop_evidence=stop_ref) == receipt
         if changed == "missing":
             receipt = None
         elif changed == "target":
@@ -4111,9 +4115,17 @@ def test_container_terminal_candidate_reopens_export_over_unchanged_staging(tmp_
         result = ProviderResult(seat.executor_id, True, "ok", None, 1, 0, None, "session",
             "completed", b"", b"", candidate_export=receipt)
         if changed and not changed.startswith("cold-"):
-            with pytest.raises(CollaborationDurabilityError):
+            with pytest.raises(CollaborationDurabilityError) as refused:
                 coordinator._persist_terminal_candidate(packet, seat, 1, request=request,
                     result=result, completion_evidence=completion)
+            cause = refused.value
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            assert cause.args == {
+                "missing": ("target baseline or export",), "target": ("other",),
+                "manifest": ("export association",), "completion": ("controller evidence digest changed",),
+                "baseline": ("v2 target repository baseline changed",), "inputs": ("immutable run inputs",),
+            }[changed]
         else:
             ref = coordinator._persist_terminal_candidate(packet, seat, 1, request=request,
                 result=result, completion_evidence=completion)

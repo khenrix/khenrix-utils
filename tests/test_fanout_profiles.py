@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -89,19 +90,43 @@ def test_standard_profiles_pin_model_and_effort(executor, model, effort):
     assert profile.digest == profile.profile_sha256
 
 
-def test_default_codex_profiles_admit_measured_01590_and_reject_older_binary():
+def test_default_codex_profiles_admit_measured_01600_and_reject_older_binary():
     """A CLI upgrade must not leave every Codex seat blocked or admit stale sessions."""
-    installed = ["0.159.0"]
+    installed = ["0.160.0"]
     registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: installed[0])
 
     for execution_class, tier in (("read-only", "standard"),
                                   ("read-only", "deep"),
                                   ("repo-write", "standard")):
-        registry.assert_installed_version(registry.select("codex", execution_class, tier))
+        profile = registry.select("codex", execution_class, tier)
+        assert profile.cli_version == "0.160.0"
+        registry.assert_installed_version(profile)
 
-    installed[0] = "0.157.1"
-    with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
-        registry.assert_installed_version(registry.select("codex", "read-only", "deep"))
+    for stale in ("0.159.0", "0.157.1"):
+        installed[0] = stale
+        with pytest.raises(fanout.ProviderRequestError, match="CLI version drift"):
+            registry.assert_installed_version(registry.select("codex", "read-only", "deep"))
+
+
+def test_exact_codex_image_pin_matches_default_dispatch_profile_and_linux_archive():
+    image = ROOT / "components" / "fanout-container"
+    tools = tomllib.loads((image / "mise.toml").read_text())["tools"]
+    lock = tomllib.loads((image / "mise.lock").read_text())["tools"]
+    assert tools == {"python": "3.12.14", "claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
+    codex = lock["codex"][0]
+    assert codex["version"] == tools["codex"]
+    assert codex["specifiers"] == ["0.160.0"]
+    assert codex["backend"] == "aqua:openai/codex"
+    assert codex["platforms.linux-x64"] == {
+        "checksum": "sha256:4fcc47ab57f52ff75363951a8761146cd10c8288bd86fed45487dbb204a16b71",
+        "url": "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-package-x86_64-unknown-linux-musl.tar.gz",
+        "url_api": "https://api.github.com/repos/openai/codex/releases/assets/604048102",
+    }
+    registry = fanout.ProviderRegistry.default(version_probe=lambda _executor: "0.160.0")
+    for execution_class, tier in (("read-only", "standard"), ("read-only", "deep"), ("repo-write", "standard")):
+        profile = registry.select("codex", execution_class, tier)
+        assert profile.cli_version == tools["codex"]
+        registry.assert_installed_version(profile)
 
 
 @pytest.mark.parametrize("executor", ["claude", "agy"])
@@ -277,7 +302,7 @@ def test_result_distinguishes_requested_from_unobserved_model(
     monkeypatch.setattr(providers, "run_command", lambda _command: fanout.ProcessResult(
         status=fanout.ProcessStatus.EXIT, returncode=0, stdout=fixture, stderr=b"",
     ))
-    registry = _synthetic_codex_registry(version_probe=lambda _executor: "0.159.0")
+    registry = _synthetic_codex_registry(version_probe=lambda _executor: "0.160.0")
     profile = registry.admit("codex", "read-only", "standard")
 
     result = fanout.run_provider(fanout.ProviderRequest(
@@ -372,7 +397,7 @@ def test_structured_observed_model_mismatch_is_invalid(
     monkeypatch.setattr(providers, "run_command", lambda _command: fanout.ProcessResult(
         status=fanout.ProcessStatus.EXIT, returncode=0, stdout=output, stderr=b"",
     ))
-    registry = _synthetic_codex_registry(version_probe=lambda _executor: "0.159.0")
+    registry = _synthetic_codex_registry(version_probe=lambda _executor: "0.160.0")
 
     result = fanout.run_provider(fanout.ProviderRequest(
         "codex", "question", cwd=tmp_path,
