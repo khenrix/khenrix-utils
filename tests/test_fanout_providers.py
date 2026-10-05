@@ -468,7 +468,50 @@ def test_adapter_commands_pin_explicit_sessions_posture_and_stdin_only(
     assert not {"--continue", "--last"}.intersection(command.argv)
 
 
-@pytest.mark.parametrize("tier,effort", [("standard", "xhigh"), ("deep", "ultra")])
+@pytest.mark.parametrize("executor,model,deep_effort,previous_read,previous_write", [
+    ("claude", "claude-opus-5-5", "ultracode", "max", "xhigh"),
+    ("codex", "gpt-6.1-sol", "ultra", "xhigh", "xhigh"),
+])
+@pytest.mark.parametrize("execution_class", ["read-only", "repo-write"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_standard_workers_use_medium_without_rewriting_saved_profiles(
+    tmp_path, executor, model, deep_effort, previous_read, previous_write,
+    execution_class, resume, _mock_clean_codex_host,
+):
+    registry = ProviderRegistry.default()
+    profile = registry.select(executor, execution_class, "standard")
+    assert profile.requested_model == model
+    assert profile.requested_effort == "medium"
+    session = "8d5b1544-4657-4f42-a041-1f1fe330a4bd" if executor == "claude" else "exact-thread"
+    request = ProviderRequest(
+        executor, "bounded task", cwd=tmp_path, execution_class=execution_class,
+        profile=profile, session_id=session if resume or executor == "claude" else None,
+        resume=resume,
+    )
+    argv = registry.require(executor).build_command(request).argv
+    if executor == "claude":
+        assert argv[argv.index("--effort") + 1] == "medium"
+    else:
+        assert 'model_reasoning_effort="medium"' in argv
+    assert registry.select(executor, "read-only", "deep").requested_effort == deep_effort
+    assert registry.select("agy", execution_class, "standard").requested_effort == "high"
+
+    previous_effort = previous_read if execution_class == "read-only" else previous_write
+    initial, continuation = providers._default_argv(executor, execution_class, model, previous_effort)
+    saved = replace(profile, requested_effort=previous_effort, initial_argv=initial,
+                    resume_argv=continuation, profile_sha256=None)
+    restored = ExecutorProfile.from_dict(saved.to_dict(), adapter=profile.adapter)
+    historical = ProviderRegistry((restored,)).select(executor, execution_class, "standard")
+    assert historical.to_dict() == saved.to_dict()
+    assert historical.digest == saved.digest != profile.digest
+    old_argv = historical.adapter.build_command(replace(request, profile=historical)).argv
+    if executor == "claude":
+        assert old_argv[old_argv.index("--effort") + 1] == previous_effort
+    else:
+        assert f'model_reasoning_effort="{previous_effort}"' in old_argv
+
+
+@pytest.mark.parametrize("tier,effort", [("standard", "medium"), ("deep", "ultra")])
 @pytest.mark.parametrize("resume", [False, True])
 def test_codex_read_only_profile_isolates_ambient_tools_on_both_turn_shapes(
     tmp_path, tier, effort, resume, _mock_clean_codex_host,
@@ -796,10 +839,10 @@ def test_codex_repo_write_argv_is_unchanged_by_read_only_isolation(tmp_path, pin
     )).argv
     assert initial == (
         "codex", "exec", "-", "--json", "--sandbox", "workspace-write",
-    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"') if pinned else ())
+    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"') if pinned else ())
     assert resumed == (
         "codex", "exec", "resume", "-c", 'sandbox_mode="workspace-write"',
-    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"') if pinned else ()) + (
+    ) + (("-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"') if pinned else ()) + (
         "--json", "exact-codex-thread", "-",
     )
 

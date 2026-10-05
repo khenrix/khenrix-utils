@@ -7,6 +7,12 @@ description: Use when a validated fanout admission packet needs durable Claude, 
 
 Run one accepted fanout DAG through isolated executor seats. The invoking CLI owns admission, recovery, reconciliation, and actions; seats contribute evidence, not authority.
 
+Standard Sol and Opus worker profiles request medium effort for both read-only and
+repo-write tasks; Gemini remains high. The invoking orchestrator uses higher effort for
+planning and reconciliation. Explicit deep profiles are unchanged. This is an effort
+policy, not a relaxed acceptance bar or a write certificate. Existing runs retain their
+recorded profiles; the new defaults apply only to freshly admitted runs.
+
 **REQUIRED INPUT:** Use `llm-fanout-plan` first. Keep its complete `fanout-plan-admission-v1` or `fanout-plan-admission-v2` packet in a file. A bare compiled plan is never repo-write bundle approval. A write bundle needs the planner's separate, exact digest-bound owner review; source-plan approval does not approve a later model-produced bundle.
 
 Use `python3 scripts/execute.py --help` beside this file. `start` takes paths to the admission packet, fresh run root, separate local authority root, owner-only `0700` private root, ordered skill roots, and an explicit provider-turn budget. V1 requires `--repo-root`; v2 requires exactly one `--target-root ID=/absolute/path` per admitted repository target and rejects `--repo-root`. Distinct v2 targets may share a ticket key or relative path name, but each repo-write task owns one target and each target has at most one writer. Set the budget to at least the sum of `seat count × round count × (retries + 1)` for **every work task** under its effective provider policy; it is a worst-case reservation, not expected spend. `start` does not launch a seat. Keep packet, answer, and candidate bytes in files, never argv. Owner and controller capabilities stay only in private `0600` descriptors outside the run and target repositories; startup escrows them and the exact target baselines before creating run roots.

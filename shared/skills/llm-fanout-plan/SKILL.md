@@ -7,6 +7,13 @@ description: Use when an approved implementation plan, a direct cross-model ques
 
 Produce one validated DAG. Planning never starts providers or approves amendments.
 
+Use higher reasoning effort for the invoking orchestrator's planning and reconciliation.
+Size standard work for medium-effort Sol and Opus seats; Gemini keeps its existing high
+effort. Give each task a bounded objective, the evidence it needs, a concrete deliverable,
+and acceptance checks. Split when a task spans distinct decisions or ownership boundaries,
+not merely to add parallel sessions. Keep dependent implementation and its immediate tests
+together. Explicit deep reviews remain a separate tier; do not silently downgrade them.
+
 For a v2 plan, map each source Task's `**Target:**` to one exact repository target; distinct repositories may share a ticket key and relative path names. Keep each work task and source Step on its declared target. A repository writer owns only one target, with at most one repo-write work task per target. Compare owned paths by `(target_id, relative_path)`. Declare `artifact` or `handover` mode on every compiled task dependency, including same-target edges; `handover` requires a repo-write predecessor. Keep source cross-Task `**Dependency modes:**` declarations aligned with those compiled edges.
 
 Current public v2 execution is no-spend: admission and a dormant `start`/read-only `status` are supported, but public `resume` refuses provider turns for both read-only and repo-write work. Green compilation, profile preflight, or a test-injected transport does not lift that temporary gate. Do not promise v2 model work as the next step.

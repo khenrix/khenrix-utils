@@ -50,8 +50,8 @@ def test_registry_pins_distinct_standard_and_deep_class_profiles():
     write = registry.select("claude", "repo-write", "standard")
     deep = registry.select("claude", "read-only", "deep")
 
-    assert (read.requested_model, read.requested_effort) == ("claude-opus-5-5", "max")
-    assert (write.requested_model, write.requested_effort) == ("claude-opus-5-5", "xhigh")
+    assert (read.requested_model, read.requested_effort) == ("claude-opus-5-5", "medium")
+    assert (write.requested_model, write.requested_effort) == ("claude-opus-5-5", "medium")
     assert (deep.requested_model, deep.requested_effort) == ("claude-opus-5-5", "ultracode")
     assert read.cli_version == "2.1.284"
     assert len({read.digest, write.digest, deep.digest}) == 3
@@ -78,7 +78,7 @@ def test_builtin_profile_rejects_a_descriptor_that_would_launch_another_model():
 
 
 @pytest.mark.parametrize("executor,model,effort", [
-    ("codex", "gpt-6.1-sol", "xhigh"),
+    ("codex", "gpt-6.1-sol", "medium"),
     ("agy", "gemini-3.8-flash-high", "high"),
 ])
 def test_standard_profiles_pin_model_and_effort(executor, model, effort):
@@ -155,7 +155,7 @@ def test_deep_readonly_admission_keeps_effort_and_historical_characterization():
 
     for executor in ("claude", "agy"):
         assert registry.admit(executor, "read-only", "deep").characterized
-    for tier, effort in (("standard", "xhigh"), ("deep", "ultra")):
+    for tier, effort in (("standard", "medium"), ("deep", "ultra")):
         profile = registry.admit("codex", "read-only", tier)
         assert profile.characterized is False
         assert profile.requested_model == "gpt-6.1-sol"
@@ -237,11 +237,11 @@ def test_initial_and_resume_argv_pin_the_same_selected_model(
         assert ("--mode", "accept-edits") == first.argv[first.argv.index("--mode"):][:2]
         assert ("--mode", "accept-edits") == next_turn.argv[next_turn.argv.index("--mode"):][:2]
     elif executor == "claude":
-        assert ("--effort", "max") == first.argv[first.argv.index("--effort"):][:2]
-        assert ("--effort", "max") == next_turn.argv[next_turn.argv.index("--effort"):][:2]
+        assert ("--effort", "medium") == first.argv[first.argv.index("--effort"):][:2]
+        assert ("--effort", "medium") == next_turn.argv[next_turn.argv.index("--effort"):][:2]
     else:
-        assert 'model_reasoning_effort="xhigh"' in first.argv
-        assert 'model_reasoning_effort="xhigh"' in next_turn.argv
+        assert 'model_reasoning_effort="medium"' in first.argv
+        assert 'model_reasoning_effort="medium"' in next_turn.argv
         assert 'sandbox_mode="read-only"' in next_turn.argv
 
 
