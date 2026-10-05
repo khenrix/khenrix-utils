@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shutil
 import signal
 import stat
 import subprocess
@@ -23,6 +24,31 @@ JUDGE_COMPOSE = COMPONENT / "controller/egress-overlay/docker-compose-harbor-jud
 
 
 class HarborJudgeGateTests(unittest.TestCase):
+    def test_rendered_judge_uses_init_without_broadening_its_boundary(self) -> None:
+        compose = shutil.which("docker-compose")
+        self.assertIsNotNone(compose, "Use the component's pinned mise tools")
+        rendered = subprocess.run(
+            [compose, "--project-name", "maka-synthetic-cancel", "-f", str(JUDGE_COMPOSE),
+             "config", "--format", "json"],
+            capture_output=True, text=True, check=True, timeout=10,
+            env={
+                "PATH": os.environ["PATH"],
+                "MAKA_CONTROLLER_IMAGE_ID": "sha256:" + "c" * 64,
+                "MAKA_EGRESS_IMAGE_ID": "sha256:" + "d" * 64,
+                "MAKA_EVAL_SECRET_VOLUME": "maka-synthetic-secret",
+                "MAKA_EVAL_RUNTIME_ROOT": "/synthetic/runtime",
+                "MAKA_LAB_ROOT": "/synthetic/lab",
+                "MAKA_INSTALL_RECEIPT": "/synthetic/install-receipt.json",
+                "MAKA_JUDGE_DECOY": "maka-decoy-synthetic123",
+            },
+        )
+        judge = json.loads(rendered.stdout)["services"]["judge"]
+        self.assertIs(judge.get("init"), True)
+        self.assertEqual(judge["entrypoint"][0], "/synthetic/runtime/node/bin/node")
+        self.assertIs(judge["read_only"], True)
+        self.assertEqual(judge["cap_drop"], ["ALL"])
+        self.assertEqual(judge["networks"], {"judge": None})
+
     def test_entrypoint_selects_distinct_runtime_and_completion_bytes(self) -> None:
         entrypoint = COMPONENT / "controller/entrypoint.sh"
         source = entrypoint.read_text(encoding="utf-8")

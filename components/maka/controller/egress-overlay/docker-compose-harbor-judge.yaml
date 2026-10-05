@@ -29,6 +29,7 @@ services:
 
   judge:
     image: ${MAKA_CONTROLLER_IMAGE_ID:?}
+    init: true
     entrypoint:
       - ${MAKA_EVAL_RUNTIME_ROOT:?}/node/bin/node
       - ${MAKA_LAB_ROOT:?}/controller/harbor_judge.mjs

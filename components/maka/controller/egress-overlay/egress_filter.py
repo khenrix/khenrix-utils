@@ -689,6 +689,8 @@ def judge_response_evidence_with_reason(
                 return None, "missing-completion"
             done = True
             continue
+        if completed:
+            return None, "invalid-sse"
         try:
             event = strict_json_object(frame)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):

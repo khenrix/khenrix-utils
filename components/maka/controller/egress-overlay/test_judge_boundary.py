@@ -410,6 +410,13 @@ class HarborJudgeBoundaryTests(unittest.TestCase):
                  "item": {"id": "msg_extra", "type": "message", "role": "assistant"}}
         self.assertIsNone(policy.judge_response_evidence(
             200, f"data:{json.dumps(extra)}\n\n".encode() + payload))
+        for kind in ("response.output_item.added", "response.output_item.done"):
+            for identity in ("msg_1", "msg_extra"):
+                with self.subTest(late_kind=kind, identity=identity):
+                    late = {"type": kind, "item": {**extra["item"], "id": identity}}
+                    self.assertIsNone(policy.judge_response_evidence(
+                        200, payload.replace(b"data: [DONE]",
+                            f"data:{json.dumps(late)}\n\ndata: [DONE]".encode())))
         self.assertIsNone(policy.judge_response_evidence(
             200, f"data: {json.dumps(created)}\n\n".encode()))
         created["response"]["model"] = "gpt-5.6-sol"
