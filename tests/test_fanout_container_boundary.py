@@ -2465,3 +2465,78 @@ def test_agy_settings_reject_unsafe_directory_modes(agy_existing_settings, direc
     root, _, command = agy_existing_settings
     (root / directory).chmod(0o755)
     assert subprocess.run(command, capture_output=True, check=False).returncode != 0
+
+
+def test_colima_receives_owned_nonwritable_home_without_ambient_secrets(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as boundary
+    home = tmp_path / 'host-home'
+    home.mkdir(mode=0o750)
+    monkeypatch.setenv('HOME', str(home))
+    for name in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
+                 'GIT_DIR', 'GIT_CONFIG_COUNT', 'HTTPS_PROXY', 'DOCKER_HOST', 'DOCKER_CONTEXT',
+                 'DOCKER_CONFIG', 'COLIMA_HOME', 'SSH_AUTH_SOCK'):
+        monkeypatch.setenv(name, 'TEST_ONLY_DO_NOT_INHERIT')
+    child = boundary.build_host_control_environment(('colima', 'list', '--json'))
+    assert child['HOME'] == str(home)
+    assert 'TEST_ONLY_DO_NOT_INHERIT' not in child.values()
+    assert child['GIT_CONFIG_GLOBAL'] == os.devnull
+    assert home.stat().st_mode & 0o777 == 0o750
+
+
+@pytest.mark.parametrize('binary', ('docker', 'ssh', 'ssh-keyscan', '/usr/bin/ssh', 'codex', 'claude', 'agy', 'git', '/private/tmp/colima', 'sh'))
+def test_other_commands_remain_home_blind(tmp_path, monkeypatch, binary):
+    from shared.lib.fanout import container_boundary as boundary
+    monkeypatch.setenv('HOME', str(tmp_path))
+    assert 'HOME' not in boundary.build_host_control_environment((binary, 'fixture-operation'))
+
+
+@pytest.mark.parametrize('kind', ('symlink', 'writable', 'relative', 'missing', 'file', 'foreign-owner'))
+def test_host_controls_reject_unsafe_home(tmp_path, monkeypatch, kind):
+    from shared.lib.fanout import container_boundary as boundary
+    home = tmp_path / 'host-home'
+    if kind == 'symlink':
+        home.symlink_to(tmp_path, target_is_directory=True)
+    elif kind == 'writable':
+        home.mkdir(mode=0o700)
+        home.chmod(0o775)
+    elif kind == 'relative':
+        home = Path('relative-host-home')
+    elif kind == 'file':
+        home.touch()
+    elif kind == 'foreign-owner':
+        home.mkdir(mode=0o750)
+        monkeypatch.setattr(boundary.os, 'getuid', lambda: home.stat().st_uid + 1)
+    monkeypatch.setenv('HOME', str(home))
+    with pytest.raises(boundary.ProviderRequestError):
+        boundary.build_host_control_environment(('colima', 'list', '--json'))
+
+
+def test_provider_private_home_contract_is_unchanged(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as boundary
+    private = tmp_path / 'private'
+    private.mkdir(mode=0o700)
+    child = boundary.build_child_environment(overrides={'HOME': str(private)})
+    assert child['HOME'] == str(private)
+    assert boundary.build_host_control_environment(('codex',), overrides={'HOME': str(private)})['HOME'] == str(private)
+    with pytest.raises(boundary.ProviderRequestError, match='cannot be overridden'):
+        boundary.build_host_control_environment(('colima',), overrides={'HOME': str(private)})
+    private.chmod(0o750)
+    with pytest.raises(Exception):
+        boundary.build_child_environment(overrides={'HOME': str(private)})
+
+
+def test_colima_control_spawn_receives_home(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as boundary
+    home = tmp_path / 'host-home'
+    home.mkdir(mode=0o750)
+    monkeypatch.setenv('HOME', str(home))
+    seen = {}
+
+    def refused_spawn(argv, **kwargs):
+        seen.update(kwargs['env'])
+        raise OSError('synthetic spawn refusal; no host command runs')
+
+    monkeypatch.setattr(boundary.subprocess, 'Popen', refused_spawn)
+    result = boundary._run_control_command(('colima', 'list', '--json'))
+    assert result.status is boundary.ProcessStatus.SPAWN_ERROR
+    assert seen['HOME'] == str(home)

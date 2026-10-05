@@ -22,7 +22,7 @@ import time
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Mapping, Protocol
 
 from .artifacts import ArtifactRef, ArtifactStore, canonical_json
 from .broker import Broker, BrokerPermit, BrokerRejected, _safe_response_body
@@ -120,6 +120,27 @@ def _require_sha(value: object, name: str) -> str:
     return value
 
 
+def build_host_control_environment(argv: tuple[str, ...], *,
+                                   overrides: Mapping[str, str] | None = None,
+                                   max_depth: int = 2) -> dict[str, str]:
+    """Keep filtered child environments, adding host HOME only for Colima."""
+    environment = build_child_environment(overrides=overrides, max_depth=max_depth)
+    if not argv or argv[0] != "colima":
+        return environment
+    if overrides and "HOME" in overrides:
+        raise ProviderRequestError("Colima host HOME cannot be overridden")
+    try:
+        home = Path.home()
+        metadata = home.lstat()
+    except (OSError, RuntimeError) as error:
+        raise ProviderRequestError("Colima host HOME is unavailable") from error
+    if (not home.is_absolute() or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid() or metadata.st_mode & 0o022):
+        raise ProviderRequestError("Colima host HOME must be an owned directory without group/world write access")
+    environment["HOME"] = str(home)
+    return environment
+
+
 def _run_bounded_command(command: ProcessCommand, *,
                          stdout_cap: int = _MAX_CLI_STDOUT,
                          stderr_cap: int = _MAX_CLI_STDERR,
@@ -131,8 +152,8 @@ def _run_bounded_command(command: ProcessCommand, *,
             or type(stdout_cap) is not int or stdout_cap < 1
             or type(stderr_cap) is not int or stderr_cap < 1):
         raise ProviderRequestError("container process capture limit is invalid")
-    environment = build_child_environment(
-        overrides=command.environment, max_depth=command.max_depth)
+    environment = build_host_control_environment(
+        command.argv, overrides=command.environment, max_depth=command.max_depth)
     with (executor_slot(root=command.slot_root, cap=command.slot_cap,
                         timeout=command.slot_timeout) if acquire_slot else nullcontext()):
         if before_spawn is not None:
