@@ -26,7 +26,7 @@ import test_fanout_container_runtime as runtime_tests
 from shared.lib.fanout.artifacts import ArtifactRef, ArtifactStore, canonical_json
 from shared.lib.fanout.broker import Broker, BrokerPermit, BrokerRejected
 from shared.lib.fanout.container_broker import OutboundRequestIdentity, PermitLedger, RelayRequest, dispatch_once
-from shared.lib.fanout.container_boundary import PinnedDockerTransport, _turn_digest
+from shared.lib.fanout.container_boundary import PinnedDockerTransport, ContainerAdmission, SessionStore, _turn_digest
 from shared.lib.fanout.container_runtime import ContainerLauncher, ContainerSpec, private_volume_names
 from shared.lib.fanout.container_source import release_source_binding
 from shared.lib.fanout.container_transfer import TransferIdentity, snapshot_manifest, encode_manifest
@@ -121,7 +121,7 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, re
                     execution_class="repo-write", profile=profile, run_id="private-quality",
                     task_id="synthetic-task", target_id="repo-alpha", seat_id=f"seat-{provider}",
                     inputs_digest=hashlib.sha256(baseline.entries[0].data).hexdigest(),
-                    session_id=SESSION_IDS[provider], resume=route == "resume",
+                    session_id=SESSION_IDS[provider] if route == "resume" or provider == "claude" else None, resume=route == "resume",
                     context_sha256=hashlib.sha256(b"complete synthetic plan").hexdigest(),
                     skill_bundle_sha256=hashlib.sha256(b"skills").hexdigest(),
                     skill_delivery_sha256=hashlib.sha256(b"skills").hexdigest())
@@ -146,10 +146,14 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, re
                 docker.old = copy.deepcopy(retained)
                 socket = runtime_tests.FakeAttestor().proof
                 launcher = ContainerLauncher(docker, guest_socket_attestor=lambda _: socket)
+                sessions = SessionStore(controller, request.run_id, request.task_id,
+                    request.target_id, request.seat_id, session)
                 transport = PinnedDockerTransport.start(controller, spec, launcher=launcher,
                     vm_attestor=lambda: vm, socket_attestor=lambda _: socket,
                     image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
-                    process_runner=lambda _: None, recover=route == "resume")
+                    process_runner=lambda _: None, recover=route == "resume", request=request,
+                    session_control=SimpleNamespace(ledger=ledger, permit_id=permit_id, epoch=epoch,
+                        broker=Broker(permit, credential="synthetic-controller-only", send=lambda *_: None)))
                 handle = transport.handle
                 launch_ref = (transport.handle_evidence_name, transport.handle_evidence_digest)
                 transport.attest_container()
@@ -178,27 +182,16 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, re
                         "provider_context_sha256": request.context_sha256,
                         "skill_bundle_sha256": request.skill_bundle_sha256,
                         "manifest_ref": asdict(manifest_ref)})
-                    grant_ref = write_evidence(controller, "container-input-grant", {
-                        "identity": asdict(identity), "source_root": str(source),
-                        "source_device": info.st_dev, "source_inode": info.st_ino,
-                        "material_evidence_name": material_ref[0], "material_evidence_digest": material_ref[1],
-                        "handle_evidence_name": launch_ref[0], "handle_evidence_digest": launch_ref[1],
-                        "original_handle": asdict(handle), "vm_probe": asdict(vm), "socket": asdict(socket),
-                        "image_digest": spec.image_digest, "cli_digest": spec.cli_digest,
-                        "profile_digest": profile.digest, "request_digest": admitted_request_digest(request),
-                        "permit_id": permit_id, "permit_epoch": epoch,
-                        "permit_digest": hashlib.sha256(canonical_json(asdict(permit))).hexdigest()})
-                    input_receipt_ref = write_evidence(controller, "container-input-transfer", {
-                        "identity": asdict(identity), "manifest_sha256": hashlib.sha256(encode_manifest(material_manifest)).hexdigest(),
-                        "workspace_volume": workspace, "workdir": "/workspace/inputs/" + hashlib.sha256(canonical_json(asdict(identity))).hexdigest() + "/published/repo",
-                        "original_handle": asdict(handle), "handle_evidence_name": launch_ref[0],
-                        "handle_evidence_digest": launch_ref[1], "material_evidence_name": material_ref[0],
-                        "material_evidence_digest": material_ref[1], "grant_evidence_name": grant_ref[0],
-                        "grant_evidence_digest": grant_ref[1]})
-                    journal = _InputClaimJournal(controller, identity, workspace)
-                    grant = SimpleNamespace(evidence_name=grant_ref[0], evidence_digest=grant_ref[1])
-                    journal.claim(grant)
-                    journal.complete(grant, *input_receipt_ref)
+                    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+                    from test_fanout_container_transfer_transport import _guest_popen
+                    admitted = ContainerAdmission(permit, permit_id, epoch, ledger, spec.image_digest,
+                        spec.cli_digest, socket, transport, sessions, *launch_ref)
+                    grant = issue_input_source_grant(controller, request, transport, admitted, source, *material_ref)
+                    guest = tmp_path / f"certification-guest-{provider}"
+                    guest.mkdir(mode=0o700)
+                    transport._transfer_popen, _ = _guest_popen(guest, [], container_id=handle.container_id)
+                    imported = transport.stage_inputs(request, grant)
+                    input_receipt_ref = imported.evidence_name, imported.evidence_digest
                 input_payload = certifier.read_evidence(controller, "container-input-transfer", *input_receipt_ref)
                 boundary = {"controller_id": controller.controller_id, "run_id": request.run_id,
                     "task_id": request.task_id, "target_id": request.target_id, "seat_id": request.seat_id,
@@ -229,7 +222,17 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, re
                     "container_inspect_sha256": handle.inspect_sha256, "workspace_volume": workspace, "session_volume": session})
                 terminal = _terminal(provider, session_id=SESSION_IDS[provider])
                 adapter = ProviderRegistry.default(version_probe=lambda _: "unused").require(provider)
-                answer = adapter.parse(terminal.stdout).answer.encode()
+                parsed = adapter.parse(terminal.stdout)
+                from shared.lib.fanout.providers import _make_result
+                result = _make_result(request, adapter, terminal, parsed, 1, 0.1)
+                assert result.valid and result.session_id == SESSION_IDS[provider]
+                turn_digest = _turn_digest(request, SimpleNamespace(**boundary))
+                sessions.reserve(provider, turn_digest, initial=route == "initial",
+                    upstream_route_digest=permit.upstream_route_digest,
+                    initial_session_id=request.session_id if provider == "claude" and route == "initial" else None)
+                sessions.settle(provider, result.session_id, turn_digest, initial=route == "initial",
+                                upstream_route_digest=permit.upstream_route_digest)
+                answer = parsed.answer.encode()
                 prefix = f"{provider}-{route}"
                 def artifact(name, data):
                     return asdict(raw.write_bytes(f"{prefix}-{name}", data))
@@ -503,6 +506,32 @@ def test_trial_certificate_binds_exact_roots_and_cannot_satisfy_release(
     assert not certificate_authority.verify_trial(certificate, (caller,), release_source_binding().digest).passed
     assert not certificate_authority.verify_release(certificate, trial_roots, release_source_binding().digest).passed
     assert not certificate_authority.verify_trial(replace(certificate, mac="0" * 64), trial_roots, release_source_binding().digest).passed
+
+
+def test_memory_only_current_source_drift_refuses_existing_full_proof_issuance(
+    complete_private_probe, certificate_authority, trial_roots, tmp_path, monkeypatch,
+):
+    import shutil
+    from shared.lib.fanout import container_source as source
+    root = complete_private_probe[0]
+    before = source.release_source_binding()
+    native = source._source_root(None)
+    copied = tmp_path / "same-release"
+    for name in sorted(set(source._source_paths(native)) | set(source._memory_paths(native))):
+        destination = copied / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(native / name, destination)
+    assert source.release_source_binding(copied) == before
+    monkeypatch.setattr(source, "_SOURCE_ROOT", copied)
+    certificate = certificate_authority.issue_trial(root, trial_roots)
+    assert certificate_authority.verify_trial(certificate, trial_roots, before.digest).passed
+    memory = copied / "components/memory/memory_ingress.py"
+    memory.write_bytes(memory.read_bytes() + b"\n# actual memory-only source drift\n")
+    after = source.release_source_binding()
+    assert after.runtime_sha256 == before.runtime_sha256
+    assert after.memory_sha256 != before.memory_sha256 and after.modes_sha256 == before.modes_sha256
+    with pytest.raises(certification().CertificationRejected):
+        certificate_authority.issue_trial(root, trial_roots)
 
 
 def test_certificate_issuance_reopens_instead_of_trusting_a_typed_result(
@@ -931,11 +960,13 @@ def test_owner_trial_uses_fixed_docker_execution_and_refuses_replaced_callback(
     certificate = certificate_authority.issue_trial(proof_root, trial_roots)
     assert certificate_authority.verify_trial(certificate, trial_roots, release_source_binding().digest).passed
     api._require_certified_boundary(request, certificate)
-    callback_calls, docker_commands = [], []
+    callback_calls, docker_commands, final_admissions = [], [], []
     def callback(command):
         callback_calls.append(command)
         raise RuntimeError("injected callback was reached")
-    def docker_io(command):
+    def docker_io(command, *, before_spawn):
+        before_spawn()
+        final_admissions.append(command)
         docker_commands.append(command)
         raise RuntimeError("fixed Docker execution was reached")
     monkeypatch.setattr(container_boundary, "_run_bounded_command", docker_io)
@@ -945,10 +976,12 @@ def test_owner_trial_uses_fixed_docker_execution_and_refuses_replaced_callback(
         with pytest.raises(api.CertificationRejected):
             api.run_trial_turn(request, certificate, trial_roots)
         assert docker_commands == []
+        assert final_admissions == []
     else:
         with pytest.raises(RuntimeError, match="fixed Docker execution"):
             api.run_trial_turn(request, certificate, trial_roots)
         assert len(docker_commands) == 1
+        assert final_admissions == docker_commands
         assert docker_commands[0].argv[:4] == ("docker", "--context", "colima-fanout-isolated", "exec")
         assert boundary.container_id in docker_commands[0].argv
     assert callback_calls == [] and original_callback_calls == []

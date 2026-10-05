@@ -1060,7 +1060,7 @@ def test_host_relay_fails_on_extra_malformed_attempt_after_ceiling(tmp_path):
 
 def test_guest_idle_session_sends_finite_closure(monkeypatch):
     guest = _guest_module()
-    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/private/tmp") as socket_root:
+    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/tmp") as socket_root:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", socket_root)
         frames = _Frames([{"type": "ready_ack"}, {"type": "closed"}])
         relay = guest.GuestRelay("seat-1", "a" * 64, 1, frames,
@@ -1074,7 +1074,7 @@ def test_guest_idle_session_sends_finite_closure(monkeypatch):
 
 def test_guest_accepts_only_finite_34_attempt_ceiling(monkeypatch):
     guest = _guest_module()
-    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/private/tmp") as socket_root:
+    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/tmp") as socket_root:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", socket_root)
         frames = _Frames([])
         relay = guest.GuestRelay("seat-1", "a" * 64, 1, frames,
@@ -1093,7 +1093,7 @@ def test_guest_accepts_only_finite_34_attempt_ceiling(monkeypatch):
 
 def test_exhausted_relay_keeps_its_socket_until_owner_drain(monkeypatch):
     guest = _guest_module()
-    with tempfile.TemporaryDirectory(prefix="fanout-terminal-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="fanout-terminal-", dir="/tmp") as directory:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", directory)
         frames = _Frames([{"type": "ready_ack"}, {"type": "closed"}])
         relay = guest.GuestRelay("seat-1", "a" * 64, 1, frames,
@@ -1158,7 +1158,7 @@ def test_guest_unix_http_round_trip_uses_typed_host_frames(monkeypatch, tmp_path
         except Exception as error:
             failures.append(error)
 
-    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/private/tmp") as socket_root:
+    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/tmp") as socket_root:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", socket_root)
         relay = guest.GuestRelay("seat-1", permit_id, 1, guest_frames,
                                  max_requests=1, max_request_bytes=1024,
@@ -1210,7 +1210,7 @@ def test_guest_host_two_agy_auxiliary_denials_then_one_main_send(monkeypatch, tm
         except Exception as error:
             failures.append(error)
 
-    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/private/tmp") as socket_root:
+    with tempfile.TemporaryDirectory(prefix="fanout-", dir="/tmp") as socket_root:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", socket_root)
         relay = guest.GuestRelay("seat-1", permit_id, 1, guest_frames,
                                  max_requests=3, max_request_bytes=1024,
@@ -1267,6 +1267,18 @@ def _guest_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("length", [91, 128])
+def test_guest_linux_socket_limit_refuses_long_seat(length):
+    guest = _guest_module()
+    with pytest.raises(ValueError):
+        guest.seat_socket_path("s" * length)
+
+
+def test_guest_linux_socket_limit_accepts_exact_90_bytes():
+    guest = _guest_module()
+    assert guest.seat_socket_path("s" * 90) == "/run/fanout/" + "s" * 90 + ".sock"
 
 
 def test_guest_socket_is_exact_and_bridge_is_loopback_only(tmp_path, monkeypatch):

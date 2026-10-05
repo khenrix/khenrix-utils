@@ -48,6 +48,48 @@ class RunningLauncher:
         return self.handle
 
 
+def _complete_original_inputs(controller, request, spec, handle, permit, ledger,
+                              permit_id, epoch, origin, vm, socket, sessions):
+    from shared.lib.fanout.container_boundary import ContainerAdmission, PinnedDockerTransport
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant, _InputClaimJournal
+    identity = TransferIdentity(spec.run_id, spec.task_id, spec.target_id, spec.seat_id, request.inputs_digest)
+    claim = _InputClaimJournal(controller, identity, spec.workspace_volume)
+    if claim._read() is not None:
+        return claim.completed()
+    transport = PinnedDockerTransport(controller, spec, handle, RunningLauncher(handle),
+        lambda: vm, lambda _: socket, lambda: spec.image_digest, lambda _: spec.cli_digest,
+        lambda _: None, origin)
+    admission = ContainerAdmission(permit, permit_id, epoch, ledger,
+        spec.image_digest, spec.cli_digest, socket, transport, sessions, *origin)
+    source = controller.root / "quarantine" / f"original-{request.executor_id}-{spec.seat_id}"
+    source.mkdir(mode=0o700)
+    (source / "repo").mkdir(mode=0o700)
+    (source / "context").mkdir(mode=0o700)
+    (source / "repo" / "base.txt").write_text("original baseline\n")
+    (source / "context" / "full-plan.md").write_text("original complete plan\n")
+    manifest = snapshot_manifest(source, identity)
+    with ArtifactStore(controller.root / "quarantine" / "input-material-store") as store:
+        ref = store.write_json(f"{request.executor_id}-{spec.seat_id}/manifest.json", asdict(manifest))
+    info = source.stat()
+    material = write_evidence(controller, "container-input-material", {
+        "schema_version": "InputMaterialV1", "identity": asdict(identity),
+        "source_device": info.st_dev, "source_inode": info.st_ino,
+        "original_handle": asdict(handle), "workspace_volume": spec.workspace_volume,
+        "run_inputs_sha256": request.inputs_digest, "task_packet_sha256": "5" * 64,
+        "target_baseline_sha256": "6" * 64, "workspace_sha256": "7" * 64,
+        "skill_delivery_sha256": request.skill_delivery_sha256,
+        "dependency_context_sha256": "9" * 64,
+        "provider_context_sha256": request.context_sha256,
+        "skill_bundle_sha256": request.skill_bundle_sha256, "manifest_ref": asdict(ref),
+    })
+    grant = issue_input_source_grant(controller, request, transport, admission, source, *material)
+    guest = controller.root / "quarantine" / f"guest-{request.executor_id}-{spec.seat_id}"
+    guest.mkdir(mode=0o700)
+    transport._transfer_popen, _ = _guest_popen(guest, [], container_id=handle.container_id)
+    receipt = transport.stage_inputs(request, grant)
+    return receipt.evidence_name, receipt.evidence_digest
+
+
 @pytest.fixture
 def seat(tmp_path, request):
     from shared.lib.fanout.container_boundary import (
@@ -94,6 +136,7 @@ def seat(tmp_path, request):
     permit_id = ledger.register(permit, 1)
     origin = write_evidence(controller, "container-seat-launch", {
         "spec": asdict(spec), "handle": asdict(handle), "route": "start",
+        "volumes": __import__("test_fanout_container_runtime")._volumes(spec),
     })
     launcher = RunningLauncher(handle)
     transport = PinnedDockerTransport(
@@ -146,6 +189,15 @@ def seat(tmp_path, request):
     material_ref = write_evidence(controller, "container-input-material", material)
     return (controller, request, transport, admission, source,
             material_ref, manifest, vm, launcher, tmp_path)
+
+
+def test_initial_grant_retains_actual_complete_original_permit(seat):
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+    controller, request, transport, admission, source, material, *_ = seat
+    grant = issue_input_source_grant(controller, request, transport, admission, source, *material)
+    payload = read_evidence(controller, "container-input-grant", grant.evidence_name, grant.evidence_digest)
+    assert payload.get("original_permit") == asdict(admission.broker_permit)
+    assert payload["original_permit"]["route"] == "initial"
 
 
 def _guest_popen(tmp_path, calls, *, mode="normal", container_id=CONTAINER_ID):
@@ -612,6 +664,9 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
     origin = write_evidence(controller, "container-seat-launch", {
         "spec": asdict(recovered_spec), "handle": asdict(recovered_handle),
         "route": "recover",
+        "volumes": read_evidence(controller, "container-seat-launch",
+                                  receipt.handle_evidence_name, receipt.handle_evidence_digest)["volumes"],
+        "original_input": [receipt.evidence_name, receipt.evidence_digest],
         "recovery": {"spec": asdict(recovered_spec), "handle": asdict(recovered_handle), "predecessors": []},
     })
     recovered = PinnedDockerTransport(
@@ -777,7 +832,10 @@ def test_export_reopen_authenticates_persisted_tree_and_stopped_seat(seat, chang
     if changed is not None and (changed.startswith("recovery") or changed == "start-recovery"):
         recovery = {"spec": asdict(transport.spec), "handle": asdict(transport.handle), "predecessors": []}
         launch = {"spec": asdict(transport.spec), "handle": asdict(transport.handle),
-                  "route": "recover", "recovery": recovery}
+                  "route": "recover", "recovery": recovery,
+                  "volumes": read_evidence(controller, "container-seat-launch",
+                                            inputs.handle_evidence_name, inputs.handle_evidence_digest)["volumes"],
+                  "original_input": [inputs.evidence_name, inputs.evidence_digest]}
         if changed == "recovery-missing":
             launch.pop("recovery")
         elif changed == "recovery-extra":

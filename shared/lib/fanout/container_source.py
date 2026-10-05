@@ -17,6 +17,7 @@ _CORE = (
     "broker.py",
     "container_broker.py",
     "container_boundary.py",
+    "container_certification.py",
     "container_credentials.py",
     "container_routes.py",
     "container_source.py",
@@ -34,6 +35,8 @@ _MAX_FILES = 256
 _MAX_FILE_BYTES = 1024 * 1024
 _MAX_TOTAL_BYTES = 8 * 1024 * 1024
 _MAX_EXECUTABLE_BYTES = 128 * 1024 * 1024
+_CACHE_DIRECTORIES = frozenset({"__pycache__"})
+_CACHE_SUFFIXES = frozenset({".pyc", ".pyo"})
 
 
 class SourceClosureError(ValueError):
@@ -57,17 +60,20 @@ class ReleaseSourceBinding:
 
     runtime_sha256: str
     memory_sha256: str
+    modes_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        for value in (self.runtime_sha256, self.memory_sha256):
+        for value in (self.runtime_sha256, self.memory_sha256, *(() if self.modes_sha256 is None else (self.modes_sha256,))):
             if (not isinstance(value, str) or len(value) != 64
                     or any(char not in "0123456789abcdef" for char in value)):
                 raise SourceClosureError("release component digest is invalid")
 
     def _components(self) -> dict[str, object]:
-        return {"schema_version": "fanout-release-source-v1",
-                "components": {"runtime": self.runtime_sha256,
-                               "memory": self.memory_sha256}}
+        components = {"runtime": self.runtime_sha256, "memory": self.memory_sha256}
+        if self.modes_sha256 is not None:
+            components["modes"] = self.modes_sha256
+        return {"schema_version": "fanout-release-source-v2" if self.modes_sha256 is not None else "fanout-release-source-v1",
+                "components": components}
 
     @property
     def digest(self) -> str:
@@ -80,14 +86,41 @@ class ReleaseSourceBinding:
     @classmethod
     def from_dict(cls, value: object) -> ReleaseSourceBinding:
         if (not isinstance(value, dict) or set(value) != {"schema_version", "components", "digest"}
-                or value.get("schema_version") != "fanout-release-source-v1"
+                or not isinstance(value.get("schema_version"), str)
+                or value["schema_version"] not in {"fanout-release-source-v1", "fanout-release-source-v2"}
                 or not isinstance(value.get("components"), dict)
-                or set(value["components"]) != {"runtime", "memory"}):
+                or set(value["components"]) != ({"runtime", "memory", "modes"}
+                    if value["schema_version"] == "fanout-release-source-v2" else {"runtime", "memory"})
+                or value["schema_version"] == "fanout-release-source-v2" and value["components"]["modes"] is None):
             raise SourceClosureError("release source binding is invalid")
-        result = cls(value["components"]["runtime"], value["components"]["memory"])
+        result = cls(value["components"]["runtime"], value["components"]["memory"], value["components"].get("modes"))
         if value["digest"] != result.digest:
             raise SourceClosureError("release source binding digest differs")
         return result
+
+
+def _owned_files(root: Path, relative: str) -> set[str]:
+    pending = [root / relative]
+    selected = set()
+    visited = 0
+    while pending:
+        path = pending.pop()
+        try:
+            info = path.lstat()
+            visited += 1
+            if visited > _MAX_FILES:
+                raise SourceClosureError("source closure membership budget exceeded")
+            if stat.S_ISDIR(info.st_mode):
+                if path.name not in _CACHE_DIRECTORIES:
+                    pending.extend(path.iterdir())
+            elif stat.S_ISREG(info.st_mode):
+                if path.suffix not in _CACHE_SUFFIXES:
+                    selected.add(path.relative_to(root).as_posix())
+            else:
+                raise SourceClosureError(f"owned source is not regular or is a symlink: {path}")
+        except OSError as error:
+            raise SourceClosureError(f"owned source directory is missing or unsafe: {path}") from error
+    return selected
 
 
 def _source_paths(root: Path) -> list[str]:
@@ -96,6 +129,8 @@ def _source_paths(root: Path) -> list[str]:
         for pattern in ("shared/lib/fanout/*.py", "scripts/fanout_*.py")
         for path in root.glob(pattern)
     }
+    for relative in ("shared/lib/fanout", "components/fanout-container"):
+        selected.update(_owned_files(root, relative))
     required = {
         "capabilities.toml",
         "scripts/lib/checks.py",
@@ -117,9 +152,13 @@ def _source_paths(root: Path) -> list[str]:
         scripts = list(skill.glob("scripts/*.py"))
         if len(scripts) != 1:
             raise SourceClosureError(f"required fanout skill needs exactly one script: {name}")
+        entry = {"llm-fanout-plan": "plan.py", "llm-fanout-execute": "execute.py"}.get(name)
+        if entry is not None and scripts[0].name != entry:
+            raise SourceClosureError(f"required fanout skill entry is missing: {name}")
         required.update(metadata)
         selected.update(metadata)
         selected.add(scripts[0].relative_to(root).as_posix())
+        selected.update(_owned_files(root, skill.relative_to(root).as_posix()))
     missing = sorted(name for name in required if not (root / name).exists()
                      and not (root / name).is_symlink())
     if missing:
@@ -128,6 +167,36 @@ def _source_paths(root: Path) -> list[str]:
     if len(selected) > _MAX_FILES:
         raise SourceClosureError("source closure file budget exceeded")
     return sorted(selected)
+
+
+def _source_identity(info) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, info.st_mode)
+
+
+def _portable_mode(mode: int) -> int:
+    return 0o755 if mode & 0o111 else 0o644
+
+
+def _source_inventory(root: Path, names: list[str]) -> dict:
+    observed = {}
+    try:
+        for name in names:
+            path = root / name
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_FILE_BYTES:
+                raise SourceClosureError(f"source is not regular, is a symlink, or exceeds budget: {path}")
+            observed[("file", name)] = _source_identity(info)
+            for directory in (root, *[root / parent for parent in Path(name).parents if parent != Path(".")]):
+                identity = directory.lstat()
+                if not stat.S_ISDIR(identity.st_mode):
+                    raise SourceClosureError(f"source directory is unsafe or a symlink: {directory}")
+                observed[("directory", directory.relative_to(root).as_posix())] = (identity.st_dev, identity.st_ino, identity.st_mode)
+    except OSError as error:
+        raise SourceClosureError("source inventory changed or is missing") from error
+    if sum(info[2] for key, info in observed.items() if key[0] == "file") > _MAX_TOTAL_BYTES:
+        raise SourceClosureError("source union byte budget exceeded")
+    return observed
 
 
 def _read_source(root: Path, name: str, budget: int) -> bytes:
@@ -154,15 +223,15 @@ def _read_source(root: Path, name: str, budget: int) -> bytes:
         try:
             opened = os.fstat(fd)
             if (not stat.S_ISREG(opened.st_mode)
-                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                    or _source_identity(opened) != _source_identity(before)
                     or opened.st_size > min(_MAX_FILE_BYTES, budget)):
                 raise SourceClosureError(f"source changed or exceeded budget: {path}")
             with os.fdopen(fd, "rb", closefd=False) as stream:
                 data = stream.read(min(_MAX_FILE_BYTES, budget) + 1)
             after = os.fstat(fd)
             if (len(data) != opened.st_size or len(data) > min(_MAX_FILE_BYTES, budget)
-                    or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                    != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)):
+                    or _source_identity(after) != _source_identity(opened)
+                    or _source_identity(path.lstat()) != _source_identity(opened)):
                 raise SourceClosureError(f"source changed or exceeded budget: {path}")
             return data
         finally:
@@ -190,7 +259,7 @@ def runtime_source_digest(root: Path | None = None) -> str:
     return _digest_paths(source_root, _source_paths(source_root))
 
 
-def _validate_active_skill(root: Path) -> None:
+def _validate_active_skill(root: Path, *, modes: bool = False) -> None:
     """Bind direct-copy entry/metadata duplicates to the canonical release bytes."""
     entries = {"llm-fanout-plan": "scripts/plan.py",
                "llm-fanout-execute": "scripts/execute.py"}
@@ -208,6 +277,8 @@ def _validate_active_skill(root: Path) -> None:
         canonical = f"shared/skills/{name}/{relative}"
         if _read_source(active_root, relative, _MAX_TOTAL_BYTES) != _read_source(root, canonical, _MAX_TOTAL_BYTES):
             raise SourceClosureError(f"active fanout skill differs from canonical source: {relative}")
+        if modes and _portable_mode((active_root / relative).lstat().st_mode) != _portable_mode((root / canonical).lstat().st_mode):
+            raise SourceClosureError(f"active fanout skill mode differs from canonical source: {relative}")
 
 
 def _digest_paths(source_root: Path, names: list[str], *,
@@ -237,8 +308,14 @@ def _memory_paths(root: Path, controller: bytes | None = None) -> list[str]:
                         and any(isinstance(target, ast.Name) and target.id == "CONTROLLER_FILES"
                                 for target in node.targets)]
         writes = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
-                  and node.id == "CONTROLLER_FILES" and isinstance(node.ctx, ast.Store)]
-        if len(declarations) != 1 or len(declarations[0].targets) != 1 or len(writes) != 1:
+                  and node.id == "CONTROLLER_FILES" and isinstance(node.ctx, (ast.Store, ast.Del))]
+        bindings = [node for node in ast.walk(tree) if
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler, ast.MatchAs, ast.MatchStar))
+            and node.name == "CONTROLLER_FILES"
+            or isinstance(node, ast.alias) and (node.asname or node.name.split(".")[0]) == "CONTROLLER_FILES"
+            or isinstance(node, ast.MatchMapping) and node.rest == "CONTROLLER_FILES"
+            or isinstance(node, ast.arg) and node.arg == "CONTROLLER_FILES"]
+        if len(declarations) != 1 or len(declarations[0].targets) != 1 or len(writes) != 1 or bindings:
             raise ValueError
         names = ast.literal_eval(declarations[0].value)
     except (ValueError, SyntaxError, TypeError, RecursionError) as error:
@@ -258,11 +335,38 @@ def _memory_paths(root: Path, controller: bytes | None = None) -> list[str]:
 def release_source_binding(root: Path | None = None) -> ReleaseSourceBinding:
     """Attest the named runtime and managed-memory closures without importing memory code."""
     source_root = _source_root(root)
-    runtime = runtime_source_digest(source_root)
+    runtime_names = _source_paths(source_root)
+    controller_name = "components/memory/memoryctl.py"
+    controller_inventory = _source_inventory(source_root, [controller_name])
     controller = _read_source(source_root, "components/memory/memoryctl.py", _MAX_TOTAL_BYTES)
-    memory = _digest_paths(source_root, _memory_paths(source_root, controller),
+    memory_names = _memory_paths(source_root, controller)
+    names = sorted(set(runtime_names) | set(memory_names))
+    if len(names) > _MAX_FILES:
+        raise SourceClosureError("source union file budget exceeded")
+    before = _source_inventory(source_root, names)
+    if any(before[key] != value for key, value in controller_inventory.items()):
+        raise SourceClosureError("memory controller changed during selection")
+    active_root = source_root.parent if source_root.name == ".runtime" else source_root
+    active_names = [name for name in ("SKILL.md", "agents/openai.yaml", "scripts/execute.py", "scripts/plan.py")
+                    if (active_root / name).exists() or (active_root / name).is_symlink()]
+    active_before = _source_inventory(active_root, active_names)
+    _validate_active_skill(source_root, modes=True)
+    runtime = _digest_paths(source_root, runtime_names)
+    memory = _digest_paths(source_root, memory_names,
                            selected_controller=controller)
-    return ReleaseSourceBinding(runtime, memory)
+    if (_source_paths(source_root) != runtime_names
+            or _memory_paths(source_root) != memory_names
+            or _source_inventory(source_root, names) != before
+            or [name for name in ("SKILL.md", "agents/openai.yaml", "scripts/execute.py", "scripts/plan.py")
+                if (active_root / name).exists() or (active_root / name).is_symlink()] != active_names
+            or _source_inventory(active_root, active_names) != active_before):
+        raise SourceClosureError("source union inventory changed during attestation")
+    modes = hashlib.sha256()
+    for name in names:
+        relative = name.encode("utf-8")
+        modes.update(len(relative).to_bytes(4, "big") + relative)
+        modes.update(_portable_mode(before[("file", name)][-1]).to_bytes(4, "big"))
+    return ReleaseSourceBinding(runtime, memory, modes.hexdigest())
 
 
 def host_runtime_identity() -> HostRuntimeIdentity:

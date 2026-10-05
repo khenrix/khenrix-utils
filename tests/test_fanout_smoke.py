@@ -456,7 +456,7 @@ def test_live_cold_reopen_rejects_memory_component_drift_with_legacy_hash_unchan
     monkeypatch.setattr(fanout_smoke, "release_source_binding", lambda: before, raising=False)
     fanout_smoke.prepare_live(root, authorized=True, **dependencies)
     monkeypatch.setattr(fanout_smoke, "release_source_binding",
-                        lambda: ReleaseSourceBinding(before.runtime_sha256, "e" * 64))
+                        lambda: ReleaseSourceBinding(before.runtime_sha256, "e" * 64, before.modes_sha256))
     with pytest.raises(fanout_smoke.SmokeError, match="release|component"):
         fanout_smoke.resume_live(root, authorized=True, **dependencies)
     assert len(_calls(root)) == 3
@@ -480,7 +480,7 @@ def test_live_cold_reopen_rejects_relabelled_release_before_preflight(
     state_path = root / "state.json"
     state = json.loads(state_path.read_bytes())
     original_inputs = state["inputs"]
-    changed = ReleaseSourceBinding(before.runtime_sha256, "e" * 64)
+    changed = ReleaseSourceBinding(before.runtime_sha256, "e" * 64, before.modes_sha256)
     state["release_binding"] = changed.to_dict()
     if relabel_inputs:
         state["inputs"]["skill_manifests"]["release-source"] = changed.digest

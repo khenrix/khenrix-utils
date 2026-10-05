@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -47,8 +48,9 @@ class Evidence:
 
     def run(self, argv: tuple[str, ...], *, input_bytes: bytes | None = None,
             timeout: int = 60) -> str | bytes:
-        result = subprocess.run(argv, input=input_bytes, capture_output=True,
-                                timeout=timeout, check=False)
+        from shared.lib.fanout.container_boundary import _run_control_command
+        from shared.lib.fanout.process import ProcessStatus
+        result = _run_control_command(argv, data=input_bytes or b"", timeout=timeout)
         record = {"argv": list(argv), "exit_code": result.returncode,
                   "stdout": result.stdout.decode("utf-8", "replace") if input_bytes is None
                   else {"sha256": hashlib.sha256(result.stdout).hexdigest(),
@@ -56,7 +58,7 @@ class Evidence:
                   "stderr": result.stderr.decode("utf-8", "replace")}
         self.data["commands"].append(record)
         self.save()
-        if result.returncode != 0:
+        if result.status != ProcessStatus.EXIT or result.returncode != 0:
             raise ProviderRequestError(f"control command failed: {argv[0]} {argv[1]}")
         return result.stdout if input_bytes is not None else result.stdout.decode("utf-8", "replace")
 
@@ -270,8 +272,90 @@ def _strict_ssh_argv(config: str, known_hosts: Path,
     )
 
 
+def _console_host_key(home: Path, context: dict[str, object],
+                       scanned_key: str) -> str:
+    if not isinstance(context, dict):
+        raise ProviderRequestError("SSH host key enrollment lacks independent console witness")
+    try:
+        identity = _profile_identity(home, context, hashlib.sha256(scanned_key.encode("ascii")).hexdigest())
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ProviderRequestError("SSH console instance identity is unavailable") from error
+    marker = home / ".colima" / f".{PROFILE}-fanout-owner.json"
+    claim = {"schema": 1, "profile": PROFILE, "context": CONTEXT,
+             "uid": os.getuid(), "start_argv": list(START_ARGV)}
+    descriptors = []
+    paths = []
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(fd)
+        path = home
+        for name in (".colima", "_lima", f"colima-{PROFILE}"):
+            fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            descriptors.append(fd)
+            path = path / name
+            info = os.fstat(fd)
+            if (info.st_uid != os.getuid() or info.st_mode & 0o022
+                    or name == f"colima-{PROFILE}" and stat.S_IMODE(info.st_mode) != 0o700):
+                raise ProviderRequestError("SSH console instance parent is unsafe")
+            paths.append((path, info.st_dev, info.st_ino))
+        marker_fd = os.open(marker.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptors[1])
+        descriptors.append(marker_fd)
+        info = os.fstat(marker_fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 4096
+                or json.loads(os.read(marker_fd, 4097)) != claim):
+            raise ProviderRequestError("SSH console instance is not probe-owned")
+        before = os.stat("serial.log", dir_fd=fd, follow_symlinks=False)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                or before.st_nlink != 1 or before.st_mode & 0o022
+                or not 0 < before.st_size <= 1024 * 1024):
+            raise ProviderRequestError("SSH console witness is unsafe or oversized")
+        log_fd = os.open("serial.log", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        descriptors.append(log_fd)
+        def metadata(info):
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                    info.st_ctime_ns, info.st_mode, info.st_uid, info.st_nlink)
+        if metadata(os.fstat(log_fd)) != metadata(before):
+            raise ProviderRequestError("SSH console witness changed before read")
+        raw = bytearray()
+        while len(raw) <= before.st_size:
+            chunk = os.read(log_fd, min(65536, before.st_size + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        if (len(raw) != before.st_size or metadata(os.fstat(log_fd)) != metadata(before)
+                or metadata(os.stat("serial.log", dir_fd=fd, follow_symlinks=False)) != metadata(before)
+                or any((path.lstat().st_dev, path.lstat().st_ino) != (device, inode)
+                       for path, device, inode in paths)
+                or _profile_identity(home, context, identity["ssh_host_key_sha256"]) != identity):
+            raise ProviderRequestError("SSH console witness or instance changed during read")
+        text = bytes(raw).decode("utf-8")
+        begin, end = "-----BEGIN SSH HOST KEY KEYS-----", "-----END SSH HOST KEY KEYS-----"
+        lines = text.splitlines()
+        if lines.count(begin) != 1 or lines.count(end) != 1 or lines.index(begin) >= lines.index(end):
+            raise ProviderRequestError("SSH console key block is incomplete or ambiguous")
+        if any(line.startswith("ssh-ed25519 ") for line in
+               lines[:lines.index(begin)] + lines[lines.index(end) + 1:]):
+            raise ProviderRequestError("SSH console key is outside its complete block")
+        keys = [line.split() for line in lines[lines.index(begin) + 1:lines.index(end)]
+                if line.startswith("ssh-ed25519 ")]
+        if len(keys) != 1 or len(keys[0]) not in (2, 3):
+            raise ProviderRequestError("SSH console Ed25519 key is absent or ambiguous")
+        key = " ".join(keys[0][:2])
+        decoded = base64.b64decode(keys[0][1], validate=True)
+        if (len(decoded) != 51 or decoded[:19] != b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+                or base64.b64encode(decoded).decode("ascii") != keys[0][1]):
+            raise ProviderRequestError("SSH console Ed25519 key is malformed")
+        return key
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError) as error:
+        raise ProviderRequestError("SSH console witness is unavailable or invalid") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _admit_host_key(home: Path, scanned_key: str,
-                    guest_key: str | None) -> tuple[str, Path]:
+                    context: dict[str, object] | None) -> tuple[str, Path]:
     pin_path = home / ".colima/.fanout-isolated-known_hosts"
     if re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/]+={0,2}", scanned_key) is None:
         raise ProviderRequestError("SSH host key scan is malformed")
@@ -280,8 +364,8 @@ def _admit_host_key(home: Path, scanned_key: str,
     except FileNotFoundError:
         pin_stat = None
     if pin_stat is None:
-        if guest_key != scanned_key:
-            raise ProviderRequestError("SSH host key enrollment lacks matching guest key")
+        if _console_host_key(home, context, scanned_key) != scanned_key:
+            raise ProviderRequestError("SSH host key enrollment lacks matching independent console key")
         fd = os.open(pin_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
             os.write(fd, f"fanout-isolated {scanned_key}\n".encode("ascii"))
@@ -351,15 +435,7 @@ def _attest_live(evidence: Evidence, home: Path,
         raise ProviderRequestError("SSH host key scan is ambiguous")
     scanned_key = f"{scan_lines[0][1]} {scan_lines[0][2]}"
     pin_path = home / ".colima/.fanout-isolated-known_hosts"
-    guest_key = None
-    if not pin_path.exists() and allow_enroll:
-        guest_pub = evidence.run(("colima", "ssh", "-p", PROFILE, "--",
-                                  "cat", "/etc/ssh/ssh_host_ed25519_key.pub"))
-        guest_parts = guest_pub.split()
-        if len(guest_parts) < 2:
-            raise ProviderRequestError("SSH host key guest witness is malformed")
-        guest_key = f"{guest_parts[0]} {guest_parts[1]}"
-    pinned_key, pin_path = _admit_host_key(home, scanned_key, guest_key)
+    pinned_key, pin_path = _admit_host_key(home, scanned_key, context if allow_enroll else None)
     evidence.data["ssh_host_key_pin_path"] = str(pin_path)
     evidence.data["ssh_host_key_sha256"] = hashlib.sha256(
         pinned_key.encode("ascii")).hexdigest()

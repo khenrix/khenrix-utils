@@ -14,6 +14,7 @@ import secrets
 import stat
 import subprocess
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Callable
 
 from .errors import ProviderRequestError
@@ -86,6 +87,7 @@ class _InventoryScope:
 
     stopped: tuple[tuple[str, str], ...]
     active: tuple[tuple[ContainerSpec, ContainerHandle], ...]
+    volumes: tuple[tuple[str, dict], ...] = ()
 
 
 def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHandle,
@@ -97,13 +99,19 @@ def decode_launch_record(value: object, spec: ContainerSpec, handle: ContainerHa
             or not isinstance(handle.inspect_sha256, str) or _SHA.fullmatch(handle.inspect_sha256) is None
             or (handle.workspace_volume, handle.session_volume) != (spec.workspace_volume, spec.session_volume)):
         raise ProviderRequestError("container launch handle differs")
-    keys = {"spec", "handle", "route"} | ({"recovery"} if recover else set())
+    keys = {"spec", "handle", "route", "volumes"} | ({"recovery", "original_input"} if recover else set())
     if (not isinstance(value, dict) or set(value) != keys
             or value["spec"] != asdict(spec) or value["handle"] != asdict(handle)
             or value["route"] != ("recover" if recover else "start")):
         raise ProviderRequestError("container launch association differs")
+    ContainerLauncher._validate_volume_records(spec, value["volumes"])
     if not recover:
         return None
+    ref = value["original_input"]
+    if (not isinstance(ref, list) or len(ref) != 2
+            or not isinstance(ref[1], str) or _SHA.fullmatch(ref[1]) is None
+            or ref[0] != ref[1] + ".json"):
+        raise ProviderRequestError("original input receipt reference is invalid")
     recovery = value["recovery"]
     if (not isinstance(recovery, dict) or set(recovery) != {"spec", "handle", "predecessors"}
             or recovery["spec"] != asdict(spec) or recovery["handle"] != asdict(handle)
@@ -194,6 +202,12 @@ class GuestSocketAttestation:
 GuestSocketAttestor = Callable[[str], GuestSocketAttestation]
 
 
+def seat_socket_path(seat_id: str) -> str:
+    if not isinstance(seat_id, str) or _ID.fullmatch(seat_id) is None or len(seat_id) > 90:
+        raise ProviderRequestError("container seat exceeds the Linux guest socket path limit")
+    return f"{GUEST_SOCKET_ROOT}/{seat_id}.sock"
+
+
 def private_volume_names(run_id: str, task_id: str, target_id: str,
                          seat_id: str) -> tuple[str, str]:
     """Derive private names from controller identities, never a guest path."""
@@ -259,6 +273,14 @@ class ContainerLauncher:
         self._docker = docker_runner or _default_docker
         self._socket_attestor = guest_socket_attestor
         self._recovery: _RecoveryAssociation | None = None
+        self._volume_expectations = None
+        self._volume_handle = None
+        self._observed_volumes = {}
+
+    def restore_launch(self, value, spec, handle, *, recover):
+        self._recovery = decode_launch_record(value, spec, handle, recover=recover)
+        self._volume_expectations = (spec, json.loads(canonical_json(value["volumes"])))
+        self._volume_handle = (spec, handle)
 
     def _run(self, *args: str) -> bytes:
         argv = DOCKER + args
@@ -280,8 +302,7 @@ class ContainerLauncher:
                                         spec.seat_id)
         if (spec.workspace_volume, spec.session_volume) != expected:
             raise ProviderRequestError("container private volume identity differs")
-        if not isinstance(spec.socket_path, str) or spec.socket_path != (
-                f"{GUEST_SOCKET_ROOT}/{spec.seat_id}.sock"):
+        if not isinstance(spec.socket_path, str) or spec.socket_path != seat_socket_path(spec.seat_id):
             raise ProviderRequestError("container guest socket path differs")
         if not isinstance(spec.image_digest, str) or _IMAGE.fullmatch(spec.image_digest) is None:
             raise ProviderRequestError("container image is not pinned by digest")
@@ -340,7 +361,38 @@ class ContainerLauncher:
             raise ProviderRequestError("Docker image digest reference differs")
         return image_id
 
-    def _volume(self, spec: ContainerSpec, kind: str, *, create: bool) -> str:
+    @staticmethod
+    def _validate_volume_record(spec, kind, item):
+        name = spec.workspace_volume if kind == "workspace" else spec.session_volume
+        if not isinstance(item, dict):
+            raise ProviderRequestError("Docker private volume record is invalid")
+        mountpoint = item.get("Mountpoint")
+        created = item.get("CreatedAt")
+        if (item.get("Name") != name or item.get("Driver") != "local"
+                or item.get("Scope") != "local" or not _empty(item.get("Options"))
+                or item.get("Labels") != ContainerLauncher._volume_labels(spec, kind)
+                or not isinstance(mountpoint, str) or not mountpoint.startswith("/")
+                or mountpoint.startswith(("/Users/", "/Volumes/", "/private/", "/host_mnt/"))
+                or not isinstance(created, str) or re.fullmatch(
+                    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})",
+                    created) is None):
+            raise ProviderRequestError("Docker private volume identity or creation metadata differs")
+        try:
+            datetime.fromisoformat(created)
+        except ValueError as error:
+            raise ProviderRequestError("Docker private volume CreatedAt is invalid") from error
+        if _guest_path(mountpoint) != mountpoint:
+            raise ProviderRequestError("Docker private volume mountpoint is not canonical")
+        return mountpoint
+
+    @staticmethod
+    def _validate_volume_records(spec, records):
+        if not isinstance(records, dict) or set(records) != {"workspace", "session"}:
+            raise ProviderRequestError("original private volume metadata is absent")
+        for kind in ("workspace", "session"):
+            ContainerLauncher._validate_volume_record(spec, kind, records[kind])
+
+    def _volume(self, spec: ContainerSpec, kind: str, *, create: bool, expected=None) -> str:
         name = spec.workspace_volume if kind == "workspace" else spec.session_volume
         labels = self._volume_labels(spec, kind)
         if create:
@@ -351,15 +403,16 @@ class ContainerLauncher:
             if created != name:
                 raise ProviderRequestError("Docker private volume creation changed identity")
         item = _json_one(self._run("volume", "inspect", name), "volume inspect")
-        mountpoint = item.get("Mountpoint")
-        if (item.get("Name") != name or item.get("Driver") != "local"
-                or item.get("Scope") != "local" or not _empty(item.get("Options"))
-                or item.get("Labels") != labels
-                or not isinstance(mountpoint, str) or not mountpoint.startswith("/")
-                or mountpoint.startswith(("/Users/", "/Volumes/", "/private/", "/host_mnt/"))):
-            raise ProviderRequestError("Docker private volume identity or driver differs")
-        if _guest_path(mountpoint) != mountpoint:
-            raise ProviderRequestError("Docker private volume mountpoint is not canonical")
+        mountpoint = self._validate_volume_record(spec, kind, item)
+        if expected is None and self._volume_expectations is not None:
+            if self._volume_expectations[0] != spec:
+                raise ProviderRequestError("original private volume seat association differs")
+            expected = self._volume_expectations[1]
+        if expected is not None:
+            self._validate_volume_records(spec, expected)
+            if item != expected[kind]:
+                raise ProviderRequestError("original private volume creation metadata changed")
+        self._observed_volumes[name] = item
         return mountpoint
 
     @staticmethod
@@ -728,6 +781,10 @@ class ContainerLauncher:
                 raise ProviderRequestError("container inventory stopped association is invalid")
             predecessors = scope.stopped
             active_ids = set()
+            peer_volumes = dict(scope.volumes)
+            if len(peer_volumes) != len(scope.volumes) or set(peer_volumes) != {
+                    handle.container_id for _, handle in scope.active}:
+                raise ProviderRequestError("active sibling original volume metadata is absent")
             for entry in scope.active:
                 if not isinstance(entry, tuple) or len(entry) != 2:
                     raise ProviderRequestError("container inventory active association is invalid")
@@ -746,8 +803,8 @@ class ContainerLauncher:
                 active_ids.add(peer_handle.container_id)
                 if peer_handle.container_id == exclude_id:
                     continue
-                sources = (self._volume(peer_spec, "workspace", create=False),
-                           self._volume(peer_spec, "session", create=False))
+                sources = (self._volume(peer_spec, "workspace", create=False, expected=peer_volumes[peer_handle.container_id]),
+                           self._volume(peer_spec, "session", create=False, expected=peer_volumes[peer_handle.container_id]))
                 if self._resource_conflict(spec, {"Mounts": [], "HostConfig": {"Mounts": []}},
                                            self._labels(peer_spec), volume_sources):
                     raise ProviderRequestError("active sibling resource conflict")
@@ -955,9 +1012,17 @@ class ContainerLauncher:
                 scope: _InventoryScope | None = None) -> ContainerHandle:
         if self._socket_attestor is None:
             raise ProviderRequestError("authenticated guest socket attestor is required")
+        if recover:
+            if self._volume_expectations is None or self._volume_expectations[0] != spec:
+                raise ProviderRequestError("authenticated original volume authority is absent")
+            self._validate_volume_records(spec, self._volume_expectations[1])
         image_id = self._image_id(spec)
-        workspace_source = self._volume(spec, "workspace", create=True)
-        session_source = self._volume(spec, "session", create=True)
+        workspace_source = self._volume(spec, "workspace", create=not recover)
+        session_source = self._volume(spec, "session", create=not recover)
+        if not recover:
+            self._volume_expectations = (spec, json.loads(canonical_json({
+                "workspace": self._observed_volumes[spec.workspace_volume],
+                "session": self._observed_volumes[spec.session_volume]})))
         sources = (workspace_source, session_source)
         predecessors = self._inventory(spec, sources, fence_owned=recover and scope is None,
                                        scope=scope, image_id=image_id)
@@ -991,6 +1056,7 @@ class ContainerLauncher:
                                      spec.workspace_volume, spec.session_volume)
             if recover:
                 self._recovery = _RecoveryAssociation(spec, handle, predecessors)
+            self._volume_handle = (spec, handle)
             return handle
         except BaseException as primary:
             try:
@@ -1006,6 +1072,8 @@ class ContainerLauncher:
 
     def start(self, spec: ContainerSpec, *, scope: _InventoryScope | None = None) -> ContainerHandle:
         self._recovery = None
+        self._volume_expectations = None
+        self._volume_handle = None
         self._validate_spec(spec)
         return self._launch(spec, recover=False, scope=scope)
 
@@ -1017,6 +1085,8 @@ class ContainerLauncher:
     def attest_running(self, spec: ContainerSpec, handle: ContainerHandle, *,
                        scope: _InventoryScope | None = None) -> ContainerHandle:
         self._validate_spec(spec)
+        if self._volume_handle != (spec, handle) or self._volume_expectations is None:
+            raise ProviderRequestError("running private volume launch association conflict")
         if (not isinstance(handle, ContainerHandle)
                 or not isinstance(handle.container_id, str)
                 or _CONTAINER_ID.fullmatch(handle.container_id) is None

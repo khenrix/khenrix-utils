@@ -33,6 +33,7 @@ from .container_runtime import (ContainerHandle, ContainerLauncher, ContainerSpe
 from .container_transfer_transport import (
     CandidateExportReceipt, InputSourceGrant, InputTransferReceipt,
     abandon_input_claim, admitted_request_digest,
+    authenticate_launch_record, original_input_launch,
     export_candidate as _export_candidate,
     reopen_input_receipt as _reopen_input_receipt,
     stage_inputs as _stage_inputs,
@@ -120,7 +121,10 @@ def _require_sha(value: object, name: str) -> str:
 
 def _run_bounded_command(command: ProcessCommand, *,
                          stdout_cap: int = _MAX_CLI_STDOUT,
-                         stderr_cap: int = _MAX_CLI_STDERR) -> ProcessResult:
+                         stderr_cap: int = _MAX_CLI_STDERR,
+                         before_spawn: Callable[[], None] | None = None,
+                         acquire_slot: bool = True,
+                         output_limit_result: bool = False) -> ProcessResult:
     """Capture a Docker exec without letting guest output grow host memory."""
     if (not isinstance(command, ProcessCommand)
             or type(stdout_cap) is not int or stdout_cap < 1
@@ -128,8 +132,10 @@ def _run_bounded_command(command: ProcessCommand, *,
         raise ProviderRequestError("container process capture limit is invalid")
     environment = build_child_environment(
         overrides=command.environment, max_depth=command.max_depth)
-    with executor_slot(root=command.slot_root, cap=command.slot_cap,
-                       timeout=command.slot_timeout):
+    with (executor_slot(root=command.slot_root, cap=command.slot_cap,
+                        timeout=command.slot_timeout) if acquire_slot else nullcontext()):
+        if before_spawn is not None:
+            before_spawn()
         try:
             process = subprocess.Popen(
                 command.argv, cwd=command.cwd, env=environment,
@@ -182,6 +188,11 @@ def _run_bounded_command(command: ProcessCommand, *,
                         selector.unregister(key.fileobj)
                     elif len(output) + len(chunk) > cap:
                         _cleanup_group(process, command.term_grace, command.reap_timeout)
+                        if output_limit_result:
+                            return ProcessResult(
+                                ProcessStatus.OUTPUT_LIMIT, process.returncode,
+                                bytes(streams["stdout"]), bytes(streams["stderr"]),
+                                error=key.data, capture_complete=False)
                         raise ProviderRequestError("container process output limit exceeded")
                     else:
                         output.extend(chunk)
@@ -207,6 +218,13 @@ def _run_bounded_command(command: ProcessCommand, *,
             for pipe in (process.stdin, process.stdout, process.stderr):
                 if pipe is not None and not pipe.closed:
                     pipe.close()
+
+
+def _run_control_command(argv: tuple[str, ...], *, data: bytes = b"",
+                         timeout: float = 30) -> ProcessResult:
+    return _run_bounded_command(
+        ProcessCommand(argv, data, timeout=timeout), stdout_cap=1024 * 1024,
+        stderr_cap=_MAX_CLI_STDERR, acquire_slot=False, output_limit_result=True)
 
 
 class ContainerTransport(Protocol):
@@ -276,11 +294,22 @@ class PinnedDockerTransport:
               cli_attestor: Callable[[str], str],
               process_runner: Callable[[ProcessCommand], ProcessResult],
               recover: bool = False, lifecycle_scope=None,
-              context_ref=None, session_control=None) -> "PinnedDockerTransport":
+              context_ref=None, session_control=None,
+              request: ProviderRequest | None = None) -> "PinnedDockerTransport":
         if lifecycle_scope is not None:
             from .container_coordinator import _CoordinatorLifecycle
             if type(lifecycle_scope) is not _CoordinatorLifecycle or lifecycle_scope.controller is not controller:
                 raise ProviderRequestError("container lifecycle owner is invalid")
+        original_input = None
+        if recover:
+            if request is None or session_control is None:
+                raise ProviderRequestError("container recovery lacks original input authority")
+            origin, original_input = original_input_launch(controller, request, spec,
+                broker=session_control.broker, current_permit=session_control.broker.permit,
+                ledger=session_control.ledger, permit_id=session_control.permit_id,
+                epoch=session_control.epoch)
+            launcher.restore_launch(origin, spec, ContainerHandle(**origin["handle"]), recover=False)
+        if lifecycle_scope is not None:
             with lifecycle_scope.guard:
                 try:
                     scope = lifecycle_scope.prepare(launcher, spec, context_ref, session_control)
@@ -289,7 +318,7 @@ class PinnedDockerTransport:
                         image_attestor=image_attestor, cli_attestor=cli_attestor,
                         process_runner=process_runner, recover=recover, scope=scope,
                         lifecycle_scope=lifecycle_scope, context_ref=context_ref,
-                        session_control=session_control)
+                        session_control=session_control, original_input=original_input)
                 except BaseException as primary:
                     if not lifecycle_scope.blocked:
                         lifecycle_scope.fail(spec, None, session_control, primary)
@@ -297,13 +326,13 @@ class PinnedDockerTransport:
         return cls._start_guarded(controller, spec, launcher=launcher,
             vm_attestor=vm_attestor, socket_attestor=socket_attestor,
             image_attestor=image_attestor, cli_attestor=cli_attestor,
-            process_runner=process_runner, recover=recover)
+            process_runner=process_runner, recover=recover, original_input=original_input)
 
     @classmethod
     def _start_guarded(cls, controller, spec, *, launcher, vm_attestor,
                        socket_attestor, image_attestor, cli_attestor,
                        process_runner, recover, scope=None, lifecycle_scope=None,
-                       context_ref=None, session_control=None):
+                       context_ref=None, session_control=None, original_input=None):
         assert_controller(controller)
         if scope is None:
             handle = launcher.recover(spec) if recover else launcher.start(spec)
@@ -314,10 +343,12 @@ class PinnedDockerTransport:
             record = {
                 "spec": asdict(spec), "handle": asdict(handle),
                 "route": "recover" if recover else "start",
+                "volumes": launcher._volume_expectations[1],
             }
             if recover:
                 record["recovery"] = json.loads(canonical_json(asdict(launcher._recovery)))
-            decode_launch_record(record, spec, handle, recover=recover)
+                record["original_input"] = original_input
+            authenticate_launch_record(controller, record, spec, handle)
             origin = write_evidence(controller, _HANDLE_CATEGORY, record)
             transport = cls(controller, spec, handle, launcher, vm_attestor,
                             socket_attestor, image_attestor, cli_attestor,
@@ -343,11 +374,17 @@ class PinnedDockerTransport:
     def start_live(cls, controller: LifecycleController, spec: ContainerSpec, *,
                    ledger: PermitLedger, broker: Broker, permit_id: str,
                    epoch: int, recover: bool = False, lifecycle_scope=None,
-                   context_ref=None) -> "PinnedDockerTransport":
+                   context_ref=None, request: ProviderRequest | None = None) -> "PinnedDockerTransport":
         """Open the owner-pinned relay, then create one inspected seat."""
+        ContainerLauncher._validate_spec(spec)
         if (not isinstance(broker, Broker)
                 or broker.permit.upstream_route_digest is None):
             raise ProviderRequestError("container live upstream route is absent")
+        if recover:
+            if request is None:
+                raise ProviderRequestError("container recovery lacks original input authority")
+            original_input_launch(controller, request, spec, broker=broker,
+                current_permit=broker.permit, ledger=ledger, permit_id=permit_id, epoch=epoch)
         if lifecycle_scope is not None:
             from .container_coordinator import _CoordinatorLifecycle
             if type(lifecycle_scope) is not _CoordinatorLifecycle or lifecycle_scope.controller is not controller:
@@ -373,7 +410,7 @@ class PinnedDockerTransport:
                     transport.handle, command, transport._model_workdir),
                 recover=recover,
                 lifecycle_scope=lifecycle_scope, context_ref=context_ref,
-                session_control=control,
+                session_control=control, request=request,
             )
             transport._control = control
             transport._production_edge = True
@@ -408,21 +445,20 @@ class PinnedDockerTransport:
         argv = (*DOCKER, "exec", "--user", "65532:65532", handle.container_id,
                 "python", "-c", script, provider)
         try:
-            result = subprocess.run(argv, capture_output=True, timeout=30,
-                                    check=False)
+            result = _run_control_command(argv)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ProviderRequestError("container Linux CLI byte attestation failed") from error
         try:
             digest = result.stdout.decode("ascii").strip()
         except UnicodeDecodeError as error:
             raise ProviderRequestError("container Linux CLI byte attestation failed") from error
-        if result.returncode != 0 or _SHA.fullmatch(digest) is None:
+        if result.status != ProcessStatus.EXIT or result.returncode != 0 or _SHA.fullmatch(digest) is None:
             raise ProviderRequestError("container Linux CLI byte attestation failed")
         return digest
 
     @staticmethod
     def _docker_exec(handle: ContainerHandle, command: ProcessCommand,
-                     workdir: str) -> ProcessResult:
+                     workdir: str, *, before_spawn=None) -> ProcessResult:
         if (not isinstance(workdir, str) or not re.fullmatch(
                 r"/workspace/inputs/[0-9a-f]{64}/published/repo", workdir)):
             raise ProviderRequestError("container model workdir is not sealed")
@@ -434,19 +470,19 @@ class PinnedDockerTransport:
             slot_root=command.slot_root, max_depth=command.max_depth,
             term_grace=command.term_grace, reap_timeout=command.reap_timeout,
         )
-        return _run_bounded_command(wrapped)
+        return (_run_bounded_command(wrapped) if before_spawn is None
+                else _run_bounded_command(wrapped, before_spawn=before_spawn))
 
     @staticmethod
     def _provision_agy_settings(handle: ContainerHandle) -> None:
         argv = (*DOCKER, "exec", "--user", "65532:65532", handle.container_id,
                 "python", "-c", _AGY_SETTINGS_SCRIPT, "/session", "65532")
         try:
-            result = subprocess.run(argv, capture_output=True, timeout=30,
-                                    check=False)
+            result = _run_control_command(argv)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ProviderRequestError("container agy settings provision failed") from error
         expected = hashlib.sha256(_AGY_SETTINGS_BYTES).hexdigest().encode("ascii")
-        if result.returncode != 0 or result.stdout.strip() != expected:
+        if result.status != ProcessStatus.EXIT or result.returncode != 0 or result.stdout.strip() != expected:
             raise ProviderRequestError("container agy settings are unsafe")
 
     def attest_vm(self) -> VMProbe:
@@ -519,13 +555,34 @@ class PinnedDockerTransport:
         # before handing any prompt bytes to Docker exec.
         self.process_result = None
         self._require_fixed_runner()
-        if command.argv[0] == "agy" and getattr(self, "_control", None) is not None:
-            self._provision_agy_settings(self.handle)
-        _check_live(boundary)
+        def final_admission():
+            _check_live(boundary)
+            admission = boundary.admission
+            try:
+                admission.ledger.require_permit(admission.permit_id, admission.epoch,
+                                                admission.broker_permit)
+            except BrokerRejected as error:
+                raise ProviderRequestError("container broker permit changed or was fenced") from error
+            if command.argv[0] == "agy" and getattr(self, "_control", None) is not None:
+                self._provision_agy_settings(self.handle)
+                _check_live(boundary)
+                try:
+                    admission.ledger.require_permit(admission.permit_id, admission.epoch,
+                                                    admission.broker_permit)
+                except BrokerRejected as error:
+                    raise ProviderRequestError("container broker permit changed or was fenced") from error
         self._model_workdir = boundary.input_workdir
-        result = (PinnedDockerTransport._docker_exec(self.handle, command, self._model_workdir)
-                  if self._production_edge is True else self._process_runner(command))
+        if self._production_edge is True:
+            result = PinnedDockerTransport._docker_exec(
+                self.handle, command, self._model_workdir, before_spawn=final_admission)
+        else:
+            final_admission()
+            result = self._process_runner(command)
         self.process_result = result
+        control = getattr(self, "_control", None)
+        worker_error = getattr(control, "_relay_error", None)
+        if worker_error is not None:
+            raise ProviderRequestError("host relay worker failed") from worker_error
         return result
 
     def close(self) -> None:
@@ -565,8 +622,7 @@ class PinnedDockerTransport:
                 origin = read_evidence(self.controller, _HANDLE_CATEGORY,
                                        self.handle_evidence_name,
                                        self.handle_evidence_digest)
-                decode_launch_record(origin, self.spec, self.handle,
-                                     recover=origin.get("route") == "recover")
+                authenticate_launch_record(self.controller, origin, self.spec, self.handle)
                 self._stopped_inspect = self._quarantine_handle(self.spec, self.handle, self.launcher)
                 self._quarantined = True
             if self.stop_evidence is None:
@@ -663,7 +719,8 @@ class PinnedDockerTransport:
         stopped = owned()
         stopped_host = stopped["HostConfig"]
         restart = stopped_host.get("RestartPolicy")
-        if (stopped.get("State", {}).get("Running") is not False
+        stopped_state = stopped.get("State")
+        if (not isinstance(stopped_state, dict) or stopped_state.get("Running") is not False
                 or not isinstance(restart, dict) or restart.get("Name") != "no"):
             raise ProviderRequestError("container shutdown could not verify stopped seat")
         return last_raw
@@ -749,20 +806,36 @@ class SessionStore:
         path = self._record.parent / f".session-{secrets.token_hex(8)}"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600)
+        created = os.fstat(fd)
         try:
-            pending = memoryview(data)
-            while pending:
-                pending = pending[os.write(fd, pending):]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(path, self._record)
-        directory_fd = os.open(self._record.parent,
-                               os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            try:
+                pending = memoryview(data)
+                while pending:
+                    written = os.write(fd, pending)
+                    if written <= 0:
+                        raise OSError("container session write made no progress")
+                    pending = pending[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(path, self._record)
+            directory_fd = os.open(self._record.parent,
+                                   os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except BaseException as primary:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+                    raise ProviderRequestError("container session temporary identity changed")
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except BaseException as cleanup:
+                primary.add_note(f"Session temporary cleanup also failed: {type(cleanup).__name__}")
+            raise
 
     def _update(self, operation):
         assert_controller(self.controller)
@@ -867,7 +940,7 @@ class SessionStore:
         _require_sha(upstream_route_digest, "upstream route")
         if initial_session_id is not None and (
                 provider != "claude" or not isinstance(initial_session_id, str)
-                or not initial_session_id or "\0" in initial_session_id):
+                or _SESSION_ID.fullmatch(initial_session_id) is None):
             raise ProviderRequestError("container initial session identity is invalid")
 
         def operation(state):
@@ -1086,15 +1159,24 @@ class PinnedSSHSeatControl:
             except BaseException:
                 raise ProviderRequestError("pinned guest SSH diagnostic capture failed") from None
         try:
-            result = subprocess.run(self._argv(guest_argv), input=data,
-                                    capture_output=True, timeout=timeout,
-                                    check=False)
+            result = _run_control_command(self._argv(guest_argv), data=data,
+                                          timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as error:
             if type(error) is subprocess.TimeoutExpired:
                 capture("timeout", timed_out=True, stderr=error.stderr)
             else:
                 capture("spawn_failure")
             raise ProviderRequestError("pinned guest SSH control failed") from error
+        if result.status == ProcessStatus.TIMEOUT:
+            capture("timeout", timed_out=True, stderr=result.stderr)
+            raise ProviderRequestError("pinned guest SSH control failed")
+        if result.status == ProcessStatus.SPAWN_ERROR:
+            capture("spawn_failure")
+            raise ProviderRequestError("pinned guest SSH control failed")
+        if result.status == ProcessStatus.OUTPUT_LIMIT:
+            capture(result.error + "_budget", stderr=result.stderr if result.error != "stderr" else None,
+                    stdout_bytes=len(result.stdout))
+            raise ProviderRequestError("pinned guest SSH control failed")
         if result.returncode != 0 or len(result.stdout) > 1024 * 1024:
             capture("nonzero_exit" if result.returncode != 0 else "stdout_budget",
                     returncode=result.returncode if type(result.returncode) is int else None,
@@ -1109,14 +1191,12 @@ class PinnedSSHSeatControl:
         )
         home = Path.home()
         try:
-            status = subprocess.run(("colima", "status", "-p", PROFILE, "--json"),
-                                    capture_output=True, timeout=30, check=False)
-            context = subprocess.run((*DOCKER[:1], "context", "inspect", CONTEXT,
-                                      "--format", "{{json .}}"),
-                                     capture_output=True, timeout=30, check=False)
-            info = subprocess.run((*DOCKER, "info", "--format", "{{.ServerVersion}}"),
-                                  capture_output=True, timeout=30, check=False)
-            if (status.returncode != 0 or context.returncode != 0
+            status = _run_control_command(("colima", "status", "-p", PROFILE, "--json"))
+            context = _run_control_command((*DOCKER[:1], "context", "inspect", CONTEXT,
+                                           "--format", "{{json .}}"))
+            info = _run_control_command((*DOCKER, "info", "--format", "{{.ServerVersion}}"))
+            if (any(result.status != ProcessStatus.EXIT for result in (status, context, info))
+                    or status.returncode != 0 or context.returncode != 0
                     or info.returncode != 0 or not info.stdout.strip()
                     or len(context.stdout) > 1024 * 1024):
                 raise ProviderRequestError("dedicated VM control is unavailable")
@@ -1340,6 +1420,10 @@ print(observed)
                 errors.append(error)
             else:
                 self._lease = None
+        if self._relay_error is not None:
+            error = ProviderRequestError("host relay worker failed")
+            error.__cause__ = self._relay_error
+            errors.append(error)
         if errors:
             first = errors[0]
             for error in errors[1:]:
@@ -1474,6 +1558,8 @@ def _authenticated_launch(controller: LifecycleController,
         f"/run/fanout/{request.seat_id}.sock", admission.cli_digest,
     )
     decode_launch_record(origin, expected, handle, recover=request.resume)
+    authenticate_launch_record(controller, origin, expected, handle,
+                              inputs_digest=request.inputs_digest)
 
 
 def _check_association(request: ProviderRequest, admission: ContainerAdmission) -> None:
@@ -1522,6 +1608,9 @@ def _check_association(request: ProviderRequest, admission: ContainerAdmission) 
 
 def _check_live(boundary: ContainerSeatBoundary) -> None:
     admission = boundary.admission
+    worker_error = getattr(getattr(admission.transport, "_control", None), "_relay_error", None)
+    if worker_error is not None:
+        raise ProviderRequestError("host relay worker failed") from worker_error
     try:
         vm = admission.transport.attest_vm()
         handle = admission.transport.attest_container()

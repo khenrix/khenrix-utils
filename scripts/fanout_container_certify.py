@@ -26,6 +26,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, replace
 from itertools import islice
 from pathlib import Path
+from types import SimpleNamespace
 from types import CodeType
 from typing import Mapping
 
@@ -55,7 +56,7 @@ from shared.lib.fanout.container_routes import (
 )
 from shared.lib.fanout.container_runtime import (
     ContainerHandle, ContainerLauncher, ContainerSpec, GuestSocketAttestation,
-    _RecoveryAssociation, decode_launch_record, private_volume_names,
+    _RecoveryAssociation, decode_launch_record, private_volume_names, seat_socket_path,
 )
 from shared.lib.fanout.container_source import (
     HostRuntimeIdentity, RuntimeIdentityError, SourceClosureError,
@@ -906,6 +907,12 @@ class _FakeLauncher(ContainerLauncher):
         self.ledger = ledger
         self.previous = previous
         self._recovery = None
+        self._volume_expectations = None
+        self._volume_handle = None
+        self._observed_volumes = {}
+        self.volume_state = (controller.root / "quarantine" / f"fake-volumes-{spec.seat_id}.json"
+                             if controller is not None else None)
+        self.volumes = {}
         self.recovered_prior_container_id = None
         self.handle = ContainerHandle(
             hashlib.sha256(f"{spec.seat_id}:{route}".encode()).hexdigest(),
@@ -918,6 +925,12 @@ class _FakeLauncher(ContainerLauncher):
         self.recovered_prior_container_id = None
         if spec != self.spec:
             raise CertificationRejected("fake launcher target differs")
+        self._volume_expectations = None
+        for kind in ("workspace", "session"):
+            self._volume(spec, kind, create=True)
+        self._volume_expectations = (spec, {kind: self._observed_volumes[getattr(spec, kind + "_volume")]
+                                           for kind in ("workspace", "session")})
+        self._volume_handle = (spec, self.handle)
         return self.handle
 
     def recover(self, spec: ContainerSpec) -> ContainerHandle:
@@ -975,11 +988,12 @@ class _FakeLauncher(ContainerLauncher):
                 raise CertificationRejected("fake prior broker epoch was not fenced")
         recovery = _RecoveryAssociation(
             spec, self.handle, ((prior_handle.container_id, ref.digest),))
-        decode_launch_record({"spec": asdict(spec), "handle": asdict(self.handle),
-                              "route": "recover", "recovery": json.loads(
-                                  canonical_json(asdict(recovery)))},
-                             spec, self.handle, recover=True)
+        if self._volume_expectations is None or self._volume_expectations[0] != spec:
+            raise CertificationRejected("fake recovery lacks original volume authority")
+        for kind in ("workspace", "session"):
+            self._volume(spec, kind, create=False)
         self._recovery = recovery
+        self._volume_handle = (spec, self.handle)
         self.recovered_prior_container_id = stopped["container_id"]
         return self.handle
 
@@ -987,6 +1001,10 @@ class _FakeLauncher(ContainerLauncher):
                        handle: ContainerHandle) -> ContainerHandle:
         if spec != self.spec or handle != self.handle or not self.running:
             raise CertificationRejected("fake launcher seat is not running")
+        if self._volume_handle != (spec, handle):
+            raise CertificationRejected("fake volume launch association differs")
+        for kind in ("workspace", "session"):
+            self._volume(spec, kind, create=False)
         return handle
 
     @staticmethod
@@ -1008,6 +1026,24 @@ class _FakeLauncher(ContainerLauncher):
         return json.dumps([item]).encode()
 
     def _run(self, *args: str) -> bytes:
+        if args[:2] in (("volume", "create"), ("volume", "inspect")):
+            volumes = (json.loads(self.volume_state.read_bytes())
+                       if self.volume_state is not None and self.volume_state.exists() else self.volumes)
+            if args[1] == "create":
+                name = args[-1]
+                kind = next(kind for kind in ("workspace", "session")
+                            if getattr(self.spec, kind + "_volume") == name)
+                if name not in volumes:
+                    volumes[name] = {"Name": name, "Driver": "local", "Scope": "local", "Options": {},
+                        "Labels": self._volume_labels(self.spec, kind),
+                        "CreatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "Mountpoint": f"/var/lib/docker/volumes/{name}/_data"}
+                    if self.volume_state is not None:
+                        self.volume_state.write_bytes(canonical_json(volumes))
+                        self.volume_state.chmod(0o600)
+                self.volumes = volumes
+                return name.encode()
+            return canonical_json([volumes[args[2]]] if args[2] in volumes else [])
         if args == ("inspect", "--type", "container", self.handle.container_id):
             return self._fake_inspect(self.spec, self.handle, self.running)
         if args == ("update", "--restart", "no", self.handle.container_id):
@@ -1371,7 +1407,9 @@ def _fake_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
         controller, spec, launcher=launcher, vm_attestor=lambda: vm,
         socket_attestor=lambda _: socket, image_attestor=lambda: image,
         cli_attestor=lambda _: cli, process_runner=process_runner,
-        recover=route == "resume",
+        recover=route == "resume", request=request,
+        session_control=SimpleNamespace(broker=broker, ledger=ledger,
+            permit_id=permit_id, epoch=epoch),
     )
     transport._transfer_popen = _fake_transfer_popen(
         guest_workspace, transport.handle.container_id)
@@ -1868,6 +1906,7 @@ def _live_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
         provider, "repo-write", "standard")
     task_id, target_id = "synthetic-task", "repo-alpha"
     seat_id = _certification_seat_id(run_id, provider)
+    seat_socket_path(seat_id)
     workspace, session_volume = private_volume_names(
         run_id, task_id, target_id, seat_id)
     store = SessionStore(controller, run_id, task_id, target_id, seat_id,
@@ -1983,7 +2022,7 @@ def _live_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
                              admission.cli_digests[provider])
         transport = PinnedDockerTransport.start_live(
             controller, spec, ledger=ledger, broker=broker,
-            permit_id=permit_id, epoch=epoch, recover=route == "resume")
+            permit_id=permit_id, epoch=epoch, recover=route == "resume", request=request)
         vm = transport.attest_vm()
         control = getattr(transport, "_control", None)
         vm_observation = getattr(control, "vm_observation", None)

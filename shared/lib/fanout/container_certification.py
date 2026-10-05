@@ -135,7 +135,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
     from .container_transfer import TransferIdentity
     from .container_transfer_transport import (
         CandidateExportReceipt, InputTransferReceipt, admitted_request_digest,
-        validate_input_receipt,
+        validate_input_receipt, authenticate_launch_record,
     )
     from .container_upstream import HostUpstream
     from .process import ProcessResult, ProcessStatus
@@ -197,6 +197,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                         boundary["handle_evidence_name"], boundary["handle_evidence_digest"])
                     spec, handle = ContainerSpec(**launch["spec"]), ContainerHandle(**launch["handle"])
                     recovery = decode_launch_record(launch, spec, handle, recover=request.resume)
+                    authenticate_launch_record(controller, launch, spec, handle, inputs_digest=request.inputs_digest)
                     if (handle.container_id != cell["container_id"] or handle.inspect_sha256 != cell["container_inspect_sha256"]
                             or any(getattr(spec, name) != getattr(request, name) for name in ("run_id", "task_id", "target_id", "seat_id"))
                             or spec.image_digest != cell["image_digest"] or spec.cli_digest != cell["cli_digest"]
@@ -215,7 +216,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                         raise ValueError("cell VM")
                     observations = RuntimeTranscript(_artifact_json(store, value["runtime"]))
                     launcher = ContainerLauncher(guest_socket_attestor=lambda _: socket)
-                    launcher._recovery = recovery
+                    launcher.restore_launch(launch, spec, handle, recover=request.resume)
                     launcher._run = observations.replay
                     if launcher.attest_running(spec, handle) != handle:
                         raise ValueError("cell running container")

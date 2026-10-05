@@ -93,9 +93,9 @@ def test_private_ssh_failure_retains_only_bounded_actual_control_fields(
             raise subprocess.TimeoutExpired("EXCEPTION_CMD_CANARY", 30,
                                              output=b"OUTPUT_CANARY", stderr=stderr)
         if kind == "spawn": raise OSError("EXCEPTION_CANARY")
-        return subprocess.CompletedProcess(argv, 255 if kind == "exit255" else (0 if kind == "stdout_budget" else 1),
-                                           b"x" * 1048577 if kind == "stdout_budget" else b"STDOUT_CANARY", stderr)
-    monkeypatch.setattr(boundary_module.subprocess, "run", run)
+        return ProcessResult(ProcessStatus.EXIT, 255 if kind == "exit255" else (0 if kind == "stdout_budget" else 1),
+                             b"x" * 1048577 if kind == "stdout_budget" else b"STDOUT_CANARY", stderr)
+    monkeypatch.setattr(boundary_module, "_run_control_command", run)
     try:
         with pytest.raises(ProviderRequestError):
             control._ssh(("trusted",), b"INPUT_CANARY", operation="relay_drain")
@@ -119,13 +119,13 @@ def test_private_ssh_success_unknown_operation_and_capture_failure_are_closed(bo
     calls = []
     def run(argv, **kwargs):
         calls.append(True)
-        return subprocess.CompletedProcess(argv, 0, b"unchanged success", b"")
-    monkeypatch.setattr(boundary_module.subprocess, "run", run)
+        return ProcessResult(ProcessStatus.EXIT, 0, b"unchanged success", b"")
+    monkeypatch.setattr(boundary_module, "_run_control_command", run)
     try: assert control._ssh(("trusted",), operation="vm_nonce") == b"unchanged success"
     except TypeError: pytest.fail("pinned SSH fixed-operation diagnostic interface is absent")
     with pytest.raises(ProviderRequestError): control._ssh(("trusted",), operation="attacker-command")
     assert len(calls) == 1 and list((control.controller.root / "receipts").glob("*.json")) == []
-    monkeypatch.setattr(boundary_module.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, b"", b"safe"))
+    monkeypatch.setattr(boundary_module, "_run_control_command", lambda *args, **kwargs: ProcessResult(ProcessStatus.EXIT, 1, b"", b"safe"))
     writes = []
     def fail_write(*args):
         writes.append(True)
@@ -138,7 +138,7 @@ def test_private_ssh_success_unknown_operation_and_capture_failure_are_closed(bo
 @pytest.mark.parametrize("failure", ("writer_base", "malformed_source"))
 def test_private_ssh_capture_cannot_bless_malformed_source_or_leak_writer_error(boundary_module, tmp_path, monkeypatch, failure):
     control = _private_failure_control(boundary_module, tmp_path)
-    monkeypatch.setattr(boundary_module.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, b"", b"safe"))
+    monkeypatch.setattr(boundary_module, "_run_control_command", lambda *args, **kwargs: ProcessResult(ProcessStatus.EXIT, 1, b"", b"safe"))
     if failure == "writer_base":
         def broken(*_args): raise SystemExit("PRIVATE_WRITER_CANARY")
         monkeypatch.setattr(boundary_module, "write_evidence", broken)
@@ -236,6 +236,8 @@ def _seat(module, tmp_path: Path, provider: str, *, controller=None,
         execution_class="repo-write", profile=profile, run_id="run-one",
         task_id="task-one", target_id="target-one", seat_id="seat-one",
         inputs_digest="1" * 64, session_id=session_id, resume=resume,
+        context_sha256="a" * 64, skill_bundle_sha256="b" * 64,
+        skill_delivery_sha256="8" * 64,
     )
     vm_probe = VMProbe("fanout-isolated", "unix:///private/dedicated/docker.sock",
                        "2" * 64, "3" * 64, "4" * 64, "5" * 64)
@@ -265,10 +267,20 @@ def _seat(module, tmp_path: Path, provider: str, *, controller=None,
         "spec": {field: getattr(spec, field) for field in spec.__dataclass_fields__},
         "handle": {field: getattr(handle, field) for field in handle.__dataclass_fields__},
         "route": "recover" if resume else "start",
+        "volumes": __import__("test_fanout_container_runtime")._volumes(spec),
     }
     if resume:
         launch["recovery"] = {"spec": dict(launch["spec"]), "handle": dict(launch["handle"]), "predecessors": []}
+        from shared.lib.fanout.container_transfer_transport import _InputClaimJournal
+        from shared.lib.fanout.container_transfer import TransferIdentity
+        identity = TransferIdentity(request.run_id, request.task_id, request.target_id,
+                                    request.seat_id, request.inputs_digest)
+        launch["original_input"] = list(_InputClaimJournal(controller, identity, workspace).completed())
     name, digest = write_evidence(controller, "container-seat-launch", launch)
+    if not resume and route_digest is not None and (session_id is not None or provider != "claude"):
+        from test_fanout_container_transfer_transport import _complete_original_inputs
+        _complete_original_inputs(controller, request, spec, handle, broker_permit,
+                                  ledger, permit_id, epoch, (name, digest), vm_probe, socket, store)
     admission = module.ContainerAdmission(
         broker_permit=broker_permit, permit_id=permit_id, epoch=epoch,
         ledger=ledger, image_digest=IMAGE, cli_digest=CLI,
@@ -353,6 +365,115 @@ def test_successful_initial_binds_exact_id_for_cold_resume(boundary_module, tmp_
     resumed_result = boundary_module.run_container_turn(resumed, cold_boundary)
     assert resumed_result.valid and resumed_result.session_id == session_id
     assert len(cold_transport.calls) == 1
+
+
+@pytest.mark.parametrize("fault", (
+    None, "mac", "noncanonical", "mode", "record-symlink", "lock-symlink",
+    "oversized", "controller", "identity", "volume",
+))
+def test_cold_session_record_authority_precedes_dispatch(boundary_module, tmp_path, fault):
+    from shared.lib.fanout import canonical_json
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    request, boundary, _, store, ledger, controller = _seat(
+        boundary_module, tmp_path, "claude", session_id=CLAUDE_ID, terminal_id=CLAUDE_ID)
+    assert boundary_module.run_container_turn(request, boundary).valid
+    binding = asdict(store.resume("claude"))
+    ledger.fence_epoch(boundary.permit_id, 1)
+    cold = resume_lifecycle_controller(controller.root, controller.capability)
+    cold_store = boundary_module.SessionStore(cold, *store.identity, store.volume)
+    cold_ledger = PermitLedger(cold.root / "locks/spend", cold)
+    resumed, sealed, transport, *_ = _seat(boundary_module, tmp_path, "claude",
+        controller=cold, store=cold_store, ledger=cold_ledger, epoch=2, resume=True,
+        session_id=CLAUDE_ID, terminal_id=CLAUDE_ID)
+    assert asdict(cold_store.resume("claude")) == binding
+    record = json.loads(cold_store._record.read_bytes())
+    target = None
+    if fault == "mac":
+        record["mac"] = "0" * 64
+    elif fault == "controller":
+        foreign = create_lifecycle_controller(tmp_path / "foreign-controller")
+        record["payload"]["controller_id"] = foreign.controller_id
+    elif fault == "identity":
+        record["payload"]["identity"][1] = "foreign-task"
+    elif fault == "volume":
+        record["payload"]["volume"] = "foreign-session-volume"
+    elif fault == "oversized":
+        record["payload"]["turns"].update({f"{index:064x}": {
+            "provider": "claude", "state": "uncertain"} for index in range(1000)})
+    if fault in {"controller", "identity", "volume", "oversized"}:
+        record["mac"] = cold_store._mac(record["payload"])
+    if fault in {"mac", "controller", "identity", "volume", "oversized"}:
+        data = canonical_json(record)
+        if fault == "oversized":
+            assert len(data) > 64 * 1024
+        cold_store._record.write_bytes(data)
+    elif fault == "noncanonical":
+        cold_store._record.write_text(json.dumps(record, indent=2))
+    elif fault == "mode":
+        cold_store._record.chmod(0o640)
+    elif fault in {"record-symlink", "lock-symlink"}:
+        path = cold_store._record if fault == "record-symlink" else cold_store._lock
+        target = path.with_suffix(".owned-target")
+        path.rename(target)
+        target_before = target.read_bytes()
+        path.symlink_to(target)
+    if fault is None:
+        assert boundary_module.run_container_turn(resumed, sealed).valid
+        assert len(transport.calls) == 1
+        assert cold_store.resume("claude").session_id == CLAUDE_ID
+    else:
+        before = cold_store._record.read_bytes()
+        with pytest.raises((ProviderRequestError, OSError)) as rejected:
+            boundary_module.run_container_turn(resumed, sealed)
+        if isinstance(rejected.value, OSError):
+            import errno
+            assert fault in {"record-symlink", "lock-symlink"}
+            assert rejected.value.errno == errno.ELOOP
+        assert transport.calls == []
+        assert cold_ledger.attempt_counts(sealed.permit_id, 2) == (0, 0)
+        assert cold_store._record.read_bytes() == before
+        if target is not None:
+            assert target.read_bytes() == target_before
+            assert path.is_symlink()
+
+
+@pytest.mark.parametrize("provider,resume,returned", (
+    ("claude", False, "22222222-2222-4222-8222-222222222222"),
+    *((provider, True, returned) for provider in ("claude", "codex", "agy")
+      for returned in (None, "22222222-2222-4222-8222-222222222222")),
+))
+def test_invalid_returned_session_keeps_cold_uncertainty(
+    boundary_module, tmp_path, provider, resume, returned,
+):
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    native_id = SESSION_IDS[provider]
+    request, sealed, transport, store, ledger, controller = _seat(
+        boundary_module, tmp_path, provider,
+        session_id=native_id if provider == "claude" else None, terminal_id=native_id)
+    if resume:
+        assert boundary_module.run_container_turn(request, sealed).valid
+        prior = asdict(store.resume(provider))
+        ledger.fence_epoch(sealed.permit_id, 1)
+        cold = resume_lifecycle_controller(controller.root, controller.capability)
+        store = boundary_module.SessionStore(cold, *store.identity, store.volume)
+        ledger = PermitLedger(cold.root / "locks/spend", cold)
+        request, sealed, transport, *_ = _seat(boundary_module, tmp_path, provider,
+            controller=cold, store=store, ledger=ledger, epoch=2, resume=True,
+            session_id=native_id, terminal_id=returned)
+    else:
+        prior = None
+        transport.result = _terminal(provider, session_id=returned)
+    result = boundary_module.run_container_turn(request, sealed)
+    assert not result.valid and len(transport.calls) == 1
+    binding = store.read(provider)
+    assert binding.session_id == native_id
+    if prior is not None:
+        assert asdict(binding) == prior
+    cold = resume_lifecycle_controller(controller.root, controller.capability)
+    reopened = boundary_module.SessionStore(cold, *store.identity, store.volume)
+    assert asdict(reopened.read(provider)) == asdict(binding)
+    with pytest.raises(ProviderRequestError, match="uncertain"):
+        reopened.resume(provider)
 
 
 @pytest.mark.parametrize("route", ("initial", "resume"))
@@ -729,7 +850,7 @@ def test_public_provider_entry_stays_closed_with_container_descriptor(boundary_m
     assert transport.calls == []
 
 
-def _launched_seat(module, tmp_path, *, before_start=None):
+def _launched_seat(module, tmp_path, *, before_start=None, provider="claude"):
     controller = create_lifecycle_controller(tmp_path / "controller")
     spec = ContainerSpec(
         "run-synthetic", "task-plan", "target-one", "seat-claude", IMAGE,
@@ -767,29 +888,29 @@ def _launched_seat(module, tmp_path, *, before_start=None):
 
     def process_runner(command):
         sent.append(command)
-        return _terminal("claude", session_id=CLAUDE_ID)
+        return _terminal(provider, session_id=SESSION_IDS[provider])
 
     transport = module.PinnedDockerTransport.start(
         controller, spec, launcher=launcher, vm_attestor=lambda: vm_probe,
         socket_attestor=socket_attestor, image_attestor=lambda: IMAGE,
         cli_attestor=lambda _provider: CLI, process_runner=process_runner,
     )
-    profile = ProviderRegistry.default().select("claude", "repo-write", "standard")
+    profile = ProviderRegistry.default().select(provider, "repo-write", "standard")
     request = ProviderRequest(
-        executor_id="claude", prompt="synthetic", cwd=tmp_path,
+        executor_id=provider, prompt="synthetic", cwd=tmp_path,
         execution_class="repo-write", profile=profile, run_id=spec.run_id,
         task_id=spec.task_id, target_id=spec.target_id, seat_id=spec.seat_id,
-        inputs_digest="1" * 64, session_id=CLAUDE_ID,
+        inputs_digest="1" * 64, session_id=CLAUDE_ID if provider == "claude" else None,
         context_sha256="a" * 64, skill_bundle_sha256="b" * 64,
         skill_delivery_sha256="8" * 64,
     )
     broker_permit = BrokerPermit(
-        provider="claude", run_id=spec.run_id, task_id=spec.task_id,
+        provider=provider, run_id=spec.run_id, task_id=spec.task_id,
         target_id=spec.target_id, seat_id=spec.seat_id, route="initial",
         model=profile.requested_model, placeholder_key="disposable-placeholder",
         max_requests=2, max_request_bytes=100_000,
         max_response_bytes=100_000, max_output_tokens=1024,
-        inputs_digest=request.inputs_digest, session_id=CLAUDE_ID,
+        inputs_digest=request.inputs_digest, session_id=request.session_id,
         upstream_route_digest="a" * 64,
         upstream_origin="https://eu-aiplatform.googleapis.com",
         upstream_model=profile.requested_model,
@@ -852,6 +973,208 @@ def test_turn_stops_exact_owned_seat_after_success(boundary_module, tmp_path):
     assert docker.events[-2:] == ["disable-restart-seat", "stop-seat"]
 
 
+@pytest.mark.parametrize("fault", (None, "nonzero", "nonhex", "agy-settings"))
+def test_actual_execution_proofs_precede_model_handoff(boundary_module, tmp_path, monkeypatch, fault):
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    provider = "agy" if fault == "agy-settings" else "claude"
+    request, boundary, transport, docker, _, sent = _launched_seat(
+        boundary_module, tmp_path, provider=provider)
+    proofs = []
+    def control_command(argv):
+        proofs.append(argv)
+        if fault == "agy-settings":
+            assert argv[-3] == boundary_module._AGY_SETTINGS_SCRIPT
+            return ProcessResult(ProcessStatus.EXIT, 0, b"0" * 64 + b"\n", b"")
+        # The first live validation succeeds; the second is after reservation.
+        bad = len(proofs) == 2
+        return ProcessResult(ProcessStatus.EXIT, 1 if bad and fault == "nonzero" else 0,
+            (("g" * 64 if bad and fault == "nonhex" else CLI) + "\n").encode(), b"")
+    monkeypatch.setattr(boundary_module, "_run_control_command", control_command)
+    if provider == "agy":
+        control = object.__new__(boundary_module.PinnedSSHSeatControl)
+        control.controller, control.permit_id, control.epoch, control._lease = boundary.controller, boundary.permit_id, 1, None
+        control.close = lambda: None
+        transport._control = control
+    else:
+        transport._cli_attestor = lambda executor: transport._attest_linux_cli(transport.spec, executor, transport.handle)
+    if fault is None:
+        assert boundary_module.run_container_turn(request, boundary).valid
+        assert len(sent) == 1 and len(proofs) == 3
+    else:
+        with pytest.raises(ProviderRequestError, match="live attestation failed|settings are unsafe") as rejected:
+            boundary_module.run_container_turn(request, boundary)
+        if provider != "agy":
+            assert "CLI byte attestation failed" in str(rejected.value.__cause__)
+        assert sent == []
+        assert len(proofs) == (1 if provider == "agy" else 2)
+        cold = resume_lifecycle_controller(boundary.controller.root, boundary.controller.capability)
+        sessions = boundary_module.SessionStore(cold, request.run_id, request.task_id,
+            request.target_id, request.seat_id, boundary.session_volume)
+        with pytest.raises(ProviderRequestError, match="uncertain"):
+            sessions.assert_clear(provider)
+        with pytest.raises(ProviderRequestError, match="uncertain|exact session binding"):
+            sessions.resume(provider)
+    assert docker.inspect["State"]["Running"] is False
+    assert boundary.admission.ledger.attempt_counts(boundary.permit_id, 1) == (0, 0)
+
+
+@pytest.mark.parametrize("phase", ("after-send", "during-stream", "after-settlement"))
+@pytest.mark.parametrize("cleanup_failure", (False, True))
+def test_post_ready_worker_exception_rejects_terminal_and_retains_cold_truth(
+    boundary_module, tmp_path, phase, cleanup_failure,
+):
+    import base64
+    from scripts.fanout_container_certify import _fake_preview
+    from shared.lib.fanout.container_broker import HostRelay
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    request, boundary, transport, docker, socket_attestor, _ = _launched_seat(boundary_module, tmp_path)
+    admission = boundary.admission
+    control = object.__new__(boundary_module.PinnedSSHSeatControl)
+    control.controller, control.spec, control.ledger = boundary.controller, transport.spec, admission.ledger
+    control.permit_id, control.epoch = admission.permit_id, admission.epoch
+    sends, frames_sent = [], []
+    def send(*args):
+        sends.append(args)
+        return BrokerResponse(200, {"content-type": "text/event-stream"}, [b'data: {"ok":true}\n\n'])
+    send.preview = lambda *args: _fake_preview(admission.broker_permit, *args)
+    control.broker = Broker(admission.broker_permit, credential="synthetic-private", send=send)
+    body = json.dumps({"model": request.profile.requested_model, "messages": [], "max_tokens": 16}).encode()
+    incoming = iter(({"type": "ready", "seat_id": request.seat_id,
+        "permit_id": admission.permit_id, "epoch": admission.epoch},
+        {"type": "request", "permit_id": admission.permit_id, "epoch": admission.epoch,
+         "request_id": "actual-worker-request", "method": "POST", "provider_path": "/v1/messages",
+         "headers": {"x-api-key": "disposable-placeholder", "content-type": "application/json"},
+         "body_b64": base64.b64encode(body).decode()}))
+    fault = RuntimeError("actual escaped worker failure")
+    class Frames:
+        acked = False
+        def recv(self):
+            try:
+                return next(incoming)
+            except StopIteration:
+                if phase == "after-settlement" and not self.acked:
+                    self.acked = True
+                    end = next(frame for frame in frames_sent if frame["type"] == "response_end")
+                    return {"type": "response_ack", "request_id": end["request_id"],
+                            "response_digest": end["response_digest"]}
+                raise fault
+        def send(self, frame):
+            frames_sent.append(frame)
+            if ((phase == "after-send" and frame["type"] == "response_start")
+                    or (phase == "during-stream" and frame["type"] == "response_chunk")):
+                raise fault
+    control._process = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    owned_process = control._process
+    control._socket_at_open = socket_attestor.proof
+    control._lease = boundary_module.HostSessionLease(boundary.controller, admission.permit_id, admission.epoch)
+    control._lease.__enter__()
+    control._relay_error = None
+    control._drain_relay = lambda _: None
+    def closed_socket(*_args, **_kwargs):
+        if cleanup_failure:
+            raise OSError("actual additional socket cleanup failure")
+        return b""
+    control._ssh = closed_socket
+    def worker():
+        try:
+            HostRelay(admission.ledger, control.broker).serve(Frames())
+        except BaseException as error:
+            control._relay_error = error
+    control._thread = threading.Thread(target=worker, daemon=True)
+    def terminal(_command):
+        control._thread.start()
+        control._thread.join(timeout=2)
+        assert not control._thread.is_alive() and control._relay_error is fault, frames_sent
+        assert len(sends) == 1
+        assert any(frame["type"] == {"after-send": "response_start", "during-stream": "response_chunk",
+                                    "after-settlement": "response_end"}[phase] for frame in frames_sent)
+        return _terminal("claude", session_id=CLAUDE_ID)
+    transport._process_runner = terminal
+    transport._control = control
+    try:
+        with pytest.raises(ProviderRequestError, match="relay|worker") as raised:
+            boundary_module.run_container_turn(request, boundary)
+        assert raised.value.__cause__ is fault
+        assert len(sends) == 1 and owned_process.poll() is not None
+        assert control._process is None and control._thread is None and control._lease is None
+        assert docker.inspect["State"]["Running"] is False
+        cold = resume_lifecycle_controller(boundary.controller.root, boundary.controller.capability)
+        reopened = PermitLedger(cold.root / "locks/spend", cold)
+        state, _ = reopened.disposition("actual-worker-request")
+        assert state == ("settled" if phase == "after-settlement" else "uncertain")
+        assert reopened.attempt_counts(admission.permit_id, admission.epoch) == (1, 0)
+        with reopened._locked() as durable:
+            assert durable["permits"][admission.permit_id]["used"] == 1
+        sessions = boundary_module.SessionStore(cold, request.run_id, request.task_id,
+            request.target_id, request.seat_id, boundary.session_volume)
+        with pytest.raises(ProviderRequestError, match="uncertain|quarantine"):
+            sessions.resume("claude")
+        assert transport.stop_evidence is not None
+    finally:
+        if owned_process.poll() is None:
+            owned_process.kill()
+            owned_process.wait(timeout=2)
+        for pipe in (owned_process.stdin, owned_process.stdout):
+            pipe.close()
+
+
+@pytest.mark.parametrize("session_id", ("bad id", ":bad", "a" * 257, "a/b"))
+def test_reserve_rejects_invalid_initial_id_before_any_write(boundary_module, tmp_path, session_id):
+    _, _, _, sessions, *_ = _seat(boundary_module, tmp_path, "codex")
+    before = {path.name: path.read_bytes() for path in sessions._record.parent.iterdir() if path.is_file()}
+    with pytest.raises(ProviderRequestError, match="session identity"):
+        sessions.reserve("claude", "a" * 64, initial=True,
+            upstream_route_digest="a" * 64, initial_session_id=session_id)
+    assert {path.name: path.read_bytes() for path in sessions._record.parent.iterdir() if path.is_file()} == before
+
+
+@pytest.mark.parametrize("phase", ("write", "fsync", "replace"))
+def test_failed_session_write_removes_only_its_new_temp(boundary_module, tmp_path, monkeypatch, phase):
+    _, _, _, sessions, *_ = _seat(boundary_module, tmp_path, "codex")
+    sessions.reserve("codex", "a" * 64, initial=True, upstream_route_digest="a" * 64)
+    original = sessions._record.read_bytes()
+    foreign = sessions._record.parent / ".session-foreign"
+    foreign.write_bytes(b"unrelated temporary record")
+    payload = sessions._read()
+    fault = OSError("actual session atomic write failure")
+    def fail(*_args):
+        raise fault
+    with monkeypatch.context() as patch:
+        patch.setattr(boundary_module.os, phase, fail)
+        with pytest.raises(OSError) as raised:
+            sessions._write(payload)
+    assert raised.value is fault and sessions._record.read_bytes() == original
+    assert foreign.read_bytes() == b"unrelated temporary record"
+    assert sorted(path.name for path in sessions._record.parent.glob(".session-*")) == [foreign.name]
+
+
+def test_second_stopped_inspect_rejects_non_dictionary_state(boundary_module, tmp_path):
+    request, boundary, transport, docker, *_ = _launched_seat(boundary_module, tmp_path)
+    original = transport.launcher._run
+    def run(*args):
+        if args == ("inspect", "--type", "container", transport.handle.container_id) and not docker.inspect["State"]["Running"]:
+            item = json.loads(original(*args))[0]
+            item["State"] = ["not a dictionary"]
+            return json.dumps([item]).encode()
+        return original(*args)
+    transport.launcher._run = run
+    with pytest.raises(ProviderRequestError, match="shutdown|state|stopped"):
+        boundary_module.run_container_turn(request, boundary)
+    with pytest.raises(ProviderRequestError, match="uncertain|quarantine"):
+        boundary.session_store.resume("claude")
+
+
+def test_initial_launch_seals_complete_volume_records_before_worker(boundary_module, tmp_path):
+    _, boundary, transport, docker, _, sent = _launched_seat(boundary_module, tmp_path)
+    launch = read_evidence(boundary.controller, "container-seat-launch",
+                          transport.handle_evidence_name, transport.handle_evidence_digest)
+    assert launch.get("volumes") == docker.original_volumes
+    assert launch["volumes"]["workspace"]["CreatedAt"] == "2026-10-04T12:34:56.123456789Z"
+    assert sent == []
+    transport.close()
+
+
 def test_successful_close_retains_authenticated_full_stopped_inspect(boundary_module, tmp_path):
     _, boundary, transport, docker, _, _ = _launched_seat(boundary_module, tmp_path)
     transport.close()
@@ -907,8 +1230,8 @@ def test_vm_attestation_retains_complete_observed_bytes(boundary_module, tmp_pat
     def run(argv, **_kwargs):
         output = (json.dumps(context).encode() if "context" in argv else
                   b"27.0\n" if "info" in argv else b'{"status":"Running"}')
-        return subprocess.CompletedProcess(argv, 0, output, b"")
-    monkeypatch.setattr(boundary_module.subprocess, "run", run)
+        return ProcessResult(ProcessStatus.EXIT, 0, output, b"")
+    monkeypatch.setattr(boundary_module, "_run_control_command", run)
     monkeypatch.setattr(vm_probe, "_profile_identity", lambda *_: {"synthetic": True})
     monkeypatch.setattr(vm_probe, "_read_binding", lambda *_: {"synthetic": True})
     monkeypatch.setattr(vm_probe, "_require_profile_binding", lambda *_: None)
@@ -954,7 +1277,9 @@ def test_fixed_docker_execution_retains_raw_result_and_clears_failed_attempt(
     terminal = ProcessResult(ProcessStatus.EXIT, 0, b"raw stdout\r\n", b"raw stderr\n")
     commands = []
 
-    def docker_io(command):
+    def docker_io(command, *, before_spawn=None):
+        if before_spawn is not None:
+            before_spawn()
         commands.append(command)
         if len(commands) == 2:
             raise RuntimeError("fixed execution failed")
@@ -1173,9 +1498,12 @@ def test_start_live_primary_error_survives_failed_relay_cleanup(
     )
     broker = Broker(permit, credential="controller-secret",
                     send=lambda *_: BrokerResponse(200, {}, b""))
+    workspace, session = private_volume_names("run-one", "task-one", "target-one", "seat-one")
+    spec = ContainerSpec("run-one", "task-one", "target-one", "seat-one", IMAGE,
+                         workspace, session, "/run/fanout/seat-one.sock", CLI)
     with pytest.raises(RuntimeError, match="primary relay-open failure") as raised:
         boundary_module.PinnedDockerTransport.start_live(
-            controller, None, ledger=None, broker=broker, permit_id="a" * 64,
+            controller, spec, ledger=None, broker=broker, permit_id="a" * 64,
             epoch=1)
     assert any("cleanup" in note.lower() for note in raised.value.__notes__)
     receipts = controller.root / "receipts"
@@ -1543,7 +1871,7 @@ def test_owner_drain_closes_idle_relay_including_final_refusal(
     control.broker.permit.model = model
     control.broker.permit.max_requests = 4
     guest = broker_tests._guest_module()
-    with tempfile.TemporaryDirectory(prefix="fanout-drain-", dir="/private/tmp") as directory:
+    with tempfile.TemporaryDirectory(prefix="fanout-drain-", dir="/tmp") as directory:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", directory)
         frames = broker_tests._Frames([{"type": "ready_ack"}, {"type": "closed"}])
         relay = guest.GuestRelay("seat-test", "a" * 64, 1, frames,
@@ -1712,6 +2040,129 @@ def test_host_capture_timeout_is_bounded_terminal(boundary_module, tmp_path):
     assert result.status == ProcessStatus.TIMEOUT
     assert result.stdout == b"partial"
     assert result.timeout is not None and result.timeout.reaped
+
+
+@pytest.mark.parametrize("stream,cap", [(1, 1024 * 1024), (2, 512 * 1024)])
+def test_named_ssh_capture_stops_reading_and_reaps_on_overflow(
+    boundary_module, tmp_path, monkeypatch, stream, cap,
+):
+    control = _private_failure_control(boundary_module, tmp_path)
+    pid_file = tmp_path / "ssh-client.pid"
+    script = ("import os,sys,time;"
+              "open(sys.argv[1],'w').write(str(os.getpid()));"
+              "[os.write(int(sys.argv[2]),b'x'*8192) for _ in range(256)];"
+              "time.sleep(30)")
+    control._argv = lambda _: (sys.executable, "-c", script, str(pid_file), str(stream))
+    popen, read = subprocess.Popen, os.read
+    output_fds = set()
+    observed = 0
+
+    def spawn(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        output_fds.add((process.stdout if stream == 1 else process.stderr).fileno())
+        return process
+
+    def counted_read(fd, size):
+        nonlocal observed
+        raw = read(fd, size)
+        if fd in output_fds:
+            observed += len(raw)
+        return raw
+
+    monkeypatch.setattr(boundary_module.subprocess, "Popen", spawn)
+    monkeypatch.setattr(boundary_module.os, "read", counted_read)
+    with pytest.raises(ProviderRequestError):
+        control._ssh(("trusted",), operation="vm_nonce", timeout=3)
+    assert observed <= cap + 1
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
+
+
+@pytest.mark.parametrize("operation", ("linux-cli", "agy-settings", "vm-probe"))
+@pytest.mark.parametrize("failure", (None, "stdout", "stderr", "deadline"))
+def test_named_control_joins_bound_capture_and_never_accept_partial_success(
+    boundary_module, tmp_path, monkeypatch, operation, failure,
+):
+    from scripts.fanout_container_vm_probe import Evidence
+    digest = (CLI if operation != "agy-settings" else
+              __import__("hashlib").sha256(boundary_module._AGY_SETTINGS_BYTES).hexdigest())
+    script = "import os,time;os.write(1," + repr((digest + "\n").encode()) + ");"
+    if failure in ("stdout", "stderr"):
+        script += f"[os.write({1 if failure == 'stdout' else 2},b'x'*8192) for _ in range(256)];time.sleep(30)"
+    elif failure == "deadline":
+        script += "time.sleep(30)"
+    original = boundary_module._run_control_command
+    popen, read = subprocess.Popen, os.read
+    processes, selected_fds, calls = [], set(), []
+    observed = 0
+    def spawn(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        selected_fds.add((process.stderr if failure == "stderr" else process.stdout).fileno())
+        return process
+    def counted_read(fd, size):
+        nonlocal observed
+        raw = read(fd, size)
+        if fd in selected_fds:
+            observed += len(raw)
+        return raw
+    def local_command(argv, *, data=b"", timeout=30):
+        calls.append(tuple(argv))
+        return original((sys.executable, "-c", script), data=data,
+                        timeout=0.05 if failure == "deadline" else timeout)
+    monkeypatch.setattr(boundary_module.subprocess, "Popen", spawn)
+    monkeypatch.setattr(boundary_module.os, "read", counted_read)
+    monkeypatch.setattr(boundary_module, "_run_control_command", local_command)
+    spec = ContainerSpec("run", "task", "target", "seat", IMAGE, *private_volume_names("run", "task", "target", "seat"),
+                         "/run/fanout/seat.sock", CLI)
+    handle = ContainerHandle("c" * 64, "d" * 64, spec.workspace_volume, spec.session_volume)
+    def invoke():
+        if operation == "linux-cli":
+            return boundary_module.PinnedDockerTransport._attest_linux_cli(spec, "claude", handle)
+        if operation == "agy-settings":
+            return boundary_module.PinnedDockerTransport._provision_agy_settings(handle)
+        return Evidence.run(SimpleNamespace(data={"commands": []}, save=lambda: None), ("colima", "status"))
+    if failure is None:
+        result = invoke()
+        assert result == (None if operation == "agy-settings" else digest + ("\n" if operation == "vm-probe" else ""))
+    else:
+        with pytest.raises(ProviderRequestError):
+            invoke()
+    assert calls and len(processes) == 1 and processes[0].poll() is not None
+    assert observed <= (512 * 1024 if failure == "stderr" else 1024 * 1024) + 1
+    with pytest.raises(ProcessLookupError):
+        os.kill(processes[0].pid, 0)
+
+
+@pytest.mark.parametrize("drift", ["socket", "container", "permit"])
+def test_model_slot_wait_rechecks_authority_before_settings_or_spawn(
+    boundary_module, tmp_path, monkeypatch, drift,
+):
+    _, boundary, transport, docker, socket, _ = _launched_seat(boundary_module, tmp_path)
+    transport._production_edge = True
+    transport._control = SimpleNamespace()
+    effects = []
+
+    @contextmanager
+    def waited_slot(**_kwargs):
+        if drift == "socket":
+            socket.proof = replace(socket.proof, inode=socket.proof.inode + 1)
+        elif drift == "container":
+            docker.inspect["Config"]["Labels"][runtime_tests.BOUNDARY + "seat"] = "foreign"
+        else:
+            boundary.admission.ledger.fence_epoch(boundary.admission.permit_id,
+                                                  boundary.admission.epoch)
+        yield
+
+    monkeypatch.setattr(boundary_module, "executor_slot", waited_slot)
+    monkeypatch.setattr(transport, "_provision_agy_settings", lambda *_: effects.append("settings"))
+    def spawn(*_args, **_kwargs):
+        effects.append("spawn")
+        raise AssertionError("prompt handoff reached after authority drift")
+    monkeypatch.setattr(boundary_module.subprocess, "Popen", spawn)
+    with pytest.raises(ProviderRequestError):
+        transport.run(ProcessCommand(("agy", "--prompt"), b"private prompt", cwd=tmp_path), boundary)
+    assert effects == []
 
 
 def test_host_capture_preserves_slot_and_fixed_environment(

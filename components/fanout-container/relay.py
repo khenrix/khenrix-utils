@@ -42,7 +42,7 @@ class RelayRejected(ValueError):
 
 
 def seat_socket_path(seat_id: str) -> str:
-    if not isinstance(seat_id, str) or _ID.fullmatch(seat_id) is None:
+    if not isinstance(seat_id, str) or _ID.fullmatch(seat_id) is None or len(seat_id) > 90:
         raise ValueError("relay seat identity is invalid")
     return f"{GUEST_SOCKET_ROOT}/{seat_id}.sock"
 

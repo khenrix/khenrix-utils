@@ -58,7 +58,7 @@ class SharedDocker:
         spec = spec or ContainerSpec("run-synthetic", "task-plan", "target-one", label,
                                     IMAGE, workspace, session, f"/run/fanout/{label}.sock", CLI)
         workspace, session = spec.workspace_volume, spec.session_volume
-        names = {"_labels", "_volume_labels", "_mounts", "_host_mounts", "_inspect",
+        names = {"_labels", "_volume_labels", "_volumes", "_mounts", "_host_mounts", "_inspect",
                  "_no_spend_running_inspect", "_stopped_inspect", "FakeDocker"}
         source = ast.parse(Path(__file__).read_text())
         nodes = [node for node in source.body if isinstance(node, ast.Assign)
@@ -101,6 +101,7 @@ class SharedDocker:
 
         socket = GuestSocketAttestation(spec.socket_path, 65532, stat.S_IFSOCK | 0o600, 4, 17, 12345)
         launcher = ContainerLauncher(run, guest_socket_attestor=lambda _: socket)
+        launcher._volume_expectations = (spec, copy.deepcopy(docker.original_volumes))
         return spec, launcher, docker, namespace
 
     def previous(self, seat, container_id):
@@ -152,6 +153,56 @@ class LifecycleHarness:
         self.coordinator = SimpleNamespace(journal=self.journal, owner=self.owner,
             lifecycle_controller=self.controller, _journal_guard=threading.Lock())
         self.scope = helper._coordinator_lifecycle(self.coordinator)
+        self.history = {}
+
+    def original_turn(self, seat, provider):
+        from dataclasses import asdict
+        from shared.lib.fanout import container_boundary as boundary
+        from shared.lib.fanout.broker import BrokerPermit
+        from shared.lib.fanout.container_runtime import ContainerHandle
+        from shared.lib.fanout.container_vm import VMProbe
+        from shared.lib.fanout.controller import write_evidence
+        from shared.lib.fanout.providers import ProviderRequest, ProviderRegistry
+        from test_fanout_container_boundary import FakeTransport, _terminal, SESSION_IDS
+        from test_fanout_container_transfer_transport import _complete_original_inputs
+        spec, launcher, docker, _ = seat
+        if spec.seat_id in self.history:
+            return self.history[spec.seat_id]
+        profile = ProviderRegistry.default().select(provider, "repo-write", "standard")
+        native_id = SESSION_IDS[provider]
+        request = ProviderRequest(provider, "original prior turn", cwd=self.controller.root,
+            execution_class="repo-write", profile=profile, run_id=spec.run_id,
+            task_id=spec.task_id, target_id=spec.target_id, seat_id=spec.seat_id,
+            inputs_digest=self.inputs.digest, session_id=native_id if provider == "claude" else None,
+            context_sha256="a" * 64, skill_bundle_sha256="b" * 64, skill_delivery_sha256="8" * 64)
+        permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+            "initial", profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
+            inputs_digest=self.inputs.digest, session_id=request.session_id, upstream_route_digest="3" * 64,
+            upstream_origin="synthetic.invalid", upstream_model=profile.requested_model, upstream_path="/v1/messages")
+        permit_id = self.ledger.register(permit, 1)
+        handle = ContainerHandle(("1" if provider == "claude" else "2") * 64, "7" * 64,
+                                 spec.workspace_volume, spec.session_volume)
+        origin = write_evidence(self.controller, "container-seat-launch", {
+            "spec": asdict(spec), "handle": asdict(handle), "route": "start",
+            "volumes": copy.deepcopy(docker.original_volumes)})
+        socket = launcher._socket_attestor(spec.socket_path)
+        vm = VMProbe("fanout-isolated", "unix:///private/dedicated/docker.sock",
+                     "2" * 64, "3" * 64, "4" * 64, "5" * 64)
+        sessions = boundary.SessionStore(self.controller, spec.run_id, spec.task_id,
+                                        spec.target_id, spec.seat_id, spec.session_volume)
+        _complete_original_inputs(self.controller, request, spec, handle, permit, self.ledger,
+                                  permit_id, 1, origin, vm, socket, sessions)
+        transport = FakeTransport(vm, handle, socket, spec.cli_digest, _terminal(provider, session_id=native_id))
+        transport.attest_image = lambda: spec.image_digest
+        admission = boundary.ContainerAdmission(permit, permit_id, 1, self.ledger,
+            spec.image_digest, spec.cli_digest, socket, transport, sessions, *origin)
+        sealed = boundary.issue_container_boundary(self.controller, request, vm, handle, admission)
+        assert boundary.run_container_turn(request, sealed).valid
+        assert sessions.resume(provider).session_id == native_id
+        self.ledger.fence_epoch(permit_id, 1)
+        resumed = replace(request, resume=True, session_id=native_id, prompt="current resumed turn")
+        self.history[spec.seat_id] = resumed
+        return resumed
 
     def start(self, seat, *, process_runner=lambda _: None, epoch=2):
         from shared.lib.fanout.broker import BrokerPermit
@@ -159,10 +210,11 @@ class LifecycleHarness:
         from shared.lib.fanout.controller import write_evidence
         spec, launcher, _, _ = seat
         provider = "codex" if spec.seat_id == "seat-codex" else "claude"
+        request = self.original_turn(seat, provider)
         permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
-            "resume", "synthetic-model", "disposable-placeholder", 4, 1048576, 8388608, 8192,
-            inputs_digest=self.inputs.digest, session_id="synthetic-session", upstream_route_digest="3" * 64,
-            upstream_origin="synthetic.invalid", upstream_model="synthetic-model", upstream_path="/v1/messages")
+            "resume", request.profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
+            inputs_digest=self.inputs.digest, session_id=request.session_id, upstream_route_digest="3" * 64,
+            upstream_origin="synthetic.invalid", upstream_model=request.profile.requested_model, upstream_path="/v1/messages")
         context = write_evidence(self.controller, "container-coordinator-context", {
             "schema_version": "fanout-container-coordinator-context-v1", "release_source_binding": self.scope.source,
             "inputs_digest": self.inputs.digest, "run_id": spec.run_id, "task_id": spec.task_id,
@@ -174,14 +226,16 @@ class LifecycleHarness:
         permit_id = self.scope.reserve(context, spec, self.ledger, permit, epoch)
         control = object.__new__(PinnedSSHSeatControl)
         control.controller, control.spec, control.ledger = self.controller, spec, self.ledger
-        control.permit_id, control.epoch, control.broker = permit_id, epoch, SimpleNamespace(permit=permit)
+        from shared.lib.fanout.broker import Broker
+        control.permit_id, control.epoch, control.broker = permit_id, epoch, Broker(
+            permit, credential="synthetic-controller-only", send=lambda *_: None)
         control._lease = self.stack.enter_context(HostSessionLease(self.controller, permit_id, epoch))
         control.close = lambda: control._lease.__exit__()
         transport = PinnedDockerTransport.start(self.controller, spec, launcher=launcher,
             vm_attestor=lambda: None, socket_attestor=launcher._socket_attestor,
             image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
             process_runner=process_runner, recover=True, lifecycle_scope=self.scope,
-            context_ref=context, session_control=control)
+            context_ref=context, session_control=control, request=request)
         self.stack.callback(transport.close)
         return transport, context
 
@@ -190,6 +244,209 @@ class LifecycleHarness:
             self.stack.close()
         finally:
             self.journal.close()
+
+
+@pytest.mark.parametrize("changed", [
+    "provider", "model", "run_id", "task_id", "target_id", "seat_id",
+    "inputs_digest", "session_id", "route", "upstream_route_digest",
+    "upstream_origin", "upstream_model", "upstream_path", "permit_id", "epoch", "profile",
+])
+def test_recovery_requires_authenticated_current_permit_before_allocation(tmp_path, changed):
+    from shared.lib.fanout.broker import Broker, BrokerPermit
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport
+    daemon, seat, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        request = harness.original_turn(seat, "claude")
+        spec, launcher, _, _ = seat
+        with harness.ledger._locked() as state:
+            original_permits = copy.deepcopy(state["permits"])
+        permit = BrokerPermit("claude", spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+            "resume", request.profile.requested_model, "current-disposable-placeholder",
+            4, 1048576, 8388608, 8192, inputs_digest=request.inputs_digest,
+            session_id=request.session_id, upstream_route_digest="3" * 64,
+            upstream_origin="synthetic.invalid", upstream_model=request.profile.requested_model,
+            upstream_path="/v1/messages")
+        changes = {"provider": "codex", "model": "different-model", "run_id": "different-run",
+            "task_id": "different-task", "target_id": "different-target", "seat_id": "different-seat",
+            "inputs_digest": "f" * 64, "session_id": "different-session", "route": "initial",
+            "upstream_route_digest": "f" * 64, "upstream_origin": "different.invalid",
+            "upstream_model": "different-model", "upstream_path": "/different"}
+        if changed in changes:
+            permit = replace(permit, **{changed: changes[changed]})
+        if changed == "profile":
+            request = replace(request, profile=replace(request.profile,
+                cli_version="different-version", profile_sha256=None))
+        permit_id = harness.ledger.register(permit, 2)
+        assert permit_id not in original_permits
+        broker = Broker(permit, credential="synthetic-controller-only", send=lambda *_: None)
+        control = SimpleNamespace(broker=broker, ledger=harness.ledger,
+            permit_id="f" * 64 if changed == "permit_id" else permit_id,
+            epoch=3 if changed == "epoch" else 2)
+        before = len(seat[2].calls)
+        with pytest.raises(ProviderRequestError):
+            PinnedDockerTransport.start(harness.controller, spec, launcher=launcher,
+                vm_attestor=lambda: None, socket_attestor=launcher._socket_attestor,
+                image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
+                process_runner=lambda _: pytest.fail("model must not run"),
+                recover=True, request=request, session_control=control)
+        assert len(seat[2].calls) == before
+        assert harness.ledger.attempt_counts(permit_id, 2) == (0, 0)
+        with harness.ledger._locked() as state:
+            assert all(state["permits"][key] == value for key, value in original_permits.items())
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("changed", ["workspace-missing", "session-missing", "both-missing", "created-at"])
+def test_lifecycle_resume_refuses_missing_or_recreated_original_volume_before_prepare(tmp_path, changed):
+    daemon, seat, _ = _shared_resume_fixture()
+    harness = LifecycleHarness(tmp_path)
+    try:
+        harness.original_turn(seat, "claude")
+        docker = seat[2]
+        if changed in {"workspace-missing", "both-missing"}:
+            docker.volumes.pop("workspace")
+        if changed in {"session-missing", "both-missing"}:
+            docker.volumes.pop("session")
+        if changed == "created-at":
+            docker.volumes["workspace"]["CreatedAt"] = "2026-10-03T00:00:00Z"
+        before = len(docker.calls)
+        with pytest.raises(ProviderRequestError):
+            harness.start(seat, process_runner=lambda _: pytest.fail("model must not run"))
+        assert not daemon.mutations
+        assert all(call[3] not in {"create", "start", "stop", "update"}
+                   and call[3:5] != ("volume", "create") for call in docker.calls[before:])
+    finally:
+        harness.close()
+
+
+@pytest.mark.parametrize("provider,fault", (
+    *((provider, None) for provider in ("claude", "codex", "agy")),
+    *(("claude", fault) for fault in ("missing", "tampered", "provider", "route",
+        "known-session", "permit-id", "epoch", "extra", "malformed")),
+    ("codex", "filled-unknown-session"), ("agy", "filled-unknown-session"),
+))
+def test_recovery_authenticates_complete_original_grant_before_allocation(tmp_path, provider, fault):
+    from dataclasses import asdict
+    from shared.lib.fanout import canonical_json
+    from shared.lib.fanout.broker import Broker, BrokerPermit
+    from shared.lib.fanout.container_broker import _digest
+    from shared.lib.fanout.container_boundary import PinnedDockerTransport
+    from shared.lib.fanout.container_transfer import TransferIdentity
+    from shared.lib.fanout.container_transfer_transport import _InputClaimJournal
+    from shared.lib.fanout.controller import read_evidence, write_evidence
+    daemon = SharedDocker()
+    seat = daemon.seat("seat-" + provider, "c" * 64)
+    daemon.previous(seat, ("1" if provider == "claude" else "2") * 64)
+    harness = LifecycleHarness(tmp_path)
+    try:
+        request = harness.original_turn(seat, provider)
+        spec, launcher, docker, _ = seat
+        identity = TransferIdentity(spec.run_id, spec.task_id, spec.target_id,
+                                    spec.seat_id, request.inputs_digest)
+        journal = _InputClaimJournal(harness.controller, identity, spec.workspace_volume)
+        original_receipt_ref = journal.completed()
+        receipt = read_evidence(harness.controller, "container-input-transfer", *original_receipt_ref)
+        original_grant_ref = (receipt["grant_evidence_name"], receipt["grant_evidence_digest"])
+        grant = read_evidence(harness.controller, "container-input-grant", *original_grant_ref)
+        original = BrokerPermit(**grant["original_permit"])
+        assert original.route == "initial"
+        assert original.session_id == (request.session_id if provider == "claude" else None)
+        assert request.resume and request.session_id is not None
+        with harness.ledger._locked() as state:
+            original_entries = copy.deepcopy(state["permits"])
+        permit = replace(original, route="resume", session_id=request.session_id,
+                         placeholder_key="current-disposable-placeholder")
+        if fault in {"provider", "known-session", "filled-unknown-session"}:
+            if fault == "provider":
+                alternate = replace(original, provider="codex", session_id=None,
+                                    placeholder_key="alternate-original-placeholder")
+                alternate_epoch = 2
+            else:
+                alternate = replace(original,
+                    session_id=("22222222-2222-4222-8222-222222222222"
+                                if fault == "known-session" else request.session_id),
+                    placeholder_key="alternate-original-placeholder")
+                alternate_epoch = 2
+            alternate_id = harness.ledger.register(alternate, alternate_epoch)
+            harness.ledger.fence_epoch(alternate_id, alternate_epoch)
+            grant.update(original_permit=asdict(alternate), permit_digest=_digest(alternate),
+                         permit_id=alternate_id, permit_epoch=alternate_epoch)
+        elif fault == "missing":
+            grant.pop("original_permit")
+        elif fault == "tampered":
+            grant["original_permit"]["max_requests"] += 1
+        elif fault == "permit-id":
+            grant["permit_id"] = "f" * 64
+        elif fault == "epoch":
+            grant["permit_epoch"] = 2
+        elif fault == "extra":
+            grant["original_permit"]["unissued"] = True
+        elif fault == "malformed":
+            grant["original_permit"] = "not-an-object"
+        permit_id = harness.ledger.register(permit, 3)
+        broker = Broker(permit, credential="synthetic-controller-only",
+                        send=lambda *_: pytest.fail("provider must not run"))
+        control = SimpleNamespace(broker=broker, ledger=harness.ledger, permit_id=permit_id, epoch=3)
+        if fault == "route":
+            grant.update(original_permit=asdict(permit), permit_digest=_digest(permit),
+                         permit_id=permit_id, permit_epoch=3)
+        if fault is not None:
+            # Sign a new fault artifact and bind its real completed claim; the
+            # genuine historical grant/receipt and original ledger stay intact.
+            grant_ref = write_evidence(harness.controller, "container-input-grant", grant)
+            receipt.update(grant_evidence_name=grant_ref[0], grant_evidence_digest=grant_ref[1])
+            receipt_ref = write_evidence(harness.controller, "container-input-transfer", receipt)
+            claim = journal._read()
+            claim.update(grant_evidence_name=grant_ref[0], grant_evidence_digest=grant_ref[1],
+                         receipt_evidence_name=receipt_ref[0], receipt_evidence_digest=receipt_ref[1])
+            journal._write(claim)
+            confirmation = journal._confirmation_payload(claim)
+            journal.confirmation.write_bytes(canonical_json({"payload": confirmation,
+                "mac": journal._confirmation_mac(confirmation)}))
+            assert journal.completed() == receipt_ref
+            assert read_evidence(harness.controller, "container-input-grant", *grant_ref) == grant
+            assert read_evidence(harness.controller, "container-input-transfer", *receipt_ref) == receipt
+        before = len(docker.calls)
+        def recover():
+            return PinnedDockerTransport.start(harness.controller, spec, launcher=launcher,
+                vm_attestor=lambda: None, socket_attestor=launcher._socket_attestor,
+                image_attestor=lambda: spec.image_digest, cli_attestor=lambda _: spec.cli_digest,
+                process_runner=lambda _: pytest.fail("model must not run"),
+                recover=True, request=request, session_control=control)
+        if fault is None:
+            transport = recover()
+            assert transport.handle.workspace_volume == spec.workspace_volume
+            assert transport.handle.session_volume == spec.session_volume
+            assert docker.created and docker.inspect["State"]["Running"] is True
+            transport.close()
+        else:
+            with pytest.raises(ProviderRequestError, match="original permit authentication failed") as rejected:
+                recover()
+            cause = rejected.value.__cause__
+            if fault == "missing":
+                assert isinstance(cause, KeyError) and cause.args == ("original_permit",)
+            elif fault == "permit-id":
+                assert isinstance(cause, KeyError) and cause.args == ("f" * 64,)
+            else:
+                expected = {"tampered": "original initial association", "route": "original initial association",
+                    "filled-unknown-session": "original initial association", "provider": "original request association",
+                    "known-session": "original request association", "epoch": "original ledger association",
+                    "extra": "complete original permit", "malformed": "complete original permit"}
+                assert isinstance(cause, ValueError) and str(cause) == expected[fault]
+            assert len(docker.calls) == before and not docker.created
+            assert not daemon.mutations
+        assert harness.ledger.attempt_counts(permit_id, 3) == (0, 0)
+        with harness.ledger._locked() as state:
+            assert all(state["permits"][key] == value for key, value in original_entries.items())
+            assert state["permits"][permit_id]["fenced"] is False
+        genuine = read_evidence(harness.controller, "container-input-grant", *original_grant_ref)
+        assert genuine["original_permit"] == asdict(original)
+        genuine_receipt = read_evidence(harness.controller, "container-input-transfer", *original_receipt_ref)
+        assert (genuine_receipt["grant_evidence_name"], genuine_receipt["grant_evidence_digest"]) == original_grant_ref
+    finally:
+        harness.close()
 
 
 def test_shared_daemon_later_resume_never_stops_active_sibling(tmp_path):
@@ -255,18 +512,25 @@ def test_scoped_model_turns_overlap_and_completed_sibling_stays_stopped(tmp_path
         assert second[2].inspect["State"]["Running"] is True
         return ProcessResult(ProcessStatus.EXIT, 0, b"synthetic model B", b"")
     # This guard-focused test replaces only unrelated full admission setup.
+    harness.original_turn(first, "claude")
+    harness.original_turn(second, "codex")
     monkeypatch.setattr(boundary, "_check_live", lambda admitted: admitted.transport.attest_container())
     try:
         a, _ = harness.start(first, process_runner=model_a)
         b, _ = harness.start(second, process_runner=model_b)
         command = ProcessCommand(("claude",), b"synthetic prompt")
+        def admitted(transport):
+            control = transport._control
+            return SimpleNamespace(transport=transport, input_workdir="/workspace",
+                admission=SimpleNamespace(ledger=control.ledger, permit_id=control.permit_id,
+                    epoch=control.epoch, broker_permit=control.broker.permit))
         def turn_a():
-            result = a.run(command, SimpleNamespace(transport=a, input_workdir="/workspace"))
+            result = a.run(command, admitted(a))
             a.close()
             completed.set()
             return result
         def turn_b():
-            result = b.run(command, SimpleNamespace(transport=b, input_workdir="/workspace"))
+            result = b.run(command, admitted(b))
             assert b.attest_container() == b.handle
             assert not first[2].inspect["State"]["Running"]
             return result
@@ -607,18 +871,24 @@ def test_saved_lifecycle_refuses_incomplete_or_changed_signed_associations(tmp_p
 
 
 def test_live_relay_open_failure_blocks_pending_owner_with_signed_cleanup(tmp_path, monkeypatch):
-    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout.broker import Broker, BrokerPermit
     from shared.lib.fanout.container_boundary import PinnedDockerTransport, PinnedSSHSeatControl
     from shared.lib.fanout.controller import read_evidence, write_evidence
     daemon, first, second = _shared_resume_fixture()
     harness = LifecycleHarness(tmp_path)
     try:
         a, context_ref = harness.start(first)
+        request = harness.original_turn(second, "codex")
         context = read_evidence(harness.controller, "container-coordinator-context", *context_ref)
         context["seat_id"] = context["request"]["seat_id"] = second[0].seat_id
         context["request"]["executor_id"] = "codex"
+        context["request"]["session_id"] = request.session_id
         context_ref = write_evidence(harness.controller, "container-coordinator-context", context)
-        permit = replace(a._control.broker.permit, provider="codex", seat_id=second[0].seat_id)
+        spec = second[0]
+        permit = BrokerPermit("codex", spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+            "resume", request.profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
+            inputs_digest=request.inputs_digest, session_id=request.session_id, upstream_route_digest="3" * 64,
+            upstream_origin="synthetic.invalid", upstream_model=request.profile.requested_model, upstream_path="/v1/messages")
         permit_id = harness.scope.reserve(context_ref, second[0], harness.ledger, permit, 2)
         broker = Broker(permit, credential="synthetic-only-credential", send=lambda *_: pytest.fail("provider called"))
         def fail_open(_):
@@ -627,12 +897,13 @@ def test_live_relay_open_failure_blocks_pending_owner_with_signed_cleanup(tmp_pa
         with pytest.raises(OSError, match="relay open failed") as raised:
             PinnedDockerTransport.start_live(harness.controller, second[0], ledger=harness.ledger,
                 broker=broker, permit_id=permit_id, epoch=2, recover=True,
-                lifecycle_scope=harness.scope, context_ref=context_ref)
+                lifecycle_scope=harness.scope, context_ref=context_ref, request=request)
         assert harness.scope.blocked
         assert any("receipt=" in note for note in raised.value.__notes__)
         assert not second[2].created
         with harness.ledger._locked() as state:
             assert state["permits"][permit_id]["fenced"] is False
+        assert harness.ledger.attempt_counts(permit_id, 2) == (0, 0)
     finally:
         harness.close()
 
@@ -673,11 +944,42 @@ def _labels(spec: ContainerSpec) -> dict[str, str]:
     }
 
 
+@pytest.mark.parametrize("length", [91, 128])
+def test_linux_socket_limit_refuses_before_any_docker_operation(spec, length):
+    seat = "s" * length
+    workspace, session = private_volume_names(spec.run_id, spec.task_id, spec.target_id, seat)
+    changed = replace(spec, seat_id=seat, workspace_volume=workspace, session_volume=session,
+                      socket_path=f"/run/fanout/{seat}.sock")
+    calls = []
+    launcher = ContainerLauncher(lambda argv, data: calls.append(argv),
+                                 guest_socket_attestor=lambda _: None)
+    with pytest.raises(ProviderRequestError):
+        launcher.start(changed)
+    assert calls == []
+
+
+def test_linux_socket_limit_accepts_exact_90_byte_seat(spec):
+    seat = "s" * 90
+    workspace, session = private_volume_names(spec.run_id, spec.task_id, spec.target_id, seat)
+    changed = replace(spec, seat_id=seat, workspace_volume=workspace, session_volume=session,
+                      socket_path=f"/run/fanout/{seat}.sock")
+    ContainerLauncher._validate_spec(changed)
+
+
 def _volume_labels(spec: ContainerSpec, kind: str) -> dict[str, str]:
     return {key: value for key, value in _labels(spec).items()
             if key in {BOUNDARY + field for field in ("boundary", "run", "task", "target", "seat")}} | {
                 BOUNDARY + "volume_kind": kind,
             }
+
+
+def _volumes(spec):
+    return {kind: {"Name": name, "Driver": "local", "Options": None,
+                   "Scope": "local", "Labels": _volume_labels(spec, kind),
+                   "CreatedAt": "2026-10-04T12:34:56.123456789Z",
+                   "Mountpoint": "/var/lib/docker/volumes/" + name + "/_data"}
+            for kind, name in (("workspace", spec.workspace_volume),
+                               ("session", spec.session_volume))}
 
 
 def _mounts(spec: ContainerSpec) -> list[dict[str, object]]:
@@ -801,12 +1103,8 @@ class FakeDocker:
         }
         self.old: dict[str, dict[str, object]] = {}
         self.created = False
-        self.volumes = {
-            kind: {"Name": name, "Driver": "local", "Options": None,
-                   "Scope": "local", "Labels": _volume_labels(spec, kind),
-                   "Mountpoint": "/var/lib/docker/volumes/" + name + "/_data"}
-            for kind, name in (("workspace", WORKSPACE), ("session", SESSION))
-        }
+        self.volumes = _volumes(spec)
+        self.original_volumes = copy.deepcopy(self.volumes)
 
     def add_orphan(self, *, run_id: str | None = None, seat_id: str | None = None,
                    changed_mount: bool = False, restart: str = "no") -> str:
@@ -846,6 +1144,9 @@ class FakeDocker:
         if args[:2] == ("volume", "create"):
             name = args[-1]
             self.events.append("volume-create")
+            kind = next(kind for kind, item in self.original_volumes.items() if item["Name"] == name)
+            if kind not in self.volumes:
+                self.volumes[kind] = copy.deepcopy(self.original_volumes[kind])
             return self._ok(name + "\n", json_output=False)
         if args[:2] == ("volume", "inspect"):
             self.volume_inspect_count += 1
@@ -948,7 +1249,33 @@ def attestor():
 
 
 def _launcher(fake_docker, attestor):
-    return ContainerLauncher(fake_docker, guest_socket_attestor=attestor)
+    launcher = ContainerLauncher(fake_docker, guest_socket_attestor=attestor)
+    launcher._volume_expectations = (fake_docker.spec, copy.deepcopy(fake_docker.original_volumes))
+    return launcher
+
+
+@pytest.mark.parametrize("missing", [("workspace",), ("session",), ("workspace", "session")])
+def test_authenticated_recovery_never_recreates_missing_original_volumes(spec, fake_docker, attestor, missing):
+    for kind in missing:
+        fake_docker.volumes.pop(kind)
+    with pytest.raises(ProviderRequestError):
+        _launcher(fake_docker, attestor).recover(spec)
+    assert not any(argv[3:5] == ("volume", "create") or argv[3] in ("create", "start")
+                   for argv in fake_docker.calls)
+
+
+def test_same_name_volume_creation_metadata_change_refuses_before_recovery(spec, fake_docker, attestor):
+    fake_docker.volumes["workspace"]["CreatedAt"] = "2026-10-05T12:34:56Z"
+    with pytest.raises(ProviderRequestError):
+        _launcher(fake_docker, attestor).recover(spec)
+    assert not any(argv[3] in ("create", "start") for argv in fake_docker.calls)
+
+
+def test_recovery_without_original_volume_authority_refuses_before_create(spec, fake_docker, attestor):
+    with pytest.raises(ProviderRequestError):
+        ContainerLauncher(fake_docker, guest_socket_attestor=attestor).recover(spec)
+    assert not any(argv[3:5] == ("volume", "create") or argv[3] in ("create", "start")
+                   for argv in fake_docker.calls)
 
 
 def _has_start(fake_docker) -> bool:
@@ -1333,6 +1660,7 @@ def test_recovery_refuses_foreign_bind_of_socket_parent(spec, fake_docker, attes
 def test_recovery_refuses_foreign_bind_overlapping_private_volume(spec, fake_docker, attestor, kind, overlap):
     volume_root = f"/var/lib/docker/private-mounts/{kind}/{fake_docker.volumes[kind]['Name']}"
     fake_docker.volumes[kind]["Mountpoint"] = volume_root
+    fake_docker.original_volumes[kind]["Mountpoint"] = volume_root
     source = posixpath.dirname(volume_root) if overlap == "ancestor" else volume_root + "/secret"
     foreign_id = _foreign_bind(fake_docker, spec, source)
     with pytest.raises(ProviderRequestError, match="conflict"):
@@ -2230,8 +2558,10 @@ def test_running_attestation_refuses_another_container_id_in_handle(spec, fake_d
         "EndpointID": NONE_ENDPOINT_ID, "MacAddress": "",
         "IPv4Address": "", "IPv6Address": "",
     }
-    with pytest.raises(ProviderRequestError, match="digest"):
+    other_before = copy.deepcopy(fake_docker.old[other_id])
+    with pytest.raises(ProviderRequestError, match="launch association"):
         launcher.attest_running(spec, replace(handle, container_id=other_id))
+    assert fake_docker.old[other_id] == other_before
 
 
 def test_running_attestation_requires_authenticated_socket_attestor(spec, fake_docker, attestor):

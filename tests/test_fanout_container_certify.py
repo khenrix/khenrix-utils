@@ -134,7 +134,8 @@ def certifier(monkeypatch):
         def today(cls):
             return cls(2026, 9, 30)
 
-    monkeypatch.setattr(module, "datetime", SimpleNamespace(date=ObservationDate))
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(date=ObservationDate,
+        datetime=datetime.datetime, timezone=datetime.timezone))
     return module
 
 
@@ -1329,7 +1330,7 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
     monkeypatch.setattr(certifier.os, "fsync", track_capability_sync)
 
     def synthetic_start(controller, spec, *, ledger, broker, permit_id, epoch,
-                        recover=False):
+                        recover=False, request=None):
         assert capability_parent_synced, "capability filename was not durable before seat start"
         assert broker.permit.max_request_bytes == 1048576
         assert broker.permit.max_response_bytes == 8388608
@@ -1450,7 +1451,9 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
             socket_attestor=lambda _: socket,
             image_attestor=lambda: spec.image_digest,
             cli_attestor=lambda _: spec.cli_digest,
-            process_runner=run_process, recover=recover)
+            process_runner=run_process, recover=recover, request=request,
+            session_control=SimpleNamespace(broker=broker, ledger=ledger,
+                permit_id=permit_id, epoch=epoch))
         transport._transfer_popen = certifier._fake_transfer_popen(
             workspace, transport.handle.container_id)
         transport.ledger = ledger
@@ -2459,17 +2462,42 @@ def _stopped_fake_predecessor(certifier, tmp_path):
     ledger = PermitLedger(controller.root / "locks" / "spend", controller)
     identity = ("fake-recovery", "task", "target", "seat-claude")
     workspace, session = certifier.private_volume_names(*identity)
-    spec = certifier.ContainerSpec(*identity, "sha256:" + "1" * 64,
+    spec = certifier.ContainerSpec(*identity, "fanout-seat@sha256:" + "1" * 64,
                                    workspace, session, "/run/fanout/seat-claude.sock",
                                    "2" * 64)
-    permit = BrokerPermit("claude", *identity, "initial", "claude-opus-5-5",
-                          "disposable-placeholder", 1, 100_000, 100_000, 1024)
+    from shared.lib.fanout.providers import ProviderRegistry, ProviderRequest
+    from shared.lib.fanout.container_vm import VMProbe
+    from test_fanout_container_boundary import FakeTransport, _terminal, CLAUDE_ID
+    from test_fanout_container_transfer_transport import _complete_original_inputs
+    profile = ProviderRegistry.default().select("claude", "repo-write", "standard")
+    request = ProviderRequest("claude", "original initial turn", profile=profile, cwd=tmp_path,
+        execution_class="repo-write", run_id=spec.run_id, task_id=spec.task_id,
+        target_id=spec.target_id, seat_id=spec.seat_id, inputs_digest="e" * 64,
+        context_sha256="a" * 64, skill_bundle_sha256="b" * 64, skill_delivery_sha256="8" * 64,
+        session_id=CLAUDE_ID)
+    permit = BrokerPermit("claude", *identity, "initial", profile.requested_model,
+        "disposable-placeholder", 1, 100_000, 100_000, 1024,
+        inputs_digest=request.inputs_digest, session_id=request.session_id,
+        **certifier._fake_upstream_fields("claude", profile.requested_model))
     permit_id = ledger.register(permit, 1)
-    launcher = certifier._FakeLauncher(spec, "initial")
+    launcher = certifier._FakeLauncher(spec, "initial", controller=controller)
     transport = certifier.PinnedDockerTransport.start(
         controller, spec, launcher=launcher, vm_attestor=lambda: None,
         socket_attestor=lambda _: None, image_attestor=lambda: spec.image_digest,
         cli_attestor=lambda _: spec.cli_digest, process_runner=lambda _: None)
+    socket = certifier.GuestSocketAttestation(spec.socket_path, 65532, stat.S_IFSOCK | 0o600, 1, 2, 3)
+    vm = VMProbe("fanout-isolated", "unix:///private/dedicated/docker.sock",
+                 "2" * 64, "3" * 64, "4" * 64, "5" * 64)
+    sessions = certifier.SessionStore(controller, *identity, spec.session_volume)
+    _complete_original_inputs(controller, request, spec, transport.handle, permit, ledger, permit_id, 1,
+        (transport.handle_evidence_name, transport.handle_evidence_digest), vm, socket, sessions)
+    prior_turn = FakeTransport(vm, transport.handle, socket, spec.cli_digest, _terminal("claude", session_id=CLAUDE_ID))
+    prior_turn.attest_image = lambda: spec.image_digest
+    admission = certifier.ContainerAdmission(permit, permit_id, 1, ledger, spec.image_digest,
+        spec.cli_digest, socket, prior_turn, sessions, transport.handle_evidence_name, transport.handle_evidence_digest)
+    sealed = certifier.issue_container_boundary(controller, request, vm, transport.handle, admission)
+    assert certifier.run_container_turn(request, sealed).valid
+    transport.resume_request = replace(request, resume=True, prompt="actual current resume")
     transport.close()
     ledger.fence_epoch(permit_id, 1)
     name, digest = write_evidence(controller, "container-fake-stopped", {
@@ -2492,11 +2520,25 @@ def test_fake_recovery_binds_native_retained_predecessor(certifier, tmp_path):
     stopped = read_evidence(controller, "container-seat-stopped", *initial.stop_evidence)
     launcher = certifier._FakeLauncher(spec, "resume", controller=controller,
                                        ledger=ledger, previous=previous)
+    from shared.lib.fanout.broker import Broker
+    from shared.lib.fanout.container_transfer_transport import _InputClaimJournal
+    from shared.lib.fanout.container_transfer import TransferIdentity
+    identity = TransferIdentity(spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+                                initial.resume_request.inputs_digest)
+    receipt = read_evidence(controller, "container-input-transfer",
+        *_InputClaimJournal(controller, identity, spec.workspace_volume).completed())
+    grant = read_evidence(controller, "container-input-grant",
+        receipt["grant_evidence_name"], receipt["grant_evidence_digest"])
+    permit = certifier.BrokerPermit(**dict(grant["original_permit"], route="resume",
+                                         session_id=initial.resume_request.session_id))
+    permit_id = ledger.register(permit, 2)
+    control = SimpleNamespace(broker=Broker(permit, credential="synthetic-controller-only", send=lambda *_: None),
+                              ledger=ledger, permit_id=permit_id, epoch=2)
     resumed = certifier.PinnedDockerTransport.start(
         controller, spec, launcher=launcher, vm_attestor=lambda: None,
         socket_attestor=lambda _: None, image_attestor=lambda: spec.image_digest,
         cli_attestor=lambda _: spec.cli_digest, process_runner=lambda _: None,
-        recover=True)
+        recover=True, request=initial.resume_request, session_control=control)
     assert resumed.handle.container_id != initial.handle.container_id
     assert type(launcher._recovery) is _RecoveryAssociation
     assert launcher._recovery.predecessors == (

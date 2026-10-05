@@ -33,9 +33,7 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
     control.vm_observation = {"profile_identity": observed}
     control.close = lambda: observed["profile_dir"].update(inode=999)
     transport._control = control
-    with original_boundary.admission.ledger._locked() as state:
-        state.update(permits={}, requests={}, send_claims={})
-        original_boundary.admission.ledger._save(state)
+    original_boundary.admission.ledger.fence_epoch(original_boundary.permit_id, 1)
     path, policy, _ = company_manifest
     requested = {provider: provider + "-company" for provider in ("claude", "codex", "agy")}
     _, routes = probe._admit_route_set(path, policy, requested)
@@ -44,7 +42,7 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
         "route_digests": {"claude": routes["claude"].digest},
         "vm": {"claude": {"profile_identity": {"not_observed": True}}}}), "0" * 64)
     coordinator = SimpleNamespace(provider_runner=run_provider, lifecycle_controller=controller)
-    packet = SimpleNamespace(attempt=1, provider_policy=SimpleNamespace(quality_tier="standard"),
+    packet = SimpleNamespace(attempt=2, provider_policy=SimpleNamespace(quality_tier="standard"),
                              to_dict=lambda: {"task_id": request.task_id})
     seat = SimpleNamespace(executor_id="claude")
     monkeypatch.setattr(helper, "authenticate_inputs", lambda *_: (SimpleNamespace(digest=request.inputs_digest), None))
@@ -81,6 +79,7 @@ def test_coordinator_retains_observed_vm_identity_across_actual_turn_cleanup(
         assert effective["max_tokens"] == 8192
         assert effective["thinking"] == {"type": "adaptive"}
         control.permit_id, control.epoch = kwargs["permit_id"], kwargs["epoch"]
+        control.ledger, control.broker = kwargs["ledger"], broker
         return transport
     monkeypatch.setattr(boundary_module.PinnedDockerTransport, "start_live", classmethod(existing_owned_seat))
     closed = []
@@ -464,7 +463,9 @@ def _assert_persisted_certificate_turn_refusals(root, certificate, trial_control
                     changed_stop["spec"][field] = changed_boundary[field]
                     spec = ContainerSpec(**changed_stop["spec"])
                     launch = write_evidence(coordinator.lifecycle_controller, "container-seat-launch", {
-                        "spec": asdict(spec), "handle": changed_stop["handle"], "route": "start"})
+                        "spec": asdict(spec), "handle": changed_stop["handle"], "route": "start",
+                        "volumes": read_evidence(coordinator.lifecycle_controller, "container-seat-launch",
+                            stopped["launch_evidence_name"], stopped["launch_evidence_digest"])["volumes"]})
                     changed_stop.update(launch_evidence_name=launch[0], launch_evidence_digest=launch[1])
                     changed_boundary.update(handle_evidence_name=launch[0], handle_evidence_digest=launch[1])
                     inspect = json.loads(original_raw)
@@ -609,7 +610,8 @@ def _synthetic_lifecycle_proof(controller, spec, handle, launch, context, permit
             return raw
         launcher._run = capture
         try:
-            launcher.attest_running(spec, handle, scope=_InventoryScope((), ((spec, handle),)))
+            launcher.attest_running(spec, handle, scope=_InventoryScope((), ((spec, handle),),
+                ((handle.container_id, launcher._volume_expectations[1]),)))
         finally:
             launcher._run = original
         runtime = helper._scope_material(controller, observations.observations)
@@ -689,12 +691,19 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             daemon = SharedDocker()
             synthetic = daemon.seat(seat.seat_id, sha(f"{task.id}/{provider}/{number}".encode()), spec=spec)
             launcher = synthetic[1]
+            if number == 2:
+                imported_payload = read_evidence(controller, "container-input-transfer", *imports[provider])
+                original_launch = read_evidence(controller, "container-seat-launch",
+                    imported_payload["handle_evidence_name"], imported_payload["handle_evidence_digest"])
+                launcher.restore_launch(original_launch, spec, ContainerHandle(**original_launch["handle"]), recover=False)
             handle = launcher.recover(spec) if number == 2 else launcher.start(spec)
             launch_value = {"spec": asdict(spec), "handle": asdict(handle),
-                            "route": "start" if number == 1 else "recover"}
+                            "route": "start" if number == 1 else "recover",
+                            "volumes": launcher._volume_expectations[1]}
             if number == 2:
                 # This coordinator codec fixture has no Docker recovery inventory.
                 launch_value["recovery"] = {"spec": asdict(spec), "handle": asdict(handle), "predecessors": []}
+                launch_value["original_input"] = list(imports[provider])
             launch = write_evidence(controller, "container-seat-launch", launch_value)
             permit = BrokerPermit(provider, packet.run_id, task.id, task.target_id, seat.seat_id,
                 "initial" if number == 1 else "resume", profile.requested_model, "disposable-placeholder", 4, 1048576, 8388608, 8192,
@@ -708,21 +717,21 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             identity = TransferIdentity(packet.run_id, task.id, task.target_id, seat.seat_id, service.inputs.digest)
             if number == 1:
                 source, material_name, material_digest = helper.stage_input_material(coordinator, packet, seat, request, handle)
-                source_info = source.stat()
-                grant = write_evidence(controller, "container-input-grant", {"identity": asdict(identity),
-                    "original_handle": asdict(handle), "material_evidence_name": material_name, "material_evidence_digest": material_digest,
-                    "source_root": str(source), "source_device": source_info.st_dev, "source_inode": source_info.st_ino,
-                    "request_digest": admitted_request_digest(request)})
-                imported = write_evidence(controller, "container-input-transfer", {"identity": asdict(identity),
-                    "manifest_sha256": sha(encode_manifest(snapshot_manifest(source, identity))), "workspace_volume": workspace,
-                    "workdir": f"/workspace/inputs/{sha(canonical(asdict(identity)))}/published/repo", "original_handle": asdict(handle),
-                    "handle_evidence_name": launch[0], "handle_evidence_digest": launch[1],
-                    "material_evidence_name": material_name, "material_evidence_digest": material_digest,
-                    "grant_evidence_name": grant[0], "grant_evidence_digest": grant[1]})
-                claim = _InputClaimJournal(controller, identity, workspace)
-                claimed = SimpleNamespace(evidence_name=grant[0], evidence_digest=grant[1])
-                claim.claim(claimed)
-                claim.complete(claimed, *imported)
+                from shared.lib.fanout.container_boundary import ContainerAdmission, PinnedDockerTransport
+                from shared.lib.fanout.container_transfer_transport import issue_input_source_grant
+                from test_fanout_container_transfer_transport import _guest_popen
+                vm = VMProbe(**observations[provider]["probe"])
+                transport = PinnedDockerTransport(controller, spec, handle, launcher, lambda: vm,
+                    launcher._socket_attestor, lambda: spec.image_digest, lambda _: spec.cli_digest, lambda _: None, launch)
+                sessions = SessionStore(controller, packet.run_id, task.id, task.target_id, seat.seat_id, volume)
+                admitted = ContainerAdmission(permit, permit_id, number, ledger, spec.image_digest,
+                    spec.cli_digest, socket, transport, sessions, *launch)
+                grant = issue_input_source_grant(controller, request, transport, admitted, source, material_name, material_digest)
+                guest = controller.root / "quarantine" / f"guest-{task.id}-{provider}"
+                guest.mkdir(mode=0o700)
+                transport._transfer_popen, _ = _guest_popen(guest, [], container_id=handle.container_id)
+                staged = transport.stage_inputs(request, grant)
+                imported = staged.evidence_name, staged.evidence_digest
                 imports[provider] = imported
             imported = imports[provider]
             vm = VMProbe(**observations[provider]["probe"])

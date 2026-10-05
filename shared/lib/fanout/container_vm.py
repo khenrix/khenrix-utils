@@ -66,11 +66,11 @@ def _yaml_mounts(text: str, *, absent_is_empty: bool = False) -> list[dict[str, 
         return []
     if value:
         raise ProviderRequestError("effective VM host mount configuration is ambiguous")
-    block = re.search(r"^mounts:[ \t]*\n((?:^[ \t].*\n|^[ \t]*#.*\n|^[ \t]*\n)*)",
+    block = re.search(r"^mounts:[ \t]*\n((?:^(?:[ \t].*|-.*|#.*)?(?:\n|$))*)",
                       text, re.MULTILINE)
     if block is None:
         raise ProviderRequestError("effective VM host mount configuration is ambiguous")
-    locations = re.findall(r"^\s+-\s+location:\s*(\S.*?)\s*$", block.group(1),
+    locations = re.findall(r"^[ \t]*-\s+location:\s*(\S.*?)\s*$", block.group(1),
                            re.MULTILINE)
     if not locations and block.group(1).strip():
         raise ProviderRequestError("effective VM host mount configuration is ambiguous")

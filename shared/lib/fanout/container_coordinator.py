@@ -62,6 +62,7 @@ def _scope_context(controller, ref, spec, inputs_digest, source, permit):
 def _read_scope_member(controller, ref, opening_ref, opening):
     from .broker import BrokerPermit
     from .container_runtime import ContainerHandle, ContainerSpec, decode_launch_record
+    from .container_transfer_transport import authenticate_launch_record
     member = read_evidence(controller, "container-coordinator-member", *ref)
     if (set(member) != {"schema_version", "opening", "spec", "handle", "launch", "context",
                        "permit", "permit_id", "permit_epoch", "lease"}
@@ -74,6 +75,7 @@ def _read_scope_member(controller, ref, opening_ref, opening):
                              opening["release_source_binding"], permit)
     launch = read_evidence(controller, "container-seat-launch", *member["launch"])
     recovery = decode_launch_record(launch, spec, handle, recover=context["request"]["resume"])
+    authenticate_launch_record(controller, launch, spec, handle, inputs_digest=opening["inputs_digest"])
     lease = member["lease"]
     expected_lease = controller_directory(controller, "locks") / (
         f"relay-{member['permit_id']}-{member['permit_epoch']}.lock")
@@ -85,13 +87,13 @@ def _read_scope_member(controller, ref, opening_ref, opening):
             or len(member["permit_id"]) != 64
             or any(char not in "0123456789abcdef" for char in member["permit_id"])):
         raise ValueError("original lifecycle lease association")
-    return member, spec, handle, recovery
+    return member, spec, handle, recovery, launch["volumes"]
 
 
 def _completed_scope_member(controller, member_ref, stop_ref, opening_ref, opening):
     from .container_runtime import ContainerLauncher
     from .container_transfer_transport import reopen_stopped_seat
-    member, spec, handle, _ = _read_scope_member(controller, member_ref, opening_ref, opening)
+    member, spec, handle, _, _ = _read_scope_member(controller, member_ref, opening_ref, opening)
     reopen_stopped_seat(controller, tuple(stop_ref), spec=spec, handle=handle)
     proof = read_evidence(controller, "container-seat-stopped", *stop_ref)
     if [proof["launch_evidence_name"], proof["launch_evidence_digest"]] != member["launch"]:
@@ -129,14 +131,16 @@ def _read_lifecycle_snapshot(controller, ref, *, spec, handle, context_ref):
         raise ValueError("bounded lifecycle members")
     stopped = [tuple(entry) for entry in baseline]
     active = []
+    volumes = []
     subject = None
     seen_refs = set()
     for member_ref in members["active"]:
         if tuple(member_ref) in seen_refs:
             raise ValueError("duplicate lifecycle member")
         seen_refs.add(tuple(member_ref))
-        member, peer_spec, peer_handle, _ = _read_scope_member(controller, member_ref, opening_ref, opening)
+        member, peer_spec, peer_handle, _, original_volumes = _read_scope_member(controller, member_ref, opening_ref, opening)
         active.append((peer_spec, peer_handle))
+        volumes.append((peer_handle.container_id, original_volumes))
         if member_ref == snapshot["subject"]:
             if (peer_spec != spec or peer_handle != handle or member["context"] != list(context_ref)):
                 raise ValueError("exact lifecycle subject")
@@ -148,7 +152,7 @@ def _read_lifecycle_snapshot(controller, ref, *, spec, handle, context_ref):
         stopped.append(_completed_scope_member(controller, member_ref, stop_ref, opening_ref, opening))
     if subject is None:
         raise ValueError("missing lifecycle subject")
-    return _InventoryScope(tuple(stopped), tuple(active)), subject
+    return _InventoryScope(tuple(stopped), tuple(active), tuple(volumes)), subject
 
 
 def _replay_lifecycle_runtime(controller, snapshot_ref, runtime_ref, *, spec, handle, context_ref, socket):
@@ -159,7 +163,7 @@ def _replay_lifecycle_runtime(controller, snapshot_ref, runtime_ref, *, spec, ha
     launcher = ContainerLauncher(guest_socket_attestor=lambda _: socket)
     launcher._run = observations.replay
     launch = read_evidence(controller, "container-seat-launch", *subject["launch"])
-    launcher._recovery = decode_launch_record(launch, spec, handle, recover=launch["route"] == "recover")
+    launcher.restore_launch(launch, spec, handle, recover=launch["route"] == "recover")
     launcher.attest_running(spec, handle, scope=scope)
     observations.require_complete()
     return subject
@@ -237,8 +241,10 @@ class _CoordinatorLifecycle:
 
     def _inventory(self):
         from .container_runtime import _InventoryScope
+        volumes = []
         for entry in self.active.values():
-            member, _, _, _ = _read_scope_member(self.controller, entry["ref"], self.opening_ref, self.opening)
+            member, _, _, _, original_volumes = _read_scope_member(self.controller, entry["ref"], self.opening_ref, self.opening)
+            volumes.append((entry["handle"].container_id, original_volumes))
             transport = entry["transport"]
             lease = self._control(entry["spec"], member["context"], getattr(transport, "_control", None))
             if (member != entry["member"] or transport.spec != entry["spec"] or transport.handle != entry["handle"]
@@ -253,7 +259,7 @@ class _CoordinatorLifecycle:
                 raise CollaborationDurabilityError("completed lifecycle proof changed")
             completed.append(observed)
         stopped = tuple(tuple(entry) for entry in baseline) + tuple(completed)
-        return _InventoryScope(stopped, tuple((entry["spec"], entry["handle"]) for entry in self.active.values()))
+        return _InventoryScope(stopped, tuple((entry["spec"], entry["handle"]) for entry in self.active.values()), tuple(volumes))
 
     def prepare(self, launcher, spec, context_ref, control):
         self.authorize()
@@ -263,7 +269,8 @@ class _CoordinatorLifecycle:
         if self.opening is None:
             launcher._validate_spec(spec)
             launcher._image_id(spec)
-            sources = (launcher._volume(spec, "workspace", create=True), launcher._volume(spec, "session", create=True))
+            create = control.broker.permit.route != "resume"
+            sources = (launcher._volume(spec, "workspace", create=create), launcher._volume(spec, "session", create=create))
             baseline = launcher._inventory(spec, sources, fence_owned=True)
             # The ledger lock is released before every Docker operation above.
             with control.ledger._locked() as state:
@@ -289,7 +296,7 @@ class _CoordinatorLifecycle:
             "permit": asdict(control.broker.permit), "permit_id": control.permit_id,
             "permit_epoch": control.epoch, "lease": lease}
         ref = write_evidence(self.controller, "container-coordinator-member", member)
-        decoded, _, _, _ = _read_scope_member(self.controller, ref, self.opening_ref, self.opening)
+        decoded, _, _, _, _ = _read_scope_member(self.controller, ref, self.opening_ref, self.opening)
         if decoded != member or transport.handle.container_id in self.active:
             raise CollaborationDurabilityError("container lifecycle registration changed")
         self.active[transport.handle.container_id] = {"ref": ref, "member": member, "spec": transport.spec,
@@ -925,7 +932,7 @@ def run_coordinator_turn(coordinator, packet, seat, round, request, peer):
     try:
         transport = PinnedDockerTransport.start_live(controller, spec, ledger=ledger, broker=broker,
             permit_id=permit_id, epoch=epoch, recover=request.resume,
-            lifecycle_scope=lifecycle, context_ref=context)
+            lifecycle_scope=lifecycle, context_ref=context, request=request)
         admission = ContainerAdmission(permit, permit_id, epoch, ledger, spec.image_digest, spec.cli_digest,
             transport.attest_socket(), transport, sessions,
             transport.handle_evidence_name, transport.handle_evidence_digest)

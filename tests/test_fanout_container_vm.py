@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +24,7 @@ from scripts import fanout_container_vm_probe as live_probe  # noqa: E402
 SPEC = VMProfileSpec("fanout-isolated", "colima-fanout-isolated", "x86_64")
 ENDPOINT = f"unix://{Path.home()}/.colima/fanout-isolated/docker.sock"
 NONCE = b"controller-issued-32-byte-nonce-test"
-HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZha2UtZ3Vlc3QtaG9zdC1rZXktZm9yLXRlc3Q="
+HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
 OBSERVED = {
     "mounts": None,
     "lima_mounts": [],
@@ -526,19 +528,169 @@ def test_strict_ssh_quotes_remote_python_code_as_one_argument():
 
 
 def test_first_host_key_enrollment_needs_matching_guest_key(tmp_path):
-    (tmp_path / ".colima").mkdir()
+    context, _ = _console_instance(tmp_path)
     with pytest.raises(ProviderRequestError, match="SSH host key"):
         live_probe._admit_host_key(tmp_path, HOST_KEY, None)
     assert not (tmp_path / ".colima/.fanout-isolated-known_hosts").exists()
-    pinned, path = live_probe._admit_host_key(tmp_path, HOST_KEY, HOST_KEY)
+    pinned, path = live_probe._admit_host_key(tmp_path, HOST_KEY, context)
     assert pinned == HOST_KEY
     assert path.read_text() == f"fanout-isolated {HOST_KEY}\n"
     assert path.stat().st_mode & 0o077 == 0
 
 
+@pytest.mark.parametrize("body", [
+    "mounts:\n- location: /Users/example\n",
+    "mounts:\n- not-a-supported-share\n",
+    "mounts:\n  location: /Users/example\n",
+])
+def test_lima_share_body_cannot_be_classified_as_empty(body):
+    colima = "arch: x86_64\nvmType: qemu\nmounts: null\n"
+    try:
+        observed = parse_profile_config(colima, body, "colima-fanout-isolated")
+    except ProviderRequestError:
+        return
+    assert observed["lima_mounts"] != []
+
+
+def test_matching_network_and_guest_key_cannot_publish_first_pin(tmp_path):
+    (tmp_path / ".colima").mkdir(mode=0o700)
+    with pytest.raises(ProviderRequestError):
+        live_probe._admit_host_key(tmp_path, HOST_KEY, HOST_KEY)
+    assert not (tmp_path / ".colima/.fanout-isolated-known_hosts").exists()
+
+
+def _console_instance(tmp_path, raw=None):
+    (tmp_path / ".colima").mkdir(mode=0o700)
+    live_probe._claim_profile(tmp_path, set())
+    profile = tmp_path / ".colima/fanout-isolated"
+    profile.mkdir(mode=0o700)
+    (profile / "colima.yaml").write_text("arch: x86_64\nvmType: qemu\nmounts: null\n")
+    lima = tmp_path / ".colima/_lima/colima-fanout-isolated"
+    lima.mkdir(parents=True, mode=0o700)
+    (lima / "lima.yaml").write_text("arch: x86_64\nvmType: qemu\nmounts: []\n")
+    (lima / "disk").write_bytes(b"exact original disk")
+    metadata = tmp_path / ".docker/contexts/meta/context-id"
+    metadata.mkdir(parents=True)
+    (metadata / "meta.json").write_text('{"Name":"colima-fanout-isolated"}')
+    context = {"Name": "colima-fanout-isolated", "Endpoints": {"docker": {
+        "Host": f"unix://{tmp_path}/.colima/fanout-isolated/docker.sock"}},
+        "Storage": {"MetadataPath": str(metadata)}}
+    log = lima / "serial.log"
+    log.write_bytes(raw if raw is not None else (
+        "boot\n-----BEGIN SSH HOST KEY KEYS-----\n" + HOST_KEY +
+        " root@guest\n-----END SSH HOST KEY KEYS-----\n").encode())
+    log.chmod(0o644)
+    return context, log
+
+
+def test_exact_owned_console_witness_can_publish_first_pin(tmp_path):
+    context, log = _console_instance(tmp_path)
+    pinned, path = live_probe._admit_host_key(tmp_path, HOST_KEY, context)
+    assert pinned == HOST_KEY and path.read_text() == f"fanout-isolated {HOST_KEY}\n"
+    assert log.stat().st_mode & 0o777 == 0o644
+
+
+@pytest.mark.parametrize("raw", [
+    b"no complete block\n",
+    ("-----BEGIN SSH HOST KEY KEYS-----\n" + HOST_KEY + "\n").encode(),
+    ("-----BEGIN SSH HOST KEY KEYS-----\n" + HOST_KEY + "\n" + HOST_KEY +
+     "\n-----END SSH HOST KEY KEYS-----\n").encode(),
+    (HOST_KEY + "\n-----BEGIN SSH HOST KEY KEYS-----\n"
+     "ssh-rsa AAAA\n-----END SSH HOST KEY KEYS-----\n").encode(),
+    ("-----BEGIN SSH HOST KEY KEYS-----\nssh-ed25519 AAAA\n"
+     "-----END SSH HOST KEY KEYS-----\n").encode(),
+])
+def test_bad_console_witness_does_not_publish_pin_or_sidecar(tmp_path, raw):
+    context, _ = _console_instance(tmp_path, raw)
+    with pytest.raises(ProviderRequestError):
+        live_probe._admit_host_key(tmp_path, HOST_KEY, context)
+    assert not (tmp_path / ".colima/.fanout-isolated-known_hosts").exists()
+    assert not live_probe._binding_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("unsafe", ["missing", "symlink", "hardlink", "writable", "oversized",
+                                   "wrong-instance", "missing-disk", "wrong-key", "outside-block"])
+def test_unsafe_console_witness_never_publishes_first_pin(tmp_path, unsafe):
+    context, log = _console_instance(tmp_path)
+    if unsafe == "missing":
+        log.unlink()
+    elif unsafe == "symlink":
+        saved = log.with_name("saved.log")
+        log.rename(saved)
+        log.symlink_to(saved)
+    elif unsafe == "hardlink":
+        os.link(log, log.with_name("linked.log"))
+    elif unsafe == "writable":
+        log.chmod(0o664)
+    elif unsafe == "oversized":
+        log.write_bytes(b"x" * (1024 * 1024 + 1))
+    elif unsafe == "wrong-instance":
+        log.parent.chmod(0o755)
+    elif unsafe == "missing-disk":
+        (log.parent / "disk").unlink()
+    elif unsafe == "wrong-key":
+        log.write_bytes(log.read_bytes().replace(b"HR4f", b"HR4e"))
+    else:
+        log.write_bytes((HOST_KEY + "\n").encode() + log.read_bytes())
+    with pytest.raises(ProviderRequestError):
+        live_probe._admit_host_key(tmp_path, HOST_KEY, context)
+    assert not (tmp_path / ".colima/.fanout-isolated-known_hosts").exists()
+    assert not live_probe._binding_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("change", ["before-open-read", "growth", "replace", "parent-replace", "foreign-owner"])
+def test_console_witness_read_interval_refuses_drift(tmp_path, monkeypatch, change):
+    context, log = _console_instance(tmp_path)
+    original_open, original_read, original_fstat = os.open, os.read, os.fstat
+    log_fd = None
+    changed = False
+
+    def open_file(path, flags, *args, **kwargs):
+        nonlocal log_fd
+        fd = original_open(path, flags, *args, **kwargs)
+        if path == "serial.log":
+            log_fd = fd
+            if change == "before-open-read":
+                with log.open("ab") as stream:
+                    stream.write(b"grew before read\n")
+        return fd
+
+    def read_file(fd, count):
+        nonlocal changed
+        raw = original_read(fd, count)
+        if fd == log_fd and not changed:
+            changed = True
+            if change == "growth":
+                with log.open("ab") as stream:
+                    stream.write(b"grew during read\n")
+            elif change == "replace":
+                log.rename(log.with_name("displaced.log"))
+                log.write_bytes(raw)
+            elif change == "parent-replace":
+                log.parent.rename(log.parent.with_name("displaced-instance"))
+                log.parent.mkdir(mode=0o700)
+        return raw
+
+    def file_stat(fd):
+        info = original_fstat(fd)
+        if fd == log_fd and change == "foreign-owner":
+            fields = list(info)
+            fields[4] = info.st_uid + 1
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(live_probe.os, "open", open_file)
+    monkeypatch.setattr(live_probe.os, "read", read_file)
+    monkeypatch.setattr(live_probe.os, "fstat", file_stat)
+    with pytest.raises(ProviderRequestError):
+        live_probe._admit_host_key(tmp_path, HOST_KEY, context)
+    assert not (tmp_path / ".colima/.fanout-isolated-known_hosts").exists()
+    assert not live_probe._binding_path(tmp_path).exists()
+
+
 def test_existing_host_key_pin_rejects_changed_server(tmp_path):
-    (tmp_path / ".colima").mkdir()
-    live_probe._admit_host_key(tmp_path, HOST_KEY, HOST_KEY)
+    context, _ = _console_instance(tmp_path)
+    live_probe._admit_host_key(tmp_path, HOST_KEY, context)
     changed = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG90aGVyLWtleS1tYXRlcmlhbC0xMjM0NTY="
     with pytest.raises(ProviderRequestError, match="SSH host key"):
-        live_probe._admit_host_key(tmp_path, changed, changed)
+        live_probe._admit_host_key(tmp_path, changed, None)

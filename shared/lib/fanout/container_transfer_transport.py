@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import BinaryIO, Iterable, Iterator
 
 from .artifacts import ArtifactLimits, ArtifactRef, ArtifactStore, canonical_json
-from .container_runtime import ContainerHandle, DOCKER, decode_launch_record, private_volume_names
+from .broker import BrokerRejected
+from .container_runtime import ContainerHandle, ContainerSpec, DOCKER, decode_launch_record, private_volume_names
 from .container_transfer import (
     MAX_ENTRIES, MAX_FRAME, MAX_MANIFEST, MAX_TOTAL, TransferEntry, TransferIdentity,
     TransferManifest, TransferRejected, _decode_manifest, _import_content,
@@ -191,7 +192,7 @@ def _root_info(controller: LifecycleController, path: Path, *, empty: bool = Fal
 
 def _material(controller: LifecycleController, name: str, digest: str,
               identity: TransferIdentity, handle: ContainerHandle,
-              source_info, request) -> tuple[TransferManifest, ArtifactRef]:
+              source_info, request=None) -> tuple[TransferManifest, ArtifactRef]:
     try:
         value = read_evidence(controller, _MATERIAL_CATEGORY, name, digest)
         if set(value) != _MATERIAL_KEYS or value["schema_version"] != "InputMaterialV1":
@@ -202,10 +203,10 @@ def _material(controller: LifecycleController, name: str, digest: str,
                 or value["original_handle"] != asdict(handle)
                 or value["workspace_volume"] != handle.workspace_volume
                 or value["run_inputs_sha256"] != identity.inputs_digest
-                or (not request.resume and
+                or (request is not None and not request.resume and
                     value["provider_context_sha256"] != request.context_sha256)
-                or value["skill_bundle_sha256"] != request.skill_bundle_sha256
-                or value["skill_delivery_sha256"] != request.skill_delivery_sha256
+                or (request is not None and value["skill_bundle_sha256"] != request.skill_bundle_sha256)
+                or (request is not None and value["skill_delivery_sha256"] != request.skill_delivery_sha256)
                 or any(not _sha(value[key]) for key in _DIGEST_KEYS)):
             raise ValueError("material provenance")
         ref_value = value["manifest_ref"]
@@ -316,6 +317,8 @@ def issue_input_source_grant(controller: LifecycleController, request,
                              material_evidence_name: str,
                              material_evidence_digest: str) -> InputSourceGrant:
     """Issue a source grant only from authenticated controller material."""
+    if request.resume or admission.broker_permit.route != "initial":
+        raise ProviderRequestError("container original input grant requires an initial permit")
     vm = _preflight(controller, request, transport, admission)
     identity = _identity(request)
     info = _root_info(controller, source_root)
@@ -340,6 +343,7 @@ def issue_input_source_grant(controller: LifecycleController, request,
         "permit_id": admission.permit_id,
         "permit_epoch": admission.epoch,
         "permit_digest": hashlib.sha256(canonical_json(asdict(admission.broker_permit))).hexdigest(),
+        "original_permit": asdict(admission.broker_permit),
     }
     name, digest = write_evidence(controller, _GRANT_CATEGORY, payload)
     return InputSourceGrant(Path(source_root), identity, info.st_dev,
@@ -372,6 +376,7 @@ def _open_grant(controller: LifecycleController, request, transport,
             or payload.get("request_digest") != admitted_request_digest(request)
             or payload.get("permit_id") != admission.permit_id
             or payload.get("permit_epoch") != admission.epoch
+            or payload.get("original_permit") != asdict(admission.broker_permit)
             or payload.get("permit_digest") != hashlib.sha256(
                 canonical_json(asdict(admission.broker_permit))).hexdigest()
             or payload.get("socket") != asdict(admission.socket_attestation)
@@ -763,8 +768,13 @@ def reopen_input_receipt(controller: LifecycleController, request, transport,
     """Recover a completed import; attest the new handle without restaging."""
     identity = _identity(request)
     _preflight(controller, request, transport, admission)
+    return _completed_input_receipt(controller, request, transport.handle.workspace_volume)
+
+
+def _completed_input_receipt(controller, request, workspace_volume):
+    identity = _identity(request)
     journal = _InputClaimJournal(controller, identity,
-                                 transport.handle.workspace_volume)
+                                 workspace_volume)
     name, digest = journal.completed()
     try:
         payload = read_evidence(controller, _RECEIPT_CATEGORY, name, digest)
@@ -781,8 +791,170 @@ def reopen_input_receipt(controller: LifecycleController, request, transport,
     except (KeyError, TypeError, ValueError) as error:
         raise ProviderRequestError("container input receipt is invalid") from error
     validate_input_receipt(controller, request, receipt,
-                           transport.handle.workspace_volume)
+                           workspace_volume)
     return receipt
+
+
+def original_input_launch(controller, request, spec, *, broker, current_permit,
+                          ledger, permit_id, epoch):
+    from .broker import Broker
+    from .container_broker import PermitLedger
+    if not request.resume:
+        raise ProviderRequestError("original input launch requires exact resume")
+    if (not isinstance(broker, Broker) or broker.permit is not current_permit
+            or not isinstance(ledger, PermitLedger) or ledger.controller is not controller
+            or ledger.root != controller_directory(controller, "locks") / "spend"):
+        raise ProviderRequestError("container recovery current broker association is invalid")
+    try:
+        ledger.require_permit(permit_id, epoch, current_permit)
+    except BrokerRejected as error:
+        raise ProviderRequestError("container recovery current permit is invalid") from error
+    receipt = _completed_input_receipt(controller, request, spec.workspace_volume)
+    grant = read_evidence(controller, _GRANT_CATEGORY,
+                          receipt.grant_evidence_name, receipt.grant_evidence_digest)
+    original = _original_permit(controller, request, grant)
+    if (current_permit.route != "resume"
+            or current_permit.session_id != request.session_id
+            or request.session_id is None
+            or any(getattr(current_permit, field) != getattr(original, field) for field in
+                   ("provider", "model", "run_id", "task_id", "target_id", "seat_id",
+                    "inputs_digest", "upstream_route_digest", "upstream_origin",
+                    "upstream_model", "upstream_path"))):
+        raise ProviderRequestError("container recovery current permit differs from original authority")
+    from .container_boundary import SessionStore
+    sessions = SessionStore(controller, spec.run_id, spec.task_id,
+                            spec.target_id, spec.seat_id, spec.session_volume)
+    if sessions.resume(request.executor_id).session_id != current_permit.session_id:
+        raise ProviderRequestError("container recovery current session differs")
+    launch = read_evidence(controller, "container-seat-launch",
+                           receipt.handle_evidence_name, receipt.handle_evidence_digest)
+    decode_launch_record(launch, spec, receipt.original_handle, recover=False)
+    return launch, [receipt.evidence_name, receipt.evidence_digest]
+
+
+def _decode_original_permit(controller, grant):
+    from .broker import BrokerPermit
+    from .container_broker import PermitLedger, _digest, _seat_scope
+    try:
+        raw = grant["original_permit"]
+        if not isinstance(raw, dict) or set(raw) != set(BrokerPermit.__dataclass_fields__):
+            raise ValueError("complete original permit")
+        original = BrokerPermit(**raw)
+        if (canonical_json(asdict(original)) != canonical_json(raw)
+                or _digest(original) != grant["permit_digest"]
+                or original.route != "initial"
+                or original.provider not in {"claude", "codex", "agy"}
+                or (original.provider != "claude" and original.session_id is not None)
+                or (original.provider == "claude" and original.session_id is None)
+                or not _sha(grant["profile_digest"])
+                or not _sha(grant["permit_id"])
+                or type(grant["permit_epoch"]) is not int or grant["permit_epoch"] < 1
+                or original.upstream_route_digest is None):
+            raise ValueError("original initial association")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProviderRequestError("container original permit authentication failed") from error
+    ledger = PermitLedger(controller_directory(controller, "locks") / "spend", controller)
+    with ledger._locked() as state:
+        try:
+            entry = state["permits"][grant["permit_id"]]
+            if (entry["permit_digest"] != _digest(original)
+                    or entry["epoch"] != grant["permit_epoch"]
+                    or entry["seat_scope"] != _seat_scope(original)
+                    or any(entry[field] != getattr(original, field) for field in
+                           ("provider", "model", "upstream_route_digest", "upstream_origin",
+                            "upstream_model", "upstream_path", "max_requests",
+                            "max_response_bytes", "max_output_tokens"))):
+                raise ValueError("original ledger association")
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProviderRequestError("container original permit authentication failed") from error
+    return original
+
+
+def _original_permit(controller, request, grant):
+    original = _decode_original_permit(controller, grant)
+    try:
+        if (original.provider != request.executor_id
+                or original.model != request.profile.requested_model
+                or grant["profile_digest"] != request.profile.digest
+                or any(getattr(original, field) != getattr(request, field)
+                       for field in ("run_id", "task_id", "target_id", "seat_id", "inputs_digest"))
+                or original.session_id != (request.session_id if request.executor_id == "claude" else None)):
+            raise ValueError("original request association")
+        if request.resume:
+            from .container_boundary import SessionStore
+            _, session = private_volume_names(request.run_id, request.task_id,
+                                              request.target_id, request.seat_id)
+            sessions = SessionStore(controller, request.run_id, request.task_id,
+                                    request.target_id, request.seat_id, session)
+            binding = sessions.read(request.executor_id)
+            if (binding is None or binding.session_id != request.session_id
+                    or binding.upstream_route_digest != original.upstream_route_digest):
+                raise ValueError("authenticated learned session chain")
+            settled = sessions._update(lambda state: (
+                state["bindings"].get(request.executor_id) == asdict(binding)
+                and state["turns"].get(binding.turn_digest) ==
+                    {"provider": request.executor_id, "state": "settled"}, False))
+            if not settled:
+                raise ValueError("authenticated original successful turn")
+        return original
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProviderRequestError("container original permit authentication failed") from error
+
+
+def authenticate_launch_record(controller, launch, spec, handle, *, inputs_digest=None):
+    recovery = decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
+    if recovery is None:
+        return None
+    try:
+        name, digest = launch["original_input"]
+        payload = read_evidence(controller, _RECEIPT_CATEGORY, name, digest)
+        identity = TransferIdentity(**payload["identity"])
+        receipt = InputTransferReceipt(
+            identity, payload["manifest_sha256"], payload["workspace_volume"],
+            payload["workdir"], ContainerHandle(**payload["original_handle"]),
+            payload["handle_evidence_name"], payload["handle_evidence_digest"],
+            payload["material_evidence_name"], payload["material_evidence_digest"],
+            payload["grant_evidence_name"], payload["grant_evidence_digest"], name, digest)
+        if (payload != _input_payload(receipt)
+                or (identity.run_id, identity.task_id, identity.target_id, identity.seat_id) !=
+                   (spec.run_id, spec.task_id, spec.target_id, spec.seat_id)
+                or inputs_digest is not None and identity.inputs_digest != inputs_digest
+                or receipt.workspace_volume != spec.workspace_volume
+                or receipt.workdir != _workdir(identity)
+                or _InputClaimJournal(controller, identity, spec.workspace_volume).completed() != (name, digest)):
+            raise ValueError("exact completed original import")
+        grant = read_evidence(controller, _GRANT_CATEGORY,
+                              receipt.grant_evidence_name, receipt.grant_evidence_digest)
+        original = _decode_original_permit(controller, grant)
+        if (grant["identity"] != asdict(identity)
+                or any(getattr(original, field) != getattr(identity, field) for field in
+                       ("run_id", "task_id", "target_id", "seat_id", "inputs_digest"))
+                or grant["original_handle"] != asdict(receipt.original_handle)
+                or (grant["handle_evidence_name"], grant["handle_evidence_digest"]) !=
+                   (receipt.handle_evidence_name, receipt.handle_evidence_digest)
+                or (grant["material_evidence_name"], grant["material_evidence_digest"]) !=
+                   (receipt.material_evidence_name, receipt.material_evidence_digest)
+                or (grant["image_digest"], grant["cli_digest"]) != (spec.image_digest, spec.cli_digest)):
+            raise ValueError("original grant association")
+        origin = read_evidence(controller, "container-seat-launch",
+                               receipt.handle_evidence_name, receipt.handle_evidence_digest)
+        decode_launch_record(origin, spec, receipt.original_handle, recover=False)
+        if launch["volumes"] != origin["volumes"]:
+            raise ValueError("original creation metadata")
+        source = Path(grant["source_root"])
+        info = _root_info(controller, source)
+        if (info.st_dev, info.st_ino) != (grant["source_device"], grant["source_inode"]):
+            raise ValueError("original source root")
+        manifest, _ = _material(controller, receipt.material_evidence_name,
+                                receipt.material_evidence_digest, identity, receipt.original_handle, info)
+        if (snapshot_manifest(source, identity) != manifest
+                or hashlib.sha256(encode_manifest(manifest)).hexdigest() != receipt.manifest_sha256):
+            raise ValueError("original complete material")
+        return recovery
+    except BrokerRejected:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, TransferRejected) as error:
+        raise ProviderRequestError("container original launch authentication failed") from error
 
 
 def validate_input_receipt(controller: LifecycleController, request,
@@ -813,6 +985,7 @@ def validate_input_receipt(controller: LifecycleController, request,
         grant = read_evidence(controller, _GRANT_CATEGORY,
                               receipt.grant_evidence_name,
                               receipt.grant_evidence_digest)
+        _original_permit(controller, request, grant)
         if (grant.get("identity") != asdict(identity)
                 or grant.get("original_handle") != asdict(receipt.original_handle)
                 or grant.get("material_evidence_name") != receipt.material_evidence_name
@@ -820,6 +993,12 @@ def validate_input_receipt(controller: LifecycleController, request,
                 or (not request.resume and
                     grant.get("request_digest") != admitted_request_digest(request))):
             raise ValueError("grant association")
+        original_spec = ContainerSpec(
+            identity.run_id, identity.task_id, identity.target_id, identity.seat_id,
+            grant["image_digest"], receipt.original_handle.workspace_volume,
+            receipt.original_handle.session_volume, f"/run/fanout/{identity.seat_id}.sock",
+            grant["cli_digest"])
+        decode_launch_record(origin, original_spec, receipt.original_handle, recover=False)
         source = Path(grant["source_root"])
         info = _root_info(controller, source)
         if (info.st_dev, info.st_ino) != (grant["source_device"], grant["source_inode"]):
@@ -831,6 +1010,8 @@ def validate_input_receipt(controller: LifecycleController, request,
             raise ValueError("source tree changed")
         if hashlib.sha256(encode_manifest(manifest)).hexdigest() != receipt.manifest_sha256:
             raise ValueError("manifest digest")
+    except BrokerRejected:
+        raise
     except (OSError, KeyError, TypeError, ValueError, TransferRejected) as error:
         raise ProviderRequestError("container input receipt authentication failed") from error
 
@@ -951,7 +1132,7 @@ def reopen_candidate_export(controller: LifecycleController,
         spec, handle = ContainerSpec(**stopped["spec"]), ContainerHandle(**stopped["handle"])
         launch = read_evidence(controller, "container-seat-launch",
             stopped["launch_evidence_name"], stopped["launch_evidence_digest"])
-        decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
+        authenticate_launch_record(controller, launch, spec, handle, inputs_digest=identity.inputs_digest)
         if ((spec.run_id, spec.task_id, spec.target_id, spec.seat_id) !=
                    (identity.run_id, identity.task_id, identity.target_id, identity.seat_id)
                 or (handle.container_id, handle.inspect_sha256, handle.workspace_volume,
@@ -978,7 +1159,7 @@ def reopen_stopped_seat(controller, stop_evidence, *, spec, handle):
                    private_volume_names(spec.run_id, spec.task_id, spec.target_id, spec.seat_id)):
             raise ValueError("exact stopped seat")
         launch = read_evidence(controller, "container-seat-launch", stopped["launch_evidence_name"], stopped["launch_evidence_digest"])
-        decode_launch_record(launch, spec, handle, recover=launch.get("route") == "recover")
+        authenticate_launch_record(controller, launch, spec, handle)
         ref = ArtifactRef(**stopped["raw_inspect"])
         if ref.path != f"stopped/{handle.container_id}.json":
             raise ValueError("stopped artifact path")
