@@ -89,6 +89,55 @@ it does not discard successful history.
 `cli.py publish` and `cli.py status` also support already-curated JSON batches.
 They do not collect source pages or call a model.
 
+## Pure directory reports
+
+`directory.py` exposes `directory_report` for already-curated routing records.
+`generated_directory.py` exposes `generated_directory_report` for supplied
+generated JSON and health metadata bytes. These are library functions; existing
+commands and source checkpoints are unchanged.
+
+The generated envelope contains `generated_at` (a date), `count`, and
+`knowledge_bases`. Each entry contains `team`, `repo`, `use_when`, `caretaker`,
+and `access`; optional fields are `slack`, `status`, `last_commit`, and
+`review_by`. This enriched envelope is distinct from a repository's registration
+document. For example:
+
+```json
+{
+  "generated_at": "2026-10-06",
+  "count": 1,
+  "knowledge_bases": [{
+    "team": "Example area",
+    "repo": "example/team-kb",
+    "use_when": "You need context on this team's shared services, boundaries and ownership.",
+    "caretaker": "operator@example.invalid",
+    "access": [{"kind": "repo", "path": "docs", "entrypoint": "index.md"}]
+  }]
+}
+```
+
+The first `kind: repo` access determines the declared path; defaults are `.`
+and `README.md`. MCP entries remain inert. Repository identities ignore casing,
+while declared paths preserve it. Unknown fields, conflicting duplicates, unsafe
+paths, oversized metadata, and inconsistent counts, dates, or directory pins
+refuse the report.
+
+Callers explicitly select identities and provide independent target commit pins.
+All supplied metadata must already be admitted for the source and consumer.
+Selection controls card relevance, not access: unselected identities and the
+existing repository's routes remain in the report.
+`last_commit` is a date and never supplies a target revision. Missing dates remain
+explicit; review dates before generation and commit ages greater than 90 days
+receive separate flags. Status values are draft, stable (default), or deprecated.
+The existing repository appears in `existing_routes`, without a duplicate card;
+its absence retains the preserve-existing-source action. Tagged health metadata,
+including a no-findings result, does not establish complete inventory or source
+coverage.
+
+Both functions operate only on supplied metadata. They perform no collection,
+MCP connection, publication, state update, or retrieval authorization. Directory
+pin assertions alone do not prove an authenticated read or approved access.
+
 This component does not enable Obsidian Sync, vault Git, community plugins, semantic
 retrieval or automatic prompt/memory injection. Those require separate integration
 and acceptance evidence. Same-user file-integrity checks and cooperative locks are
