@@ -12,7 +12,8 @@ import sys
 import uuid
 
 from curation import (_path, _reject_constant, _strings, _unique_object,
-                      MAX_INVENTORY_PATHS, validate_curated_batch, validate_repository)
+                      MAX_INVENTORY_PATHS, parse_publication,
+                      validate_curated_batch, validate_repository)
 from workvault import (_directory, _file, _identity, _private, _read, _root_path,
                        _unlink_owned, _write_private, publish_curated_batch, status)
 
@@ -194,6 +195,85 @@ def sync_status(config):
         raise SyncError('sync status refused') from None
 
 
+def maintain_status(config):
+    """Report local publication metadata against the last observed inventory."""
+    try:
+        config = _config(config)
+        empty = {'schema_version': 'workvault-maintain-status-v1', 'state': 'empty',
+                 'conflict_check': 'unavailable_unstructured_cards'}
+        try:
+            with _directory(config.state) as state_directory:
+                try:
+                    raw_state = _read(state_directory, STATE)
+                except FileNotFoundError:
+                    return empty
+                state = _state(_json(raw_state), config.repository)
+                active = set(state['discovered_paths'])
+                stale, missing, duplicates = [], [], {}
+                vault_identity = None
+                try:
+                    with _directory(config.vault) as directory:
+                        vault_identity = _identity(os.fstat(directory))
+                        observed = {}
+                        for path in sorted(state['tracked_paths']):
+                            name = publication_name(config.repository, path)
+                            try:
+                                raw = _read(directory, name)
+                            except FileNotFoundError:
+                                observed[name] = None
+                                missing.append(path)
+                                continue
+                            batch = parse_publication(raw)['batch']
+                            if (batch['repository'] != config.repository
+                                    or batch['requested_paths'] != [path]):
+                                raise SyncError('publication source differs')
+                            observed[name] = hashlib.sha256(raw).digest()
+                            if path not in active:
+                                continue
+                            if batch['commit'] != state['target_commit']:
+                                stale.append(path)
+                            card = batch['cards'][0]
+                            payload = {key: value for key, value in card.items()
+                                       if key not in ('path', 'source_links', 'cross_references')}
+                            digest = hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                ensure_ascii=False, separators=(',', ':')).encode()).digest()
+                            duplicates.setdefault(digest, []).append(path)
+                        for name, digest in observed.items():
+                            try:
+                                current = hashlib.sha256(_read(directory, name)).digest()
+                            except FileNotFoundError:
+                                current = None
+                            if current != digest:
+                                raise SyncError('publication changed during report')
+                except FileNotFoundError:
+                    missing = sorted(state['tracked_paths'])
+                try:
+                    current_state = _read(state_directory, STATE)
+                except FileNotFoundError:
+                    raise SyncError('inventory changed during report') from None
+                if current_state != raw_state:
+                    raise SyncError('inventory changed during report')
+                for path, expected in ((config.state, _identity(os.fstat(state_directory))),
+                                       (config.vault, vault_identity)):
+                    try:
+                        with _directory(path) as current_directory:
+                            current_identity = _identity(os.fstat(current_directory))
+                    except FileNotFoundError:
+                        current_identity = None
+                    if current_identity != expected:
+                        raise SyncError('configured root changed during report')
+                return {'schema_version': 'workvault-maintain-status-v1', 'state': 'reported',
+                    'repository': config.repository, 'observed_commit': state['target_commit'],
+                    'stale_paths': stale, 'missing_paths': missing,
+                    'retained_removed_paths': sorted(set(state['tracked_paths']) - active),
+                    'duplicate_payload_groups': sorted(paths for paths in duplicates.values() if len(paths) > 1),
+                    'conflict_check': 'unavailable_unstructured_cards'}
+        except FileNotFoundError:
+            return empty
+    except Exception:
+        raise SyncError('maintenance refused') from None
+
+
 def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
     """Curate at most five pages per call; publish one stable note per source page.
 
@@ -286,16 +366,16 @@ def load_config(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('sync', 'status', 'inventory'))
+    parser.add_argument('command', choices=('sync', 'status', 'inventory', 'maintain'))
     parser.add_argument('--config', required=True)
     parser.add_argument('--ref')
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
-        if args.command == 'status':
+        if args.command in ('status', 'maintain'):
             if args.ref is not None:
-                raise SyncError('status does not fetch a ref')
-            result = sync_status(config)
+                raise SyncError('offline report does not fetch a ref')
+            result = sync_status(config) if args.command == 'status' else maintain_status(config)
         elif args.command == 'inventory':
             from collector import GitHubSource
             snapshot = GitHubSource().snapshot(config.repository, ref=args.ref)

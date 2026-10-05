@@ -12,6 +12,7 @@ Run through the checkout's pinned mise environment:
 mise exec -- python -B components/workvault/sync.py inventory --config /absolute/private/sync.json
 mise exec -- python -B components/workvault/sync.py sync --config /absolute/private/sync.json
 mise exec -- python -B components/workvault/sync.py status --config /absolute/private/sync.json
+mise exec -- python -B components/workvault/sync.py maintain --config /absolute/private/sync.json
 mise exec -- python -B -m unittest discover -s components/workvault
 ```
 
@@ -23,6 +24,24 @@ pins the requested ref or default branch to an immutable commit, reads at most f
 knowledge pages per model call, validates structured curation, and publishes a stable
 note per page. `status` is offline. Both inventory and sync accept `--ref` for an
 explicit commit or ref.
+
+`maintain` is offline and report-only. It compares managed publications with the
+last observed pinned inventory, reports missing publications, stale commit identities
+and retained removed paths, and groups exact duplicate curated payloads among active
+source paths. Duplicate comparison includes title, summary, details, date, draft and
+uncertainty; it excludes source paths, links and cross-references. It emits metadata
+only, preserves human notes, and does not create roots, refresh sources, call a model,
+publish, snapshot or update state. `--ref` is refused. Concurrent changes detected
+during the report refuse the result rather than claim a coherent generation.
+Configured state and vault roots are securely reopened and matched by device/inode
+before returning a report; replacement, disappearance or a previously missing vault
+appearing refuses the result. These checks are not a transactional multi-file snapshot
+and do not isolate an unrestricted same-user process.
+
+The current card schema has unstructured prose, not comparable fact identities.
+`conflict_check: unavailable_unstructured_cards` explicitly records that semantic
+contradictions are not assessed. A successful report is not an all-clear or complete
+Phase 3 acceptance, and stale means revision mismatch, not an inferred age threshold.
 
 Configuration is an owner-only `0600` regular JSON file in an owner-only directory:
 
