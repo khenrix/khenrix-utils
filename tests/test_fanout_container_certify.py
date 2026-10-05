@@ -430,7 +430,8 @@ def test_live_cell_reopens_authenticated_ledger_requests(certifier, tmp_path):
     assert (attempts, auxiliary, fenced) == (1, 0, True)
 
 
-def test_candidate_proof_reconstructs_edited_export_bytes(certifier, tmp_path):
+@pytest.mark.parametrize("missing_lf", (False, True))
+def test_candidate_proof_reconstructs_edited_export_bytes(certifier, tmp_path, missing_lf):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "README.md").write_text("# repo-alpha\n")
@@ -445,7 +446,8 @@ def test_candidate_proof_reconstructs_edited_export_bytes(certifier, tmp_path):
     controller = create_lifecycle_controller(tmp_path / "controller")
     export = tmp_path / "candidate-export"
     export.mkdir(mode=0o700)
-    (export / "README.md").write_text("# repo-alpha\ncertified synthetic edit\n")
+    (export / "README.md").write_bytes(
+        b"# repo-alpha\ncertified synthetic edit" + (b"" if missing_lf else b"\n"))
     identity = TransferIdentity("run", "task", "repo-alpha", "seat", "1" * 64)
     manifest = snapshot_manifest(export, identity)
     manifest_digest = hashlib.sha256(certifier.canonical_json(asdict(manifest))).hexdigest()
@@ -459,6 +461,11 @@ def test_candidate_proof_reconstructs_edited_export_bytes(certifier, tmp_path):
                                      "3" * 64, "4" * 64,
                                      "fanout-workspace-synthetic", "fanout-session-synthetic",
                                      name, digest)
+    if missing_lf:
+        with pytest.raises(certifier.CertificationRejected, match="not the exact edited file"):
+            certifier._checked_candidate(
+                controller, baseline, receipt, b"certified synthetic edit\n")
+        return
     candidate = certifier._checked_candidate(
         controller, baseline, receipt, b"certified synthetic edit\n")
     assert [entry.path for entry in candidate.entries] == ["README.md"]
@@ -1294,6 +1301,10 @@ def test_live_orchestration_uses_task_five_stage_turn_export_and_cold_resume(
         assert (request.run_id, request.task_id, request.target_id, request.seat_id) == identity
         assert boundary.session_store.identity == identity
         assert boundary.session_store.volume == spec.session_volume
+        marker = f"certified synthetic {request.executor_id} {'resume' if request.resume else 'initial'}\n"
+        assert "Edit only README.md, preserving all existing bytes; append exactly this line:\n" + marker in request.prompt
+        assert "Include exactly one trailing LF newline byte (0x0A) in the appended bytes.\n" in request.prompt
+        assert "Do not modify any other path. Report the completed edit.\n" in request.prompt
         return original_turn(request, boundary)
 
     monkeypatch.setattr(certifier, "run_container_turn", checked_turn)

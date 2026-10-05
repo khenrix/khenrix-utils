@@ -1933,7 +1933,8 @@ def _live_cell(controller, ledger: PermitLedger, target: Path, sibling: Path,
     marker = f"certified synthetic {provider} {route}\n".encode()
     plan_bytes = (b"# Complete synthetic repo-write plan\n"
                   b"Target: repo-alpha. Context: private bounded certification.\n"
-                  b"Edit only README.md by appending exactly: " + marker +
+                  b"Edit only README.md, preserving all existing bytes; append exactly this line:\n" + marker +
+                  b"Include exactly one trailing LF newline byte (0x0A) in the appended bytes.\n"
                   b"Do not modify any other path. Report the completed edit.\n")
     if provider == "agy":
         plan_bytes += (b"The current directory is already the target repository; README.md exists.\n"
