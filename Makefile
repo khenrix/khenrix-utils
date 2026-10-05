@@ -62,6 +62,7 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_container_certify.py tests/test_fanout_container_certification.py \
                 tests/test_fanout_container_coordinator.py \
                 tests/test_fanout_container_runtime.py \
+                tests/test_fanout_container_image.py \
                 tests/test_fanout_container_source.py tests/test_fanout_container_transfer.py \
                 tests/test_fanout_container_transfer_transport.py \
                 tests/test_fanout_container_upstream.py tests/test_fanout_container_vm.py \
