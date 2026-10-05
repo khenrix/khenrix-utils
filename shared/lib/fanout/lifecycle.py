@@ -44,6 +44,7 @@ from .verification import (
     _read_all,
     _remove_path,
     _set_directory_mode,
+    _set_bound_directory_mode,
     _set_symlink_mode,
     _write_all,
     _write_entry,
@@ -409,7 +410,7 @@ class _TransactionQuarantine:
         expected: os.stat_result,
         mode: int,
     ) -> bool:
-        """Change a verified quarantined directory, then no-replace restore that same inode."""
+        """No-replace restore a verified directory before applying its final bound mode."""
         descriptor = os.open(
             temporary,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
@@ -423,15 +424,23 @@ class _TransactionQuarantine:
             ):
                 raise HandoverError("quarantined directory identity changed before mode update")
             original_mode = stat.S_IMODE(opened.st_mode)
-            os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-            if _rename_no_replace(self.descriptor, temporary, parent_fd, name):
-                os.fsync(parent_fd)
-                os.fsync(self.descriptor)
-                return True
-            os.fchmod(descriptor, original_mode)
-            os.fsync(descriptor)
-            return False
+            try:
+                if not original_mode & stat.S_IWUSR:
+                    os.fchmod(descriptor, 0o700)
+                    os.fsync(descriptor)
+                if _rename_no_replace(self.descriptor, temporary, parent_fd, name):
+                    os.fsync(parent_fd)
+                    os.fsync(self.descriptor)
+                    _set_bound_directory_mode(parent_fd, name, descriptor, opened, mode,
+                                              name, "transaction restore")
+                    return True
+                os.fchmod(descriptor, original_mode)
+                os.fsync(descriptor)
+                return False
+            except BaseException:
+                os.fchmod(descriptor, original_mode)
+                os.fsync(descriptor)
+                raise
         finally:
             os.close(descriptor)
 
@@ -847,7 +856,9 @@ def handover_candidate(
                 before_operation=lambda action, path: journal.record(f"stage-{action}-intent", path),
                 operation=lambda action, path: journal.record(f"stage-{action}", path),
             )
-            outcomes, failure = _run_checks(stage, verification.checks, verification.environment)
+            outcomes, failure = _run_checks(stage, verification.checks, verification.environment,
+                                            candidate=verification.candidate, limits=baseline.limits,
+                                            baseline=baseline)
             journal.record("stage-check-outcomes", details=_check_evidence(outcomes, failure))
             if failure is not None:
                 journal.record("stage-verification-failed")
@@ -878,7 +889,7 @@ def handover_candidate(
                 nonlocal destination_mutation_started
                 _require_tree(pinned.descriptor, expected)
                 before = _expected_path(expected, path)
-                after = _expected_tree_after_operation(expected, verification.candidate, action, path)
+                after = _expected_tree_after_operation(expected, verification.candidate, action, path, baseline=baseline)
                 target = _expected_path(after, path)
                 source_quarantine = f"source-{uuid.uuid4().hex}"
                 mutations.record(
@@ -902,7 +913,7 @@ def handover_candidate(
 
             def after_destination_operation(action: str, path: str) -> None:
                 nonlocal expected
-                expected = _expected_tree_after_operation(expected, verification.candidate, action, path)
+                expected = _expected_tree_after_operation(expected, verification.candidate, action, path, baseline=baseline)
                 _require_tree(pinned.descriptor, expected)
                 journal.record(f"destination-{action}", path)
                 mutations.complete(action, path)
@@ -961,36 +972,37 @@ def handover_candidate(
                 ) -> None:
                     mutation = mutations.pending_path(path)
                     assert mutation.source_quarantine is not None
-                    moved = quarantine.retain_exact(
-                        parent_fd,
-                        name,
-                        information,
-                        path,
-                        mutation.source_quarantine,
-                    )
-                    identity = (moved.st_dev, moved.st_ino, _kind(moved.st_mode))
-                    journal.record(
-                        "destination-source-bound",
-                        path,
-                        details={
-                            "action": mutation.action,
-                            "device": identity[0],
-                            "inode": identity[1],
-                            "kind": identity[2],
-                        },
-                    )
-                    mutation.bound_identity = identity
-                    if not quarantine.restore_directory_with_mode(
-                        mutation.source_quarantine,
-                        parent_fd,
-                        name,
-                        moved,
-                        mode,
-                    ):
-                        raise CandidateVerificationError(
-                            f"candidate directory changed during mode update: {path}; "
-                            "exact evidence remains quarantined"
+                    descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                         dir_fd=parent_fd)
+                    opened = os.fstat(descriptor)
+                    try:
+                        if (opened.st_dev, opened.st_ino) != (information.st_dev, information.st_ino):
+                            raise CandidateVerificationError("candidate directory identity changed")
+                        identity = (opened.st_dev, opened.st_ino, _kind(opened.st_mode))
+                        journal.record(
+                            "destination-source-bound", path,
+                            details={"action": mutation.action, "device": identity[0],
+                                     "inode": identity[1], "kind": identity[2]},
                         )
+                        mutation.bound_identity = identity
+                        if not opened.st_mode & stat.S_IWUSR:
+                            _set_bound_directory_mode(parent_fd, name, descriptor, opened,
+                                                      0o700, path, "directory preparation")
+                        moved = quarantine.retain_exact(parent_fd, name, os.fstat(descriptor),
+                                                        path, mutation.source_quarantine)
+                        if not quarantine.restore_directory_with_mode(
+                            mutation.source_quarantine, parent_fd, name, moved, mode,
+                        ):
+                            raise CandidateVerificationError(
+                                f"candidate directory changed during mode update: {path}; "
+                                "exact evidence remains quarantined"
+                            )
+                    except BaseException:
+                        os.fchmod(descriptor, stat.S_IMODE(opened.st_mode))
+                        os.fsync(descriptor)
+                        raise
+                    finally:
+                        os.close(descriptor)
 
                 _apply_candidate(
                     baseline,
@@ -1021,6 +1033,9 @@ def handover_candidate(
                 final_workspace,
                 verification.checks,
                 verification.environment,
+                candidate=verification.candidate,
+                limits=baseline.limits,
+                baseline=baseline,
             )
             journal.record("final-check-outcomes", details=_check_evidence(final_outcomes, final_failure))
             _require_tree(pinned.descriptor, expected)
@@ -1652,6 +1667,8 @@ def _expected_tree_after_operation(
     candidate: CandidateBundle,
     action: str,
     path: str,
+    *,
+    baseline: RepositoryBaseline | None = None,
 ) -> tuple[_TreeEntry, ...]:
     entries = {entry.path: entry for entry in expected}
     if action == "delete":
@@ -1660,6 +1677,11 @@ def _expected_tree_after_operation(
         entries.pop(path)
     elif action in {"directory-prepare", "directory-mode", "write"}:
         candidate_entry = next((entry for entry in candidate.entries if entry.path == path), None)
+        if candidate_entry is None and action.startswith("directory-") and baseline is not None:
+            original = next((entry for entry in baseline.directories if entry.path == path), None)
+            affected = set(candidate.deleted_paths) | {entry.path for entry in candidate.entries}
+            if original is not None and any(changed.startswith(path + "/") for changed in affected):
+                candidate_entry = CandidateEntry(path, "directory", original.mode, b"")
         if candidate_entry is None:
             raise HandoverError("destination operation is not part of the candidate")
         if action.startswith("directory-") and candidate_entry.kind != "directory":
@@ -2189,14 +2211,23 @@ def _restore_directory_mode_if_owned(
                 or not _matches_expected_path(actual, expected)
             ):
                 return False
-            moved = quarantine.retain_exact(parent_fd, parts[-1], information, path, temporary)
-            return quarantine.restore_directory_with_mode(
-                temporary,
-                parent_fd,
-                parts[-1],
-                moved,
-                before.mode,
-            )
+            descriptor = os.open(parts[-1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=parent_fd)
+            try:
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino, _kind(opened.st_mode)) != identity:
+                    return False
+                if not opened.st_mode & stat.S_IWUSR:
+                    _set_bound_directory_mode(parent_fd, parts[-1], descriptor, opened,
+                                              0o700, path, "directory rollback")
+                moved = quarantine.retain_exact(parent_fd, parts[-1], os.fstat(descriptor), path, temporary)
+                return quarantine.restore_directory_with_mode(temporary, parent_fd, parts[-1], moved, before.mode)
+            except BaseException:
+                os.fchmod(descriptor, stat.S_IMODE(information.st_mode))
+                os.fsync(descriptor)
+                raise
+            finally:
+                os.close(descriptor)
         finally:
             parent_expected = expected_outputs.get("/".join(parts[:-1]))
             if parent_expected is not None and parent_expected.kind == "directory":

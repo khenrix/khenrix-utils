@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -1594,8 +1595,10 @@ def _repository(tmp_path: Path) -> Path:
     return repository
 
 
-def _repo_runtime(tmp_path: Path, plan=None):
+def _repo_runtime(tmp_path: Path, plan=None, *, repository_setup=None):
     repository = _repository(tmp_path)
+    if repository_setup is not None:
+        repository_setup(repository)
     baseline = fanout.capture_repository_baseline(repository)
     controller = fanout.create_lifecycle_controller(tmp_path / "controller")
     workspaces = {
@@ -1733,6 +1736,69 @@ def _verified_repo_synthesis(runtime):
     )
     assert receipt.valid
     return receipt, collected
+
+
+@pytest.mark.parametrize("mutation", ("entry", "delete", "prefix", "empty", "parent-mode", "new-parent-mode"))
+def test_repo_candidate_authority_requires_exact_task_owned_paths(tmp_path, mutation):
+    scope = {"entry": ("changed.txt",), "delete": ("other",), "prefix": ("changed",),
+             "empty": (), "parent-mode": ("parent/child",), "new-parent-mode": ("parent/child",)}[mutation]
+    check = fanout.PlanCheckV1(argv=(sys.executable, "-c", "pass"), cwd="", env_allowlist=(),
+                              timeout=5, accepted_exit_codes=(0,), expected_artifacts=())
+    plan = _plan(_task("write", execution_class="repo-write", checks=(check,), owned_paths=scope))
+    def prepare(repository):
+        if mutation == "parent-mode":
+            (repository / "parent").mkdir(mode=0o755)
+            (repository / "parent").chmod(0o755)
+    runtime = _repo_runtime(tmp_path, plan, repository_setup=prepare)
+    runtime.service.start(owner=runtime.owner)
+    runtime.service.resume(owner=runtime.owner)
+    sources = tuple(item.candidate for item in runtime.service.collect("write", owner=runtime.owner))
+    entries = {
+        "entry": (fanout.CandidateEntry("sibling", "file", 0o644, b"outside"),),
+        "delete": (),
+        "prefix": (fanout.CandidateEntry("changed.txt", "file", 0o644, b"after\n"),),
+        "empty": (fanout.CandidateEntry("changed.txt", "file", 0o644, b"after\n"),),
+        "parent-mode": (fanout.CandidateEntry("parent", "directory", 0o700, b""),
+                        fanout.CandidateEntry("parent/child", "file", 0o644, b"owned")),
+        "new-parent-mode": (fanout.CandidateEntry("parent", "directory", 0o700, b""),
+                            fanout.CandidateEntry("parent/child", "file", 0o644, b"owned")),
+    }[mutation]
+    candidate = fanout.synthesize_candidate(runtime.baseline, sources=sources, entries=entries,
+                                            deleted_paths=("changed.txt",) if mutation == "delete" else ())
+    state = runtime.service._execution_state("write")
+    binding = fanout.CandidateReconciliationBinding(runtime.inputs.run_id, "write", state.decision_plan_sha256,
+                                                    state.decision_plan_revision, state.barriers[-1])
+    generic = fanout.verify_candidate(runtime.baseline, candidate, (check,), controller=runtime.controller,
+                                      reconciliation=binding)
+    assert generic.valid
+    with pytest.raises(fanout.ExecutionPendingError, match="scope|owned"):
+        runtime.service.verify_repo_synthesis("write", candidate, owner=runtime.owner)
+    with pytest.raises(fanout.ExecutionPendingError, match="scope|owned"):
+        runtime.service.submit("write", generic, owner=runtime.owner)
+    assert runtime.scheduler.task_phase("write") == "reconciliation-pending"
+
+
+@pytest.mark.parametrize("scope", (("parent/child",), ("parent",)))
+def test_repo_candidate_accepts_canonical_necessary_new_parent_and_owned_subtree(tmp_path, scope):
+    check = fanout.PlanCheckV1(argv=(sys.executable, "-c", "pass"), cwd="", env_allowlist=(),
+                              timeout=5, accepted_exit_codes=(0,), expected_artifacts=())
+    plan = _plan(_task("write", execution_class="repo-write", checks=(check,), owned_paths=scope))
+    runtime = _repo_runtime(tmp_path, plan)
+    runtime.service.start(owner=runtime.owner)
+    runtime.service.resume(owner=runtime.owner)
+    collected = runtime.service.collect("write", owner=runtime.owner)
+    candidate = fanout.synthesize_candidate(runtime.baseline, sources=tuple(item.candidate for item in collected),
+        entries=(fanout.CandidateEntry("parent", "directory", 0o755, b""),
+                 fanout.CandidateEntry("parent/child", "file", 0o644, b"owned")), deleted_paths=())
+    receipt = runtime.service.verify_repo_synthesis("write", candidate, owner=runtime.owner)
+    assert receipt.valid
+    runtime.service.submit("write", receipt, owner=runtime.owner)
+    restarted, _coordinator = _restart_before_profile_recovery(runtime, runtime.scheduler.plan)
+    assert restarted.status().tasks[0].phase == "completed"
+    outcome = restarted.handover("write", receipt, owner=runtime.owner)
+    assert outcome.status == "committed"
+    assert (runtime.repository / "parent/child").read_bytes() == b"owned"
+    assert stat.S_IMODE((runtime.repository / "parent").stat().st_mode) == 0o755
 
 
 def test_repo_write_rejects_verified_single_seat_then_accepts_fresh_synthesis(tmp_path):

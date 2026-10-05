@@ -167,6 +167,461 @@ def _target_evidence_context(tmp_path):
     return plan, inputs, binding
 
 
+@pytest.mark.parametrize("layout", ("baseline-escape", "delta-escape", "cycle", "contained"))
+def test_candidate_links_are_validated_in_the_complete_resulting_tree(tmp_path, layout):
+    repo = _repository(tmp_path)
+    (repo / "dir").mkdir()
+    (repo / "dir" / "inside").write_bytes(b"inside")
+    if layout in {"baseline-escape", "contained"}:
+        (repo / "a").symlink_to("." if layout == "baseline-escape" else "dir")
+    baseline = capture_repository_baseline(repo)
+    source = CandidateBundle(baseline.digest, (), ())
+    entries = {
+        "baseline-escape": (CandidateEntry("b", "symlink", 0o777, b"a/../outside"),),
+        "delta-escape": (CandidateEntry("a", "symlink", 0o777, b"."),
+                         CandidateEntry("b", "symlink", 0o777, b"a/../outside")),
+        "cycle": (CandidateEntry("a", "symlink", 0o777, b"b"),
+                  CandidateEntry("b", "symlink", 0o777, b"a")),
+        "contained": (CandidateEntry("b", "symlink", 0o777, b"a/../dir/inside"),),
+    }[layout]
+    if layout == "contained":
+        candidate = synthesize_candidate(baseline, sources=(source, source), entries=entries, deleted_paths=())
+        receipt = verify_candidate(baseline, candidate, (_check("from pathlib import Path; assert Path('b').read_bytes() == b'inside'"),), controller=_controller(tmp_path))
+        assert receipt.valid
+    else:
+        with pytest.raises(CandidateValidationError, match="symlink|cycle"):
+            synthesize_candidate(baseline, sources=(source, source), entries=entries, deleted_paths=())
+
+
+@pytest.mark.parametrize("ingress", ("workspace", "export"))
+def test_candidate_ingress_refuses_oversized_files_before_any_payload_read(tmp_path, monkeypatch, ingress):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    baseline = replace(baseline, limits=fanout.RepoLimits(32, 200))
+    root = _seat(tmp_path, baseline).root if ingress == "workspace" else _export_tree(tmp_path, baseline)
+    (root / "changed.bin").write_bytes(b"x" * 33)
+    manifest_digest = _export_manifest_sha256(root, _export_identity()) if ingress == "export" else None
+    real_read = os.read
+    reads = []
+    def observe_read(fd, size):
+        if stat.S_ISREG(os.fstat(fd).st_mode) and os.fstat(fd).st_size == 33:
+            reads.append(size)
+        return real_read(fd, size)
+    monkeypatch.setattr(os, "read", observe_read)
+    with pytest.raises(CandidateValidationError, match="limit|quota"):
+        if ingress == "workspace":
+            create_candidate(baseline, root)
+        else:
+            fanout.verification.create_candidate_from_export(baseline, root, _export_identity(), manifest_digest)
+    assert reads == []
+
+
+@pytest.mark.parametrize("drift", ("bytes", "mode", "link", "deleted"))
+def test_successful_check_cannot_issue_valid_receipt_after_candidate_drift(tmp_path, drift):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    candidate = CandidateBundle(baseline.digest, (
+        CandidateEntry("changed.bin", "file", 0o644, b"admitted"),
+        CandidateEntry("link", "symlink", 0o777, b"keep.txt"),
+    ), ("remove.txt",))
+    source = {
+        "bytes": "from pathlib import Path; Path('changed.bin').write_bytes(b'rewritten')",
+        "mode": "from pathlib import Path; Path('changed.bin').chmod(0o755)",
+        "link": "from pathlib import Path; Path('link').unlink(); Path('link').symlink_to('changed.bin')",
+        "deleted": "from pathlib import Path; Path('remove.txt').write_bytes(b'reappeared')",
+    }[drift]
+    receipt = verify_candidate(baseline, candidate, (_check(source),), controller=_controller(tmp_path))
+    assert not receipt.valid
+    assert receipt.failure and "candidate" in receipt.failure
+
+
+@pytest.mark.parametrize("phase", ("handover-stage", "handover-final-check"))
+def test_handover_checks_refuse_candidate_rewrite_and_preserve_caller(tmp_path, phase):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("changed.bin", "file", 0o644, b"admitted"),), ())
+    check = _check("from pathlib import Path; "
+                   f"Path('changed.bin').write_bytes(b'rewritten') if '{phase}' in Path.cwd().parts else None")
+    controller = _controller(tmp_path)
+    receipt = verify_candidate(baseline, candidate, (check,), controller=controller)
+    assert receipt.valid
+    with pytest.raises(fanout.HandoverError, match="check|verification"):
+        fanout.handover_candidate(baseline, receipt, controller=controller)
+    assert (baseline.repository / "changed.bin").read_bytes() == b"before\x00"
+
+
+@pytest.mark.parametrize("declared", (False, True))
+def test_candidate_checks_allow_new_build_outputs_without_changing_admitted_candidate(tmp_path, declared):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("changed.bin", "file", 0o644, b"admitted"),), ())
+    check = _check("from pathlib import Path; assert Path('changed.bin').read_bytes() == b'admitted'; "
+                   "Path('build-output.txt').write_bytes(b'build result'); "
+                   "Path('build-output').mkdir(); Path('build-output/result').write_bytes(b'nested result')",
+                   expected_artifacts=("build-output.txt", "build-output/result") if declared else ())
+    controller = _controller(tmp_path)
+    receipt = verify_candidate(baseline, candidate, (check,), controller=controller)
+    assert receipt.valid
+    assert (receipt.workspace / "build-output.txt").read_bytes() == b"build result"
+    assert (receipt.workspace / "build-output/result").read_bytes() == b"nested result"
+    assert (receipt.workspace / "changed.bin").read_bytes() == b"admitted"
+    result = fanout.handover_candidate(baseline, receipt, controller=controller)
+    assert result.status == "committed"
+    assert (baseline.repository / "changed.bin").read_bytes() == b"admitted"
+    assert not (baseline.repository / "build-output.txt").exists()
+    assert not (baseline.repository / "build-output").exists()
+
+
+@pytest.mark.parametrize("operation", ("edit", "delete"))
+def test_candidate_updates_under_unchanged_nonwritable_parent_restore_exact_mode(tmp_path, operation):
+    repo = _repository(tmp_path)
+    (repo / "locked").mkdir()
+    (repo / "locked" / "child").write_bytes(b"old")
+    (repo / "locked").chmod(0o500)
+    baseline = capture_repository_baseline(repo)
+    candidate = CandidateBundle(baseline.digest,
+                                (CandidateEntry("locked/child", "file", 0o644, b"new"),) if operation == "edit" else (),
+                                ("locked/child",) if operation == "delete" else ())
+    check = _check("from pathlib import Path; import stat; assert stat.S_IMODE(Path('locked').stat().st_mode) == 0o500; "
+                   + ("assert Path('locked/child').read_bytes() == b'new'" if operation == "edit" else "assert not Path('locked/child').exists()"))
+    controller = _controller(tmp_path)
+    receipt = verify_candidate(baseline, candidate, (check,), controller=controller)
+    assert receipt.valid
+    assert stat.S_IMODE((repo / "locked").stat().st_mode) == 0o500
+    assert (repo / "locked" / "child").read_bytes() == b"old"
+    result = fanout.handover_candidate(baseline, receipt, controller=controller)
+    assert result.status == "committed"
+    assert stat.S_IMODE((repo / "locked").stat().st_mode) == 0o500
+    if operation == "edit":
+        assert (repo / "locked" / "child").read_bytes() == b"new"
+    else:
+        assert not (repo / "locked" / "child").exists()
+
+
+@pytest.mark.parametrize("failure", ("final-check", "before-detach", "after-detach"))
+def test_nonwritable_parent_handover_restores_original_inode_after_failure_or_cold_replay(tmp_path, monkeypatch, failure):
+    repo = _repository(tmp_path)
+    (repo / "locked").mkdir()
+    (repo / "locked/child").write_bytes(b"old")
+    (repo / "locked").chmod(0o500)
+    original_inode = (repo / "locked").stat().st_ino
+    baseline = capture_repository_baseline(repo)
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("locked/child", "file", 0o644, b"new"),), ())
+    check = _check("from pathlib import Path; assert 'handover-final-check' not in Path.cwd().parts") if failure == "final-check" else _check("pass")
+    controller = _controller(tmp_path)
+    receipt = verify_candidate(baseline, candidate, (check,), controller=controller)
+    assert receipt.valid
+    lifecycle = sys.modules[f"{fanout.__name__}.lifecycle"]
+    original_retain = lifecycle._TransactionQuarantine.retain_exact
+    reached = False
+    def interrupt(self, parent_fd, name, information, path, temporary):
+        nonlocal reached
+        if path == "locked" and not reached:
+            reached = True
+            if failure == "after-detach":
+                original_retain(self, parent_fd, name, information, path, temporary)
+            raise OSError("injected interruption at bound directory detach")
+        return original_retain(self, parent_fd, name, information, path, temporary)
+    with monkeypatch.context() as fault:
+        if failure != "final-check":
+            fault.setattr(lifecycle._TransactionQuarantine, "retain_exact", interrupt)
+            def no_live_rollback(*args, **kwargs):
+                raise fanout.HandoverError("injected process exit before live rollback")
+            fault.setattr(lifecycle, "_rollback_from_backup", no_live_rollback)
+        with pytest.raises(fanout.HandoverError):
+            fanout.handover_candidate(baseline, receipt, controller=controller)
+    transaction = next((controller.root / "transactions").iterdir())
+    if failure != "final-check":
+        assert reached
+        capability = controller.capability
+        cold = fanout.resume_lifecycle_controller(controller.root, capability)
+        result = fanout.recover_handover(cold, transaction)
+        assert (result.status, result.recovered) == ("rolled-back", True)
+    assert (repo / "locked").stat().st_ino == original_inode
+    assert stat.S_IMODE((repo / "locked").stat().st_mode) == 0o500
+    assert (repo / "locked/child").read_bytes() == b"old"
+    assert json.loads((transaction / "handover.jsonl").read_text().splitlines()[-1])["step"] == "rollback-complete"
+
+
+def _quota_baseline(tmp_path):
+    repo = tmp_path / "quota-caller"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Fixture")
+    _git(repo, "config", "user.email", "fixture@example.invalid")
+    (repo / "old").write_bytes(b"1234")
+    (repo / "keep").write_bytes(b"xy")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "seed")
+    return replace(capture_repository_baseline(repo), limits=fanout.RepoLimits(4, 6))
+
+
+@pytest.mark.parametrize("ingress", ("workspace", "export", "manifest", "synthesis"))
+@pytest.mark.parametrize("change", ("replacement", "delete-add", "overflow"))
+def test_candidate_ingress_counts_each_resulting_path_once_with_unchanged_bytes(tmp_path, ingress, change):
+    baseline = _quota_baseline(tmp_path)
+    entries = (CandidateEntry("old", "file", 0o644, b"abcd"),) if change == "replacement" else (CandidateEntry("new", "file", 0o644, b"ABCD"),)
+    deleted = ("old",) if change == "delete-add" else ()
+    proposed = CandidateBundle(baseline.digest, entries, deleted)
+    source = CandidateBundle(baseline.digest, (), ())
+    def admit():
+        if ingress == "synthesis":
+            return synthesize_candidate(baseline, sources=(source, source), entries=entries, deleted_paths=deleted)
+        if ingress == "manifest":
+            decoded = CandidateBundle.from_manifest(proposed.manifest_bytes)
+            return verify_candidate(baseline, decoded, (_check("pass"),), controller=_controller(tmp_path)).candidate
+        root = _seat(tmp_path, baseline).root if ingress == "workspace" else _export_tree(tmp_path, baseline)
+        for path in deleted:
+            (root / path).unlink()
+        for entry in entries:
+            (root / entry.path).write_bytes(entry.data)
+            (root / entry.path).chmod(entry.mode)
+        if ingress == "workspace":
+            return create_candidate(baseline, root)
+        return fanout.verification.create_candidate_from_export(baseline, root, _export_identity(), _export_manifest_sha256(root, _export_identity()))
+    if change == "overflow":
+        with pytest.raises(CandidateValidationError, match="total|limit|quota"):
+            admit()
+    else:
+        admitted = admit()
+        assert admitted.entries == entries
+        assert admitted.deleted_paths == deleted
+
+
+def test_baseline_aware_manifest_refuses_oversized_payload_before_base64_decode(tmp_path, monkeypatch):
+    baseline = _quota_baseline(tmp_path)
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("old", "file", 0o644, b"12345"),), ())
+    decoded_payloads = []
+    real_decode = fanout.verification.base64.b64decode
+    def observe_decode(payload, **kwargs):
+        decoded_payloads.append(len(payload))
+        return real_decode(payload, **kwargs)
+    monkeypatch.setattr(fanout.verification.base64, "b64decode", observe_decode)
+    with pytest.raises(CandidateValidationError, match="file limit"):
+        CandidateBundle.from_manifest(candidate.manifest_bytes, baseline=baseline)
+    assert decoded_payloads == []
+
+
+@pytest.mark.parametrize("bound", (False, True))
+def test_duplicate_manifest_paths_are_refused_before_any_payload_decode(tmp_path, monkeypatch, bound):
+    baseline = _quota_baseline(tmp_path)
+    document = CandidateBundle(baseline.digest, (CandidateEntry("old", "file", 0o644, b"abcd"),), ()).to_manifest()
+    document["entries"].append(dict(document["entries"][0]))
+    decoded = []
+    original = fanout.verification.base64.b64decode
+    def observe(payload, **kwargs):
+        decoded.append(payload)
+        return original(payload, **kwargs)
+    monkeypatch.setattr(fanout.verification.base64, "b64decode", observe)
+    with pytest.raises(CandidateValidationError, match="unique|duplicate"):
+        CandidateBundle.from_manifest(document, baseline=baseline if bound else None)
+    assert decoded == []
+
+
+def test_deleted_path_resurrection_is_refused_without_reading_its_payload(tmp_path, monkeypatch):
+    baseline = _quota_baseline(tmp_path)
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("new", "file", 0o644, b"ABCD"),), ("old",))
+    reads = []
+    original = os.read
+    def observe(fd, size):
+        information = os.fstat(fd)
+        if stat.S_ISREG(information.st_mode) and information.st_size == 5:
+            reads.append(size)
+        return original(fd, size)
+    monkeypatch.setattr(os, "read", observe)
+    receipt = verify_candidate(baseline, candidate, (_check("from pathlib import Path; Path('old').write_bytes(b'12345')"),), controller=_controller(tmp_path))
+    assert not receipt.valid
+    assert receipt.outcomes[0].returncode == 0
+    assert reads == []
+
+
+def test_postcheck_retained_growth_cannot_read_beyond_the_exact_result_budget(tmp_path, monkeypatch):
+    baseline = _quota_baseline(tmp_path)
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("new", "file", 0o644, b"ABCD"),), ("old",))
+    reads = []
+    original = os.read
+    def observe(fd, size):
+        information = os.fstat(fd)
+        if stat.S_ISREG(information.st_mode) and information.st_size == 3:
+            reads.append(size)
+        return original(fd, size)
+    monkeypatch.setattr(os, "read", observe)
+    receipt = verify_candidate(baseline, candidate, (_check("from pathlib import Path; Path('keep').write_bytes(b'xyz')"),), controller=_controller(tmp_path))
+    assert not receipt.valid
+    assert receipt.outcomes[0].returncode == 0
+    assert reads == []
+
+
+@pytest.mark.parametrize("snapshot", (1, 2))
+@pytest.mark.parametrize("change", ("growth", "addition", "total"))
+def test_export_snapshots_refuse_over_budget_payload_before_read(tmp_path, monkeypatch, snapshot, change):
+    baseline = _quota_baseline(tmp_path)
+    root = _export_tree(tmp_path, baseline)
+    identity = _export_identity()
+    digest = _export_manifest_sha256(root, identity)
+    original_snapshot, original_read = transfer.snapshot_manifest, os.read
+    calls, reads = [], []
+    target = root / ("new" if change == "addition" else "old")
+    def mutate(path, selected, **kwargs):
+        calls.append(selected)
+        if len(calls) == snapshot:
+            if change == "total":
+                (root / "aaa").write_bytes(b"abc")
+                (root / "aaa").chmod(0o600)
+            else:
+                target.write_bytes(b"12345")
+                target.chmod(0o600)
+        return original_snapshot(path, selected, **kwargs)
+    def observe(fd, size):
+        info = os.fstat(fd)
+        if len(calls) == snapshot and stat.S_ISREG(info.st_mode) and target.exists() and info.st_ino == target.stat().st_ino:
+            reads.append(size)
+        return original_read(fd, size)
+    monkeypatch.setattr(fanout.verification, "snapshot_manifest", mutate)
+    monkeypatch.setattr(os, "read", observe)
+    with pytest.raises(CandidateValidationError):
+        fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
+    assert len(calls) == snapshot
+    assert reads == []
+
+
+@pytest.mark.parametrize("phase", ("fresh", "handover-stage", "handover-final-check"))
+@pytest.mark.parametrize("drift", ("bytes", "mode", "link", "directory-mode"))
+def test_checks_preserve_retained_baseline_truth_not_only_the_delta(tmp_path, phase, drift):
+    repository = _repository(tmp_path)
+    (repository / "retained-link").symlink_to("keep.txt")
+    (repository / "retained-dir").mkdir()
+    baseline = capture_repository_baseline(repository)
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("changed.bin", "file", 0o644, b"admitted"),), ())
+    mutation = {
+        "bytes": "Path('keep.txt').write_bytes(b'check-only'); assert Path('keep.txt').read_bytes() == b'check-only'",
+        "mode": "Path('keep.txt').chmod(0o755)",
+        "link": "Path('retained-link').unlink(); Path('retained-link').symlink_to('changed.bin')",
+        "directory-mode": "Path('retained-dir').chmod(0o755)",
+    }[drift]
+    source = "from pathlib import Path; " + mutation if phase == "fresh" else (
+        "from pathlib import Path\n" + f"if '{phase}' in Path.cwd().parts:\n    " + mutation
+    )
+    controller = _controller(tmp_path)
+    receipt = verify_candidate(baseline, candidate, (_check(source),), controller=controller)
+    if phase == "fresh":
+        assert not receipt.valid
+        assert receipt.outcomes[0].returncode == 0
+    else:
+        assert receipt.valid
+        with pytest.raises(fanout.HandoverError, match="check|verification"):
+            fanout.handover_candidate(baseline, receipt, controller=controller)
+    assert (repository / "keep.txt").read_bytes() == b"unchanged\n"
+    assert (repository / "changed.bin").read_bytes() == b"before\x00"
+    assert (repository / "keep.txt").stat().st_mode & 0o777 == next(item.mode for item in baseline.entries if item.path == "keep.txt")
+    assert os.readlink(repository / "retained-link") == "keep.txt"
+    assert (repository / "retained-dir").stat().st_mode & 0o777 == next(item.mode for item in baseline.directories if item.path == "retained-dir")
+
+
+def test_candidate_capture_refuses_growth_with_reads_bounded_to_initial_size(tmp_path, monkeypatch):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    seat = _seat(tmp_path, baseline)
+    real_read = os.read
+    requests = []
+    grew = False
+    def grow_during_read(fd, size):
+        nonlocal grew
+        information = os.fstat(fd)
+        payload = real_read(fd, size)
+        if stat.S_ISREG(information.st_mode) and information.st_ino == (seat.root / "changed.bin").stat().st_ino:
+            requests.append(size)
+            if not grew:
+                grew = True
+                with (seat.root / "changed.bin").open("ab") as handle:
+                    handle.write(b"x")
+        return payload
+    monkeypatch.setattr(os, "read", grow_during_read)
+    with pytest.raises(CandidateValidationError, match="changed"):
+        create_candidate(baseline, seat)
+    assert grew and requests and max(requests) <= 7
+
+
+def test_candidate_directory_to_file_replacement_preserves_historical_deletions(tmp_path):
+    repo = _repository(tmp_path)
+    (repo / "directory").mkdir()
+    (repo / "directory" / "child").write_bytes(b"old")
+    baseline = capture_repository_baseline(repo)
+    seat = _seat(tmp_path, baseline)
+    (seat.root / "directory" / "child").unlink()
+    (seat.root / "directory").rmdir()
+    (seat.root / "directory").write_bytes(b"new")
+    (seat.root / "directory").chmod(0o644)
+    candidate = create_candidate(baseline, seat)
+    assert candidate.entries == (CandidateEntry("directory", "file", 0o644, b"new"),)
+    assert candidate.deleted_paths == ("directory", "directory/child")
+    receipt = verify_candidate(baseline, candidate, (_check("from pathlib import Path; assert Path('directory').read_bytes() == b'new'"),), controller=_controller(tmp_path))
+    assert receipt.valid
+
+
+@pytest.mark.parametrize("scope, entries, deleted", (
+    (("keep.txt",), (CandidateEntry("sibling", "file", 0o644, b"outside"),), ()),
+    (("keep.txt",), (), ("remove.txt",)),
+    (("keep",), (CandidateEntry("keep.txt", "file", 0o644, b"changed"),), ()),
+    ((), (CandidateEntry("keep.txt", "file", 0o644, b"changed"),), ()),
+    (("parent/child",), (CandidateEntry("parent", "directory", 0o700, b""),
+                         CandidateEntry("parent/child", "file", 0o644, b"owned")), ()),
+))
+def test_durable_target_load_rechecks_current_task_scope_after_diagnostic_issuance(tmp_path, scope, entries, deleted):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    plan, inputs, binding = _target_evidence_context(tmp_path)
+    info = (baseline.repository / ".git").stat()
+    binding = replace(binding, root=baseline.repository, common_dir=baseline.repository / ".git",
+                      common_device=info.st_dev, common_inode=info.st_ino,
+                      base_oid=baseline.head, baseline_sha256=baseline.digest)
+    inputs = replace(inputs, targets={"booking": binding})
+    candidate = CandidateBundle(baseline.digest, entries, deleted)
+    with fanout.ArtifactStore(tmp_path / "artifacts") as store:
+        controller = _controller(tmp_path)
+        envelope = fanout.issue_target_candidate(candidate, task_id="work", plan=plan, inputs=inputs,
+                                                  store=store, controller=controller, baseline=baseline)
+        assert fanout.load_target_candidate(envelope, plan=plan, inputs=inputs, store=store,
+                                            controller=controller, baseline=baseline).candidate == candidate
+        document = plan.to_dict()
+        document["tasks"][0].update(execution_class="repo-write", owned_paths=list(scope),
+                                    reconciliation_policy="synthesis-required", checks=[_check("pass").to_dict()])
+        writer_plan = fanout.plan.FanoutPlanV2.from_dict(document)
+        writer_inputs = replace(inputs, compiled_plan_sha256=hashlib.sha256(canonical_json(writer_plan.to_dict())).hexdigest())
+        with pytest.raises(CandidateValidationError, match="owned scope"):
+            fanout.load_target_candidate(envelope, plan=writer_plan, inputs=writer_inputs, store=store,
+                                        controller=controller, baseline=baseline)
+
+
+def test_durable_target_new_parent_uses_original_baseline_after_caller_delivery(tmp_path):
+    baseline = capture_repository_baseline(_repository(tmp_path))
+    plan, inputs, binding = _target_evidence_context(tmp_path)
+    info = (baseline.repository / ".git").stat()
+    binding = replace(binding, root=baseline.repository, common_dir=baseline.repository / ".git",
+                      common_device=info.st_dev, common_inode=info.st_ino,
+                      base_oid=baseline.head, baseline_sha256=baseline.digest)
+    document = plan.to_dict()
+    document["tasks"][0].update(execution_class="repo-write", owned_paths=["parent/child"],
+                                reconciliation_policy="synthesis-required", checks=[_check("pass").to_dict()])
+    plan = fanout.plan.FanoutPlanV2.from_dict(document)
+    inputs = replace(inputs, targets={"booking": binding}, compiled_plan_sha256=hashlib.sha256(canonical_json(plan.to_dict())).hexdigest())
+    candidate = CandidateBundle(baseline.digest, (CandidateEntry("parent", "directory", 0o755, b""),
+        CandidateEntry("parent/child", "file", 0o644, b"owned")), ())
+    with fanout.ArtifactStore(tmp_path / "artifacts") as store:
+        controller = _controller(tmp_path)
+        envelope = fanout.issue_target_candidate(candidate, task_id="work", plan=plan, inputs=inputs,
+                                                  store=store, controller=controller, baseline=baseline)
+        verified, receipt = fanout.verify_target_candidate(envelope, baseline=baseline, plan=plan, inputs=inputs,
+                                                           store=store, controller=controller)
+        fanout.handover_candidate(baseline, receipt, controller=controller)
+        assert capture_repository_baseline(baseline.repository).digest != baseline.digest
+        assert fanout.load_target_candidate(envelope, plan=plan, inputs=inputs, store=store, controller=controller,
+                                            baseline=baseline).candidate == candidate
+        assert fanout.load_target_verification(verified, plan=plan, inputs=inputs, store=store, controller=controller,
+                                               baseline=baseline).candidate == candidate
+        assert fanout.validate_target_candidate_binding(envelope, task_id="work", plan=plan,
+            inputs=inputs, store=store, controller=controller, baseline=baseline) == candidate
+        with pytest.raises(CandidateValidationError, match="original target baseline"):
+            fanout.load_target_candidate(envelope, plan=plan, inputs=inputs, store=store,
+                controller=controller, baseline=replace(baseline, repository=tmp_path))
+        with pytest.raises(CandidateValidationError, match="owned scope"):
+            fanout.load_target_candidate(envelope, plan=plan, inputs=inputs, store=store, controller=controller)
+
+
 def test_target_candidate_loader_binds_identical_manifest_to_target_identity(tmp_path):
     plan, inputs, binding = _target_evidence_context(tmp_path)
     bundle = CandidateBundle(binding.baseline_sha256, (), ())
@@ -510,7 +965,7 @@ def test_controller_issues_independent_target_evidence_for_identical_candidate_c
             address_candidate, plan=plan, inputs=inputs, store=store,
             controller=controller,
         ).candidate == candidate
-        with pytest.raises(CandidateValidationError, match="baseline.*target"):
+        with pytest.raises(CandidateValidationError, match="^original target baseline changed binding$"):
             fanout.verify_target_candidate(
                 booking_candidate, baseline=address_baseline, plan=plan,
                 inputs=inputs, store=store, controller=controller,
@@ -700,6 +1155,80 @@ def test_export_candidate_enforces_baseline_byte_limit(tmp_path):
         )
 
 
+@pytest.mark.parametrize("target", ("keep", "peer", "other"))
+def test_export_symlink_payload_interval_refuses_growth_before_readlink(tmp_path, monkeypatch, target):
+    baseline = _quota_baseline(tmp_path)
+    root = _export_tree(tmp_path, baseline)
+    (root / "old").unlink()
+    if target != "keep":
+        (root / target).write_bytes(b"")
+        (root / target).chmod(0o644)
+    link = root / "link"
+
+    def replace_link(value):
+        link.unlink(missing_ok=True)
+        link.symlink_to(value)
+        if stat.S_IMODE(link.lstat().st_mode) != 0o777:
+            if os.chmod not in os.supports_follow_symlinks:
+                pytest.skip("filesystem cannot set transferable symlink modes")
+            try:
+                os.chmod(link, 0o777, follow_symlinks=False)
+            except NotImplementedError:
+                pytest.skip("filesystem cannot set transferable symlink modes")
+            except OSError as error:
+                if error.errno in {errno.ENOSYS, errno.ENOTSUP}:
+                    pytest.skip("filesystem cannot set transferable symlink modes")
+                raise
+            if stat.S_IMODE(link.lstat().st_mode) != 0o777:
+                pytest.skip("filesystem did not retain transferable symlink mode")
+
+    replace_link("keep")
+    identity = _export_identity()
+    digest = _export_manifest_sha256(root, identity)
+    original_snapshot, original_readlink = transfer.snapshot_manifest, os.readlink
+    snapshots, initial_reads, payload_reads = [], [], []
+
+    def observe(path, *args, **kwargs):
+        value = original_readlink(path, *args, **kwargs)
+        if path == "link":
+            payload_reads.append(value)
+        return value
+
+    def mutate_after_first_snapshot(path, selected, **kwargs):
+        snapshots.append(selected)
+        assert kwargs == {"max_file_bytes": 4, "max_total_bytes": 6}
+        manifest = original_snapshot(path, selected, **kwargs)
+        if len(snapshots) == 1:
+            initial_reads.extend(payload_reads)
+            payload_reads.clear()
+            if target != "keep":
+                replace_link(target)
+            assert link.lstat().st_size == {"keep": 4, "peer": 4, "other": 5}[target]
+        return manifest
+
+    monkeypatch.setattr(fanout.verification, "snapshot_manifest", mutate_after_first_snapshot)
+    monkeypatch.setattr(transfer.os, "readlink", observe)
+    if target == "keep":
+        candidate = fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
+        assert candidate.entries == (CandidateEntry("link", "symlink", 0o777, b"keep"),)
+        assert candidate.deleted_paths == ("old",)
+        assert len(snapshots) == 2
+        assert payload_reads == ["keep", "keep"]
+    else:
+        with pytest.raises(CandidateValidationError) as caught:
+            fanout.verification.create_candidate_from_export(baseline, root, identity, digest)
+        assert isinstance(caught.value.__cause__, transfer.TransferRejected)
+        assert len(snapshots) == 1
+        if target == "peer":
+            assert "symlink digest" in str(caught.value.__cause__)
+            assert payload_reads == ["peer"]
+        else:
+            assert payload_reads == []
+    assert initial_reads == ["keep", "keep"]
+    assert (baseline.repository / "old").read_bytes() == b"1234"
+    assert (baseline.repository / "keep").read_bytes() == b"xy"
+
+
 def test_export_candidate_rejects_mutation_after_snapshot(tmp_path, monkeypatch):
     baseline = capture_repository_baseline(_repository(tmp_path))
     root = _export_tree(tmp_path, baseline)
@@ -707,8 +1236,8 @@ def test_export_candidate_rejects_mutation_after_snapshot(tmp_path, monkeypatch)
     digest = _export_manifest_sha256(root, identity)
     original = transfer.snapshot_manifest
 
-    def mutate_after_snapshot(path, selected_identity):
-        manifest = original(path, selected_identity)
+    def mutate_after_snapshot(path, selected_identity, **kwargs):
+        manifest = original(path, selected_identity, **kwargs)
         (root / "changed.bin").write_bytes(b"changed during read")
         return manifest
 

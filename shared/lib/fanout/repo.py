@@ -265,6 +265,7 @@ def verify_seat_workspace(
         raise RepositoryValidationError(
             "workspace verification requires an authenticated lifecycle controller"
         ) from error
+    _authenticate_seat_git(workspace.root)
     root = workspace.root.resolve()
     if workspace.baseline_digest != baseline.digest:
         raise RepositoryValidationError("workspace uses another immutable baseline")
@@ -337,6 +338,7 @@ def validate_seat_workspace(
         if verification.controller_id != controller.controller_id:
             raise RepositoryValidationError("workspace evidence belongs to another controller")
         root = verification.workspace.root
+        _authenticate_seat_git(root)
         root_info = root.lstat()
         git_info = (root / ".git").lstat()
         if (
@@ -482,8 +484,14 @@ def capture_repository_baseline(
         raise RepositoryValidationError("repository HEAD is not a full object id")
     budget = _Budget(applied_limits)
     head_entries = tuple(_capture_head_entries(root, budget))
+    _validate_link_namespace({entry.path: entry.data for entry in head_entries if entry.kind == "symlink"})
     index_entries = tuple(_capture_index_entries(root, budget))
+    common = {entry.path: entry for entry in index_entries if entry.stage == 0}
+    for stage in {entry.stage for entry in index_entries}:
+        view = common | {entry.path: entry for entry in index_entries if entry.stage == stage}
+        _validate_link_namespace({path: entry.data for path, entry in view.items() if entry.mode == 0o120000})
     worktree_entries, deleted_paths = _capture_worktree_entries(root, head_entries, index_entries, budget)
+    _validate_link_namespace({entry.path: entry.data for entry in worktree_entries if entry.kind == "symlink"})
     directories = tuple(_capture_directory_entries(root))
     return RepositoryBaseline(
         repository=root, head=head, head_entries=head_entries, index_entries=index_entries,
@@ -556,6 +564,7 @@ def revalidate_target_bindings(
         if current[key] != binding:
             raise RepositoryValidationError(f"target {key}: saved Git or baseline binding changed")
         if key in writable_ids:
+            _require_clean_baseline(baselines[key])
             if binding.branch_oid is not None:
                 try:
                     current_ref = _git(binding.root, "symbolic-ref", "-q", "--no-recurse", "HEAD").decode().strip()
@@ -591,7 +600,22 @@ def create_seat_workspace(
         raise RepositoryIsolationError("run root must not be the caller repository or its descendant")
     root.mkdir(parents=True, exist_ok=True)
     seats = root / "seats"
-    seats.mkdir(exist_ok=True)
+    try:
+        seats.mkdir(exist_ok=True)
+        information = seats.lstat()
+        if not stat.S_ISDIR(information.st_mode) or information.st_uid != os.getuid():
+            raise RepositoryIsolationError("seats parent must be a real owned directory")
+        seats_fd = os.open(seats, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(seats_fd)
+            if (opened.st_dev, opened.st_ino) != (information.st_dev, information.st_ino):
+                raise RepositoryIsolationError("seats parent changed during authentication")
+            if seats.resolve(strict=True) != seats or seats.parent != root:
+                raise RepositoryIsolationError("seats destination escapes the run root")
+        finally:
+            os.close(seats_fd)
+    except OSError as error:
+        raise RepositoryIsolationError("seats parent must be a real owned directory") from error
     destination = seats / seat_id
     if destination.exists() or destination.is_symlink():
         raise RepositoryValidationError(f"seat workspace already exists: {destination}")
@@ -625,6 +649,59 @@ def _repository_root(repository: Path | str) -> Path:
     return root
 
 
+def _authenticate_seat_git(root: Path) -> None:
+    """Check Git's effective directories before trusting any seat Git content."""
+    try:
+        for directory in (root, root / ".git"):
+            information = directory.lstat()
+            if not stat.S_ISDIR(information.st_mode) or information.st_uid != os.getuid():
+                raise RepositoryIsolationError("seat Git directories must be real owned directories")
+        expected_root = root.resolve(strict=True)
+        expected_git = expected_root / ".git"
+        for option, expected in (
+            ("--show-toplevel", expected_root),
+            ("--absolute-git-dir", expected_git),
+            ("--git-common-dir", expected_git),
+        ):
+            actual = Path(os.fsdecode(_git(root, "rev-parse", option).strip()))
+            actual = actual if actual.is_absolute() else root / actual
+            if actual.resolve(strict=True) != expected:
+                raise RepositoryIsolationError("seat Git worktree or metadata directory was redirected")
+    except OSError as error:
+        raise RepositoryIsolationError("seat Git directory identity is unavailable") from error
+
+
+def _require_clean_baseline(baseline: RepositoryBaseline) -> None:
+    head = {entry.path: (entry.kind, entry.kind == "file" and bool(entry.mode & 0o111), entry.data)
+            for entry in baseline.head_entries}
+    index = {
+        entry.path: ("symlink" if entry.mode == 0o120000 else "file",
+                     entry.mode != 0o120000 and bool(entry.mode & 0o111), entry.data)
+        for entry in baseline.index_entries
+    }
+    current = {entry.path: (entry.kind, entry.kind == "file" and bool(entry.mode & 0o111), entry.data)
+               for entry in baseline.entries}
+    if (head != index or index != current or baseline.deleted_paths
+            or any(entry.stage or entry.flags & _INDEX_INTENT_TO_ADD for entry in baseline.index_entries)):
+        raise RepositoryValidationError("repository writer requires a clean checkout")
+
+
+def _capture_blob(root: Path, path: str, object_id: bytes, budget: "_Budget") -> bytes:
+    oid = object_id.decode("ascii", "strict")
+    if _git(root, "cat-file", "-t", oid).strip() != b"blob":
+        raise RepositoryValidationError("Git entry does not refer to a blob")
+    try:
+        size = int(_git(root, "cat-file", "-s", oid).strip())
+    except ValueError as error:
+        raise RepositoryValidationError("Git blob size is invalid") from error
+    budget.check_size(path, size)
+    data = _git(root, "cat-file", "blob", oid, max_output_bytes=size)
+    if len(data) != size:
+        raise RepositoryValidationError("Git blob changed while captured")
+    budget.add(path, data)
+    return data
+
+
 def _capture_head_entries(root: Path, budget: "_Budget") -> Iterable[RepositoryEntry]:
     output = _git(root, "ls-tree", "-r", "-z", "HEAD")
     for record in _records(output):
@@ -634,12 +711,9 @@ def _capture_head_entries(root: Path, budget: "_Budget") -> Iterable[RepositoryE
             raise RepositoryValidationError("Git returned an invalid HEAD tree entry")
         mode = _git_mode(fields[0])
         path = _decode_path(encoded_path)
-        data = _git(root, "cat-file", "blob", fields[2].decode("ascii", "strict"))
-        budget.add(path, data)
+        data = _capture_blob(root, path, fields[2], budget)
         kind = "symlink" if mode == 0o120000 else "file"
-        if kind == "symlink":
-            _reject_escaping_link(root, path, data)
-        else:
+        if kind != "symlink":
             _reject_secret(path, data)
         yield RepositoryEntry(path, mode, kind, data)
 
@@ -675,8 +749,7 @@ def _capture_index_entries(root: Path, budget: "_Budget") -> Iterable[Repository
             != bool(raw_flags & (_INDEX_INTENT_TO_ADD | _INDEX_SKIP_WORKTREE))
         ):
             raise RepositoryValidationError("Git returned unsupported index flags")
-        data = _git(root, "cat-file", "blob", object_id.decode("ascii", "strict"))
-        budget.add(path, data)
+        data = _capture_blob(root, path, object_id, budget)
         if mode != 0o120000:
             _reject_secret(path, data)
         yield RepositoryIndexEntry(path, mode, decoded_stage, data, raw_flags & _INDEX_SEMANTIC_FLAGS)
@@ -696,20 +769,34 @@ def _capture_worktree_entries(
         entry_path = root / Path(path)
         try:
             information = entry_path.lstat()
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             deleted.append(path)
             continue
         if stat.S_ISLNK(information.st_mode):
+            budget.check_size(path, information.st_size)
             data = os.fsencode(os.readlink(entry_path))
+            if _file_identity(entry_path.lstat()) != _file_identity(information):
+                raise RepositoryIsolationError("baseline symlink changed during capture")
             budget.add(path, data)
             _reject_escaping_link(root, path, data)
             entries.append(RepositoryEntry(path, stat.S_IMODE(information.st_mode), "symlink", data))
         elif stat.S_ISREG(information.st_mode):
-            with entry_path.open("rb") as handle:
-                data = handle.read()
+            budget.check_size(path, information.st_size)
+            parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                for part in PurePosixPath(path).parts[:-1]:
+                    child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                    os.close(parent_fd)
+                    parent_fd = child_fd
+                data = _read_regular_file(parent_fd, PurePosixPath(path).name, information,
+                                          min(budget.limits.max_file_bytes, budget.limits.max_total_bytes - budget.total))
+            finally:
+                os.close(parent_fd)
             budget.add(path, data)
             _reject_secret(path, data)
             entries.append(RepositoryEntry(path, stat.S_IMODE(information.st_mode), "file", data))
+        elif stat.S_ISDIR(information.st_mode):
+            deleted.append(path)
         else:
             raise RepositoryIsolationError(f"baseline path is not a regular file or symlink: {path}")
     return entries, deleted
@@ -908,6 +995,7 @@ def _materialize_worktree(
 def _git(
     cwd: Path, *args: str, input: bytes | None = None,
     extra_environment: Mapping[str, str] | None = None,
+    max_output_bytes: int | None = None,
 ) -> bytes:
     environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     environment.update({
@@ -919,14 +1007,66 @@ def _git(
     })
     if extra_environment:
         environment.update(extra_environment)
+    command = (_GIT, "-C", os.fspath(cwd), *_GIT_OPTIONS, *args)
+    if max_output_bytes is not None:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment) as process:
+            assert process.stdout is not None
+            data = bytearray()
+            while len(data) < max_output_bytes:
+                chunk = os.read(process.stdout.fileno(), min(64 * 1024, max_output_bytes - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if os.read(process.stdout.fileno(), 1):
+                process.kill()
+                raise RepositoryQuotaError("Git blob exceeds its authenticated size")
+            _, stderr = process.communicate()
+            if process.returncode:
+                raise RepositoryValidationError(f"Git blob read failed: {stderr.decode('utf-8', 'replace')}")
+            return bytes(data)
     result = subprocess.run(
-        (_GIT, "-C", os.fspath(cwd), *_GIT_OPTIONS, *args), input=input,
+        command, input=input,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment, check=False,
     )
     if result.returncode:
         message = result.stderr.decode("utf-8", "replace").strip()
         raise RepositoryValidationError(f"git {' '.join(args[:2]) or 'command'} failed: {message}")
     return result.stdout
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _read_regular_file(parent_fd: int, name: str, before: os.stat_result, max_bytes: int) -> bytes:
+    """Read only an authenticated regular file, bounded by its size and caller budget."""
+    if not stat.S_ISREG(before.st_mode):
+        raise RepositoryIsolationError("file read requires a regular file")
+    if before.st_size > max_bytes:
+        raise RepositoryQuotaError("repository file or remaining total quota exceeded")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(fd)
+            if _file_identity(opened) != _file_identity(before) or not stat.S_ISREG(opened.st_mode):
+                raise RepositoryIsolationError("regular file changed before capture")
+            data = bytearray()
+            while len(data) < opened.st_size:
+                chunk = os.read(fd, min(64 * 1024, opened.st_size - len(data)))
+                if not chunk:
+                    raise RepositoryIsolationError("regular file shrank during capture")
+                data.extend(chunk)
+            if os.read(fd, 1):
+                raise RepositoryIsolationError("regular file grew during capture")
+            after = os.fstat(fd)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if _file_identity(after) != _file_identity(opened) or _file_identity(current) != _file_identity(opened):
+                raise RepositoryIsolationError("regular file changed during capture")
+            return bytes(data)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise RepositoryIsolationError("regular file cannot be captured safely") from error
 
 
 def _path(value: object, label: str) -> str:
@@ -979,11 +1119,45 @@ def _reject_escaping_link(root: Path, path: str, data: bytes) -> None:
     target = os.fsdecode(data)
     if os.path.isabs(target):
         raise RepositoryIsolationError(f"symlink escapes repository: {path}")
-    resolved = (root / Path(path).parent / target).resolve(strict=False)
+    try:
+        resolved = (root / Path(path).parent / target).resolve(strict=False)
+    except RuntimeError as error:
+        raise RepositoryIsolationError(f"symlink cycle: {path}") from error
     try:
         resolved.relative_to(root)
     except ValueError as error:
         raise RepositoryIsolationError(f"symlink escapes repository: {path}") from error
+
+
+def _validate_link_namespace(links: Mapping[str, bytes]) -> None:
+    """Resolve retained targets only through links in the same namespace."""
+    for path, data in links.items():
+        text = os.fsdecode(data)
+        if text.startswith("/"):
+            raise RepositoryIsolationError(f"symlink escapes its namespace: {path}")
+        pending = list(PurePosixPath(path).parts[:-1]) + text.split("/")
+        resolved: list[str] = []
+        traversals = 0
+        while pending:
+            part = pending.pop(0)
+            if part in {"", "."}:
+                continue
+            if part == "..":
+                if not resolved:
+                    raise RepositoryIsolationError(f"symlink escapes its namespace: {path}")
+                resolved.pop()
+                continue
+            target = links.get("/".join((*resolved, part)))
+            if target is None:
+                resolved.append(part)
+                continue
+            traversals += 1
+            if traversals > 40:
+                raise RepositoryIsolationError(f"symlink cycle or traversal limit: {path}")
+            text = os.fsdecode(target)
+            if text.startswith("/"):
+                raise RepositoryIsolationError(f"symlink escapes its namespace: {path}")
+            pending = text.split("/") + pending
 
 
 def _plain_secret_mapping_offsets(data: bytes) -> set[int]:
@@ -1064,17 +1238,21 @@ class _Budget:
     limits: RepoLimits
     total: int = 0
 
-    def add(self, path: str, data: bytes) -> None:
-        size = len(data)
+    def check_size(self, path: str, size: int) -> None:
+        if size < 0:
+            raise RepositoryValidationError("repository content size is invalid")
         if size > self.limits.max_file_bytes:
             raise RepositoryQuotaError(
                 f"repository file quota exceeded for {path}: {size} > {self.limits.max_file_bytes} bytes"
             )
-        self.total += size
-        if self.total > self.limits.max_total_bytes:
+        if self.total + size > self.limits.max_total_bytes:
             raise RepositoryQuotaError(
-                f"repository total quota exceeded: {self.total} > {self.limits.max_total_bytes} bytes"
+                f"repository total quota exceeded: {self.total + size} > {self.limits.max_total_bytes} bytes"
             )
+
+    def add(self, path: str, data: bytes) -> None:
+        self.check_size(path, len(data))
+        self.total += len(data)
 
 
 def _baseline_bytes(baseline: RepositoryBaseline) -> bytes:

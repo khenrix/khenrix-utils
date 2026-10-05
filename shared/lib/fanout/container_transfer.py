@@ -359,6 +359,8 @@ def _source_payload(root_fd: int, entry: TransferEntry) -> Iterator[bytes]:
                 raise TransferRejected("source symlink kind differs from manifest")
             if stat.S_IMODE(before.st_mode) != entry.mode:
                 raise TransferRejected("source symlink mode differs from manifest")
+            if before.st_size != entry.length:
+                raise TransferRejected("source symlink length differs from manifest")
             try:
                 target = os.readlink(parts[-1], dir_fd=parent_fd)
                 payload = target.encode("utf-8", "strict")
@@ -621,9 +623,16 @@ def stage_import(root: Path, expected: TransferIdentity, manifest: bytes,
         os.close(root_fd)
 
 
-def snapshot_manifest(root: Path, identity: TransferIdentity) -> TransferManifest:
+def snapshot_manifest(root: Path, identity: TransferIdentity, *,
+                      max_file_bytes: int | None = None,
+                      max_total_bytes: int | None = None) -> TransferManifest:
     """Snapshot a source tree through no-follow descriptors and bounded reads."""
     _validate_identity(identity)
+    for ceiling in (max_file_bytes, max_total_bytes):
+        if ceiling is not None and (type(ceiling) is not int or ceiling < 0):
+            raise TransferRejected("snapshot byte ceiling is invalid")
+    file_ceiling = min(MAX_FILE, MAX_FILE if max_file_bytes is None else max_file_bytes)
+    total_ceiling = min(MAX_TOTAL, MAX_TOTAL if max_total_bytes is None else max_total_bytes)
     entries: list[TransferEntry] = []
     links: dict[str, str] = {}
     total = 0
@@ -649,8 +658,12 @@ def snapshot_manifest(root: Path, identity: TransferIdentity) -> TransferManifes
                     child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
                     try:
                         current = os.fstat(child_fd)
-                        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+                        if (not stat.S_ISDIR(current.st_mode)
+                                or (current.st_dev, current.st_ino, current.st_mode) !=
+                                (before.st_dev, before.st_ino, before.st_mode)):
                             raise TransferRejected("source directory changed during scan")
+                        if mode & 0o700 != 0o700 or mode & 0o022:
+                            raise TransferRejected("source directory mode is not transferable")
                         entries.append(TransferEntry(path, "directory", mode, _EMPTY_SHA256, 0))
                         scan(child_fd, path + "/")
                     finally:
@@ -658,12 +671,18 @@ def snapshot_manifest(root: Path, identity: TransferIdentity) -> TransferManifes
                 elif stat.S_ISLNK(before.st_mode):
                     if mode != 0o777:
                         raise TransferRejected("source symlink mode is not transferable")
+                    if before.st_size > min(_MAX_LINK, file_ceiling):
+                        raise TransferRejected("source symlink size ceiling exceeded")
+                    if before.st_size > total_ceiling - total:
+                        raise TransferRejected("transfer total byte ceiling exceeded")
                     target = os.readlink(name, dir_fd=directory_fd)
                     try:
                         payload = target.encode("utf-8", "strict")
                     except UnicodeEncodeError as error:
                         raise TransferRejected("source symlink target is not UTF-8") from error
                     _link_target(path, payload)
+                    if len(payload) > min(file_ceiling, total_ceiling - total):
+                        raise TransferRejected("source symlink byte ceiling exceeded")
                     after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     if (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns) != (
                             after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns):
@@ -675,14 +694,24 @@ def snapshot_manifest(root: Path, identity: TransferIdentity) -> TransferManifes
                 elif stat.S_ISREG(before.st_mode):
                     if before.st_nlink != 1:
                         raise TransferRejected("source hardlink is not transferable")
-                    if before.st_size > MAX_FILE:
+                    if not mode & 0o400 or mode & 0o022:
+                        raise TransferRejected("source file mode is not transferable")
+                    if before.st_size > file_ceiling:
                         raise TransferRejected("source file size ceiling exceeded")
+                    if before.st_size > total_ceiling - total:
+                        raise TransferRejected("transfer total byte ceiling exceeded")
                     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                                  dir_fd=directory_fd)
                     try:
                         opened = os.fstat(fd)
-                        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                        if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                                or (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size,
+                                    opened.st_mtime_ns, opened.st_ctime_ns) !=
+                                (before.st_dev, before.st_ino, before.st_mode, before.st_size,
+                                 before.st_mtime_ns, before.st_ctime_ns)):
                             raise TransferRejected("source file changed during scan")
+                        if opened.st_size > min(file_ceiling, total_ceiling - total):
+                            raise TransferRejected("source file byte ceiling exceeded")
                         digest = hashlib.sha256()
                         length = 0
                         while length < opened.st_size:
@@ -707,7 +736,7 @@ def snapshot_manifest(root: Path, identity: TransferIdentity) -> TransferManifes
                     total += length
                 else:
                     raise TransferRejected("source entry kind is not transferable")
-                if total > MAX_TOTAL:
+                if total > total_ceiling:
                     raise TransferRejected("transfer total byte ceiling exceeded")
             after_dir = os.fstat(directory_fd)
             if (before_dir.st_dev, before_dir.st_ino, before_dir.st_mtime_ns,

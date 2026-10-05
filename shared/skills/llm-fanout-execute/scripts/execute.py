@@ -1545,6 +1545,7 @@ def inspect_v2_status(private_root: Path | str, *, runtime=None, registry=None,
                     accepted_plan, accepted_inputs, run, artifacts, owner=owner,
                     original_journal_inputs=inputs, anchor_store=anchor,
                     lifecycle_controller=lifecycle,
+                    repository_baselines=baselines,
                 )
                 proven_delivery = {
                     task.target_id for task in accepted_plan.tasks
@@ -2088,9 +2089,10 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
         baselines = _load_target_baseline_record(runtime, artifacts, record, verify_live=for_dispatch)
         scheduler = (runtime.Scheduler.create(plan, inputs, scheduler_backend, artifacts,
             owner=owner, anchor_store=anchor, journal=journal,
-            lifecycle_controller=lifecycle) if scheduler_backend.read() is None else
+            lifecycle_controller=lifecycle, repository_baselines=baselines) if scheduler_backend.read() is None else
             runtime.Scheduler.resume_exact_v2(plan, inputs, scheduler_backend, artifacts, owner=owner,
-                anchor_store=anchor, journal=journal, lifecycle_controller=lifecycle))
+                anchor_store=anchor, journal=journal, lifecycle_controller=lifecycle,
+                repository_baselines=baselines))
         memory = memory_factory(artifacts, memory_preflight)
         coordinator = runtime.CollaborationCoordinator(artifacts=artifacts, journal=journal, owner=owner,
             memory=memory, registry=registry, provider_runner=provider_runner or runtime.run_provider,
@@ -2377,6 +2379,17 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
           runtime.FileSchedulerBackend.resume(
               run, run_id=initial_inputs.run_id, owner=owner,
           ) as backend):
+        baseline_fields = {key: descriptor[key] for key in (
+            "schema_version", "run_id", "inputs", "baseline_manifest_refs", "writable_target_ids",
+        )}
+        baselines = _load_target_baseline_record(runtime, artifacts, baseline_fields, verify_live=False)
+        with runtime.ArtifactStore.open_existing(private / "startup-baseline") as startup_artifacts:
+            startup_baselines = _load_target_baseline_record(
+                runtime, startup_artifacts,
+                {**baseline_fields, "schema_version": "fanout-execute-startup-v2"}, verify_live=False,
+            )
+        if dict(baselines) != dict(startup_baselines):
+            raise ValueError("v2 owner original baseline differs from startup escrow")
         plan, inputs = initial_plan, initial_inputs
         for revision, amendment in sorted(journal.state.amendments.items()):
             documents = runtime.ExecutionService.recovery_documents(
@@ -2391,7 +2404,7 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
             raise ValueError("restore original executor profiles for v2 owner handover")
         scheduler = runtime.Scheduler.resume_exact_v2(
             plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
-            journal=journal, lifecycle_controller=controller,
+            journal=journal, lifecycle_controller=controller, repository_baselines=baselines,
         )
         handover_module = importlib.import_module(f"{runtime.__name__}.branch_handover")
         if args.command == "handover":
@@ -2432,10 +2445,12 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
                 envelope("verification", verification_ref), plan=plan, inputs=inputs,
                 artifacts=artifacts, scheduler=scheduler, controller=controller,
                 journal=journal, owner=owner, task_id=task.id,
+                baseline=baselines[task.target_id],
             )
             outcome = handover_module.deliver_branch_candidate(
                 prepared, plan=plan, inputs=inputs, artifacts=artifacts,
                 scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+                baseline=baselines[task.target_id],
             )
             target_id = task.target_id
         else:
@@ -2453,6 +2468,7 @@ def _v2_owner_handover(args, *, runtime, registry) -> dict[str, object]:
             outcome = handover_module.recover_branch_handover(
                 intent, plan=plan, inputs=inputs, artifacts=artifacts,
                 scheduler=scheduler, controller=controller, journal=journal, owner=owner,
+                baseline=baselines[intent.target_id],
             )
             target_id = intent.target_id
         if isinstance(outcome, runtime.HandoverTerminalV2):

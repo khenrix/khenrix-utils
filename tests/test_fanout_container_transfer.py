@@ -89,9 +89,13 @@ def test_round_trip_preserves_admitted_plan_skill_bundle_checkpoint_and_in_tree_
     program = b"print('synthetic target')\n"
     (source / "context").mkdir(mode=0o755)
     (source / "src").mkdir(mode=0o755)
+    (source / "context").chmod(0o755)
+    (source / "src").chmod(0o755)
     (source / "context/plan.json").write_bytes(plan)
     (source / "context/skills.json").write_bytes(bundle)
     (source / "context/peer-checkpoint.json").write_bytes(checkpoint)
+    for name in ("context/plan.json", "context/skills.json", "context/peer-checkpoint.json"):
+        (source / name).chmod(0o644)
     (source / "src/main.py").write_bytes(program)
     (source / "src/main.py").chmod(0o755)
     source_link = source / "src/current.py"
@@ -289,12 +293,84 @@ def test_file_larger_than_one_frame_round_trips(tmp_path):
     source.mkdir()
     payload = b"x" * 65536 + b"y" * 17
     (source / "item").write_bytes(payload)
+    (source / "item").chmod(0o644)
     manifest = _manifest(_entry("item", payload))
     encoded, chunks = stage_export(source, IDENTITY, manifest)
     destination = tmp_path / "destination"
     destination.mkdir(mode=0o700)
     published = stage_import(destination, IDENTITY, encoded, chunks)
     assert (published / "item").read_bytes() == payload
+
+
+def test_snapshot_refuses_same_inode_growth_between_stat_and_open_before_read(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    path = source / "item"
+    path.write_bytes(b"1234")
+    path.chmod(0o600)
+    identity = path.stat().st_ino
+    original_open, original_read = os.open, os.read
+    opened, reads = [], []
+    def grow(name, flags, *args, **kwargs):
+        if name == "item" and not opened:
+            opened.append(identity)
+            path.write_bytes(b"12345")
+        return original_open(name, flags, *args, **kwargs)
+    def observe(fd, size):
+        if os.fstat(fd).st_ino == identity:
+            reads.append(size)
+        return original_read(fd, size)
+    monkeypatch.setattr(transfer, "MAX_FILE", 4)
+    monkeypatch.setattr(os, "open", grow)
+    monkeypatch.setattr(os, "read", observe)
+    with pytest.raises(TransferRejected):
+        transfer.snapshot_manifest(source, IDENTITY)
+    assert opened == [identity]
+    assert path.stat().st_ino == identity
+    assert reads == []
+
+
+@pytest.mark.parametrize("limits", ((4, 6), (4, 5)))
+def test_snapshot_optional_limits_accept_exact_bytes_or_refuse_before_remaining_read(tmp_path, monkeypatch, limits):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a").write_bytes(b"xy")
+    (source / "b").write_bytes(b"1234")
+    reads = []
+    original = os.read
+    identity = (source / "b").stat().st_ino
+    def observe(fd, size):
+        if os.fstat(fd).st_ino == identity:
+            reads.append(size)
+        return original(fd, size)
+    monkeypatch.setattr(os, "read", observe)
+    if limits == (4, 6):
+        manifest = transfer.snapshot_manifest(source, IDENTITY, max_file_bytes=4, max_total_bytes=6)
+        assert [(entry.path, entry.length, entry.mode) for entry in manifest.entries] == [("a", 2, 0o600), ("b", 4, 0o600)]
+        assert manifest == transfer.snapshot_manifest(source, IDENTITY)
+        assert reads == [4, 1, 4, 1]
+    else:
+        with pytest.raises(TransferRejected, match="total"):
+            transfer.snapshot_manifest(source, IDENTITY, max_file_bytes=4, max_total_bytes=5)
+        assert reads == []
+
+
+@pytest.mark.parametrize("limits", ((3, 10), (10, 3)))
+def test_snapshot_optional_limits_refuse_symlink_before_readlink(tmp_path, monkeypatch, limits):
+    source = tmp_path / "source"
+    source.mkdir()
+    link = source / "link"
+    link.symlink_to("abcd")
+    _set_symlink_mode_or_skip(link, 0o777)
+    reads = []
+    original = os.readlink
+    def observe(path, **kwargs):
+        reads.append(path)
+        return original(path, **kwargs)
+    monkeypatch.setattr(os, "readlink", observe)
+    with pytest.raises(TransferRejected, match="ceiling"):
+        transfer.snapshot_manifest(source, IDENTITY, max_file_bytes=limits[0], max_total_bytes=limits[1])
+    assert reads == []
 
 
 def test_existing_published_destination_is_not_clobbered(tmp_path):
@@ -365,6 +441,10 @@ def test_export_rejects_symlink_chain_that_reads_outside_source_root(tmp_path):
     target = "../../jump/../../../outside"
     (source / "a/b/c/d/link").symlink_to(target)
     (source / "a/b/jump").symlink_to("../../foo")
+    for name in ("a", "a/b", "a/b/c", "a/b/c/d", "foo"):
+        (source / name).chmod(0o755)
+    for name in ("a/b/c/d/link", "a/b/jump"):
+        _set_symlink_mode_or_skip(source / name, 0o777)
     assert (source / "a/b/c/d/link").read_bytes() == b"outside-secret"
     manifest = _chained_link_manifest(target.encode())
 
@@ -449,6 +529,57 @@ def test_direct_transfer_rejects_symlink_mode_different_from_manifest(tmp_path, 
             stage_export(source, IDENTITY, manifest)
 
 
+@pytest.mark.parametrize("operation", ("seal", "export"))
+@pytest.mark.parametrize("target", ("keep", "peer", "other"))
+def test_direct_symlink_payload_checks_actual_length_before_readlink(tmp_path, monkeypatch, operation, target):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "keep").write_bytes(b"xy")
+    (source / "keep").chmod(0o644)
+    entries = [
+        _entry("keep", b"xy"),
+        _entry("link", b"keep", kind="symlink", mode=0o777),
+    ]
+    if target != "keep":
+        (source / target).write_bytes(b"")
+        (source / target).chmod(0o644)
+        entries.append(_entry(target))
+    manifest = _manifest(*entries)
+    link = source / "link"
+    link.symlink_to(target)
+    _set_symlink_mode_or_skip(link, 0o777)
+    assert link.lstat().st_size == {"keep": 4, "peer": 4, "other": 5}[target]
+    reads = []
+    original_readlink = os.readlink
+
+    def observe(path, *args, **kwargs):
+        value = original_readlink(path, *args, **kwargs)
+        if path == "link":
+            reads.append(value)
+        return value
+
+    monkeypatch.setattr(transfer, "MAX_FILE", 4)
+    monkeypatch.setattr(transfer, "MAX_TOTAL", 6)
+    monkeypatch.setattr(transfer.os, "readlink", observe)
+
+    def collect():
+        if operation == "seal":
+            return list(seal_transfer(manifest, source))
+        return list(stage_export(source, IDENTITY, manifest)[1])
+
+    if target == "keep":
+        assert collect() == [_frame(b"xy"), _frame(b"keep")]
+        assert reads == ["keep", "keep"] if operation == "seal" else reads == ["keep", "keep", "keep"]
+    elif target == "peer":
+        with pytest.raises(TransferRejected, match="symlink digest"):
+            collect()
+        assert reads == ["peer"]
+    else:
+        with pytest.raises(TransferRejected):
+            collect()
+        assert reads == []
+
+
 def test_direct_transfer_rejects_symlink_mode_changed_during_readlink(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
@@ -479,6 +610,7 @@ def test_export_rehashes_candidate_and_rejects_changed_bytes(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     (source / "item").write_bytes(b"changed")
+    (source / "item").chmod(0o644)
     manifest = _manifest(_entry("item", b"payload"))
     with pytest.raises(TransferRejected, match="digest"):
         list(stage_export(source, IDENTITY, manifest)[1])

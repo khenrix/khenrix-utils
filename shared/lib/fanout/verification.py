@@ -30,10 +30,12 @@ from .container_transfer import (
     _source_payload as _export_entry_payload,
     snapshot_manifest,
 )
-from .errors import ArtifactError, CandidateValidationError, CandidateVerificationError
+from .errors import ArtifactError, CandidateValidationError, CandidateVerificationError, RepositoryError
 from .plan import FanoutPlanV2, PlanCheckV1
 from .process import ProcessCommand, ProcessStatus, run_command
-from .repo import RepositoryBaseline, RepositoryEntry, SeatWorkspace, _git, create_seat_workspace
+from .repo import (RepoLimits, RepositoryBaseline, RepositoryEntry, SeatWorkspace,
+                   _Budget, _file_identity, _git, _read_regular_file, _validate_link_namespace,
+                   create_seat_workspace)
 from .runstate import RunInputs
 from .targets import TargetBinding
 
@@ -134,7 +136,8 @@ class CandidateBundle:
         return canonical_json(self.to_manifest())
 
     @classmethod
-    def from_manifest(cls, value: bytes | bytearray | memoryview | Mapping[str, object]) -> "CandidateBundle":
+    def from_manifest(cls, value: bytes | bytearray | memoryview | Mapping[str, object], *,
+                      baseline: RepositoryBaseline | None = None) -> "CandidateBundle":
         """Parse a complete candidate manifest while rechecking every byte binding."""
         if isinstance(value, (bytes, bytearray, memoryview)):
             encoded = bytes(value)
@@ -161,6 +164,29 @@ class CandidateBundle:
         if not isinstance(entries_value, list) or not isinstance(deleted_value, list) or not isinstance(sources_value, list):
             raise CandidateValidationError("candidate manifest collections are invalid")
         entries: list[CandidateEntry] = []
+        seen: set[str] = set()
+        for item in entries_value:
+            if not isinstance(item, dict):
+                raise CandidateValidationError("candidate manifest entry is invalid")
+            path = _path(item.get("path"), "candidate manifest entry path")
+            if path in seen:
+                raise CandidateValidationError("candidate manifest entry paths must be unique")
+            seen.add(path)
+        if baseline is not None:
+            _baseline(baseline)
+            if decoded["baseline_sha256"] != baseline.digest:
+                raise CandidateValidationError("candidate manifest baseline differs")
+            sizes = {entry.path: len(entry.data) for entry in baseline.entries}
+            for path in deleted_value:
+                sizes.pop(_path(path, "candidate deleted path"), None)
+            for item in entries_value:
+                if not isinstance(item, dict) or type(item.get("size")) is not int or item["size"] < 0:
+                    raise CandidateValidationError("candidate manifest entry size is invalid")
+                if item["size"] > baseline.limits.max_file_bytes:
+                    raise CandidateValidationError("candidate manifest file exceeds the immutable baseline file limit")
+                sizes[_path(item.get("path"), "candidate entry path")] = item["size"]
+            if sum(sizes.values()) > baseline.limits.max_total_bytes:
+                raise CandidateValidationError("candidate manifest resulting tree exceeds the immutable baseline total limit")
         for index, item in enumerate(entries_value):
             if not isinstance(item, dict) or any(not isinstance(key, str) for key in item):
                 raise CandidateValidationError("candidate manifest entry is invalid")
@@ -171,6 +197,8 @@ class CandidateBundle:
                 raise CandidateValidationError("candidate manifest entry size is invalid")
             if not isinstance(item["data_b64"], str):
                 raise CandidateValidationError("candidate manifest entry bytes are invalid")
+            if len(item["data_b64"]) != 4 * ((item["size"] + 2) // 3):
+                raise CandidateValidationError("candidate manifest encoded byte size differs")
             try:
                 data = base64.b64decode(item["data_b64"].encode("ascii"), validate=True)
             except (UnicodeEncodeError, ValueError) as error:
@@ -189,6 +217,8 @@ class CandidateBundle:
         )
         if isinstance(value, (bytes, bytearray, memoryview)) and candidate.manifest_bytes != encoded:
             raise CandidateValidationError("candidate manifest is not canonical JSON")
+        if baseline is not None:
+            _validate_candidate(baseline, candidate)
         return candidate
 
 
@@ -352,6 +382,7 @@ def _target_seal(
 def issue_target_candidate(
     candidate: CandidateBundle, *, task_id: str, plan: FanoutPlanV2,
     inputs: RunInputs, store: ArtifactStore, controller: LifecycleController,
+    baseline: RepositoryBaseline | None = None,
 ) -> TargetEvidenceEnvelope:
     """Controller-seal one target's proposed v1 candidate without changing v1 bytes."""
     target, binding, _task = _target_issue_context(task_id, plan, inputs)
@@ -362,6 +393,7 @@ def issue_target_candidate(
         or len(candidate.manifest_bytes) > _TARGET_EVIDENCE_MAX_BYTES
     ):
         raise CandidateValidationError("target candidate baseline or byte limit differs")
+    _validate_target_candidate_scope(candidate, binding, _task, baseline)
     try:
         assert_controller(controller)
         manifest_ref = store.write_bytes(
@@ -396,6 +428,7 @@ def issue_target_candidate(
 def load_target_candidate(
     envelope: TargetEvidenceEnvelope, *, plan: FanoutPlanV2, inputs: RunInputs,
     store: ArtifactStore, controller: LifecycleController | None = None,
+    baseline: RepositoryBaseline | None = None,
 ) -> TargetCandidate:
     data = read_target_evidence(
         envelope, plan=plan, inputs=inputs, store=store, evidence_kind="candidate",
@@ -439,11 +472,23 @@ def load_target_candidate(
         manifest = store.read_bytes(candidate_ref)
     except (ArtifactError, OSError, TypeError, ValueError) as error:
         raise CandidateValidationError("target candidate manifest failed byte verification") from error
-    candidate = CandidateBundle.from_manifest(manifest)
+    candidate = CandidateBundle.from_manifest(manifest, baseline=baseline)
+    _, binding, task = _target_issue_context(envelope.task_id, plan, inputs)
+    _validate_target_candidate_scope(candidate, binding, task, baseline)
     return TargetCandidate(
         envelope.target_id, envelope.repository, envelope.branch_ref,
         envelope.base_oid, envelope.baseline_sha256, candidate,
     )
+
+
+def _validate_target_candidate_scope(candidate, binding, task, baseline) -> None:
+    if baseline is not None:
+        if (not isinstance(baseline, RepositoryBaseline) or baseline.digest != binding.baseline_sha256
+                or baseline.head != binding.base_oid or baseline.repository != binding.root):
+            raise CandidateValidationError("original target baseline changed binding")
+        _validate_candidate(baseline, candidate)
+    if task.execution_class == "repo-write":
+        validate_candidate_task_scope(candidate, task.owned_paths, baseline=baseline)
 
 
 def verify_target_candidate(
@@ -458,7 +503,7 @@ def verify_target_candidate(
     target, binding, task = _target_issue_context(candidate_envelope.task_id, plan, inputs)
     candidate = load_target_candidate(
         candidate_envelope, plan=plan, inputs=inputs, store=store,
-        controller=controller,
+        controller=controller, baseline=baseline,
     ).candidate
     try:
         exact_root = binding.root.resolve(strict=True)
@@ -516,6 +561,7 @@ def verify_target_candidate(
 def load_target_verification(
     envelope: TargetEvidenceEnvelope, *, plan: FanoutPlanV2, inputs: RunInputs,
     store: ArtifactStore, controller: LifecycleController,
+    baseline: RepositoryBaseline | None = None,
 ) -> "CandidateVerification":
     data = read_target_evidence(
         envelope, plan=plan, inputs=inputs, store=store, evidence_kind="verification",
@@ -573,10 +619,10 @@ def load_target_verification(
     )
     issued_candidate = load_target_candidate(
         candidate_envelope, plan=plan, inputs=inputs, store=store,
-        controller=controller,
+        controller=controller, baseline=baseline,
     )
     receipt = load_candidate_verification(
-        controller, store, task_id=envelope.task_id, candidate_ref=candidate_ref,
+        controller, store, task_id=envelope.task_id, candidate_ref=candidate_ref, baseline=baseline,
     )
     task = next(item for item in plan.tasks if item.id == envelope.task_id)
     if (receipt.baseline_digest != envelope.baseline_sha256 or receipt.checks != task.checks
@@ -590,6 +636,7 @@ def load_target_checks(
     envelope: TargetEvidenceEnvelope, *, plan: FanoutPlanV2, inputs: RunInputs,
     store: ArtifactStore, controller: LifecycleController,
     verification_envelope: TargetEvidenceEnvelope,
+    baseline: RepositoryBaseline | None = None,
 ) -> tuple["CheckOutcome", ...]:
     if (
         not isinstance(verification_envelope, TargetEvidenceEnvelope)
@@ -603,7 +650,7 @@ def load_target_checks(
         raise CandidateValidationError("target check and verification envelopes differ")
     verification = load_target_verification(
         verification_envelope, plan=plan, inputs=inputs, store=store,
-        controller=controller,
+        controller=controller, baseline=baseline,
     )
     data = read_target_evidence(
         envelope, plan=plan, inputs=inputs, store=store, evidence_kind="check",
@@ -1507,7 +1554,8 @@ def create_candidate(baseline: RepositoryBaseline, workspace: SeatWorkspace | Pa
     deleted: list[str] = []
     total = 0
     for path in sorted(paths, key=_path_bytes):
-        entry = _read_entry(root, path, directory_is_absent=path in baseline_entries)
+        entry = _read_entry(root, path, directory_is_absent=path in baseline_entries,
+                            max_bytes=min(baseline.limits.max_file_bytes, baseline.limits.max_total_bytes - total))
         if entry is None:
             if path in baseline_entries:
                 deleted.append(path)
@@ -1524,7 +1572,9 @@ def create_candidate(baseline: RepositoryBaseline, workspace: SeatWorkspace | Pa
         if baseline_directory_modes.get(path) != mode:
             entries.append(CandidateEntry(path, "directory", mode, b""))
     deleted.extend(sorted(baseline_directories - set(directories), key=_path_bytes))
-    return CandidateBundle(baseline.digest, tuple(entries), tuple(deleted))
+    candidate = CandidateBundle(baseline.digest, tuple(entries), tuple(deleted))
+    _validate_candidate(baseline, candidate)
+    return candidate
 
 
 def create_candidate_from_export(
@@ -1545,7 +1595,13 @@ def create_candidate_from_export(
         raise CandidateValidationError("candidate export root is unsafe") from error
     try:
         root_info = os.fstat(root_fd)
-        manifest = snapshot_manifest(root, expected_identity)
+        try:
+            _scan_directory(root_fd, (), {}, top_level=True, budget=_Budget(baseline.limits))
+        except RepositoryError as error:
+            raise CandidateValidationError("candidate export exceeds the immutable baseline byte limit") from error
+        manifest = snapshot_manifest(root, expected_identity,
+                                     max_file_bytes=baseline.limits.max_file_bytes,
+                                     max_total_bytes=baseline.limits.max_total_bytes)
         if manifest.identity != expected_identity:
             raise CandidateValidationError("candidate export identity differs")
         if hashlib.sha256(canonical_json(asdict(manifest))).hexdigest() != expected_manifest_sha256:
@@ -1561,6 +1617,9 @@ def create_candidate_from_export(
         deleted: set[str] = set()
         total = 0
         for exported in manifest.entries:
+            if (exported.length > baseline.limits.max_file_bytes
+                    or total + exported.length > baseline.limits.max_total_bytes):
+                raise CandidateValidationError("candidate export exceeds the immutable baseline byte limit")
             data = b"".join(_export_entry_payload(root_fd, exported))
             entry = CandidateEntry(exported.path, exported.kind, exported.mode, data)
             _candidate_budget(baseline, entry, total)
@@ -1580,7 +1639,9 @@ def create_candidate_from_export(
                     deleted.add(entry.path)
         deleted.update(set(baseline_entries) - exported_paths)
         deleted.update(set(baseline_directories) - exported_paths)
-        if snapshot_manifest(root, expected_identity) != manifest:
+        if snapshot_manifest(root, expected_identity,
+                             max_file_bytes=baseline.limits.max_file_bytes,
+                             max_total_bytes=baseline.limits.max_total_bytes) != manifest:
             raise CandidateValidationError("candidate export tree changed during verification")
         current_root = os.stat(root, follow_symlinks=False)
         if (current_root.st_dev, current_root.st_ino) != (root_info.st_dev, root_info.st_ino):
@@ -1671,7 +1732,8 @@ def verify_candidate(
         seat_id = f"verify-{uuid.uuid4().hex[:16]}"
         workspace = create_seat_workspace(baseline, transaction_root, seat_id).root.resolve()
         _apply_candidate(baseline, candidate, workspace)
-        outcomes, failure = _run_checks(workspace, immutable_checks, immutable_environment)
+        outcomes, failure = _run_checks(workspace, immutable_checks, immutable_environment,
+                                        candidate=candidate, limits=baseline.limits, baseline=baseline)
     except CandidateVerificationError:
         raise
     except Exception as error:
@@ -1756,6 +1818,7 @@ def load_candidate_verification(
     *,
     task_id: str,
     candidate_ref: ArtifactRef,
+    baseline: RepositoryBaseline | None = None,
 ) -> CandidateVerification:
     """Reconstruct one fresh verifier receipt from a delivered candidate manifest."""
     _answer_identity(task_id, "task")
@@ -1768,7 +1831,7 @@ def load_candidate_verification(
     if candidate_ref.path != candidate_result_path(task_id, candidate_ref.digest, evidence_digest):
         raise CandidateValidationError("candidate result is not bound to verifier evidence")
     try:
-        candidate = CandidateBundle.from_manifest(artifacts.read_bytes(candidate_ref))
+        candidate = CandidateBundle.from_manifest(artifacts.read_bytes(candidate_ref), baseline=baseline)
         payload = read_evidence(
             controller, "candidate-verification", f"{evidence_digest}.json", evidence_digest,
         )
@@ -1871,6 +1934,21 @@ def _apply_candidate(
         info = os.fstat(root_fd)
         if not stat.S_ISDIR(info.st_mode):
             raise CandidateVerificationError("candidate destination is not a real directory")
+        affected = set(candidate.deleted_paths) | {entry.path for entry in candidate.entries}
+        prepared = tuple(
+            CandidateEntry(directory.path, "directory", directory.mode, b"")
+            for directory in baseline.directories
+            if directory.mode & 0o700 != 0o700
+            and any(path.startswith(directory.path + "/") for path in affected)
+        )
+        for entry in sorted(prepared, key=lambda item: (len(PurePosixPath(item.path).parts), _path_bytes(item.path))):
+            if before_operation is not None:
+                before_operation("directory-prepare", entry.path)
+            _write_directory(root_fd, entry, mode=0o700,
+                             guard=_mutation_guard(mutation_guard, "directory-prepare", entry.path),
+                             directory_mode=directory_mode)
+            if operation is not None:
+                operation("directory-prepare", entry.path)
         for path in sorted(candidate.deleted_paths, key=lambda value: (-len(PurePosixPath(value).parts), _path_bytes(value))):
             if before_operation is not None:
                 before_operation("delete", path)
@@ -1903,14 +1981,43 @@ def _apply_candidate(
             _write_entry(root_fd, entry, guard=guard, quarantine=quarantine, created=created)
             if operation is not None:
                 operation("write", entry.path)
-        for entry in sorted(directories, key=lambda item: (-len(PurePosixPath(item.path).parts), _path_bytes(item.path))):
+        final_directories = {entry.path: entry for entry in prepared if entry.path not in candidate.deleted_paths}
+        final_directories.update({entry.path: entry for entry in directories})
+        for entry in sorted(final_directories.values(), key=lambda item: (-len(PurePosixPath(item.path).parts), _path_bytes(item.path))):
             if before_operation is not None:
                 before_operation("directory-mode", entry.path)
             guard = _mutation_guard(mutation_guard, "directory-mode", entry.path)
             _set_directory_mode(root_fd, entry, guard=guard, directory_mode=directory_mode)
             if operation is not None:
                 operation("directory-mode", entry.path)
-        _assert_candidate_applied(root_fd, candidate)
+        _assert_candidate_applied(root_fd, candidate, limits=baseline.limits)
+
+
+def validate_candidate_task_scope(
+    candidate: CandidateBundle, owned_paths: Sequence[str], *, baseline: RepositoryBaseline | None = None,
+) -> None:
+    """Authorize only exact task subtrees and their necessary new canonical parents."""
+    if not isinstance(candidate, CandidateBundle):
+        raise CandidateValidationError("task scope requires a candidate bundle")
+    owned = tuple(_path(path, "task owned path") for path in owned_paths)
+    def admitted(path: str) -> bool:
+        return any(path == root or path.startswith(root + "/") for root in owned)
+    if baseline is not None and baseline.digest != candidate.baseline_digest:
+        raise CandidateValidationError("task scope baseline differs from candidate")
+    existing = set() if baseline is None else (
+        {entry.path for entry in baseline.entries} | _baseline_directories(baseline)
+    )
+    for path in candidate.deleted_paths:
+        if not admitted(path):
+            raise CandidateValidationError(f"candidate deletion is outside task owned scope: {path}")
+    for entry in candidate.entries:
+        if admitted(entry.path):
+            continue
+        if (baseline is None or entry.path in existing or entry.path in candidate.deleted_paths
+                or entry.kind != "directory" or entry.mode != 0o755 or entry.data
+                or not any(admitted(child.path) and child.path.startswith(entry.path + "/")
+                           for child in candidate.entries)):
+            raise CandidateValidationError(f"candidate entry is outside task owned scope: {entry.path}")
 
 
 def _validate_candidate(baseline: RepositoryBaseline, candidate: CandidateBundle) -> None:
@@ -1921,7 +2028,6 @@ def _validate_candidate(baseline: RepositoryBaseline, candidate: CandidateBundle
         raise CandidateValidationError("candidate baseline digest does not match the immutable baseline")
     baseline_entries = {entry.path: entry for entry in baseline.entries}
     baseline_directories = _baseline_directories(baseline)
-    total = 0
     for entry in candidate.entries:
         previous = baseline_entries.get(entry.path)
         if previous is not None and _same_entry(previous, entry):
@@ -1935,8 +2041,6 @@ def _validate_candidate(baseline: RepositoryBaseline, candidate: CandidateBundle
             and entry.path not in candidate.deleted_paths
         ):
             raise CandidateValidationError("candidate structural replacement must declare its baseline deletion")
-        _candidate_budget(baseline, entry, total)
-        total += len(entry.data)
     for path in candidate.deleted_paths:
         if path not in baseline_entries and path not in baseline_directories:
             raise CandidateValidationError("candidate deletes a path absent from the immutable baseline")
@@ -1961,12 +2065,40 @@ def _validate_candidate(baseline: RepositoryBaseline, candidate: CandidateBundle
                 continue
             if ancestor_entry is None or ancestor_entry.kind != "directory":
                 raise CandidateValidationError("candidate must explicitly represent every parent directory")
+    resulting = {entry.path: CandidateEntry(entry.path, entry.kind, entry.mode, entry.data)
+                 for entry in baseline.entries}
+    resulting.update({entry.path: CandidateEntry(entry.path, "directory", entry.mode, b"")
+                      for entry in baseline.directories})
+    for path in candidate.deleted_paths:
+        resulting.pop(path, None)
+    resulting.update(by_path)
+    total = 0
+    for entry in resulting.values():
+        _candidate_budget(baseline, entry, total)
+        total += len(entry.data)
+        parts = PurePosixPath(entry.path).parts
+        for index in range(1, len(parts)):
+            parent = resulting.get("/".join(parts[:index]))
+            if parent is None or parent.kind != "directory":
+                raise CandidateValidationError("candidate resulting tree has a non-directory parent")
+    _validate_resulting_links(resulting)
+
+
+def _validate_resulting_links(entries: Mapping[str, CandidateEntry]) -> None:
+    try:
+        _validate_link_namespace({entry.path: entry.data for entry in entries.values() if entry.kind == "symlink"})
+    except RepositoryError as error:
+        raise CandidateValidationError(f"candidate resulting tree {error}") from error
 
 
 def _run_checks(
     workspace: Path,
     checks: tuple[PlanCheckV1, ...],
     environment: tuple[tuple[str, str], ...],
+    *,
+    candidate: CandidateBundle | None = None,
+    limits: RepoLimits | None = None,
+    baseline: RepositoryBaseline | None = None,
 ) -> tuple[tuple[CheckOutcome, ...], str | None]:
     outcomes: list[CheckOutcome] = []
     supplied = dict(environment)
@@ -1995,19 +2127,21 @@ def _run_checks(
             outcomes.append(CheckOutcome(index, argv_digest, result.status.value, result.returncode, failure=failure))
             return tuple(outcomes), failure
         try:
-            artifacts = _expected_artifacts(workspace, check.expected_artifacts)
-        except CandidateValidationError as error:
-            failure = f"check {index} expected artifact failed: {error}"
+            artifacts = _expected_artifacts(workspace, check.expected_artifacts, limits=limits)
+            if candidate is not None:
+                _assert_candidate_applied(workspace, candidate, limits=limits, baseline=baseline)
+        except (CandidateValidationError, CandidateVerificationError) as error:
+            failure = f"check {index} candidate or expected artifact failed: {error}"
             outcomes.append(CheckOutcome(index, argv_digest, result.status.value, result.returncode, failure=failure))
             return tuple(outcomes), failure
         outcomes.append(CheckOutcome(index, argv_digest, result.status.value, result.returncode, artifacts))
     return tuple(outcomes), None
 
 
-def _expected_artifacts(root: Path, paths: tuple[str, ...]) -> tuple[CheckArtifact, ...]:
+def _expected_artifacts(root: Path, paths: tuple[str, ...], *, limits: RepoLimits | None = None) -> tuple[CheckArtifact, ...]:
     artifacts: list[CheckArtifact] = []
     for path in paths:
-        entry = _read_entry(root, path)
+        entry = _read_entry(root, path, max_bytes=(limits or RepoLimits()).max_file_bytes)
         if entry is None or entry.kind != "file":
             raise CandidateValidationError(f"expected artifact is not a regular contained file: {path}")
         artifacts.append(CheckArtifact(path, entry.digest, len(entry.data)))
@@ -2089,7 +2223,8 @@ def _scan_workspace_safety(root: Path) -> dict[str, int]:
     return directories
 
 
-def _scan_directory(fd: int, prefix: tuple[str, ...], directories: dict[str, int], *, top_level: bool) -> None:
+def _scan_directory(fd: int, prefix: tuple[str, ...], directories: dict[str, int], *, top_level: bool,
+                    budget: _Budget | None = None) -> None:
     for name in sorted(os.listdir(fd), key=os.fsencode):
         if top_level and name == ".git":
             continue
@@ -2104,22 +2239,31 @@ def _scan_directory(fd: int, prefix: tuple[str, ...], directories: dict[str, int
             directories[path] = stat.S_IMODE(information.st_mode)
             child = _open_directory(fd, name)
             try:
-                _scan_directory(child, (*prefix, name), directories, top_level=False)
+                _scan_directory(child, (*prefix, name), directories, top_level=False, budget=budget)
             finally:
                 os.close(child)
         elif stat.S_ISREG(information.st_mode):
+            if budget is not None:
+                budget.check_size(path, information.st_size)
+                budget.total += information.st_size
             continue
         elif stat.S_ISLNK(information.st_mode):
+            if budget is not None:
+                budget.check_size(path, information.st_size)
+                budget.total += information.st_size
             try:
                 target = os.fsencode(os.readlink(name, dir_fd=fd))
             except OSError as error:
                 raise CandidateValidationError("candidate workspace changed while it was collected") from error
             _link_target(path, target)
         else:
+            if budget is not None:
+                continue
             raise CandidateValidationError(f"candidate workspace contains a special file: {path}")
 
 
-def _read_entry(root: Path | str | int, path: str, *, directory_is_absent: bool = False) -> CandidateEntry | None:
+def _read_entry(root: Path | str | int, path: str, *, directory_is_absent: bool = False,
+                max_bytes: int = RepoLimits().max_file_bytes) -> CandidateEntry | None:
     parts = PurePosixPath(path).parts
     with _opened_root(root) as root_fd:
         try:
@@ -2138,26 +2282,19 @@ def _read_entry(root: Path | str | int, path: str, *, directory_is_absent: bool 
                 return None
             if stat.S_ISREG(information.st_mode):
                 try:
-                    file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
-                except OSError as error:
-                    if error.errno in {errno.ENOENT, errno.ELOOP, errno.ENOTDIR}:
-                        raise CandidateValidationError("candidate workspace changed while it was collected") from error
-                    raise
-                try:
-                    opened = os.fstat(file_fd)
-                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (information.st_dev, information.st_ino):
-                        raise CandidateValidationError("candidate workspace changed while it was collected")
-                    data = _read_all(file_fd)
-                finally:
-                    os.close(file_fd)
-                return CandidateEntry(path, "file", stat.S_IMODE(opened.st_mode), data)
+                    data = _read_regular_file(parent_fd, parts[-1], information, max_bytes)
+                except RepositoryError as error:
+                    raise CandidateValidationError(f"candidate file exceeds its limit or changed during collection: {path}") from error
+                return CandidateEntry(path, "file", stat.S_IMODE(information.st_mode), data)
             if stat.S_ISLNK(information.st_mode):
+                if information.st_size > max_bytes:
+                    raise CandidateValidationError("candidate symlink exceeds its immutable baseline file limit")
                 try:
                     target = os.fsencode(os.readlink(parts[-1], dir_fd=parent_fd))
                     current = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
                 except OSError as error:
                     raise CandidateValidationError("candidate workspace changed while it was collected") from error
-                if (current.st_dev, current.st_ino) != (information.st_dev, information.st_ino):
+                if _file_identity(current) != _file_identity(information):
                     raise CandidateValidationError("candidate workspace changed while it was collected")
                 return CandidateEntry(path, "symlink", stat.S_IMODE(current.st_mode), target)
             if stat.S_ISDIR(information.st_mode):
@@ -2464,7 +2601,9 @@ def _set_symlink_mode(parent_fd: int, name: str, mode: int, path: str) -> None:
         raise CandidateVerificationError(f"candidate symlink mode could not be preserved: {path}")
 
 
-def _assert_candidate_applied(root: Path | str | int, candidate: CandidateBundle) -> None:
+def _assert_candidate_applied(root: Path | str | int, candidate: CandidateBundle, *,
+                              limits: RepoLimits | None = None,
+                              baseline: RepositoryBaseline | None = None) -> None:
     for path in candidate.deleted_paths:
         replacements = tuple(
             entry for entry in candidate.entries
@@ -2475,7 +2614,7 @@ def _assert_candidate_applied(root: Path | str | int, candidate: CandidateBundle
                 raise CandidateVerificationError(f"candidate structural deletion did not apply: {path}")
             continue
         try:
-            value = _read_entry(root, path)
+            value = _entry_information(root, path)
         except CandidateValidationError as error:
             if "changed while" in str(error):
                 value = None
@@ -2485,31 +2624,51 @@ def _assert_candidate_applied(root: Path | str | int, candidate: CandidateBundle
             raise CandidateVerificationError(f"candidate deletion did not apply: {path}")
     for expected in candidate.entries:
         try:
-            actual = _read_entry(root, expected.path)
+            actual = _read_entry(root, expected.path,
+                                 max_bytes=min((limits or RepoLimits()).max_file_bytes, len(expected.data)))
         except CandidateValidationError as error:
             raise CandidateVerificationError("candidate write could not be verified") from error
         if actual is None or actual != expected:
             raise CandidateVerificationError(f"candidate write did not apply: {expected.path}")
+    if baseline is not None:
+        replaced = {entry.path for entry in candidate.entries}
+        removed = candidate.deleted_paths
+        for retained in (*baseline.entries, *baseline.directories):
+            path = retained.path
+            if (path in replaced or any(path == deleted or path.startswith(deleted + "/") for deleted in removed)
+                    or any(path.startswith(entry.path + "/") and entry.kind != "directory" for entry in candidate.entries)):
+                continue
+            expected = (CandidateEntry(path, retained.kind, retained.mode, retained.data)
+                        if isinstance(retained, RepositoryEntry)
+                        else CandidateEntry(path, "directory", retained.mode, b""))
+            actual = _read_entry(root, path, max_bytes=min(baseline.limits.max_file_bytes, len(expected.data)))
+            if actual != expected:
+                raise CandidateVerificationError(f"candidate retained baseline did not apply: {path}")
 
 
 def _is_directory(root: Path | str | int, path: str) -> bool:
+    information = _entry_information(root, path)
+    return information is not None and stat.S_ISDIR(information.st_mode)
+
+
+def _entry_information(root: Path | str | int, path: str) -> os.stat_result | None:
     parts = PurePosixPath(path).parts
     with _opened_root(root) as root_fd:
         try:
             parent_fd = _open_parent(root_fd, parts, create=False)
         except FileNotFoundError:
-            return False
+            return None
         except CandidateValidationError as error:
             cause = error.__cause__
             if isinstance(cause, OSError) and cause.errno in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP}:
-                return False
+                return None
             raise
         try:
             try:
                 information = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
             except FileNotFoundError:
-                return False
-            return stat.S_ISDIR(information.st_mode)
+                return None
+            return information
         finally:
             os.close(parent_fd)
 
@@ -2536,7 +2695,7 @@ def _candidate_budget(baseline: RepositoryBaseline, entry: CandidateEntry, total
     if size > baseline.limits.max_file_bytes:
         raise CandidateValidationError("candidate file exceeds the immutable baseline file limit")
     if total + size > baseline.limits.max_total_bytes:
-        raise CandidateValidationError("candidate delta exceeds the immutable baseline total limit")
+        raise CandidateValidationError("candidate resulting tree exceeds the immutable baseline total limit")
 
 
 def _same_entry(previous: RepositoryEntry, candidate: CandidateEntry) -> bool:

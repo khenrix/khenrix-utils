@@ -1171,7 +1171,8 @@ def produce_container_trial(trial_root, certificate, admission_packet, skill_roo
                     raise CollaborationDurabilityError("trial candidate failed fresh declared checks")
                 service.submit(task.id, verification, owner=opened.owner)
                 issued = runtime.issue_target_candidate(candidate, task_id=task.id, plan=service.plan,
-                    inputs=service.inputs, store=opened.artifacts, controller=service.lifecycle_controller)
+                    inputs=service.inputs, store=opened.artifacts, controller=service.lifecycle_controller,
+                    baseline=service.repository_baselines[task.target_id])
                 verified, receipt = runtime.verify_target_candidate(issued, baseline=service.repository_baselines[task.target_id],
                     plan=service.plan, inputs=service.inputs, store=opened.artifacts, controller=service.lifecycle_controller)
                 if not receipt.valid:
@@ -1182,10 +1183,12 @@ def produce_container_trial(trial_root, certificate, admission_packet, skill_roo
                 transaction = prepare_branch_handover(service.inputs.targets[task.target_id], issued, verified,
                     plan=service.plan, inputs=service.inputs, artifacts=opened.artifacts,
                     scheduler=service.scheduler, controller=service.lifecycle_controller,
-                    journal=opened.journal, owner=opened.owner, task_id=task.id)
+                    journal=opened.journal, owner=opened.owner, task_id=task.id,
+                    baseline=service.repository_baselines[task.target_id])
                 deliver_branch_candidate(transaction, plan=service.plan, inputs=service.inputs,
                     artifacts=opened.artifacts, scheduler=service.scheduler, controller=service.lifecycle_controller,
-                    journal=opened.journal, owner=opened.owner)
+                    journal=opened.journal, owner=opened.owner,
+                    baseline=service.repository_baselines[task.target_id])
         with _open_trial_authority(root) as cold:
             cold.journal.recover_uncertain(cold.owner)
             events = _read_private_file(cold.journal._root_fd, cold.journal._EVENT_FILE, cold.journal.limits.max_journal_bytes)

@@ -24,7 +24,7 @@ from .lifecycle import (
 )
 from .plan import FanoutPlanV2
 from .process import _cleanup_group
-from .repo import _capture_directory_entries, capture_repository_baseline
+from .repo import RepositoryBaseline, _capture_directory_entries, capture_repository_baseline
 from .runstate import BranchHandoverIntentV2, HandoverTerminalV2, OwnerCapability, RunInputs, RunJournal
 from .scheduler_authority import Scheduler
 from .targets import TargetBinding, _direct_branch_ref, _git_environment, resolve_target
@@ -407,7 +407,7 @@ def _target_baseline(binding: TargetBinding, *, clean: bool,
 
 def _envelopes(intent: BranchHandoverIntentV2, binding: TargetBinding,
                plan: FanoutPlanV2, inputs: RunInputs, artifacts: ArtifactStore,
-               controller: LifecycleController):
+               controller: LifecycleController, *, baseline: RepositoryBaseline | None = None):
     candidate_envelope = TargetEvidenceEnvelope(
         intent.run_id, intent.task_id, intent.target_id, intent.repository,
         intent.branch_ref, intent.base_oid, binding.baseline_sha256,
@@ -419,10 +419,10 @@ def _envelopes(intent: BranchHandoverIntentV2, binding: TargetBinding,
         "verification", intent.verification_ref,
     )
     candidate = load_target_candidate(
-        candidate_envelope, plan=plan, inputs=inputs, store=artifacts, controller=controller,
+        candidate_envelope, plan=plan, inputs=inputs, store=artifacts, controller=controller, baseline=baseline,
     ).candidate
     verification = load_target_verification(
-        verification_envelope, plan=plan, inputs=inputs, store=artifacts, controller=controller,
+        verification_envelope, plan=plan, inputs=inputs, store=artifacts, controller=controller, baseline=baseline,
     )
     wrapper = artifacts.read_json(intent.verification_ref)
     candidate_ref = {"path": intent.candidate_ref.path, "digest": intent.candidate_ref.digest,
@@ -433,18 +433,18 @@ def _envelopes(intent: BranchHandoverIntentV2, binding: TargetBinding,
     return candidate, verification
 
 
-def _source(scheduler: Scheduler, task_id: str, intent: BranchHandoverIntentV2):
+def _source(scheduler: Scheduler, task_id: str, intent: BranchHandoverIntentV2, *, baseline=None):
     result = scheduler.handover_source_for(task_id)
     if (intent.run_id != scheduler.inputs.run_id
             or intent.plan_revision != result.plan_revision
             or intent.plan_sha256 != result.plan_sha256
             or intent.inputs_digest != result.inputs_digest
-            or result.artifact.digest != _envelope_candidate_digest(scheduler, intent)):
+            or result.artifact.digest != _envelope_candidate_digest(scheduler, intent, baseline=baseline)):
         raise HandoverError("settled scheduler source changed")
     return result
 
 
-def _envelope_candidate_digest(scheduler: Scheduler, intent: BranchHandoverIntentV2) -> str:
+def _envelope_candidate_digest(scheduler: Scheduler, intent: BranchHandoverIntentV2, *, baseline=None) -> str:
     binding = scheduler.inputs.targets[intent.target_id]
     envelope = TargetEvidenceEnvelope(
         intent.run_id, intent.task_id, intent.target_id, intent.repository,
@@ -453,7 +453,7 @@ def _envelope_candidate_digest(scheduler: Scheduler, intent: BranchHandoverInten
     )
     return load_target_candidate(
         envelope, plan=scheduler.plan, inputs=scheduler.inputs,
-        store=scheduler.artifacts, controller=scheduler._lifecycle_controller,
+        store=scheduler.artifacts, controller=scheduler._lifecycle_controller, baseline=baseline,
     ).candidate.digest
 
 
@@ -598,6 +598,7 @@ def prepare_branch_handover(
     inputs: RunInputs, artifacts: ArtifactStore, scheduler: Scheduler,
     controller: LifecycleController, journal: RunJournal, owner: OwnerCapability,
     task_id: str,
+    baseline: RepositoryBaseline | None = None,
 ) -> PreparedBranchHandover:
     journal.authorize_owner(owner)
     if (not isinstance(binding, TargetBinding) or inputs.targets is None
@@ -617,7 +618,10 @@ def prepare_branch_handover(
     with _handover_lock(binding) as pinned:
         _settled_scheduler(scheduler, owner)
         expected_head_ref = _head_ref(binding.root)
-        baseline = _target_baseline(binding, clean=True, expected_head_ref=expected_head_ref)
+        captured = _target_baseline(binding, clean=True, expected_head_ref=expected_head_ref)
+        if baseline is not None and baseline != captured:
+            raise HandoverError("original target baseline changed")
+        baseline = captured if baseline is None else baseline
         source = scheduler.handover_source_for(task_id)
         intent = BranchHandoverIntentV2(
             inputs.run_id, source.plan_revision, source.plan_sha256,
@@ -629,8 +633,8 @@ def prepare_branch_handover(
         )
         if journal.state.branch_handovers.get(task_id) is not None:
             raise HandoverError("branch handover intent already exists")
-        candidate, verification = _envelopes(intent, binding, plan, inputs, artifacts, controller)
-        result = _source(scheduler, task_id, intent)
+        candidate, verification = _envelopes(intent, binding, plan, inputs, artifacts, controller, baseline=baseline)
+        result = _source(scheduler, task_id, intent, baseline=baseline)
         if candidate.digest != result.artifact.digest:
             raise HandoverError("reconciled result differs from selected candidate")
         journal.append_branch_intent(intent, owner=owner)
@@ -670,13 +674,13 @@ def _block(intent: BranchHandoverIntentV2, journal: RunJournal,
     return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
 
 
-def _current_intent(intent, scheduler, journal, owner) -> None:
+def _current_intent(intent, scheduler, journal, owner, *, baseline=None) -> None:
     _settled_scheduler(scheduler, owner)
     if journal.branch_handover_state(intent.task_id) != (intent, None):
         raise HandoverError("branch handover is completed or changed")
     if intent.task_id in journal.state.branch_blocked:
         raise HandoverError("branch handover was withdrawn")
-    _source(scheduler, intent.task_id, intent)
+    _source(scheduler, intent.task_id, intent, baseline=baseline)
 
 
 class _UnresolvedGitLocks(HandoverError):
@@ -791,9 +795,9 @@ def _ref_ack(process, expected: bytes) -> None:
         raise HandoverError("native HEAD transaction acknowledgment is unavailable")
 
 
-def _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner):
+def _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner, *, baseline=None):
     original_ref = _associated_head_ref(intent, journal, controller)
-    _current_intent(intent, scheduler, journal, owner)
+    _current_intent(intent, scheduler, journal, owner, baseline=baseline)
     with _original_guard(binding, original_ref) as guard:
         pinned = _PINNED_GIT.get()
         environment = _git_env()
@@ -827,11 +831,11 @@ def _switch_absent_ticket(intent, binding, record, scheduler, controller, journa
                 intent, journal, controller, scheduler.artifacts,
             ) != record:
                 raise HandoverError("prepared handover changed before HEAD switch")
-            _envelopes(intent, binding, scheduler.plan, scheduler.inputs, scheduler.artifacts, controller)
+            _envelopes(intent, binding, scheduler.plan, scheduler.inputs, scheduler.artifacts, controller, baseline=baseline)
             _assert_raw_checkout(binding.root, record["tree_oid"],
                                  exact_modes=record["worktree_modes"],
                                  directory_modes=record["directory_modes"])
-            _current_intent(intent, scheduler, journal, owner)
+            _current_intent(intent, scheduler, journal, owner, baseline=baseline)
             process.stdin.write(b"commit\n")
             process.stdin.flush()
             _checkpoint("after-head-commit-request")
@@ -868,6 +872,7 @@ def deliver_branch_candidate(
     prepared: PreparedBranchHandover, *, plan: FanoutPlanV2,
     inputs: RunInputs, artifacts: ArtifactStore, scheduler: Scheduler,
     controller: LifecycleController, journal: RunJournal, owner: OwnerCapability,
+    baseline: RepositoryBaseline | None = None,
 ) -> HandoverTerminalV2 | BlockedHandover:
     if not isinstance(prepared, PreparedBranchHandover) or prepared._owner is not owner:
         raise HandoverError("delivery requires the same-process prepared handover")
@@ -891,19 +896,22 @@ def deliver_branch_candidate(
             return _block(intent, journal, owner, "delivery-failed")
         _settled_scheduler(scheduler, owner)
         try:
-            _current_intent(intent, scheduler, journal, owner)
+            captured = _initial_git(intent, binding, prepared.expected_head_ref)
+            if baseline is not None and baseline != captured:
+                raise HandoverError("original target baseline changed")
+            baseline = captured if baseline is None else baseline
+            _current_intent(intent, scheduler, journal, owner, baseline=baseline)
             state = _require_association(
                 intent, journal, controller, transaction, prepared.expected_head_ref,
             )
             if state.status != "not-mutated":
                 raise HandoverError("lifecycle transaction is not ready for application")
-            baseline = _initial_git(intent, binding, prepared.expected_head_ref)
-            candidate, verification = _envelopes(intent, binding, plan, inputs, artifacts, controller)
-            _source(scheduler, intent.task_id, intent)
+            candidate, verification = _envelopes(intent, binding, plan, inputs, artifacts, controller, baseline=baseline)
+            _source(scheduler, intent.task_id, intent, baseline=baseline)
             expected_tree = _candidate_git_entries(binding.root, baseline, candidate)
-            _current_intent(intent, scheduler, journal, owner)
+            _current_intent(intent, scheduler, journal, owner, baseline=baseline)
             disposition = handover_candidate(
-                capture_repository_baseline(binding.root), verification,
+                baseline, verification,
                 controller=controller, task_id=intent.task_id,
                 transaction=transaction, locked_destination=pinned,
             )
@@ -941,21 +949,21 @@ def deliver_branch_candidate(
             )
             if state.status != "committed":
                 raise HandoverError("lifecycle transaction did not commit")
-            _envelopes(intent, binding, plan, inputs, artifacts, controller)
-            _source(scheduler, intent.task_id, intent)
+            _envelopes(intent, binding, plan, inputs, artifacts, controller, baseline=baseline)
+            _source(scheduler, intent.task_id, intent, baseline=baseline)
             _pre_cas_checkout(intent, binding, tree, prepared.expected_head_ref,
                               worktree_modes, directory_modes)
             _assert_candidate_applied(pinned.descriptor, candidate)
             _assert_staged_tree(binding.root, tree, expected_tree)
             _assert_git_target(binding)
-            _current_intent(intent, scheduler, journal, owner)
+            _current_intent(intent, scheduler, journal, owner, baseline=baseline)
             _git(binding.root, "update-ref", "--no-deref", intent.branch_ref, oid, intent.old_ref_oid)
             _checkpoint("after-ref-cas")
             if intent.old_ref_oid == _ZERO_OID:
-                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner)
+                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner, baseline=baseline)
             _checkpoint("after-head-switch")
             return _finish(intent, binding, record, plan, inputs, artifacts,
-                           scheduler, controller, journal, owner)
+                           scheduler, controller, journal, owner, baseline=baseline)
         except Exception as error:
             if intent.task_id in journal.state.branch_blocked:
                 return BlockedHandover(*journal.state.branch_blocked[intent.task_id])
@@ -995,8 +1003,8 @@ def _pre_cas_checkout(intent: BranchHandoverIntentV2, binding: TargetBinding,
                          directory_modes=directory_modes)
 
 
-def _finish(intent, binding, record, plan, inputs, artifacts, scheduler, controller, journal, owner):
-    _current_intent(intent, scheduler, journal, owner)
+def _finish(intent, binding, record, plan, inputs, artifacts, scheduler, controller, journal, owner, *, baseline=None):
+    _current_intent(intent, scheduler, journal, owner, baseline=baseline)
     if intent.old_ref_oid == _ZERO_OID:
         _assert_no_switch_residue(binding, _associated_head_ref(intent, journal, controller))
     proof = _proof_bytes(intent, binding, record)
@@ -1013,7 +1021,7 @@ def _finish(intent, binding, record, plan, inputs, artifacts, scheduler, control
                 "candidate_sha256": record["candidate_sha256"]}
     terminal = HandoverTerminalV2(intent.sha256, record["commit_oid"], evidence,
                                   record["candidate_sha256"], hashlib.sha256(canonical_json(unsigned)).hexdigest())
-    _current_intent(intent, scheduler, journal, owner)
+    _current_intent(intent, scheduler, journal, owner, baseline=baseline)
     if journal.branch_handover_state(intent.task_id)[1] is None:
         journal.append_branch_terminal(intent.task_id, terminal, owner=owner)
     _checkpoint("after-journal-terminal")
@@ -1080,6 +1088,7 @@ def recover_branch_handover(
     intent: BranchHandoverIntentV2, *, plan: FanoutPlanV2, inputs: RunInputs,
     artifacts: ArtifactStore, scheduler: Scheduler, controller: LifecycleController,
     journal: RunJournal, owner: OwnerCapability,
+    baseline: RepositoryBaseline | None = None,
 ) -> HandoverTerminalV2 | BlockedHandover:
     journal.authorize_owner(owner)
     if (inputs.targets is None or scheduler._journal is not journal
@@ -1111,6 +1120,10 @@ def recover_branch_handover(
             return _block(intent, journal, owner, "association-missing")
         if terminal is not None:
             try:
+                _envelopes(intent, binding, plan, inputs, artifacts, controller, baseline=baseline)
+                scheduler._validate_handover_claim(intent.task_id, terminal, intent)
+                state = scheduler._states()[intent.task_id]
+                scheduler._verify_receipt(state.result, state)
                 verify_git_handover_proof(intent, terminal, inputs=inputs, artifacts=artifacts,
                                           controller=controller, journal=journal)
             except Exception:
@@ -1118,7 +1131,7 @@ def recover_branch_handover(
             scheduler.mark_handover_terminal(intent.task_id, terminal, owner=owner)
             return terminal
         try:
-            _current_intent(intent, scheduler, journal, owner)
+            _current_intent(intent, scheduler, journal, owner, baseline=baseline)
             record = _prepared_commit(intent, journal, controller, artifacts)
         except Exception:
             try:
@@ -1144,8 +1157,8 @@ def recover_branch_handover(
         try:
             if intent.old_ref_oid == _ZERO_OID:
                 _assert_no_switch_residue(binding, _associated_head_ref(intent, journal, controller))
-            _envelopes(intent, binding, plan, inputs, artifacts, controller)
-            _source(scheduler, intent.task_id, intent)
+            _envelopes(intent, binding, plan, inputs, artifacts, controller, baseline=baseline)
+            _source(scheduler, intent.task_id, intent, baseline=baseline)
             _assert_raw_checkout(
                 binding.root, record["tree_oid"], exact_modes=record["worktree_modes"],
                 directory_modes=record["directory_modes"],
@@ -1154,9 +1167,9 @@ def recover_branch_handover(
                     and _head_ref(binding.root) == _associated_head_ref(intent, journal, controller)
                     and _git(binding.root, "rev-parse", "HEAD").decode() == intent.base_oid):
                 _assert_git_target(binding)
-                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner)
+                _switch_absent_ticket(intent, binding, record, scheduler, controller, journal, owner, baseline=baseline)
             return _finish(intent, binding, record, plan, inputs, artifacts,
-                           scheduler, controller, journal, owner)
+                           scheduler, controller, journal, owner, baseline=baseline)
         except Exception as error:
             if intent.task_id in journal.state.branch_blocked:
                 return BlockedHandover(*journal.state.branch_blocked[intent.task_id])

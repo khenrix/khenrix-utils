@@ -83,6 +83,56 @@ def _target_repo(tmp_path: Path, target_id: str) -> tuple[Path, object]:
     )
 
 
+@pytest.mark.parametrize("namespace", ("head", "index", "merge"))
+@pytest.mark.parametrize("target", ("a/../outside", "b"))
+def test_retained_link_namespace_cannot_borrow_safe_current_intermediates(tmp_path, namespace, target):
+    repo = _repo(tmp_path)
+    (repo / "dir").mkdir()
+    (repo / "dir/inside").write_bytes(b"inside")
+    (repo / "a").symlink_to(".")
+    (repo / "b").symlink_to(target)
+    _git(repo, "add", "a", "b", "dir/inside")
+    if namespace == "head":
+        _git(repo, "commit", "-qm", "retained links")
+    elif namespace == "merge":
+        a_oid = _git(repo, "hash-object", "-w", "--stdin", input=b".").stdout.strip()
+        b_oid = _git(repo, "hash-object", "-w", "--stdin", input=os.fsencode(target)).stdout.strip()
+        _git(repo, "update-index", "--force-remove", "a", "b")
+        _git(repo, "update-index", "-z", "--index-info", input=(
+            b"120000 " + a_oid + b" 1\ta\0" + b"120000 " + b_oid + b" 1\tb\0"
+        ))
+    (repo / "a").unlink()
+    (repo / "a").symlink_to("dir")
+    (repo / "b").unlink()
+    (repo / "b").symlink_to("dir/inside")
+    with pytest.raises(fanout.RepositoryIsolationError, match="symlink"):
+        capture_repository_baseline(repo)
+
+
+def test_safe_merge_link_views_replay_all_stages_and_current_bytes(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "dir").mkdir()
+    (repo / "dir/inside").write_bytes(b"inside")
+    (repo / "a").symlink_to("dir")
+    (repo / "b").symlink_to("a/inside")
+    _git(repo, "add", "dir/inside")
+    records = []
+    for stage, target in ((1, b"dir"), (2, b"."), (3, b"dir/..")):
+        oid = _git(repo, "hash-object", "-w", "--stdin", input=target).stdout.strip()
+        records.append(b"120000 " + oid + f" {stage}\ta\0".encode())
+    b_oid = _git(repo, "hash-object", "-w", "--stdin", input=b"a/dir/inside").stdout.strip()
+    records.append(b"120000 " + b_oid + b" 0\tb\0")
+    _git(repo, "update-index", "-z", "--index-info", input=b"".join(records))
+    baseline = capture_repository_baseline(repo)
+    assert [(entry.stage, entry.data) for entry in baseline.index_entries if entry.path == "a"] == [
+        (1, b"dir"), (2, b"."), (3, b"dir/.."),
+    ]
+    seat = create_seat_workspace(baseline, tmp_path / "seats", "merge")
+    assert _git(seat.root, "ls-files", "--stage", "-z").stdout == _git(repo, "ls-files", "--stage", "-z").stdout
+    assert os.readlink(seat.root / "a") == "dir"
+    assert os.readlink(seat.root / "b") == "a/inside"
+
+
 def test_two_equal_content_repositories_keep_distinct_target_bindings(tmp_path):
     """A shared baseline digest must not collapse different repository identities."""
     address, address_spec = _target_repo(tmp_path, "address")
@@ -775,3 +825,229 @@ def test_capture_neutralizes_hostile_git_environment_and_never_changes_caller_st
     assert seat.root.is_dir()
     assert _caller_state(repo) == before
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("target", ("../outside", "/outside"))
+def test_staged_escaping_link_is_refused_even_when_current_link_is_safe(tmp_path, target):
+    repo = _repo(tmp_path)
+    link = repo / "inside-link"
+    link.unlink()
+    link.symlink_to(target)
+    _git(repo, "add", "inside-link")
+    link.unlink()
+    link.symlink_to("target.txt")
+    before = _caller_state(repo)
+    with pytest.raises(RepositoryIsolationError, match="symlink"):
+        capture_repository_baseline(repo)
+    assert _caller_state(repo) == before
+
+
+def test_safe_divergent_staged_and_current_links_replay_exactly(tmp_path):
+    repo = _repo(tmp_path)
+    link = repo / "inside-link"
+    link.unlink()
+    link.symlink_to("tracked.txt")
+    _git(repo, "add", "inside-link")
+    link.unlink()
+    link.symlink_to("target.txt")
+    baseline = capture_repository_baseline(repo)
+    seat = create_seat_workspace(baseline, tmp_path / "run", "claude")
+    assert _git(seat.root, "show", ":inside-link").stdout == b"tracked.txt"
+    assert os.readlink(seat.root / "inside-link") == "target.txt"
+
+
+@pytest.mark.parametrize("redirect", ("caller", "other", "file"))
+def test_seats_parent_redirect_is_refused_before_any_destination_write(tmp_path, redirect):
+    repo = _repo(tmp_path)
+    other = _repo(tmp_path, "other")
+    baseline = capture_repository_baseline(repo)
+    run = tmp_path / "run"
+    run.mkdir()
+    seats = run / "seats"
+    if redirect == "file":
+        seats.write_bytes(b"keep me")
+    else:
+        seats.symlink_to(repo if redirect == "caller" else other, target_is_directory=True)
+    before = (_caller_state(repo), _caller_state(other), seats.lstat())
+    with pytest.raises(RepositoryIsolationError, match="seats"):
+        create_seat_workspace(baseline, run, "claude")
+    assert (_caller_state(repo), _caller_state(other), seats.lstat()) == before
+
+
+@pytest.mark.parametrize("join", ("initial", "warm", "cold", "first-turn", "native"))
+def test_seat_git_worktree_redirect_is_refused_at_workspace_authority_joins(tmp_path, join):
+    repo = _repo(tmp_path)
+    if join == "native":
+        (repo / "inside-link").unlink()
+    baseline = capture_repository_baseline(repo)
+    controller = fanout.create_lifecycle_controller(tmp_path / "run")
+    seat = create_seat_workspace(baseline, controller.root, "claude")
+    receipt = fanout.verify_seat_workspace(baseline, seat, controller=controller)
+    if join == "native":
+        adapter = fanout.CodexAdapter()
+        profile = fanout.ExecutorProfile("codex", adapter, adapter.capabilities, "repo-write", "standard",
+                                         "diagnostic-model", "low", "diagnostic-cli", ("/bin/sh",),
+                                         ("/bin/sh", "--resume", "{session_id}"), 10, 10)
+        request = fanout.ProviderRequest("codex", "diagnostic only", cwd=seat.root,
+            execution_class="repo-write", profile=profile, run_id="run-1", task_id="task-1",
+            target_id="target-1", inputs_digest="a" * 64, seat_id="claude")
+        command = fanout.ProcessCommand(argv=("/bin/sh", "-c", "printf diagnostic"), stdin=b"", cwd=seat.root)
+        owner_root = tmp_path / "native-owner"
+        owner_root.mkdir(mode=0o700)
+        boundary = fanout.issue_native_boundary(controller, receipt, run_id="run-1", task_id="task-1",
+            target_id="target-1", inputs_digest="a" * 64, request=request, command=command,
+            other_target_roots=(repo,), denied_owner_roots=(owner_root,))
+    identities = (seat.root.stat().st_ino, (seat.root / ".git").stat().st_ino)
+    _git(seat.root, "config", "core.worktree", str(repo))
+    (seat.root / "tracked.txt").write_bytes(b"seat drift\n")
+    assert (seat.root.stat().st_ino, (seat.root / ".git").stat().st_ino) == identities
+    with pytest.raises(fanout.ProviderRequestError if join == "native" else RepositoryIsolationError) as refused:
+        if join == "initial":
+            fanout.verify_seat_workspace(baseline, seat, controller=controller)
+        elif join == "warm":
+            fanout.validate_seat_workspace(controller, receipt)
+        elif join == "cold":
+            fanout.resume_seat_workspace(seat, controller=controller, evidence_digest=receipt.evidence_digest)
+        elif join == "first-turn":
+            fanout.validate_seat_workspace_baseline(baseline, controller, receipt)
+        else:
+            fanout.validate_native_boundary(boundary, request, command, controller, receipt)
+    if join == "native":
+        assert isinstance(refused.value.__cause__, RepositoryIsolationError)
+    else:
+        assert "Git" in str(refused.value) or "worktree" in str(refused.value)
+
+
+def _tiny_repo(tmp_path):
+    repo = tmp_path / "tiny"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "Fixture")
+    _git(repo, "config", "user.email", "fixture@example.invalid")
+    (repo / "one").write_bytes(b"1234")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "seed")
+    return repo
+
+
+@pytest.mark.parametrize("namespace", ("head", "index", "worktree"))
+def test_repository_quota_refuses_content_before_reading_oversized_namespace(tmp_path, monkeypatch, namespace):
+    repo = _tiny_repo(tmp_path)
+    if namespace != "head":
+        (repo / "one").write_bytes(b"12345")
+        if namespace == "index":
+            _git(repo, "add", "one")
+            (repo / "one").write_bytes(b"1234")
+    module = sys.modules[capture_repository_baseline.__module__]
+    real_git = module._git
+    reads = []
+    def observe_git(root, *args, **kwargs):
+        if args[:2] == ("cat-file", "blob"):
+            reads.append(args)
+        return real_git(root, *args, **kwargs)
+    monkeypatch.setattr(module, "_git", observe_git)
+    with pytest.raises(RepositoryQuotaError):
+        capture_repository_baseline(repo, limits=RepoLimits(3 if namespace == "head" else 4, 100))
+    assert len(reads) == {"head": 0, "index": 1, "worktree": 2}[namespace]
+
+
+def test_repository_quotas_are_additive_and_exact_limits_are_accepted(tmp_path, monkeypatch):
+    repo = _tiny_repo(tmp_path)
+    module = sys.modules[capture_repository_baseline.__module__]
+    real_read = module.os.read
+    requests = []
+    def observe_read(fd, size):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            requests.append(size)
+        return real_read(fd, size)
+    monkeypatch.setattr(module.os, "read", observe_read)
+    baseline = capture_repository_baseline(repo, limits=RepoLimits(4, 12))
+    assert [entry.data for entry in baseline.entries] == [b"1234"]
+    assert requests and max(requests) <= 4
+    with pytest.raises(RepositoryQuotaError):
+        capture_repository_baseline(repo, limits=RepoLimits(4, 11))
+
+
+@pytest.mark.parametrize("direction", ("file-to-directory", "directory-to-file"))
+def test_capture_and_replay_preserve_historical_paths_under_structural_replacement(tmp_path, direction):
+    repo = _tiny_repo(tmp_path)
+    if direction == "directory-to-file":
+        (repo / "one").unlink()
+        (repo / "one").mkdir()
+        (repo / "one" / "child").write_bytes(b"old")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "directory")
+        (repo / "one" / "child").unlink()
+        (repo / "one").rmdir()
+        (repo / "one").write_bytes(b"new")
+        deleted = ("one/child",)
+    else:
+        (repo / "one").unlink()
+        (repo / "one").mkdir()
+        (repo / "one" / "child").write_bytes(b"new")
+        deleted = ("one",)
+    before = _caller_state(repo)
+    baseline = capture_repository_baseline(repo)
+    seat = create_seat_workspace(baseline, tmp_path / "run", "claude")
+    assert baseline.deleted_paths == deleted
+    assert _non_git_tree(seat.root) == _non_git_tree(repo)
+    assert _caller_state(repo) == before
+
+
+@pytest.mark.parametrize("flag", ("--assume-unchanged", "--skip-worktree"))
+def test_writable_target_refuses_status_hidden_dirty_content_before_dispatch(tmp_path, flag):
+    repo, spec = _target_repo(tmp_path, "address")
+    _git(repo, "update-index", flag, "tracked.txt")
+    (repo / "tracked.txt").write_bytes(b"hidden dirty bytes\n")
+    assert _git(repo, "status", "--porcelain=v1").stdout == b""
+    module = sys.modules[capture_repository_baseline.__module__]
+    bindings, baselines = module.capture_and_bind_targets({"address": spec}, {"address": repo})
+    seat = create_seat_workspace(baselines["address"], tmp_path / "read-only-run", "claude")
+    assert (seat.root / "tracked.txt").read_bytes() == b"hidden dirty bytes\n"
+    with pytest.raises(fanout.RepositoryValidationError, match="clean"):
+        module.revalidate_target_bindings(bindings, writable_ids={"address"})
+
+
+def test_repository_capture_refuses_regular_file_growth_during_bounded_read(tmp_path, monkeypatch):
+    repo = _tiny_repo(tmp_path)
+    real_read = os.read
+    grew = False
+    def grow_during_read(fd, size):
+        nonlocal grew
+        payload = real_read(fd, size)
+        if stat.S_ISREG(os.fstat(fd).st_mode) and not grew:
+            grew = True
+            with (repo / "one").open("ab") as handle:
+                handle.write(b"5")
+        return payload
+    monkeypatch.setattr(os, "read", grow_during_read)
+    with pytest.raises(RepositoryIsolationError, match="grew|changed"):
+        capture_repository_baseline(repo, limits=RepoLimits(4, 12))
+    assert grew and (repo / "one").read_bytes() == b"12345"
+
+
+def test_repository_capture_refuses_fifo_without_reading_it(tmp_path, monkeypatch):
+    repo = _tiny_repo(tmp_path)
+    (repo / "one").unlink()
+    os.mkfifo(repo / "one")
+    real_open = os.open
+    def refuse_fifo_open(path, flags, *args, **kwargs):
+        if path == "one":
+            pytest.fail("capture attempted to open a known FIFO")
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", refuse_fifo_open)
+    with pytest.raises(RepositoryIsolationError, match="regular file"):
+        capture_repository_baseline(repo)
+
+
+def test_workspace_identity_allows_legitimate_resumed_content_changes(tmp_path):
+    repo = _repo(tmp_path)
+    baseline = capture_repository_baseline(repo)
+    controller = fanout.create_lifecycle_controller(tmp_path / "run")
+    seat = create_seat_workspace(baseline, controller.root, "claude")
+    receipt = fanout.verify_seat_workspace(baseline, seat, controller=controller)
+    (seat.root / "tracked.txt").write_bytes(b"legitimate turn result\n")
+    fanout.validate_seat_workspace(controller, receipt)
+    resumed = fanout.resume_seat_workspace(seat, controller=controller, evidence_digest=receipt.evidence_digest)
+    assert resumed.evidence_digest == receipt.evidence_digest
+    assert (seat.root / "tracked.txt").read_bytes() == b"legitimate turn result\n"

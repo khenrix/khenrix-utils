@@ -70,15 +70,15 @@ def _native_result(children, **state):
                                 for process in children], **state}, sort_keys=True))
 
 
-@pytest.mark.parametrize("entries", (
-    (fanout.CandidateEntry("README.md", "file", 0o600, b"unsupported change\n"),),
-    (fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
-     fanout.CandidateEntry("empty", "directory", 0o755, b"")),
-    (fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
-     fanout.CandidateEntry("notes", "directory", 0o700, b"")),
+@pytest.mark.parametrize("entries, owned_paths", (
+    ((fanout.CandidateEntry("README.md", "file", 0o600, b"unsupported change\n"),), ("README.md",)),
+    ((fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
+      fanout.CandidateEntry("empty", "directory", 0o755, b"")), ("README.md", "empty")),
+    ((fanout.CandidateEntry("README.md", "file", 0o644, b"representable change\n"),
+      fanout.CandidateEntry("notes", "directory", 0o700, b"")), ("README.md", "notes")),
 ))
-def test_representation_refusal_precedes_caller_mutation(tmp_path, entries):
-    fixture = _settled_writer(tmp_path, candidate_entries=entries, baseline_mode=0o644)
+def test_representation_refusal_precedes_caller_mutation(tmp_path, entries, owned_paths):
+    fixture = _settled_writer(tmp_path, candidate_entries=entries, baseline_mode=0o644, owned_paths=owned_paths)
     handover, prepared = _prepare_join(fixture)
     root = prepared.binding.root
     readme = (root / "README.md").read_bytes()
@@ -173,7 +173,7 @@ def test_conditional_native_handover_joins_candidate_modes_proof_and_dependencie
         return result
     with monkeypatch.context() as patch:
         patch.setattr(cases, "_git", setup_after_commit)
-        fixture = _settled_writer(tmp_path, baseline_mode=0o600, candidate_entries=(
+        fixture = _settled_writer(tmp_path, baseline_mode=0o600, original_baseline=True, owned_paths=("newdir/run", "newdir/link"), candidate_entries=(
             fanout.CandidateEntry("newdir", "directory", 0o755, b""),
             fanout.CandidateEntry("newdir/run", "file", 0o755, b"#!/bin/sh\nexit 0\n"),
             fanout.CandidateEntry("newdir/link", "symlink", 0o777, b"run"),
@@ -464,14 +464,23 @@ def _settled_writer(tmp_path, *, changed: bool = False, candidate_entries=None,
                     baseline_mode: int | None = None,
                     baseline_directory_mode: int | None = None,
                     baseline_file_count: int = 0,
-                    candidate_deleted_paths: tuple[str, ...] = ()):
-    scheduler, backend, journal, controller, baseline, owner = cases._v2_handover_fixture(
-        tmp_path, existing_branch=existing_branch, file_backend=file_backend,
-        dependency_mode=dependency_mode, independent_count=independent_count,
-        descendant=descendant, recoverable_amendments=recoverable_amendments,
-        baseline_mode=baseline_mode, baseline_directory_mode=baseline_directory_mode,
-        baseline_file_count=baseline_file_count,
-    )
+                    candidate_deleted_paths: tuple[str, ...] = (), owned_paths=("README.md",), original_baseline=False):
+    original_work = cases._work
+    def scoped_work(task_id, **kwargs):
+        work = original_work(task_id, **kwargs)
+        if task_id == "address":
+            work["owned_paths"] = list(owned_paths)
+        return work
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cases, "_work", scoped_work)
+        scheduler, backend, journal, controller, baseline, owner = cases._v2_handover_fixture(
+            tmp_path, existing_branch=existing_branch, file_backend=file_backend,
+            dependency_mode=dependency_mode, independent_count=independent_count,
+            descendant=descendant, recoverable_amendments=recoverable_amendments,
+            baseline_mode=baseline_mode, baseline_directory_mode=baseline_directory_mode,
+            baseline_file_count=baseline_file_count,
+            original_baseline=original_baseline,
+        )
     scheduler.schedule_ready(owner=owner)
     scheduler.mark_active("address", owner=owner)
     scheduler.begin_reconciliation("address", owner=owner)
@@ -481,7 +490,7 @@ def _settled_writer(tmp_path, *, changed: bool = False, candidate_entries=None,
     candidate = fanout.CandidateBundle(baseline.digest, entries, candidate_deleted_paths)
     issued = fanout.issue_target_candidate(
         candidate, task_id="address", plan=scheduler.plan, inputs=scheduler.inputs,
-        store=backend.artifacts, controller=controller,
+        store=backend.artifacts, controller=controller, baseline=baseline,
     )
     verified, _receipt = fanout.verify_target_candidate(
         issued, baseline=baseline, plan=scheduler.plan, inputs=scheduler.inputs,
@@ -1584,6 +1593,7 @@ def test_git_stage_must_represent_exact_verified_candidate(tmp_path, distortion,
     )
     scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
         tmp_path, candidate_entries=entries,
+        owned_paths=("empty",) if distortion == "empty-directory" else ("README.md",),
     )
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     binding = scheduler.inputs.targets["address"]
@@ -2747,7 +2757,7 @@ def test_extra_directory_blocks_exact_checkout(tmp_path, monkeypatch, phase, ext
 def test_deleting_last_tracked_child_preserves_pinned_empty_parent(tmp_path):
     scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
         tmp_path, candidate_entries=(), candidate_deleted_paths=("notes/keep.txt",),
-        baseline_directory_mode=0o700,
+        baseline_directory_mode=0o700, owned_paths=("notes/keep.txt",),
     )
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     binding = scheduler.inputs.targets["address"]
@@ -2797,7 +2807,7 @@ def test_unowned_file_added_under_candidate_directory_is_never_staged(tmp_path, 
         fanout.CandidateEntry("newdir/owned.txt", "file", 0o644, b"owned\n"),
     )
     scheduler, backend, journal, controller, owner, candidate, verification = _settled_writer(
-        tmp_path, candidate_entries=entries,
+        tmp_path, candidate_entries=entries, owned_paths=("newdir/owned.txt",),
     )
     handover = importlib.import_module(f"{fanout.__name__}.branch_handover")
     binding = scheduler.inputs.targets["address"]

@@ -69,6 +69,7 @@ from .verification import (
     validate_answer_synthesis,
     validate_answer_selection,
     validate_candidate_verification,
+    validate_candidate_task_scope,
     verify_candidate,
     verify_answer_selection,
     verify_answer_synthesis,
@@ -217,6 +218,7 @@ def validate_target_candidate_binding(
     candidate: TargetEvidenceEnvelope, *, task_id: str, plan: FanoutPlanV2,
     inputs: RunInputs, store: ArtifactStore | None = None,
     controller: LifecycleController | None = None,
+    baseline: RepositoryBaseline | None = None,
 ) -> CandidateBundle:
     """Accept only controller-issued candidate bytes for one admitted target task."""
     if (
@@ -233,7 +235,7 @@ def validate_target_candidate_binding(
     try:
         issued = load_target_candidate(
             candidate, plan=plan, inputs=inputs, store=store,
-            controller=controller,
+            controller=controller, baseline=baseline,
         )
     except CandidateValidationError as error:
         raise ExecutionValidationError("target candidate controller evidence differs") from error
@@ -1254,6 +1256,7 @@ class ExecutionService:
         if len(state.barriers) != policy.rounds:
             raise ExecutionPendingError("repository synthesis verification requires a final provider barrier")
         baseline = self._require_baseline(task)
+        self._validate_task_candidate_scope(task, candidate, baseline)
         sources = self._frozen_repo_candidates(task, baseline, state)
         available = Counter(item.candidate.digest for item in sources)
         requested = Counter(candidate.source_candidate_digests)
@@ -2088,6 +2091,7 @@ class ExecutionService:
         baseline = self._require_baseline(task)
         controller = self._require_controller()
         validate_candidate_verification(controller, verification)
+        self._validate_task_candidate_scope(task, verification.candidate, baseline)
         if (
             not verification.valid
             or verification.baseline_digest != baseline.digest
@@ -2162,6 +2166,7 @@ class ExecutionService:
         baseline = self._require_baseline(task)
         controller = self._require_controller()
         validate_candidate_verification(controller, verification)
+        self._validate_task_candidate_scope(task, verification.candidate, baseline)
         if (
             not verification.valid
             or verification.baseline_digest != baseline.digest
@@ -3426,6 +3431,14 @@ class ExecutionService:
         ):
             raise ExecutionPendingError("checked selection differs from exact final-barrier seat")
 
+    def _validate_task_candidate_scope(
+        self, task: PlanTaskV1, candidate: CandidateBundle, baseline: RepositoryBaseline,
+    ) -> None:
+        try:
+            validate_candidate_task_scope(candidate, task.owned_paths, baseline=baseline)
+        except CandidateValidationError as error:
+            raise ExecutionPendingError(f"candidate violates task owned scope: {error}") from error
+
     def _validate_candidate_binding(
         self,
         task: PlanTaskV1,
@@ -3434,6 +3447,7 @@ class ExecutionService:
     ) -> None:
         controller = self._require_controller()
         baseline = self._require_baseline(task)
+        self._validate_task_candidate_scope(task, result.candidate, baseline)
         try:
             validate_candidate_verification(controller, result)
         except CandidateValidationError as error:
@@ -3529,6 +3543,7 @@ class ExecutionService:
                     verification = load_candidate_verification(
                         self._require_controller(), self.artifacts,
                         task_id=task.id, candidate_ref=result.artifact,
+                        baseline=self._require_baseline(task),
                     )
                     self._validate_candidate_binding(task, verification, state)
                 elif result.artifact.path.startswith("results/answer-selections/"):

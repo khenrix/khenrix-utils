@@ -1098,7 +1098,7 @@ def test_v2_write_target_rejects_recursive_head_alias_before_start(execute, tmp_
     _git(root, "branch", "feat/TASK-123-address")
     _git(root, "symbolic-ref", "refs/heads/alias", "refs/heads/feat/TASK-123-address")
     _git(root, "symbolic-ref", "HEAD", "refs/heads/alias")
-    with pytest.raises(ValueError, match="existing ticket branch must be current HEAD"):
+    with pytest.raises(ValueError, match="^target address: target current HEAD: branch ref is symbolic$"):
         execute.prepare_v2_run(
             packet, target_roots={"address": root}, skill_roots=(tmp_path / "skills",),
             provider_runner=lambda _: pytest.fail("provider launched"),
@@ -1402,17 +1402,18 @@ def _v2_cold_delivered_fixture(execute, tmp_path):
     try:
         with (fanout.ArtifactStore.open_existing(run / "artifacts") as artifacts,
               fanout.FileSchedulerBackend.resume(run, run_id=inputs.run_id, owner=owner) as backend):
-            scheduler = fanout.Scheduler.create(
-                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
-                journal=journal, lifecycle_controller=controller,
-            )
-            scheduler.schedule_ready(owner=owner)
-            scheduler.mark_active("change", owner=owner)
-            scheduler.begin_reconciliation("change", owner=owner)
             baseline = execute._load_baseline(
                 fanout, artifacts, descriptor["baseline_manifest_refs"]["address"],
                 address, target_id="address",
             )
+            scheduler = fanout.Scheduler.create(
+                plan, inputs, backend, artifacts, owner=owner, anchor_store=anchor,
+                journal=journal, lifecycle_controller=controller,
+                repository_baselines={"address": baseline},
+            )
+            scheduler.schedule_ready(owner=owner)
+            scheduler.mark_active("change", owner=owner)
+            scheduler.begin_reconciliation("change", owner=owner)
             candidate = fanout.CandidateBundle(baseline.digest, (), ())
             issued = fanout.issue_target_candidate(
                 candidate, task_id="change", plan=plan, inputs=inputs,
@@ -1551,7 +1552,7 @@ def test_v2_cli_cold_status_checks_read_only_complete_target_baseline(execute, t
     assert "target booking: original baseline changed" in capsys.readouterr().err
 
 
-def _v2_cli_handover_fixture(execute, tmp_path):
+def _v2_cli_handover_fixture(execute, tmp_path, *, new_parent=False):
     check = {"argv": ["/bin/test", "-e", "source.txt"], "cwd": "",
              "env_allowlist": [], "timeout": 10, "accepted_exit_codes": [0],
              "expected_artifacts": []}
@@ -1583,10 +1584,12 @@ def _v2_cli_handover_fixture(execute, tmp_path):
                 fanout, artifacts, descriptor["baseline_manifest_refs"]["address"],
                 address, target_id="address",
             )
-            candidate = fanout.CandidateBundle(baseline.digest, (), ())
+            entries = (fanout.CandidateEntry("src", "directory", 0o755, b""),
+                       fanout.CandidateEntry("src/change.py", "file", 0o644, b"owned change\n")) if new_parent else ()
+            candidate = fanout.CandidateBundle(baseline.digest, entries, ())
             issued = fanout.issue_target_candidate(
                 candidate, task_id="change", plan=plan, inputs=inputs,
-                store=artifacts, controller=controller,
+                store=artifacts, controller=controller, baseline=baseline,
             )
             verified, receipt = fanout.verify_target_candidate(
                 issued, baseline=baseline, plan=plan, inputs=inputs,
@@ -1634,10 +1637,11 @@ def _v2_owner_approval(tmp_path, *, action, run_id, task_id, evidence):
     return approval
 
 
+@pytest.mark.parametrize("new_parent", (False, True))
 def test_v2_cli_handover_delivers_with_exact_same_process_owner_approval(execute, tmp_path,
-                                                                           capsys):
+                                                                       capsys, new_parent):
     private, _run, _authority, address, candidate_ref, verification_ref, evidence = (
-        _v2_cli_handover_fixture(execute, tmp_path)
+        _v2_cli_handover_fixture(execute, tmp_path, new_parent=new_parent)
     )
     run_id = execute.load_private_descriptor(private)["run_id"]
     approval = _v2_owner_approval(
@@ -1656,6 +1660,11 @@ def test_v2_cli_handover_delivers_with_exact_same_process_owner_approval(execute
     assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == (
         "refs/heads/feat/TASK-123-address"
     )
+    if new_parent:
+        assert (address / "src/change.py").read_bytes() == b"owned change\n"
+    assert execute.main(["status", "--private-root", str(private)], runtime=fanout,
+                        registry=_registry()) == 0
+    assert json.loads(capsys.readouterr().out)["target_states"]["address"] == "delivered"
 
 
 def test_v2_cli_handover_rejects_changed_approval_before_intent(execute, tmp_path, capsys):
@@ -1694,11 +1703,12 @@ def test_v2_cli_handover_rejects_changed_approval_before_intent(execute, tmp_pat
 
 
 @pytest.mark.parametrize("checkpoint", ("after-ref-cas", "after-journal-terminal"))
+@pytest.mark.parametrize("new_parent", (False, True))
 def test_v2_cli_recover_handover_uses_only_authenticated_intent(execute, tmp_path,
                                                                   monkeypatch, capsys,
-                                                                  checkpoint):
+                                                                  checkpoint, new_parent):
     private, run, authority, address, candidate_ref, verification_ref, evidence = (
-        _v2_cli_handover_fixture(execute, tmp_path)
+        _v2_cli_handover_fixture(execute, tmp_path, new_parent=new_parent)
     )
     descriptor = execute.load_private_descriptor(private)
     approval = _v2_owner_approval(
@@ -1752,6 +1762,8 @@ def test_v2_cli_recover_handover_uses_only_authenticated_intent(execute, tmp_pat
     assert _git_output(address, "symbolic-ref", "--no-recurse", "HEAD") == (
         "refs/heads/feat/TASK-123-address"
     )
+    if new_parent:
+        assert (address / "src/change.py").read_bytes() == b"owned change\n"
     assert execute.main([
         "recover-handover", "--private-root", str(private), "--task-id", "change",
         "--candidate-ref-file", str(candidate_ref),

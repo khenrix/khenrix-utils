@@ -282,7 +282,7 @@ def _v2_handover_fixture(tmp_path: Path, *, dependency_mode: str = "handover",
                          descendant: bool = False, recoverable_amendments: bool = False,
                          baseline_mode: int | None = None,
                          baseline_directory_mode: int | None = None,
-                         baseline_file_count: int = 0):
+                         baseline_file_count: int = 0, original_baseline: bool = False):
     repo = tmp_path / "address"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -389,6 +389,7 @@ def _v2_handover_fixture(tmp_path: Path, *, dependency_mode: str = "handover",
         plan, inputs, backend, backend.artifacts, owner=owner,
         anchor_store=runstate_module._test_anchor_authority(MemoryAnchorStore()),
         journal=journal, lifecycle_controller=controller,
+        repository_baselines={"address": baseline} if original_baseline else None,
     )
     return scheduler, backend, journal, controller, baseline, owner
 

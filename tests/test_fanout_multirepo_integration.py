@@ -61,6 +61,7 @@ class _NativeFakeAdapter(fanout.ProviderAdapter):
         return SimpleNamespace(
             session_id=result["session_id"], answer=result["answer"],
             usage=None, final=True, error=None, observed_model=None,
+            successful_file_change=False,
         )
 
 

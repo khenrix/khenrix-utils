@@ -20,6 +20,7 @@ from .runstate import (
     _AnchorAuthority, _require_anchor_store,
 )
 from .controller import LifecycleController, assert_controller
+from .repo import RepositoryBaseline
 from .errors import CandidateValidationError
 from .verification import TargetEvidenceEnvelope, load_target_candidate, load_target_verification
 
@@ -191,7 +192,8 @@ class Scheduler:
                  record: BackendRecord, authority: _AnchorAuthority, authority_id: str,
                  authority_key: str, authority_revision: int,
                  authority_record: dict[str, object], *, journal: RunJournal | None = None,
-                 lifecycle_controller: LifecycleController | None = None) -> None:
+                 lifecycle_controller: LifecycleController | None = None,
+                 repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> None:
         self._backend = backend
         self._artifacts = artifacts
         self._inputs = inputs
@@ -203,6 +205,7 @@ class Scheduler:
         self._authority_record = authority_record
         self._journal = journal
         self._lifecycle_controller = lifecycle_controller
+        self._repository_baselines = dict(repository_baselines or {})
         self._failed = False
 
     @classmethod
@@ -210,29 +213,32 @@ class Scheduler:
                backend: SchedulerBackend, artifacts: ArtifactStore, *, owner: OwnerCapability,
                anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
                journal: RunJournal | None = None,
-               lifecycle_controller: LifecycleController | None = None) -> "Scheduler":
+               lifecycle_controller: LifecycleController | None = None,
+               repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         return cls._create_impl(
             plan, inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=False, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
 
     @classmethod
     def _create_for_test(cls, plan: FanoutPlanV1 | Mapping[str, object], inputs: RunInputs,
                          backend: SchedulerBackend, artifacts: ArtifactStore, *, owner: OwnerCapability,
                          anchor_store: _AnchorAuthority, journal: RunJournal | None = None,
-                         lifecycle_controller: LifecycleController | None = None) -> "Scheduler":
+                         lifecycle_controller: LifecycleController | None = None,
+                         repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         return cls._create_impl(
             plan, inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=True, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
 
     @classmethod
     def _create_impl(cls, plan: FanoutPlanV1 | Mapping[str, object], inputs: RunInputs,
                      backend: SchedulerBackend, artifacts: ArtifactStore, *, owner: OwnerCapability,
                      anchor_store: _AnchorAuthority, allow_test: bool,
-                     journal: RunJournal | None, lifecycle_controller: LifecycleController | None) -> "Scheduler":
+                     journal: RunJournal | None, lifecycle_controller: LifecycleController | None,
+                     repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         plan = validate_plan(plan)
         _owner(owner)
         _target_authority(plan, inputs, artifacts, journal, lifecycle_controller,
@@ -256,7 +262,7 @@ class Scheduler:
         return cls._resume_impl(
             plan, inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=allow_test, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -265,11 +271,12 @@ class Scheduler:
                artifacts: ArtifactStore, *, owner: OwnerCapability,
                anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
                journal: RunJournal | None = None,
-               lifecycle_controller: LifecycleController | None = None) -> "Scheduler":
+               lifecycle_controller: LifecycleController | None = None,
+               repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         return cls._resume_impl(
             expected_plan, expected_inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=False, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -278,7 +285,8 @@ class Scheduler:
                         artifacts: ArtifactStore, *, owner: OwnerCapability,
                         anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
                         journal: RunJournal,
-                        lifecycle_controller: LifecycleController) -> "Scheduler":
+                        lifecycle_controller: LifecycleController,
+                        repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         """Reopen owner handover authority without repairing pending scheduler state."""
         if not isinstance(validate_plan(expected_plan), FanoutPlanV2):
             raise SchedulerStateError("exact owner reopen requires a v2 plan")
@@ -286,6 +294,7 @@ class Scheduler:
             expected_plan, expected_inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=False, journal=journal,
             lifecycle_controller=lifecycle_controller, allow_repair=False,
+            repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -293,11 +302,12 @@ class Scheduler:
                          expected_inputs: RunInputs, backend: SchedulerBackend,
                          artifacts: ArtifactStore, *, owner: OwnerCapability,
                          anchor_store: _AnchorAuthority, journal: RunJournal | None = None,
-                         lifecycle_controller: LifecycleController | None = None) -> "Scheduler":
+                         lifecycle_controller: LifecycleController | None = None,
+                         repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         return cls._resume_impl(
             expected_plan, expected_inputs, backend, artifacts, owner=owner,
             anchor_store=anchor_store, allow_test=True, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -306,7 +316,8 @@ class Scheduler:
                      artifacts: ArtifactStore, *, owner: OwnerCapability,
                      anchor_store: _AnchorAuthority, allow_test: bool,
                      journal: RunJournal | None, lifecycle_controller: LifecycleController | None,
-                     allow_repair: bool = True) -> "Scheduler":
+                     allow_repair: bool = True,
+                     repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> "Scheduler":
         plan = validate_plan(expected_plan)
         _owner(owner)
         _target_authority(plan, expected_inputs, artifacts, journal, lifecycle_controller,
@@ -374,7 +385,7 @@ class Scheduler:
         scheduler = cls(
             backend, artifacts, expected_inputs, record, anchor_store, authority_id,
             authority_key, revision.revision, authority, journal=journal,
-            lifecycle_controller=lifecycle_controller,
+            lifecycle_controller=lifecycle_controller, repository_baselines=repository_baselines,
         )
         if isinstance(plan, FanoutPlanV2):
             for state in record.snapshot.tasks:
@@ -395,12 +406,14 @@ class Scheduler:
                         artifacts: ArtifactStore, *, owner: OwnerCapability,
                         original_journal_inputs: RunInputs,
                         anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
-                        lifecycle_controller: LifecycleController) -> BlockedHandoverInspection:
+                        lifecycle_controller: LifecycleController,
+                        repository_baselines: Mapping[str, RepositoryBaseline] | None = None) -> BlockedHandoverInspection:
         return cls._inspect_blocked_impl(
             expected_plan, expected_inputs, run_root, artifacts, owner=owner,
             original_journal_inputs=original_journal_inputs,
             journal_anchor=anchor_store, scheduler_anchor=anchor_store,
             lifecycle_controller=lifecycle_controller, allow_test=False,
+            repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -409,7 +422,8 @@ class Scheduler:
                        artifacts: ArtifactStore, *, owner: OwnerCapability,
                        original_journal_inputs: RunInputs,
                        anchor_store: LocalAnchorAuthority | RemoteAnchorAuthority,
-                       lifecycle_controller: LifecycleController):
+                       lifecycle_controller: LifecycleController,
+                       repository_baselines: Mapping[str, RepositoryBaseline] | None = None):
         """Authenticate and project v2 scheduler status without any authority CAS."""
         return cls._inspect_blocked_impl(
             expected_plan, expected_inputs, run_root, artifacts, owner=owner,
@@ -417,6 +431,7 @@ class Scheduler:
             journal_anchor=anchor_store, scheduler_anchor=anchor_store,
             lifecycle_controller=lifecycle_controller, allow_test=False,
             project_status=True,
+            repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -426,13 +441,15 @@ class Scheduler:
                                   original_journal_inputs: RunInputs,
                                   journal_anchor: _AnchorAuthority,
                                   scheduler_anchor: _AnchorAuthority,
-                                  lifecycle_controller: LifecycleController
+                                  lifecycle_controller: LifecycleController,
+                                  repository_baselines: Mapping[str, RepositoryBaseline] | None = None,
                                   ) -> BlockedHandoverInspection:
         return cls._inspect_blocked_impl(
             expected_plan, expected_inputs, run_root, artifacts, owner=owner,
             original_journal_inputs=original_journal_inputs,
             journal_anchor=journal_anchor, scheduler_anchor=scheduler_anchor,
             lifecycle_controller=lifecycle_controller, allow_test=True,
+            repository_baselines=repository_baselines,
         )
 
     @classmethod
@@ -444,7 +461,8 @@ class Scheduler:
                               scheduler_anchor: _AnchorAuthority,
                               lifecycle_controller: LifecycleController,
                               allow_test: bool,
-                              project_status: bool = False):
+                              project_status: bool = False,
+                              repository_baselines: Mapping[str, RepositoryBaseline] | None = None):
         from .storage import FileSchedulerBackend
         plan = validate_plan(expected_plan)
         if not isinstance(plan, FanoutPlanV2):
@@ -513,6 +531,7 @@ class Scheduler:
                 authority_id, authority_key, 0, authority,
                 journal=inspection if project_status else None,
                 lifecycle_controller=lifecycle_controller,
+                repository_baselines=repository_baselines,
             )
             blocked_targets = set()
             for task_id, (intent_sha256, _reason) in inspection.state.branch_blocked.items():
@@ -831,6 +850,7 @@ class Scheduler:
                 intent, terminal, plan=self.plan, inputs=self._inputs,
                 artifacts=self._artifacts, controller=self._lifecycle_controller,
                 result=state.result,
+                baseline=self._repository_baselines.get(intent.target_id),
             )
         except (CandidateValidationError, ArtifactError, OSError, ValueError) as error:
             raise SchedulerStateError("handover candidate or fresh verifier evidence is invalid") from error
@@ -1190,6 +1210,7 @@ def _verify_target_handover_evidence(
     intent: BranchHandoverIntentV2, terminal: HandoverTerminalV2 | None, *,
     plan: FanoutPlanV2, inputs: RunInputs, artifacts: ArtifactStore,
     controller: LifecycleController, result: ReconciledResult,
+    baseline: RepositoryBaseline | None = None,
 ) -> None:
     """Authenticate the exact Task 6 envelopes named by a Task 7 intent."""
     binding = inputs.targets[intent.target_id]
@@ -1200,11 +1221,11 @@ def _verify_target_handover_evidence(
                        ("verification", intent.verification_ref)))
     candidate = load_target_candidate(
         envelopes[0], plan=plan, inputs=inputs, store=artifacts,
-        controller=controller,
+        controller=controller, baseline=baseline,
     )
     verification = load_target_verification(
         envelopes[1], plan=plan, inputs=inputs, store=artifacts,
-        controller=controller,
+        controller=controller, baseline=baseline,
     )
     wrapper = artifacts.read_json(intent.verification_ref)
     if (not isinstance(wrapper, dict) or wrapper.get("candidate_evidence") != {

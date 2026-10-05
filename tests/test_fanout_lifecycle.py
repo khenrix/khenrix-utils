@@ -702,9 +702,9 @@ def test_handover_revalidates_the_caller_after_stage_before_direct_writes(tmp_pa
     original = lifecycle._run_checks
     injected = False
 
-    def edit_after_stage(workspace, checks, environment):
+    def edit_after_stage(workspace, checks, environment, **kwargs):
         nonlocal injected
-        outcomes, failure = original(workspace, checks, environment)
+        outcomes, failure = original(workspace, checks, environment, **kwargs)
         if not injected:
             injected = True
             (repository / "changed.txt").write_text("late caller edit\n", encoding="utf-8")
@@ -715,6 +715,7 @@ def test_handover_revalidates_the_caller_after_stage_before_direct_writes(tmp_pa
     with pytest.raises(HandoverError, match="destination"):
         handover_candidate(baseline, receipt, controller=controller)
 
+    assert injected
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "late caller edit\n"
     assert (repository / "remove.txt").exists()
 
@@ -961,10 +962,10 @@ def test_handover_rollback_preserves_a_late_replacement_after_ownership_is_obser
     checks = 0
     injected = False
 
-    def fail_only_final(workspace, check_set, environment):
+    def fail_only_final(workspace, check_set, environment, **kwargs):
         nonlocal checks
         checks += 1
-        outcomes, failure = original_checks(workspace, check_set, environment)
+        outcomes, failure = original_checks(workspace, check_set, environment, **kwargs)
         if checks == 2:
             return outcomes, "injected final verification failure"
         return outcomes, failure
@@ -990,6 +991,7 @@ def test_handover_rollback_preserves_a_late_replacement_after_ownership_is_obser
         handover_candidate(baseline, receipt, controller=controller)
 
     assert injected
+    assert checks == 2
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "late caller replacement\n"
 
 
@@ -1020,10 +1022,10 @@ def test_handover_runs_final_immutable_checks_on_the_caller_and_rolls_back_on_fa
     original = lifecycle._run_checks
     calls = 0
 
-    def fail_only_final(workspace, checks, environment):
+    def fail_only_final(workspace, checks, environment, **kwargs):
         nonlocal calls
         calls += 1
-        outcomes, failure = original(workspace, checks, environment)
+        outcomes, failure = original(workspace, checks, environment, **kwargs)
         if calls == 2:
             return outcomes, "injected caller-only final check failure"
         return outcomes, failure
@@ -1085,19 +1087,20 @@ def test_handover_rolls_back_a_nonwritable_candidate_directory_after_final_check
     original = lifecycle._run_checks
     calls = 0
 
-    def fail_only_final(workspace, checks, environment):
+    def fail_only_final(workspace, checks, environment, **kwargs):
         nonlocal calls
         calls += 1
-        outcomes, failure = original(workspace, checks, environment)
+        outcomes, failure = original(workspace, checks, environment, **kwargs)
         if calls == 2:
             return outcomes, "injected final failure after read-only directory materialization"
         return outcomes, failure
 
     monkeypatch.setattr(lifecycle, "_run_checks", fail_only_final)
 
-    with pytest.raises(HandoverError):
+    with pytest.raises(HandoverError, match="final"):
         handover_candidate(baseline, receipt, controller=controller)
 
+    assert calls == 2
     assert _tree(repository) == before
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "before\n"
 
@@ -1765,10 +1768,10 @@ def test_rollback_rechecks_created_file_bytes_after_atomic_detach(tmp_path, monk
     check_calls = 0
     injected = False
 
-    def fail_only_final(workspace, checks, environment):
+    def fail_only_final(workspace, checks, environment, **kwargs):
         nonlocal check_calls
         check_calls += 1
-        outcomes, failure = original_checks(workspace, checks, environment)
+        outcomes, failure = original_checks(workspace, checks, environment, **kwargs)
         if check_calls == 2:
             return outcomes, "injected final verification failure"
         return outcomes, failure
@@ -1787,6 +1790,7 @@ def test_rollback_rechecks_created_file_bytes_after_atomic_detach(tmp_path, monk
         handover_candidate(baseline, receipt, controller=controller)
 
     assert injected
+    assert check_calls == 2
     assert (repository / "changed.txt").read_text(encoding="utf-8") == "late detach-boundary edit\n"
 
 
@@ -1800,10 +1804,10 @@ def test_exact_peer_replacement_leaves_an_explicit_nonterminal_rollback_conflict
     check_calls = 0
     injected = False
 
-    def fail_only_final(workspace, checks, environment):
+    def fail_only_final(workspace, checks, environment, **kwargs):
         nonlocal check_calls
         check_calls += 1
-        outcomes, failure = original_checks(workspace, checks, environment)
+        outcomes, failure = original_checks(workspace, checks, environment, **kwargs)
         if check_calls == 2:
             return outcomes, "injected final verification failure"
         return outcomes, failure
@@ -1825,6 +1829,7 @@ def test_exact_peer_replacement_leaves_an_explicit_nonterminal_rollback_conflict
         handover_candidate(baseline, receipt, controller=controller)
 
     assert injected
+    assert check_calls == 2
     assert (repository / "changed.txt").read_bytes() == b"after\n"
     transaction = next((controller.root / "transactions").iterdir())
     steps = [json.loads(line)["step"] for line in (transaction / "handover.jsonl").read_text().splitlines()]
@@ -1914,12 +1919,11 @@ def test_directory_mode_update_never_mutates_an_inode_rebound_after_its_identity
             not injected
             and inside_bound_mode_helper
             and information.st_ino == original_inode
-            and not private.exists()
+            and private.exists()
+            and private.stat().st_ino == original_inode
         ):
             injected = True
-            transaction = next((controller.root / "transactions").iterdir())
-            displaced = next(path for path in (transaction / "quarantine").iterdir()
-                             if path.stat().st_ino == original_inode)
+            private.rename(displaced)
             shutil.copytree(displaced, private, symlinks=True)
             private.chmod(0o700)
         return original_fchmod(fd, mode)
