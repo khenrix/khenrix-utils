@@ -5,7 +5,12 @@ import http.client
 import hashlib
 import json
 import math
+import os
+import selectors
 import ssl
+import socket
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -66,6 +71,97 @@ def _system_tls_context() -> ssl.SSLContext:
     return context
 
 
+_RESOLVER_CODE = """import json,socket,sys
+rows=[]
+for family,kind,protocol,_,address in socket.getaddrinfo(sys.argv[1],int(sys.argv[2]),0,socket.SOCK_STREAM):
+    if family in (socket.AF_INET,socket.AF_INET6):
+        rows.append([family,kind,protocol,list(address)])
+    if len(rows)==16:
+        break
+raw=json.dumps(rows,separators=(',',':'))
+if not rows or len(raw)>8192:
+    raise SystemExit(2)
+sys.stdout.write(raw)
+"""
+
+
+def _seconds_left(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BrokerRejected("host upstream deadline expired")
+    return remaining
+
+
+def _resolve_address(host: str, port: int, deadline: float):
+    _seconds_left(deadline)
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", _RESOLVER_CODE, host, str(port)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C"}, close_fds=True,
+    )
+    try:
+        raw = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                if not selector.select(_seconds_left(deadline)):
+                    raise BrokerRejected("host upstream deadline expired")
+                piece = os.read(process.stdout.fileno(), min(4096, 8193 - len(raw)))
+                if not piece:
+                    break
+                raw.extend(piece)
+                if len(raw) > 8192:
+                    raise BrokerRejected("host upstream resolution exceeds budget")
+        if process.wait(timeout=_seconds_left(deadline)) != 0:
+            raise BrokerRejected("host upstream resolution failed")
+        try:
+            rows = json.loads(raw)
+            if not isinstance(rows, list) or not 1 <= len(rows) <= 16:
+                raise ValueError("address count")
+            for row in rows:
+                if not isinstance(row, list) or len(row) != 4:
+                    raise ValueError("address shape")
+                family, kind, protocol, address = row
+                if (type(family) is not int or family not in (socket.AF_INET, socket.AF_INET6)
+                        or type(kind) is not int or kind != socket.SOCK_STREAM
+                        or type(protocol) is not int or protocol != socket.IPPROTO_TCP
+                        or not isinstance(address, list)
+                        or len(address) != (2 if family == socket.AF_INET else 4)
+                        or type(address[0]) is not str or len(address[0]) > 64
+                        or type(address[1]) is not int or address[1] != port
+                        or any(type(value) is not int or not 0 <= value <= 0xffffffff
+                               for value in address[2:])):
+                    raise ValueError("address association")
+                socket.inet_pton(family, address[0])
+            return rows[0][:3], tuple(rows[0][3])
+        except (ValueError, TypeError, OSError, UnicodeError) as error:
+            raise BrokerRejected("host upstream resolution is invalid") from error
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=1)
+        process.stdout.close()
+
+
+def _connect(connection: http.client.HTTPSConnection, lease: "_TransportLease",
+             deadline: float) -> None:
+    if connection._tunnel_host:
+        raise BrokerRejected("host upstream tunnel is not admitted")
+    parameters, address = _resolve_address(connection.host, connection.port, deadline)
+    _seconds_left(deadline)
+    opened = socket.socket(*parameters)
+    lease.attach_socket(opened)
+    opened.settimeout(_seconds_left(deadline))
+    opened.connect(address)
+    _seconds_left(deadline)
+    secured = connection._context.wrap_socket(
+        opened, server_hostname=connection.host, do_handshake_on_connect=False)
+    lease.attach_socket(secured)
+    secured.settimeout(_seconds_left(deadline))
+    secured.do_handshake()
+    _seconds_left(deadline)
+
+
 def _remaining(connection: http.client.HTTPSConnection, deadline: float) -> None:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -98,6 +194,7 @@ class _TransportLease:
 
     def __init__(self, connection: http.client.HTTPSConnection, deadline: float):
         self.connection = connection
+        self._socket = connection.sock
         self._response: http.client.HTTPResponse | None = None
         self._closed = False
         self._lock = threading.Lock()
@@ -109,21 +206,51 @@ class _TransportLease:
 
     def attach(self, response: http.client.HTTPResponse) -> None:
         with self._lock:
-            if self._closed:
-                _close(response)
-                raise BrokerRejected("host upstream deadline expired")
-            self._response = response
+            closed = self._closed
+            if not closed:
+                self._response = response
+                if self._socket is None:
+                    self._socket = self.connection.sock
+        if closed:
+            _close(response)
+            raise BrokerRejected("host upstream deadline expired")
+
+    def attach_socket(self, opened: socket.socket) -> None:
+        with self._lock:
+            closed = self._closed
+            if not closed:
+                self._socket = opened
+                self.connection.sock = opened
+        if closed:
+            self._shutdown(opened)
+            _close(opened)
+            raise BrokerRejected("host upstream deadline expired")
+
+    @staticmethod
+    def _shutdown(opened) -> None:
+        if opened is not None:
+            try:
+                opened.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
             self._closed = True
             response = self._response
             self._response = None
+            opened = self._socket
+            self._socket = None
+            if self.connection.sock is opened:
+                self.connection.sock = None
         self._timer.cancel()
+        self._shutdown(opened)
+        if opened is not None:
+            _close(opened)
         if response is not None:
             _close(response)
-        # A timed-out DNS lookup can assign a socket after the timer fires.
-        # The caller's final close handles that late socket too.
         _close(self.connection)
 
 
@@ -379,7 +506,7 @@ class HostUpstream:
             lease = _TransportLease(connection, deadline)
             lease.start()
             phase = "connect"
-            connection.connect()
+            _connect(connection, lease, deadline)
             _remaining(connection, deadline)
             phase = "request_write"
             connection.request(method, prepared.path, body=prepared.body, headers=outgoing)

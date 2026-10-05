@@ -906,6 +906,12 @@ def test_private_failure_sink_live_producer_authenticates_exact_reservation_bind
         value = upstream_tests.FakeConnection(host, port, response=response, **kwargs)
         made.append(value); return value
     monkeypatch.setattr("http.client.HTTPSConnection", connection)
+    from shared.lib.fanout import container_upstream
+    def connect(value, lease, deadline):
+        value.connect()
+        lease.attach_socket(value.sock)
+        container_upstream._remaining(value, deadline)
+    monkeypatch.setattr(container_upstream, "_connect", connect)
     primary = certifier.ProviderRequestError("offline transport boundary reached")
     def inspect_failure(_controller, _spec, *, broker, permit_id, epoch, **kwargs):
         request = RelayRequest(permit_id, epoch, "owner-failure", "POST", "/v1/messages",
@@ -1642,6 +1648,47 @@ def test_maka_ballot_cannot_turn_failed_isolation_green(certifier, complete_rece
     quality = certifier.assess_quality(complete_receipt, FakeMaka())
     assert not quality.isolation_passed
     assert len(quality.ballot_digest) == 64
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source_sha256", "f" * 64), ("permit_epoch", 3), ("permit_id", "f" * 64),
+    ("cold_controller_reopened", False), ("permit_fenced", False),
+    ("seat_stopped", False), ("prior_seat_stopped", False),
+])
+def test_single_otherwise_valid_cell_cannot_claim_stale_or_unsettled_authority(
+    certifier, complete_receipt, field, value,
+):
+    assert certifier.evaluate_private_probe(complete_receipt).passed
+    complete_receipt["providers"]["agy"]["resume"][field] = value
+    decision = certifier.evaluate_private_probe(complete_receipt)
+    assert not decision.passed
+    assert any("agy resume" in reason for reason in decision.reasons)
+
+
+def test_favorable_actual_ballots_do_not_change_failed_isolation(
+    certifier, complete_receipt, tmp_path,
+):
+    answer = tmp_path / "completed-answer.txt"
+    digest = certifier._write_private(answer, b"synthetic favorable answer")
+    complete_receipt["private_run_root"] = str(tmp_path)
+    complete_receipt["answers"] = {"claude": {"path": str(answer), "sha256": digest}}
+    assert certifier.evaluate_private_probe(complete_receipt).passed
+    complete_receipt["providers"]["agy"]["initial"]["isolation"]["caller"]["write_denied"] = False
+    class FavorableMaka:
+        target_id = "maka"
+        no_tools_characterization_sha256 = "e" * 64
+        def __init__(self):
+            self.requests = []
+        def judge(self, request):
+            self.requests.append(request)
+            return {"winner": "A" if request.answer_a == "synthetic favorable answer" else "B",
+                "auth_route": "harbor-lab", "requested_model": "gpt-6.1-sol", "observed_model": "gpt-6.1-sol",
+                "effort": "xhigh", "tool_calls": 0, "tool_boundary_sha256": self.no_tools_characterization_sha256}
+    maka = FavorableMaka()
+    quality = certifier.assess_quality(complete_receipt, maka)
+    assert len(maka.requests) == len(quality.ballots) == 2
+    assert [ballot["winner"] for ballot in quality.ballots] == ["A", "B"]
+    assert not quality.isolation_passed and not certifier.evaluate_private_probe(complete_receipt).passed
 
 
 def _refuse_auxiliary(ledger, permit, permit_id, epoch, *, path=None):

@@ -51,6 +51,17 @@ def certification():
         pytest.fail("the shared authenticated evidence and certificate gates are missing")
 
 
+def _served_response(provider, identity="synthetic-response"):
+    if provider == "claude":
+        return {"type": "message", "id": identity, "model": "claude-opus-5-5",
+                "stop_reason": "end_turn", "content": []}
+    if provider == "codex":
+        return {"object": "response", "id": identity, "model": "gpt-6.1-sol",
+                "status": "completed", "error": None, "incomplete_details": None}
+    return {"responseId": identity, "modelVersion": "gemini-3.8-flash",
+            "candidates": [{"finishReason": "STOP", "content": {"parts": []}}]}
+
+
 @pytest.fixture
 def persisted_probe(certifier, complete_receipt, company_manifest, tmp_path, monkeypatch):
     root, controller, ledger = _completed_quality_root(
@@ -248,7 +259,7 @@ def complete_private_probe(persisted_probe, certifier, tmp_path, monkeypatch, re
                     prepared.route_digest, prepared.origin, prepared.path,
                     hashlib.sha256(prepared.body).hexdigest(), prepared.effective_model)
                 request_id = f"{provider}-{route}"
-                response = b'{"ok":true}'
+                response = canonical_json(_served_response(provider, request_id)).rstrip(b"\n")
                 ledger.record_attempt(permit_id, epoch)
                 ledger.reserve(permit_id, epoch, request_id, wire_identity)
                 ledger.claim_send(permit_id, epoch, request_id, permit, wire_identity)
@@ -304,6 +315,8 @@ def test_complete_persisted_attestations_are_reopened(complete_private_probe, mo
     proof = api.read_private_route_evidence(root, manifest, require_attestations=True)
     assert proof.attestations_complete
     receipt = proof.receipt
+    assert receipt["providers"]["codex"]["initial"]["observed_model"] is None
+    assert receipt["providers"]["codex"]["resume"]["observed_model"] is None
     for provider, count in (("claude", 1), ("codex", 3), ("agy", 5)):
         cell = receipt["providers"][provider]["resume"]
         value = read_evidence(complete_private_probe[1], "container-private-cell-attestation",
@@ -344,6 +357,71 @@ def _edit_complete_cell(complete_private_probe, certifier, provider, route, *, r
     cell["attestation_evidence_name"], cell["attestation_evidence_digest"] = write_evidence(
         controller, "container-private-cell-attestation", value)
     _reseal_completed_receipt(certifier, root, controller, receipt)
+
+
+@pytest.mark.parametrize("provider,fault", [(provider, fault)
+    for provider in ("claude", "codex", "agy") for fault in ("missing", "wrong-model", "incomplete")])
+def test_full_authority_requires_actual_completed_served_identity(
+    complete_private_probe, certifier, certificate_authority, trial_roots, provider, fault,
+):
+    root, controller, ledger, manifest = complete_private_probe
+    api = certification()
+    assert api.read_private_route_evidence(root, manifest, require_attestations=True).attestations_complete
+    receipt = copy.deepcopy(certifier._read_private_receipt(root))
+    cell = receipt["providers"][provider]["resume"]
+    value = read_evidence(controller, "container-private-cell-attestation",
+                          cell["attestation_evidence_name"], cell["attestation_evidence_digest"])
+    response = _served_response(provider, f"{provider}-resume")
+    if fault == "missing":
+        response = {"requested_model": value["permit"]["model"], "ok": True}
+    elif fault == "wrong-model":
+        response["modelVersion" if provider == "agy" else "model"] = "synthetic-unserved-model"
+    elif provider == "claude":
+        response["stop_reason"] = None
+    elif provider == "codex":
+        response["status"] = "in_progress"
+    else:
+        response["candidates"][0]["finishReason"] = "MAX_TOKENS"
+    body = canonical_json(response).rstrip(b"\n")
+    digest = hashlib.sha256(body).hexdigest()
+    with ArtifactStore.open_existing(root / "raw") as raw:
+        ref = asdict(raw.write_bytes(f"{provider}-otherwise-valid-{fault}.json", body))
+    value["wire"][0].update(response_body=ref, delivered_body=ref)
+    request_id = value["wire"][0]["request_id"]
+    with ledger._locked() as state:
+        state["requests"][request_id]["response_digest"] = digest
+        ledger._save(state)
+    cell["ledger_requests"] = list(ledger.request_records(cell["permit_id"], cell["permit_epoch"]))
+    cell["broker_dispositions"][0]["response_sha256"] = digest
+    cell["attestation_evidence_name"], cell["attestation_evidence_digest"] = write_evidence(
+        controller, "container-private-cell-attestation", value)
+    _reseal_completed_receipt(certifier, root, controller, receipt)
+    with pytest.raises(api.CertificationRejected):
+        api.read_private_route_evidence(root, manifest, require_attestations=True)
+    with pytest.raises(api.CertificationRejected):
+        certificate_authority.issue_trial(root, trial_roots)
+
+
+@pytest.mark.parametrize("fault", ["original", "delivered", "request"])
+def test_full_reader_rejects_otherwise_valid_cross_request_wire_swaps(
+    complete_private_probe, certifier, fault,
+):
+    root, controller, _, manifest = complete_private_probe
+    api = certification()
+    assert api.read_private_route_evidence(root, manifest, require_attestations=True).attestations_complete
+    receipt = copy.deepcopy(certifier._read_private_receipt(root))
+    initial, resumed = receipt["providers"]["claude"]["initial"], receipt["providers"]["claude"]["resume"]
+    first = read_evidence(controller, "container-private-cell-attestation", initial["attestation_evidence_name"], initial["attestation_evidence_digest"])
+    value = read_evidence(controller, "container-private-cell-attestation", resumed["attestation_evidence_name"], resumed["attestation_evidence_digest"])
+    if fault == "request":
+        value["wire"][0]["request_id"] = first["wire"][0]["request_id"]
+    else:
+        field = "response_body" if fault == "original" else "delivered_body"
+        value["wire"][0][field] = first["wire"][0][field]
+    resumed["attestation_evidence_name"], resumed["attestation_evidence_digest"] = write_evidence(controller, "container-private-cell-attestation", value)
+    _reseal_completed_receipt(certifier, root, controller, receipt)
+    with pytest.raises(api.CertificationRejected):
+        api.read_private_route_evidence(root, manifest, require_attestations=True)
 
 
 @pytest.mark.parametrize("changed", ["missing", "duplicate", "extra", "reordered", "shape",
@@ -482,15 +560,97 @@ def certificate_authority(tmp_path):
 
 @pytest.fixture
 def trial_roots(tmp_path, certifier):
+    from shared.lib.fanout.container_coordinator import prepare_container_trial_targets
     run = tmp_path / "synthetic-trial"
     run.mkdir(mode=0o700)
-    (run / "targets").mkdir(mode=0o700)
+    return prepare_container_trial_targets(run)
+
+
+def test_trial_issuance_refuses_caller_like_roots_without_creation_provenance(
+    complete_private_probe, certificate_authority, tmp_path, certifier,
+):
+    run = tmp_path / "caller-like"
+    (run / "targets").mkdir(mode=0o700, parents=True)
+    run.chmod(0o700)
     roots = tuple(run / "targets" / name for name in ("repo-alpha", "repo-beta"))
-    for root in roots:
-        root.mkdir(mode=0o700)
-        (root / "README.md").write_text("Disposable synthetic target.\n")
-        certifier._git_synthetic(root)
-    return roots
+    for target in roots:
+        target.mkdir(mode=0o700)
+        (target / "README.md").write_text("Disposable synthetic target.\n")
+        certifier._git_synthetic(target)
+    with pytest.raises(certification().CertificationRejected):
+        certificate_authority.issue_trial(complete_private_probe[0], roots)
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "agy"])
+@pytest.mark.parametrize("fault", ["missing", "disagreement"])
+def test_success_producer_refuses_requested_only_bytes_but_retains_actual_raw(
+    complete_private_probe, certifier, provider, fault,
+):
+    root, controller, ledger, _ = complete_private_probe
+    cell = certifier._read_private_receipt(root)["providers"][provider]["initial"]
+    value = read_evidence(controller, "container-private-cell-attestation",
+                         cell["attestation_evidence_name"], cell["attestation_evidence_digest"])
+    record = cell["ledger_requests"][0]
+    raw = (b'{"ok":true}' if fault == "missing" else
+           canonical_json(_served_response(provider, "synthetic-original")).rstrip(b"\n"))
+    delivered = (raw if fault == "missing" else
+                 canonical_json(_served_response(provider, "synthetic-swapped-delivery")).rstrip(b"\n"))
+    with ArtifactStore.open_existing(root / "raw") as store:
+        observed = {name: store.read_bytes(ArtifactRef(**value["wire"][0][name]))
+                    for name in ("normalized_body", "effective_body")}
+    identity = record["identity"]
+    observed.update(method="POST", provider_path=identity["path"],
+        **{name: identity[name] for name in ("upstream_origin", "upstream_path", "upstream_model", "upstream_route_digest")},
+        content_type="application/json", http_status=200, response_body=raw, delivered_body=delivered)
+    with ledger._locked() as state:
+        state["requests"][record["request_id"]].update(state="uncertain", response_digest=None)
+        ledger._save(state)
+    prefix = f"{provider}-refused"
+    with pytest.raises(BrokerRejected):
+        certifier._capture_private_wire(ledger, cell["permit_id"], cell["permit_epoch"], root / "raw", prefix, observed)
+    with ArtifactStore.open_existing(root / "raw") as store:
+        ref = ArtifactRef(f"{prefix}-wire/{record['request_id']}/response_body.bin", hashlib.sha256(raw).hexdigest(), len(raw))
+        assert store.read_bytes(ref) == raw
+        if fault == "disagreement":
+            assert store.read_bytes(ArtifactRef(f"{prefix}-wire/{record['request_id']}/delivered_body.bin",
+                hashlib.sha256(delivered).hexdigest(), len(delivered))) == delivered
+    assert ledger.request_records(cell["permit_id"], cell["permit_epoch"])[0]["state"] == "uncertain"
+
+
+@pytest.mark.parametrize("fault", ["missing", "tampered", "noncanonical", "source", "substituted", "baseline"])
+def test_trial_creation_provenance_refuses_otherwise_valid_preparation_drift(
+    complete_private_probe, certificate_authority, trial_roots, certifier, fault,
+):
+    import shutil
+    from shared.lib.fanout.container_coordinator import _read_trial_preparation
+    root = trial_roots[0].parent.parent
+    controller, _ = _read_trial_preparation(root)
+    certificate = certificate_authority.issue_trial(complete_private_probe[0], trial_roots)
+    pointer = root / "trial-preparation.json"
+    if fault == "missing":
+        pointer.rename(root / "preserved-preparation.json")
+    elif fault == "tampered":
+        saved = json.loads(pointer.read_bytes())["evidence"]
+        path = controller.root / "receipts" / saved[0]
+        path.write_bytes(path.read_bytes() + b"changed")
+    elif fault == "noncanonical":
+        pointer.write_bytes(pointer.read_bytes() + b"\n")
+    elif fault == "source":
+        saved = json.loads(pointer.read_bytes())["evidence"]
+        value = read_evidence(controller, "container-trial-preparation", *saved)
+        value["release_source_binding"]["runtime_sha256"] = "f" * 64
+        changed = write_evidence(controller, "container-trial-preparation", value)
+        pointer.write_bytes(canonical_json({"evidence": list(changed)}))
+    elif fault == "substituted":
+        retained = trial_roots[0].with_name("retained-created-root")
+        trial_roots[0].rename(retained)
+        shutil.copytree(retained, trial_roots[0])
+        assert capture_repository_baseline(trial_roots[0]).digest == capture_repository_baseline(retained).digest
+    else:
+        (trial_roots[0] / "README.md").write_text("changed original baseline\n")
+    assert not certificate_authority.verify_trial(certificate, trial_roots, release_source_binding().digest).passed
+    with pytest.raises(certification().CertificationRejected):
+        certificate_authority.issue_trial(complete_private_probe[0], trial_roots)
 
 
 def test_trial_certificate_binds_exact_roots_and_cannot_satisfy_release(
@@ -506,6 +666,70 @@ def test_trial_certificate_binds_exact_roots_and_cannot_satisfy_release(
     assert not certificate_authority.verify_trial(certificate, (caller,), release_source_binding().digest).passed
     assert not certificate_authority.verify_release(certificate, trial_roots, release_source_binding().digest).passed
     assert not certificate_authority.verify_trial(replace(certificate, mac="0" * 64), trial_roots, release_source_binding().digest).passed
+
+
+@pytest.mark.parametrize("change", ["challenge", "profile", "key", "mounts", "endpoint"])
+def test_certificate_requires_same_stable_initial_resume_vm_not_challenge(
+    complete_private_probe, certificate_authority, trial_roots, certifier, change,
+):
+    from shared.lib.fanout.container_certification import _reopen_vm
+    root, controller, _, manifest = complete_private_probe
+    receipt = copy.deepcopy(certifier._read_private_receipt(root))
+    cell = receipt["providers"]["claude"]["resume"]
+    value = read_evidence(controller, "container-private-cell-attestation",
+                         cell["attestation_evidence_name"], cell["attestation_evidence_digest"])
+    with ArtifactStore.open_existing(root / "raw") as raw:
+        observed = json.loads(raw.read_bytes(ArtifactRef(**value["vm"])))
+        if change == "profile":
+            observed["profile_identity"]["lima_disk"]["inode"] += 1
+        elif change == "key":
+            observed["host_key"] = "ssh-ed25519 " + "B" * 44
+        elif change == "mounts":
+            observed["mounts"] = base64.b64encode(b"proc /proc proc rw 0 0\nsysfs /sys sysfs ro 0 0\n").decode()
+        else:
+            observed["nonce"] = observed["reply"] = base64.b64encode(b"c" * 32).decode()
+        decoded = {name: base64.b64decode(observed[name]) for name in ("colima", "lima", "mounts", "nonce", "reply")}
+        context = json.loads(base64.b64decode(observed["context"]))
+        vm = require_vm_probe(VMProfileSpec("fanout-isolated", "colima-fanout-isolated", "x86_64"),
+            parse_profile_config(decoded["colima"].decode(), decoded["lima"].decode(), context["Name"]),
+            decoded["mounts"].decode().splitlines(), context["Endpoints"]["docker"]["Host"], decoded["nonce"], decoded["reply"],
+            ssh_host_key=observed["host_key"], pinned_host_key=observed["host_key"])
+        observed["probe"] = asdict(vm)
+        if change == "endpoint":
+            from shared.lib.fanout.providers import ProviderRequestError
+            vm = replace(vm, docker_endpoint="unix:///synthetic/foreign.sock")
+            context["Endpoints"]["docker"]["Host"] = vm.docker_endpoint
+            observed["context"] = base64.b64encode(canonical_json(context)).decode()
+            observed["probe"] = asdict(vm)
+            observed["profile_identity"]["endpoint"] = vm.docker_endpoint
+        observed["profile_identity"]["ssh_host_key_sha256"] = vm.ssh_host_key_sha256
+        observed["profile_binding"] = copy.deepcopy(observed["profile_identity"])
+        if change == "endpoint":
+            with pytest.raises(ProviderRequestError, match="Docker endpoint"):
+                _reopen_vm(observed)
+        else:
+            assert _reopen_vm(observed) == vm
+        value["vm"] = asdict(raw.write_json(f"resume-valid-vm-{change}.json", observed))
+    boundary = read_evidence(controller, "container-seat-admission", value["boundary_evidence_name"], value["boundary_evidence_digest"])
+    boundary.update(vm_probe_digest=vm.digest, vm_docker_endpoint=vm.docker_endpoint,
+        vm_ssh_host_key_sha256=vm.ssh_host_key_sha256, vm_effective_mounts_sha256=vm.effective_mounts_sha256,
+        vm_guest_mounts_sha256=vm.guest_mounts_sha256)
+    value["boundary_evidence_name"], value["boundary_evidence_digest"] = write_evidence(controller, "container-seat-admission", boundary)
+    exported = read_evidence(controller, "container-candidate-export", cell["candidate_export_evidence_digest"] + ".json", cell["candidate_export_evidence_digest"])
+    request = ProviderRequest(**value["request"], profile=ProviderRegistry.default().select("claude", "repo-write", "standard"))
+    exported["turn_digest"] = _turn_digest(request, SimpleNamespace(**boundary))
+    cell["candidate_export_evidence_digest"] = write_evidence(controller, "container-candidate-export", exported)[1]
+    cell["vm_probe_sha256"] = vm.digest
+    cell["attestation_evidence_name"], cell["attestation_evidence_digest"] = write_evidence(controller, "container-private-cell-attestation", value)
+    _reseal_completed_receipt(certifier, root, controller, receipt)
+    if change == "challenge":
+        certificate = certificate_authority.issue_trial(root, trial_roots)
+        assert certificate_authority.verify_trial(certificate, trial_roots, release_source_binding().digest).passed
+    else:
+        with pytest.raises(certification().CertificationRejected):
+            certificate_authority.issue_trial(root, trial_roots)
+        with pytest.raises(certification().CertificationRejected):
+            certification().read_private_route_evidence(root, manifest, require_attestations=True)
 
 
 def test_memory_only_current_source_drift_refuses_existing_full_proof_issuance(
@@ -562,9 +786,8 @@ def test_trial_certificate_rechecks_runtime_source_route_and_root_identity(
 def _accepted_trial(api, authority, probe_root, roots, certifier):
     trial = authority.issue_trial(probe_root, roots)
     run = roots[0].parent.parent
-    capability = LifecycleCapability("synthetic-trial-capability-" + "x" * 40)
-    certifier._write_private(run.with_name(run.name + ".controller-capability"), capability.export_token().encode())
-    controller = create_lifecycle_controller(run / "controller", capability=capability)
+    from shared.lib.fanout.container_coordinator import _read_trial_preparation
+    controller, _ = _read_trial_preparation(run)
     with ArtifactStore(run / "raw") as store:
         checks = {name: {"artifact": asdict(store.write_json(name + ".json", {
             "check": name, "status": "pass", "release_source_binding": release_source_binding().to_dict()}))}
@@ -817,8 +1040,8 @@ def test_existing_producer_retains_wire_only_for_exact_authenticated_send(
 
 
 @pytest.mark.parametrize("mime,raw", [
-    ("application/json", b'{"ok":true}'),
-    ("text/event-stream", b'data: {"ok":true}\n\n'),
+    ("application/json", json.dumps(_served_response("codex"), separators=(",", ":")).encode()),
+    ("text/event-stream", b'data: ' + json.dumps({"type": "response.completed", "response": _served_response("codex")}, separators=(",", ":")).encode() + b'\n\n'),
 ])
 def test_real_success_sender_records_authenticated_reserved_wire(
     certifier, upstream_module, connection_factory, tmp_path, mime, raw,
@@ -834,7 +1057,7 @@ def test_real_success_sender_records_authenticated_reserved_wire(
     with ArtifactStore(raw_root):
         pass
     captured = []
-    sender = HostUpstream(permit, route, max_response_bytes=128, deadline_seconds=2,
+    sender = HostUpstream(permit, route, max_response_bytes=permit.max_response_bytes, deadline_seconds=2,
         success_sink=lambda payload: captured.append(certifier._capture_private_wire(
             ledger, permit_id, 1, raw_root, "codex-initial", payload)))
     path, _, body = _routed_request("codex")
@@ -854,9 +1077,12 @@ def test_real_success_sender_records_authenticated_reserved_wire(
 
 
 @pytest.mark.parametrize("mime,chunks,expected", [
-    ("application/json", [b'{ "ok": true }\n'], b'{"ok":true}'),
-    ("text/event-stream", [b'data: { "ok": true }\r', b'\n\r\ndata: [DONE]\r\n\r\n'],
-     b'data: {"ok":true}\n\ndata: [DONE]\n\n'),
+    ("application/json", [json.dumps(_served_response("claude"), indent=1).encode() + b'\n'],
+     json.dumps(_served_response("claude"), separators=(",", ":")).encode()),
+    ("text/event-stream", [b'data: ' + json.dumps({"type": "message_start", "message": {**_served_response("claude"), "stop_reason": None}}).encode() + b'\r',
+      b'\n\r\ndata: { "type": "message_delta", "delta": { "stop_reason": "tool_use" } }\r\n\r\ndata: { "type": "message_stop" }\r\n\r\n'],
+     b'data: ' + json.dumps({"type": "message_start", "message": {**_served_response("claude"), "stop_reason": None}}, separators=(",", ":")).encode() +
+     b'\n\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\ndata: {"type":"message_stop"}\n\n'),
 ])
 def test_real_normalized_delivery_reopens_complete_raw_and_delivered_proofs(
     complete_private_probe, certifier, upstream_module, connection_factory, mime, chunks, expected,
@@ -915,7 +1141,7 @@ def test_real_normalized_delivery_reopens_complete_raw_and_delivered_proofs(
 
 @pytest.mark.parametrize("injected", [False, True])
 def test_owner_trial_uses_fixed_docker_execution_and_refuses_replaced_callback(
-    complete_private_probe, certificate_authority, trial_roots, monkeypatch, injected, certifier,
+    complete_private_probe, certificate_authority, trial_roots, monkeypatch, injected, certifier, tmp_path,
 ):
     import test_fanout_container_boundary as boundary_tests
     from shared.lib.fanout import container_boundary
@@ -931,7 +1157,12 @@ def test_owner_trial_uses_fixed_docker_execution_and_refuses_replaced_callback(
         monkeypatch.setattr(runtime_tests, name, value)
     monkeypatch.setattr(boundary_tests, "IMAGE", receipt["image_digest"])
     monkeypatch.setattr(boundary_tests, "CLI", receipt["cli_digests"]["claude"])
-    request, boundary, transport, _, _, original_callback_calls = boundary_tests._launched_seat(container_boundary, trial_roots[0])
+    fixture_root = tmp_path / "certified-boundary-fixture"
+    fixture_root.mkdir(mode=0o700)
+    with monkeypatch.context() as construction:
+        construction.setattr(boundary_tests, "ProviderRequest",
+            lambda **fields: ProviderRequest(**{**fields, "cwd": trial_roots[0]}))
+        request, boundary, transport, _, _, original_callback_calls = boundary_tests._launched_seat(container_boundary, fixture_root)
     request = replace(request, certificate_roots=trial_roots)
     initial = receipt["providers"]["claude"]["initial"]
     attestation = read_evidence(proof_controller, "container-private-cell-attestation",

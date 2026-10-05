@@ -1852,6 +1852,7 @@ def _add_cell_failure_note(error: BaseException, note: str) -> None:
 
 def _capture_private_wire(ledger: PermitLedger, permit_id: str, epoch: int,
                           raw_root: Path, prefix: str, payload: dict) -> dict:
+    from shared.lib.fanout.canary_proof import served_response_identity
     fields = {"method", "provider_path", "normalized_body", "effective_body", "upstream_origin",
               "upstream_path", "upstream_model", "upstream_route_digest", "http_status", "content_type", "response_body", "delivered_body"}
     if (type(payload) is not dict or set(payload) != fields
@@ -1874,12 +1875,26 @@ def _capture_private_wire(ledger: PermitLedger, permit_id: str, epoch: int,
     with ledger._locked() as state:
         if state["send_claims"].get(request_id) is not True:
             raise BrokerRejected("successful private wire send claim differs")
+        permit = state["permits"][permit_id]
+        if (permit["epoch"] != epoch or any(permit[name] != payload[name] for name in (
+                "upstream_origin", "upstream_path", "upstream_model", "upstream_route_digest"))
+                or any(len(payload[name]) > permit["max_response_bytes"] for name in ("response_body", "delivered_body"))):
+            raise BrokerRejected("successful private wire original permit differs")
     captured = {"request_id": request_id, "http_status": payload["http_status"], "content_type": payload["content_type"]}
     with ArtifactStore.open_existing(raw_root) as store:
         for name in ("normalized_body", "effective_body", "response_body"):
             captured[name] = asdict(store.write_bytes(f"{prefix}-wire/{request_id}/{name}.bin", payload[name]))
         captured["delivered_body"] = (captured["response_body"] if payload["delivered_body"] == payload["response_body"] else
             asdict(store.write_bytes(f"{prefix}-wire/{request_id}/delivered_body.bin", payload["delivered_body"])))
+    try:
+        original = served_response_identity(permit["provider"], permit["model"], permit["upstream_model"],
+                                            payload["response_body"], payload["content_type"])
+        delivered = served_response_identity(permit["provider"], permit["model"], permit["upstream_model"],
+                                             payload["delivered_body"], payload["content_type"])
+        if original != delivered:
+            raise ValueError("original/delivered identity differs")
+    except (ValueError, BrokerRejected, UnicodeError, TypeError, AttributeError):
+        raise BrokerRejected("private wire served completion refused; diagnostic bytes retained") from None
     return captured
 
 

@@ -719,6 +719,7 @@ def reopen_turn_completion(coordinator, packet, seat, terminal, peer):
     from .container_transfer_transport import InputTransferReceipt, validate_input_receipt, admitted_request_digest, reopen_stopped_seat
     from .container_upstream import HostUpstream
     from .providers import ProviderRequest
+    from .canary_proof import served_response_identity
     inputs, baseline = authenticate_inputs(coordinator, packet)
     prefix = coordinator._provider_prefix(packet, terminal.round, seat.seat_id)
     exact = coordinator._read_named(prefix + "/container-turn.json", required=True)
@@ -860,6 +861,10 @@ def reopen_turn_completion(coordinator, packet, seat, terminal, peer):
                 or type(item["http_status"]) is not int or not 200 <= item["http_status"] < 300
                 or item["content_type"] not in {"application/json", "text/event-stream"}):
             raise ValueError("actual model wire bytes")
+        if served_response_identity(seat.executor_id, permit.model, permit.upstream_model,
+                response, item["content_type"]) != served_response_identity(seat.executor_id,
+                permit.model, permit.upstream_model, delivered, item["content_type"]):
+            raise ValueError("actual served response identity differs")
     return proof
 
 
@@ -1012,9 +1017,16 @@ def _trial_root(root):
 def prepare_container_trial_targets(trial_root):
     """Prepare only inert disposable Git targets, before owner trial issuance."""
     from .repo import _git
+    from scripts import fanout_container_certify as probe
+    from .controller import create_lifecycle_controller
+    from .container_certification import _root_bindings
+    from .container_source import release_source_binding
     root = _trial_root(trial_root)
-    if any(root.iterdir()):
+    capability_path = root.with_name(root.name + ".controller-capability")
+    if any(root.iterdir()) or os.path.lexists(capability_path):
         raise CollaborationValidationError("trial target preparation requires a fresh empty root")
+    controller = create_lifecycle_controller(root / "controller")
+    probe._write_private(capability_path, controller.capability.export_token().encode("ascii"))
     targets = root / "targets"
     targets.mkdir(mode=0o700)
     roots = []
@@ -1029,7 +1041,46 @@ def prepare_container_trial_targets(trial_root):
         _git(target, "add", "README.md")
         _git(target, "commit", "-qm", "synthetic baseline")
         roots.append(target)
+    info = root.lstat()
+    evidence = write_evidence(controller, "container-trial-preparation", {
+        "controller_id": controller.controller_id,
+        "release_source_binding": release_source_binding().to_dict(),
+        "trial_root": {"path": str(root), "device": info.st_dev, "inode": info.st_ino},
+        "roots": _root_bindings(tuple(roots), trial=True)})
+    probe._write_private(root / "trial-preparation.json", canonical_json({"evidence": list(evidence)}))
     return tuple(roots)
+
+
+def _read_trial_preparation(trial_root, *, fresh=True):
+    from scripts import fanout_container_certify as probe
+    from .container_certification import _read_owned_json, _root_bindings
+    from .container_source import release_source_binding
+    root = _trial_root(trial_root)
+    pointer, raw = _read_owned_json(root / "trial-preparation.json")
+    if (len(raw) > 4096 or set(pointer) != {"evidence"} or type(pointer["evidence"]) is not list
+            or len(pointer["evidence"]) != 2):
+        raise ValueError("trial preparation pointer")
+    controller = probe._quality_controller(root)
+    value = read_evidence(controller, "container-trial-preparation", *pointer["evidence"])
+    info = root.lstat()
+    roots = tuple(root / "targets" / name for name in ("repo-alpha", "repo-beta"))
+    if (set(value) != {"controller_id", "release_source_binding", "trial_root", "roots"}
+            or value["controller_id"] != controller.controller_id
+            or value["release_source_binding"] != release_source_binding().to_dict()
+            or value["trial_root"] != {"path": str(root), "device": info.st_dev, "inode": info.st_ino}
+            or len(value["roots"]) != 2 or {item["path"] for item in value["roots"]} != {str(path) for path in roots}):
+        raise ValueError("original trial preparation association")
+    for item in value["roots"]:
+        target = Path(item["path"])
+        target_info = target.lstat()
+        if (set(item) != {"path", "device", "inode", "baseline_sha256", "head"}
+                or target.resolve() != target or not stat.S_ISDIR(target_info.st_mode)
+                or target_info.st_uid != os.getuid() or stat.S_IMODE(target_info.st_mode) != 0o700
+                or (target_info.st_dev, target_info.st_ino) != (item["device"], item["inode"])):
+            raise ValueError("original prepared root identity")
+    if fresh and value["roots"] != _root_bindings(roots, trial=True):
+        raise ValueError("original prepared baselines changed")
+    return controller, value["roots"]
 
 
 def _open_trial_authority(root):
@@ -1053,6 +1104,7 @@ def _open_trial_authority(root):
 def completed_trial_root_bindings(trial_root):
     from .branch_handover import verify_git_handover_proof
     root = _trial_root(trial_root)
+    _, created = _read_trial_preparation(root, fresh=False)
     with _open_trial_authority(root) as opened:
         service = opened.service
         inputs = opened.journal.inputs
@@ -1080,13 +1132,16 @@ def completed_trial_root_bindings(trial_root):
                 raise ValueError("original journal baseline")
             result.append({"path": str(binding.root), "device": info.st_dev, "inode": info.st_ino,
                            "baseline_sha256": baseline.digest, "head": baseline.head})
-        return sorted(result, key=lambda item: item["path"])
+        result = sorted(result, key=lambda item: item["path"])
+        if result != created:
+            raise ValueError("prepared creation roots/original journal baselines differ")
+        return result
 
 
 def produce_container_trial(trial_root, certificate, admission_packet, skill_roots, *, allow_paid=False):
     """Run the reviewed synthetic DAG through the fixed production container path."""
     from scripts import fanout_container_certify as probe
-    from .container_certification import TrialCertificate, TRIAL_CHECKS, _owner_authority
+    from .container_certification import TrialCertificate, TRIAL_CHECKS, _owner_authority, _read_owned_json
     from .container_source import release_source_binding, _SOURCE_ROOT
     from .container_boundary import SessionStore
     from .container_runtime import private_volume_names
@@ -1098,9 +1153,22 @@ def produce_container_trial(trial_root, certificate, admission_packet, skill_roo
     if (allow_paid is not True or type(certificate) is not TrialCertificate
             or not _owner_authority().verify_trial(certificate, roots, binding.digest).passed):
         raise CollaborationValidationError("paid synthetic trial requires exact owner-issued trial authority")
-    if (set(path.name for path in root.iterdir()) - {"targets", "trial-certificate.json"}
-            or root.with_name(root.name + ".controller-capability").exists()):
+    if set(path.name for path in root.iterdir()) - {"targets", "controller", "trial-preparation.json", "trial-certificate.json"}:
         raise CollaborationValidationError("synthetic trial contains prior execution state")
+    trial_controller, _ = _read_trial_preparation(root)
+    pointer, _ = _read_owned_json(root / "trial-preparation.json")
+    from .controller import _DIRECTORIES, _RECORD, _controller_root
+    with _controller_root(trial_controller) as controller_fd:
+        if set(os.listdir(controller_fd)) != {*_DIRECTORIES, _RECORD}:
+            raise CollaborationValidationError("synthetic trial contains prior execution state")
+        for name in _DIRECTORIES:
+            child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=controller_fd)
+            try:
+                expected = {pointer["evidence"][0]} if name == "receipts" else set()
+                if set(os.listdir(child_fd)) != expected:
+                    raise CollaborationValidationError("synthetic trial contains prior execution state")
+            finally:
+                os.close(child_fd)
     execute, runtime = _execute_source()
     resolver = execute._resolver(runtime, skill_roots)
     plan = execute.verify_admission(admission_packet, runtime, resolver).plan
@@ -1115,8 +1183,6 @@ def produce_container_trial(trial_root, certificate, admission_packet, skill_roo
                    (("claude", "codex", "agy"), 2, 2, 0, "standard")
                    for task in work for policy in (task.provider_policy or plan.defaults,))):
         raise CollaborationValidationError("trial admission must bind the exact two-target standard artifact DAG")
-    trial_controller = runtime.create_lifecycle_controller(root / "controller")
-    probe._write_private(root.with_name(root.name + ".controller-capability"), trial_controller.capability.export_token().encode("ascii"))
     with ArtifactStore(root / "raw") as raw:
         private = root / "private"
         private.mkdir(mode=0o700)

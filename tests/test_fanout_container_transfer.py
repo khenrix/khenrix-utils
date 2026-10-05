@@ -62,6 +62,65 @@ def _published_absent(root: Path) -> None:
     assert not any(path.name.startswith(".fanout-transfer-") for path in root.iterdir())
 
 
+@pytest.mark.parametrize("fail_parent_sync", [False, True])
+def test_import_ack_requires_published_parent_fsync(tmp_path, monkeypatch, fail_parent_sync):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    manifest = _manifest(_entry("context", kind="directory", mode=0o755),
+        _entry("context/plan.json", b"{}\n"), _entry("repo", kind="directory", mode=0o755),
+        _entry("repo/item", b"published bytes"))
+    wire = _manifest_bytes(manifest)
+    stream = transfer._MAGIC + len(wire).to_bytes(4, "big") + wire + _frame(b"{}\n") + _frame(b"published bytes")
+    identity_hash = hashlib.sha256(canonical_json(asdict(IDENTITY))).hexdigest()
+    root = workspace / "inputs" / identity_hash
+    published = root / "published"
+    real_rename, real_fsync, real_remove = transfer._rename_no_replace, transfer.os.fsync, transfer._remove_tree
+    events = []
+    parent_fd = None
+    def rename(source_fd, source_name, destination_fd, destination_name):
+        nonlocal parent_fd
+        result = real_rename(source_fd, source_name, destination_fd, destination_name)
+        if result:
+            parent_fd = destination_fd
+            events.append("published")
+        return result
+    def fsync(fd):
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) == (workspace.stat().st_dev, workspace.stat().st_ino):
+            events.append("workspace-fsync")
+        elif root.parent.exists() and (info.st_dev, info.st_ino) == (root.parent.stat().st_dev, root.parent.stat().st_ino):
+            events.append("inputs-fsync")
+        if fd == parent_fd and (info.st_dev, info.st_ino) == (root.stat().st_dev, root.stat().st_ino):
+            assert published.is_dir()
+            events.append("parent-fsync")
+            if fail_parent_sync:
+                raise OSError(errno.EIO, "actual post-rename parent sync failure")
+        real_fsync(fd)
+    def remove(fd, name):
+        assert not published.exists(), "published stage ownership must already be released"
+        return real_remove(fd, name)
+    monkeypatch.setattr(transfer, "_rename_no_replace", rename)
+    monkeypatch.setattr(transfer.os, "fsync", fsync)
+    monkeypatch.setattr(transfer, "_remove_tree", remove)
+    ack = io.BytesIO()
+    if fail_parent_sync:
+        with pytest.raises(TransferRejected, match="staging failed") as rejected:
+            transfer.main(["import"], stdin=io.BytesIO(stream), stdout=ack, workspace=workspace)
+        assert isinstance(rejected.value.__cause__, OSError)
+        assert rejected.value.__cause__.errno == errno.EIO
+        assert ack.getvalue() == b""
+    else:
+        assert transfer.main(["import"], stdin=io.BytesIO(stream), stdout=ack, workspace=workspace) == 0
+        assert ack.getvalue() == hashlib.sha256(wire).hexdigest().encode() + b"\n"
+    assert events == ["inputs-fsync", "workspace-fsync", "published", "parent-fsync"]
+    assert (published / "repo/item").read_bytes() == b"published bytes"
+    assert (published / "context/plan.json").read_bytes() == b"{}\n"
+    assert not list(root.glob(".fanout-transfer-*"))
+    with pytest.raises(TransferRejected, match="destination already exists"):
+        transfer.main(["import"], stdin=io.BytesIO(stream), stdout=io.BytesIO(), workspace=workspace)
+    assert events.count("published") == 1 and events.count("parent-fsync") == 1
+
+
 def _set_symlink_mode_or_skip(link: Path, mode: int) -> None:
     if os.chmod in os.supports_follow_symlinks:
         try:

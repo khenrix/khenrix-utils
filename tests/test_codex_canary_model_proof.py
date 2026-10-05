@@ -89,6 +89,86 @@ def test_partial_created_event_does_not_replace_completed_response_model():
     assert _proof().response_model(raw, "text/event-stream") == ("resp_fixture", MODEL)
 
 
+def _company_events(provider, reason="end_turn"):
+    if provider == "claude":
+        return [
+            {"type": "message_start", "message": {"type": "message", "id": "synthetic-message", "model": "claude-opus-5-5", "stop_reason": None}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "synthetic-tool", "name": "fixture", "input": {}}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": reason}}, {"type": "message_stop"}]
+    return [{"responseId": "synthetic-generation", "modelVersion": "gemini-3.8-flash",
+        "candidates": [{"content": {"parts": [{"functionCall": {"name": "fixture", "args": {}}}]}}]},
+        {"responseId": "synthetic-generation", "modelVersion": "gemini-3.8-flash",
+         "candidates": [{"finishReason": "STOP", "content": {"parts": []}}]}]
+
+
+def _company_wire(events, ending=b"\n"):
+    return b"".join(b"data: " + json.dumps(event, separators=(",", ":")).encode() + ending * 2 for event in events)
+
+
+@pytest.mark.parametrize("provider,requested,returned,identity", [
+    ("claude", "claude-opus-5-5", "claude-opus-5-5", "synthetic-message"),
+    ("agy", "gemini-3.8-flash-high", "gemini-3.8-flash", "synthetic-generation"),
+])
+@pytest.mark.parametrize("ending", [b"\n", b"\r\n"])
+def test_company_complete_tool_calls_have_actual_identity_without_done(provider, requested, returned, identity, ending):
+    events = _company_events(provider, reason="tool_use")
+    api = _proof()
+    assert api.served_response_identity(provider, requested, returned, _company_wire(events, ending), "text/event-stream") == (identity, returned)
+    message = (dict(events[0]["message"], stop_reason="end_turn") if provider == "claude" else events[-1])
+    assert api.served_response_identity(provider, requested, returned, json.dumps(message).encode(), "application/json") == (identity, returned)
+
+
+@pytest.mark.parametrize("provider,fault", [(provider, fault) for provider in ("claude", "agy")
+    for fault in ("missing-id", "wrong-model", "conflicting", "incomplete", "error", "late", "partial", "duplicate", "nonfinite", "malformed-frame")])
+def test_company_protocol_refuses_missing_failed_conflicting_or_late_completion(provider, fault):
+    events = _company_events(provider)
+    requested, returned = (("claude-opus-5-5", "claude-opus-5-5") if provider == "claude" else
+                           ("gemini-3.8-flash-high", "gemini-3.8-flash"))
+    if fault == "missing-id":
+        (events[0]["message"] if provider == "claude" else events[0]).pop("id" if provider == "claude" else "responseId")
+    elif fault == "wrong-model":
+        (events[0]["message"] if provider == "claude" else events[0])["model" if provider == "claude" else "modelVersion"] = "synthetic-other-model"
+    elif fault == "conflicting":
+        if provider == "claude":
+            events.insert(1, events[0])
+        else:
+            events[-1]["responseId"] = "synthetic-swapped-response"
+    elif fault == "incomplete":
+        if provider == "claude":
+            events.pop()
+        else:
+            events[-1]["candidates"][0]["finishReason"] = "MAX_TOKENS"
+    elif fault == "error":
+        events.insert(1, {"type": "error", "error": {"message": "synthetic failure"}})
+    elif fault == "late":
+        events.append(events[1])
+    raw = _company_wire(events)
+    if fault == "partial":
+        raw = raw[:-1]
+    elif fault == "duplicate":
+        raw = raw.replace(b'"model":', b'"model":"synthetic-other-model","model":', 1) if provider == "claude" else raw.replace(b'"modelVersion":', b'"modelVersion":"synthetic-other-model","modelVersion":', 1)
+    elif fault == "nonfinite":
+        raw = raw.replace(b'{', b'{"invalid":NaN,', 1)
+    elif fault == "malformed-frame":
+        raw = b"not-an-sse-field\n" + raw
+    with pytest.raises(ValueError):
+        _proof().served_response_identity(provider, requested, returned, raw, "text/event-stream")
+
+
+def test_completed_codex_response_refuses_late_semantic_event():
+    with pytest.raises(ValueError):
+        _proof().response_model(_sse({"type": "response.completed", "response": _response()},
+            {"type": "response.output_text.delta", "delta": "late"}), "text/event-stream")
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex", "agy", "synthetic-unsupported"])
+def test_company_response_does_not_guess_unadmitted_mapping(provider):
+    with pytest.raises(ValueError):
+        _proof().served_response_identity(provider, "synthetic-unadmitted-alias", "synthetic-guessed-model", b"{}", "application/json")
+
+
 @pytest.mark.parametrize("message", ["model rerouted: gpt-6.1-sol -> other (fallback)", "fixture warning"])
 def test_codex_native_error_item_remains_failure_after_turn_completed(message):
     stdout = b"\n".join(json.dumps(event).encode() for event in (

@@ -8,6 +8,8 @@ import http.client
 import io
 import json
 import socket
+import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -285,6 +287,12 @@ def connection_factory(monkeypatch):
         return connection
 
     monkeypatch.setattr("http.client.HTTPSConnection", make)
+    def connect(connection, lease, deadline):
+        connection.connect()
+        lease.attach_socket(connection.sock)
+        import shared.lib.fanout.container_upstream as upstream
+        upstream._remaining(connection, deadline)
+    monkeypatch.setattr("shared.lib.fanout.container_upstream._connect", connect)
     return made, response
 def test_vertex_claude_preview_pins_eu_endpoint_and_removes_guest_model(upstream_module):
     sender, _, route = _routed_sender(upstream_module, "claude")
@@ -757,6 +765,265 @@ def test_sse_stalled_socket_stops_at_absolute_deadline(upstream_module):
     finally:
         stream.close()
         provider.close()
+
+
+@pytest.mark.parametrize("phase,detached,dripping", (
+    ("headers", False, False), ("headers", False, True),
+    *((phase, detached, dripping) for phase in ("json", "sse")
+      for detached in (False, True) for dripping in (False, True)),
+))
+def test_native_response_deadline_shuts_down_retained_socket(
+    upstream_module, phase, detached, dripping,
+):
+    client, peer = socket.socketpair()
+    connection = http.client.HTTPConnection("fictional.invalid")
+    connection.sock = client
+    connection.putrequest("GET", "/fixture")
+    connection.endheaders()
+    header = b"HTTP/1.1 200 OK\r\nContent-Type: " + (
+        b"text/event-stream" if phase == "sse" else b"application/json") + b"\r\n"
+    header += b"Connection: close\r\n" if detached else b"Connection: keep-alive\r\n"
+    header += b"Transfer-Encoding: chunked\r\n" if phase == "sse" else b"Content-Length: 4096\r\n"
+    peer.sendall(header + (b"X-fixture: " if phase == "headers" else b"\r\n"))
+    if phase == "sse":
+        peer.sendall(b"1000\r\n")
+    deadline = time.monotonic() + 0.12
+    lease = upstream_module._TransportLease(connection, deadline)
+    finished, stop_dripping = threading.Event(), threading.Event()
+    failures = []
+    responses = []
+    def read():
+        try:
+            response = connection.getresponse()
+            responses.append(response)
+            lease.attach(response)
+            if phase == "sse":
+                b"".join(upstream_module._SSEBody(lease, response, 128, deadline))
+            else:
+                upstream_module._read_piece(connection, response, deadline, 128)
+        except Exception as error:
+            failures.append(error)
+        finally:
+            finished.set()
+    def drip():
+        while not stop_dripping.wait(0.02):
+            try:
+                peer.sendall(b"x")
+            except OSError:
+                return
+    reader = threading.Thread(target=read, daemon=True)
+    writer = threading.Thread(target=drip, daemon=True)
+    reader.start()
+    if dripping:
+        writer.start()
+    lease.start()
+    try:
+        bounded = finished.wait(0.5)
+        assert bounded, "deadline did not cancel a real HTTPResponse buffered read"
+        assert failures
+    finally:
+        stop_dripping.set()
+        try:
+            peer.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        peer.close()
+        reader.join(timeout=1)
+        if dripping:
+            writer.join(timeout=1)
+        lease.close()
+        lease._timer.join(timeout=1)
+        assert not reader.is_alive() and not writer.is_alive() and not lease._timer.is_alive()
+        assert client.fileno() == -1 and peer.fileno() == -1
+        assert all(response.isclosed() for response in responses)
+
+
+@pytest.mark.parametrize("caller", ["upstream", "tokeninfo"])
+@pytest.mark.parametrize("phase", ["dns", "tcp", "tls"])
+def test_connect_phases_share_one_owned_absolute_deadline(upstream_module, monkeypatch, caller, phase):
+    from shared.lib.fanout import container_credentials as credentials
+    finished, release = threading.Event(), threading.Event()
+    children, opened, handshakes, failures = [], [], [], []
+    real_popen = subprocess.Popen
+    def stalled_resolver(argv, **kwargs):
+        assert argv[1:4] == ["-I", "-S", "-c"]
+        assert "fake-openai-key" not in repr((argv, kwargs.get("env")))
+        assert set(kwargs["env"]) == {"PATH", "LANG"}
+        child = real_popen([sys.executable, "-I", "-S", "-c", "import time;time.sleep(30)"], **kwargs)
+        children.append(child)
+        return child
+    def resolve(*_args, **_kwargs):
+        if phase == "dns":
+            release.wait(1)
+            raise OSError("synthetic stalled resolution ended")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+    class OpenedSocket:
+        def __init__(self, kind):
+            self.kind, self.closed = kind, False
+            self.cancelled = threading.Event()
+            opened.append(self)
+        def settimeout(self, value):
+            assert 0 < value <= 0.15
+        def setsockopt(self, *_args):
+            pass
+        def connect(self, address):
+            assert address == ("127.0.0.1", 443)
+            if phase == "tcp":
+                self.cancelled.wait(0.7)
+                raise OSError("synthetic TCP wait ended")
+        def do_handshake(self):
+            handshakes.append(self)
+            self.cancelled.wait(0.7)
+            raise OSError("synthetic TLS wait ended")
+        def shutdown(self, how):
+            assert how == socket.SHUT_RDWR
+            self.cancelled.set()
+        def close(self):
+            self.closed = True
+    class TLSContext:
+        verify_mode, check_hostname = ssl.CERT_REQUIRED, True
+        def wrap_socket(self, raw, *, server_hostname, do_handshake_on_connect=True):
+            assert server_hostname == ("api.openai.com" if caller == "upstream" else "www.googleapis.com")
+            secured = OpenedSocket("tls")
+            raw.close()
+            if do_handshake_on_connect:
+                secured.do_handshake()
+            return secured
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    if phase == "dns":
+        monkeypatch.setattr(subprocess, "Popen", stalled_resolver)
+    else:
+        monkeypatch.setattr(socket, "socket", lambda *_args: OpenedSocket("tcp"))
+        # Resolution in the isolated child stays credential-blind and bounded.
+        def fixed_resolver(argv, **kwargs):
+            child = real_popen([sys.executable, "-I", "-S", "-c",
+                'import sys;sys.stdout.write("[[2,1,6,[\\\"127.0.0.1\\\",443]]]")'], **kwargs)
+            children.append(child)
+            return child
+        monkeypatch.setattr(subprocess, "Popen", fixed_resolver)
+    monkeypatch.setattr(upstream_module, "_system_tls_context", lambda: TLSContext())
+    monkeypatch.setattr(credentials, "_system_tls_context", lambda: TLSContext())
+    monkeypatch.setattr(credentials, "_TOKENINFO_DEADLINE_SECONDS", 0.15)
+    def call():
+        try:
+            if caller == "tokeninfo":
+                credentials.HostCredentialSource._verify_vertex_token("synthetic-only-token", "owner@fictional.invalid")
+            else:
+                _, permit, route = _routed_sender(upstream_module, "codex")
+                sender = upstream_module.HostUpstream(permit, route, max_response_bytes=128, deadline_seconds=0.15)
+                sender("POST", *_routed_request("codex"))
+        except Exception as error:
+            failures.append(error)
+        finally:
+            finished.set()
+    worker = threading.Thread(target=call, daemon=True)
+    worker.start()
+    try:
+        assert finished.wait(0.5), "DNS/TCP/TLS outlived the one caller deadline"
+        assert len(failures) == 1
+        assert children and all(child.poll() is not None for child in children)
+        assert isinstance(failures[0], BrokerRejected if caller == "upstream" else credentials.RouteCredentialError)
+        assert "synthetic-only-token" not in str(failures[0]) and "fake-openai-key" not in str(failures[0])
+    finally:
+        release.set()
+        for resource in opened:
+            resource.shutdown(socket.SHUT_RDWR)
+        worker.join(timeout=1)
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=1)
+        assert not worker.is_alive()
+    assert children and all(child.poll() is not None for child in children)
+    assert all(resource.closed for resource in opened)
+    if phase == "tls":
+        assert len(handshakes) == 1 and handshakes[0].kind == "tls"
+
+
+@pytest.mark.parametrize("late", ["socket", "response"])
+def test_expired_lease_refuses_late_native_ownership_outside_lock(upstream_module, late):
+    client, peer = socket.socketpair()
+    connection = http.client.HTTPConnection("fictional.invalid")
+    if late == "response":
+        connection.sock = client
+        response = http.client.HTTPResponse(client)
+    lease = upstream_module._TransportLease(connection, time.monotonic() + 1)
+    lease.start()
+    lease.close()
+    lease._timer.join(timeout=1)
+    if late == "socket":
+        with pytest.raises(BrokerRejected, match="deadline"):
+            lease.attach_socket(client)
+    else:
+        real_close = response.close
+        def close():
+            assert lease._lock.acquire(blocking=False)
+            lease._lock.release()
+            real_close()
+        response.close = close
+        with pytest.raises(BrokerRejected, match="deadline"):
+            lease.attach(response)
+        assert response.isclosed()
+    lease.close()
+    peer.settimeout(0.5)
+    assert peer.recv(1) == b""
+    peer.close()
+    assert client.fileno() == -1 and connection.sock is None
+
+
+@pytest.mark.parametrize("caller", ["upstream", "tokeninfo"])
+def test_owned_connect_keeps_hostname_and_delivers_native_http(upstream_module, monkeypatch, caller):
+    from shared.lib.fanout import container_credentials as credentials
+    client, peer = socket.socketpair()
+    children, connected, tls_names = [], [], []
+    real_popen = subprocess.Popen
+    def resolve(argv, **kwargs):
+        assert argv[-2:] == ["api.openai.com" if caller == "upstream" else "www.googleapis.com", "443"]
+        child = real_popen([sys.executable, "-I", "-S", "-c",
+            'import sys;sys.stdout.write("[[2,1,6,[\\\"127.0.0.1\\\",443]]]")'], **kwargs)
+        children.append(child)
+        return child
+    class NativeSocket:
+        def __getattr__(self, name):
+            return getattr(client, name)
+        def connect(self, address):
+            connected.append(address)
+        def do_handshake(self):
+            pass
+    class TLSContext:
+        def wrap_socket(self, opened, *, server_hostname, do_handshake_on_connect):
+            assert do_handshake_on_connect is False
+            tls_names.append(server_hostname)
+            return opened
+    content = (b'{"ok":true}' if caller == "upstream" else
+               b'{"email":"owner@fictional.invalid","expires_in":300}')
+    peer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: application/json\r\n" +
+                 f"Content-Length: {len(content)}\r\n\r\n".encode() + content)
+    monkeypatch.setattr(subprocess, "Popen", resolve)
+    monkeypatch.setattr(socket, "socket", lambda *_: NativeSocket())
+    monkeypatch.setattr(upstream_module, "_system_tls_context", lambda: TLSContext())
+    monkeypatch.setattr(credentials, "_system_tls_context", lambda: TLSContext())
+    try:
+        if caller == "upstream":
+            sender, *_ = _routed_sender(upstream_module, "codex")
+            assert sender("POST", *_routed_request("codex")).body == content
+        else:
+            credentials.HostCredentialSource._verify_vertex_token("synthetic-only-token", "owner@fictional.invalid")
+        assert connected == [("127.0.0.1", 443)]
+        assert tls_names == ["api.openai.com" if caller == "upstream" else "www.googleapis.com"]
+        peer.settimeout(0.5)
+        request = peer.recv(8192)
+        assert request.startswith(b"POST /v1/responses HTTP/1.1" if caller == "upstream" else
+                                  b"POST /oauth2/v1/tokeninfo HTTP/1.1")
+        assert children and all(child.poll() is not None for child in children)
+        assert client.fileno() == -1
+    finally:
+        client.close()
+        peer.close()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=1)
 
 
 def test_late_connect_and_tls_failure_never_retry_or_reflect_credential(

@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from .container_routes import RouteProfile, RouteRejected, _ACCOUNT, _open_parent, _validate_profile
 from .container_transfer_support import canonical_json
-from .container_upstream import _TransportLease, _remaining, _system_tls_context
+from .container_upstream import _TransportLease, _connect, _remaining, _system_tls_context
 
 
 _OWNER_HOME = Path.home()
@@ -329,7 +329,7 @@ class HostCredentialSource:
             connection.auto_open = False
             lease = _TransportLease(connection, deadline)
             lease.start()
-            connection.connect()
+            _connect(connection, lease, deadline)
             _remaining(connection, deadline)
             connection.request("POST", "/oauth2/v1/tokeninfo",
                                body=urlencode({"access_token": token}).encode(),

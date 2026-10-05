@@ -265,6 +265,11 @@ def _stub_vertex(monkeypatch, *, account="fixture@example.invalid", expires=3600
         lambda host, port, *, timeout, context: TokenInfoConnection(
             host, port, timeout=timeout, context=context,
             response=TokenInfoResponse(account, expires, mime, encoding), calls=requests))
+    def connect(connection, lease, deadline):
+        connection.connect()
+        lease.attach_socket(connection.sock)
+        credentials._remaining(connection, deadline)
+    monkeypatch.setattr(credentials, "_connect", connect)
     return calls, requests
 
 

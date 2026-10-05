@@ -611,6 +611,7 @@ def stage_import(root: Path, expected: TransferIdentity, manifest: bytes,
         if not _rename_no_replace(root_fd, stage_name, root_fd, "published"):
             raise TransferRejected("transfer destination exists or no-replace rename is unavailable")
         stage_name = None
+        os.fsync(root_fd)
         return Path(root) / "published"
     except OSError as error:
         raise TransferRejected("transfer staging failed") from error
@@ -798,6 +799,9 @@ def _identity_root(workspace: Path, identity: TransferIdentity, *, create: bool)
                     raise TransferRejected("transfer identity root is not owner-private")
             finally:
                 os.close(root_fd)
+            if create:
+                os.fsync(inputs_fd)
+                os.fsync(workspace_fd)
         finally:
             os.close(inputs_fd)
     except OSError as error:

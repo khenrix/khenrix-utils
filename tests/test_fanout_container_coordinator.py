@@ -264,13 +264,14 @@ def test_completed_trial_certificate_reopens_actual_cas_but_cannot_launch(
     certificate_path = root / "trial-certificate.json"
     certificate_path.write_bytes(runtime.canonical_json(certificate.to_dict()))
     certificate_path.chmod(0o600)
-    trial_controller = runtime.create_lifecycle_controller(root / "controller")
-    probe._write_private(root.with_name(root.name + ".controller-capability"), trial_controller.capability.export_token().encode("ascii"))
+    trial_controller, _ = helper._read_trial_preparation(root)
     capability_path = root.with_name(root.name + ".controller-capability")
     original_capability = capability_path.read_bytes()
+    (root / "prior-execution").mkdir(mode=0o700)
     with pytest.raises(runtime.CollaborationValidationError, match="prior execution state"):
         helper.produce_container_trial(root, certificate, packet, (skills,), allow_paid=True)
     assert capability_path.read_bytes() == original_capability
+    (root / "prior-execution").rmdir()
     raw = runtime.ArtifactStore(root / "raw")
     private = root / "private"
     private.mkdir(mode=0o700)
@@ -548,9 +549,70 @@ def test_no_spend_trial_cli_prepares_targets_before_owner_issuance(tmp_path, cer
     root = tmp_path / "prepared-trial"
     root.mkdir(mode=0o700)
     assert certifier.main(["--prepare-synthetic-targets", "--private-run-root", str(root)]) == 0
-    assert sorted(path.name for path in root.iterdir()) == ["targets"]
+    assert sorted(path.name for path in root.iterdir()) == ["controller", "targets", "trial-preparation.json"]
+    from shared.lib.fanout.container_coordinator import _read_trial_preparation
+    controller, created = _read_trial_preparation(root)
+    assert controller.root == root / "controller" and len(created) == 2
     assert sorted(path.name for path in (root / "targets").iterdir()) == ["repo-alpha", "repo-beta"]
     assert __import__("json").loads(capsys.readouterr().out)["provider_turns"] == 0
+
+
+@pytest.mark.parametrize("symlink", [False, True])
+def test_trial_preparer_refuses_existing_sibling_capability_before_creation(tmp_path, symlink):
+    from shared.lib.fanout.container_coordinator import prepare_container_trial_targets
+    root = tmp_path / "fresh-preparation"
+    root.mkdir(mode=0o700)
+    capability = root.with_name(root.name + ".controller-capability")
+    if symlink:
+        capability.symlink_to(tmp_path / "absent-owner-file")
+    else:
+        capability.write_bytes(b"synthetic-preserved-capability")
+        capability.chmod(0o600)
+    before = capability.lstat()
+    with pytest.raises(CollaborationValidationError, match="fresh empty root"):
+        prepare_container_trial_targets(root)
+    assert not tuple(root.iterdir())
+    assert capability.lstat() == before
+
+
+def test_failed_partial_preparation_preserves_controller_but_has_no_creation_authority(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_coordinator as helper, repo
+    root = tmp_path / "partial-preparation"
+    root.mkdir(mode=0o700)
+    actual_git = repo._git
+    def fail_second_root(repository, *argv):
+        if repository.name == "repo-beta" and argv[0] == "init":
+            raise RuntimeError("synthetic second-root interruption")
+        return actual_git(repository, *argv)
+    monkeypatch.setattr(repo, "_git", fail_second_root)
+    with pytest.raises(RuntimeError, match="second-root interruption"):
+        helper.prepare_container_trial_targets(root)
+    assert (root / "controller/controller.json").is_file()
+    assert root.with_name(root.name + ".controller-capability").is_file()
+    assert not (root / "trial-preparation.json").exists()
+    with pytest.raises(ValueError):
+        helper._read_trial_preparation(root)
+
+
+def test_trial_reopens_same_preparer_controller_and_refuses_prior_private_execution(
+    complete_private_probe, certificate_authority, trial_roots, monkeypatch,
+):
+    from shared.lib.fanout import container_coordinator as helper, container_certification as authority
+    from shared.lib.fanout.controller import write_evidence
+    from shared.lib.fanout.container_source import release_source_binding
+    root = trial_roots[0].parent.parent
+    controller, _ = helper._read_trial_preparation(root)
+    token_path = root.with_name(root.name + ".controller-capability")
+    original_token = token_path.read_bytes()
+    certificate = certificate_authority.issue_trial(complete_private_probe[0], trial_roots)
+    write_evidence(controller, "container-synthetic-trial-complete", {"synthetic_prior_execution": True})
+    assert certificate_authority.verify_trial(certificate, trial_roots, release_source_binding().digest).passed
+    monkeypatch.setattr(authority, "_owner_authority", lambda: certificate_authority)
+    monkeypatch.setattr(helper, "_execute_source", lambda: pytest.fail("prior execution reached dispatch preparation"))
+    with pytest.raises(CollaborationValidationError, match="prior execution state"):
+        helper.produce_container_trial(root, certificate, None, (), allow_paid=True)
+    assert token_path.read_bytes() == original_token
+    assert helper._read_trial_preparation(root)[0].controller_id == controller.controller_id
 
 
 @pytest.mark.parametrize("unsafe", [False, True])
@@ -791,7 +853,8 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
             wire_identity = OutboundRequestIdentity("POST", path, sha(body), 32,
                 "gemini-3.8-flash" if provider == "agy" else profile.requested_model,
                 prepared.route_digest, prepared.origin, prepared.path, sha(prepared.body), prepared.effective_model)
-            response = b'{"ok":true}'
+            from test_fanout_container_certification import _served_response
+            response = canonical(_served_response(provider)).rstrip(b"\n")
             if provider == "agy":
                 for _ in range(3):
                     _refuse_auxiliary(ledger, permit, permit_id, number)

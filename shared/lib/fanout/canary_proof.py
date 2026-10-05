@@ -587,19 +587,12 @@ def response_model(raw: bytes, mime: str) -> tuple[str, str]:
     if mime == "application/json":
         responses = [(_json_object(raw), True)]
     elif mime == "text/event-stream":
-        if not raw.endswith((b"\n\n", b"\r\n\r\n")):
-            raise ValueError("Codex SSE response is incomplete")
         responses = []
         completed = 0
-        for block in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n"):
-            if not block:
-                continue
-            lines = block.splitlines()
-            data = "\n".join(line[5:].lstrip(" ") for line in lines if line.startswith("data:"))
-            if not data or data == "[DONE]":
-                continue
-            event = _json_object(data.encode())
+        for event in _response_events(raw):
             kind = event.get("type")
+            if completed and kind != "ping":
+                raise ValueError("Codex SSE response contains a late event")
             if (kind in {"error", "response.failed", "response.incomplete"}
                     or event.get("error") is not None):
                 raise ValueError("Codex SSE response contains a failure")
@@ -632,3 +625,104 @@ def response_model(raw: bytes, mime: str) -> tuple[str, str]:
     if completed_identity is None:
         raise ValueError("positive completed Codex Response.model is missing")
     return completed_identity
+
+
+def _response_events(raw: bytes):
+    if not raw.endswith((b"\n\n", b"\r\n\r\n")):
+        raise ValueError("served SSE response is incomplete")
+    for block in raw.decode("utf-8").replace("\r\n", "\n").split("\n\n"):
+        if not block:
+            continue
+        data, kind = [], None
+        for line in block.splitlines():
+            if line.startswith("data:"):
+                data.append(line[5:].lstrip(" "))
+            elif line.startswith("event:") and kind is None:
+                kind = line[6:].lstrip(" ")
+            elif not line.startswith(":"):
+                raise ValueError("served SSE frame is malformed")
+        if not data:
+            continue
+        payload = "\n".join(data)
+        if payload == "[DONE]":
+            continue
+        event = _json_object(payload.encode())
+        if kind is not None and event.get("type", kind) != kind:
+            raise ValueError("served SSE event type conflicts")
+        yield event
+
+
+def served_response_identity(provider: str, requested_model: str, upstream_model: str,
+                             raw: bytes, mime: str) -> tuple[str, str]:
+    """Require the explicit company route's actual completed response identity."""
+    models = {"claude": ("claude-opus-5-5", "claude-opus-5-5"),
+              "codex": (MODEL, MODEL), "agy": ("gemini-3.8-flash-high", "gemini-3.8-flash")}
+    if models.get(provider) != (requested_model, upstream_model):
+        raise ValueError("served response route is unsupported")
+    if provider == "codex":
+        return response_model(raw, mime)
+    if not isinstance(raw, bytes) or not 0 < len(raw) <= 8 * 1024 * 1024:
+        raise ValueError("served response body is missing or oversized")
+    if mime == "application/json":
+        events = [_json_object(raw)]
+    elif mime == "text/event-stream":
+        events = _response_events(raw)
+    else:
+        raise ValueError("served response media is unsupported")
+    identity = None
+    terminal = False
+    reason = None
+    for event in events:
+        if event.get("error") is not None or event.get("type") == "error":
+            raise ValueError("served response contains an error")
+        if provider == "claude":
+            kind = event.get("type")
+            if kind == "ping":
+                continue
+            if terminal:
+                raise ValueError("Claude response contains a late event")
+            if mime == "application/json" or kind == "message_start":
+                message = event if mime == "application/json" else event.get("message")
+                if (identity is not None or type(message) is not dict or message.get("type") != "message"
+                        or not isinstance(message.get("id"), str) or not message["id"]
+                        or message.get("model") != upstream_model or message.get("error") is not None):
+                    raise ValueError("positive Claude Message identity is missing or conflicting")
+                identity = message["id"], message["model"]
+                if mime == "application/json":
+                    reason = message.get("stop_reason")
+                    terminal = True
+                elif message.get("stop_reason") is not None:
+                    raise ValueError("Claude start is already terminal")
+            elif kind == "message_delta":
+                delta = event.get("delta")
+                if identity is None or reason is not None or type(delta) is not dict:
+                    raise ValueError("Claude terminal delta is conflicting")
+                reason = delta.get("stop_reason")
+                if reason not in {"end_turn", "tool_use"}:
+                    raise ValueError("Claude completion reason is unsupported")
+            elif kind == "message_stop":
+                if identity is None or reason not in {"end_turn", "tool_use"}:
+                    raise ValueError("Claude final stop is missing its completion")
+                terminal = True
+            elif kind not in {"content_block_start", "content_block_delta", "content_block_stop"} or identity is None or reason is not None:
+                raise ValueError("Claude semantic event is unsupported or late")
+        else:
+            if terminal or event.get("promptFeedback", {}).get("blockReason") is not None:
+                raise ValueError("Gemini response is blocked or contains late generation")
+            current = event.get("responseId"), event.get("modelVersion")
+            if (not isinstance(current[0], str) or not current[0] or current[1] != upstream_model
+                    or identity is not None and identity != current):
+                raise ValueError("positive Gemini identity is missing or conflicting")
+            identity = current
+            candidates = event.get("candidates")
+            if (type(candidates) is not list or len(candidates) != 1 or type(candidates[0]) is not dict
+                    or type(candidates[0].get("index", 0)) is not int or candidates[0].get("index", 0) != 0):
+                raise ValueError("Gemini single candidate is missing or conflicting")
+            reason = candidates[0].get("finishReason")
+            if reason is not None:
+                if reason != "STOP":
+                    raise ValueError("Gemini completion reason is unsupported")
+                terminal = True
+    if identity is None or not terminal or reason not in {"end_turn", "tool_use", "STOP"}:
+        raise ValueError("positive completed served identity is missing")
+    return identity

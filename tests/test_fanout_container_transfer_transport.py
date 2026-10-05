@@ -705,6 +705,97 @@ def test_cold_resume_reopens_original_receipt_with_new_handle(seat):
     assert [call[-1] for call in calls] == ["import", "export", "export"]
 
 
+@pytest.mark.parametrize("fault", [None, "root", "same-inode", "bytes", "missing-grant", "inconsistent-grant"])
+def test_actual_cold_import_reopens_immutable_original_authority(seat, fault):
+    import shutil
+    from shared.lib.fanout import canonical_json
+    from shared.lib.fanout.container_boundary import ContainerAdmission, PinnedDockerTransport, SessionStore, issue_container_boundary, run_container_turn
+    from shared.lib.fanout.container_transfer_transport import issue_input_source_grant, stage_inputs, _InputClaimJournal
+    from shared.lib.fanout.controller import resume_lifecycle_controller
+    from shared.lib.fanout.errors import LifecycleError
+    from test_fanout_container_boundary import FakeTransport, _terminal
+    controller, request, transport, admission, source, material, _, vm, _, tmp_path = seat
+    imports = []
+    transport._transfer_popen, _ = _guest_popen(tmp_path, imports)
+    grant = issue_input_source_grant(controller, request, transport, admission, source, *material)
+    receipt = stage_inputs(controller, request, transport, grant)
+    initial = FakeTransport(vm, transport.handle, admission.socket_attestation, CLI,
+                            _terminal("claude", session_id=request.session_id))
+    initial.attest_image = lambda: IMAGE
+    initial_admission = replace(admission, transport=initial, input_receipt=receipt)
+    sealed = issue_container_boundary(controller, request, vm, transport.handle, initial_admission)
+    assert run_container_turn(request, sealed).valid
+    saved = asdict(sealed.session_store.resume("claude"))
+    admission.ledger.fence_epoch(admission.permit_id, 1)
+    cold = resume_lifecycle_controller(controller.root, controller.capability)
+    ledger = PermitLedger(cold.root / "locks/spend", cold)
+    sessions = SessionStore(cold, request.run_id, request.task_id, request.target_id,
+                            request.seat_id, transport.handle.session_volume)
+    resumed = replace(request, resume=True, prompt="changed legitimate resume context",
+                      context_sha256="d" * 64)
+    current = replace(admission.broker_permit, route="resume")
+    permit_id = ledger.register(current, 2)
+    identity = TransferIdentity(request.run_id, request.task_id, request.target_id, request.seat_id, request.inputs_digest)
+    journal = _InputClaimJournal(cold, identity, transport.handle.workspace_volume)
+    assert journal.completed() == (receipt.evidence_name, receipt.evidence_digest)
+    assert asdict(sessions.resume("claude")) == saved
+    if fault == "root":
+        old = source.with_name("retained-original-source")
+        original_inode = source.stat().st_ino
+        source.rename(old)
+        shutil.copytree(old, source)
+        assert source.stat().st_ino != original_inode
+    elif fault == "same-inode":
+        original_inode = source.stat().st_ino
+        moved = source.with_name("temporarily-moved-source")
+        source.rename(moved)
+        moved.rename(source)
+        (source / "repo/base.txt").write_text("foreign replacement bytes\n")
+        assert source.stat().st_ino == original_inode
+    elif fault == "bytes":
+        (source / "repo/base.txt").write_text("changed bytes\n")
+    elif fault == "missing-grant":
+        path = cold.root / "receipts" / grant.evidence_name
+        path.rename(path.with_suffix(".retained-original"))
+    elif fault == "inconsistent-grant":
+        value = read_evidence(cold, "container-input-grant", grant.evidence_name, grant.evidence_digest)
+        value["original_handle"]["inspect_sha256"] = "1" * 64
+        changed_grant = write_evidence(cold, "container-input-grant", value)
+        value = read_evidence(cold, "container-input-transfer", receipt.evidence_name, receipt.evidence_digest)
+        value.update(grant_evidence_name=changed_grant[0], grant_evidence_digest=changed_grant[1])
+        changed_receipt = write_evidence(cold, "container-input-transfer", value)
+        claim = journal._read()
+        claim.update(grant_evidence_name=changed_grant[0], grant_evidence_digest=changed_grant[1],
+                     receipt_evidence_name=changed_receipt[0], receipt_evidence_digest=changed_receipt[1])
+        journal._write(claim)
+        confirmed = journal._confirmation_payload(claim)
+        journal.confirmation.write_bytes(canonical_json({"payload": confirmed, "mac": journal._confirmation_mac(confirmed)}))
+        assert journal.completed() == changed_receipt
+    recovered_handle = replace(transport.handle, container_id="f" * 64, inspect_sha256="0" * 64)
+    origin = read_evidence(cold, "container-seat-launch", receipt.handle_evidence_name, receipt.handle_evidence_digest)
+    origin.update(handle=asdict(recovered_handle), route="recover", original_input=list(journal.completed()),
+        recovery={"spec": asdict(transport.spec), "handle": asdict(recovered_handle), "predecessors": []})
+    recovered_origin = write_evidence(cold, "container-seat-launch", origin)
+    recovered = PinnedDockerTransport(cold, transport.spec, recovered_handle, RunningLauncher(recovered_handle),
+        lambda: vm, transport._socket_attestor, lambda: IMAGE, lambda _: CLI,
+        lambda _: pytest.fail("cold refusal reached provider"), recovered_origin)
+    recovered._transfer_popen = lambda *_args, **_kwargs: pytest.fail("cold reopen restaged inputs")
+    current_admission = ContainerAdmission(current, permit_id, 2, ledger, IMAGE, CLI,
+        admission.socket_attestation, recovered, sessions, *recovered_origin)
+    if fault is None:
+        assert recovered.reopen_input_receipt(resumed, current_admission) == receipt
+    else:
+        refusal = LifecycleError if fault == "missing-grant" else ProviderRequestError
+        with pytest.raises(refusal):
+            recovered.reopen_input_receipt(resumed, current_admission)
+    assert [call[-1] for call in imports] == ["import"]
+    assert ledger.attempt_counts(permit_id, 2) == (0, 0)
+    assert asdict(sessions.resume("claude")) == saved
+    with ledger._locked() as state:
+        assert state["permits"][admission.permit_id]["fenced"] is True
+        assert state["permits"][permit_id]["fenced"] is False
+
+
 def test_claim_refuses_lost_live_control_lease_before_exec(seat):
     from shared.lib.fanout.container_transfer_transport import (
         issue_input_source_grant, stage_inputs,

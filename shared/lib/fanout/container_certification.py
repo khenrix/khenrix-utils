@@ -141,6 +141,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
     from .process import ProcessResult, ProcessStatus
     from .providers import ProviderRequest, ProviderRegistry, _make_result
     from .repo import capture_repository_baseline
+    from .canary_proof import served_response_identity
     try:
         binding = release_source_binding()
         if ReleaseSourceBinding.from_dict(receipt.get("release_source_binding")) != binding:
@@ -156,6 +157,7 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                 credential = credential_source.load()
                 if credential_source.fingerprint != receipt["providers"][provider]["initial"]["credential_source_fingerprint"]:
                     raise ValueError("cell host credential changed")
+                initial_vm = None
                 for route in probe.ROUTES:
                     cell = receipt["providers"][provider][route]
                     value = read_evidence(controller, "container-private-cell-attestation",
@@ -208,7 +210,14 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                         for name in ("path", "uid", "mode", "device", "inode", "ctime_ns")})
                     if hashlib.sha256(canonical_json(asdict(socket))).hexdigest() != cell["socket_attestation_sha256"]:
                         raise ValueError("cell socket")
-                    vm = _reopen_vm(_artifact_json(store, value["vm"]))
+                    vm_observation = _artifact_json(store, value["vm"])
+                    vm = _reopen_vm(vm_observation)
+                    stable_vm = (vm.profile, vm.docker_endpoint, vm.ssh_host_key_sha256,
+                                 vm.effective_mounts_sha256, vm.guest_mounts_sha256,
+                                 vm_observation["profile_identity"])
+                    if initial_vm is not None and initial_vm != stable_vm:
+                        raise ValueError("initial/resume stable VM identity differs")
+                    initial_vm = stable_vm
                     if (vm.digest != cell["vm_probe_sha256"] or boundary["vm_probe_digest"] != vm.digest
                             or any(boundary[name] != getattr(vm, field) for name, field in (
                                 ("vm_docker_endpoint", "docker_endpoint"), ("vm_ssh_host_key_sha256", "ssh_host_key_sha256"),
@@ -314,6 +323,10 @@ def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> N
                                 or captured["content_type"] not in {"application/json", "text/event-stream"}
                                 or hashlib.sha256(delivered).hexdigest() != record["response_digest"]):
                             raise ValueError("cell wire bytes")
+                        if served_response_identity(provider, permit.model, permit.upstream_model,
+                                response, captured["content_type"]) != served_response_identity(
+                                provider, permit.model, permit.upstream_model, delivered, captured["content_type"]):
+                            raise ValueError("cell served response identity differs")
         if release_source_binding() != binding:
             raise ValueError("source changed during admission")
     except Exception:
@@ -402,7 +415,7 @@ class CertificateAuthority:
 
     def issue_trial(self, probe_root: Path, exact_synthetic_roots: tuple[Path, ...]) -> TrialCertificate:
         proof = read_private_route_evidence(probe_root, require_attestations=True)
-        roots = _root_bindings(exact_synthetic_roots, trial=True)
+        roots = _prepared_root_bindings(exact_synthetic_roots)
         key, _ = self._keys((Path(probe_root), *(Path(item["path"]) for item in roots)))
         payload = _certificate_binding(proof, roots)
         raw = canonical_json(payload)
@@ -538,7 +551,7 @@ class CertificateAuthority:
     def _verify(self, certificate, roots: tuple[Path, ...], source_hash: str, *, trial: bool) -> CertificationDecision:
         try:
             payload, proof = self._authenticated_certificate(certificate, source_hash, trial=trial)
-            expected = _certificate_binding(proof, _root_bindings(roots, trial=trial))
+            expected = _certificate_binding(proof, _prepared_root_bindings(roots) if trial else _root_bindings(roots, trial=False))
             if not trial:
                 expected["accepted_trial"] = self._accepted_trial(Path(payload["accepted_trial"]["root"]), proof)
                 expected["accepted_evaluations"] = self._accepted_evaluations(
@@ -595,6 +608,18 @@ def _root_bindings(roots: tuple[Path, ...], *, trial: bool) -> list[dict[str, ob
         raise CertificationRejected("exact synthetic roots are unavailable" if trial else
                                     "caller target roots are unavailable") from None
     return sorted(result, key=lambda item: item["path"])
+
+
+def _prepared_root_bindings(roots: tuple[Path, ...]) -> list[dict[str, object]]:
+    from .container_coordinator import _read_trial_preparation
+    try:
+        current = _root_bindings(roots, trial=True)
+        _, created = _read_trial_preparation(Path(current[0]["path"]).parent.parent)
+        if current != created:
+            raise ValueError("exact prepared roots differ")
+        return created
+    except Exception:
+        raise CertificationRejected("authenticated fresh synthetic preparation is unavailable") from None
 
 
 def _certificate_binding(proof: AuthenticatedPrivateEvidence, roots: list[dict]) -> dict[str, object]:
