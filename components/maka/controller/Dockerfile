@@ -46,12 +46,12 @@ LABEL org.opencontainers.image.title="Maka audit lab controller" \
       io.maka.eval.relay-agent-sha256="6214ed402d2d8345b20b625739b9a08905116bfdd944775938d5d78054033621" \
       io.maka.eval.model-fetcher-sha256="427672c03fead122a387d4f690d85ec2d800fe7e7a9e70d02f8fbe648d413dd7" \
       io.maka.eval.maka-subject-sha256="f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775" \
-      io.maka.judge.compatibility-overlay="relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1" \
+      io.maka.judge.compatibility-overlay="relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2" \
       io.maka.judge.runtime-variant="harbor-judge-sol61-h2-v1" \
       io.maka.judge.model-fetcher-sha256="7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5" \
       io.maka.judge.model-metadata-sha256="9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7" \
       io.maka.judge.undici-h2-base-sha256="611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7" \
-      io.maka.judge.undici-h2-sha256="521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087" \
+      io.maka.judge.undici-h2-sha256="32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4" \
       io.maka.eval.terminal-bench-revision="d49e28f1e4ddd13d289e85a5f312a66750951932"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/maka-lab/controller/entrypoint.sh"]

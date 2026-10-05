@@ -48,7 +48,7 @@ const judgeVariant = variant === 'harbor-judge-sol61-v1' || h2Variant;
 if (process.argv.length === 5 && !judgeVariant) fail('unknown runtime compatibility variant');
 
 const runtimeRoot = await realpath(resolve(process.argv[2]));
-const h2Suffix = '-harbor-judge-sol61-v1-undici-h2-close-v1';
+const h2Suffix = '-harbor-judge-sol61-v1-undici-h2-close-v2';
 if ((h2Variant && basename(runtimeRoot) !==
     `maka-0.2.0-dev.62.20260928-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2${h2Suffix}`) ||
     (!h2Variant && basename(runtimeRoot).endsWith(h2Suffix))) {
@@ -168,7 +168,7 @@ if (h2Variant) {
   if (resolvedUndiciH2 !== runtimeUndiciH2) fail('staged runtime resolves Undici outside its bundle');
   const undiciH2 = requireWithin(runtimeRoot, resolvedUndiciH2, 'Undici H2 client');
   const undiciH2Sha256 = createHash('sha256').update(await readFile(resolvedUndiciH2)).digest('hex');
-  if (undiciH2Sha256 !== '521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087') {
+  if (undiciH2Sha256 !== '32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4') {
     fail('staged Undici H2 client does not match the pinned close overlay');
   }
   h2Metadata = { undiciH2,

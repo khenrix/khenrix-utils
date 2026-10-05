@@ -114,7 +114,7 @@ assert.ok(Object.keys(lookupModelMetadata('openai', 'gpt-5.6-sol')).length > 0);
         import apply_undici_h2_close_compat as h2
         h2_original = (staged / h2.TARGET).read_bytes()
         assert v2.digest(h2_original) == "611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7"
-        active_runtime = root / (runtime.name + "-undici-h2-close-v1")
+        active_runtime = root / (runtime.name + "-undici-h2-close-v2")
         active_staged = active_runtime / "maka-agent"
         shutil.copytree(staged, active_staged, symlinks=True)
         h2.apply(active_staged)
@@ -130,7 +130,7 @@ assert.ok(Object.keys(lookupModelMetadata('openai', 'gpt-5.6-sol')).length > 0);
         assert active_evidence["modelFetcherSha256"] == "7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5"
         assert active_evidence["modelMetadataSha256"] == "9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7"
         assert active_evidence["undiciH2BaseSha256"] == "611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7"
-        assert active_evidence["undiciH2Sha256"] == "521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
+        assert active_evidence["undiciH2Sha256"] == "32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
         target = active_staged / h2.TARGET
         patched_h2 = target.read_bytes()
         target.write_bytes(patched_h2 + b"\n// drift\n")

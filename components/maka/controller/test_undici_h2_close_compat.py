@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 TARGET = Path("node_modules/@maka/runtime/node_modules/undici/lib/dispatcher/client-h2.js")
 BASE_SHA256 = "611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7"
-PATCHED_SHA256 = "521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
+PATCHED_SHA256 = "32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
 
 
 def inode_metadata(path: Path) -> tuple[int, int, int, int, int]:
@@ -25,7 +25,7 @@ def inode_metadata(path: Path) -> tuple[int, int, int, int, int]:
 def lifecycle(source: bytes) -> subprocess.CompletedProcess[str]:
     # Characterization seam: execute the actual pinned H2 context method with
     # EventEmitter sockets so synchronous and asynchronous close are deterministic.
-    # The real TLS/CONNECT trigger is covered by the private Docker diagnosis.
+    # The real TLS/CONNECT trigger is covered by the egress integration test.
     return subprocess.run(["node", "--input-type=module", "-"], input=f"""
 import assert from 'node:assert/strict';
 import {{ EventEmitter }} from 'node:events';
@@ -37,26 +37,34 @@ const end = source.indexOf('    /**', start);
 assert.ok(end > start);
 const method = source.slice(start, end);
 const kClosed = Symbol('closed');
-for (const mode of ['synchronous', 'already-closed', 'asynchronous']) {{
+for (const mode of ['nested-close-events', 'session-only', 'synchronous', 'already-closed', 'asynchronous', 'both-close-events', 'session-already-destroyed']) {{
   const socket = new EventEmitter();
+  const session = new EventEmitter();
+  session.destroyed = mode === 'session-already-destroyed';
+  if (mode === 'nested-close-events') socket.on('close', () => session.emit('close'));
   socket[kClosed] = mode === 'already-closed';
   let destroys = 0;
   const error = new Error('test teardown');
   socket.destroy = (observed) => {{
     assert.equal(observed, error);
     destroys++;
-    if (mode === 'synchronous') socket.emit('close');
+    if (mode === 'session-only') setImmediate(() => session.emit('close'));
+    else if (mode === 'both-close-events') {{ socket.emit('close'); session.emit('close'); }}
+    else if (mode === 'synchronous' || mode === 'nested-close-events') socket.emit('close');
     else setImmediate(() => socket.emit('close'));
     return socket;
   }};
-  const context = runInNewContext('({{' + method + '}})', {{ socket, kClosed, queueMicrotask }});
+  const context = runInNewContext('({{' + method + '}})', {{ socket, session, kClosed, queueMicrotask }});
   let callbacks = 0;
   context.destroy(error, () => callbacks++);
   await new Promise(setImmediate);
   assert.equal(callbacks, 1, mode + ' close must complete exactly once');
-  assert.equal(destroys, mode === 'already-closed' ? 0 : 1);
+  assert.equal(destroys, ['already-closed', 'session-already-destroyed'].includes(mode) ? 0 : 1);
+  assert.equal(socket.listenerCount('close'), mode === 'nested-close-events' ? 1 : 0,
+    mode + ' removes only its teardown socket listener');
+  assert.equal(session.listenerCount('close'), 0, mode + ' leaves no teardown session listener');
 }}
-console.log('Pinned H2 synchronous/already-closed/asynchronous lifecycle passed');
+console.log('Pinned H2 socket/session close lifecycle passed');
 """, text=True, capture_output=True, timeout=10)
 
 

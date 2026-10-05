@@ -609,7 +609,7 @@ export async function runtimeBoundaryDigest(runtimeRoot, packageRoot, componentR
   }
   if (packageRoot !== join(runtimeRoot, 'maka-agent') ||
       relative(join(componentRoot, 'runtime', 'linux-amd64'), runtimeRoot) !==
-        `maka-${VERSION}-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1`) {
+        `maka-${VERSION}-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2`) {
     throw new Error('Harbor judge runtime path is not pinned');
   }
   const source = await installedSourceDigest(componentRoot, receiptPath);
@@ -618,14 +618,14 @@ export async function runtimeBoundaryDigest(runtimeRoot, packageRoot, componentR
   const complete = (await readRuntimeControlFile(join(runtimeRoot, '.complete'))).toString('utf8');
   if (complete !== `maka=0.2.0-dev.62.20260928
 node=24.16.0
-compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1
-compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v1
+compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2
+compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v2
 relay-agent-sha256=6214ed402d2d8345b20b625739b9a08905116bfdd944775938d5d78054033621
 model-fetcher-sha256=7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5
 maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775
 model-metadata-sha256=9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7
 undici-h2-base-sha256=611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7
-undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087
+undici-h2-sha256=32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4
 `) throw new Error('Harbor judge runtime completion marker is not pinned');
   const manifest = (await readRuntimeControlFile(join(runtimeRoot, 'RUNTIME_SHA256SUMS'))).toString('utf8');
   const symlinkManifest = (await readRuntimeControlFile(join(runtimeRoot, 'RUNTIME_SYMLINKS'))).toString('utf8');
@@ -647,7 +647,7 @@ undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d8508
       !fileNames.has('maka-agent/dist/cli.js') || !fileNames.has('node/bin/node') ||
       !files.some((entry) => entry.name ===
         'maka-agent/node_modules/@maka/runtime/node_modules/undici/lib/dispatcher/client-h2.js' &&
-        entry.sha256 === '521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087')) {
+        entry.sha256 === '32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4')) {
     throw new Error('Harbor judge runtime manifest is incomplete');
   }
   await eachBounded(files, (entry) => verifyRuntimeFile(runtimeRoot, entry));

@@ -26,10 +26,10 @@ case "${MAKA_EVAL_RUNTIME_VARIANT:-}" in
     model_fetcher_sha256=7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5
     model_metadata_sha256=9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7
     if test "$MAKA_EVAL_RUNTIME_VARIANT" = harbor-judge-sol61-h2-v1; then
-      compatibility_overlay_bundle=$compatibility_overlay_bundle-undici-h2-close-v1
-      compatibility_overlays=$compatibility_overlays,undici-h2-close-v1
+      compatibility_overlay_bundle=$compatibility_overlay_bundle-undici-h2-close-v2
+      compatibility_overlays=$compatibility_overlays,undici-h2-close-v2
       undici_h2_base_sha256=611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7
-      undici_h2_sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087
+      undici_h2_sha256=32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4
     fi
     ;;
   *) echo 'Unknown Maka eval runtime variant' >&2; exit 64 ;;

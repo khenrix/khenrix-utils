@@ -47,10 +47,10 @@ jq -e '.maka.compatibilityOverlays == [{
     "patchedSha256":"9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7"
   }]
 }, {
-  "id":"undici-h2-close-v1",
+  "id":"undici-h2-close-v2",
   "target":"node_modules/@maka/runtime/node_modules/undici/lib/dispatcher/client-h2.js",
   "baseSha256":"611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7",
-  "patchedSha256":"521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
+  "patchedSha256":"32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
 }]' "$LAB_ROOT/provenance.json" >/dev/null
 jq -e '.egressProxy.openaiEndpoint == "POST https://api.openai.com/v1/responses"' "$LAB_ROOT/provenance.json" >/dev/null
 python "$LAB_ROOT/controller/test_maka_hosted_onboarding_compat.py" "$package_root"

@@ -12,12 +12,12 @@ test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format 
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.eval.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.eval.model-fetcher-sha256"}}')" = 427672c03fead122a387d4f690d85ec2d800fe7e7a9e70d02f8fbe648d413dd7
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.eval.maka-subject-sha256"}}')" = f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.runtime-variant"}}')" = harbor-judge-sol61-h2-v1
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.model-fetcher-sha256"}}')" = 7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.model-metadata-sha256"}}')" = 9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7
 test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.undici-h2-base-sha256"}}')" = 611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7
-test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.undici-h2-sha256"}}')" = 521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087
+test "$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{index .Config.Labels "io.maka.judge.undici-h2-sha256"}}')" = 32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4
 stage_probe="$LAB_ROOT/runtime/linux-amd64/.staging-Zz09Yx"
 cleanup_stage_probe() {
   if test -d "$stage_probe"; then
@@ -80,7 +80,7 @@ jq -e '
   and .stagedRuntime == true
 ' <<< "$judge_runtime_path_proof" >/dev/null
 # Preserve the old judge copy and stage the corrected active judge separately.
-judge_runtime_root=$judge_runtime_root-undici-h2-close-v1
+judge_runtime_root=$judge_runtime_root-undici-h2-close-v2
 docker run --rm --network none --ulimit core=0 \
   --mount "type=bind,source=$LAB_ROOT,target=$LAB_ROOT" \
   --workdir "$LAB_ROOT" \
@@ -103,7 +103,7 @@ jq -e '
   and .makaSubjectSha256 == "f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775"
   and .undiciH2 == "maka-agent/node_modules/@maka/runtime/node_modules/undici/lib/dispatcher/client-h2.js"
   and .undiciH2BaseSha256 == "611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7"
-  and .undiciH2Sha256 == "521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
+  and .undiciH2Sha256 == "32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
   and .stagedRuntime == true
 ' <<< "$judge_runtime_path_proof" >/dev/null
 test "$(docker run --rm --network none --entrypoint sha256sum \

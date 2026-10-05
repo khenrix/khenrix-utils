@@ -311,11 +311,13 @@ adds the 6.1 discovery row alongside 5.6 under the same exact lab-route guard,
 and API metadata with `low`, `medium`, `high`, `xhigh`, and `max` efforts. It
 keeps its original immutable runtime identity and hashes.
 
-The active judge selects `harbor-judge-sol61-h2-v1`, adding `undici-h2-close-v1`
+The active judge selects `harbor-judge-sol61-h2-v1`, adding `undici-h2-close-v2`
 after the unchanged 6.1 overlay. Its separate immutable runtime ends in
-`relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1`.
-The H2 overlay registers Undici's socket-close callback before destroying the
-socket, so a synchronous TLS close completes dispatcher teardown. Exact input
+`relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2`.
+The H2 overlay registers completion listeners before destroying the socket and
+completes teardown once when either the socket or HTTP/2 session closes. It also
+handles sessions that are already destroyed and removes both listeners after
+completion. The previous `undici-h2-close-v1` runtime remains immutable. Exact input
 and output hashes are pinned in provenance, completion markers, image labels,
 runtime-path checks and the active boundary. The build stages and checks all
 three runtime identities; the default coding runtime and its 5.6 benchmark

@@ -509,7 +509,7 @@ test('the read-only boundary pins installed source receipt and the entire staged
   const root = await fixture(t);
   const component = join(root, 'maka');
   const runtime = join(component, 'runtime/linux-amd64',
-    'maka-0.2.0-dev.62.20260928-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1');
+    'maka-0.2.0-dev.62.20260928-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2');
   const sourceComponent = dirname(dirname(fileURLToPath(import.meta.url)));
   const packageRoot = process.env.KHENRIX_MAKA_PACKAGE_ROOT ?? resolve(dirname(execFileSync(
     'mise', ['-C', sourceComponent, 'which', 'maka'], { encoding: 'utf8' },
@@ -518,10 +518,15 @@ test('the read-only boundary pins installed source receipt and the entire staged
   const originalH2 = await readFile(join(packageRoot, undiciPath), 'utf8');
   assert.equal(createHash('sha256').update(originalH2).digest('hex'),
     '611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7');
-  const patchedH2 = originalH2.replace("        socket.destroy(err).on('close', callback)",
-    "        socket.on('close', callback)\n        socket.destroy(err)");
+  const stagedPackage = join(root, 'staged-package');
+  const stagedH2 = join(stagedPackage, undiciPath);
+  await mkdir(dirname(stagedH2), {recursive: true});
+  await writeFile(stagedH2, originalH2);
+  execFileSync('python', ['-B', join(sourceComponent, 'controller/apply_undici_h2_close_compat.py'),
+    stagedPackage], {timeout: 5000});
+  const patchedH2 = await readFile(stagedH2, 'utf8');
   assert.equal(createHash('sha256').update(patchedH2).digest('hex'),
-    '521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087');
+    '32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4');
   const sourceFiles = new Map([
     ['controller/harbor_judge.mjs', 'runner'],
     ['controller/egress-overlay/egress_filter.py', 'relay'],
@@ -544,14 +549,14 @@ test('the read-only boundary pins installed source receipt and the entire staged
     [`maka-agent/${undiciPath}`, patchedH2],
     ['.complete', `maka=0.2.0-dev.62.20260928
 node=24.16.0
-compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1
-compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v1
+compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2
+compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v2
 relay-agent-sha256=6214ed402d2d8345b20b625739b9a08905116bfdd944775938d5d78054033621
 model-fetcher-sha256=7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5
 maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775
 model-metadata-sha256=9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7
 undici-h2-base-sha256=611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7
-undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087
+undici-h2-sha256=32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4
 `],
   ]);
   for (let index = 0; index < 512; index++) {
@@ -593,7 +598,7 @@ undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d8508
     t.diagnostic(`${runtimeFiles.size}-file boundary: ${(performance.now() - started).toFixed(1)} ms`);
   }
   assert.match(boundary, /^[0-9a-f]{64}$/u);
-  const oldJudgeRuntime = runtime.replace('-undici-h2-close-v1', '');
+  const oldJudgeRuntime = runtime.replace('-undici-h2-close-v2', '');
   await assert.rejects(runtimeBoundaryDigest(oldJudgeRuntime, join(oldJudgeRuntime, 'maka-agent'),
     component, receiptPath, { controller: `sha256:${'a'.repeat(64)}`, egress: `sha256:${'b'.repeat(64)}` }),
   /runtime path/u);
@@ -603,7 +608,7 @@ undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d8508
   await chmod(h2RuntimeFile, 0o444);
   await chmod(join(runtime, 'RUNTIME_SHA256SUMS'), 0o644);
   await writeFile(join(runtime, 'RUNTIME_SHA256SUMS'), manifest.replace(
-    '521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087',
+    '32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4',
     '611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7'));
   await chmod(join(runtime, 'RUNTIME_SHA256SUMS'), 0o444);
   await assert.rejects(runtimeBoundaryDigest(runtime, join(runtime, 'maka-agent'), component,

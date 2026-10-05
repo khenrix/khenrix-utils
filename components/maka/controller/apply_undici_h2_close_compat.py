@@ -10,12 +10,31 @@ from pathlib import Path
 
 from apply_maka_hosted_onboarding_compat import digest, regular_target
 
-OVERLAY_ID = "undici-h2-close-v1"
+OVERLAY_ID = "undici-h2-close-v2"
 TARGET = Path("node_modules/@maka/runtime/node_modules/undici/lib/dispatcher/client-h2.js")
 BASE_SHA256 = "611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7"
-PATCHED_SHA256 = "521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
-OLD = b"        socket.destroy(err).on('close', callback)"
-NEW = b"        socket.on('close', callback)\n        socket.destroy(err)"
+PATCHED_SHA256 = "32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
+OLD = b"""      if (socket[kClosed]) {
+        queueMicrotask(callback)
+      } else {
+        socket.destroy(err).on('close', callback)
+      }"""
+NEW = b"""      if (socket[kClosed] || session.destroyed) {
+        queueMicrotask(callback)
+      } else {
+        // Node can close the H2 session without emitting socket close.
+        let settled = false
+        const done = () => {
+          if (settled) return
+          settled = true
+          socket.off('close', done)
+          session.off('close', done)
+          callback()
+        }
+        socket.once('close', done)
+        session.once('close', done)
+        socket.destroy(err)
+      }"""
 
 
 def atomic_replace(target: Path, data: bytes) -> None:

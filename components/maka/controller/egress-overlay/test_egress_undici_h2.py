@@ -83,7 +83,7 @@ class H2Origin(socketserver.BaseRequestHandler):
                     content_type = "text/event-stream"
                     body = (
                         b'data: {"type":"response.created","response":{"id":"synthetic-judge-response","model":"gpt-6.1-sol","service_tier":"default"}}\n\n'
-                        b'data: {"type":"response.completed","response":{"id":"synthetic-judge-response","model":"gpt-6.1-sol","service_tier":"default","status":"completed","output":[]}}\n\n'
+                        b'data: {"type":"response.completed","response":{"id":"synthetic-judge-response","model":"gpt-6.1-sol","service_tier":"default","status":"completed","output":[{"id":"synthetic-judge-message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Synthetic judge answer."}]}]}}\n\n'
                         b'data: [DONE]\n\n'
                     )
                 connection.send_headers(
@@ -278,6 +278,8 @@ with tempfile.TemporaryDirectory() as temporary:
         assert receipt["prompt_sha256"] == hashlib.sha256(prompt.encode()).hexdigest()
         assert receipt["request_marker_sha256"] == hashlib.sha256(
             b"maka:fanout-judge-0123456789abcdef0123456789abcdef").hexdigest()
+        assert receipt["response_answer_sha256"] == hashlib.sha256(
+            b"Synthetic judge answer.").hexdigest()
     else:
         assert [record["ruleId"] for record in records] == [
             "openai_websocket_disabled",

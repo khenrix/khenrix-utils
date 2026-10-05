@@ -79,7 +79,10 @@ try {
       } },
       { type: 'response.completed', response: {
         id: 'synthetic-judge-response', model: 'gpt-6.1-sol', service_tier: 'default',
-        status: 'completed', output: [],
+        status: 'completed', output: [{
+          id: 'synthetic-judge-message', type: 'message', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: 'Synthetic judge answer.' }],
+        }],
       } },
     ]);
   } else {

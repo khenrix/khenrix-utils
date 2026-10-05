@@ -28,7 +28,7 @@ if test "$LAB_ROOT" != "$expected_root" || test -L "$LAB_ROOT" \
 fi
 
 python "$LAB_ROOT/scripts/component_doctor.py" >/dev/null
-runtime_root="$LAB_ROOT/runtime/linux-amd64/maka-0.2.0-dev.62.20260928-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1"
+runtime_root="$LAB_ROOT/runtime/linux-amd64/maka-0.2.0-dev.62.20260928-node-24.16.0-relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2"
 install_receipt="$HOME/.local/state/khenrix-utils/maka/install-receipt.json"
 profile=$(colima list -j | jq -sc '[.[] | select(.name == "maka-amd64")][0]')
 test "$(jq -r .status <<< "$profile")" = Running
@@ -43,12 +43,12 @@ test -f "$runtime_root/RUNTIME_SYMLINKS"
 controller_image_id=$(docker image inspect maka-lab-controller:0.2.0-dev.62.20260928 --format '{{.Id}}')
 egress_image_id=$(docker image inspect maka-eval-egress-proxy:12.2.3 --format '{{.Id}}')
 test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = 2f32205528a4436783c800715261d4b6e286023d
-test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1
+test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.compatibility-overlay"}}')" = relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2
 test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.runtime-variant"}}')" = harbor-judge-sol61-h2-v1
 test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.model-fetcher-sha256"}}')" = 7afdf60203915621ea87e85f786a07e0dbc6a4a8332f5f8034486594f0e2bfa5
 test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.model-metadata-sha256"}}')" = 9996eeb39bd34a89b0161ce4acaf036c2b2429cd13157b52a63dabe9189501b7
 test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.undici-h2-base-sha256"}}')" = 611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7
-test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.undici-h2-sha256"}}')" = 521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087
+test "$(docker image inspect "$controller_image_id" --format '{{index .Config.Labels "io.maka.judge.undici-h2-sha256"}}')" = 32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4
 test "$(docker image inspect "$egress_image_id" --format '{{index .Config.Labels "io.maka.lab.source-revision"}}')" = 2f32205528a4436783c800715261d4b6e286023d
 expected_filter=$(shasum -a 256 "$LAB_ROOT/controller/egress-overlay/egress_filter.py" | awk '{print $1}')
 installed_filter=$(docker run --rm --network none --entrypoint sha256sum "$egress_image_id" \

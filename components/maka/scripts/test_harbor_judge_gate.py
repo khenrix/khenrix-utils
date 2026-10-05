@@ -79,7 +79,7 @@ maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b91488
                 self.assertEqual(path, baseline)
                 self.assertEqual(completion, frozen)
             else:
-                suffix = "-undici-h2-close-v1" if variant == "harbor-judge-sol61-h2-v1" else ""
+                suffix = "-undici-h2-close-v2" if variant == "harbor-judge-sol61-h2-v1" else ""
                 self.assertEqual(path, baseline + "-harbor-judge-sol61-v1" + suffix)
                 expected = frozen.replace(
                     "compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2",
@@ -92,11 +92,11 @@ maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b91488
                 if suffix:
                     expected = expected.replace(
                         "compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1",
-                        "compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v1",
+                        "compatibility-overlay-bundle=relay-root-virtiofs-v2-eval-openai-onboarding-v2-harbor-judge-sol61-v1-undici-h2-close-v2",
                     ).replace(
                         "compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1",
-                        "compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v1",
-                    ) + "\nundici-h2-base-sha256=611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7\nundici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d85087"
+                        "compatibility-overlays=relay-root-virtiofs-v2,eval-openai-onboarding-v2,harbor-judge-sol61-v1,undici-h2-close-v2",
+                    ) + "\nundici-h2-base-sha256=611003bb876a218e5bd652877766e8dbfef6e6d54274241fe31b4ccb5e3895e7\nundici-h2-sha256=32c2b747c1c1c9c7405e60dc70145f67f9b8f96db0b6264f55e1f0400a375dc4"
                 self.assertEqual(completion, expected)
 
     def test_shell_result_gate_accepts_only_current_model_in_result_and_relay(self) -> None:
