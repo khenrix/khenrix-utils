@@ -15,6 +15,9 @@ mise exec -- python -B components/workvault/sync.py status --config /absolute/pr
 mise exec -- python -B -m unittest discover -s components/workvault
 ```
 
+The same deterministic suite runs in `make verify` and `make test`; use
+`mise exec -- make workvault-test` to run only this component.
+
 `inventory` reads the source schema, complete index and recursive Git tree. `sync`
 pins the requested ref or default branch to an immutable commit, reads at most five
 knowledge pages per model call, validates structured curation, and publishes a stable

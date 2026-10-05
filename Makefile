@@ -10,7 +10,7 @@ PY   := python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test fanout-test forge-test-slow forge-host-smoke forge-proc-host-smoke codex-tokenless-canary tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge smoke-llm-fanout benchmark-llm-fanout eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
+.PHONY: help render setup-claude setup-codex setup-agy khenrix-refresh refresh verify precommit test council-test fanout-test workvault-test forge-test-slow forge-host-smoke forge-proc-host-smoke codex-tokenless-canary tier0-host-smoke doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test smoke-llm-council smoke-llm-forge smoke-llm-fanout benchmark-llm-fanout eval eval-test status defaults-status defaults-status-json defaults-apply clean cli-sources cli-sources-status
 
 LLM_COUNCIL := shared/skills/llm-council/scripts/fanout.py
 EVAL := scripts/eval_harness.py
@@ -148,7 +148,7 @@ refresh: khenrix-refresh ## Alias for khenrix-refresh
 # collision guard -- i.e. a change that silently overwrites the user's existing
 # MCP definition. Verified: guard removed -> verify GREEN, eval-test RED. The
 # suites guarding destructive behaviour must be inside the gate, not beside it.
-verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test fanout-test eval-test ## Validate manifests, skills, and local CLI canaries without paid model calls
+verify: render doctor-test reconcile-defaults-test memory-runtime-test maka-component-test skill-delivery-test audit-test bats-test council-test fanout-test workvault-test eval-test ## Validate manifests, skills, and local CLI canaries without paid model calls
 	$(PY) scripts/render.py --check
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; [print('  ⚠',x) for x in checks.receipt_gate(checks.ROOT, advisory=True)]"
 
@@ -164,7 +164,7 @@ precommit: verify forge-test-slow ## Commit-boundary gate: render in sync + ever
 	@$(PY) -c "import sys; sys.path.insert(0,'scripts/lib'); import checks; p=checks.receipt_gate(checks.ROOT, advisory=False); [print('  ✗',x) for x in p]; sys.exit(1 if p else 0)"
 	@echo "✅ precommit clean (render in sync + eval receipts fresh)"
 
-test: fanout-test council-test forge-test-slow ## Run fanout and historical council/forge deterministic suites (no token cost)
+test: fanout-test council-test workvault-test forge-test-slow ## Run fanout, vault and historical council/forge deterministic suites (no token cost)
 	$(PY) $(LLM_COUNCIL) --self-test
 	$(call RUN_PYTEST,-m slow tests/test_council_characterization.py tests/test_council_facade.py)
 
@@ -173,6 +173,9 @@ council-test: ## Council engine (seat/characterization/seam/facade) + fast forge
 
 fanout-test: ## Fanout engine, local CLI canaries, quality-fixture, smoke, and benchmark tests
 	$(call RUN_PYTEST,$(FANOUT_TESTS))
+
+workvault-test: ## Curated vault collection, publication, coverage and recovery tests (no token cost)
+	$(PY) -B -m unittest discover -s components/workvault
 
 smoke-llm-fanout: ## Opt-in live fanout authority smoke; fails closed until wired
 	$(PY) scripts/fanout_smoke.py --live
