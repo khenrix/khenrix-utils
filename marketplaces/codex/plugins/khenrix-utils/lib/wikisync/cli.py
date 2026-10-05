@@ -22,10 +22,10 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .canonurl import canonicalize
+from .canonurl import canonicalize, redact_credentials, redact_text_urls
 from .capture import CaptureStore
 from .config import Config, load_config
 from .ledger import Ledger
@@ -108,6 +108,12 @@ def cmd_plan(ctx: Context, channel: str, snapshot_file: str | None = None,
         return {"channel": channel, "deferred": True, "reason": "enumeration_failed",
                 "jobs": [], "removable": [], "errors": snap.errors}
 
+    snap = replace(snap, items=[replace(
+        it, native_id=redact_text_urls(it.native_id),
+        canonical_url=canonicalize(redact_credentials(it.canonical_url)).canonical,
+        original_url=redact_text_urls(it.original_url),
+        title=redact_text_urls(it.title), collection=redact_text_urls(it.collection),
+    ) for it in snap.items])
     diff = ctx.ledger.plan_diff(snap)
     jobs = []
     for reason, group in (("new", diff.new), ("reappeared", diff.reappeared),
@@ -166,7 +172,23 @@ def _extraction_only(job: dict) -> dict:
     return {k: v for k, v in job.items() if k != "now"}
 
 
+def _sanitize_job(job: dict) -> dict:
+    clean = {}
+    for key, value in job.items():
+        if isinstance(value, str):
+            value = redact_text_urls(value)
+        elif isinstance(value, list):
+            value = [redact_text_urls(entry) if isinstance(entry, str) else entry
+                     for entry in value]
+            if key in ("captures", "sources"):
+                value = [{k: redact_text_urls(v) if isinstance(v, str) else v
+                          for k, v in entry.items()} for entry in value]
+        clean[key] = value
+    return clean
+
+
 def cmd_commit(ctx: Context, job: dict, now: str | None = None) -> dict:
+    job = _sanitize_job(job)
     # An empty --now (the CLI default) must fall back to the job's own timestamp, else
     # created/updated render blank.
     now = now or job.get("now") or ""
@@ -240,11 +262,12 @@ def cmd_reprocess(ctx: Context, now: str = "", only_stale: bool = False) -> list
         cap = ctx.store.latest(it["native_id"], "extraction")
         if cap is None:
             continue
-        ext = json.loads(ctx.store.get(cap.capture_id))
+        ext = _sanitize_job(json.loads(ctx.store.get(cap.capture_id)))
         if only_stale and int(ext.get("taxonomy_version", 0)) >= TAXONOMY_VERSION:
             continue
-        item = SourceItem(native_id=it["native_id"], canonical_url=url,
-                          title=it["title"] or "", collection=ext.get("collection", ""))
+        url = redact_credentials(url)
+        item = SourceItem(native_id=redact_text_urls(it["native_id"]), canonical_url=url,
+                          title=redact_text_urls(it["title"] or ""), collection=ext.get("collection", ""))
         r = route(item, ext)
         all_tags.append(list(r.tags))
         page_path = Path(ctx.cfg.vault) / prow["path"]
@@ -291,7 +314,7 @@ def _parse_frontmatter(text: str) -> dict:
 
 def cmd_adopt(ctx: Context, md_path: str, now: str = "") -> dict:
     p = Path(md_path)
-    fm = _parse_frontmatter(p.read_text())
+    fm = _sanitize_job(_parse_frontmatter(p.read_text()))
     source_url = fm.get("source_url")
     if not source_url:
         raise ValueError(f"adopt: {md_path} has no source_url in frontmatter")

@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,14 @@ def _ctx(td):
                        store=CaptureStore(cfg.state_dir))
 
 
+def _persistent_ctx(td):
+    ctx = _ctx(td)
+    ctx.cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    ctx.ledger.close()
+    ctx.ledger = Ledger(ctx.cfg.state_dir / "ledger.sqlite")
+    return ctx
+
+
 class TestProbe(unittest.TestCase):
     def test_all_capability_keys_present(self):
         with tempfile.TemporaryDirectory() as td:
@@ -33,6 +42,28 @@ class TestProbe(unittest.TestCase):
 
 
 class TestPlan(unittest.TestCase):
+    def test_snapshot_identity_is_sanitized_before_diff_and_observe(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _persistent_ctx(td)
+            snapshot = Path(td) / "snapshot.json"
+            results = []
+            for secret in ("PLAN_FIRST_SECRET", "PLAN_SECOND_SECRET"):
+                url = f"https://ex.com/x?token={secret}&variant=blue&signed=one%2Ftwo"
+                snapshot.write_text(json.dumps({"status": "complete", "items": [{
+                    "native_id": url, "canonical_url": url, "original_url": url,
+                }]}))
+                results.append(cli.cmd_plan(ctx, "chrome-bookmarks", str(snapshot), NOW))
+            safe = "https://ex.com/x?token=REDACTED&variant=blue&signed=one%2Ftwo"
+            self.assertEqual(results[1]["jobs"][0]["native_id"], safe)
+            self.assertEqual(results[1]["jobs"][0]["reason"], "updated")
+            self.assertEqual(results[0]["jobs"][0]["item_id"], results[1]["jobs"][0]["item_id"])
+            self.assertEqual(results[1]["removable"], [])
+            self.assertEqual(ctx.ledger.item_count(), 1)
+            persisted = "\n".join(ctx.ledger.conn.iterdump())
+            self.assertNotIn("PLAN_FIRST_SECRET", persisted)
+            self.assertNotIn("PLAN_SECOND_SECRET", persisted)
+            ctx.ledger.close()
+
     def test_bookmarks_emits_prepared_jobs(self):
         with tempfile.TemporaryDirectory() as td:
             res = cli.cmd_plan(_ctx(td), channel="chrome-bookmarks")
@@ -49,6 +80,42 @@ class TestPlan(unittest.TestCase):
 
 
 class TestCommit(unittest.TestCase):
+    def test_commit_sanitizes_actual_ledger_captures_and_extraction(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _persistent_ctx(td)
+            url = "https://ex.com/x?token=COMMIT_SECRET&variant=blue&signed=one%2Ftwo"
+            job = {"source_url": url, "native_id": url, "title": "A",
+                   "summary": "Read https://ex.com/article?api_key=TEXT_SECRET&q=42.",
+                   "ingredients": ["https://ex.com/ingredient?password=LIST_SECRET&size=L"],
+                   "captures": [{"kind": "original-source",
+                                 "text": "https://ex.com/source?secret=CAPTURE_SECRET&v=1"}],
+                   "sources": [{"url": "https://ex.com/archive?auth=SOURCE_SECRET&v=2"}],
+                   "now": NOW}
+            first = cli.cmd_commit(ctx, job)
+            page = ctx.cfg.vault / first["path"]
+            page.write_text(page.read_text() + "\n## My notes\nmanual token=not-a-url\n")
+            second = cli.cmd_commit(ctx, job)
+            self.assertEqual(first["path"], second["path"])
+            self.assertEqual(ctx.ledger.item_count(), 1)
+            self.assertIn("manual token=not-a-url", page.read_text())
+            safe = "https://ex.com/x?token=REDACTED&variant=blue&signed=one%2Ftwo"
+            self.assertIsNotNone(ctx.ledger.find_page_by_url(safe))
+            capture = ctx.store.latest(safe, "original-source")
+            self.assertIsNotNone(capture)
+            self.assertEqual(Path(capture.raw_path).read_bytes(),
+                             b"https://ex.com/source?secret=REDACTED&v=1")
+            extraction = ctx.store.latest(safe, "extraction")
+            self.assertIsNotNone(extraction)
+            ext = json.loads(ctx.store.get(extraction.capture_id))
+            self.assertEqual(ext["summary"], "Read https://ex.com/article?api_key=REDACTED&q=42.")
+            self.assertEqual(ext["ingredients"], ["https://ex.com/ingredient?password=REDACTED&size=L"])
+            persisted = "\n".join(ctx.ledger.conn.iterdump()).encode() + page.read_bytes()
+            persisted += b"".join(path.read_bytes() for path in ctx.store.root.rglob("*") if path.is_file())
+            for secret in ("COMMIT_SECRET", "TEXT_SECRET", "LIST_SECRET", "CAPTURE_SECRET", "SOURCE_SECRET"):
+                self.assertNotIn(secret.encode(), persisted)
+            self.assertEqual(job["source_url"], url)
+            ctx.ledger.close()
+
     def test_rejects_missing_source_url(self):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaises(ValueError):
@@ -87,6 +154,21 @@ class TestCommit(unittest.TestCase):
 
 
 class TestAdopt(unittest.TestCase):
+    def test_adoption_sanitizes_url_identity_without_rewriting_manual_page(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _persistent_ctx(td)
+            md = ctx.cfg.vault / "wiki" / "adopt.md"
+            url = "https://ex.com/x?token=ADOPT_SECRET&variant=blue"
+            original = f'---\nsource_url: "{url}"\nnative_id: "{url}"\n---\nmanual body\n'
+            md.write_text(original)
+            one = cli.cmd_adopt(ctx, str(md), NOW)
+            two = cli.cmd_adopt(ctx, str(md), NOW)
+            self.assertEqual(one["page_id"], two["page_id"])
+            self.assertEqual(one["source_url"], "https://ex.com/x?token=REDACTED&variant=blue")
+            self.assertNotIn("ADOPT_SECRET", "\n".join(ctx.ledger.conn.iterdump()))
+            self.assertEqual(md.read_text(), original)
+            ctx.ledger.close()
+
     def test_matches_by_source_url_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
             ctx = _ctx(td)
@@ -110,6 +192,28 @@ class TestAdopt(unittest.TestCase):
 
 
 class TestReprocess(unittest.TestCase):
+    def test_reprocess_sanitizes_new_render_but_does_not_clean_historical_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            ctx = _persistent_ctx(td)
+            url = "https://ex.com/x?token=HISTORICAL_SECRET&variant=blue"
+            ctx.ledger.observe(chan="manual", native_id=url, url=url, title="A", now=NOW)
+            path = "wiki/sources/old.md"
+            ctx.ledger.record_page(path=path, source_url=url, now=NOW)
+            page = ctx.cfg.vault / path
+            page.parent.mkdir(parents=True)
+            page.write_text("<!-- khenrix:managed:start -->\nold\n<!-- khenrix:managed:end -->\nmanual survives\n")
+            payload = json.dumps({"title": "A", "summary": "https://ex.com/y?key=REPROCESS_SECRET&q=2"}).encode()
+            historical = ctx.store.put(url, "extraction", payload)
+            rendered = cli.cmd_reprocess(ctx, now=NOW)
+            text = (ctx.cfg.vault / rendered[0]).read_text()
+            self.assertNotIn("HISTORICAL_SECRET", text)
+            self.assertNotIn("REPROCESS_SECRET", text)
+            self.assertIn("key=REDACTED&q=2", text)
+            self.assertIn("manual survives", text)
+            self.assertEqual(ctx.store.get(historical.capture_id), payload)
+            self.assertEqual(ctx.ledger.active_items_for_url(url)[0]["native_id"], url)
+            ctx.ledger.close()
+
     def test_reprocess_preserves_manual_and_rerenders(self):
         with tempfile.TemporaryDirectory() as td:
             ctx = _ctx(td)

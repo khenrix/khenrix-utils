@@ -16,7 +16,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from . import SCHEMA_VERSION
-from .canonurl import redact_credentials
+from .canonurl import redact_credentials, redact_text_urls
 from .taxonomy import TAXONOMY_VERSION, Route
 
 MANAGED_START = "<!-- khenrix:managed:start -->"
@@ -68,7 +68,7 @@ def _collect_sources(source_url, channel, author, capabilities, extraction):
     out = [(label, source_url, _provides_text(primary_caps) or "the saved item")]
     seen = {source_url}
     for s in extraction.get("sources", []) or []:
-        u = (s.get("url") or "").strip()
+        u = redact_credentials((s.get("url") or "").strip())
         if u and u not in seen:
             out.append((s.get("label") or "original source", u, s.get("provides") or ""))
             seen.add(u)
@@ -76,6 +76,8 @@ def _collect_sources(source_url, channel, author, capabilities, extraction):
         kind = cap.get("kind", "")
         if kind in ("original-source", "archive"):
             u = _first_url(cap.get("text", ""))
+            if u:
+                u = redact_credentials(u)
             if u and u not in seen:
                 lbl = "original recipe" if kind == "original-source" else "web archive"
                 prov = "full recipe" if kind == "original-source" else "archived page"
@@ -198,7 +200,7 @@ def render_page(item, extraction: dict, route: Route, existing_text: str | None 
         ("source_author", author),
         ("source_channel", channel),
         ("source_collection", collections),
-        ("native_id", item.native_id),
+        ("native_id", redact_text_urls(item.native_id)),
         ("capture_id", extraction.get("capture_id") or ""),
         ("fetcher_version", extraction.get("fetcher_version", 1)),
         ("extractor_version", extraction.get("extractor_version", 1)),
@@ -217,9 +219,9 @@ def render_page(item, extraction: dict, route: Route, existing_text: str | None 
     if existing_text and MANAGED_END in existing_text:
         manual_tail = existing_text.split(MANAGED_END, 1)[1]
 
-    text = f"{frontmatter}\n\n{managed}{manual_tail}"
+    text = f"{redact_text_urls(frontmatter)}\n\n{redact_text_urls(managed)}{manual_tail}"
     if not manual_tail.endswith("\n"):
         text += "\n"
     gen_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    path = f"{route.target_dir}/{filename(title, author, item.native_id)}"
+    path = f"{route.target_dir}/{filename(title, author, redact_text_urls(item.native_id))}"
     return PageDoc(path=path, text=text, generated_hash=gen_hash)

@@ -640,12 +640,13 @@ def test_valid_first_judge_reply_needs_no_semantic_retry(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("phase", ["grading", "comparison"])
+@pytest.mark.parametrize("skill", ["chunk-map", "khenrix-quality"])
 def test_two_malformed_judge_replies_stop_campaign_without_receipt(
-    tmp_path, monkeypatch, phase
+    tmp_path, monkeypatch, phase, skill
 ):
-    """The deterministic gate must not bless an advisory panel whose judge never answered."""
+    """An ordinary skill cannot earn a verdict from two malformed judge replies."""
     eval_root = tmp_path / "evals"
-    eval_dir = eval_root / "llm-fanout-plan"
+    eval_dir = eval_root / skill
     eval_dir.mkdir(parents=True)
     (eval_dir / "evals.json").write_text(json.dumps({"evals": [
         {"id": 0, "name": "first", "prompt": "Answer", "assertions": ["correct"]},
@@ -691,7 +692,7 @@ def test_two_malformed_judge_replies_stop_campaign_without_receipt(
         return raw, {"valid": True, "reason": "ok", "duration_sec": 0.01}
 
     monkeypatch.setattr(eval_harness, "run_text", fake_run_text)
-    args = eval_harness.parse_args(["--skill", "llm-fanout-plan", "--iteration", "1"])
+    args = eval_harness.parse_args(["--skill", skill, "--iteration", "1"])
 
     assert eval_harness.run(args) == 1
     assert not (eval_dir / "receipt.json").exists()
@@ -723,3 +724,127 @@ def test_judge_transport_error_keeps_its_reason_without_semantic_retry(
     assert result["judge_ok"] is False
     assert result["judge_reason"] == "timeout"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("phase", ("grading", "comparison"))
+@pytest.mark.parametrize("retry_failure", ("malformed", "timeout"))
+def test_exhausted_judge_retains_completed_and_inflight_partial_benchmark(
+    measured_campaign, monkeypatch, phase, retry_failure,
+):
+    args, eval_dir, calls, artifacts = measured_campaign
+    evals = [{"id": number, "name": f"case-{number}", "prompt": "Answer", "assertions": ["correct"]}
+             for number in range(3)]
+    (eval_dir / "evals.json").write_text(json.dumps({"evals": evals}))
+    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"fixture-cli 1.0\n")
+    bad_attempts = []
+    def turn(provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(provider)
+        case = next(part for part in workdir.parts if part.startswith("eval-"))
+        target = case.startswith("eval-1-") and (
+            workdir.parent.name == "codex__without_skill" if phase == "grading"
+            else workdir.name.startswith("compare-"))
+        valid, reason = True, "ok"
+        if target:
+            raw = "{malformed"
+            if bad_attempts and retry_failure == "timeout":
+                raw, valid, reason = "", False, "timeout"
+            bad_attempts.append((workdir, raw, reason))
+        elif workdir.name.startswith("judge"):
+            raw = '{"expectations":[{"passed":true}]}'
+        elif workdir.name.startswith("compare-"):
+            raw = '{"winner":"A"}'
+        else:
+            raw = f"{case}/{workdir.name}/completed executor"
+        workdir.mkdir(parents=True, exist_ok=True)
+        path = workdir / f"{provider}.stdout.attempt-1.txt"
+        path.write_text(raw)
+        artifacts.append((path, raw))
+        return raw, {"valid": valid, "reason": reason, "duration_sec": 0.25}
+    monkeypatch.setattr(eval_harness, "run_text", turn)
+    assert eval_harness.run(args) == 1
+    iteration = eval_dir / "workspace/iteration-1"
+    assert not (iteration / "eval-2-case-2").exists()
+    assert not (eval_dir / "receipt.json").exists()
+    benchmark = json.loads((iteration / "benchmark.json").read_text())
+    assert len(benchmark["runs"]) == 4
+    assert benchmark["runs"][0]["result"]["passed"] == 1
+    assert benchmark["runs"][2]["result"]["passed"] == 1
+    assert benchmark["runs"][3]["result"]["executor_error"] == 0
+    assert benchmark["runs"][3]["result"]["time_seconds"] == 0.25
+    assert benchmark["comparisons"][0]["judge_ok"] is True
+    if phase == "grading":
+        last = benchmark["runs"][3]
+        assert last["result"]["judge_error"] == 1 and last["result"]["passed"] == 0
+        assert last["expectations"][0]["evidence"] == "no verdict returned"
+    else:
+        assert benchmark["comparisons"][1]["winner_condition"] is None
+        assert benchmark["comparisons"][1]["judge_ok"] is False
+    error = benchmark["metadata"]["judge_error"]
+    assert ("timeout" if retry_failure == "timeout" else "unreadable verdict") in error
+    assert len(bad_attempts) == 2 and bad_attempts[0][0] != bad_attempts[1][0]
+    assert all(str(path) in error for path, _raw, _reason in bad_attempts)
+    assert [path.read_text() for path, _raw in artifacts] == [raw for _path, raw in artifacts]
+
+
+@pytest.mark.parametrize("gate", ("passed", "failed", "skipped", "empty"))
+def test_malformed_advisory_only_certifies_actual_nonzero_noskip_owning_success(
+    measured_campaign, monkeypatch, gate,
+):
+    args, old_dir, calls, artifacts = measured_campaign
+    eval_dir = old_dir.with_name("llm-fanout-plan")
+    old_dir.rename(eval_dir)
+    args.skill = "llm-fanout-plan"
+    monkeypatch.setattr(fanout_baseline, "installed_version", lambda _provider: b"fixture-cli 1.0\n")
+    def malformed(provider, _prompt, _cfg, workdir, **_kwargs):
+        calls.append(provider)
+        raw = "{malformed" if workdir.name.startswith("judge") else "completed executor"
+        workdir.mkdir(parents=True, exist_ok=True)
+        path = workdir / f"{provider}.stdout.attempt-1.txt"
+        path.write_text(raw)
+        artifacts.append((path, raw))
+        return raw, {"valid": True, "reason": "ok", "duration_sec": 0.1}
+    monkeypatch.setattr(eval_harness, "run_text", malformed)
+    # The certifier still launches a native owning process and parses its real counts.
+    expected = "https://ex.com/?token=REDACTED" if gate != "failed" else "deliberately wrong fault"
+    owner = ("import sys,unittest\nsys.path.insert(0,'shared/lib')\n"
+             "from wikisync.canonurl import redact_credentials\n"
+             "class Owner(unittest.TestCase):\n"
+             + (" @unittest.skip('controlled skip')\n" if gate == "skipped" else "")
+             + " def test_credentials(self):\n"
+             + f"  self.assertEqual(redact_credentials('https://ex.com/?token=secret'),{expected!r})\n"
+             + ("suite=unittest.TestSuite()\n" if gate == "empty"
+                else "suite=unittest.defaultTestLoader.loadTestsFromTestCase(Owner)\n")
+             + "result=unittest.TextTestRunner().run(suite)\nsys.exit(not result.wasSuccessful())\n")
+    monkeypatch.setitem(eval_harness.DETERMINISTIC_GATED, args.skill, ["python3", "-c", owner])
+    native_run = subprocess.run
+    observed = []
+    def owning_run(command, **kwargs):
+        result = native_run(command, **kwargs)
+        observed.append(result)
+        print(json.dumps({"owning_argv": command, "returncode": result.returncode,
+                          "stdout": result.stdout, "stderr": result.stderr}))
+        return result
+    monkeypatch.setattr(eval_harness.subprocess, "run", owning_run)
+    if gate == "passed":
+        assert eval_harness.run(args) == 0
+        receipt = json.loads((eval_dir / "receipt.json").read_text())
+        assert receipt["self_test"] is True and receipt["provenance"] == "eval"
+        assert receipt["gate_counts"] == {"tests_run": 1, "skipped": 0, "failed": 0}
+    else:
+        with pytest.raises(SystemExit, match="deterministic|counts"):
+            eval_harness.run(args)
+        assert not (eval_dir / "receipt.json").exists()
+    benchmark = json.loads((eval_dir / "workspace/iteration-1/benchmark.json").read_text())
+    assert len(benchmark["runs"]) == 1 and benchmark["runs"][0]["result"]["judge_error"] == 1
+    assert len(artifacts) == 3
+    assert len(observed) == 1
+    assert observed[0].returncode == (1 if gate == "failed" else 0)
+    assert [path.read_text() for path, _raw in artifacts] == [raw for _path, raw in artifacts]
+
+
+def test_execute_receipt_selects_material_makefile_target_handover_and_eval_owners():
+    named = {Path(argument).name for argument in eval_harness.DETERMINISTIC_GATED["llm-fanout-execute"]
+             if argument.endswith(".py")}
+    assert named >= {"test_fanout_branch_handover.py", "test_fanout_targets.py", "test_eval_provider.py"}
+    command = eval_harness.portable_gate_command(eval_harness.DETERMINISTIC_GATED["llm-fanout-execute"])
+    assert all(not Path(argument).is_absolute() for argument in command)

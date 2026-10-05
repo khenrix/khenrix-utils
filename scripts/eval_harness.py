@@ -170,6 +170,8 @@ DETERMINISTIC_GATED = {
             "test_fanout_execute_skill.py", "test_fanout_execute.py",
             "test_fanout_cold_recovery.py", "test_fanout_storage.py",
             "test_fanout_memory.py", "test_fanout_repo.py",
+            "test_fanout_targets.py", "test_fanout_branch_handover.py",
+            "test_eval_provider.py",
             "test_fanout_verification.py", "test_skill_delivery.py",
         )],
 }
@@ -1052,6 +1054,12 @@ def _numbered(items: list) -> str:
 class JudgeVerdictError(RuntimeError):
     """A judge produced no usable verdict after a fresh semantic retry."""
 
+    def __init__(self, message, *, attempts):
+        super().__init__(message)
+        self.attempts = attempts
+        self.runs = []
+        self.comparison = None
+
 
 def _run_judge(judge: str, prompt: str, cfg: dict, workdir: Path, *,
                timeout: int, verdict_ok):
@@ -1060,6 +1068,7 @@ def _run_judge(judge: str, prompt: str, cfg: dict, workdir: Path, *,
                          readonly=False)
     if not rec.get("valid") or verdict_ok(text):
         return text, rec
+    first_attempt = {"workdir": str(workdir), "reason": "unreadable verdict", "record": rec}
 
     # A unique sibling keeps both raw attempts even when this iteration is rerun.
     retry_dir = Path(tempfile.mkdtemp(prefix=f"{workdir.name}-retry-", dir=workdir.parent))
@@ -1069,7 +1078,8 @@ def _run_judge(judge: str, prompt: str, cfg: dict, workdir: Path, *,
         return text, rec
     reason = rec.get("reason") if not rec.get("valid") else "unreadable verdict"
     raise JudgeVerdictError(
-        f"judge failed after one fresh retry ({reason}); raw attempts: {workdir}, {retry_dir}")
+        f"judge failed after one fresh retry ({reason}); raw attempts: {workdir}, {retry_dir}",
+        attempts=[first_attempt, {"workdir": str(retry_dir), "reason": reason, "record": rec}])
 
 
 def _grading_verdict_ok(text: str, assertions: list) -> bool:
@@ -1205,7 +1215,13 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
                                  retries=retries, readonly=readonly, exec_cwd=exec_cwd)
         (wd / "answer.md").write_text(text)
         outputs[condition] = text
-        g = grade(text, rendered_ev, condition, judge, cfg, wd, timeout=timeout)
+        error = None
+        try:
+            g = grade(text, rendered_ev, condition, judge, cfg, wd, timeout=timeout)
+        except JudgeVerdictError as exc:
+            error = exc
+            g = parse_grading("", ev["assertions"], f"eval-{ev['id']}-{ev['name']}", condition)
+            g.update(judge_ok=False, judge_reason=str(exc), judge_attempts=exc.attempts)
         (wd / "grading.json").write_text(json.dumps(g, indent=2))
         runs.append({
             "eval_id": ev["id"], "eval_name": f"eval-{ev['id']}-{ev['name']}",
@@ -1213,13 +1229,28 @@ def run_eval_for_provider(skill: str, provider: str, ev: dict, judge: str, cfg: 
             "result": build_run_result(rec, g),
             "expectations": g["expectations"],
         })
-    cmp = compare(outputs["with_skill"], outputs["without_skill"], rendered_ev,
-                  judge, cfg, base,
-                  timeout=timeout, provider=provider)
+        if error is not None:
+            runs[-1]["judge_attempts"] = error.attempts
+            error.runs = runs
+            raise error
+    error = None
+    try:
+        cmp = compare(outputs["with_skill"], outputs["without_skill"], rendered_ev,
+                      judge, cfg, base, timeout=timeout, provider=provider)
+    except JudgeVerdictError as exc:
+        error = exc
+        _, _, key = blind_pair(outputs["with_skill"], outputs["without_skill"], ev["id"])
+        cmp = parse_comparison("", key)
+        cmp.update(judge_ok=False, judge_reason=str(exc), judge_attempts=exc.attempts,
+                   executor=provider, eval_id=ev["id"], judge=judge,
+                   judge_model=(cfg.get(judge) or {}).get("model"))
     # PER-PROVIDER FILENAME: this dir is shared by all three providers, so a single
     # comparison.json had each provider silently overwrite the previous one's verdict —
     # a per-provider blind tally was not reconstructible from the artifacts at all.
     (base / f"comparison.{provider}.json").write_text(json.dumps(cmp, indent=2))
+    if error is not None:
+        error.runs, error.comparison = runs, cmp
+        raise error
     return runs, cmp
 
 
@@ -1330,6 +1361,7 @@ def run(args) -> int:
         return 1
     all_runs = []
     comparisons = []
+    judge_error = None
     try:
         for provider in providers:
             for ev in evals:
@@ -1340,8 +1372,11 @@ def run(args) -> int:
                 all_runs.extend(runs)
                 comparisons.append(cmp)
     except JudgeVerdictError as exc:
-        print(f"  ✗ {exc}; campaign stopped without a receipt", file=sys.stderr)
-        return 1
+        all_runs.extend(exc.runs)
+        if exc.comparison is not None:
+            comparisons.append(exc.comparison)
+        judge_error = str(exc)
+        print(f"  ✗ {exc}; campaign stopped; partial results retained", file=sys.stderr)
 
     benchmark = {
         "metadata": {"skill_name": args.skill, "judge": args.judge,
@@ -1350,10 +1385,13 @@ def run(args) -> int:
                      "evals_run": [f"eval-{e['id']}-{e['name']}" for e in evals],
                      "runs_per_configuration": 1},
         "runs": all_runs,
+        "comparisons": comparisons,
         "run_summary": aggregate(all_runs),
         "notes": ["Portable harness: time_seconds from fan-out duration; token "
                   "accounting not captured cross-provider (tokens=null)."],
     }
+    if judge_error is not None:
+        benchmark["metadata"]["judge_error"] = judge_error
     (itdir / "benchmark.json").write_text(json.dumps(benchmark, indent=2))
     _print_summary(benchmark, itdir)
     d = benchmark["run_summary"]["delta"].get("pass_rate")
@@ -1385,7 +1423,7 @@ def run(args) -> int:
     # overrides below gate on a self-test/unit suite instead, so a flaky executor there
     # costs an advisory number, not the gate; they deliberately stay unaffected.
     invalid = [r for r in all_runs if r["result"].get("errors")]
-    gate_ok = (d is not None and d >= 0 and not invalid)
+    gate_ok = (d is not None and d >= 0 and not invalid and judge_error is None)
     if args.skill == "llm-council":
         # Orchestrator exception (docs/skill-eval-process.md): harness executors run
         # under LLM_COUNCIL_DEPTH=1, so an injected llm-council body can never convene

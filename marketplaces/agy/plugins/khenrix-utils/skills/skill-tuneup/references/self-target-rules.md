@@ -14,14 +14,16 @@ Extract the complete committed source tree so relative imports, both CLI entries
 capabilities, and memory modules all come from one commit:
 
 ```bash
-REVIEW_KU=$(mktemp -d)
-git -C "$KU" rev-parse HEAD
-git -C "$KU" archive HEAD | tar -x -C "$REVIEW_KU"
+REVIEW_KU=$(mktemp -d) || exit 1
+REVIEW_COMMIT=$(git -C "$KU" rev-parse HEAD) || exit 1
+REVIEW_ARCHIVE=$(mktemp) || exit 1
+git -C "$KU" archive "$REVIEW_COMMIT" --output="$REVIEW_ARCHIVE" || exit 1
+tar -x -f "$REVIEW_ARCHIVE" -C "$REVIEW_KU" || exit 1
 FANOUT_PLAN="$REVIEW_KU/shared/skills/llm-fanout-plan/scripts/plan.py"
 FANOUT_EXECUTE="$REVIEW_KU/shared/skills/llm-fanout-execute/scripts/execute.py"
 ```
 
-Check both extraction exit statuses before proceeding. Do not extract just one engine
+Both archive and extraction must succeed before reviewer assignments or launch. Do not extract just one engine
 file, blend dirty modules into its imports, or copy a current runtime into the archive.
 Admit review skills from exact clean roots. Keep `REPO` pointing to the under-test target;
 the question/evidence and captured baseline describe its candidate, while `REVIEW_KU`

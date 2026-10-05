@@ -14,6 +14,26 @@ def _item(collection="Bokmärkesfältet/Food/Main/Italian",
 
 
 class TestFilename(unittest.TestCase):
+    def test_secondary_sources_redact_before_dedup_and_render(self):
+        item = _item(url="https://ex.com/x?token=PRIMARY_SECRET",
+                     nid="https://ex.com/x?token=NATIVE_SECRET")
+        ext = {"title": "A", "sources": [
+            {"url": "https://ex.com/source?token=DECLARED_SECRET&variant=blue",
+             "label": "declared", "provides": "recipe"},
+        ], "captures": [
+            {"kind": "original-source", "text": "https://ex.com/source?token=CAPTURE_SECRET&variant=blue"},
+            {"kind": "archive", "text": "https://archive.org/x?key=ARCHIVE_SECRET&signed=one%2Ftwo"},
+        ]}
+        page = render_page(item, ext, route(item, ext), now="fixed")
+        for secret in ("PRIMARY_SECRET", "NATIVE_SECRET", "DECLARED_SECRET", "CAPTURE_SECRET", "ARCHIVE_SECRET"):
+            self.assertNotIn(secret, page.text)
+        sources = page.text.split("## Sources", 1)[1]
+        self.assertEqual(sources.count("https://ex.com/source?token=REDACTED&variant=blue"), 1)
+        self.assertIn("**declared:**", sources)
+        self.assertIn("recipe", sources)
+        self.assertIn("https://archive.org/x?key=REDACTED&signed=one%2Ftwo", sources)
+        self.assertEqual(page, render_page(item, ext, route(item, ext), now="fixed"))
+
     def test_slug_collision_distinct_authors(self):
         a = filename("Carbonara", "@x", "i1")
         b = filename("Carbonara", "@y", "i2")

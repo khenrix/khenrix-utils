@@ -317,11 +317,10 @@ fanout diff-review → record** (Steps 7–9 minus the checkpoint) until converg
   a green full-panel eval on exactly that candidate — if its last green eval wasn't
   full-panel, run the full panel ONCE on the unchanged candidate (that is the gate, not a
   new cycle). NOT for a self-test-gated target — anything `checks.is_self_test_gated` returns
-  True for (today: llm-council, the wiki pair, **and llm-forge**). Its receipt is earned by a
+  True for. Its receipt is earned by a
   suite, `validate_receipt` exempts it from the panel check, and running a full panel there
-  spends tokens on a gate that does not exist — on llm-forge, the most expensive skill in the
-  repo. Ask the predicate rather than trusting this list: it was written naming three of the
-  four and the missing one was the costliest. `verify-final-receipt` names which of the two
+  spends tokens on a gate that does not exist. Ask the current predicate;
+  `verify-final-receipt` names which of the two
   gates it actually proved. A council-only target converges on the first three conditions alone; there is
   no KHENRIX receipt to earn, and claiming one would be a lie — report any target-native
   gate you ran separately, and never as a receipt. **Prove it, don't assert it** —
@@ -333,8 +332,8 @@ python3 "$TUNEUP" verify-final-receipt --repo "$REPO" --skill <target>   # exit 
 ```
 
   It checks the receipt was earned (not seeded), matches the current source, and is
-  full-panel UNLESS `checks.is_self_test_gated` exempts it — llm-council, the wiki pair and
-  llm-forge today — because those receipts come from a test suite and a panel proves nothing
+  full-panel UNLESS `checks.is_self_test_gated` exempts it, because those receipts come
+  from a test suite and a panel proves nothing
   extra about them. Its success line names which of the two it proved. It applies to the TARGET —
   cross-target receipts re-earned for a shared-file edit keep their own skill's gate.
 - **The eval-fix cap of 5 is RUN-GLOBAL, not per-cycle** — it counts fix-iterations on the

@@ -140,8 +140,9 @@ mise exec -- make eval SKILL=khenrix-quality PROVIDERS=claude,codex,agy MODE=dee
 ```
 
 Notes: the eval harness removes permission-bypass flags, isolates each
-provider's home and working directory, and applies a checked no-tools boundary
-before launch. Claude also uses plan mode and an empty built-in tool set; Codex
+provider's working directory, and applies a checked no-tools boundary
+before launch. Claude retains its real HOME for account/keychain authentication,
+using safe mode and an empty built-in tool set, not plan mode. Codex
 uses its read-only sandbox with shell and app tools disabled; agy selects the
 private `eval-no-tools` agent with no bypass. A read-only posture line is
 prepended to each executor's prompt, and canary scanning checks for unintended
@@ -173,7 +174,7 @@ for that canary, known child credential values (including ADC secrets), and cred
 shapes. A match removes the provider artifact tree, leaves only a generic security-failure
 marker, and aborts the run.
 
-Authentication remains outside the temporary homes: Claude retains its normal account
+Codex and agy use isolated temporary homes. Claude retains its real HOME and normal account
 access; Codex accepts `OPENAI_API_KEY`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`, or bridges
 its stored credential into the child environment; agy receives the existing ADC path.
 
@@ -197,6 +198,14 @@ flight, the eval is under-timed â€” raise the per-attempt cap with `make eval â€
 rather than `MODE=deep`, which would also change reasoning depth.
 
 ## Per-provider measurement
+
+After one fresh semantic retry, an exhausted malformed judge reply stops further
+campaign turns. The partial benchmark retains completed runs/comparisons and the
+current executor condition, with unusable grading marked invalid and both raw attempt
+paths and reasons retained. Ordinary and mandatory quality/review verdicts still fail
+closed. The existing deterministic-advisory exception applies only if its actual owning
+suite succeeds with nonzero executed tests and no skips; a partial judge result is not
+the certification evidence.
 
 `run_summary.by_provider` reports each executor's own `with_skill` / `without_skill` /
 `delta`, plus `n_evals`, `quantum` and `status`; the receipt carries the same as

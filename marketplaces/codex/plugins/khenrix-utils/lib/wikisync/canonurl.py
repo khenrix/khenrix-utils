@@ -32,6 +32,7 @@ _CREDENTIAL_PARAMS = {
     "password", "pwd", "auth", "sig", "signature", "sessionid", "session",
 }
 _REDACTED = "REDACTED"
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 _IG_PATH = re.compile(r"^/(?P<seg>p|reel|reels|tv)/(?P<code>[A-Za-z0-9_-]+)/?")
 _YT_SHORTS = re.compile(r"^/shorts/(?P<id>[A-Za-z0-9_-]+)")
@@ -164,3 +165,29 @@ def redact_credentials(url: str) -> str:
     pairs = [(k, _REDACTED if k.lower() in _CREDENTIAL_PARAMS and v is not None else v)
              for k, v in _split_query(p.query)]
     return _rebuild(url, pairs)
+
+
+def redact_text_urls(text: str) -> str:
+    """Scrub URL query credentials without censoring ordinary prose or identifiers."""
+    parts = []
+    offset = 0
+    closing = {")": "(", "]": "["}
+    while match := _URL_RE.search(text, offset):
+        raw = match.group(0)
+        depth = {"(": 0, "[": 0}
+        end = len(raw)
+        for index, char in enumerate(raw):
+            if char in depth:
+                depth[char] += 1
+            elif char in closing:
+                opening = closing[char]
+                # The delimiter ends the URL even when prose follows without a space.
+                if depth[opening] == 0:
+                    end = index
+                    break
+                depth[opening] -= 1
+        url = raw[:end].rstrip(".,;")
+        parts.extend((text[offset:match.start()], redact_credentials(url)))
+        offset = match.start() + len(url)
+    parts.append(text[offset:])
+    return "".join(parts)
