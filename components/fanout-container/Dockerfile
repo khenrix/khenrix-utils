@@ -19,6 +19,7 @@ RUN mise install \
     && for tool in python claude codex agy; do \
          ln -s "$(mise which "$tool")" "/usr/local/bin/$tool"; \
        done \
+    && ln -s "$(mise which python)" /usr/local/bin/python3 \
     && test "$(mise --version | head -n 1 | cut -d' ' -f1)" = "2026.9.10" \
     && install -d -o 65532 -g 65532 -m 0700 \
          /workspace /session /session/.config /session/.codex /session/tmp /run/fanout
