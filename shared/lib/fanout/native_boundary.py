@@ -114,6 +114,7 @@ def issue_broker_admission(
     controller: LifecycleController, verification: SeatWorkspaceVerification,
     request: object, command: ProcessCommand,
     listener: BrokerListener, *, initial_receipt: tuple[str, str] | None = None,
+    quality_admission: tuple[str, str] | None = None,
 ) -> tuple[str, str]:
     """Authenticate one read-only command and listener; controller signing is trusted."""
     try:
@@ -124,14 +125,16 @@ def issue_broker_admission(
             raise ProviderRequestError("broker diagnostic admission is read-only")
         if request.resume != (initial_receipt is not None):
             raise ProviderRequestError("broker diagnostic resume needs initial evidence")
-        _check_canonical_broker_command(request, command, listener)
+        _check_canonical_broker_command(request, command, listener,
+            controller=controller, quality_admission=quality_admission)
         _require_broker_initial(controller, verification, request, initial_receipt)
-        binding = _broker_binding(listener, request)
+        binding = _broker_binding(listener, request, quality=quality_admission is not None)
         return write_evidence(
             controller, _BROKER_ADMISSION_CATEGORY,
             _broker_admission_payload(
                 request, verification.evidence_digest, _command_digest(command),
                 binding, initial_receipt,
+                quality_admission=quality_admission,
             ),
         )
     except ProviderRequestError:
@@ -159,7 +162,9 @@ def issue_native_boundary(
         workspace = verification.workspace.root
         _reject_aliases(workspace)
         _check_command(request, command)
-        binding = (_broker_binding(broker_listener, request)
+        quality = (read_evidence(controller, _BROKER_ADMISSION_CATEGORY, *broker_admission).get("quality_admission")
+                   if broker_admission is not None else None)
+        binding = (_broker_binding(broker_listener, request, quality=quality is not None)
                    if broker_listener is not None else None)
         if binding is not None:
             _validate_broker_admission(
@@ -297,7 +302,9 @@ def validate_native_boundary(
         if grant is not None:
             expected["staged_skill_grant"] = grant
         if boundary.broker_port is not None:
-            binding = _broker_binding(boundary.broker_listener, request)
+            quality = read_evidence(controller, _BROKER_ADMISSION_CATEGORY,
+                                   *boundary.broker_admission).get("quality_admission")
+            binding = _broker_binding(boundary.broker_listener, request, quality=quality is not None)
             _validate_broker_admission(
                 controller, verification, request, command, boundary.broker_listener, binding,
                 boundary.broker_admission,
@@ -586,6 +593,8 @@ def _native_environment(state: Path, request: object,
     overrides = {"HOME": str(state / "home"), "TMPDIR": str(state / "tmp")}
     if request.executor_id == "agy" and command.argv[0] == str(_AGY_DIRECT_BINARY):
         _agy_private_settings(state / "home")
+        if "--agent" in command.argv and command.argv[command.argv.index("--agent") + 1] == "eval-no-tools":
+            _quality_agy_agent(state / "home")
         overrides["XDG_CONFIG_HOME"] = str(state / "home" / ".config")
     child = build_child_environment(
         dict(os.environ),
@@ -605,6 +614,23 @@ def _native_environment(state: Path, request: object,
     if binding is not None:
         child.update(_broker_environment(request.executor_id, binding))
     return tuple(sorted(child.items()))
+
+
+def _quality_agy_agent(home):
+    from .eval_provider import AGY_AGENT_TEXT
+    directory = home / ".gemini" / "config" / "agents"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for path in (home / ".gemini" / "config", directory):
+        if path.is_symlink() or path.stat().st_mode & 0o077:
+            raise ProviderRequestError("quality agy private agent directory differs")
+    path = directory / "eval-no-tools.md"
+    data = AGY_AGENT_TEXT.encode()
+    if not path.exists():
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data); output.flush(); os.fsync(output.fileno())
+    if _hash_file(path, mode=0o600) != hashlib.sha256(data).hexdigest():
+        raise ProviderRequestError("quality agy private empty-tools agent differs")
 
 
 def _agy_private_settings(home: Path) -> None:
@@ -629,7 +655,7 @@ def _agy_private_settings(home: Path) -> None:
         raise ValueError("agy private Gemini settings changed")
 
 
-def _broker_binding(listener: BrokerListener, request: object) -> tuple[int, str, str, str]:
+def _broker_binding(listener: BrokerListener, request: object, *, quality=False) -> tuple[int, str, str, str]:
     if not isinstance(listener, BrokerListener):
         raise ValueError("native broker listener is invalid")
     host, port, binding_id, permit = listener.active_binding()
@@ -637,6 +663,8 @@ def _broker_binding(listener: BrokerListener, request: object) -> tuple[int, str
         (request.executor_id, request.profile.cli_version, request.profile.requested_model),
         request.profile.requested_model,
     )
+    if quality:
+        wire_model = request.profile.requested_model
     if (host != "127.0.0.1" or type(port) is not int or not 1 <= port <= 65535
             or permit.provider != request.executor_id
             or permit.run_id != request.run_id or permit.task_id != request.task_id
@@ -653,6 +681,7 @@ def _broker_binding(listener: BrokerListener, request: object) -> tuple[int, str
 def _check_canonical_broker_command(
     request: object, command: ProcessCommand | None, listener: BrokerListener,
     *, command_digest: str | None = None,
+    controller=None, quality_admission=None,
 ) -> None:
     from .providers import AgyAdapter, ClaudeAdapter, CodexAdapter, ProviderRegistry
 
@@ -669,7 +698,30 @@ def _check_canonical_broker_command(
     registry = ProviderRegistry((profile,), version_probe=registry._version_probe)
     registry.assert_installed_version(profile)
     adapter = registry.require(request.executor_id)
-    if type(adapter) is ClaudeAdapter:
+    if quality_admission is not None:
+        from functools import partial
+        from .diagnostic import reopen_quality_native_command, _codex_broker_command, _quality_send, _quality_preview
+        from .container_upstream import HostUpstream
+        expected, registration = reopen_quality_native_command(controller, request, quality_admission)
+        if (listener._ledger_binding is None
+                or listener._ledger_binding[0].controller is not controller
+                or listener._ledger_binding[1:] != (registration["permit_id"], registration["epoch"])
+                or asdict(listener.active_binding()[3]) != registration["permit"]):
+            raise ProviderRequestError("quality native consumed permit differs from listener")
+        sender = listener._broker._send
+        if (not isinstance(sender, partial) or sender.func is not _quality_send
+                or len(sender.args) != 4 or type(sender.args[0]) is not HostUpstream
+                or asdict(sender.args[0]._permit) != registration["permit"]
+                or not isinstance(getattr(sender, "preview", None), partial)
+                or sender.preview.func is not _quality_preview
+                or sender.preview.args != sender.args or sender.captures is not sender.args[3]):
+            raise ProviderRequestError("quality native sender lacks the genuine empty-tools guard")
+        evidence = read_evidence(controller, "quality-native-command", *quality_admission)
+        if str(sender.args[1].root) != evidence["store"]:
+            raise ProviderRequestError("quality native wire store differs from allocation")
+        if request.executor_id == "codex":
+            expected = _codex_broker_command(request, expected, listener)
+    elif type(adapter) is ClaudeAdapter:
         expected = adapter.build_command(request, brokered_diagnostic=True)
     elif type(adapter) is CodexAdapter:
         from .diagnostic import _codex_broker_command
@@ -691,8 +743,9 @@ def _broker_admission_payload(
     request: object, workspace_receipt: str, command_digest: str,
     binding: tuple[int, str, str, str],
     initial_receipt: tuple[str, str] | None,
+    *, quality_admission=None,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": "fanout-native-broker-diagnostic-admission-v1",
         "run_id": request.run_id, "task_id": request.task_id,
         "target_id": request.target_id, "seat_id": request.seat_id,
@@ -711,6 +764,9 @@ def _broker_admission_payload(
         "initial_receipt_name": None if initial_receipt is None else initial_receipt[0],
         "initial_receipt_digest": None if initial_receipt is None else initial_receipt[1],
     }
+    if quality_admission is not None:
+        payload["quality_admission"] = list(quality_admission)
+    return payload
 
 
 def _require_broker_initial(
@@ -747,7 +803,7 @@ def _require_broker_initial(
     )
     if (set(prior) != _BROKER_RESULT_FIELDS
             or any(prior.get(key) != value for key, value in expected.items())
-            or prior["broker_model"] != wire_model
+            or prior["broker_model"] not in {wire_model, request.profile.requested_model}
             or prior["observed_model"] not in (None, request.profile.requested_model)
             or any(not isinstance(prior[name], str)
                    or re.fullmatch(r"[0-9a-f]{64}", prior[name]) is None
@@ -766,6 +822,12 @@ def _require_broker_initial(
     except Exception as error:
         raise ProviderRequestError("broker diagnostic initial boundary is unavailable") from error
     _require_initial_boundary_chain(controller, verification, request, boundary)
+    prior_admission = read_evidence(controller, _BROKER_ADMISSION_CATEGORY,
+        boundary["broker_admission_name"], boundary["broker_admission_digest"])
+    expected_model = (request.profile.requested_model
+        if prior_admission.get("quality_admission") is not None else wire_model)
+    if prior["broker_model"] != expected_model:
+        raise ProviderRequestError("initial native permit model differs from its exact route")
 
 
 def _require_initial_boundary_chain(
@@ -834,8 +896,13 @@ def _require_initial_boundary_chain(
         raise ProviderRequestError("broker diagnostic initial boundary admission is unavailable") from error
     binding = (boundary["broker_port"], boundary["broker_binding_id"],
                boundary["broker_permit_sha256"], "")
+    quality = admission.get("quality_admission")
+    if quality is not None:
+        from .diagnostic import validate_quality_prior_command
+        validate_quality_prior_command(controller, request, tuple(quality))
     if admission != _broker_admission_payload(
         initial, verification.evidence_digest, boundary["command_digest"], binding, None,
+        quality_admission=quality,
     ):
         raise ProviderRequestError("broker diagnostic initial boundary admission differs")
     executable_name = request.profile.initial_argv[0]
@@ -866,13 +933,15 @@ def _validate_broker_admission(
     admission: tuple[str, str] | None,
     *, command_digest: str | None = None,
 ) -> None:
-    _check_canonical_broker_command(
-        request, command, listener, command_digest=command_digest,
-    )
     if (not isinstance(admission, tuple) or len(admission) != 2
             or any(not isinstance(value, str) for value in admission)):
         raise ProviderRequestError("broker diagnostic admission is invalid")
     payload = read_evidence(controller, _BROKER_ADMISSION_CATEGORY, *admission)
+    quality = payload.get("quality_admission")
+    _check_canonical_broker_command(
+        request, command, listener, command_digest=command_digest,
+        controller=controller, quality_admission=quality,
+    )
     initial_name = payload.get("initial_receipt_name")
     initial_digest = payload.get("initial_receipt_digest")
     initial = (initial_name, initial_digest) if initial_name is not None else None
@@ -883,6 +952,7 @@ def _validate_broker_admission(
         request, verification.evidence_digest,
         _command_digest(command) if command is not None else command_digest,
         binding, initial,
+        quality_admission=quality,
     ):
         raise ProviderRequestError("broker diagnostic admission changed association")
 

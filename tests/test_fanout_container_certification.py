@@ -51,6 +51,37 @@ def certification():
         pytest.fail("the shared authenticated evidence and certificate gates are missing")
 
 
+def test_quality_wire_reader_reopens_actual_prepared_and_served_bytes(tmp_path):
+    from test_fanout_container_upstream import _route, _routed_permit
+    from shared.lib.fanout.container_certification import reopen_quality_wire, CertificationRejected
+    route = _route("claude")
+    permit = _routed_permit(route, "/v1/projects/fictional-project/locations/europe-west1/publishers/anthropic/models/claude-opus-5-5:rawPredict")
+    normal = canonical_json({"model": permit.model, "max_tokens": 16,
+        "messages": [{"role": "user", "content": "inert wire reader"}], "tools": []})
+    prepared = HostUpstream(permit, route, max_response_bytes=permit.max_response_bytes,
+                            deadline_seconds=permit.response_deadline).preview(
+        "POST", "/v1/messages", {"content-type": "application/json"}, normal)
+    response = canonical_json({"type": "message", "id": "inert-quality-response",
+        "model": permit.upstream_model, "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "inert complete assistant answer"}]})
+    identity = OutboundRequestIdentity("POST", "/v1/messages", hashlib.sha256(normal).hexdigest(),
+        16, permit.model, prepared.route_digest, prepared.origin, prepared.path,
+        hashlib.sha256(prepared.body).hexdigest(), prepared.effective_model)
+    with ArtifactStore(tmp_path / "raw") as store:
+        refs = {name: asdict(store.write_bytes(name + ".bin", body)) for name, body in
+                (("normalized_body", normal), ("effective_body", prepared.body), ("response_body", response))}
+        captured = {**refs, "delivered_body": refs["response_body"], "request_id": "wire-1",
+                    "http_status": 200, "content_type": "application/json"}
+        record = {"request_id": "wire-1", "identity": asdict(identity), "state": "settled",
+                  "response_digest": hashlib.sha256(response).hexdigest()}
+        assert reopen_quality_wire(store, captured, permit, record, route) == ("inert-quality-response", permit.upstream_model)
+        foreign = store.write_bytes("foreign.bin", response.replace(b"inert-quality-response", b"foreign-response"))
+        with pytest.raises(CertificationRejected, match="wire"):
+            reopen_quality_wire(store, dict(captured, delivered_body=asdict(foreign)), permit, record, route)
+        with pytest.raises(CertificationRejected, match="wire"):
+            reopen_quality_wire(store, captured, permit, dict(record, state="uncertain"), route)
+
+
 def _served_response(provider, identity="synthetic-response"):
     if provider == "claude":
         return {"type": "message", "id": identity, "model": "claude-opus-5-5",

@@ -125,6 +125,53 @@ def read_private_route_evidence(private_root: Path, manifest: MachineRoutes | No
     return result
 
 
+def reopen_quality_wire(store, captured, permit, record, route):
+    """Reopen complete quality request/response bytes without synthetic marker policy."""
+    from .container_broker import OutboundRequestIdentity
+    from .container_upstream import HostUpstream
+    from .canary_proof import served_response_identity
+    from .diagnostic import _quality_empty_tools
+    try:
+        if (set(captured) != {"request_id", "http_status", "content_type", "normalized_body",
+                             "effective_body", "response_body", "delivered_body"}
+                or captured["request_id"] != record["request_id"]
+                or record["state"] != "settled"
+                or type(captured["http_status"]) is not int
+                or not 200 <= captured["http_status"] < 300
+                or captured["content_type"] not in {"application/json", "text/event-stream"}):
+            raise ValueError("identity/status")
+        normal = _artifact(store, captured["normalized_body"])
+        effective = _artifact(store, captured["effective_body"])
+        response = _artifact(store, captured["response_body"])
+        delivered = _artifact(store, captured["delivered_body"])
+        if any(len(body) > permit.max_response_bytes for body in (response, delivered)):
+            raise ValueError("response budget")
+        sender = HostUpstream(permit, route, max_response_bytes=permit.max_response_bytes,
+                              deadline_seconds=permit.response_deadline)
+        outbound = record["identity"]
+        prepared = sender.preview("POST", outbound["path"], {"content-type": "application/json"}, normal)
+        _quality_empty_tools(normal); _quality_empty_tools(effective)
+        document = json.loads(normal)
+        limit = (document["max_tokens"] if permit.provider == "claude" else
+                 document["max_output_tokens"] if permit.provider == "codex" else
+                 document["generationConfig"]["maxOutputTokens"])
+        wire_model = document["model"] if permit.provider != "agy" else route.profile.wire_model
+        identity = OutboundRequestIdentity("POST", outbound["path"], hashlib.sha256(normal).hexdigest(),
+            limit, wire_model, prepared.route_digest, prepared.origin, prepared.path,
+            hashlib.sha256(prepared.body).hexdigest(), prepared.effective_model)
+        if (asdict(identity) != outbound or effective != prepared.body
+                or hashlib.sha256(delivered).hexdigest() != record["response_digest"]):
+            raise ValueError("actual wire bytes")
+        original = served_response_identity(permit.provider, permit.model, permit.upstream_model,
+                                             response, captured["content_type"])
+        if original != served_response_identity(permit.provider, permit.model, permit.upstream_model,
+                                                 delivered, captured["content_type"]):
+            raise ValueError("served identity")
+        return original
+    except Exception as error:
+        raise CertificationRejected("complete quality wire proof differs") from error
+
+
 def _read_cell_attestations(controller: LifecycleController, receipt: dict) -> None:
     from scripts import fanout_container_certify as probe
     from .broker import BrokerPermit, _safe_response_body, _safe_stream_body

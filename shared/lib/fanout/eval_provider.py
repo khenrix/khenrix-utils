@@ -140,6 +140,57 @@ def build_spec(name: str, prompt: str, cfg: dict) -> PromptSpec:
     return PromptSpec(name, argv, stdin, model, effort)
 
 
+def quality_session_command(request, *, catalog_path=None) -> ProcessCommand:
+    """Quality-only persistent grammar; ordinary prompt-only eval remains ephemeral."""
+    provider, profile = request.executor_id, request.profile
+    if (provider not in ADAPTERS or profile is None or request.retries != 0
+            or (request.resume and (not isinstance(request.session_id, str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", request.session_id) is None))
+            or not isinstance(profile.requested_model, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", profile.requested_model) is None
+            or profile.requested_effort not in {"medium", "high", "max", "xhigh", "ultra", "ultracode"}):
+        raise ProcessValidationError("quality session identity or zero-retry grammar differs")
+    model, effort = profile.requested_model, profile.requested_effort
+    stdin = request.prompt_bytes
+    if provider == "claude":
+        import uuid
+        try:
+            if str(uuid.UUID(request.session_id)) != request.session_id:
+                raise ValueError("UUID")
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ProcessValidationError("quality Claude requires its own exact UUID") from error
+        argv = ("claude", "--print", "--output-format", "json",
+                "--resume" if request.resume else "--session-id", request.session_id,
+                "--model", model, "--effort", effort, "--safe-mode",
+                "--disable-slash-commands", "--strict-mcp-config", "--no-chrome", "--tools", "")
+    elif provider == "codex":
+        if (not isinstance(catalog_path, str) or not Path(catalog_path).is_absolute()
+                or any(char in catalog_path for char in ('"', "\n", "\r", "\x00"))):
+            raise ProcessValidationError("quality Codex requires an authenticated input catalog")
+        disabled = ("shell_tool", "unified_exec", "view_image", "apps", "plugins",
+                    "remote_plugin", "hooks", "skill_search", "multi_agent", "multi_agent_v2",
+                    "deferred_executor", "token_budget", "sleep_tool", "current_time_reminder",
+                    "send_message_to_user_async", "request_permissions_tool", "tool_suggest", "goals")
+        prefix = ("codex", "exec", "resume") if request.resume else ("codex", "exec")
+        argv = (*prefix, "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+                "--enable", "skip_host_skill_discovery",
+                *(part for feature in disabled for part in ("--disable", feature)),
+                "-c", "agents.enabled=false", "-c", "suppress_unstable_features_warning=true",
+                "-c", 'web_search="disabled"',
+                "-c", "tools.experimental_request_user_input.enabled=false",
+                "-c", "tools.update_plan.enabled=false", "-c", f'model_catalog_json="{catalog_path}"',
+                "-m", model, "-c", f'model_reasoning_effort="{effort}"')
+        argv += (("-c", 'sandbox_mode="read-only"', request.session_id, "-") if request.resume
+                 else ("--sandbox", "read-only", "-C", str(request.cwd), "-"))
+    else:
+        argv = ("agy", "--conversation", request.session_id) if request.resume else ("agy", "--new-project")
+        argv += ("--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json",
+                 "--model", model, "--effort", effort, "--agent", "eval-no-tools", "--disable-slash-commands")
+        stdin = (json.dumps({"event": "user", "message": {"content": request.prompt}},
+                            ensure_ascii=False) + "\n").encode()
+    return ProcessCommand(argv, stdin, cwd=request.cwd, timeout=request.timeout)
+
+
 def _private_directory(path: Path) -> None:
     info = path.lstat()
     if path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:

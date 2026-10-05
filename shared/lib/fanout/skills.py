@@ -28,6 +28,8 @@ _REFERENCE_DEFINITION = re.compile(
     re.MULTILINE,
 )
 _REFERENCE_USE = re.compile(r"\[([^\]\n]+)\](?:\[([^\]\n]*)\])?")
+_CODE_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_BACKTICKS = re.compile(r"`+")
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 _ENCODED_AMBIGUITY = re.compile(r"%(?:2[fF]|5[cC]|25)")
@@ -556,9 +558,12 @@ def _references(skill_md: str, root: Path, contents: Mapping[str, bytes],
 
 def _local_markdown_targets(text: str) -> tuple[str, ...]:
     """Return safe direct local link paths; ignore ordinary external URI schemes."""
+    text = _resource_link_prose(text)
     targets: list[str] = []
     for raw in (*_LINK.findall(text), *_reference_style_targets(text)):
         stripped = raw.strip()
+        if not stripped:
+            continue
         target = stripped[1:stripped.index(">")] if stripped.startswith("<") and ">" in stripped else stripped.split(maxsplit=1)[0]
         if not target:
             continue
@@ -584,6 +589,81 @@ def _local_markdown_targets(text: str) -> tuple[str, ...]:
             raise SkillAdmissionError(f"referenced resource escapes skill root: {raw}")
         targets.append(path)
     return tuple(targets)
+
+
+def _resource_link_prose(text: str) -> str:
+    """Exclude literal examples, preserving line boundaries and real link labels."""
+    lines: list[str] = []
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines(keepends=True):
+        match = _CODE_FENCE.fullmatch(line.rstrip("\r\n"))
+        if fence is not None:
+            if (match is not None and match[1][0] == fence[0]
+                    and len(match[1]) >= fence[1] and not match[2].strip()):
+                fence = None
+            lines.append(re.sub(r"[^\r\n]", " ", line))
+        elif match is not None and (match[1][0] != "`" or "`" not in match[2]):
+            fence = (match[1][0], len(match[1]))
+            lines.append(re.sub(r"[^\r\n]", " ", line))
+        else:
+            # Same-line spans cover inline examples without hiding a later block
+            # behind an unmatched marker. Fenced examples may span many lines.
+            lines.append(line)
+    if fence is not None:
+        raise SkillAdmissionError("skill resource example has an unterminated fence")
+    prose = "".join(lines)
+    # Destinations, labels and titles are link syntax, not code spans. An
+    # example's opening marker lies outside the complete link it illustrates.
+    definitions = tuple(_REFERENCE_DEFINITION.finditer(prose))
+    labels = {" ".join(match[1].split()).casefold() for match in definitions}
+    reference_uses = tuple(
+        (match.start(), match.end()) for match in _REFERENCE_USE.finditer(prose)
+        if " ".join((match[2] or match[1]).split()).casefold() in labels
+    )
+    link_syntax = reference_uses + tuple((match.start(), match.end()) for match in _LINK.finditer(prose)) + tuple(
+        (match.start(), match.end() + len(prose[match.end():].split("\n", 1)[0]))
+        for match in definitions
+    )
+    return _mask_inline_examples(prose, link_syntax)
+
+
+def _mask_inline_examples(text: str, link_syntax: tuple[tuple[int, int], ...]) -> str:
+    lines: list[str] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        markers = tuple(_BACKTICKS.finditer(line))
+        closers: dict[int, int] = {}
+        following: dict[int, int] = {}
+        for index in range(len(markers) - 1, -1, -1):
+            length = len(markers[index][0])
+            if length in following:
+                closers[index] = following[length]
+            following[length] = index
+        parts: list[str] = []
+        cursor = index = 0
+        while index < len(markers):
+            start = markers[index].start()
+            before = line[:start]
+            absolute_start = offset + start
+            if ((len(before) - len(before.rstrip("\\"))) % 2
+                    or any(left <= absolute_start < right for left, right in link_syntax)
+                    or index not in closers):
+                index += 1
+                continue
+            close = closers[index]
+            end = markers[close].end()
+            absolute_end = offset + end
+            if any(left < absolute_end and right > absolute_start
+                   and not (absolute_start <= left and right <= absolute_end)
+                   for left, right in link_syntax):
+                index += 1
+                continue
+            parts.extend((line[cursor:start], " " * (end - start)))
+            cursor = end
+            index = close + 1
+        lines.append("".join(parts) + line[cursor:])
+        offset += len(line)
+    return "".join(lines)
 
 
 def _reference_style_targets(text: str) -> tuple[str, ...]:

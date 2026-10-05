@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
+import os
+import re
+import sys
 import time
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Sequence
 
 from .broker import BrokerListener
+from .artifacts import ArtifactRef, ArtifactStore, canonical_json
+from .container_broker import PermitLedger
 from .controller import LifecycleController, read_evidence, write_evidence
 from .errors import ProviderProtocolError, ProviderRequestError
 from .native_boundary import (
@@ -23,6 +31,626 @@ from .repo import SeatWorkspaceVerification
 
 
 _CATEGORY = "brokered-provider-diagnostic"
+_QUALITY_ALLOCATION = "quality-case-allocation"
+
+
+def quality_row_identity(row):
+    return hashlib.sha256(canonical_json(row)).hexdigest()
+
+
+def _quality_row_permit(row, session=None):
+    from .broker import BrokerPermit
+    pending = row["initial"] is not None and row["permit"]["session_id"] is None
+    value = {**row["permit"]}
+    if pending:
+        if session is None:
+            value["route"] = "initial"
+        else:
+            value["session_id"] = session
+    return BrokerPermit(**value)
+
+
+def _quality_empty_tools(body):
+    from .artifacts import _unique_json_object
+    from .broker import BrokerRejected
+    try:
+        value = json.loads(body, object_pairs_hook=_unique_json_object)
+        if not isinstance(value, dict):
+            raise ValueError("request object")
+        pending = [value]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if key in {"tools", "functions", "functionDeclarations", "tool_calls",
+                               "functionCall", "tool_use", "tool_result"} and child:
+                        raise ValueError("nonempty tool roster or call")
+                    if key == "type" and child in {"tool_use", "tool_result", "function_call",
+                                                   "function_call_output"}:
+                        raise ValueError("tool content")
+                    pending.append(child)
+            elif isinstance(item, list):
+                pending.extend(item)
+    except (ValueError, TypeError, RecursionError) as error:
+        raise BrokerRejected("quality request tools must remain empty") from error
+
+
+def _quality_preview(upstream, store, prefix, captures, method, path, headers, body):
+    from .broker import BrokerRejected
+    _quality_empty_tools(body)
+    prepared = upstream.preview(method, path, headers, body)
+    _quality_empty_tools(prepared.body)
+    digest = hashlib.sha256(body).hexdigest()
+    if digest in captures:
+        retained = store.read_json(captures[digest])
+        if (retained["method"] != method or retained["provider_path"] != path
+                or retained["route"] != prepared.route_digest
+                or retained["origin"] != prepared.origin or retained["path"] != prepared.path
+                or retained["model"] != prepared.effective_model
+                or store.read_bytes(ArtifactRef(**retained["normalized_body"])) != body
+                or store.read_bytes(ArtifactRef(**retained["effective_body"])) != prepared.body):
+            raise BrokerRejected("quality retained prepared request differs")
+    else:
+        base = f"quality/{prefix}/prepared/{digest}"
+        normalized = store.write_bytes(base + "/normalized.json", body)
+        effective = store.write_bytes(base + "/effective.json", prepared.body)
+        captures[digest] = store.write_json(base + "/identity.json", {
+            "method": method, "provider_path": path, "route": prepared.route_digest,
+            "origin": prepared.origin, "path": prepared.path, "model": prepared.effective_model,
+            "normalized_body": asdict(normalized), "effective_body": asdict(effective)})
+    return prepared
+
+
+def _quality_send(upstream, store, prefix, captures, method, path, headers, body):
+    _quality_preview(upstream, store, prefix, captures, method, path, headers, body)
+    return upstream(method, path, headers, body)
+
+
+def quality_upstream_sender(upstream, store, prefix):
+    from .container_upstream import HostUpstream
+    if (type(upstream) is not HostUpstream or type(store) is not ArtifactStore
+            or not isinstance(prefix, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", prefix)):
+        raise ProviderRequestError("quality sender requires the genuine sealed host upstream")
+    captures = {}
+    sender = partial(_quality_send, upstream, store, prefix, captures)
+    sender.preview = partial(_quality_preview, upstream, store, prefix, captures)
+    sender.captures = captures
+    return sender
+
+
+def _quality_allocation(controller, store, ref, bindings):
+    """Reopen the complete allocation, not an unauthenticated digest flag."""
+    try:
+        value = store.read_json(ref)
+        if (set(value) != {"schema", "case_id", "controller_id", "bindings",
+                           "maka_output_tokens", "rows"}
+                or value["schema"] != "fanout-quality-case-allocation-v1"
+                or not re.fullmatch(r"(?:normal|deep|forge)-[0-9]{2}", value["case_id"])
+                or value["controller_id"] != controller.controller_id
+                or set(bindings) != {"campaign", "casebook", "source", "projection",
+                                     "profile", "inputs"}
+                or value["bindings"] != bindings
+                or any(not re.fullmatch(r"[0-9a-f]{64}", digest)
+                       for digest in bindings.values())
+                or type(value["maka_output_tokens"]) is not int
+                or value["maka_output_tokens"] != 8192
+                or type(value["rows"]) is not list
+                or not 1 <= len(value["rows"]) <= (20 if value["case_id"].startswith("forge-") else 35)):
+            raise ValueError("identity")
+        keys = set()
+        for row in value["rows"]:
+            if (set(row) != {"role", "phase", "condition", "epoch", "permit",
+                             "blocker", "initial", "profile", "catalog", "process_seconds", "outer_seconds"}
+                    or any(not isinstance(row[key], str)
+                           or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", row[key])
+                           for key in ("role", "phase", "condition"))
+                    or row["condition"] not in {"baseline", "candidate", "disabled", "transfer"}
+                    or type(row["epoch"]) is not int or not 1 <= row["epoch"] <= 35
+                    or any(type(row[key]) not in (int, float)
+                           or not math.isfinite(row[key]) or row[key] <= 0
+                           for key in ("process_seconds", "outer_seconds"))
+                    or row["process_seconds"] > row["outer_seconds"]):
+                raise ValueError("row")
+            if (not isinstance(row["profile"], str) or not re.fullmatch(r"[0-9a-f]{64}", row["profile"])
+                    or row["catalog"] is not None and (not isinstance(row["catalog"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", row["catalog"]))):
+                raise ValueError("profile/catalog")
+            permit = _quality_row_permit(row)
+            if (permit.inputs_digest != bindings["inputs"]
+                    or (row["permit"]["route"] == "resume") != (row["initial"] is not None)
+                    or any(row[key] is not None and
+                           (not isinstance(row[key], str)
+                            or not re.fullmatch(r"[0-9a-f]{64}", row[key]))
+                           for key in ("initial", "blocker"))):
+                raise ValueError("row binding")
+            key = (row["role"], row["phase"], row["condition"], row["epoch"])
+            if key in keys:
+                raise ValueError("duplicate row")
+            keys.add(key)
+        for row in value["rows"]:
+            if row["initial"] is None:
+                continue
+            originals = [prior for prior in value["rows"]
+                         if quality_row_identity(prior) == row["initial"]]
+            if (len(originals) != 1 or originals[0]["initial"] is not None
+                    or originals[0]["epoch"] >= row["epoch"]
+                    or originals[0]["condition"] != row["condition"]
+                    or originals[0]["profile"] != row["profile"]
+                    or originals[0]["catalog"] != row["catalog"]
+                    or any(originals[0]["permit"][key] != row["permit"][key] for key in
+                        ("provider", "run_id", "task_id", "target_id", "seat_id", "model", "inputs_digest",
+                         "upstream_route_digest", "upstream_origin", "upstream_model", "upstream_path"))):
+                raise ValueError("prospective original row")
+        return value
+    except Exception as error:
+        raise ProviderRequestError("quality allocation identity or rows differ") from error
+
+
+def seal_quality_allocation(controller: LifecycleController, store: ArtifactStore,
+                            ref: ArtifactRef, *, bindings: dict) -> tuple[str, str]:
+    _quality_allocation(controller, store, ref, bindings)
+    from .controller import controller_directory
+    authority = write_evidence(controller, _QUALITY_ALLOCATION, {"allocation": asdict(ref)})
+    path = controller_directory(controller, "locks") / "quality-allocation.json"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError as error:
+        raise ProviderRequestError("quality allocation already frozen") from error
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(canonical_json({"authority": authority}))
+        handle.flush()
+        os.fsync(handle.fileno())
+    return authority
+
+
+def reopen_quality_allocation(controller: LifecycleController, store: ArtifactStore,
+                              authority: tuple[str, str], *, bindings: dict) -> dict:
+    try:
+        from .controller import controller_directory
+        from .container_certification import _read_owned_json
+        frozen, _ = _read_owned_json(controller_directory(controller, "locks") / "quality-allocation.json")
+        if frozen != {"authority": list(authority)}:
+            raise ValueError("frozen allocation")
+        evidence = read_evidence(controller, _QUALITY_ALLOCATION, *authority)
+        if set(evidence) != {"allocation"}:
+            raise ValueError("allocation evidence")
+        ref = ArtifactRef(**evidence["allocation"])
+    except Exception as error:
+        raise ProviderRequestError("quality allocation authority differs") from error
+    return _quality_allocation(controller, store, ref, bindings)
+
+
+def register_quality_permit(controller, store, authority, ledger, *, role, phase,
+                            condition, permit, epoch, bindings, blocker=None,
+                            initial=None) -> str:
+    """Consume a frozen row before registering, including known-unstarted failures."""
+    value = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+    rows = [row for row in value["rows"] if (row["role"], row["phase"],
+            row["condition"], row["epoch"]) == (role, phase, condition, epoch)]
+    if (type(ledger) is not PermitLedger or ledger.controller is not controller
+            or ledger.root != controller.root / "locks" / "spend"
+            or len(rows) != 1 or rows[0]["blocker"] != blocker):
+        raise ProviderRequestError("quality allocation dispatch differs")
+    row = rows[0]
+    resolved = _quality_resolved_permit(controller, store, authority, value, row, initial)
+    if asdict(resolved) != asdict(permit):
+        raise ProviderRequestError("quality allocation resolved permit differs")
+    # Only an original controller-authenticated blocker can unlock a reserved fix.
+    if blocker is not None:
+        proof = read_evidence(controller, "quality-original-blocker", f"{blocker}.json", blocker)
+        if proof != {"case_id": value["case_id"], "role": role, "required": True}:
+            raise ProviderRequestError("quality allocation original blocker differs")
+    claim = {"allocation": authority[1], "row": row}
+    digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+    from .controller import controller_directory
+    path = controller_directory(controller, "locks") / f"quality-row-{digest}"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError as error:
+        raise ProviderRequestError("quality allocation row already consumed; no replenishment") from error
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(canonical_json(claim))
+        handle.flush()
+        os.fsync(handle.fileno())
+    parent_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+    permit_id = ledger.register(permit, epoch)
+    registered = write_evidence(controller, "quality-permit-registration", {
+        **claim, "permit_id": permit_id, "epoch": epoch, "permit": asdict(permit),
+        "initial_receipt": None if initial is None else list(initial)})
+    fd = os.open(path.with_name(f"quality-registration-{digest}"),
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(canonical_json({"authority": list(registered)}))
+        handle.flush(); os.fsync(handle.fileno())
+    return permit_id
+
+
+def _quality_resolved_permit(controller, store, authority, allocation, row, initial):
+    if row["initial"] is None:
+        if initial is not None:
+            raise ProviderRequestError("quality initial row cannot consume a predecessor")
+        return _quality_row_permit(row)
+    try:
+        if not isinstance(initial, (tuple, list)) or len(initial) != 2:
+            raise ValueError("completed predecessor")
+        prior = read_evidence(controller, "quality-readonly-turn", *initial)
+        command = read_evidence(controller, "quality-native-command", *prior["command"])
+        registration = command["registration"]
+        original = registration["row"]
+        if (command["allocation"] != list(authority) or command["store"] != str(store.root)
+                or command["bindings"] != allocation["bindings"]
+                or original not in allocation["rows"]
+                or quality_row_identity(original) != row["initial"]
+                or original["initial"] is not None):
+            raise ValueError("original row association")
+        terminal = read_evidence(controller, _CATEGORY, *prior["terminal"])
+        if (terminal["valid"] is not True or terminal["route"] != "initial"
+                or terminal["process_status"] != "exit" or terminal["exit_code"] != 0
+                or not terminal["session_id"] or not prior["records"]
+                or any(record["state"] != "settled" for record in prior["records"])):
+            raise ValueError("unsettled predecessor")
+        ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+        with ledger._locked() as state:
+            actual = state["permits"].get(registration["permit_id"])
+            if (actual is None or actual["epoch"] != original["epoch"] or not actual["fenced"]
+                    or actual["permit_digest"] != hashlib.sha256(canonical_json(registration["permit"])).hexdigest()):
+                raise ValueError("original concrete permit")
+        if (list(ledger.request_records(registration["permit_id"], original["epoch"])) != prior["records"]
+                or hashlib.sha256(store.read_bytes(ArtifactRef(**prior["stdout"]))).hexdigest() != terminal["stdout_sha256"]
+                or hashlib.sha256(store.read_bytes(ArtifactRef(**prior["stderr"]))).hexdigest() != terminal["stderr_sha256"]
+                or not store.read_bytes(ArtifactRef(**prior["final"]))):
+            raise ValueError("original raw completion")
+        session = terminal["session_id"]
+        if row["permit"]["session_id"] is not None and row["permit"]["session_id"] != session:
+            raise ValueError("frozen assigned session")
+        return _quality_row_permit(row, session)
+    except Exception as error:
+        raise ProviderRequestError("quality resume requires its exact completed original row") from error
+
+
+def _quality_loaded_sources():
+    root = Path(__file__).resolve().parents[3]
+    loaded = {}
+    for module in tuple(sys.modules.values()):
+        raw = getattr(module, "__file__", None)
+        if not raw:
+            continue
+        path = Path(raw)
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if relative.startswith(("shared/lib/fanout/", "scripts/fanout_")) and path.suffix == ".py":
+            if path.is_symlink() or path.resolve(strict=True) != path:
+                raise ProviderRequestError("quality loaded source origin differs")
+            loaded[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return loaded
+
+
+def project_quality_catalog(store, original_ref, path):
+    original = store.read_bytes(original_ref)
+    if hashlib.sha256(original).hexdigest() != "fd219bd9f061278275f528939f82f54d2eb97df4b25c23b022adbe48813d920b":
+        raise ProviderRequestError("quality catalog authentic source differs")
+    value = store.read_json(original_ref)
+    models = value.get("models")
+    selected = [model for model in models or () if model.get("slug") == "gpt-6.1-sol"]
+    if len(models or ()) != 11 or len(selected) != 1 or hashlib.sha256(json_catalog_bytes(selected[0])).hexdigest() != "56373206bcf4c478be9aa324af04e2324219a836005e1044260910307f2cceeb":
+        raise ProviderRequestError("quality catalog original descriptor differs")
+    selected[0].update(shell_type="disabled", apply_patch_tool_type=None,
+        experimental_supported_tools=[], supports_search_tool=False, tool_mode="direct",
+        use_responses_lite=False)
+    return store.write_json(path, value)
+
+
+def json_catalog_bytes(value):
+    import json
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _reopen_quality_catalog(store, catalog):
+    if set(catalog) != {"original", "projected"}:
+        raise ProviderRequestError("quality catalog association differs")
+    original_ref, projected_ref = (ArtifactRef(**catalog[key]) for key in ("original", "projected"))
+    original = store.read_bytes(original_ref)
+    if hashlib.sha256(original).hexdigest() != "fd219bd9f061278275f528939f82f54d2eb97df4b25c23b022adbe48813d920b":
+        raise ProviderRequestError("quality catalog authentic source differs")
+    expected = store.read_json(original_ref)
+    selected = [model for model in expected.get("models", ()) if model.get("slug") == "gpt-6.1-sol"]
+    if len(selected) != 1 or hashlib.sha256(json_catalog_bytes(selected[0])).hexdigest() != "56373206bcf4c478be9aa324af04e2324219a836005e1044260910307f2cceeb":
+        raise ProviderRequestError("quality catalog descriptor differs")
+    selected[0].update(shell_type="disabled", apply_patch_tool_type=None,
+        experimental_supported_tools=[], supports_search_tool=False, tool_mode="direct",
+        use_responses_lite=False)
+    if store.read_bytes(projected_ref) != canonical_json(expected):
+        raise ProviderRequestError("quality catalog tool projection differs")
+    return canonical_json(expected)
+
+
+def issue_quality_native_command(controller, store, authority, *, request, ledger,
+                                 permit, epoch, bindings, role, phase, condition,
+                                 catalog=None):
+    allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+    rows = [row for row in allocation["rows"] if (row["role"], row["phase"],
+        row["condition"], row["epoch"]) == (role, phase, condition, epoch)]
+    if (len(rows) != 1 or rows[0]["profile"] != request.profile.digest
+            or rows[0]["catalog"] != (None if catalog is None else catalog["projected"]["digest"])):
+        raise ProviderRequestError("quality native allocated row differs")
+    claim = {"allocation": authority[1], "row": rows[0]}
+    from .container_certification import _read_owned_json
+    digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+    try:
+        actual, _ = _read_owned_json(controller.root / "locks" / f"quality-row-{digest}")
+        pointer, _ = _read_owned_json(controller.root / "locks" / f"quality-registration-{digest}")
+        if set(pointer) != {"authority"}:
+            raise ValueError("registration authority")
+        registration = read_evidence(controller, "quality-permit-registration", *pointer["authority"])
+        permit_id = registration["permit_id"]
+        ledger.require_permit(permit_id, epoch, permit)
+        if (actual != claim or registration != {**claim, "permit_id": permit_id, "epoch": epoch,
+                "permit": asdict(permit), "initial_receipt": registration.get("initial_receipt")}
+                or asdict(_quality_resolved_permit(controller, store, authority, allocation,
+                    rows[0], registration["initial_receipt"])) != asdict(permit)):
+            raise ValueError("claim")
+    except Exception as error:
+        raise ProviderRequestError("quality native row must already be consumed and registered") from error
+    if request.executor_id == "codex":
+        from .native_boundary import _private_state, _write_immutable
+        state = _private_state(controller.root, request.run_id, request.task_id,
+                               request.target_id, request.seat_id)
+        home = state / "home" / ".codex"
+        home.mkdir(mode=0o700, exist_ok=True)
+        if home.is_symlink() or home.stat().st_mode & 0o077:
+            raise ProviderRequestError("quality Codex private catalog directory differs")
+        _write_immutable(home / "quality-catalog.json", _reopen_quality_catalog(store, catalog))
+    elif request.executor_id == "agy":
+        from .native_boundary import _private_state, _agy_private_settings, _quality_agy_agent
+        state = _private_state(controller.root, request.run_id, request.task_id,
+                               request.target_id, request.seat_id)
+        _agy_private_settings(state / "home")
+        _quality_agy_agent(state / "home")
+    proof = write_evidence(controller, "quality-native-command", {
+        "allocation": list(authority), "store": str(store.root), "bindings": bindings,
+        "registration": registration,
+        "catalog": catalog, "loaded": _quality_loaded_sources(),
+        "request": _quality_request_identity(request)})
+    reopen_quality_native_command(controller, request, proof)
+    return proof
+
+
+def _quality_request_identity(request):
+    from .container_transfer_transport import admitted_request_digest
+    return admitted_request_digest(request)
+
+
+def reopen_quality_native_command(controller, request, proof):
+    """Reconstruct the same bounded command at issuance and immediately before spawn."""
+    from .container_source import runtime_source_digest
+    from .container_certification import _read_owned_json
+    from .eval_provider import quality_session_command
+    try:
+        value = read_evidence(controller, "quality-native-command", *proof)
+        if (set(value) != {"allocation", "store", "bindings", "registration", "catalog", "loaded", "request"}
+                or value["request"] != _quality_request_identity(request)
+                or runtime_source_digest() != value["bindings"]["source"]
+                or not value["loaded"] or any(_quality_loaded_sources().get(name) != digest
+                    for name, digest in value["loaded"].items())):
+            raise ValueError("request/source")
+        with ArtifactStore.open_existing(value["store"]) as store:
+            allocation = reopen_quality_allocation(controller, store, tuple(value["allocation"]),
+                bindings=value["bindings"])
+            registration = value["registration"]
+            row = registration["row"]
+            if (row not in allocation["rows"] or registration["allocation"] != value["allocation"][1]
+                    or registration["epoch"] != row["epoch"] or request.timeout != row["process_seconds"]
+                    or request.retries != 0 or request.execution_class != "read-only"
+                    or row["profile"] != request.profile.digest
+                    or row["catalog"] != (None if value["catalog"] is None else value["catalog"]["projected"]["digest"])):
+                raise ValueError("row")
+            claim = {"allocation": registration["allocation"], "row": row}
+            digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+            actual, _ = _read_owned_json(controller.root / "locks" / f"quality-row-{digest}")
+            pointer, _ = _read_owned_json(controller.root / "locks" / f"quality-registration-{digest}")
+            if (actual != claim or read_evidence(controller, "quality-permit-registration",
+                    *pointer["authority"]) != registration):
+                raise ValueError("consumed row")
+            from .broker import BrokerPermit
+            permit = BrokerPermit(**registration["permit"])
+            if asdict(_quality_resolved_permit(controller, store, tuple(value["allocation"]),
+                    allocation, row, registration["initial_receipt"])) != asdict(permit):
+                raise ValueError("resolved original session")
+            ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+            ledger.require_permit(registration["permit_id"], row["epoch"], permit)
+            if (permit.provider, permit.run_id, permit.task_id, permit.target_id, permit.seat_id,
+                    permit.inputs_digest, permit.session_id, permit.route) != (
+                    request.executor_id, request.run_id, request.task_id, request.target_id, request.seat_id,
+                    request.inputs_digest, request.session_id, "resume" if request.resume else "initial"):
+                raise ValueError("permit")
+            catalog_path = None
+            if request.executor_id == "codex":
+                from .native_boundary import _hash_file
+                identity = hashlib.sha256(canonical_json((request.run_id, request.task_id,
+                    request.target_id, request.seat_id))).hexdigest()
+                path = controller.root / "native-seat-state" / identity / "home" / ".codex" / "quality-catalog.json"
+                if _hash_file(path, mode=0o400) != hashlib.sha256(_reopen_quality_catalog(store, value["catalog"])).hexdigest():
+                    raise ValueError("private catalog")
+                catalog_path = str(path)
+            elif value["catalog"] is not None:
+                raise ValueError("unexpected catalog")
+            if registration["initial_receipt"] is not None:
+                predecessor = read_evidence(controller, "quality-readonly-turn", *registration["initial_receipt"])
+                previous = read_evidence(controller, "quality-native-command", *predecessor["command"])
+                if previous["catalog"] != value["catalog"]:
+                    raise ValueError("exact initial/resume catalog")
+            command = quality_session_command(request, catalog_path=catalog_path)
+            if request.executor_id == "agy":
+                from .native_boundary import _AGY_DIRECT_BINARY, _hash_file
+                from .eval_provider import AGY_AGENT_TEXT
+                identity = hashlib.sha256(canonical_json((request.run_id, request.task_id,
+                    request.target_id, request.seat_id))).hexdigest()
+                path = controller.root / "native-seat-state" / identity / "home" / ".gemini/config/agents/eval-no-tools.md"
+                if _hash_file(path, mode=0o600) != hashlib.sha256(AGY_AGENT_TEXT.encode()).hexdigest():
+                    raise ValueError("private empty-tools agent")
+                command = replace(command, argv=(str(_AGY_DIRECT_BINARY), *command.argv[1:]))
+            return replace(command, max_output_bytes=8 * 1024 * 1024), registration
+    except Exception as error:
+        raise ProviderRequestError("quality native command association differs") from error
+
+
+def validate_quality_prior_command(controller, request, proof):
+    from .container_source import runtime_source_digest
+    value = read_evidence(controller, "quality-native-command", *proof)
+    with ArtifactStore.open_existing(value["store"]) as store:
+        allocation = reopen_quality_allocation(controller, store, tuple(value["allocation"]),
+            bindings=value["bindings"])
+        registration = value["registration"]
+        row = registration["row"]
+        permit = registration["permit"]
+        if (row not in allocation["rows"] or permit["route"] != "initial"
+                or runtime_source_digest() != value["bindings"]["source"]
+                or any(_quality_loaded_sources().get(name) != digest
+                       for name, digest in value["loaded"].items())
+                or any(permit[name] != getattr(request, name) for name in
+                       ("run_id", "task_id", "target_id", "seat_id", "inputs_digest"))
+                or permit["provider"] != request.executor_id
+                or (request.executor_id == "claude" and permit["session_id"] != request.session_id)):
+            raise ProviderRequestError("quality initial source or own-session association differs")
+        ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+        with ledger._locked() as state:
+            prior = state["permits"].get(registration["permit_id"])
+            if (prior is None or prior["epoch"] != row["epoch"] or not prior["fenced"]
+                    or prior["permit_digest"] != hashlib.sha256(canonical_json(permit)).hexdigest()):
+                raise ProviderRequestError("quality initial permit is not exactly settled/fenced")
+        if request.executor_id == "codex":
+            _reopen_quality_catalog(store, value["catalog"])
+
+
+def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
+                              permit, epoch, bindings, role, phase, condition,
+                              route, credential, verification, other_target_roots,
+                              denied_owner_roots, catalog=None, initial=None,
+                              blocker=None, initial_digest=None, initial_proof=None):
+    """Consume one allocated row and reuse the protected brokered process assembly."""
+    from .broker import Broker
+    from .container_upstream import HostUpstream
+    from scripts.fanout_container_certify import _capture_private_wire
+    if (type(request) is not ProviderRequest or request.execution_class != "read-only"
+            or request.retries != 0 or request.native_boundary is not None):
+        raise ProviderRequestError("quality readonly turn requires the exact zero-retry request")
+    allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+    row = next((row for row in allocation["rows"] if (row["role"], row["phase"],
+        row["condition"], row["epoch"]) == (role, phase, condition, epoch)), None)
+    if (row is None or request.timeout != row["process_seconds"]
+            or row["initial"] != initial_digest
+            or (initial is None) != (initial_digest is None)
+            or (initial is None) != (initial_proof is None)):
+        raise ProviderRequestError("quality readonly phase or original session differs")
+    if initial_proof is not None:
+        previous = read_evidence(controller, "quality-readonly-turn", *initial_proof)
+        if previous["terminal"] != [initial.receipt_name, initial.receipt_digest]:
+            raise ProviderRequestError("quality readonly original terminal differs")
+    started = time.monotonic()
+    permit_id = register_quality_permit(controller, store, authority, ledger,
+        role=role, phase=phase, condition=condition, permit=permit, epoch=epoch,
+        bindings=bindings, blocker=blocker, initial=initial_proof)
+    wires = {}
+    terminal = None
+    def success(payload):
+        captured = _capture_private_wire(ledger, permit_id, epoch, store.root,
+                                        f"quality-{role}-{phase}-{epoch}", payload)
+        wires[captured["request_id"]] = captured
+    sender = quality_upstream_sender(HostUpstream(permit, route,
+        max_response_bytes=permit.max_response_bytes, deadline_seconds=permit.response_deadline,
+        success_sink=success), store, f"{role}-{phase}-{epoch}")
+    command_proof = issue_quality_native_command(controller, store, authority,
+        request=request, ledger=ledger, permit=permit, epoch=epoch, bindings=bindings,
+        role=role, phase=phase, condition=condition, catalog=catalog)
+    try:
+        with BrokerListener(Broker(permit, credential=credential, send=sender),
+                            ledger_binding=(ledger, permit_id, epoch)) as listener:
+            terminal = run_brokered_provider_diagnostic(request, controller=controller,
+                verification=verification, broker_listener=listener,
+                other_target_roots=other_target_roots, denied_owner_roots=denied_owner_roots,
+                initial=initial, quality_admission=command_proof)
+    finally:
+        ledger.fence_epoch(permit_id, epoch)
+    elapsed = time.monotonic() - started
+    process = terminal.process
+    prefix = f"quality/{role}/{phase}/{epoch}"
+    stdout = store.write_bytes(prefix + "/stdout.bin", process.stdout)
+    stderr = store.write_bytes(prefix + "/stderr.bin", process.stderr)
+    final = store.write_bytes(prefix + "/final.txt", terminal.result.answer.encode("utf-8"))
+    records = ledger.request_records(permit_id, epoch)
+    main, auxiliary = ledger.attempt_counts(permit_id, epoch)
+    proof = write_evidence(controller, "quality-readonly-turn", {
+        "schema": "fanout-quality-readonly-turn-v1", "command": list(command_proof),
+        "terminal": [terminal.receipt_name, terminal.receipt_digest],
+        "stdout": asdict(stdout), "stderr": asdict(stderr), "final": asdict(final),
+        "records": list(records), "prepared": [asdict(ref) for ref in sender.captures.values()],
+        "wires": wires, "route": asdict(route), "main_attempts": main, "auxiliary_attempts": auxiliary,
+        "elapsed": elapsed, "outer_seconds": row["outer_seconds"]})
+    validate_quality_readonly_turn(controller, store, request, proof)
+    return terminal, proof
+
+
+def validate_quality_readonly_turn(controller, store, request, proof):
+    from .broker import BrokerPermit
+    from .container_broker import attempt_limit
+    value = read_evidence(controller, "quality-readonly-turn", *proof)
+    expected_fields = {"schema", "command", "terminal", "stdout", "stderr", "final",
+        "records", "prepared", "wires", "route", "main_attempts", "auxiliary_attempts", "elapsed", "outer_seconds"}
+    if set(value) != expected_fields or value["schema"] != "fanout-quality-readonly-turn-v1":
+        raise ProviderRequestError("quality readonly receipt differs")
+    command = read_evidence(controller, "quality-native-command", *value["command"])
+    if command["request"] != _quality_request_identity(request) or command["store"] != str(store.root):
+        raise ProviderRequestError("quality readonly request or store differs")
+    allocation = reopen_quality_allocation(controller, store, tuple(command["allocation"]),
+        bindings=command["bindings"])
+    registration = command["registration"]
+    row = registration["row"]
+    permit = BrokerPermit(**registration["permit"])
+    ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+    records = ledger.request_records(registration["permit_id"], row["epoch"])
+    attempts = ledger.attempt_counts(registration["permit_id"], row["epoch"])
+    with ledger._locked() as state:
+        frozen = state["permits"].get(registration["permit_id"])
+        if frozen is None or not frozen["fenced"]:
+            raise ProviderRequestError("quality readonly permit is not fenced")
+    terminal = read_evidence(controller, _CATEGORY, *value["terminal"])
+    if (row not in allocation["rows"] or value["records"] != list(records)
+            or attempts != (value["main_attempts"], value["auxiliary_attempts"])
+            or sum(attempts) > attempt_limit(permit) or len(records) > permit.max_requests
+            or terminal["valid"] is not True or terminal["process_status"] != "exit"
+            or terminal["exit_code"] != 0 or value["outer_seconds"] != row["outer_seconds"]
+            or type(value["elapsed"]) not in (int, float) or not math.isfinite(value["elapsed"])
+            or not 0 < value["elapsed"] <= row["outer_seconds"]
+            or not records or {record["request_id"] for record in records} != set(value["wires"])
+            or any(record["state"] != "settled" for record in records)):
+        raise ProviderRequestError("quality readonly delivery or finite accounting differs")
+    for name in ("stdout", "stderr"):
+        if hashlib.sha256(store.read_bytes(ArtifactRef(**value[name]))).hexdigest() != terminal[name + "_sha256"]:
+            raise ProviderRequestError("quality readonly process bytes differ")
+    final = store.read_bytes(ArtifactRef(**value["final"]))
+    registry = ProviderRegistry((request.profile,))
+    parsed = registry.require(request.executor_id).parse(store.read_bytes(ArtifactRef(**value["stdout"])))
+    if not final or final != parsed.answer.encode("utf-8"):
+        raise ProviderRequestError("quality readonly final bytes differ")
+    for retained in value["prepared"]:
+        prepared = store.read_json(ArtifactRef(**retained))
+        for key in ("normalized_body", "effective_body"):
+            _quality_empty_tools(store.read_bytes(ArtifactRef(**prepared[key])))
+    from .container_certification import reopen_quality_wire
+    from .container_routes import RouteAdmission, RouteProfile
+    profile = {**value["route"]["profile"]}
+    profile["execution_classes"] = tuple(profile["execution_classes"])
+    route = RouteAdmission(**{**value["route"], "profile": RouteProfile(**profile)})
+    for record in records:
+        reopen_quality_wire(store, value["wires"][record["request_id"]], permit,
+                            record, route)
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +670,7 @@ def run_brokered_provider_diagnostic(
     verification: SeatWorkspaceVerification, broker_listener: BrokerListener,
     other_target_roots: Sequence[Path], denied_owner_roots: Sequence[Path],
     initial: BrokeredDiagnosticResult | None = None,
+    quality_admission: tuple[str, str] | None = None,
 ) -> BrokeredDiagnosticResult:
     """Run one fake or approved probe turn; never authorize ordinary dispatch."""
     if (not isinstance(request, ProviderRequest) or request.profile is None
@@ -64,7 +693,21 @@ def run_brokered_provider_diagnostic(
         raise ProviderRequestError("diagnostic profile differs from the installed pin")
     selected_registry.assert_installed_version(profile)
     adapter = selected_registry.require(request.executor_id)
-    if type(adapter) is ClaudeAdapter:
+    if quality_admission is not None:
+        command, registration = reopen_quality_native_command(controller, request, quality_admission)
+        claim = {"allocation": registration["allocation"], "row": registration["row"]}
+        digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+        try:
+            descriptor = os.open(controller.root / "locks" / f"quality-cli-{digest}",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except FileExistsError as error:
+            raise ProviderRequestError("quality CLI row already attempted; no replay") from error
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(canonical_json({"command": list(quality_admission), "request": _quality_request_identity(request)}))
+            output.flush(); os.fsync(output.fileno())
+        if request.executor_id == "codex":
+            command = _codex_broker_command(request, command, broker_listener)
+    elif type(adapter) is ClaudeAdapter:
         command = adapter.build_command(request, brokered_diagnostic=True)
     elif type(adapter) is CodexAdapter:
         command = _codex_broker_command(
@@ -80,6 +723,7 @@ def run_brokered_provider_diagnostic(
         controller, verification, request, command, broker_listener,
         initial_receipt=(None if initial is None else
                          (initial.receipt_name, initial.receipt_digest)),
+        quality_admission=quality_admission,
     )
     boundary = issue_native_boundary(
         controller, verification, run_id=request.run_id, task_id=request.task_id,

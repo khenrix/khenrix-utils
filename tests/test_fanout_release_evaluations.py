@@ -54,6 +54,11 @@ def release_root(tmp_path, monkeypatch):
     fanout_baseline.prepare_historical(ROOT, historical,
         source=ROOT / "tests/fixtures/llm-fanout-historical-original")
     monkeypatch.setenv("KHENRIX_HISTORICAL_BASELINE_ROOT", str(historical))
+    original_checks = tmp_path / "original-checks.py"
+    original_checks.write_bytes(Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"]).read_bytes())
+    original_checks.chmod(0o600)
+    monkeypatch.setenv("FANOUT_QUALITY_ARCHIVE_ROOT", str(historical))
+    monkeypatch.setenv("FANOUT_QUALITY_ORIGINAL_CHECKS", str(original_checks))
     for skill in helper.SKILLS:
         evals = checkout / "evals" / skill
         evals.mkdir(parents=True)
@@ -80,7 +85,8 @@ def test_cold_delivered_validator_reopens_authenticated_producer_evidence(releas
         capture_complete=True, pid=12345))
     strict = helper.capture_strict_gate(controller, store)
     skills = helper.capture_skill_evaluations(controller, store)
-    helper.probe._write_private(root / "proofs.json", helper.canonical_json({"strict": strict, "skills": skills}))
+    proofs_ref = store.write_json("test-proofs.json", {"strict": strict, "skills": skills})
+    helper.probe._write_private(root / "proofs.json", helper.canonical_json(dataclasses.asdict(proofs_ref)))
     helper.probe._write_private(root.with_name(root.name + ".controller-capability"),
                                 controller.capability.export_token().encode("ascii"))
     spec = importlib.util.spec_from_file_location("_release_cold_delivery", ROOT / "components/skills/skillctl.py")
@@ -101,9 +107,10 @@ runtime = helper._runtime()
 evaluations = importlib.import_module("scripts.fanout_release_evaluations")
 source = importlib.import_module(runtime.__name__ + ".container_source")
 assert evaluations.ROOT == entry.parent.parent / ".runtime"
-proofs, _ = evaluations._read_owned_json(evidence_root / "proofs.json")
+proofs_ref, _ = evaluations._read_owned_json(evidence_root / "proofs.json")
 controller = evaluations.probe._quality_controller(evidence_root)
 with runtime.ArtifactStore.open_existing(evidence_root / "raw") as store:
+    proofs = store.read_json(runtime.ArtifactRef(**proofs_ref))
     producer = evaluations.validate_strict_gate(controller, store, proofs["strict"], source.release_source_binding())
     assert producer == producer_root
     evaluations.validate_skill_evaluations(controller, store, proofs["skills"],
@@ -250,6 +257,8 @@ def test_strict_gate_transports_and_reopens_only_its_explicit_historical_subject
         launches.append((command, environment))
         assert tuple(command.argv) == helper.STRICT_ARGV
         assert environment.get("KHENRIX_HISTORICAL_BASELINE_ROOT") == str(historical)
+        assert environment.get("FANOUT_QUALITY_ARCHIVE_ROOT") == str(historical)
+        assert environment.get("FANOUT_QUALITY_ORIGINAL_CHECKS") == os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"]
         assert "ANTHROPIC_API_KEY" not in environment
         return helper.ProcessResult(helper.ProcessStatus.EXIT, 0, b"bounded fake gate", b"", pid=12345)
 
@@ -259,10 +268,36 @@ def test_strict_gate_transports_and_reopens_only_its_explicit_historical_subject
     subject = proof["historical_subject"]
     assert subject["root"] == str(historical)
     assert subject["provenance"] == json.loads((historical.parent / "provenance.json").read_bytes())
+    assert proof["before_original_sources"] == proof["after_original_sources"]
+    assert len(proof["original_source_refs"]["archive"]) == 60
     assert json.loads((root / "strict-gate-attempt.json").read_bytes())["historical_subject"] == subject
     monkeypatch.delenv("KHENRIX_HISTORICAL_BASELINE_ROOT")
     helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
     (historical / "shared/lib/council/engine.py").write_bytes(b"changed original subject")
+    with pytest.raises(ValueError, match="strict gate proof"):
+        helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
+
+
+@pytest.mark.parametrize("damage", ("retained", "after", "association", "dependency"))
+def test_strict_original_inputs_refuse_mutation_and_resealed_wrong_associations(release_root, monkeypatch, damage):
+    helper, root, controller, store = release_root
+    monkeypatch.setattr(helper, "run_command", lambda _, **__: helper.ProcessResult(
+        helper.ProcessStatus.EXIT, 0, b"unit transport, not a gate observation", b"", pid=12345))
+    proof = helper.capture_strict_gate(controller, store)
+    helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
+    if damage == "retained":
+        (store.root / proof["original_source_refs"]["checks"]["path"]).write_bytes(b"changed")
+    elif damage == "dependency":
+        Path(proof["before_original_sources"]["checks"]["path"]).write_bytes(b"changed")
+    else:
+        unsigned = json.loads(helper.canonical_json({key: value for key, value in proof.items()
+            if key not in {"completion_evidence_name", "completion_evidence_digest"}}))
+        if damage == "after":
+            unsigned["after_original_sources"]["checks"]["sha256"] = "a" * 64
+        else:
+            unsigned["before_original_sources"]["archive"]["root"] = str(root)
+        proof = helper._seal(controller, "release-strict-gate-complete", unsigned)
+        (store.root / "strict-gate/process.json").write_bytes(helper.canonical_json(proof))
     with pytest.raises(ValueError, match="strict gate proof"):
         helper.validate_strict_gate(controller, store, proof, helper.release_source_binding())
 

@@ -11,6 +11,51 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import eval_harness
 
 
+@pytest.mark.parametrize("provider", ("claude", "codex", "agy"))
+@pytest.mark.parametrize("effort", ("medium", "xhigh"))
+def test_quality_session_grammar_preserves_exact_resume_and_stdin(tmp_path, provider, effort):
+    runtime = eval_harness.eval_runtime
+    from types import SimpleNamespace
+    from dataclasses import replace
+    profile = SimpleNamespace(requested_model={"claude": "claude-opus-5-5",
+        "codex": "gpt-6.1-sol", "agy": "gemini-3.8-flash-high"}[provider],
+        requested_effort="high" if provider == "agy" else effort)
+    request = SimpleNamespace(executor_id=provider, profile=profile, resume=False,
+        session_id="ed1e3f89-8ce9-44b7-9684-59f05d9c7f9a" if provider == "claude" else None,
+        prompt_bytes="private exact prompt α".encode(), prompt="private exact prompt α",
+        cwd=tmp_path, retries=0, timeout=30)
+    catalog = "/workspace/inputs/" + "a" * 64 + "/published/context/quality-catalog.json"
+    first = runtime.quality_session_command(request, catalog_path=catalog if provider == "codex" else None)
+    request.resume = True
+    request.session_id = "ed1e3f89-8ce9-44b7-9684-59f05d9c7f9a"
+    second = runtime.quality_session_command(request, catalog_path=catalog if provider == "codex" else None)
+    assert request.session_id in second.argv
+    assert "private exact prompt α" not in first.argv
+    if provider == "agy":
+        assert json.loads(first.stdin)["message"]["content"] == request.prompt
+        assert "--new-project" in first.argv and "--new-project" not in second.argv
+        assert "eval-no-tools" in first.argv and "eval-no-tools" in second.argv
+    else:
+        assert first.stdin == second.stdin == request.prompt_bytes
+    assert "--no-session-persistence" not in first.argv
+    assert "--ephemeral" not in first.argv
+    for argv in (first.argv, second.argv):
+        if provider == "codex":
+            assert f'model_reasoning_effort="{effort}"' in argv
+            disabled = [argv[index + 1] for index, flag in enumerate(argv) if flag == "--disable"]
+            assert "goals" in disabled
+            assert "suppress_unstable_features_warning=true" in argv
+        else:
+            assert argv[argv.index("--effort") + 1] == profile.requested_effort
+    if provider == "codex":
+        assert 'agents.enabled=false' in first.argv and 'agents.enabled=false' in second.argv
+        assert f'model_catalog_json="{catalog}"' in first.argv
+        assert "multi_agent_v2" in first.argv and "request_permissions_tool" in first.argv
+    request.retries = 1
+    with pytest.raises(runtime.ProcessValidationError, match="quality"):
+        runtime.quality_session_command(request, catalog_path=catalog if provider == "codex" else None)
+
+
 @pytest.fixture
 def isolated_cli(tmp_path):
     home = tmp_path / "real-home"

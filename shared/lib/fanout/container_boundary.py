@@ -10,6 +10,7 @@ import fcntl
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -227,6 +228,64 @@ def _run_control_command(argv: tuple[str, ...], *, data: bytes = b"",
         stderr_cap=_MAX_CLI_STDERR, acquire_slot=False, output_limit_result=True)
 
 
+def quality_docker_runner(controller: LifecycleController, *, allocation_digest: str,
+                          max_commands: int, command_seconds: float, outer_seconds: float):
+    """A once-frozen quality caller bound at the existing launcher constructor."""
+    assert_controller(controller)
+    _require_sha(allocation_digest, "quality allocation")
+    if (type(max_commands) is not int or max_commands < 1
+            or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                   for value in (command_seconds, outer_seconds))
+            or command_seconds > outer_seconds):
+        raise ProviderRequestError("quality Docker process controls differ")
+    limits = {"allocation": allocation_digest, "max_commands": max_commands,
+              "command_seconds": command_seconds, "outer_seconds": outer_seconds}
+    marker = controller_directory(controller, "locks") / f"quality-docker-{allocation_digest}"
+    try:
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError as error:
+        raise ProviderRequestError("quality Docker allocation already attempted") from error
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(canonical_json(limits)); output.flush(); os.fsync(output.fileno())
+    authority = write_evidence(controller, "quality-docker-controls", limits)
+    deadline = time.monotonic() + outer_seconds
+    attempted = 0
+
+    def run(argv, data):
+        nonlocal attempted
+        if (type(argv) is not tuple or argv[:len(DOCKER)] != DOCKER
+                or any(type(value) is not str or "\x00" in value for value in argv)
+                or data is not None and type(data) is not bytes):
+            raise ProviderRequestError("quality Docker context differs")
+        if read_evidence(controller, "quality-docker-controls", *authority) != limits:
+            raise ProviderRequestError("quality Docker controls changed")
+        remaining = deadline - time.monotonic()
+        if attempted >= max_commands or remaining <= 0:
+            raise ProviderRequestError("quality Docker attempt or outer deadline exhausted")
+        attempted += 1
+        write_evidence(controller, "quality-docker-attempt", {
+            "controls": list(authority), "attempt": attempted,
+            "argv": list(argv), "stdin_sha256": hashlib.sha256(data or b"").hexdigest()})
+        result = _run_bounded_command(ProcessCommand(argv, data or b"",
+            timeout=min(command_seconds, remaining), max_output_bytes=1024 * 1024),
+            stdout_cap=1024 * 1024, stderr_cap=512 * 1024, acquire_slot=False)
+        with ArtifactStore(controller_directory(controller, "quarantine") /
+                           f"quality-docker-{allocation_digest}") as retained:
+            stdout = retained.write_bytes(f"{attempted}/stdout.bin", result.stdout)
+            stderr = retained.write_bytes(f"{attempted}/stderr.bin", result.stderr)
+        write_evidence(controller, "quality-docker-terminal", {
+            "controls": list(authority), "attempt": attempted,
+            "status": result.status.value, "returncode": result.returncode,
+            "capture_complete": result.capture_complete,
+            "stdout": asdict(stdout), "stderr": asdict(stderr)})
+        if result.status is not ProcessStatus.EXIT or not result.capture_complete:
+            raise ProviderRequestError("quality Docker command did not settle within its controls")
+        return subprocess.CompletedProcess(argv, result.returncode, result.stdout, result.stderr)
+    run.controller = controller
+    run.controls = authority
+    return run
+
+
 class ContainerTransport(Protocol):
     """Live proof and one CLI process; production implementations use pinned control."""
 
@@ -374,12 +433,20 @@ class PinnedDockerTransport:
     def start_live(cls, controller: LifecycleController, spec: ContainerSpec, *,
                    ledger: PermitLedger, broker: Broker, permit_id: str,
                    epoch: int, recover: bool = False, lifecycle_scope=None,
-                   context_ref=None, request: ProviderRequest | None = None) -> "PinnedDockerTransport":
+                   context_ref=None, request: ProviderRequest | None = None,
+                   quality_docker=None) -> "PinnedDockerTransport":
         """Open the owner-pinned relay, then create one inspected seat."""
         ContainerLauncher._validate_spec(spec)
         if (not isinstance(broker, Broker)
                 or broker.permit.upstream_route_digest is None):
             raise ProviderRequestError("container live upstream route is absent")
+        if quality_docker is not None:
+            import types
+            if (type(quality_docker) is not types.FunctionType
+                    or quality_docker.__code__ not in quality_docker_runner.__code__.co_consts
+                    or quality_docker.controller is not controller
+                    or not read_evidence(controller, "quality-docker-controls", *quality_docker.controls)):
+                raise ProviderRequestError("quality Docker constructor is not the fixed owned helper")
         if recover:
             if request is None:
                 raise ProviderRequestError("container recovery lacks original input authority")
@@ -397,7 +464,7 @@ class PinnedDockerTransport:
                                        permit_id, epoch)
         try:
             control.open()
-            launcher = ContainerLauncher(guest_socket_attestor=control.attest_socket)
+            launcher = ContainerLauncher(quality_docker, guest_socket_attestor=control.attest_socket)
             control.attest_vm()
             transport = cls.start(
                 controller, spec, launcher=launcher,

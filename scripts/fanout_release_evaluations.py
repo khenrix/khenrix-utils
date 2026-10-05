@@ -80,6 +80,59 @@ def _historical_subject(root: Path, *, producer_root: Path | None = None) -> dic
             "provenance": json.loads((root.parent / "provenance.json").read_bytes())}
 
 
+def _strict_original_sources(historical_root, *, archive, original_checks, producer_root=None):
+    from scripts import fanout_forge_fixtures as fixtures
+    historical, archive, dependency = map(Path, (historical_root, archive, original_checks))
+    if (historical != archive or archive.resolve(strict=True) != archive
+            or not dependency.is_absolute() or dependency.resolve(strict=True) != dependency
+            or any(parent.is_symlink() for parent in dependency.parents)):
+        raise ValueError("strict original source association differs")
+    subject = _historical_subject(historical, producer_root=producer_root)
+    raw = fixtures._original_checks_bytes(dependency)
+    info = dependency.lstat()
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("strict original checks must be private")
+    producer = ROOT if producer_root is None else producer_root
+    expected = json.loads(_read_source(producer, baseline.HISTORICAL_LOCK, _MAX_TOTAL_BYTES))
+    return {"schema": "fanout-strict-original-inputs-v1",
+        "archive": {"root": subject["root"], "files": baseline._historical_files(expected),
+                    "lock_sha256": baseline.HISTORICAL_LOCK_SHA256,
+                    "provenance_sha256": _sha(_read_source(archive.parent, "provenance.json", _MAX_TOTAL_BYTES))},
+        "checks": {"path": str(dependency), "blob": fixtures._ORIGINAL_CHECKS_BLOB,
+                   "sha256": _sha(raw), "bytes": len(raw)}}
+
+
+def _retain_strict_original_sources(store, value):
+    from scripts import fanout_forge_fixtures as fixtures
+    archive = Path(value["archive"]["root"])
+    files = {}
+    for name in (*sorted(value["archive"]["files"]), baseline.HISTORICAL_LOCK):
+        files[name] = dataclasses.asdict(store.write_bytes("strict-gate/original-inputs/archive/" + name,
+            _read_source(archive, name, _MAX_TOTAL_BYTES)))
+    return {"archive": files,
+        "provenance": dataclasses.asdict(store.write_bytes("strict-gate/original-inputs/provenance.json",
+            _read_source(archive.parent, "provenance.json", _MAX_TOTAL_BYTES))),
+        "checks": dataclasses.asdict(store.write_bytes("strict-gate/original-inputs/checks.py",
+            fixtures._original_checks_bytes(Path(value["checks"]["path"]))))}
+
+
+def _reopen_strict_original_refs(store, value, refs):
+    if set(refs) != {"archive", "provenance", "checks"}:
+        raise ValueError("strict original source retention differs")
+    expected = {**value["archive"]["files"], baseline.HISTORICAL_LOCK: value["archive"]["lock_sha256"]}
+    if set(refs["archive"]) != set(expected):
+        raise ValueError("strict original source membership differs")
+    for name, digest in expected.items():
+        ref = ArtifactRef(**refs["archive"][name])
+        if ref.path != "strict-gate/original-inputs/archive/" + name or _sha(store.read_bytes(ref)) != digest:
+            raise ValueError("strict original archive retained bytes differ")
+    for key, path, digest in (("provenance", "provenance.json", value["archive"]["provenance_sha256"]),
+                             ("checks", "checks.py", value["checks"]["sha256"])):
+        ref = ArtifactRef(**refs[key])
+        if ref.path != "strict-gate/original-inputs/" + path or _sha(store.read_bytes(ref)) != digest:
+            raise ValueError("strict original dependency retained bytes differ")
+
+
 def capture_strict_gate(controller, store: ArtifactStore) -> dict:
     """Run the actual fixed gate once, retaining even unsuccessful/uncertain results."""
     before = release_source_binding().to_dict()
@@ -88,16 +141,25 @@ def capture_strict_gate(controller, store: ArtifactStore) -> dict:
     if not selected:
         raise ValueError("strict gate requires an explicit historical snapshot root")
     subject = _historical_subject(Path(selected))
+    archive, dependency = (os.environ.get(name) for name in
+        ("FANOUT_QUALITY_ARCHIVE_ROOT", "FANOUT_QUALITY_ORIGINAL_CHECKS"))
+    if not archive or not dependency:
+        raise ValueError("strict gate requires explicit original source inputs")
+    original_sources = _strict_original_sources(Path(selected), archive=Path(archive),
+        original_checks=Path(dependency))
+    original_refs = _retain_strict_original_sources(store, original_sources)
+    _reopen_strict_original_refs(store, original_sources, original_refs)
     probe._write_private(controller.root.parent / "strict-gate-attempt.json", canonical_json({
         "argv": list(STRICT_ARGV), "cwd": str(ROOT), "release_source_binding": before,
-        "gate_inputs": gate_before, "historical_subject": subject, "retry": False}))
+        "gate_inputs": gate_before, "historical_subject": subject,
+        "original_sources": original_sources, "retry": False}))
     result = run_command(ProcessCommand(STRICT_ARGV, b"", cwd=ROOT,
         timeout=3600, slot_root=controller.root / "locks" / "slots", max_output_bytes=64 * 1024 * 1024),
-        strict_gate_historical_root=Path(subject["root"]))
+        strict_gate_historical_root=Path(subject["root"]), strict_gate_original_sources=original_sources)
     stdout = store.write_bytes("strict-gate/stdout.bin", result.stdout)
     stderr = store.write_bytes("strict-gate/stderr.bin", result.stderr)
     proof = _seal(controller, "release-strict-gate-complete", {
-        "schema_version": "fanout-release-strict-gate-v1", "argv": list(STRICT_ARGV), "cwd": str(ROOT),
+        "schema_version": "fanout-release-strict-gate-v2", "argv": list(STRICT_ARGV), "cwd": str(ROOT),
         "status": result.status.value, "returncode": result.returncode,
         "capture_complete": result.capture_complete,
         "timeout": dataclasses.asdict(result.timeout) if result.timeout is not None else None,
@@ -106,6 +168,9 @@ def capture_strict_gate(controller, store: ArtifactStore) -> dict:
         "before_binding": before, "after_binding": release_source_binding().to_dict(),
         "before_gate_inputs": gate_before, "after_gate_inputs": _gate_inputs(),
         "historical_subject": subject,
+        "before_original_sources": original_sources,
+        "after_original_sources": _strict_original_sources(Path(selected), archive=Path(archive),
+            original_checks=Path(dependency)), "original_source_refs": original_refs,
     })
     store.write_bytes("strict-gate/process.json", canonical_json(proof))
     return proof
@@ -115,7 +180,7 @@ def validate_strict_gate(controller, store: ArtifactStore, value: Mapping,
                          source_binding: ReleaseSourceBinding) -> Path:
     try:
         _authenticate(controller, "release-strict-gate-complete", value)
-        if (value["schema_version"] != "fanout-release-strict-gate-v1"
+        if (value["schema_version"] != "fanout-release-strict-gate-v2"
                 or source_binding != release_source_binding()
                 or value["argv"] != list(STRICT_ARGV)
                 or value["status"] != ProcessStatus.EXIT.value or type(value["returncode"]) is not int
@@ -136,7 +201,8 @@ def validate_strict_gate(controller, store: ArtifactStore, value: Mapping,
                 "argv": list(STRICT_ARGV), "cwd": value["cwd"],
                 "release_source_binding": value["before_binding"],
                 "gate_inputs": value["before_gate_inputs"],
-                "historical_subject": value["historical_subject"], "retry": False})):
+                "historical_subject": value["historical_subject"],
+                "original_sources": value["before_original_sources"], "retry": False})):
             raise ValueError("strict original attempt changed")
         producer = Path(value["cwd"])
         if (not producer.is_absolute() or str(producer) != value["cwd"]
@@ -151,6 +217,13 @@ def validate_strict_gate(controller, store: ArtifactStore, value: Mapping,
             os.close(directory_fd)
         if release_source_binding(producer) != source_binding:
             raise ValueError("strict producer source changed")
+        current_original = _strict_original_sources(Path(value["historical_subject"]["root"]),
+            archive=Path(value["before_original_sources"]["archive"]["root"]),
+            original_checks=Path(value["before_original_sources"]["checks"]["path"]), producer_root=producer)
+        if (current_original != value["before_original_sources"]
+                or current_original != value["after_original_sources"]):
+            raise ValueError("strict original source inputs changed")
+        _reopen_strict_original_refs(store, current_original, value["original_source_refs"])
         if (value["historical_subject"] != _historical_subject(
                 Path(value["historical_subject"]["root"]), producer_root=producer)
                 or canonical_json(value["before_gate_inputs"]) != canonical_json(_gate_inputs(producer))

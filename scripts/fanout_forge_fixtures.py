@@ -8,6 +8,10 @@ inputs and command specs, never a fabricated live result.
 from __future__ import annotations
 
 import hashlib
+import ast
+import importlib
+import importlib.abc
+import types
 import hmac
 import json
 import os
@@ -32,6 +36,286 @@ _SYSTEM_GIT = Path("/usr/bin/git")
 
 class FixtureError(ValueError):
     """A fixture is missing, malformed, or no longer matches its preregistered pin."""
+
+
+_QUALITY_PROJECTION = frozenset({
+    "shared/lib/council/engine.py", "shared/lib/forge/cli.py",
+    "shared/lib/forge/deepreview.py", "shared/lib/forge/review.py"})
+_ORIGINAL_CHECKS = "scripts/lib/checks.py"
+_ORIGINAL_CHECKS_SHA256 = "82fa734e63f3887288d41e3cc6bdb03b8c6bf2b10ec488ce80c233c485b5adc2"
+_ORIGINAL_CHECKS_BLOB = "3e949d7a43752d1271c096fec4362169356b18c6"
+
+
+def _archive_json(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+
+
+def _archive_files(root):
+    files = {}
+    for index, path in enumerate(root.rglob("*")):
+        if index >= 512:
+            raise FixtureError("quality archive source membership exceeds its bound")
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        name = path.relative_to(root).as_posix()
+        if name == "archive.json":
+            continue
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_size > 2_000_000 or info.st_mode & 0o022):
+            raise FixtureError("quality archive contains unsafe source")
+        data = path.read_bytes()
+        if len(data) != info.st_size:
+            raise FixtureError("quality archive changed while read")
+        files[name] = data
+    if _ORIGINAL_CHECKS in files:
+        _original_checks_bytes(root / _ORIGINAL_CHECKS)
+    return files
+
+
+def _original_archive_identity(original):
+    path = Path(__file__).with_name("fanout_baseline.py")
+    spec = importlib.util.spec_from_file_location("_fanout_quality_original_baseline", path)
+    baseline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(baseline)
+    lock = json.loads((Path(__file__).resolve().parents[1] / baseline.HISTORICAL_LOCK).read_bytes())
+    expected = {**baseline._historical_files(lock),
+                baseline.HISTORICAL_LOCK: baseline.HISTORICAL_LOCK_SHA256}
+    if original is not None and baseline.check_historical(lock, original):
+        raise FixtureError("quality archive original source identity differs")
+    return {**expected, _ORIGINAL_CHECKS: _ORIGINAL_CHECKS_SHA256}
+
+
+def _original_checks_bytes(path):
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        with os.fdopen(descriptor, "rb") as source:
+            info = os.fstat(source.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o022 or info.st_size != 49_943):
+                raise FixtureError("quality archive original checks dependency differs")
+            data = source.read(49_944)
+    except OSError as error:
+        raise FixtureError("quality archive original checks dependency is absent") from error
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o022 or info.st_size != 49_943
+            or len(data) != info.st_size
+            or hashlib.sha256(data).hexdigest() != _ORIGINAL_CHECKS_SHA256):
+        raise FixtureError("quality archive original checks dependency differs")
+    return data
+
+
+def quality_archive_projection(files):
+    """Only the admitted launch/model/path joins change in the sealed derivative."""
+    if ({name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+            != {name: digest for name, digest in _original_archive_identity(None).items()
+                if name != _ORIGINAL_CHECKS}):
+        raise FixtureError("quality fixed projection original differs")
+    projected = {}
+    for name in sorted(_QUALITY_PROJECTION):
+        source = files[name].decode("utf-8")
+        replacements = []
+        for node in ast.parse(source).body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = None
+            if name.endswith("council/engine.py") and node.name in {"build_real_spec", "run_member"}:
+                args = ("name, prompt, timeout, cfg, workdir" if node.name == "build_real_spec"
+                        else "argv, stdin=stdin, timeout=timeout, env=env, cwd=cwd")
+                body = ("    transport = globals().get('_quality_transport')\n"
+                        "    if transport is None:\n"
+                        "        raise RuntimeError('protected quality transport is not bound')\n"
+                        f"    return transport.{node.name}({args})\n")
+            if name.endswith("forge/review.py") and node.name == "launcher_prompt":
+                body = ("    mapper = globals().get('_quality_launcher_path')\n"
+                        "    if mapper is None:\n"
+                        "        raise RuntimeError('protected quality launcher path is not bound')\n"
+                        "    bundle_path = mapper(bundle_path)\n"
+                        "    return (f'Read {bundle_path}/{_INSTRUCTIONS} and follow it exactly. Your working '\n"
+                        "            'directory is the checkout under review. Do not modify any file; this is a '\n"
+                        "            'review.')\n")
+            if body is not None:
+                replacements.append((node.body[0].lineno - 1, node.end_lineno, body))
+        lines = source.splitlines(keepends=True)
+        for start, end, replacement in sorted(replacements, reverse=True):
+            lines[start:end] = [replacement]
+        source = "".join(lines)
+        if name.endswith("forge/cli.py"):
+            source = source.replace('base["codex"] = {"model": "gpt-6-sol", "thinking": effort}',
+                'base["codex"] = {"model": "gpt-6.1-sol", "thinking": effort}', 1)
+            call = "    checkpoint, verified, cand, base = fixmod.apply(\n"
+            source = source.replace(call,
+                "    dependencies = globals().get('_quality_owner_fix')\n"
+                "    if dependencies is None:\n"
+                "        raise RuntimeError('protected quality owner fix is not bound')\n"
+                "    build, baseline = dependencies(repo, run_dir, manifest, log.read())\n" + call, 1)
+            source = source.replace("identity=_confirmed_author(log.read(), manifest), events=log.read())",
+                "identity=_confirmed_author(log.read(), manifest), events=log.read(),\n"
+                "        build=build, baseline=baseline)", 1)
+        if name.endswith("forge/deepreview.py"):
+            source = source.replace('"codex": {"model": "gpt-6-sol", "thinking": "ultra"}',
+                                    '"codex": {"model": "gpt-6.1-sol", "thinking": "ultra"}', 1)
+            source = source.replace("engine.run_council(specs, retries=1, timeout=timeout, backoff=2.0,",
+                                    "engine.run_council(specs, retries=0, timeout=timeout, backoff=2.0,", 1)
+        ast.parse(source)
+        projected[name] = source.encode("utf-8")
+    return projected
+
+
+def stage_quality_archive(original, destination, expected_files, projection, *, original_checks):
+    """Seal a fresh four-path derivative; never overwrite the historical archive."""
+    original, destination = Path(original), Path(destination)
+    if (not original.is_absolute() or original.resolve(strict=True) != original
+            or not destination.is_absolute() or destination.exists()
+            or destination.is_symlink() or not isinstance(projection, dict)
+            or not set(projection) <= _QUALITY_PROJECTION
+            or any(type(data) is not bytes for data in projection.values())):
+        raise FixtureError("quality archive projection path or membership differs")
+    original_files = _archive_files(original)
+    if projection and projection != quality_archive_projection(original_files):
+        raise FixtureError("quality fixed projection differs")
+    files = {**original_files, _ORIGINAL_CHECKS: _original_checks_bytes(Path(original_checks))}
+    digests = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+    if (digests != _original_archive_identity(original) or digests != expected_files
+            or not set(projection) <= files.keys()):
+        raise FixtureError("quality archive original manifest differs")
+    projected = {**files, **projection}
+    destination.mkdir(mode=0o700)
+    for name, data in sorted(projected.items()):
+        path = destination / name
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(data); output.flush(); os.fsync(output.fileno())
+    receipt = {"schema": "fanout-quality-archive-v1", "original": digests,
+               "restored": {"path": _ORIGINAL_CHECKS, "blob": _ORIGINAL_CHECKS_BLOB,
+                            "sha256": _ORIGINAL_CHECKS_SHA256},
+               "projected": {name: hashlib.sha256(data).hexdigest()
+                             for name, data in projected.items()},
+               "changed": sorted(name for name in projection if projection[name] != files[name])}
+    descriptor = os.open(destination / "archive.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(_archive_json(receipt)); output.flush(); os.fsync(output.fileno())
+    reopen_quality_archive(destination, receipt)
+    if _archive_files(original) != original_files:
+        raise FixtureError("quality archive original changed during projection")
+    return receipt
+
+
+def reopen_quality_archive(root, receipt):
+    root = Path(root)
+    files = _archive_files(root)
+    if (set(receipt) != {"schema", "original", "projected", "changed", "restored"}
+            or receipt["schema"] != "fanout-quality-archive-v1"
+            or receipt["restored"] != {"path": _ORIGINAL_CHECKS,
+                "blob": _ORIGINAL_CHECKS_BLOB, "sha256": _ORIGINAL_CHECKS_SHA256}
+            or receipt["original"].get(_ORIGINAL_CHECKS) != _ORIGINAL_CHECKS_SHA256
+            or receipt["projected"].get(_ORIGINAL_CHECKS) != _ORIGINAL_CHECKS_SHA256
+            or receipt["original"] != _original_archive_identity(None)
+            or not set(receipt["changed"]) <= _QUALITY_PROJECTION
+            or receipt["changed"] != sorted(name for name in receipt["original"]
+                if receipt["original"][name] != receipt["projected"].get(name))
+            or set(receipt["original"]) != set(receipt["projected"])
+            or {name: hashlib.sha256(data).hexdigest() for name, data in files.items()} != receipt["projected"]
+            or (root / "archive.json").read_bytes() != _archive_json(receipt)):
+        raise FixtureError("quality archive sealed derivative differs")
+    return files
+
+
+class _QualitySourceLoader(importlib.machinery.SourceFileLoader):
+    def __init__(self, name, path, source_bytes):
+        super().__init__(name, path)
+        self.source_bytes = source_bytes
+
+    def get_code(self, fullname):
+        return compile(self.source_bytes, self.path, "exec", dont_inherit=True)
+
+
+class _QualityArchiveFinder(importlib.abc.MetaPathFinder):
+    def __init__(self, namespace, root, receipt):
+        self.namespace, self.root, self.receipt = namespace, root, receipt
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not fullname.startswith(self.namespace + "."):
+            return None
+        files = reopen_quality_archive(self.root, self.receipt)
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+        if spec is None or not spec.origin:
+            raise FixtureError("quality archive imported dependency is absent")
+        try:
+            relative = Path(spec.origin).relative_to(self.root).as_posix()
+            source = files[relative]
+        except (ValueError, KeyError):
+            raise FixtureError("quality archive imported dependency differs") from None
+        spec.loader = _QualitySourceLoader(fullname, spec.origin, source)
+        return spec
+
+
+def load_quality_archive(root, receipt, names):
+    """Return actual imported modules and reopen every loaded archive dependency."""
+    root = Path(root)
+    reopen_quality_archive(root, receipt)
+    dependency = root / _ORIGINAL_CHECKS
+    checks = sys.modules.get("khenrix_checks")
+    if checks is None:
+        spec = importlib.util.spec_from_file_location("khenrix_checks", dependency,
+            loader=_QualitySourceLoader("khenrix_checks", str(dependency), _original_checks_bytes(dependency)))
+        checks = importlib.util.module_from_spec(spec)
+        sys.modules["khenrix_checks"] = checks
+        try:
+            spec.loader.exec_module(checks)
+        except BaseException:
+            sys.modules.pop("khenrix_checks", None)
+            raise
+    if (getattr(checks, "__file__", None) != str(dependency)
+            or type(getattr(checks, "__loader__", None)) is not _QualitySourceLoader
+            or checks.__loader__.source_bytes != _original_checks_bytes(dependency)
+            or _original_checks_bytes(Path(checks.__file__)) != reopen_quality_archive(root, receipt)[_ORIGINAL_CHECKS]):
+        raise FixtureError("quality archive foreign loaded original checks dependency")
+    namespace = "_fanout_quality_archive_" + hashlib.sha256(
+        _archive_json({"root": str(root), "receipt": receipt})).hexdigest()
+    package = sys.modules.get(namespace)
+    if package is None:
+        package = types.ModuleType(namespace)
+        package.__path__ = [str(root / "shared/lib")]
+        sys.modules[namespace] = package
+    elif package.__path__ != [str(root / "shared/lib")]:
+        raise FixtureError("quality archive loaded root changed")
+    if any(not re.fullmatch(r"(?:forge|council)\.[a-z_]+", name) for name in names):
+        raise FixtureError("quality archive module membership differs")
+    # Original Forge consumers use the absolute Council import. Bind that import
+    # to this derivative only while loading; never use an ambient cached engine.
+    previous = {name: sys.modules.get(name) for name in ("council", "council.engine")}
+    finder = _QualityArchiveFinder(namespace, root, receipt)
+    sys.meta_path.insert(0, finder)
+    try:
+        council = importlib.import_module(f"{namespace}.council")
+        engine = importlib.import_module(f"{namespace}.council.engine")
+        sys.modules["council"], sys.modules["council.engine"] = council, engine
+        modules = {name: importlib.import_module(f"{namespace}.{name}") for name in names}
+    finally:
+        sys.meta_path.remove(finder)
+        for name, module in previous.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    loaded = {_ORIGINAL_CHECKS: _ORIGINAL_CHECKS_SHA256}
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(namespace + ".") and getattr(module, "__file__", None):
+            path = Path(module.__file__)
+            relative = path.relative_to(root).as_posix()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if (digest != receipt["projected"].get(relative)
+                    or type(getattr(module, "__loader__", None)) is not _QualitySourceLoader
+                    or hashlib.sha256(module.__loader__.source_bytes).hexdigest() != digest):
+                raise FixtureError("quality archive loaded dependency differs")
+            loaded[relative] = digest
+    reopen_quality_archive(root, receipt)
+    return modules, loaded
 
 
 class ForgeBoundaryDescriptor(NamedTuple):

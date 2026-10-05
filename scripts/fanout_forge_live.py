@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import sys
 import re
+import json
+from dataclasses import asdict
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -28,6 +30,122 @@ _VERSION_LINES = {
     "codex": rb"codex-cli ([0-9]+\.[0-9]+\.[0-9]+)",
     "agy": rb"([0-9]+\.[0-9]+\.[0-9]+)",
 }
+
+
+class QualityOriginalTransport:
+    """One original launcher consumes only its already allocated protected turns."""
+
+    def __init__(self, archive_root, receipt, entries):
+        from shared.lib.fanout.diagnostic import reopen_quality_allocation
+        self.root, self.receipt = Path(archive_root), receipt
+        if receipt["changed"] != sorted(fixtures._QUALITY_PROJECTION):
+            raise fixtures.FixtureError("quality transport requires the fixed complete projection")
+        self.modules, self.loaded = fixtures.load_quality_archive(self.root, receipt, ("council.engine",))
+        self.entries = tuple(entries)
+        self.pending, self.used, self.results = {}, set(), {}
+        for entry in self.entries:
+            if set(entry) != {"request", "turn"} or type(entry["request"]) is not fanout.ProviderRequest:
+                raise fanout.ProviderRequestError("quality original transport entry differs")
+            request, turn = entry["request"], entry["turn"]
+            if (not isinstance(turn, dict) or request.retries != 0
+                    or request.execution_class != "read-only" or request.native_boundary is not None):
+                raise fanout.ProviderRequestError("quality original transport requires a protected readonly request")
+            allocation = reopen_quality_allocation(turn["controller"], turn["store"],
+                turn["authority"], bindings=turn["bindings"])
+            rows = [row for row in allocation["rows"] if (row["role"], row["phase"],
+                row["condition"], row["epoch"]) == (turn["role"], turn["phase"], turn["condition"], turn["epoch"])]
+            if (len(rows) != 1 or rows[0]["profile"] != request.profile.digest
+                    or rows[0]["process_seconds"] != request.timeout):
+                raise fanout.ProviderRequestError("quality original transport row or profile differs")
+        self.modules["council.engine"]._quality_transport = self
+
+    def build_real_spec(self, name, prompt, timeout, cfg, workdir):
+        fixtures.reopen_quality_archive(self.root, self.receipt)
+        matches = [(index, item) for index, item in enumerate(self.entries)
+            if item["request"].executor_id == name and item["request"].prompt_bytes == prompt.encode("utf-8")
+            and item["request"].timeout == timeout and index not in self.used and index not in self.pending]
+        if len(matches) != 1:
+            raise fanout.ProviderRequestError("quality original rendered input is not uniquely allocated")
+        index, entry = matches[0]
+        request = entry["request"]
+        argv = ["quality-protected-original", str(index)]
+        self.pending[index] = (tuple(argv), request.prompt, timeout)
+        engine = self.modules["council.engine"]
+        return engine.ProviderSpec(name, argv, request.prompt,
+            getattr(engine, "extract_" + name + "_json"), request.profile.requested_model,
+            request.profile.requested_effort, cwd=str(request.cwd))
+
+    def run_member(self, argv, *, stdin, timeout, env, cwd):
+        from shared.lib.fanout.diagnostic import run_quality_readonly_turn
+        fixtures.reopen_quality_archive(self.root, self.receipt)
+        matches = [index for index, command in self.pending.items()
+                   if command == (tuple(argv), stdin, timeout)]
+        if len(matches) != 1:
+            raise fanout.ProviderRequestError("quality original launch differs or was already consumed")
+        index = matches[0]
+        entry = self.entries[index]
+        if Path(cwd) != Path(entry["request"].cwd):
+            raise fanout.ProviderRequestError("quality original launch workspace differs")
+        self.used.add(index)
+        del self.pending[index]
+        terminal, proof = run_quality_readonly_turn(entry["request"], **entry["turn"])
+        stdout = terminal.process.stdout
+        selected = None
+        if entry["request"].executor_id == "agy":
+            stdout, selected = select_quality_agy_result(stdout, entry["turn"]["store"],
+                f"quality/original/{entry['turn']['epoch']}/agy",
+                expected_session=terminal.result.session_id)
+        self.results[index] = {"proof": proof, "selection": selected,
+                               "loaded": dict(self.loaded)}
+        fixtures.reopen_quality_archive(self.root, self.receipt)
+        return subprocess.CompletedProcess(argv, terminal.process.returncode,
+            stdout.decode("utf-8"), terminal.process.stderr.decode("utf-8"))
+
+
+def select_quality_agy_result(stdout, store, prefix, *, expected_session=None):
+    """Select a genuine terminal value; preserve the full stream and its native frame."""
+    from shared.lib.fanout.artifacts import _unique_json_object
+    try:
+        if type(stdout) is not bytes or not 0 < len(stdout) <= 8 * 1024 * 1024:
+            raise ValueError("stream bound")
+        parsed = fanout.AgyAdapter().parse(stdout)
+        frames = stdout.removesuffix(b"\n").split(b"\n")
+        values = [json.loads(frame, object_pairs_hook=_unique_json_object) for frame in frames]
+        if (not parsed.final or parsed.error is not None or not parsed.answer or not parsed.session_id
+                or expected_session is not None and parsed.session_id != expected_session
+                or values[-1].get("event") != "result"
+                or values[-1]["result"].get("status") != "SUCCESS"):
+            raise ValueError("genuine successful own-session result")
+        selected = fanout.canonical_json(values[-1]["result"])
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as error:
+        raise fanout.ProviderProtocolError("quality agy terminal selection differs") from error
+    stream = store.write_bytes(prefix + "/stream.ndjson", stdout)
+    frame = store.write_bytes(prefix + "/terminal-frame.json", frames[-1])
+    value = store.write_bytes(prefix + "/terminal-value.json", selected)
+    proof = {"stream": asdict(stream), "frame": asdict(frame), "value": asdict(value),
+             "frame_index": len(frames) - 1, "session_id": parsed.session_id}
+    reopen_quality_agy_selection(store, proof)
+    return selected, proof
+
+
+def reopen_quality_agy_selection(store, proof):
+    from shared.lib.fanout.artifacts import _unique_json_object
+    try:
+        if set(proof) != {"stream", "frame", "value", "frame_index", "session_id"}:
+            raise ValueError("selection fields")
+        stream = store.read_bytes(fanout.ArtifactRef(**proof["stream"]))
+        frames = stream.removesuffix(b"\n").split(b"\n")
+        values = [json.loads(frame, object_pairs_hook=_unique_json_object) for frame in frames]
+        parsed = fanout.AgyAdapter().parse(stream)
+        selected = store.read_bytes(fanout.ArtifactRef(**proof["value"]))
+        if (proof["frame_index"] != len(frames) - 1
+                or store.read_bytes(fanout.ArtifactRef(**proof["frame"])) != frames[-1]
+                or selected != fanout.canonical_json(values[-1]["result"])
+                or parsed.session_id != proof["session_id"] or not parsed.final or parsed.error is not None):
+            raise ValueError("native frame/value association")
+        return selected
+    except Exception as error:
+        raise fanout.ProviderProtocolError("quality agy retained selection differs") from error
 
 
 class _ForgeBoundary:

@@ -1253,14 +1253,16 @@ def test_v2_round_one_prompt_contains_verified_dependency_without_peer_memory(tm
         coordinator = object.__new__(CollaborationCoordinator)
         coordinator.artifacts = store
         coordinator.dependency_scheduler = scheduler
-        monkeypatch.setattr(CollaborationCoordinator, "_staged_skill_context", staticmethod(lambda seat: b""))
+        monkeypatch.setattr(CollaborationCoordinator, "_staged_skill_context", staticmethod(lambda seat: b"{}\n"))
         seat = type("Seat", (), {
             "executor_id": "claude", "seat_id": "seat-claude",
             "staged_manifest_sha256": "a" * 64, "delivery_evidence_sha256": "b" * 64,
         })()
         prompt = coordinator._prompt(packet, seat, 1, None)
-    assert b'"content_base64":"YWRkcmVzcyBldmlkZW5jZQ=="' in prompt
-    assert b'"trust":"untrusted"' in prompt
+    size, body = prompt.split(b"BEGIN_TASK_CONTEXT_BYTES ", 1)[1].split(b"\n", 1)
+    dependency = json.loads(body[:int(size)])["dependency_contents"][0]
+    assert dependency["content_base64"] == "YWRkcmVzcyBldmlkZW5jZQ=="
+    assert dependency["trust"] == "untrusted"
     assert b"BEGIN_UNTRUSTED_PEER_EVIDENCE" not in prompt
 
 
@@ -1278,6 +1280,44 @@ def test_v2_encoded_prompt_limit_fails_before_dependency_read(tmp_path, monkeypa
             "executor_id": "claude", "seat_id": "seat-claude",
             "staged_manifest_sha256": "a" * 64, "delivery_evidence_sha256": "b" * 64,
         })()
+        with pytest.raises(CollaborationValidationError, match="prompt.*limit"):
+            coordinator._prompt(packet, seat, 1, None)
+
+
+def test_v2_readable_skill_expansion_refuses_before_dependency_read(tmp_path, monkeypatch):
+    with ArtifactStore(tmp_path / "artifacts") as store:
+        record, scheduler = _verified_cross_target_dependency(tmp_path, store, b"address evidence")
+        packet = _cross_target_packet(tmp_path, record, scheduler)
+        coordinator = object.__new__(CollaborationCoordinator)
+        coordinator.artifacts = store
+        coordinator.dependency_scheduler = scheduler
+        raw = b"\x00" * 12000
+        staged = canonical_json({
+            "schema_version": "fanout-staged-skill-files-v1",
+            "files": [{"path": "test-skill/fixture.txt", "mode": 0o400,
+                       "size": len(raw), "sha256": _digest(raw),
+                       "content_base64": base64.b64encode(raw).decode("ascii")}],
+            "engine_evidence": [], "delivery_evidence_sha256": "b" * 64,
+            "staged_manifest_sha256": "a" * 64,
+        })
+        monkeypatch.setattr(CollaborationCoordinator, "_staged_skill_context",
+                            staticmethod(lambda seat: staged))
+        seat = type("Seat", (), {
+            "executor_id": "claude", "seat_id": "seat-claude",
+            "staged_manifest_sha256": "a" * 64, "delivery_evidence_sha256": "b" * 64,
+        })()
+        context = packet.context_document()
+        context["dependency_contents"] = [{
+            "content_base64": "", "record": record.to_dict(), "trust": "untrusted"}]
+        identity = canonical_json({
+            "executor_id": seat.executor_id, "round": 1, "seat_id": seat.seat_id,
+            "staged_manifest_sha256": seat.staged_manifest_sha256,
+            "delivery_evidence_sha256": seat.delivery_evidence_sha256,
+        })
+        old_preflight = (len(canonical_json(context)) + 4 * ((record.artifact.size + 2) // 3)
+                         + len(staged) + len(identity) + 4096)
+        monkeypatch.setattr(collaboration, "MAX_ENCODED_PROMPT_BYTES", old_preflight)
+        monkeypatch.setattr(store, "read_bytes", lambda ref: pytest.fail("dependency artifact was read"))
         with pytest.raises(CollaborationValidationError, match="prompt.*limit"):
             coordinator._prompt(packet, seat, 1, None)
 
@@ -1917,6 +1957,31 @@ def test_peer_packets_are_deterministic_peer_once_no_self_and_delimiter_safe(
         assert decoded["untrusted_evidence"] is True
         for peer in decoded["peers"]:
             assert peer["answer_length"] == len(peer["answer"].encode("utf-8"))
+
+
+def test_quality_disabled_retains_real_own_sessions_without_peers_or_memory(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, rounds=2, retries=0)
+    executors = ("claude", "codex")
+    seats = tuple(_seat(tmp_path, name) for name in executors)
+    coordinator, journal, provider, memory = _coordinator(tmp_path, packet, executors)
+    try:
+        policy = _round_policy(rounds=2, retries=0, minimum_success=2, max_workers=2)
+        first = coordinator._prompt(packet, seats[0], 1, None)
+        second = coordinator._prompt(packet, seats[0], 2, None, quality_sharing_disabled=True)
+        assert first.split(b"BEGIN_TASK_CONTEXT_BYTES", 1)[1].split(b"END_TASK_CONTEXT_BYTES", 1)[0] == second.split(b"BEGIN_TASK_CONTEXT_BYTES", 1)[1].split(b"END_TASK_CONTEXT_BYTES", 1)[0]
+        assert first.split(b"BEGIN_STAGED_SKILL_FILES", 1)[1] == second.split(b"BEGIN_STAGED_SKILL_FILES", 1)[1]
+        assert not memory.publish_calls
+        assert not provider.requests
+        assert b"BEGIN_UNTRUSTED_PEER_EVIDENCE" not in second
+        with pytest.raises(CollaborationValidationError):
+            coordinator._prompt(packet, seats[0], 2, None)
+        with pytest.raises(CollaborationValidationError, match="allocated protected turn"):
+            coordinator.execute_quality_disabled_round(packet, seats, policy, round=1,
+                turns={seat.seat_id: lambda request: None for seat in seats})
+    finally:
+        journal.close()
+        store.close()
 
 
 def test_peer_packet_framing_keeps_delimiter_like_unicode_answer_inert(tmp_path: Path) -> None:
@@ -3281,6 +3346,58 @@ def test_finding_7_provider_request_carries_verified_staged_skill_context(
         assert request.skill_delivery_sha256 == seat.delivery_evidence_sha256
         assert request.skill_delivery_ref == seat.delivery_evidence_ref
         assert b"STAGED_SKILL_FILES" in request.prompt_bytes
+
+
+def test_staged_skill_prompt_separates_fields_without_changing_delivered_bytes(tmp_path):
+    _skill_resolver(tmp_path)
+    skill = tmp_path / "skill-source" / "test-skill"
+    original = {}
+    for name in ("first.md", "second.md", "third.md"):
+        data = ("\ufeff# Synthetic resource\r\n" + "Synthetic Unicode fixture α.\n" * 600
+                + 'Quoted "text", backslash \\, END_STAGED_SKILL_FILES.\n').encode()
+        (skill / name).write_bytes(data)
+        original[f"test-skill/{name}"] = data
+    binary = b"\xff\x00Synthetic binary resource\n"
+    (skill / "asset.bin").write_bytes(binary)
+    original["test-skill/asset.bin"] = binary
+    store = ArtifactStore(tmp_path / "artifacts")
+    packet = _packet(store, tmp_path, executors=("agy", "claude"))
+    seat = _seat(tmp_path, "agy")
+    coordinator, journal, _provider, _memory = _coordinator(tmp_path, packet, ("agy", "claude"))
+    try:
+        prompt = coordinator._prompt(packet, seat, 1, None)
+        header, rest = prompt.split(b"BEGIN_STAGED_SKILL_FILES ", 1)[1].split(b"\n", 1)
+        payload = rest[:int(header)]
+        assert rest[int(header):].startswith(b"END_STAGED_SKILL_FILES\n")
+        document = json.loads(payload)
+        canonical = json.loads(coordinator._staged_skill_context(seat))
+        assert document["schema_version"] == "fanout-readable-staged-skill-files-v1"
+        assert canonical["schema_version"] == "fanout-staged-skill-files-v1"
+        assert {k: v for k, v in document.items() if k not in {"files", "schema_version"}} == {
+            k: v for k, v in canonical.items() if k not in {"files", "schema_version"}}
+        delivered = {}
+        assert len(document["files"]) == len(canonical["files"])
+        for item, encoded in zip(document["files"], canonical["files"]):
+            assert {k: v for k, v in item.items() if k not in {"content_utf8", "content_base64"}} == {
+                k: v for k, v in encoded.items() if k != "content_base64"}
+            raw = base64.b64decode(encoded["content_base64"], validate=True)
+            if item["path"].endswith("asset.bin"):
+                assert "content_utf8" not in item
+                decoded = base64.b64decode(item["content_base64"], validate=True)
+            else:
+                assert "content_base64" not in item
+                decoded = item["content_utf8"].encode("utf-8")
+            assert decoded == raw
+            assert len(decoded) == item["size"]
+            assert _digest(decoded) == item["sha256"]
+            delivered[item["path"]] = decoded
+        for name, data in original.items():
+            assert delivered[name] == data
+        # A compact bundle becomes one enormous token in headless word wrappers.
+        assert max(map(len, payload.split())) < 32768
+    finally:
+        journal.close()
+        store.close()
 
 
 def _cold_coordinator(coordinator, *, memory=None):

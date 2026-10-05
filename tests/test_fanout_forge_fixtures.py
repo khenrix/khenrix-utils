@@ -38,6 +38,134 @@ def _fixture_probe_argv(fixtures, case_id: str, workspace: Path,
     return [str(fixtures._SANDBOX_EXEC), "-p", policy, *argv]
 
 
+def test_quality_archive_derivative_reopens_real_loaded_modules(tmp_path, fixtures, monkeypatch):
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+    files = {name: hashlib.sha256(data).hexdigest()
+             for name, data in fixtures._archive_files(archive).items()}
+    files["scripts/lib/checks.py"] = fixtures._ORIGINAL_CHECKS_SHA256
+    stage = tmp_path / "derivative"
+    receipt = fixtures.stage_quality_archive(archive, stage, files, {}, original_checks=checks)
+    assert len(receipt["original"]) == 61
+    assert receipt["original"] == receipt["projected"]
+    modules, loaded = fixtures.load_quality_archive(stage, receipt,
+                                                    ("forge.fix", "forge.verify"))
+    assert modules["forge.fix"].apply.__module__.endswith("forge.fix")
+    assert "shared/lib/forge/fix.py" in loaded
+    assert loaded["shared/lib/forge/fix.py"] == files["shared/lib/forge/fix.py"]
+    assert loaded["scripts/lib/checks.py"] == files["scripts/lib/checks.py"]
+    monkeypatch.delitem(sys.modules, "khenrix_checks")
+    (stage / "shared/lib/forge/fix.py").write_bytes(b"raise RuntimeError('substituted')\n")
+    with pytest.raises(fixtures.FixtureError, match="archive"):
+        fixtures.reopen_quality_archive(stage, receipt)
+    with pytest.raises(fixtures.FixtureError, match="projection"):
+        fixtures.stage_quality_archive(archive, tmp_path / "bad", files,
+                                       {"shared/lib/forge/fix.py": b"pass\n"}, original_checks=checks)
+
+
+def test_quality_original_checks_fifo_refuses_before_archive_or_receipt(tmp_path, fixtures):
+    fifo = tmp_path / "checks.py"
+    os.mkfifo(fifo, 0o600)
+    child = (
+        "import importlib.util,sys\n"
+        "spec=importlib.util.spec_from_file_location('quality_fixture',sys.argv[1])\n"
+        "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+        "try: module._original_checks_bytes(sys.argv[2])\n"
+        "except module.FixtureError: print('refused')\n"
+        "else: raise AssertionError('FIFO accepted')\n"
+    )
+    result = subprocess.run((sys.executable, "-B", "-c", child, fixtures.__file__, str(fifo)),
+                            capture_output=True, text=True, timeout=2, check=True)
+    assert result.stdout == "refused\n"
+    assert result.stderr == ""
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["checks.py"]
+
+
+def test_quality_archive_executes_verified_source_not_untracked_bytecode(tmp_path, fixtures, monkeypatch):
+    import importlib.machinery
+    import importlib._bootstrap_external
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+    files = {name: hashlib.sha256(data).hexdigest()
+             for name, data in fixtures._archive_files(archive).items()}
+    files["scripts/lib/checks.py"] = fixtures._ORIGINAL_CHECKS_SHA256
+    stage = tmp_path / "archive"
+    receipt = fixtures.stage_quality_archive(archive, stage, files, {}, original_checks=checks)
+    for relative in ("scripts/lib/checks.py", "shared/lib/council/engine.py", "shared/lib/forge/fix.py"):
+        path = stage / relative
+        original = path.read_bytes()
+        loader = importlib.machinery.SourceFileLoader("untracked_cache", str(path))
+        info = path.stat()
+        code = compile(original + b"\nQUALITY_CACHE_MARKER = 'untracked'\n", str(path), "exec")
+        bytecode = importlib._bootstrap_external._code_to_timestamp_pyc(code,
+            int(info.st_mtime), info.st_size)
+        loader.set_data(importlib.util.cache_from_source(str(path)), bytecode)
+        assert path.read_bytes() == original
+    modules, loaded = fixtures.load_quality_archive(stage, receipt, ("council.engine", "forge.fix"))
+    assert not hasattr(sys.modules["khenrix_checks"], "QUALITY_CACHE_MARKER")
+    assert not hasattr(modules["council.engine"], "QUALITY_CACHE_MARKER")
+    assert not hasattr(modules["forge.fix"], "QUALITY_CACHE_MARKER")
+    assert callable(modules["council.engine"].extract_agy_json)
+    assert loaded["scripts/lib/checks.py"] == fixtures._ORIGINAL_CHECKS_SHA256
+    assert loaded["shared/lib/council/engine.py"] == receipt["projected"]["shared/lib/council/engine.py"]
+    monkeypatch.delitem(sys.modules, "khenrix_checks")
+
+
+def test_quality_original_checks_refuses_absent_tampered_and_foreign_cache(tmp_path, fixtures, monkeypatch):
+    from types import ModuleType
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    files = {name: hashlib.sha256(data).hexdigest() for name, data in fixtures._archive_files(archive).items()}
+    files["scripts/lib/checks.py"] = fixtures._ORIGINAL_CHECKS_SHA256
+    with pytest.raises(fixtures.FixtureError, match="checks dependency"):
+        fixtures.stage_quality_archive(archive, tmp_path / "absent", files, {},
+                                       original_checks=tmp_path / "missing")
+    wrong = tmp_path / "wrong.py"
+    wrong.write_bytes(checks.read_bytes() + b"\n")
+    with pytest.raises(fixtures.FixtureError, match="checks dependency"):
+        fixtures.stage_quality_archive(archive, tmp_path / "tampered", files, {}, original_checks=wrong)
+    stage = tmp_path / "sealed"
+    receipt = fixtures.stage_quality_archive(archive, stage, files, {}, original_checks=checks)
+    foreign = ModuleType("khenrix_checks")
+    foreign.__file__ = str(checks)
+    monkeypatch.setitem(sys.modules, "khenrix_checks", foreign)
+    with pytest.raises(fixtures.FixtureError, match="foreign loaded"):
+        fixtures.load_quality_archive(stage, receipt, ("forge.baseline",))
+    monkeypatch.delitem(sys.modules, "khenrix_checks")
+    (stage / "scripts/lib/checks.py").unlink()
+    with pytest.raises(fixtures.FixtureError, match="archive"):
+        fixtures.reopen_quality_archive(stage, receipt)
+
+
+def test_quality_fixed_projection_loads_actual_launchers_only(tmp_path, fixtures, monkeypatch):
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    original = fixtures._archive_files(archive)
+    projection = fixtures.quality_archive_projection(original)
+    assert set(projection) == fixtures._QUALITY_PROJECTION
+    files = {name: hashlib.sha256(data).hexdigest() for name, data in original.items()}
+    files["scripts/lib/checks.py"] = fixtures._ORIGINAL_CHECKS_SHA256
+    monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+    receipt = fixtures.stage_quality_archive(archive, tmp_path / "projected", files,
+                                             projection, original_checks=checks)
+    modules, loaded = fixtures.load_quality_archive(tmp_path / "projected", receipt,
+        ("council.engine", "forge.cli", "forge.deepreview", "forge.review"))
+    engine, cli = modules["council.engine"], modules["forge.cli"]
+    assert cli._model_cfg("claude-opus-5-5", "gemini-3.8-flash-high")["codex"]["model"] == "gpt-6.1-sol"
+    assert engine.extract_agy_json.__code__.co_filename == str(tmp_path / "projected/shared/lib/council/engine.py")
+    with pytest.raises(RuntimeError, match="protected quality transport"):
+        engine.build_real_spec("claude", "original prompt", 900, {}, tmp_path)
+    for name in files.keys() - fixtures._QUALITY_PROJECTION:
+        assert receipt["projected"][name] == files[name]
+    assert loaded["shared/lib/forge/cli.py"] == receipt["projected"]["shared/lib/forge/cli.py"]
+    monkeypatch.delitem(sys.modules, "khenrix_checks")
+    altered = {**projection, "shared/lib/council/engine.py": projection["shared/lib/council/engine.py"] + b"\n# foreign\n"}
+    with pytest.raises(fixtures.FixtureError, match="fixed projection"):
+        fixtures.stage_quality_archive(archive, tmp_path / "foreign", files, altered, original_checks=checks)
+
+
 def test_campaign_boundary_seals_exact_roots_and_rejects_disk_tampering(
     tmp_path: Path, fixtures, monkeypatch,
 ) -> None:

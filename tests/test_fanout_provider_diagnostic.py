@@ -7,6 +7,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from dataclasses import asdict
 
 import pytest
 
@@ -21,6 +22,161 @@ from shared.lib.fanout.broker import (  # noqa: E402
 from shared.lib.fanout.controller import read_evidence  # noqa: E402
 from shared.lib.fanout.errors import ProviderRequestError  # noqa: E402
 from shared.lib.fanout.native_boundary import issue_broker_admission  # noqa: E402
+
+
+def test_quality_allocation_consumes_authenticated_row_before_registration(tmp_path):
+    from shared.lib.fanout.artifacts import ArtifactStore
+    from shared.lib.fanout.container_broker import PermitLedger
+    controller = fanout.create_lifecycle_controller(tmp_path / "owner")
+    ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+    permit = BrokerPermit("claude", "run", "task", "target", "seat", "initial",
+                          "claude-opus-5-5", "disposable-placeholder", 1,
+                          1024, 2048, 8192, inputs_digest="a" * 64)
+    bindings = {name: "b" * 64 for name in (
+        "campaign", "casebook", "source", "projection", "profile", "inputs")}
+    bindings["inputs"] = "a" * 64
+    row = {"role": "baseline-seat", "phase": "initial", "condition": "baseline",
+           "epoch": 1, "permit": asdict(permit), "blocker": None,
+           "initial": None, "profile": "b" * 64, "catalog": None,
+           "process_seconds": 30, "outer_seconds": 60}
+    with ArtifactStore(tmp_path / "artifacts") as store:
+        ref = store.write_json("quality/normal-01.json", {
+            "schema": "fanout-quality-case-allocation-v1", "case_id": "normal-01",
+            "controller_id": controller.controller_id, "bindings": bindings,
+            "maka_output_tokens": 8192, "rows": [row]})
+        authority = diagnostic.seal_quality_allocation(controller, store, ref,
+                                                       bindings=bindings)
+        registered = diagnostic.register_quality_permit(
+            controller, store, authority, ledger, role="baseline-seat", phase="initial",
+            condition="baseline", permit=permit, epoch=1, bindings=bindings)
+        ledger.require_permit(registered, 1, permit)
+        with pytest.raises(ProviderRequestError, match="consumed"):
+            diagnostic.register_quality_permit(
+                controller, store, authority, ledger, role="baseline-seat", phase="initial",
+                condition="baseline", permit=permit, epoch=1, bindings=bindings)
+        with pytest.raises(ProviderRequestError, match="allocation"):
+            diagnostic.register_quality_permit(
+                controller, store, authority, ledger, role="off-list", phase="initial",
+                condition="baseline", permit=permit, epoch=2, bindings=bindings)
+        with pytest.raises(ProviderRequestError, match="allocation"):
+            diagnostic.reopen_quality_allocation(controller, store, authority,
+                bindings=dict(bindings, source="c" * 64))
+
+
+def test_quality_native_command_reopens_consumed_row_and_loaded_source(tmp_path):
+    from shared.lib.fanout.artifacts import ArtifactStore
+    from shared.lib.fanout.container_broker import PermitLedger
+    from shared.lib.fanout.container_source import runtime_source_digest
+    controller = fanout.create_lifecycle_controller(tmp_path / "owner")
+    ledger = PermitLedger(controller.root / "locks" / "spend", controller)
+    profile = fanout.ProviderRegistry.default().select("claude", "read-only", "standard")
+    request = fanout.ProviderRequest("claude", "inert command composition", cwd=tmp_path,
+        profile=profile, session_id="fd6f840b-4b79-4fd2-91d0-14d3d8fba655",
+        run_id="run", task_id="task", target_id="target", seat_id="seat",
+        inputs_digest="a" * 64, timeout=30)
+    permit = BrokerPermit("claude", "run", "task", "target", "seat", "initial",
+        profile.requested_model, "disposable-placeholder", 1, 1024, 2048, 8192,
+        inputs_digest="a" * 64, session_id=request.session_id)
+    bindings = {name: "b" * 64 for name in
+        ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+    bindings.update(source=runtime_source_digest(), inputs="a" * 64)
+    row = {"role": "baseline-seat", "phase": "initial", "condition": "baseline",
+        "epoch": 1, "permit": asdict(permit), "blocker": None, "initial": None,
+        "profile": profile.digest, "catalog": None,
+        "process_seconds": 30, "outer_seconds": 60}
+    with ArtifactStore(tmp_path / "artifacts") as store:
+        ref = store.write_json("quality/case.json", {
+            "schema": "fanout-quality-case-allocation-v1", "case_id": "normal-01",
+            "controller_id": controller.controller_id, "bindings": bindings,
+            "maka_output_tokens": 8192, "rows": [row]})
+        authority = diagnostic.seal_quality_allocation(controller, store, ref, bindings=bindings)
+        with pytest.raises(ProviderRequestError, match="consumed"):
+            diagnostic.issue_quality_native_command(controller, store, authority,
+                request=request, ledger=ledger, permit=permit, epoch=1, bindings=bindings,
+                role="baseline-seat", phase="initial", condition="baseline")
+        permit_id = diagnostic.register_quality_permit(controller, store, authority, ledger,
+            role="baseline-seat", phase="initial", condition="baseline", permit=permit,
+            epoch=1, bindings=bindings)
+        proof = diagnostic.issue_quality_native_command(controller, store, authority,
+            request=request, ledger=ledger, permit=permit, epoch=1, bindings=bindings,
+            role="baseline-seat", phase="initial", condition="baseline")
+        command, row_proof = diagnostic.reopen_quality_native_command(controller, request, proof)
+        assert command.stdin == request.prompt_bytes
+        assert "--tools" in command.argv and "--no-session-persistence" not in command.argv
+        assert command.max_output_bytes == 8 * 1024 * 1024
+        assert row_proof["permit_id"] == permit_id
+        assert "shared/lib/fanout/diagnostic.py" in read_evidence(controller,
+            "quality-native-command", *proof)["loaded"]
+        with pytest.raises(ProviderRequestError, match="quality"):
+            diagnostic.reopen_quality_native_command(controller,
+                replace(request, prompt="substituted"), proof)
+        with pytest.raises(ProviderRequestError, match="quality"):
+            diagnostic.reopen_quality_native_command(controller,
+                replace(request, session_id="00000000-0000-0000-0000-000000000000"), proof)
+
+
+def test_quality_sender_retains_genuine_prepared_body_and_refuses_tools_before_send(tmp_path):
+    from test_fanout_container_upstream import _route, _routed_permit
+    from shared.lib.fanout.artifacts import ArtifactStore, ArtifactRef
+    from shared.lib.fanout.container_upstream import HostUpstream
+    route = _route("claude")
+    path = "/v1/projects/fictional-project/locations/europe-west1/publishers/anthropic/models/claude-opus-5-5:streamRawPredict"
+    permit = _routed_permit(route, path)
+    sender = HostUpstream(permit, route, max_response_bytes=permit.max_response_bytes,
+                          deadline_seconds=permit.response_deadline)
+    with ArtifactStore(tmp_path / "raw") as store:
+        guarded = diagnostic.quality_upstream_sender(sender, store, "baseline-seat")
+        body = json.dumps({"model": permit.model, "max_tokens": 16, "stream": True,
+            "messages": [{"role": "user", "content": "inert source composition"}], "tools": []}).encode()
+        headers = {"content-type": "application/json"}
+        prepared = guarded.preview("POST", "/v1/messages", headers, body)
+        captured = store.read_json(guarded.captures[hashlib.sha256(body).hexdigest()])
+        assert store.read_bytes(ArtifactRef(**captured["effective_body"])) == prepared.body
+        assert captured["route"] == route.digest
+        assert json.loads(prepared.body)["tools"] == []
+        assert guarded.preview("POST", "/v1/messages", headers, body) == prepared
+        assert len(guarded.captures) == 1
+        forbidden = json.dumps({**json.loads(body), "tools": [{"name": "write_file"}]}).encode()
+        with pytest.raises(fanout.broker.BrokerRejected, match="tool"):
+            guarded.preview("POST", "/v1/messages", headers, forbidden)
+
+
+@pytest.mark.parametrize("provider", ("codex", "agy"))
+def test_quality_future_resume_slot_is_frozen_without_inventing_native_session(tmp_path, provider):
+    from shared.lib.fanout.artifacts import ArtifactStore
+    from shared.lib.fanout.container_broker import PermitLedger
+    controller = fanout.create_lifecycle_controller(tmp_path / "owner")
+    ledger = PermitLedger(controller.root / "locks/spend", controller)
+    profile = fanout.ProviderRegistry.default().select(provider, "read-only", "standard")
+    permit = BrokerPermit(provider, "run", "task", "target", "seat", "initial",
+        profile.requested_model, "disposable-placeholder", 1, 1024, 2048, 8192,
+        inputs_digest="a" * 64)
+    bindings = {name: "b" * 64 for name in
+        ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+    bindings["inputs"] = "a" * 64
+    original = {"role": "candidate-seat", "phase": "initial", "condition": "candidate",
+        "epoch": 1, "permit": asdict(permit), "blocker": None, "initial": None,
+        "profile": profile.digest, "catalog": "c" * 64 if provider == "codex" else None,
+        "process_seconds": 30, "outer_seconds": 60}
+    resume = {**original, "phase": "resume", "epoch": 2,
+              "permit": {**asdict(permit), "route": "resume"},
+              "initial": diagnostic.quality_row_identity(original)}
+    with ArtifactStore(tmp_path / "raw") as store:
+        ref = store.write_json("allocation.json", {"schema": "fanout-quality-case-allocation-v1",
+            "case_id": "normal-01", "controller_id": controller.controller_id,
+            "bindings": bindings, "maka_output_tokens": 8192, "rows": [original, resume]})
+        authority = diagnostic.seal_quality_allocation(controller, store, ref, bindings=bindings)
+        diagnostic.register_quality_permit(controller, store, authority, ledger,
+            role="candidate-seat", phase="initial", condition="candidate", permit=permit,
+            epoch=1, bindings=bindings)
+        unresolved = replace(permit, route="resume", session_id="foreign-invented-session")
+        with pytest.raises(ProviderRequestError, match="completed original"):
+            diagnostic.register_quality_permit(controller, store, authority, ledger,
+                role="candidate-seat", phase="resume", condition="candidate", permit=unresolved,
+                epoch=2, bindings=bindings)
+        assert store.read_json(ref)["rows"] == [original, resume]
+        with ledger._locked() as state:
+            assert len(state["permits"]) == 1
 
 
 @pytest.fixture
@@ -502,3 +658,49 @@ def test_agy_native_fake_initial_stays_blocked_before_broker(seat):
     assert initial.refused_agy_auxiliary_requests == 0
     assert seen == []
     assert b"listen tcp 127.0.0.1:0: bind: operation not permitted" in initial.process.stderr
+
+
+@pytest.mark.parametrize("entrypoint", ("project", "reopen"))
+def test_quality_catalog_uses_explicit_responses_tools_without_changing_effort(monkeypatch, entrypoint):
+    import copy
+    from types import SimpleNamespace
+    from shared.lib.fanout.artifacts import ArtifactRef, canonical_json
+
+    model = {"slug": "gpt-6.1-sol", "use_responses_lite": True,
+             "shell_type": "unified_exec", "apply_patch_tool_type": "freeform",
+             "experimental_supported_tools": ["time"], "supports_search_tool": True,
+             "tool_mode": "code_mode", "multi_agent_reasoning_effort": "xhigh",
+             "supported_reasoning_levels": [{"effort": "xhigh"}, {"effort": "ultra"}],
+             "default_reasoning_level": "low", "supports_reasoning_effort_updates": True}
+    original = {"models": [model, *({"slug": f"other-{index}"} for index in range(10))]}
+    raw = canonical_json(original)
+    descriptor = diagnostic.json_catalog_bytes(model)
+    original_hash = "fd219bd9f061278275f528939f82f54d2eb97df4b25c23b022adbe48813d920b"
+    descriptor_hash = "56373206bcf4c478be9aa324af04e2324219a836005e1044260910307f2cceeb"
+    # Synthetic authentication seam; the test exercises projection/reopening, not vendor provenance.
+    real_sha256 = hashlib.sha256
+
+    def source_hash(value):
+        digest = original_hash if value == raw else descriptor_hash if value == descriptor else None
+        return SimpleNamespace(hexdigest=lambda: digest) if digest else real_sha256(value)
+
+    monkeypatch.setattr(diagnostic, "hashlib", SimpleNamespace(sha256=source_hash))
+    expected = copy.deepcopy(original)
+    expected["models"][0].update(shell_type="disabled", apply_patch_tool_type=None,
+        experimental_supported_tools=[], supports_search_tool=False, tool_mode="direct",
+        use_responses_lite=False)
+    refs = {"original": ArtifactRef("original.json", original_hash, len(raw)),
+            "projected": ArtifactRef("projected.json", "c" * 64, len(canonical_json(expected)))}
+    store = SimpleNamespace(read_bytes=lambda ref: raw if ref.path == "original.json" else canonical_json(expected),
+                            read_json=lambda _ref: copy.deepcopy(original),
+                            write_json=lambda _path, value: value)
+    if entrypoint == "project":
+        actual = diagnostic.project_quality_catalog(store, refs["original"], "projected.json")
+    else:
+        actual = json.loads(diagnostic._reopen_quality_catalog(store,
+            {key: asdict(ref) for key, ref in refs.items()}))
+    assert actual == expected
+    assert actual["models"][0]["use_responses_lite"] is False
+    for key in ("multi_agent_reasoning_effort", "supported_reasoning_levels",
+                "default_reasoning_level", "supports_reasoning_effort_updates"):
+        assert actual["models"][0][key] == model[key]

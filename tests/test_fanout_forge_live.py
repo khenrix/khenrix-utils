@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -13,6 +15,40 @@ import pytest
 VERSIONS = {"claude": "2.1.284", "codex": "0.160.0", "agy": "1.2.13"}
 CLAUDE_SESSION = "11111111-1111-4111-8111-111111111111"
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_quality_agy_selection_feeds_only_genuine_native_value_to_unchanged_extractor(tmp_path, monkeypatch):
+    live = _live()
+    session = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    result = {"status": "SUCCESS", "conversation_id": session,
+              "model": "gemini-3.8-flash-high", "response": "inert actual child answer"}
+    stream = b"\n".join(json.dumps(event).encode() for event in (
+        {"event": "init", "conversation_id": session, "init": {}},
+        {"event": "result", "result": result})) + b"\n"
+    child = subprocess.run((sys.executable, "-c", "import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())"),
+                           input=stream, check=True, capture_output=True)
+    with live.fanout.ArtifactStore(tmp_path / "raw") as store:
+        selected, proof = live.select_quality_agy_result(child.stdout, store, "selected",
+                                                        expected_session=session)
+        assert json.loads(selected) == result
+        assert store.read_bytes(live.fanout.ArtifactRef(**proof["stream"])) == child.stdout
+        archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+        checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+        monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+        files = {name: live.fixtures.hashlib.sha256(data).hexdigest()
+                 for name, data in live.fixtures._archive_files(archive).items()}
+        files["scripts/lib/checks.py"] = live.fixtures._ORIGINAL_CHECKS_SHA256
+        stage = tmp_path / "archive"
+        receipt = live.fixtures.stage_quality_archive(archive, stage, files, {}, original_checks=checks)
+        modules, _ = live.fixtures.load_quality_archive(stage, receipt, ("council.engine",))
+        original = modules["council.engine"]
+        assert original.extract_agy_json(selected.decode()) == (result["response"], None)
+        monkeypatch.delitem(sys.modules, "khenrix_checks")
+        for index, invalid in enumerate((child.stdout + child.stdout.splitlines()[-1] + b"\n",
+                child.stdout.replace(session.encode(), b"foreign", 1), child.stdout[:-10],
+                child.stdout.replace(b'"SUCCESS"', b'"ERROR"'))):
+            with pytest.raises(live.fanout.ProviderProtocolError):
+                live.select_quality_agy_result(invalid, store, f"bad-{index}", expected_session=session)
 
 
 def _live():
@@ -597,3 +633,54 @@ def test_real_fixture_preflight_builds_native_sandbox_command_without_provider_c
             "agy": sealed_version,
         }
         assert version.stdout.strip() == expected_output[name]
+
+
+@pytest.mark.parametrize("provider,tier,model,effort", (
+    ("claude", "standard", "claude-opus-5-5", "medium"),
+    ("codex", "standard", "gpt-6.1-sol", "medium"),
+    ("agy", "standard", "gemini-3.8-flash-high", "high"),
+    ("claude", "deep", "claude-opus-5-5", "ultracode"),
+    ("codex", "deep", "gpt-6.1-sol", "ultra"),
+    ("agy", "deep", "gemini-3.8-flash-high", "high"),
+))
+def test_quality_original_spec_preserves_real_profile_model_and_effort(
+        tmp_path, monkeypatch, provider, tier, model, effort):
+    live = _live()
+    from shared.lib.fanout.broker import BrokerPermit
+    from shared.lib.fanout.diagnostic import seal_quality_allocation
+    monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    original = live.fixtures._archive_files(archive)
+    expected_files = {name: live.fixtures.hashlib.sha256(data).hexdigest()
+                      for name, data in original.items()}
+    expected_files["scripts/lib/checks.py"] = live.fixtures._ORIGINAL_CHECKS_SHA256
+    stage = tmp_path / "archive"
+    receipt = live.fixtures.stage_quality_archive(archive, stage, expected_files,
+        live.fixtures.quality_archive_projection(original), original_checks=checks)
+    profile = live.fanout.ProviderRegistry.default().select(provider, "read-only", tier)
+    request = live.fanout.ProviderRequest(provider, "inert original spec fixture",
+        cwd=tmp_path, execution_class="read-only", profile=profile, timeout=18, retries=0)
+    controller = live.fanout.create_lifecycle_controller(tmp_path / "controller")
+    bindings = {name: "b" * 64 for name in ("campaign", "casebook", "source",
+                "projection", "profile", "inputs")}
+    permit = BrokerPermit(provider, "run", "task", "target", "seat", "initial", model,
+        "disposable-placeholder", 1, 1024, 2048, 8192, inputs_digest=bindings["inputs"])
+    row = {"role": "baseline-seat", "phase": "initial", "condition": "baseline",
+           "epoch": 1, "permit": live.asdict(permit), "blocker": None, "initial": None,
+           "profile": profile.digest, "catalog": "c" * 64 if provider == "codex" else None,
+           "process_seconds": 18, "outer_seconds": 30}
+    with live.fanout.ArtifactStore(tmp_path / "artifacts") as store:
+        ref = store.write_json("allocation.json", {"schema": "fanout-quality-case-allocation-v1",
+            "case_id": "normal-01", "controller_id": controller.controller_id,
+            "bindings": bindings, "maka_output_tokens": 8192, "rows": [row]})
+        authority = seal_quality_allocation(controller, store, ref, bindings=bindings)
+        transport = live.QualityOriginalTransport(stage, receipt, [{"request": request,
+            "turn": {"controller": controller, "store": store, "authority": authority,
+                     "bindings": bindings, "role": "baseline-seat", "phase": "initial",
+                     "condition": "baseline", "epoch": 1}}])
+        actual = transport.build_real_spec(provider, request.prompt, 18,
+            {provider: {"model": model, "thinking": effort}}, tmp_path)
+        assert type(actual) is transport.modules["council.engine"].ProviderSpec
+        assert actual.model == model and actual.thinking == effort
+        assert actual.stdin == request.prompt and actual.cwd == str(tmp_path)

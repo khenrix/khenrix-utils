@@ -16,6 +16,8 @@ import re
 import stat
 import subprocess
 import sys
+import time
+from dataclasses import asdict
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
@@ -69,6 +71,83 @@ def _sha256(data: bytes) -> str:
 
 def _digest(value: object) -> str:
     return _sha256(fanout.canonical_json(value))
+
+
+def _observation_plan(controller, store, authority, book):
+    from shared.lib.fanout.controller import read_evidence
+    from shared.lib.fanout.artifacts import ArtifactRef
+    try:
+        record = read_evidence(controller, "quality-observation-plan", *authority)
+        if set(record) != {"plan"}:
+            raise ValueError("reference")
+        value = store.read_json(ArtifactRef(**record["plan"]))
+        if (set(value) != {"schema", "casebook_sha256", "orders", "timers"}
+                or value["schema"] != "fanout-quality-observations-v1"
+                or value["casebook_sha256"] != _digest(book)
+                or value["timers"] != [f"normal-{i:02}" for i in range(1, 31)]
+                or type(value["orders"]) is not list or len(value["orders"]) != 12
+                or {row["case_id"] for row in value["orders"]} !=
+                   {f"normal-{i:02}" for i in range(1, 13)}
+                or sum(row["first"] == "enabled" for row in value["orders"]) != 6
+                or len({row["nonce"] for row in value["orders"]}) != 12
+                or any(set(row) != {"case_id", "nonce", "first"}
+                       or row["first"] not in {"enabled", "disabled"}
+                       or not re.fullmatch(r"[0-9a-f]{32}", row["nonce"])
+                       for row in value["orders"])):
+            raise ValueError("plan")
+        return value
+    except Exception as error:
+        raise CouncilCampaignError("prospective quality observations differ") from error
+
+
+def preregister_quality_observations(controller, store, ref, book):
+    from shared.lib.fanout.controller import controller_directory, write_evidence
+    authority = write_evidence(controller, "quality-observation-plan", {"plan": asdict(ref)})
+    _observation_plan(controller, store, authority, book)
+    path = controller_directory(controller, "locks") / "quality-observations.json"
+    if path.exists() or path.is_symlink():
+        raise CouncilCampaignError("quality observations already frozen")
+    _write_new(path, {"authority": list(authority)})
+    return authority
+
+
+def start_quality_delivery(controller, store, authority, book, case_id, role):
+    from shared.lib.fanout.controller import controller_directory, write_evidence
+    plan = _observation_plan(controller, store, authority, book)
+    locks = controller_directory(controller, "locks")
+    if _read(locks / "quality-observations.json") != {"authority": list(authority)}:
+        raise CouncilCampaignError("quality observation registration differs")
+    if case_id not in plan["timers"] or role not in {"baseline", "candidate", "disabled"}:
+        raise CouncilCampaignError("quality delivery is not preregistered")
+    order = next((row for row in plan["orders"] if row["case_id"] == case_id), None)
+    if role == "disabled" and order is None:
+        raise CouncilCampaignError("disabled delivery is not preregistered")
+    if order and role in {"candidate", "disabled"}:
+        first = "candidate" if order["first"] == "enabled" else "disabled"
+        if role != first and not (locks / f"quality-delivered-{case_id}-{first}.json").is_file():
+            raise CouncilCampaignError("quality condition order differs")
+    path = locks / f"quality-start-{case_id}-{role}.json"
+    if path.exists() or path.is_symlink():
+        raise CouncilCampaignError("quality delivery already started; no replay")
+    payload = {"plan": authority[1], "case_id": case_id, "role": role,
+               "pid": os.getpid(), "started_ns": time.monotonic_ns()}
+    _write_new(path, payload)
+    return write_evidence(controller, "quality-delivery-start", payload)
+
+
+def finish_quality_delivery(controller, start, final_digest):
+    from shared.lib.fanout.controller import controller_directory, read_evidence, write_evidence
+    payload = read_evidence(controller, "quality-delivery-start", *start)
+    if not _is_digest(final_digest) or payload["pid"] != os.getpid():
+        raise CouncilCampaignError("quality delivery terminal identity differs")
+    locks = controller_directory(controller, "locks")
+    if _read(locks / f"quality-start-{payload['case_id']}-{payload['role']}.json") != payload:
+        raise CouncilCampaignError("quality delivery start differs")
+    result = {**payload, "start_receipt": start[1], "final_sha256": final_digest,
+              "elapsed_ns": time.monotonic_ns() - payload["started_ns"]}
+    _write_new(locks / f"quality-delivered-{payload['case_id']}-{payload['role']}.json", result)
+    write_evidence(controller, "quality-delivery-terminal", result)
+    return result
 
 
 def _is_digest(value: object) -> bool:

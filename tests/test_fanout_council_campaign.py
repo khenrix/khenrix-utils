@@ -67,6 +67,30 @@ class CouncilCampaignTests(unittest.TestCase):
         return {(case["id"], role): _delivery(case, role)
                 for case in CASES for role in ("baseline", "candidate")}
 
+    def test_prospective_orders_and_delivery_boundaries_cannot_be_reassigned(self):
+        from shared.lib.fanout.artifacts import ArtifactStore
+        from shared.lib.fanout.controller import create_lifecycle_controller
+        controller = create_lifecycle_controller(self.root / "controller")
+        normal = [f"normal-{i:02}" for i in range(1, 31)]
+        plan = {"schema": "fanout-quality-observations-v1",
+                "casebook_sha256": campaign._digest(BOOK),
+                "orders": [{"case_id": case, "nonce": f"{i:032x}",
+                            "first": "enabled" if i < 6 else "disabled"}
+                           for i, case in enumerate(normal[:12])],
+                "timers": normal}
+        with ArtifactStore(self.root / "observations") as store:
+            ref = store.write_json("plan.json", plan)
+            authority = campaign.preregister_quality_observations(controller, store, ref, BOOK)
+            start = campaign.start_quality_delivery(controller, store, authority, BOOK,
+                                                     "normal-01", "baseline")
+            with self.assertRaisesRegex(campaign.CouncilCampaignError, "already started"):
+                campaign.start_quality_delivery(controller, store, authority, BOOK,
+                                                 "normal-01", "baseline")
+            terminal = campaign.finish_quality_delivery(controller, start, "a" * 64)
+            self.assertGreaterEqual(terminal["elapsed_ns"], 0)
+            with self.assertRaisesRegex(campaign.CouncilCampaignError, "already frozen"):
+                campaign.preregister_quality_observations(controller, store, ref, BOOK)
+
     def test_live_gate_refuses_self_asserted_deliveries_before_judging(self) -> None:
         called = []
         with self.assertRaisesRegex(campaign.CouncilCampaignError,

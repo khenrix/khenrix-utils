@@ -426,6 +426,122 @@ def test_requires_utf8_skill_and_complete_one_level_local_references(tmp_path: P
         _resolver(_root("root", root, 0)).resolve(("review",))
 
 
+@pytest.mark.parametrize("example", (
+    "Add `**Sources:** [Title](sources/file.md)` to the wiki page.\n",
+    "Use ``[Title](sources/file.md) and `literal` text`` as an example.\n",
+    "```markdown\n[Title](sources/file.md)\n```\n",
+    "~~~markdown\n[Title](sources/file.md)\n~~~\n",
+    "````markdown\n[Title](sources/file.md)\n```\n[Other](sources/other.md)\n````\n",
+    "```markdown\n[illustration][example]\n[example]: sources/file.md\n```\n",
+))
+def test_literal_markdown_examples_are_not_skill_resources(tmp_path: Path, example: str):
+    """Wiki examples must not prevent delivery of the actual skill and its guide."""
+    root = tmp_path / "skills"
+    skill = _write_skill(root, "knowledge", example + "\nRead [guide](references/guide.md).\n",
+                         references={"references/guide.md": "Actual guide.\n"})
+    resolver = _resolver(_root("root", root, 0))
+    resolved = resolver.resolve(("knowledge",))[0]
+    assert resolved.references == (("references/guide.md", hashlib.sha256(b"Actual guide.\n").hexdigest()),)
+    admission = resolver.admit(("knowledge",), task_id="sync", seat_id="codex", provider="codex", session_id="session")
+    staged = resolver.stage(admission, tmp_path / "staged")
+    assert (staged.staged_root / "knowledge" / "SKILL.md").read_bytes() == (skill / "SKILL.md").read_bytes()
+
+
+@pytest.mark.parametrize("example", (
+    "`[literal](sources/file.md)`\n",
+    "```markdown\n[literal](sources/file.md)\n```\n",
+))
+def test_real_missing_resource_after_code_example_still_refuses(tmp_path: Path, example: str):
+    """Skipping literal code must not silently omit an actual instruction dependency."""
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", example + "Read [guide](references/missing.md).\n")
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+def test_resource_with_code_label_is_still_a_real_link(tmp_path: Path):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", "Read [`guide`](references/missing.md).\n")
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+def test_unclosed_inline_code_does_not_hide_a_real_resource(tmp_path: Path):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", "An unmatched ` marker then [guide](references/missing.md).\n")
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+def test_escaped_inline_markers_do_not_hide_a_real_resource(tmp_path: Path):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", "Escaped \\` [guide](references/missing.md) \\` markers.\n")
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+@pytest.mark.parametrize("body", (
+    '[existing](references/existing.md "`") [missing](references/missing.md "`")\n',
+    "[guide](`references/missing.md`)\n",
+    "Read [guide].\n\n[guide]: `references/missing.md`\n",
+    "Read [guide].\n\n[guide]:\n  `references/missing.md`\n",
+))
+def test_code_markers_in_real_link_destinations_and_titles_do_not_hide_resources(tmp_path: Path, body: str):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", body, references={"references/existing.md": "Existing.\n"})
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+def test_unterminated_resource_example_fence_fails_explicitly(tmp_path: Path):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", "```markdown\nRead [guide](references/missing.md).\n")
+    with pytest.raises(SkillAdmissionError, match="unterminated"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+@pytest.mark.parametrize(("target", "error"), (
+    ("references/missing.md", "missing referenced"),
+    ("../outside.md", "escapes"),
+))
+def test_backticks_in_reference_definition_labels_and_titles_cannot_hide_resources(tmp_path: Path, target: str, error: str):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", f'Read [guide`].\n\n[guide`]: {target} "`"\n')
+    with pytest.raises(SkillAdmissionError, match=error):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+@pytest.mark.parametrize(("use", "label"), (
+    ("[`guide`]", "`guide`"),
+    ("[`guide`][]", "`guide`"),
+    ("[guide][`details`]", "`details`"),
+))
+def test_code_labels_in_genuine_reference_uses_remain_bound_to_definitions(tmp_path: Path, use: str, label: str):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", f"Read {use}.\n\n[{label}]: references/missing.md\n")
+    with pytest.raises(SkillAdmissionError, match="missing referenced"):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+@pytest.mark.parametrize(("target", "error"), (
+    ("references/missing.md", "missing referenced"),
+    ("../outside.md", "escapes"),
+))
+def test_escaped_marker_before_two_code_spans_cannot_consume_a_genuine_link(tmp_path: Path, target: str, error: str):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", f"Escaped \\` then `literal` then [guide]({target}) then `other`.\n")
+    with pytest.raises(SkillAdmissionError, match=error):
+        _resolver(_root("root", root, 0)).resolve(("knowledge",))
+
+
+def test_linked_resource_code_examples_do_not_add_a_second_resource_level(tmp_path: Path):
+    root = tmp_path / "skills"
+    _write_skill(root, "knowledge", "Read [guide](references/guide.md).\n",
+                 references={"references/guide.md": "Use `[Title](sources/file.md)` as a wiki example.\n"})
+    resolved = _resolver(_root("root", root, 0)).resolve(("knowledge",))[0]
+    assert [path for path, _digest in resolved.references] == ["references/guide.md"]
+
+
 @pytest.mark.parametrize(("link", "label"), (
     ("[guide][details]", "details"),
     ("[guide][DETAILS]", "details"),

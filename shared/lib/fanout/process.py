@@ -365,7 +365,8 @@ def exact_session_lock(executor_id: str, session_id: str, *,
 def run_command(command: ProcessCommand, *,
                 base_environment: Mapping[str, str] | None = None,
                 on_started: Callable[[int], None] | None = None,
-                strict_gate_historical_root: Path | None = None) -> ProcessResult:
+                strict_gate_historical_root: Path | None = None,
+                strict_gate_original_sources: Mapping[str, object] | None = None) -> ProcessResult:
     """Run one argv command with bounded slot admission and process-group cleanup."""
     if not isinstance(command, ProcessCommand):
         raise ProcessValidationError("command must be a ProcessCommand")
@@ -373,6 +374,8 @@ def run_command(command: ProcessCommand, *,
         raise ProcessValidationError("start observer must be callable")
     if os.name != "posix":  # pragma: no cover - the contract requires a killable process group.
         raise ProcessValidationError("fanout process execution requires POSIX sessions")
+    if strict_gate_original_sources is not None and strict_gate_historical_root is None:
+        raise ProcessValidationError("original source inputs require the fixed strict gate historical subject")
     native = command.native_boundary is not None
     if native and base_environment is not None:
         raise ProcessValidationError("native seat environment is fixed at boundary issuance")
@@ -395,6 +398,18 @@ def run_command(command: ProcessCommand, *,
         _validate_environment_value("KHENRIX_HISTORICAL_BASELINE_ROOT", str(root))
         assert environment is not None
         environment["KHENRIX_HISTORICAL_BASELINE_ROOT"] = str(root)
+        if strict_gate_original_sources is not None:
+            try:
+                from scripts.fanout_release_evaluations import _strict_original_sources
+                selected = strict_gate_original_sources
+                actual = _strict_original_sources(root, archive=Path(selected["archive"]["root"]),
+                    original_checks=Path(selected["checks"]["path"]), producer_root=Path(command.cwd))
+                if actual != selected:
+                    raise ValueError("input identities")
+                environment["FANOUT_QUALITY_ARCHIVE_ROOT"] = actual["archive"]["root"]
+                environment["FANOUT_QUALITY_ORIGINAL_CHECKS"] = actual["checks"]["path"]
+            except Exception as error:
+                raise ProcessValidationError("strict gate original source input differs") from error
     return _supervise_command(command, environment, on_started=on_started)
 
 

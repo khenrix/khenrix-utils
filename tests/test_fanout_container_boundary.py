@@ -53,6 +53,33 @@ SESSION_IDS = {"claude": CLAUDE_ID, "codex": "codex-thread-1",
                "agy": "agy-conversation-1"}
 
 
+def test_quality_docker_constructor_bounds_every_attempt_before_transport(tmp_path, monkeypatch):
+    from shared.lib.fanout import container_boundary as module
+    controller = create_lifecycle_controller(tmp_path / "quality-owner")
+    seen = []
+    def inert(command, **kwargs):
+        seen.append((command, kwargs))
+        return ProcessResult(ProcessStatus.EXIT, 0, b"genuine inert transport output", b"")
+    monkeypatch.setattr(module, "_run_bounded_command", inert)
+    runner = module.quality_docker_runner(controller, allocation_digest="a" * 64,
+        max_commands=2, command_seconds=5, outer_seconds=30)
+    result = runner(("docker", "--context", "colima-fanout-isolated", "ps", "-aq"), None)
+    assert result.stdout == b"genuine inert transport output"
+    assert seen[0][0].timeout == 5
+    assert seen[0][1]["stdout_cap"] == 1024 * 1024
+    assert seen[0][1]["acquire_slot"] is False
+    runner(("docker", "--context", "colima-fanout-isolated", "inspect", "a" * 64), None)
+    with pytest.raises(ProviderRequestError, match="attempt"):
+        runner(("docker", "--context", "colima-fanout-isolated", "ps", "-aq"), None)
+    assert len(seen) == 2
+    with pytest.raises(ProviderRequestError, match="already"):
+        module.quality_docker_runner(controller, allocation_digest="a" * 64,
+            max_commands=2, command_seconds=5, outer_seconds=30)
+    with pytest.raises(ProviderRequestError, match="context"):
+        module.quality_docker_runner(controller, allocation_digest="b" * 64,
+            max_commands=1, command_seconds=5, outer_seconds=30)(("docker", "ps"), None)
+
+
 def _private_failure_control(module, tmp_path):
     controller = create_lifecycle_controller(tmp_path / "private-control")
     permit = BrokerPermit("claude", "run-control", "task", "target", "seat", "initial",
@@ -517,10 +544,10 @@ def test_codex_admitted_container_uses_outer_sandbox_on_exact_turn(
     )
     tail = (
         ("resume", *overrides, "-c", 'sandbox_mode="danger-full-access"', "-m", "gpt-6.1-sol",
-         "-c", 'model_reasoning_effort="xhigh"', "--json", "codex-thread-1", "-")
+         "-c", 'model_reasoning_effort="medium"', "--json", "codex-thread-1", "-")
         if route == "resume" else
         (*overrides, "-", "--json", "--sandbox", "danger-full-access", "-m", "gpt-6.1-sol",
-         "-c", 'model_reasoning_effort="xhigh"')
+         "-c", 'model_reasoning_effort="medium"')
     )
     assert command.argv == prefix + tail
     native = ProviderRegistry.default().require("codex").build_command(request)

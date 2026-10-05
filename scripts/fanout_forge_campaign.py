@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,6 +46,62 @@ def _sha256(data: bytes) -> str:
 
 def _digest(value: object) -> str:
     return _sha256(fanout.canonical_json(value))
+
+
+def original_owner_fix_builder(archive_root, archive_receipt, *, repo, run_dir,
+                               manifest, identity, phases, expected_head,
+                               owner_bundle_sha256):
+    """Bind the original candidate=None interface to a genuine harvested owner bundle."""
+    if (not isinstance(expected_head, str)
+            or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", expected_head) is None
+            or not _is_digest(owner_bundle_sha256)):
+        raise CampaignError("owner fix committed input differs")
+    modules, _ = fixtures.load_quality_archive(archive_root, archive_receipt,
+        ("forge.baseline", "forge.harvest", "forge.bundle", "forge.verify", "forge.gitcmd"))
+    baseline, harvest, bundle, verify, gitcmd = (modules["forge." + name] for name in
+        ("baseline", "harvest", "bundle", "verify", "gitcmd"))
+    repo, run_dir = Path(repo), Path(run_dir)
+    synth = run_dir / "synthesis"
+    restored = baseline.restore(run_dir, base_commit=manifest.base_commit,
+        tracked_tree_oid=manifest.tracked_tree_oid, commit=manifest.baseline_commit,
+        ref=manifest.baseline_ref)
+    contract = manifest.generator_contract
+    command = verify.Command(steps=manifest.verify)
+    policy_digest = _digest({"setup": [asdict(step) for step in manifest.setup],
+        "verify": [asdict(step) for step in manifest.verify], "contract": asdict(contract)})
+
+    def candidate():
+        fixtures.reopen_quality_archive(archive_root, archive_receipt)
+        if (gitcmd.git(synth, *gitcmd.NO_DAEMON_CACHE, *gitcmd.NO_HOOKS,
+                     "rev-parse", "--verify", "HEAD", env_extra=gitcmd.READONLY).stdout.strip() != expected_head
+                or phases.fwork != harvest.record(synth)
+                or phases.fverify != phases.fwork):
+            raise CampaignError("owner fix committed harvest differs")
+        result = bundle.build(synth, harvest.artifact_set(phases, synth, restored.commit),
+                              restored, contract=contract)
+        if _sha256(bundle.dumps(result)) != owner_bundle_sha256:
+            raise CampaignError("owner fix candidate bundle differs")
+        return result
+
+    candidate()
+
+    def build(actual_repo, actual_baseline, placeholder, dest, *, identity, contract):
+        expected_dest = run_dir / Path(dest).name
+        if (Path(actual_repo) != repo or actual_baseline != restored or placeholder is not None
+                or Path(dest) != expected_dest or not Path(dest).name.startswith("fix-")
+                or identity != expected_identity or contract != manifest.generator_contract
+                or _digest({"setup": [asdict(step) for step in manifest.setup],
+                    "verify": [asdict(step) for step in manifest.verify],
+                    "contract": asdict(manifest.generator_contract)}) != policy_digest
+                or baseline.restore(run_dir, base_commit=manifest.base_commit,
+                    tracked_tree_oid=manifest.tracked_tree_oid, commit=manifest.baseline_commit,
+                    ref=manifest.baseline_ref) != restored):
+            raise CampaignError("owner fix verifier interface or original policy differs")
+        return verify.build_verifier(repo, restored, candidate(), dest,
+            identity=identity, contract=contract, command=command)
+
+    expected_identity = identity
+    return build, restored
 
 
 def _execution_sources_sha256() -> str:

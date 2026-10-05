@@ -4,11 +4,13 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +19,70 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 campaign = importlib.import_module("scripts.fanout_forge_campaign")
+
+
+def test_original_owner_fix_builder_runs_fresh_four_value_contract(tmp_path, monkeypatch):
+    from dataclasses import replace
+    archive = Path(os.environ["FANOUT_QUALITY_ARCHIVE_ROOT"])
+    checks = Path(os.environ["FANOUT_QUALITY_ORIGINAL_CHECKS"])
+    monkeypatch.delitem(sys.modules, "khenrix_checks", raising=False)
+    files = campaign.fixtures._archive_files(archive)
+    files["scripts/lib/checks.py"] = checks.read_bytes()
+    receipt = campaign.fixtures.stage_quality_archive(archive, tmp_path / "archive",
+        {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}, {}, original_checks=checks)
+    modules, _ = campaign.fixtures.load_quality_archive(tmp_path / "archive", receipt,
+        ("forge.inspect", "forge.baseline", "forge.fleet", "forge.harvest", "forge.bundle", "forge.fix", "forge.verify"))
+    inspect, baseline, fleet, harvest, bundle, fix, verify = (
+        modules["forge." + name] for name in
+        ("inspect", "baseline", "fleet", "harvest", "bundle", "fix", "verify"))
+    repo, run = tmp_path / "repo", tmp_path / "run"
+    repo.mkdir(); run.mkdir()
+    def git(*args):
+        return subprocess.check_output(("git", "-C", str(repo), *args), text=True).strip()
+    git("init", "-q")
+    (repo / "value.py").write_text("value = 1\n")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "original")
+    identity = ("Test", "test@example.invalid")
+    base = baseline.materialize(repo, run, inspect.repo_facts(repo), [], "quality-fix", author=identity)
+    manifest = SimpleNamespace(base_commit=base.base_commit, tracked_tree_oid=base.tracked_tree_oid,
+        baseline_commit=base.commit, baseline_ref=base.ref,
+        generator_contract=inspect.GeneratorContract(),
+        setup=(verify.Step((sys.executable, "-B", "-c", "assert True"), timeout=10),),
+        verify=(verify.Step((sys.executable, "-B", "-c", "from value import value; assert value == 2"), timeout=10),))
+    synth = fleet.clone_seat(repo, base, run / "synthesis", name="owner", identity=identity).path
+    f0 = harvest.record(synth)
+    setup = verify.run_command(synth, verify.Command(steps=manifest.setup))
+    assert setup.exit_code == 0
+    fsetup = harvest.record(synth)
+    (synth / "value.py").write_text("value = 2\n")
+    subprocess.run(("git", "-C", str(synth), "add", "."), check=True)
+    subprocess.run(("git", "-C", str(synth), "commit", "-qm", "owner fix"), check=True)
+    fwork = harvest.record(synth)
+    phases = harvest.Phases(f0, fsetup, fwork, fwork)
+    candidate = bundle.build(synth, harvest.artifact_set(phases, synth, base.commit), base,
+                             contract=manifest.generator_contract)
+    head = subprocess.check_output(("git", "-C", str(synth), "rev-parse", "HEAD"), text=True).strip()
+    build, restored = campaign.original_owner_fix_builder(
+        tmp_path / "archive", receipt, repo=repo, run_dir=run, manifest=manifest,
+        identity=identity, phases=phases, expected_head=head,
+        owner_bundle_sha256=hashlib.sha256(bundle.dumps(candidate)).hexdigest())
+    with pytest.raises(campaign.CampaignError, match="owner fix"):
+        build(repo, replace(restored, commit="0" * 40), None, run / "wrong",
+              identity=identity, contract=manifest.generator_contract)
+    result = fix.apply(run, repo, findings=(), checkpoint=base.commit, manifest=manifest,
+                       identity=identity, build=build, baseline=restored)
+    assert result == (head, True, None, None)
+    assert (run / f"fix-{base.commit[:12]}" / "value.py").read_text() == "value = 2\n"
+    assert (synth / "value.py").read_text() == "value = 2\n"
+    monkeypatch.delitem(sys.modules, "khenrix_checks")
+
+
+def test_original_owner_fix_refuses_unrecorded_head_before_verifier(tmp_path):
+    with pytest.raises(campaign.CampaignError, match="owner fix"):
+        campaign.original_owner_fix_builder(tmp_path, {}, repo=tmp_path,
+            run_dir=tmp_path, manifest=None, identity=("Test", "test@example.invalid"),
+            phases=None, expected_head="not-a-commit", owner_bundle_sha256="a" * 64)
 
 
 def _test_boundary(run: Path, baseline: Path, consumer: Path):
