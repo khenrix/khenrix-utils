@@ -801,16 +801,12 @@ def apply_provider_isolation(spec, exec_cwd: Path, real_home: Path = REAL_HOME):
                       "--no-session-persistence", "--strict-mcp-config",
                       "--no-chrome", "--tools", ""]
     elif spec.name == "codex":
-        spec.argv += ["--ignore-user-config", "--ignore-rules", "--ephemeral",
-                      "--enable", "skip_host_skill_discovery",
-                      "--disable", "plugins", "--disable", "skill_search",
-                      "--disable", "shell_tool", "--disable", "unified_exec",
-                      "--disable", "apps",
-                      "-c", "agents.enabled=false",
-                      "-c", "tools.view_image=false",
-                      "-c", "tools.web_search=false",
-                      "-c", 'web_search="disabled"',
-                      "--skip-git-repo-check", "-C", str(exec_cwd)]
+        model = _argv_pairs(spec.argv, "-m")[-1]
+        catalog = exec_cwd / "eval-models.json"
+        with catalog.open("xb") as out:
+            out.write(eval_runtime.codex_catalog_bytes(model))
+        catalog.chmod(0o600)
+        spec.argv += eval_runtime.codex_isolation_args(exec_cwd)
     elif spec.name == "agy":
         binary = real_home / ".local" / "libexec" / "agy-bin"
         if binary.is_file():
@@ -841,11 +837,12 @@ def assert_no_tools_boundary(spec) -> None:
         return
     if spec.name == "codex":
         disabled = set(_argv_pairs(argv, "--disable"))
-        required_disabled = {"plugins", "skill_search", "shell_tool", "unified_exec", "apps"}
+        required_disabled = set(eval_runtime.CODEX_DISABLED_FEATURES)
         configs = set(_argv_pairs(argv, "-c"))
         required_configs = {
-            "agents.enabled=false", "tools.view_image=false", "tools.web_search=false",
-            'web_search="disabled"',
+            "agents.enabled=false", 'web_search="disabled"',
+            "tools.experimental_request_user_input.enabled=false", "tools.update_plan.enabled=false",
+            "suppress_unstable_features_warning=true",
         }
         enabled = set(_argv_pairs(argv, "--enable"))
         if not required_disabled <= disabled or not required_configs <= configs:
@@ -857,6 +854,10 @@ def assert_no_tools_boundary(spec) -> None:
         if not all(flag in argv for flag in
                    ("--ignore-user-config", "--ignore-rules", "--ephemeral")):
             raise RuntimeError("Codex eval config isolation is incomplete")
+        cwd = Path(spec.cwd)
+        if argv[-len(eval_runtime.codex_isolation_args(cwd)):] != eval_runtime.codex_isolation_args(cwd):
+            raise RuntimeError("Codex eval config isolation differs")
+        eval_runtime.validate_codex_catalog(cwd, _argv_pairs(argv, "-m")[-1])
         return
     if spec.name == "agy":
         if (_argv_pairs(argv, "--agent") != [AGY_EVAL_AGENT]
@@ -1866,10 +1867,9 @@ def self_test() -> int:
               "--strict-mcp-config" in claude_spec.argv and
               "--no-chrome" in claude_spec.argv)
         check("Codex disables shell, unified exec, agents, apps, image, and web tools",
-              {"shell_tool", "unified_exec", "apps"} <=
+              {"shell_tool", "unified_exec", "apps", "view_image"} <=
               set(_argv_pairs(codex_spec.argv, "--disable")) and
-              {"agents.enabled=false", "tools.view_image=false",
-               "tools.web_search=false", 'web_search="disabled"'} <=
+              {"agents.enabled=false", 'web_search="disabled"'} <=
               set(_argv_pairs(codex_spec.argv, "-c")))
         check("agy selects its no-tools agent before the positional prompt",
               _argv_pairs(agy_spec.argv, "--agent") == [AGY_EVAL_AGENT] and
@@ -1961,8 +1961,7 @@ elif provider == "codex":
     disabled = set(vals("--disable"))
     configs = set(vals("-c"))
     safe = ({"plugins", "skill_search", "shell_tool", "unified_exec", "apps"}
-            <= disabled and {"agents.enabled=false", "tools.view_image=false",
-            "tools.web_search=false", 'web_search="disabled"'} <= configs
+            <= disabled and {"agents.enabled=false", 'web_search="disabled"'} <= configs
             and bool(vals("-m")) and "--ignore-user-config" in argv
             and "--dangerously-bypass-approvals-and-sandbox" not in argv)
     prompt = sys.stdin.read()

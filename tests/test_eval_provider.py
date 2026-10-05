@@ -165,3 +165,144 @@ def test_possible_paid_protocol_failure_or_timeout_is_never_replayed(
     assert answer == "" and not record["valid"] and record["reason"] == reason
     assert record["attempts"] == 1 and len(launches) == 1
     assert Path(record["stdout_file"]).read_bytes()
+
+
+def test_codex_launch_uses_private_tool_free_model_metadata(tmp_path, isolated_cli):
+    answer, record, launches = run_fake(tmp_path, isolated_cli, "codex")
+    assert answer == "OK" and record["valid"]
+    argv = launches[0]["argv"]
+    configs = eval_harness._argv_pairs(argv, "-c")
+    assert "tools.view_image=false" not in configs
+    assert "suppress_unstable_features_warning=true" in configs
+    assert "view_image" in eval_harness._argv_pairs(argv, "--disable")
+    assert "goals" in eval_harness._argv_pairs(argv, "--disable")
+    catalog_config = next(value for value in configs if value.startswith("model_catalog_json="))
+    catalog_path = Path(json.loads(catalog_config.split("=", 1)[1]))
+    assert catalog_path.parent == tmp_path / "isolated/cwd"
+    assert catalog_path.stat().st_mode & 0o777 == 0o600
+    models = json.loads(catalog_path.read_text())["models"]
+    assert len(models) == 1 and models[0]["slug"] == "test-model"
+    assert models[0]["shell_type"] == "disabled"
+    assert models[0]["apply_patch_tool_type"] is None
+    assert models[0]["experimental_supported_tools"] == []
+    assert models[0]["supports_search_tool"] is False
+    assert models[0]["tool_mode"] == "direct"
+
+
+def test_codex_launch_without_goals_disabled_is_rejected_before_spawn(tmp_path, isolated_cli):
+    runtime = eval_harness.eval_runtime
+    home, base = isolated_cli
+    cwd = tmp_path / "isolated/cwd"
+    env = eval_harness.isolated_provider_env("codex", cwd.parent / "home", base, home)
+    env[eval_harness.TOOL_CANARY_ENV] = "TEST_ONLY_CANARY"
+    spec = runtime.build_spec("codex", "Answer", {"codex": {"model": "test-model", "thinking": "medium"}})
+    eval_harness.apply_provider_isolation(spec, cwd, home)
+    argv = list(spec.argv)
+    if "goals" in argv:
+        index = argv.index("goals")
+        assert argv[index - 1] == "--disable"
+        del argv[index - 1:index + 1]
+    command = runtime.ProcessCommand(argv, spec.stdin, cwd=cwd)
+    with pytest.raises(runtime.ProcessValidationError):
+        runtime.run_prompt_only_command(command, provider="codex", environment=env, real_home=home)
+    assert not (cwd / "launches.jsonl").exists()
+
+
+@pytest.mark.parametrize("mutation", ["patch", "clock", "model", "mode", "symlink", "hardlink", "fifo", "directory"])
+def test_codex_catalog_changes_are_rejected_before_spawn(tmp_path, isolated_cli, mutation):
+    runtime = eval_harness.eval_runtime
+    home, base = isolated_cli
+    cwd = tmp_path / "isolated/cwd"
+    env = eval_harness.isolated_provider_env("codex", cwd.parent / "home", base, home)
+    env[eval_harness.TOOL_CANARY_ENV] = "TEST_ONLY_CANARY"
+    spec = runtime.build_spec("codex", "Answer", {"codex": {"model": "test-model", "thinking": "high"}})
+    eval_harness.apply_provider_isolation(spec, cwd, home)
+    config = next(value for value in eval_harness._argv_pairs(spec.argv, "-c")
+                  if value.startswith("model_catalog_json="))
+    path = Path(json.loads(config.split("=", 1)[1]))
+    value = json.loads(path.read_text())
+    if mutation == "patch":
+        value["models"][0]["apply_patch_tool_type"] = "freeform"
+    elif mutation == "clock":
+        value["models"][0]["experimental_supported_tools"] = ["clock"]
+    elif mutation == "model":
+        value["models"][0]["slug"] = "other-model"
+    elif mutation == "mode":
+        path.chmod(0o644)
+    elif mutation == "hardlink":
+        path.with_suffix(".alias").hardlink_to(path)
+    elif mutation in {"fifo", "directory"}:
+        path.unlink()
+        if mutation == "fifo":
+            os.mkfifo(path, 0o600)
+        else:
+            path.mkdir(mode=0o700)
+    else:
+        original = path.with_suffix(".original")
+        path.rename(original)
+        path.symlink_to(original)
+    if mutation in {"patch", "clock", "model"}:
+        path.write_text(json.dumps(value))
+    command = runtime.ProcessCommand(spec.argv, spec.stdin, cwd=cwd)
+    with pytest.raises(runtime.ProcessValidationError):
+        runtime.run_prompt_only_command(command, provider="codex", environment=env, real_home=home)
+    assert not (cwd / "launches.jsonl").exists()
+
+
+def test_codex_oversized_catalog_is_rejected_without_unbounded_read(tmp_path, isolated_cli, monkeypatch):
+    runtime = eval_harness.eval_runtime
+    cwd = tmp_path / "cwd"
+    spec = runtime.build_spec("codex", "Answer", {"codex": {"model": "test-model", "thinking": "high"}})
+    eval_harness.apply_provider_isolation(spec, cwd, isolated_cli[0])
+    path = cwd / "eval-models.json"
+    with path.open("r+b") as out:
+        out.truncate(1024 * 1024)
+    original = Path.read_bytes
+
+    def forbid_unbounded_catalog_read(target):
+        if target == path:
+            pytest.fail("catalog validation used an unbounded path read")
+        return original(target)
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_unbounded_catalog_read)
+    with pytest.raises(runtime.ProcessValidationError):
+        runtime.validate_codex_catalog(cwd, "test-model")
+
+
+def test_codex_catalog_is_rechecked_after_executor_slot_wait(tmp_path, isolated_cli, monkeypatch):
+    from contextlib import contextmanager
+
+    runtime = eval_harness.eval_runtime
+    process = sys.modules[runtime.__package__ + ".process"]
+    home, base = isolated_cli
+    cwd = tmp_path / "isolated/cwd"
+    env = eval_harness.isolated_provider_env("codex", cwd.parent / "home", base, home)
+    env[eval_harness.TOOL_CANARY_ENV] = "TEST_ONLY_CANARY"
+    spec = runtime.build_spec("codex", "Answer", {"codex": {"model": "test-model", "thinking": "high"}})
+    eval_harness.apply_provider_isolation(spec, cwd, home)
+
+    @contextmanager
+    def wait_then_admit(**kwargs):
+        path = cwd / "eval-models.json"
+        value = json.loads(path.read_text())
+        value["models"][0]["apply_patch_tool_type"] = "freeform"
+        path.write_text(json.dumps(value))
+        yield
+
+    monkeypatch.setattr(process, "executor_slot", wait_then_admit)
+    command = runtime.ProcessCommand(spec.argv, spec.stdin, cwd=cwd)
+    with pytest.raises(runtime.ProcessValidationError):
+        runtime.run_prompt_only_command(command, provider="codex", environment=env, real_home=home)
+    assert not (cwd / "launches.jsonl").exists()
+
+
+def test_codex_ultra_refuses_unattested_effort_mapping_before_isolation(tmp_path, isolated_cli):
+    home, base = isolated_cli
+    cwd = tmp_path / "isolated/cwd"
+    with pytest.raises(RuntimeError, match="ultra.*mapping"):
+        eval_harness.run_text(
+            "codex", "Answer", {"codex": {"model": "test-model", "thinking": "ultra"}},
+            tmp_path / "artifacts", timeout=3, retries=0, readonly=True,
+            exec_cwd=cwd, base_env=base, real_home=home,
+        )
+    assert not cwd.exists()

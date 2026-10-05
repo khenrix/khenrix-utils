@@ -37,6 +37,11 @@ def test_self_target_checked_archive_refuses_launch_on_either_failure(tmp_path, 
                        GIT_CONFIG_NOSYSTEM="1", TMPDIR=str(tmp_path))
     archive = subprocess.run(["git", "-C", str(ROOT), "archive", "HEAD"],
                              capture_output=True, check=True, env=environment).stdout
+    tracked_tree = subprocess.run(["git", "-C", str(ROOT), "ls-tree", "-r", "-z", "HEAD"],
+                                  capture_output=True, check=True, env=environment).stdout
+    committed_blob_count = sum(
+        entry.split(b" ", 2)[1] == b"blob" for entry in tracked_tree.split(b"\0") if entry
+    )
     subprocess.run(["tar", "-x", "-C", str(repo)], input=archive, check=True, env=environment)
     subprocess.run(["git", "init", "-q", str(repo)], check=True, env=environment)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True, env=environment)
@@ -71,7 +76,7 @@ def test_self_target_checked_archive_refuses_launch_on_either_failure(tmp_path, 
     # Every tracked source byte comes from the original commit, not the dirty modules.
     with tarfile.open(fileobj=io.BytesIO(archive)) as committed_tree:
         entries = [entry for entry in committed_tree if entry.isfile() or entry.issym()]
-        assert len(entries) == 1068
+        assert len(entries) == committed_blob_count
         for entry in entries:
             want = os.fsencode(entry.linkname) if entry.issym() else committed_tree.extractfile(entry).read()
             leaf = extracted / entry.name

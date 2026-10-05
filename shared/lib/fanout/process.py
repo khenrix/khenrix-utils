@@ -405,11 +405,13 @@ def run_prompt_only_command(command: ProcessCommand, *, provider: str,
         raise ProcessValidationError("prompt-only execution requires a POSIX ProcessCommand")
     from .eval_provider import validate_launch
     child = validate_launch(command, provider, dict(environment), real_home)
-    return _supervise_command(command, child)
+    return _supervise_command(command, child,
+                              prompt_only_context=(provider, dict(environment), real_home))
 
 
 def _supervise_command(command: ProcessCommand, environment: dict[str, str] | None, *,
-                       on_started: Callable[[int], None] | None = None) -> ProcessResult:
+                       on_started: Callable[[int], None] | None = None,
+                       prompt_only_context: tuple[str, dict[str, str], Path] | None = None) -> ProcessResult:
     native = command.native_boundary is not None
     with executor_slot(root=command.slot_root, cap=command.slot_cap, timeout=command.slot_timeout), _exit_observer() as exited:
         if native:
@@ -441,6 +443,10 @@ def _supervise_command(command: ProcessCommand, environment: dict[str, str] | No
                 command.native_controller, command.native_verification,
             )
             environment = dict(command.native_boundary.frozen_environment)
+        if prompt_only_context is not None:
+            from .eval_provider import validate_launch
+            provider, prompt_environment, real_home = prompt_only_context
+            environment = validate_launch(command, provider, prompt_environment, real_home)
         assert environment is not None
         try:
             process = subprocess.Popen(

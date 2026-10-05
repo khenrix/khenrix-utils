@@ -5,6 +5,7 @@ The eval harness retains credential bridging and artifact redaction.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -28,6 +29,59 @@ AUTH_ENV = {
     "agy": {"AGY_ADC_AUTH", "GOOGLE_APPLICATION_CREDENTIALS",
             "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION"},
 }
+
+CODEX_DISABLED_FEATURES = (
+    "plugins", "skill_search", "shell_tool", "unified_exec", "apps", "view_image",
+    "remote_plugin", "hooks", "multi_agent", "multi_agent_v2", "deferred_executor",
+    "token_budget", "sleep_tool", "current_time_reminder", "send_message_to_user_async",
+    "request_permissions_tool", "tool_suggest", "image_generation", "goals",
+)
+
+
+def codex_catalog_bytes(model: str) -> bytes:
+    """Codex 0.160 ModelInfo: one exact model with no model-advertised tools."""
+    descriptor = {
+        "slug": model, "display_name": model, "supported_reasoning_levels": [],
+        "shell_type": "disabled", "visibility": "hide", "supported_in_api": True,
+        "priority": 0, "support_verbosity": False, "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "tokens", "limit": 10000},
+        "experimental_supported_tools": [], "supports_search_tool": False,
+        "tool_mode": "direct", "include_apps_usage_instructions": False,
+        "base_instructions": "Answer the request directly from prompt context.",
+    }
+    return (json.dumps({"models": [descriptor]}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def codex_isolation_args(cwd: Path) -> list[str]:
+    return ["--ignore-user-config", "--ignore-rules", "--ephemeral",
+            "--enable", "skip_host_skill_discovery",
+            *(part for feature in CODEX_DISABLED_FEATURES for part in ("--disable", feature)),
+            "-c", "agents.enabled=false", "-c", 'web_search="disabled"',
+            "-c", "tools.experimental_request_user_input.enabled=false",
+            "-c", "tools.update_plan.enabled=false",
+            "-c", "suppress_unstable_features_warning=true",
+            "-c", "model_catalog_json=" + json.dumps(str(cwd / "eval-models.json")),
+            "--skip-git-repo-check", "-C", str(cwd)]
+
+
+def validate_codex_catalog(cwd: Path, model: str) -> None:
+    path = cwd / "eval-models.json"
+    expected = codex_catalog_bytes(model)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size != len(expected)):
+                raise ProcessValidationError("Codex eval model catalog changed")
+            raw = os.read(fd, len(expected) + 1)
+            if hashlib.sha256(raw).digest() != hashlib.sha256(expected).digest():
+                raise ProcessValidationError("Codex eval model catalog changed")
+        finally:
+            os.close(fd)
+    except OSError as error:
+        raise ProcessValidationError("Codex eval model catalog is unavailable") from error
 
 
 @dataclass
@@ -65,6 +119,8 @@ def build_spec(name: str, prompt: str, cfg: dict) -> PromptSpec:
         raise RuntimeError("eval model must be an explicit model identifier")
     if effort is not None and effort not in {"low", "medium", "high", "max", "xhigh", "ultra", "ultracode"}:
         raise RuntimeError("eval effort is invalid")
+    if name == "codex" and effort == "ultra":
+        raise RuntimeError("Codex eval ultra requires an attested model effort mapping")
     if name == "claude":
         argv = [name, "--print", "--output-format", "json", "--model", model]
         if effort:
@@ -117,12 +173,7 @@ def validate_launch(command: ProcessCommand, provider: str, environment: dict,
         expected += ["--safe-mode", "--disable-slash-commands", "--no-session-persistence",
                      "--strict-mcp-config", "--no-chrome", "--tools", ""]
     elif provider == "codex":
-        expected += ["--ignore-user-config", "--ignore-rules", "--ephemeral",
-                     "--enable", "skip_host_skill_discovery", "--disable", "plugins",
-                     "--disable", "skill_search", "--disable", "shell_tool", "--disable", "unified_exec",
-                     "--disable", "apps", "-c", "agents.enabled=false", "-c", "tools.view_image=false",
-                     "-c", "tools.web_search=false", "-c", 'web_search="disabled"',
-                     "--skip-git-repo-check", "-C", str(command.cwd)]
+        expected += codex_isolation_args(command.cwd)
     else:
         binary = real_home / ".local/libexec/agy-bin"
         if binary.is_file():
@@ -131,6 +182,8 @@ def validate_launch(command: ProcessCommand, provider: str, environment: dict,
     if argv != expected:
         raise ProcessValidationError("eval argv differs from the exact no-tools command")
     _private_directory(command.cwd)
+    if provider == "codex":
+        validate_codex_catalog(command.cwd, model)
     # Claude's proven safe-mode auth path keeps real HOME; the other CLIs have empty homes.
     if not isinstance(environment.get("HOME"), str):
         raise ProcessValidationError("eval environment lacks its auth HOME")
