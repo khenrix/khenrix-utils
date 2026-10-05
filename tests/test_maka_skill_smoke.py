@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -250,6 +251,147 @@ def test_host_tool_diagnostic_does_not_echo_untrusted_event_data() -> None:
     assert maka_smoke.tool_name_diagnostic(None) == "<missing or malformed>"
 
 
+@pytest.mark.parametrize("kinds", [
+    ["model_stream_completed", "model_stream_started"],
+    ["model_stream_started", "model_stream_started", "model_stream_completed"],
+    ["model_stream_started", "model_stream_completed", "model_stream_completed"],
+    ["model_stream_started", "model_stream_completed", "model_stream_started"],
+])
+def test_host_streams_must_pair_in_order(tmp_path: Path, kinds: list[str]) -> None:
+    database = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(database)
+    with sqlite3.connect(database) as connection:
+        for index, kind in enumerate(["turn_started", *kinds]):
+            record = {"id": f"event-{index}", "sessionId": "session-1",
+                      "turnId": "turn-1", "type": kind,
+                      "data": {"activeTools": ["Skill", "SkillSearch"]}}
+            connection.execute("INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                               ("session-1", index, record["id"], kind, json.dumps(record)))
+    with maka_smoke.open_runtime_db(database) as connection:
+        with pytest.raises(maka_smoke.SmokeError, match="stream|settled"):
+            maka_smoke.verify_skill_only_tool_events(connection, "session-1", 0)
+
+
+@pytest.mark.parametrize("fault", ["cycle", "later", "rootless"])
+def test_provider_chain_must_have_an_earlier_nonce_root(tmp_path: Path, fault: str) -> None:
+    tier = tmp_path / "relay-last-tier.json"
+    marker = "maka:probe-fedcba9876543210fedcba9876543210-0123456789abcdef0123456789abcdef"
+    marker_hash = hashlib.sha256(marker.encode()).hexdigest()
+    start = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
+    end = dt.datetime.now(dt.timezone.utc)
+    paths = [tmp_path / "relay-routing-receipts" / f"{marker_hash}-{key * 32}.json"
+             for key in ("a", "b")]
+    write_routing_receipt(paths[0], marker, time_utc=(start + dt.timedelta(milliseconds=1)).isoformat())
+    write_routing_receipt(paths[1], marker, binding="response-chain", time_utc=end.isoformat())
+    root, child = [json.loads(path.read_text()) for path in paths]
+    if fault in {"cycle", "rootless"}:
+        root.update(binding="response-chain", previous_response_id_sha256=child["response_id_sha256"])
+    if fault == "later":
+        root["time_utc"] = (end + dt.timedelta(milliseconds=1)).isoformat()
+    for path, record in zip(paths, (root, child)):
+        path.write_text(json.dumps(record))
+    with pytest.raises(maka_smoke.SmokeError, match="response chain"):
+        maka_smoke.verified_model_route(tier, marker, start, end)
+
+
+def test_readiness_partial_line_and_command_child_pipe_have_finite_deadlines() -> None:
+    with subprocess.Popen([sys.executable, "-c",
+                           "import sys,time;sys.stdout.write('partial');sys.stdout.flush();time.sleep(2)"],
+                          stdout=subprocess.PIPE) as process:
+        started = maka_smoke.time.monotonic()
+        try:
+            with pytest.raises(maka_smoke.SmokeError, match="deadline"):
+                maka_smoke._bounded_line(process.stdout, started + 0.1)
+        finally:
+            process.kill()
+        assert maka_smoke.time.monotonic() - started < 1
+    with pytest.raises(subprocess.TimeoutExpired):
+        maka_smoke._bounded_command([sys.executable, "-c",
+            "import subprocess,sys;subprocess.Popen([sys.executable,'-c','import time;time.sleep(2)'])"],
+            timeout=0.1, env=os.environ, text=False)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_command_oversize_stream_refuses_and_retains_bounded_bytes(stream: str) -> None:
+    with pytest.raises(OSError, match="stream limit") as caught:
+        maka_smoke._bounded_command([sys.executable, "-c",
+            f"import sys;sys.{stream}.buffer.write(b'x'*5000);sys.{stream}.flush()"],
+            timeout=2, env=os.environ, text=False, max_bytes=4096)
+    assert len(getattr(caught.value, stream)) == 4097
+
+
+def test_command_deadline_settles_inherited_pipe_child_after_parent_exit(tmp_path: Path) -> None:
+    marker = tmp_path / "escaped-child"
+    child = ("import signal,time,pathlib;signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+             f"time.sleep(0.5);pathlib.Path({str(marker)!r}).write_text('escaped')")
+    with pytest.raises(subprocess.TimeoutExpired):
+        maka_smoke._bounded_command([sys.executable, "-c",
+            f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{child!r}])"],
+            timeout=0.1, env=os.environ, text=False)
+    maka_smoke.time.sleep(0.6)
+    assert not marker.exists()
+
+
+def test_command_elapsed_deadline_retains_bytes_after_pipes_close() -> None:
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        maka_smoke._bounded_command([sys.executable, "-c",
+            "import os,time;os.write(1,b'final-output');os.write(2,b'final-error');"
+            "os.close(1);os.close(2);time.sleep(2)"], timeout=0.1, env=os.environ, text=False)
+    assert caught.value.stdout == b"final-output"
+    assert caught.value.stderr == b"final-error"
+
+
+@pytest.mark.parametrize("unsettled", [False, True])
+def test_command_group_signal_denial_requires_actual_pipe_settlement(
+    monkeypatch: pytest.MonkeyPatch, unsettled: bool,
+) -> None:
+    real_spawn = subprocess.Popen
+    real_signal = os.killpg
+    spawned = []
+
+    def spawn(*args, **kwargs):
+        process = real_spawn(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def denied_kill(group, sig):
+        assert group == spawned[0].pid
+        if sig == maka_smoke.signal.SIGKILL:
+            raise PermissionError("controlled signal denial")
+        return real_signal(group, sig)
+
+    monkeypatch.setattr(maka_smoke.subprocess, "Popen", spawn)
+    monkeypatch.setattr(maka_smoke.os, "killpg", denied_kill)
+    child = "import signal,time;" + (
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);" if unsettled else "") + "time.sleep(2)"
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            maka_smoke._bounded_command([sys.executable, "-c",
+                f"import subprocess,sys;subprocess.Popen([sys.executable,'-c',{child!r}]);"
+                "print('captured',flush=True)"], timeout=0.1, env=os.environ, text=False)
+        assert caught.value.stdout == b"captured\n"
+        assert bool(getattr(caught.value, "cleanup_error", None)) is unsettled
+    finally:
+        try:
+            real_signal(spawned[0].pid, maka_smoke.signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def test_supervisor_stderr_capture_refuses_oversize_and_keeps_exact_bounded_prefix(tmp_path: Path) -> None:
+    with subprocess.Popen([sys.executable, "-c",
+                           "import sys,time;sys.stderr.buffer.write(b'z'*9000);sys.stderr.flush();time.sleep(2)"],
+                          stderr=subprocess.PIPE) as process, (tmp_path / "stderr").open("w+b") as retained:
+        thread, stopped, failures = maka_smoke._capture_supervisor_stderr(process, retained, max_bytes=4096)
+        thread.join(timeout=1)
+        stopped.set()
+        process.wait(timeout=1)
+        assert not thread.is_alive()
+        assert failures and "stream limit" in str(failures[0])
+        retained.seek(0)
+        assert retained.read() == b"z" * 4097
+
+
 def test_manifest_declares_ordered_fanout_skill_matrix() -> None:
     manifest = maka_smoke.load_cases(ROOT / "components" / "skills" / "maka-smoke.json")
     assert manifest["schema_version"] == 2
@@ -271,6 +413,172 @@ def test_manifest_declares_ordered_fanout_skill_matrix() -> None:
         for skill in step["expected_skills"]
     }
     assert {"llm-fanout-plan", "llm-fanout-execute"} <= routed
+
+
+def test_canonical_superpowers_instructions_fit_licensed_skill_body_limit() -> None:
+    for skill in (ROOT / "shared/superpowers").glob("*/SKILL.md"):
+        assert len(skill.read_text(encoding="utf-8")) < 40_000, skill.name
+
+
+def test_component_only_relay_discovery_has_no_checkout_consumer_dependency(tmp_path: Path) -> None:
+    source = ROOT / "components/maka"
+    component = tmp_path / "maka"
+    for relative in (source / "install-files.txt").read_text().splitlines():
+        target = component / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / relative, target)
+    assert not (component.parent / "skills").exists()
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in {"PYTHONPATH", "PYTHONHOME"}}
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-m", "unittest", "discover", "-s", ".",
+         "-p", "test_maka_openai_relay.py", "-k", "pinned_routing_chain"],
+        cwd=component / "interactive", env=environment,
+        capture_output=True, text=True, timeout=20,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "Ran 1 test" in completed.stderr
+    assert "skipped" not in completed.stderr
+
+
+def test_actual_relay_content_joins_strict_smoke_reader_and_refuses_tamper(tmp_path: Path) -> None:
+    import test_maka_openai_relay as relay_tests
+
+    tmp_path.chmod(0o700)
+    marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef-fedcba9876543210fedcba9876543210"
+    cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
+    tools = [{"type": "function", "name": name, "parameters": {"type": "object"}}
+             for name in ("Read", "Skill", "SkillSearch")]
+    fixture = relay_tests.RelayServerFixture(telemetry_path=tmp_path / "last-tier.json")
+    try:
+        first = json.loads(relay_tests.valid_body(cache_key=cache_key,
+            user_text=f"Fanout routing receipt nonce: {marker}\nLoad the skill."))
+        first.update(tools=tools, tool_choice="auto")
+        started_at = dt.datetime.now(dt.timezone.utc)
+        fixture.forwarder.response_body = relay_tests.created_stream(response_id="resp_routing_first")
+        assert fixture.request("POST", "/v1/responses", json.dumps(first).encode())[0] == 200
+        continuation = json.loads(relay_tests.valid_body(cache_key=cache_key))
+        skill_value = {"ok": True, "skill": {"instructions": "Canonical text é 😀\n", "truncated": False}}
+        continuation.update(input=[{"type": "function_call_output", "call_id": "call_one",
+                                    "output": json.dumps(skill_value)}],
+                            previous_response_id="resp_routing_first", tools=tools, tool_choice="auto")
+        fixture.forwarder.response_body = relay_tests.created_stream(response_id="resp_routing_second")
+        assert fixture.request("POST", "/v1/responses", json.dumps(continuation).encode())[0] == 200
+        finished_at = dt.datetime.now(dt.timezone.utc)
+        route = maka_smoke.verified_model_route(tmp_path / "last-tier.json", marker,
+                                               started_at, finished_at, require_content=True)
+        assert route["provider_request_count"] == 2
+        assert continuation["input"] in route["provider_content"]
+        digest = hashlib.sha256(marker.encode("ascii")).hexdigest()
+        receipt_path = next((tmp_path / "relay-routing-receipts").glob(f"{digest}-*.json"))
+        receipt = json.loads(receipt_path.read_bytes())
+        content_path = receipt_path.parent / receipt["content_file"]
+        original_content = content_path.read_bytes()
+        content_path.write_bytes(original_content + b" ")
+        try:
+            with pytest.raises(maka_smoke.SmokeError, match="content|digest"):
+                maka_smoke.verified_model_route(tmp_path / "last-tier.json", marker,
+                                               started_at, finished_at, require_content=True)
+        finally:
+            content_path.write_bytes(original_content)
+    finally:
+        fixture.close()
+
+
+def test_canonical_instruction_transform_uses_original_bytes_and_codepoints() -> None:
+    loaded = maka_smoke.canonical_skill_instructions(
+        b'\xef\xbb\xbf---\r\nname: sample\r\ndescription: fixture\r\n---\r\n \x00body\x7f\r\n ')
+    assert loaded == {"instructions": "body", "truncated": False, "name": "sample",
+                      "source_sha256": hashlib.sha256(
+                          b'\xef\xbb\xbf---\r\nname: sample\r\ndescription: fixture\r\n---\r\n \x00body\x7f\r\n ').hexdigest()}
+    assert maka_smoke.canonical_skill_instructions(
+        b"---\nname: sample\ndescription: fixture\n---\n \x00 ")["instructions"] == "(empty)"
+    raw = ("---\nname: sample\ndescription: fixture\n---\n" + "😀" * 40001).encode()
+    result = maka_smoke.canonical_skill_instructions(raw)
+    assert result["instructions"] == "😀" * 39975 + "\n[skill truncated]"
+    assert result["truncated"] is True
+
+
+def test_independent_canonical_text_matches_authentic_installed_loader_and_explicit_composition(tmp_path: Path) -> None:
+    component = ROOT / "components/maka"
+    layout = maka_smoke.install_component.canonical_layout()
+    package = layout.component / "runtime/package"
+    descriptor = json.loads((package / "package.json").read_bytes())
+    assert descriptor["name"] == "maka-agent"
+    assert descriptor["version"] == "0.2.0-dev.62.20260928"
+    raw = b"\xef\xbb\xbf---\r\nname: sample\r\ndescription: genuine fixture\r\n---\r\n \x00body\x7f\r\n "
+    path = tmp_path / "SKILL.md"
+    path.write_bytes(raw)
+    prompt = "/skill:sample  Validate content.\nReceipt nonce: fixed"
+    script = """
+import {readFile} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
+const [root,path,prompt] = process.argv.slice(1);
+const metadata = await import(pathToFileURL(root+'/node_modules/@maka/runtime/dist/skills-metadata.js'));
+const loader = await import(pathToFileURL(root+'/node_modules/@maka/runtime/dist/skills-context.js'));
+const invoke = await import(pathToFileURL(root+'/node_modules/@maka/runtime/dist/skill-invocation.js'));
+const raw = await readFile(path,'utf8');
+const validation = metadata.validateSkillMetadata(raw);
+const inventory = [{id:'sample',ref:'user:agents:sample',name:'sample',
+  description:'genuine fixture',content:validation.body,source:'agents',scope:'user',
+  enabled:true,declaredTools:[],discoveryRoot:'/fixture',path:'/fixture/sample'}];
+const result = loader.loadSkillInstructionsFromScan(inventory,'sample');
+const explicit = await invoke.prepareSkillInvocationMessageFromInventory({text:prompt,inventory});
+console.log(JSON.stringify({result,explicit}));
+"""
+    completed = maka_smoke._bounded_command(
+        ["mise", "-C", str(component), "exec", "--", "node", "--input-type=module",
+         "-e", script, str(package), str(path), prompt],
+        timeout=10, env=maka_smoke.sanitized_environment(), text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    actual = json.loads(completed.stdout)
+    expected = maka_smoke.canonical_skill_instructions(raw)
+    assert actual["result"]["skill"]["instructions"] == "body"
+    assert expected["instructions"] == actual["result"]["skill"]["instructions"]
+    assert actual["explicit"]["sendText"] == maka_smoke.explicit_instruction_text(
+        prompt, {"sample": expected}, ["sample"])
+
+
+@pytest.mark.parametrize("fault", [None, "body", "wire", "foreign", "duplicate", "partial", "failed",
+                                  "projection", "arguments", "operation", "archive"])
+def test_skill_content_joins_actual_durable_result_projection_and_wire(fault: str | None) -> None:
+    expected = {"sample": {"instructions": "canonical body", "truncated": False,
+                           "name": "sample", "source_sha256": "a" * 64}}
+    identity = {"sessionId": "session", "runId": "run", "invocationId": "invocation", "turnId": "turn"}
+    value = {"ok": True, "skill": {"id": "sample", "ref": "user:agents:sample",
+                                  "source": "agents", "instructions": "canonical body", "truncated": False}}
+    call = {**identity, "id": "call-event", "partial": False, "refs": {
+        "toolCallId": "call-1", "operationId": "op-1"}, "content": {
+        "kind": "function_call", "id": "call-1", "name": "Skill", "args": {"name": "user:agents:sample"}}}
+    response = {**identity, "id": "response-event", "partial": False, "refs": call["refs"].copy(),
+                "content": {"kind": "function_response", "id": "call-1", "name": "Skill",
+                            "result": {"kind": "json", "value": value},
+                            "modelProjection": {"version": 1, "kind": "json", "value": value}}}
+    proof = {"schema": "khenrix-maka-routing-durable-v1", **identity, "records": [call, response],
+             "invocation": {**identity, "opening": {"root": {"kind": "user"},
+                           "source": {"kind": "fresh"}, "route": {"modelId": "gpt-6.1-sol"}},
+                            "terminalEvent": {**identity, "id": "terminal", "partial": False,
+                                              "status": "completed"}}}
+    wire = [{"type": "function_call_output", "call_id": "call-1", "output": json.dumps(value)}]
+    if fault == "body": value["skill"]["instructions"] = "changed body"
+    if fault == "wire": wire[0]["output"] = json.dumps({**value, "ok": False})
+    if fault == "foreign": response["runId"] = "foreign"
+    if fault == "duplicate": proof["records"].append(response)
+    if fault == "partial": response["partial"] = True
+    if fault == "failed": response["content"]["isError"] = True
+    if fault == "projection": response["content"]["modelProjection"] = {"version": 1, "kind": "text", "text": "summary"}
+    if fault == "arguments": call["content"]["args"] = {"name": "other"}
+    if fault == "operation": response["refs"]["operationId"] = "foreign-op"
+    if fault == "archive": proof["invocation"]["opening"]["source"]["kind"] = "replay"
+    if fault:
+        with pytest.raises(maka_smoke.SmokeError, match="content|durable|instruction|wire"):
+            maka_smoke.verify_skill_content(proof, expected, wire, "session", "turn")
+    else:
+        evidence = maka_smoke.verify_skill_content(proof, expected, wire, "session", "turn")
+        assert evidence[0]["instructions_sha256"] == hashlib.sha256(b"canonical body").hexdigest()
+        assert evidence[0]["source_sha256"] == "a" * 64
+        assert evidence[0]["tool_call_id"] == "call-1"
 
 
 def test_first_turn_loads_root_router_before_explicit_target() -> None:
@@ -400,6 +708,8 @@ def write_routing_receipt(
     cache_key: str | None = None, binding: str = "nonce",
     tool_names: list[str] | None = None,
 ) -> None:
+    if binding == "response-chain":
+        time_utc = (dt.datetime.fromisoformat(time_utc) + dt.timedelta(microseconds=1)).isoformat()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.parent.chmod(0o700)
     path.write_text(json.dumps({
@@ -761,16 +1071,26 @@ def test_source_attested_cli_resolves_pinned_node_without_wrapper(
     assert commands == [["/mise", "-C", str(component), "where", "node@24.16.0"]]
 
 
+@pytest.mark.parametrize("fault", [None, "admission", "wire"])
 def test_production_run_uses_only_attested_helper_and_bound_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    fault: str | None,
 ) -> None:
     component = tmp_path / "component"
     binary = ["/pinned/node", str(component / "runtime/package/dist/cli.js")]
     host = {"pid": 4242, "hostEpoch": "epoch-1"}
     session_id = "fanout-routing-0123456789abcdef0123456789abcdef"
-    runtime_db = maka_smoke.default_runtime_db(tmp_path)
+    runtime_db = tmp_path / "private/client/workspaces/default/runtime.sqlite"
     runtime_db.parent.mkdir(parents=True)
     initialize_runtime_db(runtime_db)
+    binding = maka_smoke.PrivateHostBinding(
+        root_path=runtime_db.parent, client_data_root=tmp_path / "private/client",
+        root_id="b" * 64, spec_path=tmp_path / "private/host-spec.json",
+        attestation={**host, "rootId": "b" * 64, "startedAtMs": 100000},
+        canonical_skills={"sample": {"instructions": "canonical", "name": "sample",
+                                    "source_sha256": "a" * 64, "truncated": False}},
+    )
+    forwarded = []
     monkeypatch.setattr(
         maka_smoke.install_component, "canonical_layout",
         lambda: SimpleNamespace(home=tmp_path),
@@ -786,16 +1106,19 @@ def test_production_run_uses_only_attested_helper_and_bound_session(
     )
     monkeypatch.setattr(
         maka_smoke, "verified_model_route",
-        lambda *_args: {"requested_model": "gpt-6.1-sol"},
+        lambda *_args, **_kwargs: {"requested_model": "gpt-6.1-sol",
+                                  "provider_content": [forwarded]},
     )
     observed: list[list[str]] = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert kwargs["stdin"] is subprocess.DEVNULL
-        assert kwargs["env"] == {
-            "KHENRIX_MAKA_INSTALL_BOOT_SESSION":
-                "12345678-1234-1234-1234-123456789abc",
-        }
+        assert kwargs["env"]["KHENRIX_MAKA_INSTALL_BOOT_SESSION"] == "12345678-1234-1234-1234-123456789abc"
+        assert kwargs["env"]["KHENRIX_MAKA_PRIVATE_ROOT"] == str(runtime_db.parent)
+        prompt = command[command.index("--run") + 3]
+        normalized = maka_smoke.explicit_instruction_text(prompt, binding.canonical_skills, ["sample"])
+        outbound = normalized.replace("canonical", "changed") if fault == "wire" else normalized
+        admitted = normalized.replace("canonical", "changed") if fault == "admission" else normalized
+        forwarded.append({"role": "user", "content": [{"type": "input_text", "text": outbound}]})
         with sqlite3.connect(runtime_db) as connection:
             for sequence, event_type in enumerate(
                 ("turn_started", "model_stream_started", "model_stream_completed"), 1,
@@ -811,19 +1134,39 @@ def test_production_run_uses_only_attested_helper_and_bound_session(
                     "INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
                     (session_id, sequence, event_id, event_type, json.dumps(record)),
                 )
+            connection.execute("INSERT INTO core_root_turn_admissions VALUES (?,?,?,?)",
+                (session_id, "turn-1", 1, json.dumps({"normalizedInput": {"text": admitted},
+                    "skillInvocation": {"loaded": [{"id": "sample"}], "failed": []}})))
+        marker = prompt.splitlines()[-1].split(": ", 1)[1]
+        identity = {"sessionId": session_id, "turnId": "turn-1",
+                    "runId": "run", "invocationId": "invocation"}
+        maka_smoke._private_file(runtime_db.parent /
+            f"routing-{hashlib.sha256(marker.encode()).hexdigest()}.json", maka_smoke.canonical({
+                "schema": "khenrix-maka-routing-durable-v1", **identity, "records": [],
+                "invocation": {**identity, "opening": {"root": {"kind": "user"},
+                    "source": {"kind": "fresh"}, "route": {"modelId": "gpt-6.1-sol"}},
+                    "terminalEvent": {**identity, "partial": False, "status": "completed"}},
+            }))
         observed.append(command)
-        return subprocess.CompletedProcess(command, 0, "bounded answer\n", "")
+        return subprocess.CompletedProcess(command, 0, b"bounded answer\n", b"")
 
-    monkeypatch.setattr(maka_smoke.subprocess, "run", run)
-    step = {"id": "bound-turn", "prompt": "Validate routing only.",
+    monkeypatch.setattr(maka_smoke, "_bounded_command", run)
+    step = {"id": "bound-turn", "prompt": "/skill:sample Validate routing only.",
             "timeout_seconds": 120, "max_steps": 2}
-    completed, route = maka_smoke.run_command(
-        binary, step, tmp_path, runtime_db, continued=False,
-        resume_session_id=session_id, environment={}, tier_file=tmp_path / "tier.json",
-        host_identity=host, enforce_session_profile=True,
-    )
+    def invoke():
+        return maka_smoke.run_command(
+            binary, step, tmp_path, runtime_db, continued=False,
+            resume_session_id=session_id, environment={}, tier_file=tmp_path / "tier.json",
+            host_identity=host, enforce_session_profile=True, private_host=binding,
+        )
+    if fault:
+        with pytest.raises(maka_smoke.SmokeError, match="admitted or outbound instruction content"):
+            invoke()
+        return
+    completed, route = invoke()
     assert completed.stdout == "bounded answer\n"
     assert route["requested_model"] == "gpt-6.1-sol"
+    assert route["host_tool_evidence"]["instruction_content"][0]["instructions_sha256"] == hashlib.sha256(b"canonical").hexdigest()
     assert len(observed) == 1
     command = observed[0]
     assert command[:2] == ["/pinned/node", str(component / "interactive/maka_skill_routing.mjs")]
@@ -2049,7 +2392,7 @@ def test_private_turn_output_preserves_native_bytes_before_verification(
     allow_fake_maka_environment(monkeypatch)
     original_failures = []
     if outcome in {"timeout", "startup"}:
-        run = subprocess.run
+        run = maka_smoke._bounded_command
 
         def timed_run(command: list[str], **kwargs: object) -> object:
             if outcome == "startup":
@@ -2062,7 +2405,7 @@ def test_private_turn_output_preserves_native_bytes_before_verification(
                 original_failures.append(error)
                 raise
 
-        monkeypatch.setattr(maka_smoke.subprocess, "run", timed_run)
+        monkeypatch.setattr(maka_smoke, "_bounded_command", timed_run)
     session_id = "fanout-routing-0123456789abcdef0123456789abcdef"
     case = {"id": "private-output", "prompt": "Validate routing only.",
             "timeout_seconds": 120, "max_steps": 2}
@@ -2211,6 +2554,53 @@ def test_diagnostic_matrix_scenario_does_not_write_certification_receipt(
     assert "DIAGNOSTIC PASS" in capsys.readouterr().out
     assert len(log.read_text().splitlines()) == 1
     assert not (config.state_dir / "maka-smoke-receipt.json").exists()
+
+
+def test_partial_custom_manifest_cannot_issue_canonical_certification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, home, config = smoke_delivery_fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    manifest = maka_smoke.load_cases(ROOT / "components/skills/maka-smoke.json")
+    removed = manifest["cases"].pop()
+    manifest["required_routes"][removed["skill"]].remove(removed["route"])
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps(manifest))
+    assert maka_smoke.load_cases(path)["cases"]
+    monkeypatch.setattr(maka_smoke, "maka_version", lambda *_args: "fixture-version")
+    assert maka_smoke.main(["--repo-root", str(repo), "--home", str(home),
+                            "--manifest", str(path), "--dry-run"],
+                           _test_cli_command=[str(fake_maka(tmp_path))]) == 2
+    assert not (config.state_dir / "maka-smoke-receipt.json").exists()
+
+
+def test_adhd_continuation_rejects_failed_or_extra_skill_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = fake_maka(tmp_path)
+    database = tmp_path / "runtime.sqlite"
+    initialize_runtime_db(database)
+    tier = tmp_path / "tier/relay-last-tier.json"
+    monkeypatch.setenv("KHENRIX_FAKE_MAKA_DB", str(database))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_TIER_FILE", str(tier))
+    monkeypatch.setenv("KHENRIX_MAKA_SMOKE_ARGV_LOG", str(tmp_path / "argv.log"))
+    allow_fake_maka_environment(monkeypatch)
+    execute = maka_smoke._bounded_command
+
+    def command(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        result = execute(argv, **kwargs)
+        if len(argv) > 2 and "I have three things" in argv[2]:
+            with sqlite3.connect(database) as connection:
+                session, sequence, encoded = connection.execute(
+                    "SELECT session_id,sequence,record_json FROM core_agent_run_events ORDER BY rowid DESC LIMIT 1").fetchone()
+                record = json.loads(encoded)
+                record.update(id="failed-extra-load", type="skill_load_failed", data={"success": False})
+                connection.execute("INSERT INTO core_agent_run_events VALUES (?,?,?,?,?)",
+                    (session, sequence + 1, record["id"], record["type"], json.dumps(record)))
+        return result
+
+    monkeypatch.setattr(maka_smoke, "_bounded_command", command)
+    flow = maka_smoke.load_cases(ROOT / "components/skills/maka-smoke.json")["flows"][0]
+    environment = maka_smoke.sanitized_environment()
+    host = maka_smoke.attest_existing_host(str(binary), tmp_path, database, environment, None)
+    with pytest.raises(maka_smoke.SmokeError, match="unexpected|failed"):
+        maka_smoke.run_adhd_flow(str(binary), flow, database, environment, tier, host)
 
 
 def test_flow_checks_behavior_without_prompting_for_the_expected_answer() -> None:

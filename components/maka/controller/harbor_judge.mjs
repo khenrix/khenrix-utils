@@ -23,7 +23,7 @@ const RECEIPT_FIELDS = new Set([
   'schema', 'time_utc_ms', 'request_marker_sha256', 'prompt_sha256',
   'requested_model', 'observed_model', 'requested_service_tier',
   'observed_service_tier', 'outbound_effort', 'tool_count',
-  'http_status', 'relay_source_sha256',
+  'http_status', 'relay_source_sha256', 'response_answer_sha256',
 ]);
 const FAILURE_STAGES = new Set([
   'input', 'source-boundary', 'hosted-execution', 'projection-identity',
@@ -135,6 +135,19 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function readBallot(text) {
+  // A single string property also rejects duplicate (including escaped) keys
+  // before JSON.parse can discard them.
+  const match = /^\s*\{\s*("(?:[^"\\]|\\.)*")\s*:\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/u.exec(text);
+  try {
+    if (match && JSON.parse(match[1]) === 'winner') {
+      const winner = JSON.parse(match[2]);
+      if (['A', 'B', 'tie', 'abstain'].includes(winner)) return winner;
+    }
+  } catch {}
+  throw new Error('Harbor judge answer is not a structured ballot');
+}
+
 function requireInput(input) {
   const fields = ['panel_id', 'criterion', 'answer_a', 'answer_b', 'expected_boundary_sha256'];
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
@@ -208,22 +221,13 @@ export function readArchivedBallot(databasePath, sessionId, prompt) {
       typeof assistant?.text !== 'string') {
     throw new Error('Harbor judge transcript did not attest one answer');
   }
-  let ballot;
-  try {
-    ballot = JSON.parse(assistant.text);
-  } catch {
-    throw new Error('Harbor judge answer is not a structured ballot');
-  }
-  if (!ballot || typeof ballot !== 'object' || Array.isArray(ballot) ||
-      Object.keys(ballot).length !== 1 ||
-      !['A', 'B', 'tie', 'abstain'].includes(ballot.winner)) {
-    throw new Error('Harbor judge answer is not a structured ballot');
-  }
+  const winner = readBallot(assistant.text);
   const transcript = createHash('sha256');
   for (const row of rows) {
     transcript.update(row.message_type).update('\0').update(row.record_json).update('\0');
   }
-  return { winner: ballot.winner, transcript_sha256: transcript.digest('hex') };
+  return { winner, transcript_sha256: transcript.digest('hex'),
+    response_answer_sha256: sha256(assistant.text) };
 }
 
 export function readRuntimeEventBallot(databasePath, sessionId, prompt, adapter) {
@@ -321,18 +325,9 @@ export function readRuntimeEventBallot(databasePath, sessionId, prompt, adapter)
       !Number.isFinite(kind('token_usage')[0].output)) {
     throw new Error('Harbor judge RuntimeEvent transcript did not attest one answer');
   }
-  let ballot;
-  try {
-    ballot = JSON.parse(assistants[0].text);
-  } catch {
-    throw new Error('Harbor judge answer is not a structured ballot');
-  }
-  if (!ballot || typeof ballot !== 'object' || Array.isArray(ballot) ||
-      Object.keys(ballot).length !== 1 ||
-      !['A', 'B', 'tie', 'abstain'].includes(ballot.winner)) {
-    throw new Error('Harbor judge answer is not a structured ballot');
-  }
-  return { winner: ballot.winner, transcript_sha256: transcript.digest('hex') };
+  const winner = readBallot(assistants[0].text);
+  return { winner, transcript_sha256: transcript.digest('hex'),
+    response_answer_sha256: sha256(assistants[0].text) };
 }
 
 function decodeArchivedRecord(db, sessionId, row) {
@@ -385,6 +380,10 @@ function decodeArchivedRecord(db, sessionId, row) {
 }
 
 export function judgeEnvelope(ballot, relayReceipt, boundary) {
+  if (!DIGEST.test(ballot.response_answer_sha256) ||
+      ballot.response_answer_sha256 !== relayReceipt.response_answer_sha256) {
+    throw new Error('Harbor judge provider answer differs from the native answer');
+  }
   return {
     result: {
       winner: ballot.winner, auth_route: 'harbor-lab', requested_model: MODEL,
@@ -430,7 +429,7 @@ export async function readJudgeReceipt(root, sessionId, prompt, relaySourceHash)
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
       Object.keys(receipt).length !== RECEIPT_FIELDS.size ||
       Object.keys(receipt).some((field) => !RECEIPT_FIELDS.has(field)) ||
-      receipt.schema !== 'khenrix-maka-harbor-judge-request-v1' ||
+      receipt.schema !== 'khenrix-maka-harbor-judge-request-v2' ||
       !Number.isSafeInteger(receipt.time_utc_ms) || receipt.time_utc_ms <= 0 ||
       receipt.request_marker_sha256 !== marker ||
       receipt.prompt_sha256 !== sha256(prompt) ||
@@ -439,6 +438,7 @@ export async function readJudgeReceipt(root, sessionId, prompt, relaySourceHash)
       receipt.observed_service_tier !== 'default' ||
       receipt.outbound_effort !== 'xhigh' || receipt.tool_count !== 0 ||
       receipt.http_status !== 200 ||
+      !DIGEST.test(receipt.response_answer_sha256) ||
       receipt.relay_source_sha256 !== relaySourceHash) {
     throw new Error('Harbor judge receipt did not attest the requested execution');
   }

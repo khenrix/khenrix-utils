@@ -83,12 +83,13 @@ maka-subject-sha256=f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b91488
             "tool_boundary_sha256": "a" * 64, "winner": "A",
         }
         relay = {
-            "schema": "khenrix-maka-harbor-judge-request-v1", "time_utc_ms": 1,
+            "schema": "khenrix-maka-harbor-judge-request-v2", "time_utc_ms": 1,
             "request_marker_sha256": "b" * 64, "prompt_sha256": "c" * 64,
             "requested_model": "gpt-6.1-sol", "observed_model": "gpt-6.1-sol",
             "requested_service_tier": "default", "observed_service_tier": "default",
             "outbound_effort": "xhigh", "tool_count": 0, "http_status": 200,
             "relay_source_sha256": "d" * 64,
+            "response_answer_sha256": "f" * 64,
         }
         with tempfile.TemporaryDirectory() as directory:
             envelope = pathlib.Path(directory) / "envelope.json"

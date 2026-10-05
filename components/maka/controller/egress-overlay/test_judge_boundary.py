@@ -378,12 +378,38 @@ class HarborJudgeBoundaryTests(unittest.TestCase):
             "id": "resp_1", "model": "gpt-6.1-sol", "service_tier": "default"}}
         completed = {"type": "response.completed", "response": {
             "id": "resp_1", "model": "gpt-6.1-sol", "service_tier": "default",
-            "output": [{"type": "message"}]}}
+            "output": [{"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                        "content": [{"type": "output_text", "text": '{"winner":"A"}'}]}]}}
         payload = (f"data: {json.dumps(created)}\n\n"
                    f"data: {json.dumps(completed)}\n\n"
                    "data: [DONE]\n\n").encode()
         self.assertEqual(policy.judge_response_evidence(200, payload), {
-            "observed_model": "gpt-6.1-sol", "observed_service_tier": "default"})
+            "observed_model": "gpt-6.1-sol", "observed_service_tier": "default",
+            "response_answer_sha256": hashlib.sha256(b'{"winner":"A"}').hexdigest()})
+        self.assertEqual(policy.judge_response_evidence(200, payload.replace(b"data: ", b"data:")),
+                         policy.judge_response_evidence(200, payload))
+        for hidden in [
+            {"type": "error"}, {"type": "response.incomplete"},
+            {"type": "response.output_item.done", "item": {"type": "function_call"}},
+        ]:
+            with self.subTest(hidden=hidden):
+                self.assertIsNone(policy.judge_response_evidence(
+                    200, b"data:" + json.dumps(hidden).encode() + b"\n\n" + payload))
+        for output in [[], [{"type": "message"}],
+                       completed["response"]["output"] * 2]:
+            with self.subTest(output=output):
+                altered = {**completed, "response": {**completed["response"], "output": output}}
+                self.assertIsNone(policy.judge_response_evidence(
+                    200, (f"data:{json.dumps(created)}\n\ndata:{json.dumps(altered)}\n\n").encode()))
+        self.assertIsNone(policy.judge_response_evidence(
+            200, payload.replace(b'"type": "response.created"',
+                                 b'"type":"error","type":"response.created"')))
+        self.assertIsNone(policy.judge_response_evidence(
+            200, payload + f"data:{json.dumps(completed)}\n\n".encode()))
+        extra = {"type": "response.output_item.added",
+                 "item": {"id": "msg_extra", "type": "message", "role": "assistant"}}
+        self.assertIsNone(policy.judge_response_evidence(
+            200, f"data:{json.dumps(extra)}\n\n".encode() + payload))
         self.assertIsNone(policy.judge_response_evidence(
             200, f"data: {json.dumps(created)}\n\n".encode()))
         created["response"]["model"] = "gpt-5.6-sol"

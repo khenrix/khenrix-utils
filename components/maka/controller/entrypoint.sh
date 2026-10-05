@@ -117,6 +117,9 @@ if test ! -f "$version_root/.complete"; then
   test "$(sha256sum "$staging/maka-agent/node_modules/@maka/eval/dist/maka-subject.js" | awk '{print $1}')" \
     = f47c1278ed25434f2a1a012d26ed285eb930e737acbc182cbdcda6b914887775
   printf '%s\n' "$expected_complete" > "$staging/.complete"
+  # Empty directories have no manifest entry. Omit them only in this fresh,
+  # owned staging tree, before producing and sealing its authenticated inventory.
+  find "$staging" -depth -type d -empty -delete
   (
     cd "$staging"
     /opt/venvs/harbor-0.20.0/bin/python /opt/maka-lab/controller/runtime_manifest_verify.py \

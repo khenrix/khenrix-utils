@@ -36,6 +36,32 @@ def run_helper(root: pathlib.Path, *, hash_command: str | None = None) -> subpro
 
 
 class RuntimeManifestVerifyTests(unittest.TestCase):
+    def test_fresh_staging_omits_empty_directories_before_manifest_and_seal(self) -> None:
+        entrypoint = HELPER.with_name("entrypoint.sh").read_text()
+        staging_steps = entrypoint[entrypoint.index('  test "$(sha256sum "$staging/maka-agent/node_modules/@maka/eval/dist/maka-subject.js"'):
+                                  entrypoint.index("  (\n    cd \"$staging\"")]
+        # Execute the real staging fragment with the already-authenticated
+        # subject check omitted; its pruning runs before the manifest producer.
+        staging_steps = staging_steps[staging_steps.index("  printf '%s\\n'"): ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "empty/nested").mkdir(parents=True)
+            (root / "kept/nested").mkdir(parents=True)
+            (root / "kept/nested/file").write_bytes(b"immutable")
+            (root / "kept/link").symlink_to("nested/file")
+            completed = subprocess.run(
+                ["/bin/bash", "-c", "set -eu\n" + staging_steps],
+                env={**os.environ, "staging": str(root), "expected_complete": "pinned"},
+                capture_output=True, timeout=3,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertFalse((root / "empty").exists())
+            self.assertEqual((root / "kept/nested/file").read_bytes(), b"immutable")
+            self.assertEqual(os.readlink(root / "kept/link"), "nested/file")
+            manifest = run_helper(root)
+            self.assertEqual(manifest.returncode, 0, manifest.stderr)
+            self.assertEqual(manifest.stdout, serial_manifest(root))
+
     def test_parallel_manifest_is_byte_identical_and_includes_nested_reserved_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
 import {
@@ -10,11 +15,85 @@ import {
   runPrivateHostPreload,
   startPrivateRoutingHost,
   verifyPrivateHostFiles,
+  readRoutingDurableEvidence,
 } from './maka_skill_routing.mjs';
 
 const BOOT = '12345678-1234-1234-1234-123456789abc';
 const ENTRYPOINT = '/installed/maka/node_modules/@maka/runtime-host/dist/execution-candidate-main.js';
 const ROOT = '/profile/workspaces/default';
+
+test('the authentic installed readonly store measures and refuses oversized durable content without mutation', async (t) => {
+  const component = dirname(dirname(fileURLToPath(import.meta.url)));
+  const packageRoot = process.env.KHENRIX_MAKA_PACKAGE_ROOT ?? resolve(dirname(execFileSync(
+    'mise', ['-C', component, 'which', 'maka'], { encoding: 'utf8' }).trim()), '..', 'maka-agent');
+  assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version,
+    '0.2.0-dev.62.20260928');
+  const root = await mkdtemp(join(tmpdir(), 'maka-durable-content-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { createSqliteRuntimeStore } = await import(pathToFileURL(join(packageRoot,
+    'node_modules/@maka/storage/dist/sqlite-runtime-store.js')));
+  const persistence = await import(pathToFileURL(join(packageRoot,
+    'node_modules/@maka/storage/dist/runtime-event-persistence.js')));
+  const database = join(root, 'runtime.sqlite');
+  const writer = createSqliteRuntimeStore(database);
+  await writer.appendRuntimeEvent(SESSION, 'run', {
+    id: 'user-event', sessionId: SESSION, invocationId: 'invocation', runId: 'run',
+    turnId: 'turn', ts: 1, partial: false, role: 'user', author: 'user',
+    content: { kind: 'text', text: 'canonical text 😀'.repeat(1000) },
+  });
+  await writer.close();
+  const before = await readFile(database);
+  const reader = await persistence.openRuntimeEventReadPersistence({ workspaceRoot: root });
+  try {
+    const complete = await reader.runtimeEventStore.readRuntimeEventsBounded(
+      SESSION, 'run', { maxRecords: 256, maxBytes: 2 * 1024 * 1024 });
+    assert.equal(complete.status, 'complete');
+    assert.equal(complete.records[0].content.text, 'canonical text 😀'.repeat(1000));
+    assert.equal((await reader.runtimeEventStore.readRuntimeEventsBounded(
+      SESSION, 'run', { maxRecords: 256, maxBytes: 32 })).status, 'limit_exceeded');
+  } finally {
+    await reader.close();
+  }
+  assert.deepEqual(await readFile(database), before);
+  await assert.rejects(readRoutingDurableEvidence(root,
+    { sessionId: SESSION, runId: 'run', turnId: 'turn' }, persistence), /incomplete/u);
+});
+
+test('routing durable export uses the licensed bounded readonly consumer and refuses incomplete evidence', async () => {
+  const identity = { sessionId: SESSION, turnId: 'turn', runId: 'run', invocationId: 'invocation' };
+  const invocation = { ...identity };
+  let closed = false;
+  const calls = [];
+  const persistence = {
+    openRuntimeEventReadPersistence: async (input) => {
+      assert.deepEqual(input, { workspaceRoot: '/fresh/private' });
+      return {
+        close: () => { closed = true; },
+        runtimeEventStore: {
+          readRunInvocation: async (...args) => { calls.push(args); return invocation; },
+          readRuntimeEventsBounded: async (...args) => {
+            calls.push(args);
+            return { status: 'complete', records: [{ ...identity, id: 'event', partial: false }] };
+          },
+        },
+      };
+    },
+  };
+  const proof = await readRoutingDurableEvidence('/fresh/private', identity, persistence);
+  assert.equal(proof.runId, 'run');
+  assert.deepEqual(calls[1], [SESSION, 'run', { maxRecords: 256, maxBytes: 2 * 1024 * 1024 }]);
+  assert.equal(closed, true);
+  for (const status of ['limit_exceeded', 'partial']) {
+    const broken = { openRuntimeEventReadPersistence: async () => ({
+      close: () => {}, runtimeEventStore: {
+        readRunInvocation: async () => invocation,
+        readRuntimeEventsBounded: async () => ({ status }),
+      },
+    }) };
+    await assert.rejects(readRoutingDurableEvidence('/fresh/private', identity, broken),
+      /durable.*budget|durable.*incomplete/u);
+  }
+});
 
 function hostInput(overrides = {}) {
   return {
@@ -97,6 +176,13 @@ test('stale Host fails closed without a restart, including with active sessions'
     () => verifyHostIdentity({...stale, activeSessions: ['active-session']}),
     /active session.*restart refused/u,
   );
+});
+
+test('a changed boot permits a fresh Host even when its monotonic clock is lower', () => {
+  assert.equal(verifyHostIdentity(hostInput({ expected: {
+    currentBootSession: 'aaaaaaaa-1234-1234-1234-123456789abc',
+    installMonotonicNs: '100000000000', monotonicNowNs: '1000000000',
+  } })).pid, 4242);
 });
 
 function preparedDependencies(input = hostInput()) {
@@ -528,4 +614,45 @@ test('native run refuses Host drift and unbound run options before invoking the 
   await assert.rejects(() => runRoutingTurn(safe.filter((part) => part !== '--resume'), input, deps),
     /run input is invalid/u);
   assert.equal(invoked, 0);
+});
+
+test('durable retention receives exactly the actual settled native turn admission', async () => {
+  for (const fault of [null, 'foreign', 'missing', 'duplicate']) {
+    const {deps} = preparedDependencies();
+    deps.profile = {id: 'local', kind: 'local', name: 'Local'};
+    deps.clientDataRoot = '/profile/client';
+    const original = deps.connection.request;
+    const actual = {sessionId: SESSION, runId: 'actual-run', turnId: 'actual-turn'};
+    deps.connection.request = async (operation, payload) => {
+      if (operation === 'session.catalog.query') return {kind: 'session', session: {
+        id: SESSION, model: 'gpt-6.1-sol', llmConnectionSlug: 'keychain-openai',
+        thinkingLevel: 'xhigh', permissionMode: 'ask',
+      }};
+      if (operation === 'turn.start') return {kind: 'started', turn: {
+        ...actual, ...(fault === 'foreign' ? {sessionId: 'foreign'} : {}),
+      }};
+      return original(operation, payload);
+    };
+    const retained = [];
+    deps.retainDurableEvidence = async (turn) => retained.push(turn);
+    deps.runRuntimeHostTextCli = async (_argv, _overrides, commands) => {
+      const connected = await commands.connect(ROOT, undefined, '/profile/client');
+      if (fault !== 'missing') await connected.connection.request('turn.start', {prompt: 'prompt'});
+      if (fault === 'duplicate') await connected.connection.request('turn.start', {prompt: 'prompt'});
+      return 0;
+    };
+    const argv = ['prompt', '--cwd', '/tmp/task', '--timeout', '120', '--max-steps', '2',
+      '--thinking', 'xhigh', '--resume', SESSION];
+    const run = () => runRoutingTurn(argv, {
+      packageRoot: '/installed/maka', cwd: '/tmp/task', sessionId: SESSION,
+      expectedHost: {pid: 4242, hostEpoch: 'host-epoch-1'}, enforceSessionProfile: true,
+    }, deps);
+    if (fault) {
+      await assert.rejects(run, /durable admission/u);
+      assert.deepEqual(retained, []);
+    } else {
+      assert.equal(await run(), 0);
+      assert.deepEqual(retained, [actual]);
+    }
+  }
 });

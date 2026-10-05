@@ -664,13 +664,33 @@ def judge_response_evidence_with_reason(
         return None, "oversize-body"
     created_id = None
     completed = False
-    for line in raw.splitlines():
-        if not line.startswith(b"data: "):
-            continue
-        if line == b"data: [DONE]":
+    answer = None
+    done = False
+    message_ids = set()
+    added_ids = set()
+    finished_ids = set()
+    # SSE permits an optional single space after the colon and multiple data
+    # fields in an event. Do not skip compact failure/tool events.
+    frames = []
+    data = []
+    for line in raw.splitlines() + [b""]:
+        if not line:
+            if data:
+                frames.append(b"\n".join(data))
+                data = []
+        elif line.startswith(b"data:"):
+            value = line[5:]
+            data.append(value[1:] if value.startswith(b" ") else value)
+    for frame in frames:
+        if done:
+            return None, "invalid-sse"
+        if frame == b"[DONE]":
+            if not completed:
+                return None, "missing-completion"
+            done = True
             continue
         try:
-            event = json.loads(line[6:])
+            event = strict_json_object(frame)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return None, "invalid-sse"
         if not isinstance(event, dict):
@@ -682,6 +702,13 @@ def judge_response_evidence_with_reason(
             item = event.get("item")
             if isinstance(item, dict) and isinstance(item.get("type"), str) and item["type"].endswith("_call"):
                 return None, "tool-call"
+            if isinstance(item, dict) and item.get("type") == "message":
+                identity = item.get("id")
+                seen = added_ids if kind.endswith(".added") else finished_ids
+                if not isinstance(identity, str) or not identity or identity in seen:
+                    return None, "invalid-completion"
+                seen.add(identity)
+                message_ids.add(identity)
         if kind not in {"response.created", "response.completed"}:
             continue
         response = event.get("response")
@@ -709,10 +736,28 @@ def judge_response_evidence_with_reason(
                    (isinstance(item.get("type"), str) and item["type"].endswith("_call"))
                    for item in output):
                 return None, "tool-call"
+            messages = [item for item in output if item.get("type") == "message"]
+            if (len(messages) != 1 or any(item.get("type") not in {"message", "reasoning"}
+                                          for item in output)):
+                return None, "invalid-completion"
+            message = messages[0]
+            if (not isinstance(message.get("id"), str) or not message["id"]
+                    or message_ids - {message["id"]}):
+                return None, "invalid-completion"
+            content = message.get("content")
+            if (message.get("role") != "assistant" or message.get("status") != "completed"
+                    or not isinstance(content, list) or not content
+                    or any(not isinstance(part, dict) or part.get("type") != "output_text"
+                           or not isinstance(part.get("text"), str) for part in content)):
+                return None, "invalid-completion"
+            answer = "".join(part["text"] for part in content)
+            if not answer:
+                return None, "invalid-completion"
             completed = True
     if not completed:
         return None, "missing-completion"
-    return {"observed_model": "gpt-6.1-sol", "observed_service_tier": "default"}, None
+    return {"observed_model": "gpt-6.1-sol", "observed_service_tier": "default",
+            "response_answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest()}, None
 
 
 def judge_response_evidence(status: int, raw: bytes | None) -> dict[str, str] | None:
@@ -739,7 +784,7 @@ def persist_judge_receipt(root: Path, evidence: dict[str, object]) -> None:
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) & 0o077:
         raise OSError("judge receipt directory is unsafe")
     payload = {
-        "schema": "khenrix-maka-harbor-judge-request-v1",
+        "schema": "khenrix-maka-harbor-judge-request-v2",
         "time_utc_ms": int(time.time() * 1000),
         "relay_source_sha256": EGRESS_SOURCE_SHA256,
         **evidence,

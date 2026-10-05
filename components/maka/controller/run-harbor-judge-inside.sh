@@ -101,8 +101,9 @@ jq -e --arg boundary "$expected_boundary" '
   and (.evidence | keys | sort) == ["relay_receipt", "schema", "transcript_sha256"]
   and .evidence.schema == "khenrix-maka-harbor-judge-evidence-v1"
   and (.evidence.transcript_sha256 | test("^[0-9a-f]{64}$"))
-  and (.evidence.relay_receipt | keys | sort) == (["schema", "time_utc_ms", "request_marker_sha256", "prompt_sha256", "requested_model", "observed_model", "requested_service_tier", "observed_service_tier", "outbound_effort", "tool_count", "http_status", "relay_source_sha256"] | sort)
-  and .evidence.relay_receipt.schema == "khenrix-maka-harbor-judge-request-v1"
+  and (.evidence.relay_receipt | keys | sort) == (["schema", "time_utc_ms", "request_marker_sha256", "prompt_sha256", "requested_model", "observed_model", "requested_service_tier", "observed_service_tier", "outbound_effort", "tool_count", "http_status", "relay_source_sha256", "response_answer_sha256"] | sort)
+  and .evidence.relay_receipt.schema == "khenrix-maka-harbor-judge-request-v2"
+  and (.evidence.relay_receipt.response_answer_sha256 | test("^[0-9a-f]{64}$"))
   and .evidence.relay_receipt.requested_model == "gpt-6.1-sol"
   and .evidence.relay_receipt.observed_model == "gpt-6.1-sol"
   and .evidence.relay_receipt.requested_service_tier == "default"

@@ -146,6 +146,16 @@ test('a private Host archive yields exactly one model-bound tool-free ballot', a
   const ballot = readArchivedBallot(path, SESSION, prompt);
   assert.equal(ballot.winner, 'B');
   assert.match(ballot.transcript_sha256, /^[0-9a-f]{64}$/u);
+  assert.equal(ballot.response_answer_sha256,
+    createHash('sha256').update('{"winner":"B"}').digest('hex'));
+  for (const text of ['{"winner":"A","winner":"B"}', '{"winner":"A","\\u0077inner":"B"}']) {
+    const duplicatePath = join(root, `duplicate-${createHash('sha256').update(text).digest('hex')}.sqlite`);
+    archive(duplicatePath, [
+      { type: 'user', turnId: SESSION, text: prompt },
+      { type: 'assistant', turnId: SESSION, text, modelId: MODEL },
+    ]);
+    assert.throws(() => readArchivedBallot(duplicatePath, SESSION, prompt), /structured ballot/u);
+  }
   archive(join(root, 'old.sqlite'), [
     { type: 'user', turnId: SESSION, text: prompt },
     { type: 'assistant', turnId: SESSION, text: '{"winner":"B"}', modelId: 'gpt-5.6-sol' },
@@ -191,6 +201,14 @@ test('a fresh hosted RuntimeEvent ledger attests a ballot without legacy session
   };
   const ballot = readRuntimeEventBallot(path, SESSION, prompt, adapter);
   assert.equal(ballot.winner, 'B');
+  assert.equal(ballot.response_answer_sha256,
+    createHash('sha256').update('{"winner":"B"}').digest('hex'));
+  assert.throws(() => readRuntimeEventBallot(path, SESSION, prompt, {
+    ...adapter,
+    projectEvents: (events) => ({ diagnostics: [], messages:
+      adapter.projectEvents(events).messages.map((message) => message.type === 'assistant' ?
+        { ...message, text: '{"winner":"A","winner":"B"}' } : message) }),
+  }), /structured ballot/u);
   assert.match(ballot.transcript_sha256, /^[0-9a-f]{64}$/u);
   assert.throws(() => readRuntimeEventBallot(path, SESSION, prompt, {
     ...adapter,
@@ -230,8 +248,10 @@ test('a fresh hosted RuntimeEvent ledger attests a ballot without legacy session
 
 test('the pinned RuntimeEvent decoder and projector attest only canonical no-tool evidence', async (t) => {
   const runtimeRoot = process.env.KHENRIX_MAKA_RUNTIME_ROOT;
-  if (!runtimeRoot) return t.skip('set KHENRIX_MAKA_RUNTIME_ROOT to the installed pinned runtime');
-  const packageRoot = join(runtimeRoot, 'maka-agent', 'node_modules', '@maka');
+  const installedPackage = process.env.KHENRIX_MAKA_PACKAGE_ROOT ??
+    (runtimeRoot === undefined ? undefined : join(runtimeRoot, 'maka-agent'));
+  if (installedPackage === undefined) return t.skip('set KHENRIX_MAKA_PACKAGE_ROOT or KHENRIX_MAKA_RUNTIME_ROOT to the installed pinned runtime');
+  const packageRoot = join(installedPackage, 'node_modules', '@maka');
   const core = await import(pathToFileURL(join(packageRoot, 'core/dist/runtime-event.js')).href);
   const readModel = await import(pathToFileURL(join(packageRoot,
     'runtime/dist/runtime-event-read-model.js')).href);
@@ -389,7 +409,7 @@ test('a Harbor receipt must match this nonce, prompt, source, model, effort, and
   const prompt = `Judge receipt nonce: maka:${SESSION}\nCompare A and B.`;
   const digest = createHash('sha256').update(`maka:${SESSION}`).digest('hex');
   const receipt = {
-    schema: 'khenrix-maka-harbor-judge-request-v1',
+    schema: 'khenrix-maka-harbor-judge-request-v2',
     time_utc_ms: 1_000_000,
     request_marker_sha256: digest,
     prompt_sha256: createHash('sha256').update(prompt).digest('hex'),
@@ -401,11 +421,17 @@ test('a Harbor receipt must match this nonce, prompt, source, model, effort, and
     tool_count: 0,
     http_status: 200,
     relay_source_sha256: RELAY_HASH,
+    response_answer_sha256: createHash('sha256').update('{"winner":"B"}').digest('hex'),
   };
   const path = join(root, 'relay-judge-receipts', `${digest}-${'1'.repeat(32)}.json`);
   await writeFile(path, JSON.stringify(receipt), { mode: 0o600 });
   assert.equal((await readJudgeReceipt(join(root, 'relay-judge-receipts'), SESSION,
     prompt, RELAY_HASH)).observed_model, MODEL);
+  const ballot = { winner: 'B', transcript_sha256: 'c'.repeat(64),
+    response_answer_sha256: receipt.response_answer_sha256 };
+  assert.equal(judgeEnvelope(ballot, receipt, 'd'.repeat(64)).result.winner, 'B');
+  assert.throws(() => judgeEnvelope(ballot,
+    { ...receipt, response_answer_sha256: 'f'.repeat(64) }, 'd'.repeat(64)), /answer/u);
   for (const field of ['requested_model', 'observed_model']) {
     await writeFile(path, JSON.stringify({ ...receipt, [field]: 'gpt-5.6-sol' }), { mode: 0o600 });
     await assert.rejects(readJudgeReceipt(join(root, 'relay-judge-receipts'), SESSION,
@@ -414,6 +440,69 @@ test('a Harbor receipt must match this nonce, prompt, source, model, effort, and
   await writeFile(path, JSON.stringify({ ...receipt, tool_count: 1 }), { mode: 0o600 });
   await assert.rejects(readJudgeReceipt(join(root, 'relay-judge-receipts'), SESSION,
     prompt, RELAY_HASH), /receipt/i);
+});
+
+test('the actual egress receipt binds the native ballot through the flat shell gate', async (t) => {
+  const root = await fixture(t);
+  const prompt = `Judge receipt nonce: maka:${SESSION}\nCompare A and B.`;
+  const answer = '{"winner":"B"}';
+  const controller = dirname(fileURLToPath(import.meta.url));
+  const producer = `
+import importlib.util,json,pathlib,sys
+path=pathlib.Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location('egress_filter',path)
+policy=importlib.util.module_from_spec(spec);spec.loader.exec_module(policy)
+raw=json.dumps({'model':'gpt-6.1-sol','reasoning':{'effort':'xhigh','summary':'auto'},
+ 'input':[{'role':'user','content':[{'type':'input_text','text':sys.argv[3]}]}],
+ 'tools':[{'type':'function','name':'Skill'}]}).encode()
+outbound,evidence=policy.prepare_judge_request(raw)
+assert json.loads(outbound)['tool_choice']=='none' and 'tools' not in json.loads(outbound)
+created={'type':'response.created','response':{'id':'response','model':'gpt-6.1-sol','service_tier':'default'}}
+completed={'type':'response.completed','response':{'id':'response','model':'gpt-6.1-sol',
+ 'service_tier':'default','status':'completed','output':[{'type':'message','id':'message',
+ 'role':'assistant','status':'completed','content':[{'type':'output_text','text':sys.argv[4]}]}]}}
+sse=('data:'+json.dumps(created)+'\\n\\ndata: '+json.dumps(completed)+'\\n\\ndata:[DONE]\\n\\n').encode()
+observed=policy.judge_response_evidence(200,sse)
+assert observed is not None
+policy.persist_judge_receipt(pathlib.Path(sys.argv[2]),{**evidence,**observed,'http_status':200})
+print(policy.EGRESS_SOURCE_SHA256)
+`;
+  const receiptRoot = join(root, 'relay-judge-receipts');
+  const sourceHash = execFileSync('python3', ['-c', producer,
+    join(controller, 'egress-overlay/egress_filter.py'), receiptRoot, prompt, answer],
+  {encoding: 'utf8', timeout: 5000}).trim();
+  const receipt = await readJudgeReceipt(receiptRoot, SESSION, prompt, sourceHash);
+  const archivePath = join(root, 'runtime.sqlite');
+  archive(archivePath, [
+    {type: 'user', turnId: SESSION, text: prompt},
+    {type: 'assistant', turnId: SESSION, text: answer, modelId: MODEL},
+  ]);
+  const ballot = readArchivedBallot(archivePath, SESSION, prompt);
+  const boundary = 'a'.repeat(64);
+  const envelope = judgeEnvelope(ballot, receipt, boundary);
+  const envelopePath = join(root, 'envelope.json');
+  const resultPath = join(root, 'result.json');
+  const evidencePath = join(root, 'evidence.json');
+  await writeFile(envelopePath, JSON.stringify(envelope), {mode: 0o600});
+  const shellSource = await readFile(join(controller, 'run-harbor-judge-inside.sh'), 'utf8');
+  const shell = shellSource.slice(shellSource.indexOf('expected_boundary=$MAKA_JUDGE_EXPECTED_BOUNDARY\n'));
+  const stdout = execFileSync('/bin/bash', ['-c',
+    'set -eu\nenvelope_file=$1; result_file=$2; judge_evidence_file=$3\n' + shell,
+    'bash', envelopePath, resultPath, evidencePath], {encoding: 'utf8', timeout: 5000,
+    env: {...process.env, MAKA_JUDGE_EXPECTED_BOUNDARY: boundary}});
+  assert.deepEqual(JSON.parse(stdout), envelope.result);
+  assert.equal(Object.keys(JSON.parse(stdout)).length, 7);
+  assert.deepEqual(JSON.parse(await readFile(evidencePath, 'utf8')), envelope.evidence);
+  await assert.rejects(readFile(envelopePath), {code: 'ENOENT'});
+  assert.throws(() => judgeEnvelope(ballot,
+    {...receipt, response_answer_sha256: 'f'.repeat(64)}, boundary), /answer/u);
+  await writeFile(envelopePath, JSON.stringify({...envelope, evidence: {
+    ...envelope.evidence, relay_receipt: {...receipt, response_answer_sha256: undefined},
+  }}));
+  assert.throws(() => execFileSync('/bin/bash', ['-c',
+    'set -eu\nenvelope_file=$1; result_file=$2; judge_evidence_file=$3\n' + shell,
+    'bash', envelopePath, resultPath, evidencePath], {timeout: 5000,
+    env: {...process.env, MAKA_JUDGE_EXPECTED_BOUNDARY: boundary}, stdio: 'pipe'}));
 });
 
 test('the read-only boundary pins installed source receipt and the entire staged runtime tree', async (t) => {
@@ -476,6 +565,18 @@ undici-h2-sha256=521fef59ccb84909a3c68d52c15e972f61836e0d386093d5d4f4e64ba7d8508
     await chmod(target, 0o444);
     manifest += `${createHash('sha256').update(content).digest('hex')}  ./${name}\n`;
   }
+  await mkdir(join(runtime, 'empty/nested'), { recursive: true });
+  const entrypoint = await readFile(join(sourceComponent, 'controller/entrypoint.sh'), 'utf8');
+  const stagingFragment = entrypoint.slice(entrypoint.indexOf('  printf \'%s\\n\' "$expected_complete"'),
+    entrypoint.indexOf('  (\n    cd "$staging"'));
+  await chmod(join(runtime, '.complete'), 0o644);
+  execFileSync('/bin/bash', ['-c', `set -eu\n${stagingFragment}`], {
+    env: { ...process.env, staging: runtime, expected_complete: runtimeFiles.get('.complete').trimEnd() },
+  });
+  await chmod(join(runtime, '.complete'), 0o444);
+  await assert.rejects(readFile(join(runtime, 'empty/nested')), { code: 'ENOENT' });
+  manifest = execFileSync('python', [join(sourceComponent, 'controller/runtime_manifest_verify.py'),
+    runtime, execFileSync('which', ['sha256sum'], { encoding: 'utf8' }).trim()], { encoding: 'utf8' });
   await writeFile(join(runtime, 'RUNTIME_SHA256SUMS'), manifest, { mode: 0o444 });
   await writeFile(join(runtime, 'RUNTIME_SYMLINKS'), '', { mode: 0o444 });
   const receiptPath = join(root, 'install-receipt.json');
@@ -615,8 +716,10 @@ test('the connected Host must be a fresh staged Node process at the pinned candi
 
 test('a returned judge envelope contains hash-only evidence, never answer or transcript text', () => {
   const relayReceipt = { request_marker_sha256: 'a'.repeat(64),
-    prompt_sha256: 'b'.repeat(64), observed_model: MODEL, outbound_effort: 'xhigh' };
-  const envelope = judgeEnvelope({ winner: 'A', transcript_sha256: 'c'.repeat(64) },
+    prompt_sha256: 'b'.repeat(64), observed_model: MODEL, outbound_effort: 'xhigh',
+    response_answer_sha256: 'e'.repeat(64) };
+  const envelope = judgeEnvelope({ winner: 'A', transcript_sha256: 'c'.repeat(64),
+    response_answer_sha256: 'e'.repeat(64) },
     relayReceipt, 'd'.repeat(64));
   assert.equal(envelope.result.winner, 'A');
   assert.equal(envelope.evidence.transcript_sha256, 'c'.repeat(64));

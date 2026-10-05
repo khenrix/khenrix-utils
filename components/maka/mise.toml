@@ -14,7 +14,7 @@ docker-compose = "5.5.1"
 
 [env]
 MAKA_LAB_ROOT = "{{ config_root }}"
-MAKA_EVAL_MODEL = "gpt-5.6-sol"
+MAKA_EVAL_MODEL = "gpt-6.1-sol"
 MAKA_EVAL_THINKING = "xhigh"
 
 [tasks."maka:doctor"]

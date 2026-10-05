@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import shutil
 import tempfile
 import unittest
@@ -74,8 +75,26 @@ class PinnedOverlayTests(unittest.TestCase):
         self.assertIn(relative, compat.PATCHES)
         patched = compat.patched_content(relative, (self.package / relative).read_bytes())
         self.assertIn("MAX_SKILL_TOOL_BODY_CHARS = 40_000", patched.decode("utf-8"))
-        skill = pathlib.Path(__file__).resolve().parents[3] / "shared/superpowers/subagent-driven-development/SKILL.md"
-        self.assertLess(len(skill.read_text(encoding="utf-8")), 40_000)
+
+    def test_component_only_layout_runs_overlay_tests_without_repository_skills(self) -> None:
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as directory:
+            component_root = pathlib.Path(directory) / "maka"
+            shutil.copytree(pathlib.Path(__file__).resolve().parents[1], component_root)
+            self.assertFalse((component_root.parent / "shared").exists())
+            completed = subprocess.run(
+                [sys.executable, "-c",
+                 "import pathlib,sys,unittest; import test_maka_gpt6_compat as tests; "
+                 "tests.PinnedOverlayTests.setUpClass = classmethod("
+                 "lambda cls: setattr(cls, 'package', pathlib.Path(sys.argv[1]))); "
+                 "unittest.main(module=tests, argv=['unittest', "
+                 "'PinnedOverlayTests.test_skill_tool_loads_complete_superpowers_instructions'])",
+                 str(self.package)],
+                cwd=component_root / "scripts", capture_output=True, text=True,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, timeout=30,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

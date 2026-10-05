@@ -843,7 +843,7 @@ class RelayIntegrationTests(unittest.TestCase):
             self.assertNotIn("private prompt", path.read_text())
 
     def test_pinned_routing_chain_requires_recorded_response_in_same_session(self) -> None:
-        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef"
+        marker = "maka:fanout-routing-0123456789abcdef0123456789abcdef-fedcba9876543210fedcba9876543210"
         cache_key = "maka:fanout-routing-fedcba9876543210fedcba9876543210"
         other = "maka:fanout-routing-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         with tempfile.TemporaryDirectory() as directory:
@@ -867,8 +867,9 @@ class RelayIntegrationTests(unittest.TestCase):
             self.assertEqual(status, 200)
 
             continuation = json.loads(valid_body(cache_key=cache_key))
+            skill_value = {"ok": True, "skill": {"instructions": "Canonical text é 😀\n", "truncated": False}}
             continuation.update(
-                input=[{"type": "function_call_output", "call_id": "call_one", "output": "done"}],
+                input=[{"type": "function_call_output", "call_id": "call_one", "output": json.dumps(skill_value)}],
                 previous_response_id="resp_routing_first",
                 tools=tools,
                 tool_choice="auto",
@@ -887,6 +888,18 @@ class RelayIntegrationTests(unittest.TestCase):
             self.assertEqual({receipt["binding"] for receipt in receipts},
                              {"nonce", "response-chain"})
             self.assertTrue(all(receipt["tool_count"] == 2 for receipt in receipts))
+            retained = [json.loads((parent / "relay-routing-receipts" /
+                                    receipt["content_file"]).read_bytes()) for receipt in receipts]
+            self.assertTrue(any(item["input"] == continuation["input"] for item in retained))
+            self.assertTrue(all(hashlib.sha256(
+                (parent / "relay-routing-receipts" / receipt["content_file"]).read_bytes()
+            ).hexdigest() == receipt["content_sha256"] for receipt in receipts))
+
+            new_user = dict(continuation, input=[
+                {"role": "user", "content": [{"type": "input_text", "text": "Unbound new turn"}]}])
+            status, _, _ = self.fixture.request("POST", "/v1/responses", json.dumps(new_user).encode())
+            self.assertEqual(status, 403)
+            self.assertEqual(len(self.fixture.forwarder.calls), 2)
 
             for attempted_cache_key, previous_id in ((cache_key, "resp_unknown"),
                                                      (other, "resp_routing_second")):

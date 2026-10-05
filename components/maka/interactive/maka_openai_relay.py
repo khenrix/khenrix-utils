@@ -629,6 +629,8 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             with self.server.routing_chain_lock:  # type: ignore[attr-defined]
                 prior = self.server.routing_chains.get(previous_id)  # type: ignore[attr-defined]
         chain_attributed = (prior is not None and prior[2] == cache_key
+                            and not any(isinstance(item, dict) and item.get("role") == "user"
+                                        for item in request_metadata.get("input", []))
                             and (pinned_cache_key
                                  or _PINNED_ROUTING_MARKER_RE.fullmatch(prior[0]) is not None))
         session_bound = (pinned_marker or (chain_attributed and prior is not None
@@ -881,7 +883,9 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
             binding = "nonce"
             cache_key = request_metadata.get("prompt_cache_key")
             previous_id = request_metadata.get("previous_response_id")
-            if routing_evidence is None and isinstance(previous_id, str):
+            if (routing_evidence is None and isinstance(previous_id, str)
+                    and not any(isinstance(item, dict) and item.get("role") == "user"
+                                for item in request_metadata.get("input", []))):
                 with self.server.routing_chain_lock:  # type: ignore[attr-defined]
                     prior = self.server.routing_chains.get(previous_id)  # type: ignore[attr-defined]
                 if prior is not None and prior[2] == cache_key:
@@ -935,6 +939,18 @@ class RelayHandler(http.server.BaseHTTPRequestHandler):
                     receipt_root.mkdir(mode=0o700, exist_ok=True)
                     _private_directory(receipt_root)
                     receipt_path = receipt_root / f"{digest}-{instance}.json"
+                    content = json.dumps({
+                        "schema": "khenrix-maka-routing-content-v1",
+                        "request_instance_id": instance,
+                        "request_marker_sha256": digest,
+                        "input": request_metadata["input"],
+                    }, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+                    if len((content + "\n").encode("utf-8")) > 4 * 1024 * 1024:
+                        raise RelayConfigurationError("routing content exceeds its evidence limit")
+                    content_file = f"content-{digest}-{instance}.json"
+                    _write_private_value(receipt_root / content_file, content)
+                    routing_receipt["content_file"] = content_file
+                    routing_receipt["content_sha256"] = hashlib.sha256((content + "\n").encode("utf-8")).hexdigest()
                     _write_private_value(receipt_path, json.dumps(routing_receipt, sort_keys=True))
                     if (observer.created_response_id is not None and status == 200
                             and observer.model == request_metadata["model"]

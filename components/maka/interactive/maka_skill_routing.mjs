@@ -454,7 +454,9 @@ export function verifyHostIdentity({diagnostics, process: observed, expected, ac
   }
   const installed = BigInt(expected.installMonotonicNs);
   const now = BigInt(expected.monotonicNowNs);
-  if (now <= installed) throw new Error('Maka Host source freshness is unavailable');
+  if (expected.installBootSession === expected.currentBootSession && now <= installed) {
+    throw new Error('Maka Host source freshness is unavailable');
+  }
   const uptimeNs = BigInt(diagnostics.processUptimeSeconds) * 1_000_000_000n;
   const fresh = expected.installBootSession !== expected.currentBootSession ||
     now - (uptimeNs + 1_000_000_000n) > installed;
@@ -664,6 +666,25 @@ export async function runRoutingTurn(argv, input, deps) {
   const attest = () => verifyRoutingSessionHost(input, deps);
   await attest();
   let joined = false;
+  const admitted = [];
+  const connection = deps.retainDurableEvidence ? new Proxy(deps.connection, {
+    get(target, name) {
+      if (name === 'request') return async (operation, payload) => {
+        const result = await target.request(operation, payload);
+        if (operation === 'turn.start') {
+          if (result.kind !== 'started' || result.turn?.sessionId !== input.sessionId ||
+              typeof result.turn?.turnId !== 'string' || !result.turn.turnId ||
+              typeof result.turn?.runId !== 'string' || !result.turn.runId) {
+            throw new Error('Maka routing durable admission is unbound');
+          }
+          admitted.push(result.turn);
+        }
+        return result;
+      };
+      const value = Reflect.get(target, name, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) : deps.connection;
   try {
     const status = await deps.runRuntimeHostTextCli(argv, {
       workspaceRoot: () => deps.rootPath,
@@ -677,7 +698,7 @@ export async function runRoutingTurn(argv, input, deps) {
         await attest();
         joined = true;
         return {
-          connection: deps.connection, catalog: deps.catalog, profile: deps.profile,
+          connection, catalog: deps.catalog, profile: deps.profile,
           close: async () => {},
         };
       },
@@ -685,9 +706,36 @@ export async function runRoutingTurn(argv, input, deps) {
     if (!joined || !Number.isInteger(status) || status < 0 || status > 255) {
       throw new Error('Maka routing native CLI did not settle');
     }
+    if (status === 0 && deps.retainDurableEvidence) {
+      if (admitted.length !== 1) throw new Error('Maka routing durable admission is ambiguous');
+      await deps.retainDurableEvidence(admitted[0]);
+    }
     return status;
   } finally {
     if (joined) await attest();
+  }
+}
+
+export async function readRoutingDurableEvidence(rootPath, turn, persistence) {
+  const opened = await persistence.openRuntimeEventReadPersistence({ workspaceRoot: rootPath });
+  try {
+    const invocation = await opened.runtimeEventStore.readRunInvocation(turn.sessionId, turn.runId);
+    const read = await opened.runtimeEventStore.readRuntimeEventsBounded(
+      turn.sessionId, turn.runId, { maxRecords: 256, maxBytes: 2 * 1024 * 1024 });
+    if (!invocation || invocation.sessionId !== turn.sessionId ||
+        invocation.runId !== turn.runId || invocation.turnId !== turn.turnId ||
+        read.status !== 'complete' || !Array.isArray(read.records)) {
+      throw new Error('Maka routing durable evidence is incomplete or exceeds its budget');
+    }
+    const evidence = { schema: 'khenrix-maka-routing-durable-v1',
+      sessionId: turn.sessionId, runId: turn.runId, turnId: turn.turnId,
+      invocationId: invocation.invocationId, invocation, records: read.records };
+    if (Buffer.byteLength(JSON.stringify(evidence)) > 4 * 1024 * 1024) {
+      throw new Error('Maka routing durable evidence exceeds its budget');
+    }
+    return evidence;
+  } finally {
+    await opened.close();
   }
 }
 
@@ -807,6 +855,18 @@ async function main(argv) {
         ...deps, clientDataRoot, profile: profileModule.LOCAL_RUNTIME_HOST_PROFILE,
         catalog: await catalogReader.readRuntimeHostConnectionCatalog(connected.connection),
         runRuntimeHostTextCli: nativeRun.runRuntimeHostTextCli,
+        ...(privateRootId === undefined ? {} : { retainDurableEvidence: async (turn) => {
+          const marker = /(?:^|\n)Receipt nonce: (maka:probe-[0-9a-f]{32}-[0-9a-f]{32})$/u.exec(parsed.args[0]);
+          if (!marker || !marker[1].endsWith(sessionId.slice('fanout-routing-'.length))) {
+            throw new Error('Maka routing durable nonce is unbound');
+          }
+          const persistence = await import(pathToFileURL(join(packageRoot,
+            'node_modules/@maka/storage/dist/runtime-event-persistence.js')));
+          const evidence = await readRoutingDurableEvidence(rootPath, turn, persistence);
+          const markerHash = createHash('sha256').update(marker[1]).digest('hex');
+          await writeFile(join(rootPath, `routing-${markerHash}.json`),
+            JSON.stringify(evidence), { mode: 0o600, flag: 'wx' });
+        } }),
       });
       process.exitCode = status;
       return;

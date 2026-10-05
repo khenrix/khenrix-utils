@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { hostCommandMatches, judgeFailureCode, parseHostStartTime, runJudgeWithHost, sourceBoundaryDigest } from './maka_judge.mjs';
 
@@ -19,6 +20,81 @@ const FRESHNESS = {
 const CACHE_HASH = createHash('sha256').update(`maka:${SESSION_ID}`).digest('hex');
 const RELAY_SOURCE_HASH = createHash('sha256').update(await readFile(join(
   dirname(fileURLToPath(import.meta.url)), 'maka_openai_relay.py'))).digest('hex');
+
+async function licensedPagedTranscript(prompt, fault = null) {
+  const component = dirname(dirname(fileURLToPath(import.meta.url)));
+  const packageRoot = process.env.KHENRIX_MAKA_PACKAGE_ROOT ?? resolve(dirname(execFileSync(
+    'mise', ['-C', component, 'which', 'maka'], { encoding: 'utf8' }).trim()), '..', 'maka-agent');
+  assert.equal(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version,
+    '0.2.0-dev.62.20260928');
+  const { ClientSessionSubscription } = await import(pathToFileURL(join(packageRoot,
+    'node_modules/@maka/runtime-host/dist/client/session-subscription.js')));
+  const user = Buffer.from(JSON.stringify({ type: 'user', turnId: SESSION_ID, text: prompt }));
+  const assistant = Buffer.from(JSON.stringify({ type: 'assistant', turnId: SESSION_ID,
+    text: '{"winner":"B"}', modelId: 'gpt-6.1-sol' }));
+  // Split in the middle of a UTF8 codepoint, then let the licensed assembler
+  // validate the original payload digest and decode only the complete record.
+  let edge = user.length - 15000;
+  while ((user[edge] & 0xc0) !== 0x80) edge -= 1;
+  const fragment = (bytes, sequence, start, end) => ({
+    sequence, totalBytes: bytes.length, byteOffset: start,
+    payloadDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    data: bytes.subarray(start, end).toString('base64'),
+  });
+  const page = (fragments, nextCursor) => ({
+    sessionId: SESSION_ID, direction: 'older', throughSequence: 1,
+    fragments, nextCursor,
+    rawBytes: fragments.reduce((sum, item) => sum + Buffer.from(item.data, 'base64').length, 0),
+  });
+  const bootstrap = page([fragment(assistant, 1, 0, assistant.length),
+    fragment(user, 0, edge, user.length)], 'page-1');
+  assert.ok(bootstrap.rawBytes <= 16384);
+  let requests = 0;
+  return new ClientSessionSubscription({
+    hostEpoch: 'host-1', subscriptionId: 'subscription-1',
+    snapshot: { session: { sessionId: SESSION_ID }, projectionRevision: 1 },
+    activeAssistantStreams: [], nextSequence: 1, transcript: { durable: bootstrap },
+  }, async () => {}, async (input) => {
+    requests += 1;
+    assert.equal(input.subscriptionId, 'subscription-1');
+    assert.equal(input.cursor, requests === 1 ? 'page-1' : 'page-2');
+    assert.equal(input.throughSequence, 1);
+    assert.equal(input.maxBytes, 512 * 1024);
+    const middle = Math.floor(edge / 2);
+    const response = requests === 1 ?
+      page([fragment(user, 0, middle, edge)], 'page-2') :
+      page([fragment(user, 0, 0, middle)], null);
+    if (fault === 'missing') response.nextCursor = null;
+    if (fault === 'repeated') response.nextCursor = input.cursor;
+    if (fault === 'foreign') response.sessionId = 'foreign-session';
+    if (fault === 'watermark') response.throughSequence = 2;
+    if (fault === 'mutated') response.fragments[0].data = Buffer.alloc(
+      Buffer.from(response.fragments[0].data, 'base64').length, 120).toString('base64');
+    return response;
+  }, async () => {});
+}
+
+test('the actual licensed tail pager reconstructs near48KiB multibyte prompts and refuses broken evidence', async (t) => {
+  for (const fault of [null, 'missing', 'repeated', 'foreign', 'watermark', 'mutated']) {
+    const { root, receipts, calls, connection } = await fixture(t);
+    connection.openSessionSubscription = async (input) => {
+      assert.deepEqual(input, { sessionId: SESSION_ID, transcript: { kind: 'tail', maxBytes: 16384 } });
+      const prompt = calls.find(([operation]) => operation === 'turn.start')[1].content.text;
+      assert.ok(Buffer.byteLength(prompt) > 16 * 1024);
+      assert.ok(Buffer.byteLength(prompt) < 48 * 1024);
+      return licensedPagedTranscript(prompt, fault);
+    };
+    const judgment = runJudgeWithHost({
+      panel_id: 'interactive', criterion: 'é'.repeat(22500), answer_a: 'A', answer_b: 'B',
+      expected_boundary_sha256: BOUNDARY,
+    }, { connection, cwd: root, receiptsRoot: receipts, boundarySha256: BOUNDARY, ...FRESHNESS,
+      sourceModifiedAtMs: SOURCE_MODIFIED_AT_MS,
+      hostEntrypointProbe: async () => ({ startedAtMs: SOURCE_MODIFIED_AT_MS + 1000 }),
+      connectionId: 'connection-1', sessionId: () => SESSION_ID });
+    if (fault) await assert.rejects(judgment, /transcript|cursor|fragment|correlation|integrity/i);
+    else assert.equal((await judgment).winner, 'B');
+  }
+});
 
 test('Host argv matches the installed entrypoint with a spaced workspace root', () => {
   const node = '/private/node';
