@@ -280,6 +280,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(payload['max_tokens'], 16384)
         schema = payload['output_config']['format']['schema']['properties']['cards']['items']
         self.assertEqual(schema['properties']['uncertainty'], {'type': 'array', 'items': {'type': 'string'}})
+        self.assertIn('uncertainty, source_links, and cross_references', payload['system'])
+        self.assertIn('at most 32 unique items', payload['system'])
+        for bound in (512, 4096, 16384, 1024):
+            self.assertIn(str(bound), payload['system'])
         self.assertFalse(schema['additionalProperties'])
         self.assertNotIn('tools', payload)
         self.assertEqual(timeout, 300)

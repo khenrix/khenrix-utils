@@ -290,6 +290,10 @@ class VertexCurator:
                              'earlier_source_dates': dates[:-1]}
         system += ' Select source_links and cross_references only from the exact per-page allowed_provenance lists, without rewriting their URLs.'
         system += ' Set each card date to its exact required_date and include every earlier_source_dates value in details or uncertainty, preserving correction history without inventing changes.'
+        system += (f' Each of uncertainty, source_links, and cross_references must contain at most {curation.MAX_METADATA_ITEMS} unique items.'
+                   ' Select the most relevant provenance when the source has more links; disclose omitted references in uncertainty rather than exceeding the list bound.'
+                   f' Text limits in UTF-8 bytes: title {curation.MAX_TITLE_BYTES}, summary {curation.MAX_SUMMARY_BYTES},'
+                   f' details {curation.MAX_DETAILS_BYTES}, each uncertainty item {curation.MAX_UNCERTAINTY_BYTES}. Keep cards concise.')
         request_body = {'anthropic_version': 'vertex-2023-10-16', 'max_tokens': 16384, 'system': system,
                         'messages': [{'role': 'user', 'content': json.dumps({'repository': snapshot.repository, 'commit': snapshot.commit, 'requested_paths': list(pages), 'discovered_paths': snapshot.discovered_paths, 'allowed_provenance': allowed}) + '\nUNTRUSTED_EVIDENCE_JSON\n' + evidence}]}
         # Keep this cached API schema generic; source paths and facts stay in messages.
