@@ -941,3 +941,116 @@ def _persist_synthetic_core_barriers(opened, task, certificate, probe_receipt, t
                 "provider": "agy", "session_id": SESSION_IDS["agy"], "round": 2, "initial_barrier": asdict(barrier.barrier_ref),
                 "session_record": asdict(archived), "original_record": str(session._record), "moved_record": str(moved)})
     return source_bundles, fault
+
+
+@pytest.fixture
+def quality_material_case(tmp_path, monkeypatch):
+    """Real V1 preparation after a synthetic external case-admission seam, not installed proof."""
+    import hashlib
+    from dataclasses import asdict
+    from test_fanout_quality_case import _dormant_service
+    _, quality, runtime, opened, value = _dormant_service(tmp_path)
+    component = importlib.import_module(runtime.__name__ + ".container_coordinator")
+    diagnostic = importlib.import_module(runtime.__name__ + ".diagnostic")
+    container = importlib.import_module(runtime.__name__ + ".container_runtime")
+    broker = importlib.import_module(runtime.__name__ + ".broker")
+    with opened:
+        service = opened.service
+        task = service.plan.tasks[0]
+        preparation = service.preparations[task.id]
+        assert service.plan.schema_version == "v1" and not task.depends_on
+        assert service.coordinator.dependency_scheduler is None
+        quality.require_quality_question(service, preparation, "Which invoice rounding order is correct?\n", "normal")
+        question = service.artifacts.write_json("quality/material-case-input.json", {
+            "prompt": "Which invoice rounding order is correct?\n"})
+        value.update(schema="fanout-quality-installed-case-attachment-v2", backend="container-read-only",
+            case_input=asdict(question), catalog={"fixture": "not used for Claude or agy"}, container={
+                "image_digest": "fanout-seat@sha256:" + "b" * 64,
+                "cli_digests": {provider: "c" * 64 for provider in ("claude", "codex", "agy")},
+                "docker_controls": ["d" * 64 + ".json", "d" * 64]})
+        rows = []
+        for index, seat in enumerate(preparation.seats):
+            profile, timeout = service.coordinator._selected_profile(preparation.packet, seat, preparation.policy, service.inputs)
+            value["seats"][seat.executor_id] = {"seat_id": seat.seat_id,
+                "workspace_digest": seat.workspace_verification.evidence_digest,
+                "profile_digest": profile.digest, "route_id": "synthetic-material-route"}
+            permit = broker.BrokerPermit(seat.executor_id, value["run_id"], task.id, value["target_id"], seat.seat_id,
+                "initial", profile.requested_model, "inert-placeholder", 1, 1024, 2048, 8192,
+                inputs_digest=service.inputs.digest,
+                session_id="11111111-1111-4111-8111-111111111111" if seat.executor_id == "claude" else None)
+            original = {"role": "candidate-seat", "phase": "initial", "condition": "candidate", "epoch": 2 * index + 1,
+                "permit": asdict(permit), "blocker": None, "initial": None, "profile": profile.digest,
+                "catalog": None, "process_seconds": timeout, "outer_seconds": timeout + 60}
+            rows.extend((original, {**original, "phase": "resume", "epoch": 2 * index + 2,
+                "initial": diagnostic.quality_row_identity(original), "permit": {**asdict(permit), "route": "resume"}}))
+        rows.append({**rows[0], "role": "owner-synthesis", "epoch": 7,
+            "permit": {**rows[0]["permit"], "seat_id": rows[0]["permit"]["seat_id"] + "-quality-owner"}})
+        bindings = {key: "a" * 64 for key in ("campaign", "casebook", "source", "projection", "profile", "inputs")}
+        bindings.update(source=quality.runtime_source_digest(), inputs=service.inputs.digest,
+            projection=hashlib.sha256(runtime.canonical_json(quality._quality_input_projection(value))).hexdigest())
+        allocation = {"schema": "fanout-quality-case-allocation-v1", "case_id": value["case_id"],
+            "controller_id": service.lifecycle_controller.controller_id, "bindings": bindings,
+            "maka_output_tokens": 8192, "rows": rows}
+        ref = service.artifacts.write_json("quality/material-allocation.json", allocation)
+        authority = diagnostic.seal_quality_allocation(service.lifecycle_controller, service.artifacts, ref, bindings=bindings)
+        value.update(allocation=list(authority), bindings=bindings)
+        attachment = quality.QualityCaseAttachment(*quality.write_evidence(service.lifecycle_controller,
+            "quality-installed-case-attachment", value))
+        runner = quality.QualityCaseRunner(attachment, helper=__file__, runtime_digest="a" * 64)
+        runner._service = service
+
+        def admitted_context():
+            admitted = quality.read_evidence(service.lifecycle_controller, "quality-installed-case-attachment",
+                attachment.name, attachment.digest)
+            frozen = diagnostic.reopen_quality_allocation(service.lifecycle_controller, service.artifacts, authority, bindings=bindings)
+            return admitted, (task, preparation, frozen, {})
+
+        monkeypatch.setattr(runner, "_context", admitted_context)
+        yield runtime, component, container, quality, service, preparation, runner, value, rows
+
+
+@pytest.mark.parametrize("provider", ["claude", "agy"])
+def test_quality_v1_material_stages_complete_empty_dependency_context(quality_material_case, provider):
+    import hashlib
+    import json
+    runtime, component, container, quality, service, preparation, runner, value, rows = quality_material_case
+    seat = next(seat for seat in preparation.seats if seat.executor_id == provider)
+    row = next(row for row in rows if row["phase"] == "initial" and row["permit"]["seat_id"] == seat.seat_id)
+    request = quality._quality_case_request(service, value, preparation, seat, row)
+    volumes = container.private_volume_names(request.run_id, request.task_id, request.target_id, request.seat_id)
+    handle = container.ContainerHandle("c" * 64, "d" * 64, *volumes)
+    source, name, digest = component.stage_input_material(service.coordinator, preparation.packet, seat, request, handle, quality=runner)
+    context = source / "context"
+    assert (context / "dependencies.json").read_bytes() == runtime.canonical_json([])
+    assert {path.name for path in context.iterdir()} == {"run-inputs.json", "task-packet.json", "compiled-plan.json",
+        "source.md", "task.json", "provider-context.json", "skill-bundle.json", "skill-files.json",
+        "skill-delivery.json", "dependencies.json", "quality-attachment.json", "quality-case-input.json"}
+    assert json.loads((context / "task-packet.json").read_bytes()) == preparation.packet.to_dict()
+    assert (context / "quality-case-input.json").read_bytes() == service.artifacts.read_bytes(runtime.ArtifactRef(**value["case_input"]))
+    assert (source / "repo/source.txt").read_bytes() == next(entry.data for entry in service.baseline.entries if entry.path == "source.txt")
+    material = quality.read_evidence(service.lifecycle_controller, "container-input-material", name, digest)
+    assert material["dependency_context_sha256"] == hashlib.sha256(runtime.canonical_json([])).hexdigest()
+    assert material["workspace_sha256"] == seat.workspace_verification.evidence_digest
+    assert not service.journal.state.seat_phases
+    assert not (service.lifecycle_controller.root / "locks/spend").exists()
+
+
+@pytest.mark.parametrize("dependency", ["record", "artifact", "both"])
+def test_quality_v1_material_refuses_unexpected_dependencies_before_source_creation(quality_material_case, dependency):
+    runtime, component, _, quality, service, preparation, runner, value, rows = quality_material_case
+    seat = preparation.seats[0]
+    packet = preparation.packet
+    artifact = service.artifacts.write_bytes("quality/unexpected-dependency.txt", b"untrusted dependency\n")
+    if dependency in {"record", "both"}:
+        record = runtime.DependencyRecord(packet.run_id, packet.task_id, value["target_id"],
+            "unrelated-task", "unrelated-target", "artifact", 1, "e" * 64, artifact)
+        object.__setattr__(packet, "dependency_records", (record,))
+    if dependency in {"artifact", "both"}:
+        object.__setattr__(packet, "dependency_artifacts", (artifact,))
+    request = quality._quality_case_request(service, value, preparation, seat, rows[0])
+    with pytest.raises(runtime.CollaborationValidationError) as refused:
+        component.stage_input_material(service.coordinator, packet, seat, request, None, quality=runner)
+    assert str(refused.value.__cause__) == "standalone quality dependencies must be empty"
+    assert not list((service.lifecycle_controller.root / "quarantine").glob("input-*"))
+    assert not service.journal.state.seat_phases
+    assert not (service.lifecycle_controller.root / "locks/spend").exists()

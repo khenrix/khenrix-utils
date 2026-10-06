@@ -764,6 +764,8 @@ def stage_input_material(coordinator, packet, seat, request, handle, *, quality=
             from .quality_case import QualityCaseRunner
             if type(quality) is not QualityCaseRunner or quality._service.coordinator is not coordinator:
                 raise ValueError("fixed quality material authority")
+            if packet.dependency_records or packet.dependency_artifacts:
+                raise ValueError("standalone quality dependencies must be empty")
             inputs, baseline, identity, quality_files = quality._material_context(packet, seat, request)
         coordinator._verify_staged_seat(seat, packet)
         if coordinator.artifacts.read_bytes(seat.delivery_evidence_ref) != _delivery_evidence_bytes(seat.admission.engine_evidence):
@@ -773,9 +775,12 @@ def stage_input_material(coordinator, packet, seat, request, handle, *, quality=
         if (request.run_id, request.task_id, request.target_id, request.seat_id, request.inputs_digest) != (
                 identity.run_id, identity.task_id, identity.target_id, identity.seat_id, identity.inputs_digest):
             raise ValueError("request identity")
-        dependencies = build_verified_dependency_context(packet.dependency_records,
-            store=coordinator.artifacts, scheduler=coordinator.dependency_scheduler,
-            max_bytes=MAX_DEPENDENCY_BYTES)
+        if quality is None:
+            dependencies = build_verified_dependency_context(packet.dependency_records,
+                store=coordinator.artifacts, scheduler=coordinator.dependency_scheduler,
+                max_bytes=MAX_DEPENDENCY_BYTES)
+        else:
+            dependencies = canonical_json([])
         skill_files = coordinator._staged_skill_context(seat)
         files = {
             "run-inputs.json": canonical_json(inputs.to_dict()),

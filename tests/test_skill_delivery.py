@@ -881,6 +881,47 @@ def test_doctor_rejects_receipt_missing_shared_contract_fields(tmp_path: Path) -
         skillctl.doctor(config, as_json=False)
 
 
+def test_doctor_explicit_stream_preserves_full_cli_report_and_drift_refs(tmp_path, capsys):
+    import io
+    _, home, config = fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    capsys.readouterr()
+    skillctl.doctor(config, as_json=True)
+    original = json.loads(capsys.readouterr().out)
+    output = io.StringIO()
+    skillctl.doctor(config, as_json=True, output=output)
+    assert json.loads(output.getvalue()) == original
+    assert original["ok"] is True and capsys.readouterr().out == ""
+
+    changed = home / ".agents/skills/khenrix-quality/references/mode.md"
+    changed.write_text("private test drift\n")
+    output = io.StringIO()
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=True, output=output)
+    drift = json.loads(output.getvalue())
+    assert drift["ok"] is False
+    assert "skill:khenrix-quality:codex_maka: UPDATE" in drift["problems"]
+    assert drift["receipt"] == str(config.state_dir / skillctl.RECEIPT_NAME)
+    assert capsys.readouterr().out == ""
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=True)
+    assert json.loads(capsys.readouterr().out) == drift
+
+    receipt = config.state_dir / skillctl.RECEIPT_NAME
+    document = json.loads(receipt.read_bytes())
+    document["skills"]["khenrix-quality"]["targets"]["codex_maka"]["hash"] = "sha256:" + "0" * 64
+    receipt.write_text(json.dumps(document))
+    output = io.StringIO()
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=True, output=output)
+    drift = json.loads(output.getvalue())
+    assert "receipt target records drifted for khenrix-quality" in drift["problems"]
+    assert capsys.readouterr().out == ""
+    with pytest.raises(skillctl.DeliveryError, match="doctor found"):
+        skillctl.doctor(config, as_json=True)
+    assert json.loads(capsys.readouterr().out) == drift
+
+
 @pytest.mark.parametrize(
     "invalid_receipt",
     [[], {"schema_version": 1}, {"schema_version": 1, "skills": []}],

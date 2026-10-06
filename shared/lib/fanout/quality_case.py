@@ -1,7 +1,6 @@
 """One controller-adopted installed read-only Council case; no transport callbacks."""
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import importlib.util
 import io
@@ -178,8 +177,7 @@ def require_quality_installation(value, helper, runtime_digest):
     receipt = config.state_dir / module.RECEIPT_NAME
     if _hash_file(receipt) != value["receipt_digest"]:
         raise ProviderRequestError("quality actual installed receipt changed")
-    with contextlib.redirect_stdout(io.StringIO()):
-        module.doctor(config, as_json=True)
+    module.doctor(config, as_json=True, output=io.StringIO())
     if _hash_file(receipt) != value["receipt_digest"] or _hash_file(helper) != value["helper_digest"]:
         raise ProviderRequestError("quality installed evidence changed during comparison")
 

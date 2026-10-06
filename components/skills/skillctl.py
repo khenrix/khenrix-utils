@@ -25,7 +25,7 @@ import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared/lib/fanout"))
 from historical_only import contains_historical, historical_only
@@ -1283,7 +1283,7 @@ def _restore_locked(config: Configuration, backup_id: str) -> None:
     print(f"restored backup {backup_root.name}")
 
 
-def doctor(config: Configuration, *, as_json: bool) -> None:
+def doctor(config: Configuration, *, as_json: bool, output: TextIO | None = None) -> None:
     problems: list[str] = []
     try:
         _, entries = plan(config)
@@ -1328,12 +1328,12 @@ def doctor(config: Configuration, *, as_json: bool) -> None:
         "managed_skills": list(config.skills),
     }
     if as_json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        print(json.dumps(result, indent=2, sort_keys=True), file=output)
     elif problems:
         for problem in problems:
-            print(f"FAIL {problem}")
+            print(f"FAIL {problem}", file=output)
     else:
-        print("OK selective skill delivery and all four house-style targets are aligned")
+        print("OK selective skill delivery and all four house-style targets are aligned", file=output)
     if problems:
         raise DeliveryError(f"doctor found {len(problems)} problem(s)")
 

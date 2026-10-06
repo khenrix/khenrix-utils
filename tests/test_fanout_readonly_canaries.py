@@ -358,8 +358,25 @@ def test_canary_launch_releases_journal_guard_before_inert_http(
     guard = coordinator._journal_guard
 
     def require_released():
-        assert guard.acquire(blocking=False), "journal guard held through external-call seam"
-        guard.release()
+        failures = []
+
+        def sibling():
+            try:
+                assert guard.acquire(blocking=False), "journal guard held through external-call seam"
+                guard.release()
+            except BaseException as error:
+                failures.append(error)
+
+        worker = threading.Thread(target=sibling, daemon=True)
+        worker.start()
+        worker.join(2)
+        assert not worker.is_alive(), "journal guard release probe did not settle"
+        if failures:
+            raise failures[0]
+
+    with guard:
+        with pytest.raises(AssertionError, match="journal guard held through external-call seam"):
+            require_released()
 
     class FixtureCredential:
         fingerprint = "c" * 64

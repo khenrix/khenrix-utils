@@ -89,6 +89,91 @@ def test_fresh_helper_quality_entry_requires_attachment_without_native_or_creden
     assert not list(tmp_path.iterdir())
 
 
+def test_parallel_quality_installation_doctors_keep_process_stdout_and_per_call_reports(tmp_path, monkeypatch):
+    import io
+    import threading
+    from types import SimpleNamespace
+    from shared.lib.fanout import quality_case
+    from test_skill_delivery import fixture, skillctl
+    repo, home, config = fixture(tmp_path)
+    skillctl.apply(config, expect=None, as_json=False)
+    validator = repo / "components/skills/skillctl.py"
+    validator.parent.mkdir(parents=True)
+    validator.write_bytes((ROOT / "components/skills/skillctl.py").read_bytes())
+    helper_path = home / ".agents/skills/llm-fanout-execute/scripts/execute.py"
+    helper_path.parent.mkdir(parents=True)
+    helper_path.write_bytes(HELPER.read_bytes())
+    spec = importlib.util.spec_from_file_location("_private_quality_stdout_helper", helper_path)
+    helper = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, helper)
+    spec.loader.exec_module(helper)
+    monkeypatch.setattr(quality_case.pwd, "getpwuid", lambda _: SimpleNamespace(pw_dir=str(home)))
+    receipt = config.state_dir / skillctl.RECEIPT_NAME
+    value = {"repo_root": str(repo), "helper_path": str(helper_path),
+        "helper_digest": hashlib.sha256(helper_path.read_bytes()).hexdigest(),
+        "receipt_digest": hashlib.sha256(receipt.read_bytes()).hexdigest(), "runtime_digest": "d" * 64}
+    before_receipt, before_helper = receipt.read_bytes(), helper_path.read_bytes()
+    entered = {name: threading.Event() for name in ("doctor-a", "doctor-b")}
+    release = {name: threading.Event() for name in entered}
+    reports, seen_stdout, failures = {}, {}, []
+    execute_module = importlib.machinery.SourceFileLoader.exec_module
+
+    def schedule_actual_doctor(loader, module):
+        execute_module(loader, module)
+        if module.__name__ != "_fanout_quality_skillctl":
+            return
+        actual = module.doctor
+
+        def scheduled(config, **kwargs):
+            name = threading.current_thread().name
+            reports[name] = kwargs.get("output")
+            seen_stdout[name] = sys.stdout
+            entered[name].set()
+            assert release[name].wait(5), "parallel doctor schedule did not settle"
+            return actual(config, **kwargs)
+
+        module.doctor = scheduled
+
+    monkeypatch.setattr(importlib.machinery.SourceFileLoader, "exec_module", schedule_actual_doctor)
+    def worker():
+        try:
+            quality_case.require_quality_installation(value, helper_path, value["runtime_digest"])
+        except BaseException as error:
+            failures.append(error)
+
+    original_stdout = sys.stdout
+    workers = [threading.Thread(target=worker, name=name, daemon=True) for name in entered]
+    try:
+        workers[0].start()
+        assert entered["doctor-a"].wait(5)
+        workers[1].start()
+        assert entered["doctor-b"].wait(5)
+        stdout_during_overlap = sys.stdout is original_stdout
+        release["doctor-a"].set()
+        workers[0].join(5)
+        assert not workers[0].is_alive()
+        release["doctor-b"].set()
+        workers[1].join(5)
+        stdout_after = sys.stdout is original_stdout
+    finally:
+        for event in release.values():
+            event.set()
+        for thread in workers:
+            if thread.ident is not None:
+                thread.join(5)
+        sys.stdout = original_stdout
+    assert not any(thread.is_alive() for thread in workers)
+    if failures:
+        raise failures[0]
+    assert stdout_during_overlap and stdout_after, "parallel installation doctors changed process stdout"
+    assert all(stream is original_stdout for stream in seen_stdout.values())
+    assert all(isinstance(report, io.StringIO) for report in reports.values())
+    assert reports["doctor-a"] is not reports["doctor-b"]
+    assert [json.loads(reports[name].getvalue()) for name in entered] == [{
+        "ok": True, "receipt": str(receipt), "problems": [], "managed_skills": list(config.skills)}] * 2
+    assert receipt.read_bytes() == before_receipt and helper_path.read_bytes() == before_helper
+
+
 def _dormant_service(tmp_path):
     from test_fanout_execute_skill import _question_packet, _repository, _registry, _NeverMemory, fanout
     helper = _execute()
