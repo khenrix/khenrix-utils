@@ -558,6 +558,49 @@ def test_no_spend_trial_cli_prepares_targets_before_owner_issuance(tmp_path, cer
     assert __import__("json").loads(capsys.readouterr().out)["provider_turns"] == 0
 
 
+def test_trial_preparer_creates_git_representable_readmes_under_private_umask(tmp_path):
+    import json
+    import os
+    import stat
+    from shared.lib.fanout import container_coordinator as helper, branch_handover as handover
+    from shared.lib.fanout.repo import capture_repository_baseline
+    from shared.lib.fanout.targets import TargetSpec, resolve_target
+    from shared.lib.fanout.verification import CandidateBundle, CandidateEntry
+
+    root = tmp_path / "private-umask-preparation"
+    root.mkdir(mode=0o700)
+    previous_umask = os.umask(0o077)
+    try:
+        repositories = helper.prepare_container_trial_targets(root)
+    finally:
+        os.umask(previous_umask)
+
+    controller, created = helper._read_trial_preparation(root)
+    assert len(repositories) == len(created) == 2
+    private_directories = (root, root / "targets", *repositories, controller.root,
+                           *(path for path in controller.root.rglob("*") if path.is_dir()))
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in private_directories)
+    pointer = root / "trial-preparation.json"
+    evidence_name, _ = json.loads(pointer.read_bytes())["evidence"]
+    private_files = (root.with_name(root.name + ".controller-capability"), pointer,
+                     controller.root / "controller.json", controller.root / "receipts" / evidence_name)
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in private_files)
+    assert all(stat.S_IMODE((repository / "README.md").stat().st_mode) == 0o644
+               for repository in repositories)
+    for repository in repositories:
+        baseline = capture_repository_baseline(repository)
+        original = next(entry for entry in baseline.entries if entry.path == "README.md")
+        candidate = CandidateBundle(baseline.digest, (
+            CandidateEntry("README.md", "file", original.mode, b"synthetic trial change\n"),
+        ), ())
+        binding = resolve_target(TargetSpec(repository.name,
+            f"github.com/fanout-fixture/{repository.name}", "TRIAL-1", "refs/heads/TRIAL-1"), repository)
+        with handover._git_authority(binding):
+            entries = handover._candidate_git_entries(repository, baseline, candidate)
+        assert set(entries) == {"README.md"}
+        assert entries["README.md"][0] == 0o100644
+
+
 @pytest.mark.parametrize("symlink", [False, True])
 def test_trial_preparer_refuses_existing_sibling_capability_before_creation(tmp_path, symlink):
     from shared.lib.fanout.container_coordinator import prepare_container_trial_targets

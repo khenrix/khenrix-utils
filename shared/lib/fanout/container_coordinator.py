@@ -1289,6 +1289,7 @@ def prepare_container_trial_targets(trial_root):
         _git(target, "config", "user.email", "fanout-trial@example.invalid")
         _git(target, "config", "remote.origin.url", f"https://github.com/fanout-fixture/{name}.git")
         (target / "README.md").write_bytes(b"immutable synthetic trial input\n")
+        (target / "README.md").chmod(0o644)
         _git(target, "add", "README.md")
         _git(target, "commit", "-qm", "synthetic baseline")
         roots.append(target)
