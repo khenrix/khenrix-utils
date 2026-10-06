@@ -498,8 +498,12 @@ def _separate_target_paths(target_roots: Mapping[str, Path], run: Path,
     _disjoint_target_paths(target_roots, run, authority, private)
 
 
-def _task_seat_id(task_id: str, executor_id: str) -> str:
-    return "seat-" + _sha256(f"{task_id}\0{executor_id}".encode("utf-8"))[:24]
+def _task_seat_id(task_id: str, executor_id: str, *, run_id: str | None = None) -> str:
+    identity = f"{task_id}\0{executor_id}"
+    if run_id is not None:
+        # Guest sockets share one VM namespace, including retained stopped runs.
+        identity = f"{run_id}\0{identity}"
+    return "seat-" + _sha256(identity.encode("utf-8"))[:24]
 
 
 def _admission_session_id(run_id: str, task_id: str, executor_id: str) -> str:
@@ -799,7 +803,8 @@ def _build_preparations(runtime, *, plan, inputs, resolver, bundles, source_mark
         if not restore:
             stage_group.mkdir(parents=True, mode=0o700, exist_ok=False)
         for executor in policy.executor_ids:
-            seat_id = _task_seat_id(task.id, executor)
+            seat_id = _task_seat_id(task.id, executor,
+                                   run_id=inputs.run_id if plan.schema_version == "v2" else None)
             session_id = _admission_session_id(inputs.run_id, task.id, executor)
             if restore:
                 recorded = (workspace_evidence or {}).get(task.id, {}).get(executor)

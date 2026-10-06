@@ -975,7 +975,7 @@ def quality_material_case(tmp_path, monkeypatch):
                 "workspace_digest": seat.workspace_verification.evidence_digest,
                 "profile_digest": profile.digest, "route_id": "synthetic-material-route"}
             permit = broker.BrokerPermit(seat.executor_id, value["run_id"], task.id, value["target_id"], seat.seat_id,
-                "initial", profile.requested_model, "inert-placeholder", 1, 1024, 2048, 8192,
+                "initial", profile.requested_model, "disposable-placeholder", 1, 1024, 2048, 8192,
                 inputs_digest=service.inputs.digest,
                 session_id="11111111-1111-4111-8111-111111111111" if seat.executor_id == "claude" else None)
             original = {"role": "candidate-seat", "phase": "initial", "condition": "candidate", "epoch": 2 * index + 1,

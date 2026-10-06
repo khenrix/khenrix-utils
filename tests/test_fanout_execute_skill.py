@@ -1292,6 +1292,37 @@ def test_v2_start_escrows_targets_and_dormant_backends_without_spend(execute, tm
     assert not (run / "slots").exists()
 
 
+def test_v2_repeated_plan_uses_distinct_guest_sockets_and_cold_reopens_exact_seats(
+    execute, tmp_path,
+):
+    from fanout.container_runtime import seat_socket_path
+
+    packet, _ = _v2_write_packet(tmp_path)
+    address = _v2_target_root(tmp_path)
+    common = dict(runtime=fanout, registry=_registry(), memory_factory=_NeverMemory,
+                  memory_preflight=lambda: False,
+                  provider_runner=lambda *_args, **_kwargs: pytest.fail("provider launched"))
+    sockets = []
+    for index in range(2):
+        storage = tmp_path / f"execution-{index}"
+        storage.mkdir()
+        private = storage / "private"
+        private.mkdir(mode=0o700)
+        execute.start_v2_run(
+            packet, target_roots={"address": address}, run_root=storage / "run",
+            authority_root=storage / "authority", private_root=private,
+            skill_roots=(tmp_path / "skills",), budget=6,
+            runtime=fanout, registry=_registry(),
+        )
+        with execute.open_run(private, **common) as opened:
+            seats = tuple(seat.seat_id for seat in opened.service.preparations["change"].seats)
+        with execute.open_run(private, **common) as reopened:
+            assert tuple(seat.seat_id for seat in reopened.service.preparations["change"].seats) == seats
+        assert len(set(seats)) == 3
+        sockets.append({seat_socket_path(seat) for seat in seats})
+    assert sockets[0].isdisjoint(sockets[1])
+
+
 def _v2_cold_status_fixture(execute, tmp_path, *, writer_check=None):
     packet = _v2_two_repo_packet(tmp_path, writer_check=writer_check)
     address_dir, booking_dir = tmp_path / "address-work", tmp_path / "booking-work"
