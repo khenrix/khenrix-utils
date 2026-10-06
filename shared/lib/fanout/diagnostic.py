@@ -288,7 +288,10 @@ def _quality_resolved_permit(controller, store, authority, allocation, row, init
                 or original["initial"] is not None):
             raise ValueError("original row association")
         terminal = read_evidence(controller, _CATEGORY, *prior["terminal"])
-        if (terminal["valid"] is not True or terminal["route"] != "initial"
+        assigned_session = original["permit"]["session_id"]
+        initial_route = ("initial:unassigned" if assigned_session is None
+                         else f"initial:assigned:{assigned_session}")
+        if (terminal["valid"] is not True or terminal["route"] != initial_route
                 or terminal["process_status"] != "exit" or terminal["exit_code"] != 0
                 or not terminal["session_id"] or not prior["records"]
                 or any(record["state"] != "settled" for record in prior["records"])):

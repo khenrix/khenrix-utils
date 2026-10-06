@@ -34,6 +34,7 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_release_evaluations.py \
                 tests/test_eval_provider.py tests/test_tuneup_fanout.py \
                 tests/test_fanout_native_boundary.py tests/test_fanout_provider_diagnostic.py \
+                tests/test_fanout_quality_predecessor_route.py \
                 tests/test_fanout_process.py \
                 tests/test_fanout_preparation.py \
                 tests/test_fanout_providers.py tests/test_fanout_broker.py tests/test_fanout_profiles.py \
