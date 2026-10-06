@@ -550,7 +550,8 @@ def test_host_relay_bounds_repeated_rejected_frames(tmp_path):
     frames = CountingFrames()
     with pytest.raises(BrokerRejected, match="budget"):
         HostRelay(ledger, _broker(permit)).serve(frames)
-    assert frames.received <= 5
+    assert frames.received == 6
+    assert ledger.attempt_counts(permit_id, 1) == (4, 3)
     assert ledger.auxiliary_refusal_count(permit_id, 1) == 1
 
 
@@ -999,7 +1000,7 @@ def test_cold_reopen_rejects_more_classified_events_than_attempts(tmp_path):
 
 
 @pytest.mark.parametrize("provider,model,expected", [
-    ("agy", "gemini-3.8-flash-high", 34),
+    ("agy", "gemini-3.8-flash-high", 35),
     ("agy", "test-model", 32),
     ("claude", "test-model", 32),
     ("codex", "test-model", 32),
@@ -1072,22 +1073,22 @@ def test_guest_idle_session_sends_finite_closure(monkeypatch):
         assert not os.path.lexists(guest.seat_socket_path("seat-1"))
 
 
-def test_guest_accepts_only_finite_34_attempt_ceiling(monkeypatch):
+def test_guest_accepts_only_finite_35_attempt_ceiling(monkeypatch):
     guest = _guest_module()
     with tempfile.TemporaryDirectory(prefix="fanout-", dir="/tmp") as socket_root:
         monkeypatch.setattr(guest, "GUEST_SOCKET_ROOT", socket_root)
         frames = _Frames([])
         relay = guest.GuestRelay("seat-1", "a" * 64, 1, frames,
-                                 max_requests=34, max_request_bytes=1024,
+                                 max_requests=35, max_request_bytes=1024,
                                  max_response_bytes=1024)
         try:
-            assert relay.max_requests == 34
+            assert relay.max_requests == 35
         finally:
             relay.server_close()
             os.unlink(guest.seat_socket_path("seat-1"))
         with pytest.raises(guest.RelayRejected, match="budget"):
             guest.GuestRelay("seat-1", "a" * 64, 1, frames,
-                             max_requests=35, max_request_bytes=1024,
+                             max_requests=36, max_request_bytes=1024,
                              max_response_bytes=1024)
 
 
@@ -1323,6 +1324,138 @@ def test_bridge_forwards_bounded_http_to_only_mounted_unix_socket(tmp_path):
         bridge.server_close()
         right.close()
         thread.join(timeout=2)
+
+
+def _agy_observed_frames(permit_id, *, main_count=4, auxiliary_count=3):
+    frames = [{"type": "ready", "seat_id": "seat-1", "permit_id": permit_id, "epoch": 1}]
+    digest = hashlib.sha256(b'{"ok":true}').hexdigest()
+    for count in range(max(main_count, auxiliary_count)):
+        for auxiliary in (True, False):
+            if count >= (auxiliary_count if auxiliary else main_count):
+                continue
+            request_id = ("aux-" if auxiliary else "main-") + str(count)
+            model = "gemini-3.1-flash-lite-preview" if auxiliary else "gemini-3.8-flash"
+            frames.append({"type": "request", "permit_id": permit_id, "epoch": 1,
+                "request_id": request_id, "method": "POST",
+                "provider_path": f"/v1beta/models/{model}:streamGenerateContent?alt=sse",
+                "headers": _headers("agy"), "body_b64": base64.b64encode(_body("agy")).decode()})
+            if not auxiliary:
+                frames.append({"type": "response_ack", "request_id": request_id,
+                               "response_digest": digest})
+    frames.append({"type": "close"})
+    return frames
+
+
+def test_observed_three_auxiliary_attempts_leave_fourth_main_slot_after_cold_reopen(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    controller, ledger, permit_id = _ledger(tmp_path, permit)
+    sends = []
+    HostRelay(ledger, _broker(permit, sends=sends)).serve(
+        _Frames(_agy_observed_frames(permit_id, main_count=3)))
+    reopened = PermitLedger(tmp_path / "spend", resume_lifecycle_controller(
+        controller.root, controller.capability))
+    assert reopened.attempt_counts(permit_id, 1) == (6, 3)
+    assert len(reopened.request_records(permit_id, 1)) == 3
+    assert reopened.auxiliary_refusal_count(permit_id, 1) == 1
+    request = _request(permit_id, "agy", request_id="fourth-main",
+        path="/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse")
+    response = dispatch_once(request, reopened, _broker(permit, sends=sends))
+    assert b"".join(response.body) == b'{"ok":true}'
+    response.body.acknowledge(hashlib.sha256(b'{"ok":true}').hexdigest())
+    assert reopened.attempt_counts(permit_id, 1) == (7, 3)
+    assert len(sends) == len(reopened.request_records(permit_id, 1)) == 4
+    assert all(record["state"] == "settled" for record in reopened.request_records(permit_id, 1))
+    with pytest.raises(BrokerRejected, match="budget"):
+        dispatch_once(replace(request, request_id="fifth-main"), reopened, _broker(permit, sends=sends))
+    assert len(sends) == 4
+
+
+def test_observed_fenced_ledger_remains_unreplayable_with_new_allowance(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    controller, ledger, permit_id = _ledger(tmp_path, permit)
+    sends = []
+    HostRelay(ledger, _broker(permit, sends=sends)).serve(
+        _Frames(_agy_observed_frames(permit_id, main_count=3)))
+    ledger.fence_epoch(permit_id, 1)
+    original = ledger._record.read_bytes()
+    reopened = PermitLedger(tmp_path / "spend", resume_lifecycle_controller(
+        controller.root, controller.capability))
+    assert reopened.attempt_counts(permit_id, 1) == (6, 3)
+    with pytest.raises(BrokerRejected, match="fenced"):
+        reopened.record_attempt(permit_id, 1)
+    assert reopened._record.read_bytes() == original
+    assert len(sends) == len(reopened.request_records(permit_id, 1)) == 3
+
+
+def test_host_relay_three_refused_auxiliary_and_four_main_have_only_four_sends(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    _, ledger, permit_id = _ledger(tmp_path, permit)
+    sends = []
+    frames = _Frames(_agy_observed_frames(permit_id))
+    HostRelay(ledger, _broker(permit, sends=sends)).serve(frames)
+    assert ledger.attempt_counts(permit_id, 1) == (7, 3)
+    assert [item["type"] for item in frames.sent].count("reject") == 3
+    assert frames.sent[-1] == {"type": "closed"}
+    assert len(sends) == 4
+    assert all(item[1] == "/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse" for item in sends)
+    for count in range(3):
+        with pytest.raises(BrokerRejected, match="reservation"):
+            ledger.disposition("aux-" + str(count))
+
+
+def test_auxiliary_allowance_cannot_be_reused_for_fourth_auxiliary(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    _, ledger, permit_id = _ledger(tmp_path, permit)
+    sends = []
+    frames = _Frames(_agy_observed_frames(permit_id, main_count=0, auxiliary_count=4))
+    HostRelay(ledger, _broker(permit, sends=sends)).serve(frames)
+    assert sends == []
+    assert ledger.attempt_counts(permit_id, 1) == (4, 3)
+    assert ledger.auxiliary_refusal_count(permit_id, 1) == 1
+    assert ledger.request_records(permit_id, 1) == ()
+
+
+def test_authenticated_reopen_refuses_excess_auxiliary_count(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    controller, ledger, permit_id = _ledger(tmp_path, permit)
+    for _ in range(4):
+        ledger.record_attempt(permit_id, 1)
+    record = json.loads(ledger._record.read_bytes())
+    record["payload"]["permits"][permit_id].update(auxiliary_attempts=4, auxiliary_refusals=1)
+    record["mac"] = ledger._mac(record["payload"])
+    ledger._record.write_bytes(container_broker.canonical_json(record))
+    with pytest.raises(BrokerRejected, match="attempt"):
+        PermitLedger(tmp_path / "spend", controller).attempt_counts(permit_id, 1)
+
+
+def test_auxiliary_allowance_cannot_increase_four_main_spend_cap(tmp_path):
+    permit = replace(_permit("agy", budget=4), model="gemini-3.8-flash-high")
+    _, ledger, permit_id = _ledger(tmp_path, permit)
+    sends = []
+    HostRelay(ledger, _broker(permit, sends=sends)).serve(
+        _Frames(_agy_observed_frames(permit_id, auxiliary_count=0)))
+    request = _request(permit_id, "agy", request_id="fifth-main",
+        path="/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse")
+    with pytest.raises(BrokerRejected, match="request budget"):
+        dispatch_once(request, ledger, _broker(permit, sends=sends))
+    assert ledger.attempt_counts(permit_id, 1) == (5, 0)
+    assert len(sends) == len(ledger.request_records(permit_id, 1)) == 4
+
+
+def test_guest_35_attempt_validation_is_finite_without_opening_socket(monkeypatch):
+    guest = _guest_module()
+    class ReachedBind(Exception):
+        pass
+    def no_bind(*args, **kwargs):
+        raise ReachedBind
+    monkeypatch.setattr(guest.os.path, "lexists", lambda path: False)
+    monkeypatch.setattr(guest.UnixStreamServer, "__init__", no_bind)
+    with pytest.raises(ReachedBind):
+        guest.GuestRelay("seat-1", "a" * 64, 1, _Frames([]),
+                         max_requests=35, max_request_bytes=1024, max_response_bytes=1024)
+    with pytest.raises(guest.RelayRejected, match="budget"):
+        guest.GuestRelay("seat-1", "a" * 64, 1, _Frames([]),
+                         max_requests=36, max_request_bytes=1024, max_response_bytes=1024)
 
 
 def test_bridge_slow_request_body_hits_total_deadline(monkeypatch):

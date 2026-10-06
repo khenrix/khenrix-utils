@@ -66,12 +66,17 @@ def _valid_id(value: object) -> bool:
     return isinstance(value, str) and _ID.fullmatch(value) is not None
 
 
-def attempt_limit(permit: BrokerPermit | Mapping[str, object]) -> int:
-    """Finite guest/host attempt allowance; the broker spend cap is separate."""
+def auxiliary_attempt_limit(permit: BrokerPermit | Mapping[str, object]) -> int:
+    """Only the measured agy High auxiliary path receives a refusal allowance."""
     provider = permit["provider"] if isinstance(permit, Mapping) else permit.provider
     model = permit["model"] if isinstance(permit, Mapping) else permit.model
+    return 3 if provider == "agy" and model == "gemini-3.8-flash-high" else 0
+
+
+def attempt_limit(permit: BrokerPermit | Mapping[str, object]) -> int:
+    """Finite guest/host attempt allowance; the broker spend cap is separate."""
     maximum = permit["max_requests"] if isinstance(permit, Mapping) else permit.max_requests
-    return maximum + (2 if provider == "agy" and model == "gemini-3.8-flash-high" else 0)
+    return maximum + auxiliary_attempt_limit(permit)
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +412,7 @@ class PermitLedger:
                     or not 0 <= entry["used"] <= entry["max_requests"]
                     or not 0 <= entry["attempts"] <= maximum
                     or not 0 <= entry["auxiliary_attempts"] <= entry["attempts"]
+                    or entry["auxiliary_attempts"] > auxiliary_attempt_limit(entry)
                     or entry["auxiliary_refusals"] != min(1, entry["auxiliary_attempts"])
                     or (entry["auxiliary_attempts"] > 0 and maximum == entry["max_requests"])):
                 raise BrokerRejected("broker ledger attempt entry is invalid")
@@ -607,6 +613,7 @@ class PermitLedger:
             if entry["fenced"]:
                 raise BrokerRejected("broker permit epoch is fenced")
             if (entry["provider"] != "agy" or entry["model"] != "gemini-3.8-flash-high"
+                    or entry["auxiliary_attempts"] >= auxiliary_attempt_limit(entry)
                     or entry["auxiliary_attempts"] >= entry["attempts"] - entry["used"]):
                 raise BrokerRejected("broker auxiliary attempt is unavailable")
             entry["auxiliary_attempts"] += 1

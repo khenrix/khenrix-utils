@@ -231,7 +231,7 @@ class GuestRelay(UnixStreamServer):
                  *, max_requests: int, max_request_bytes: int, max_response_bytes: int):
         if (not isinstance(permit_id, str) or _SHA.fullmatch(permit_id) is None
                 or type(epoch) is not int or epoch < 1
-                or type(max_requests) is not int or not 1 <= max_requests <= 34
+                or type(max_requests) is not int or not 1 <= max_requests <= 35
                 or type(max_request_bytes) is not int or not 1 <= max_request_bytes <= 1024 * 1024
                 or type(max_response_bytes) is not int or not 1 <= max_response_bytes <= 8 * 1024 * 1024):
             raise RelayRejected("relay permit budget is invalid")

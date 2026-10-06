@@ -1730,7 +1730,7 @@ def test_agy_high_guest_receives_attempt_ceiling_while_permit_keeps_spend_limit(
         control.open()
     assert captured
     arguments = captured[0]
-    assert arguments[arguments.index("--max-requests") + 1] == "34"
+    assert arguments[arguments.index("--max-requests") + 1] == "35"
     assert control.broker.permit.max_requests == 32
 
 
@@ -2471,6 +2471,7 @@ def test_colima_receives_owned_nonwritable_home_without_ambient_secrets(tmp_path
     from shared.lib.fanout import container_boundary as boundary
     home = tmp_path / 'host-home'
     home.mkdir(mode=0o750)
+    home.chmod(0o750)
     monkeypatch.setenv('HOME', str(home))
     for name in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS',
                  'GIT_DIR', 'GIT_CONFIG_COUNT', 'HTTPS_PROXY', 'DOCKER_HOST', 'DOCKER_CONTEXT',
