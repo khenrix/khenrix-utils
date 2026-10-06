@@ -779,6 +779,20 @@ class ContainerLauncher:
                           ensure_ascii=True).encode("ascii")
         return hashlib.sha256(data).hexdigest()
 
+    def _inventory_items(self, ids: list[str]):
+        for offset in range(0, len(ids), 8):
+            batch = ids[offset:offset + 8]
+            raw = self._run("inspect", "--type", "container", *batch)
+            try:
+                items = json.loads(raw)
+            except (UnicodeDecodeError, ValueError) as error:
+                raise ProviderRequestError("Docker orphan inspect returned invalid JSON") from error
+            if (not isinstance(items, list) or len(items) != len(batch)
+                    or any(not isinstance(item, dict) or item.get("Id") != container_id
+                           for container_id, item in zip(batch, items))):
+                raise ProviderRequestError("recovery container identity differs")
+            yield from zip(batch, items)
+
     def _inventory(self, spec: ContainerSpec, volume_sources: tuple[str, str], *,
                    fence_owned: bool, exclude_id: str | None = None,
                    predecessors: tuple[tuple[str, str], ...] | None = None,
@@ -848,13 +862,7 @@ class ContainerLauncher:
         stopped_observations: list[tuple[str, str]] = []
         foreign_conflict = False
         owned_conflict = False
-        for container_id in ids:
-            if container_id == exclude_id:
-                continue
-            item = _json_one(self._run("inspect", "--type", "container", container_id),
-                             "orphan inspect")
-            if item.get("Id") != container_id:
-                raise ProviderRequestError("recovery container identity differs")
+        for container_id, item in self._inventory_items([value for value in ids if value != exclude_id]):
             if container_id in active:
                 peer_spec, peer_handle, peer_sources = active[container_id]
                 observed = self._inspect(container_id, peer_spec, None, image_id, peer_sources,

@@ -1176,18 +1176,21 @@ class FakeDocker:
                                     if matches(item)), json_output=False)
         if args[:2] == ("inspect", "--type"):
             assert args[2] == "container"
-            item = self.old.get(args[3])
-            if item is None:
-                if args[3] not in (CONTAINER_ID, self.inspect["Name"].removeprefix("/")):
-                    return subprocess.CompletedProcess((), 1, b"", b"container not found")
-                if args[3] == CONTAINER_ID:
-                    self.inspect_count += 1
-                    if self.inspect_count == self.fail_inspect_at:
-                        return subprocess.CompletedProcess((), 1, b"", b"inspect unavailable")
-                    if self.inspect_count == 2 and self.mutate_second_inspect:
-                        self.mutate_second_inspect(self.inspect)
-                item = self.inspect
-            return self._ok([copy.deepcopy(item)])
+            items = []
+            for container_id in args[3:]:
+                item = self.old.get(container_id)
+                if item is None:
+                    if container_id not in (CONTAINER_ID, self.inspect["Name"].removeprefix("/")):
+                        return subprocess.CompletedProcess((), 1, b"", b"container not found")
+                    if container_id == CONTAINER_ID:
+                        self.inspect_count += 1
+                        if self.inspect_count == self.fail_inspect_at:
+                            return subprocess.CompletedProcess((), 1, b"", b"inspect unavailable")
+                        if self.inspect_count == 2 and self.mutate_second_inspect:
+                            self.mutate_second_inspect(self.inspect)
+                    item = self.inspect
+                items.append(copy.deepcopy(item))
+            return self._ok(items)
         if args[0] == "create":
             self.events.append("create")
             self.created = True

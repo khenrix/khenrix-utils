@@ -192,7 +192,8 @@ def quality_session_command(request, *, catalog_path=None) -> ProcessCommand:
             raise ProcessValidationError("quality agy prompt must be UTF-8") from error
         stdin = (json.dumps({"event": "user", "message": {"content": prompt}},
                             ensure_ascii=False) + "\n").encode()
-    return ProcessCommand(argv, stdin, cwd=request.cwd, timeout=request.timeout)
+    return ProcessCommand(argv, stdin, cwd=request.cwd, timeout=request.timeout,
+        slot_cap=request.slot_cap, slot_timeout=request.slot_timeout, slot_root=request.slot_root)
 
 
 def _private_directory(path: Path) -> None:

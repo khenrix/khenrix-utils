@@ -23,7 +23,8 @@ def test_quality_session_grammar_preserves_exact_resume_and_stdin(tmp_path, prov
     request = SimpleNamespace(executor_id=provider, profile=profile, resume=False,
         session_id="ed1e3f89-8ce9-44b7-9684-59f05d9c7f9a" if provider == "claude" else None,
         prompt_bytes="private exact prompt α".encode(), prompt="private exact prompt α",
-        cwd=tmp_path, retries=0, timeout=30)
+        cwd=tmp_path, retries=0, timeout=30,
+        slot_cap=2, slot_timeout=1.25, slot_root=tmp_path / "slots")
     catalog = "/workspace/inputs/" + "a" * 64 + "/published/context/quality-catalog.json"
     first = runtime.quality_session_command(request, catalog_path=catalog if provider == "codex" else None)
     request.resume = True
@@ -54,6 +55,68 @@ def test_quality_session_grammar_preserves_exact_resume_and_stdin(tmp_path, prov
     request.retries = 1
     with pytest.raises(runtime.ProcessValidationError, match="quality"):
         runtime.quality_session_command(request, catalog_path=catalog if provider == "codex" else None)
+
+
+@pytest.mark.parametrize("provider", ("claude", "codex", "agy"))
+@pytest.mark.parametrize("resume", (False, True))
+def test_quality_session_command_preserves_requested_slot_controls(tmp_path, provider, resume):
+    from dataclasses import replace
+    from importlib import import_module
+
+    runtime = eval_harness.eval_runtime
+    providers = import_module(runtime.__package__ + ".providers")
+    boundary = import_module(runtime.__package__ + ".container_boundary")
+    slots = tmp_path / "slots"
+    slots.mkdir(mode=0o700)
+    session = "ed1e3f89-8ce9-44b7-9684-59f05d9c7f9a"
+    request = providers.ProviderRequest(provider, "private exact prompt α", cwd=tmp_path,
+        profile=providers.ProviderRegistry.default().select(provider, "read-only", "standard"),
+        session_id=session if resume or provider == "claude" else None, resume=resume,
+        timeout=31, slot_cap=2, slot_timeout=1.25, slot_root=slots,
+        run_id="quality-run", task_id="quality-task", target_id="quality-target",
+        seat_id=provider + "-seat", inputs_digest="a" * 64)
+    transport = import_module(runtime.__package__ + ".container_transfer_transport")
+    workdir = transport._workdir(transport._identity(request))
+    catalog = workdir.removesuffix("/repo") + "/context/quality-catalog.json" if provider == "codex" else None
+    command = runtime.quality_session_command(request, catalog_path=catalog)
+    if provider == "claude":
+        argv = ("claude", "--print", "--output-format", "json",
+            "--resume" if resume else "--session-id", session,
+            "--model", "claude-opus-5-5", "--effort", "medium", "--safe-mode",
+            "--disable-slash-commands", "--strict-mcp-config", "--no-chrome", "--tools", "")
+        stdin = "private exact prompt α".encode()
+    elif provider == "codex":
+        argv = ("codex", "exec", "resume") if resume else ("codex", "exec")
+        argv += ("--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+            "--enable", "skip_host_skill_discovery",
+            "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "view_image",
+            "--disable", "apps", "--disable", "plugins", "--disable", "remote_plugin",
+            "--disable", "hooks", "--disable", "skill_search", "--disable", "multi_agent",
+            "--disable", "multi_agent_v2", "--disable", "deferred_executor",
+            "--disable", "token_budget", "--disable", "sleep_tool", "--disable", "current_time_reminder",
+            "--disable", "send_message_to_user_async", "--disable", "request_permissions_tool",
+            "--disable", "tool_suggest", "--disable", "goals", "-c", "agents.enabled=false",
+            "-c", "suppress_unstable_features_warning=true", "-c", 'web_search="disabled"',
+            "-c", "tools.experimental_request_user_input.enabled=false",
+            "-c", "tools.update_plan.enabled=false", "-c", f'model_catalog_json="{catalog}"',
+            "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"')
+        argv += (("-c", 'sandbox_mode="read-only"', session, "-") if resume
+            else ("--sandbox", "read-only", "-C", str(tmp_path), "-"))
+        stdin = "private exact prompt α".encode()
+    else:
+        argv = ("agy", "--conversation", session) if resume else ("agy", "--new-project")
+        argv += ("--mode", "plan", "--input-format", "stream-json", "--output-format", "stream-json",
+            "--model", "gemini-3.8-flash-high", "--effort", "high", "--agent", "eval-no-tools",
+            "--disable-slash-commands")
+        stdin = '{"event": "user", "message": {"content": "private exact prompt α"}}\n'.encode()
+    assert command.argv == argv
+    assert command.stdin == stdin
+    assert command == runtime.ProcessCommand(argv, stdin, cwd=tmp_path, timeout=31,
+        slot_cap=2, slot_timeout=1.25, slot_root=slots)
+    canonical = replace(command, max_output_bytes=1024)
+    pair = boundary.quality_container_command(request, canonical, workdir=workdir, catalog_path=catalog)
+    assert pair.canonical is canonical
+    assert (pair.guest.slot_cap, pair.guest.slot_timeout, pair.guest.slot_root) == (2, 1.25, slots)
 
 
 @pytest.fixture

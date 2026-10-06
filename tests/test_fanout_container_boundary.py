@@ -2001,10 +2001,10 @@ def test_running_attestation_retains_exact_raw_validation_observations(boundary_
 
 def test_running_attestation_refuses_complete_transcript_over_artifact_budget(boundary_module, tmp_path):
     def retained_inventory(docker):
-        for index in range(51):
+        for index in range(512):
             container_id = f"{index + 1000:064x}"
             docker.old[container_id] = {"Id": container_id, "Config": {"Labels": {}},
-                "HostConfig": {"Mounts": []}, "Mounts": [], "Padding": "x" * 990_000}
+                "HostConfig": {"Mounts": []}, "Mounts": [], "Padding": "x" * 100_000}
     with pytest.raises(ProviderRequestError) as failure:
         _launched_seat(boundary_module, tmp_path, before_start=retained_inventory)
     assert "runtime" in str(failure.value.__cause__)
