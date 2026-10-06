@@ -338,16 +338,77 @@ class _CoordinatorLifecycle:
         self.completed[cid] = {"ref": entry["ref"], "stop": transport.stop_evidence, "digest": digest}
         del self.active[cid]
 
-    def fail(self, spec, handle, control, error):
+    def fail(self, spec, handle, control, error, *, phase="lifecycle"):
         from .container_boundary import SessionStore, _cleanup_failure_note
+        from .errors import ProviderRequestError
         self.blocked = True
-        store = None
-        provider = permit_id = None
-        if control is not None:
+        receipt = "unavailable"
+        try:
+            self.authorize(cleanup=True)
+            if (control is None or control.controller is not self.controller or control.spec != spec
+                    or control.ledger.controller is not self.controller
+                    or control.ledger.root != self.controller.root / "locks/spend"
+                    or type(phase) is not str
+                    or phase not in {"lifecycle", "relay_open", "vm_attestation", "container_launch"}):
+                raise ValueError("exact failed lifecycle association")
+            pending = self.pending.get((control.permit_id, control.epoch))
+            if pending is not None:
+                if pending != (spec, pending[1], control.broker.permit, control.ledger):
+                    raise ValueError("exact failed pending permit")
+                context_ref = pending[1]
+            else:
+                entry = self.active.get(handle.container_id) if handle is not None else None
+                if entry is None or entry["spec"] != spec or entry["transport"]._control is not control:
+                    raise ValueError("exact failed active permit")
+                context_ref = entry["member"]["context"]
+            context = _scope_context(self.controller, context_ref, spec, self.journal.inputs.digest,
+                                     self.source, control.broker.permit)
+            if (control.epoch != (context["attempt"] - 1) * 3 + context["round"]
+                    or type(context.get("request_digest")) is not str
+                    or len(context["request_digest"]) != 64
+                    or any(char not in "0123456789abcdef" for char in context["request_digest"])):
+                raise ValueError("exact failed turn request")
+            control.ledger.require_permit(control.permit_id, control.epoch, control.broker.permit)
+            permit_digest = _sha(canonical_json(asdict(control.broker.permit)))
+            ssh_ref = getattr(control, "_startup_ssh_failure" if phase == "relay_open" else "_last_ssh_failure", None)
+            if ssh_ref is not None:
+                ssh = read_evidence(self.controller, "container-ssh-control-failure", *ssh_ref)
+                if (ssh["permit_id"] != control.permit_id or ssh["permit_epoch"] != control.epoch
+                        or ssh["permit_digest"] != permit_digest
+                        or ssh["source_sha256"] != self.source["components"]["runtime"]):
+                    raise ValueError("exact failed SSH observation")
+            category = getattr(control, "_startup_failure", None) if phase == "relay_open" else None
+            if type(category) is not str or category not in {
+                    "bootstrap_failure", "relay_process_spawn_failure", "relay_worker_start_failure",
+                    "readiness_expired", "relay_process_exit", "relay_worker_failure"}:
+                category = "primary_failure"
+            primary_type = {ProviderRequestError: "ProviderRequestError", OSError: "OSError",
+                RuntimeError: "RuntimeError", ValueError: "ValueError", TypeError: "TypeError",
+                CollaborationDurabilityError: "CollaborationDurabilityError",
+                CollaborationValidationError: "CollaborationValidationError"}.get(type(error), "other")
+            control._turn_failure_ref = write_evidence(self.controller, "container-coordinator-turn-failure", {
+                "schema_version": "fanout-container-coordinator-turn-failure-v1",
+                "phase": phase, "category": category, "primary_type": primary_type,
+                "context": list(context_ref), "request_digest": context["request_digest"],
+                "inputs_digest": context["inputs_digest"], "release_source_binding": self.source,
+                **{field: getattr(spec, field) for field in ("run_id", "task_id", "target_id", "seat_id")},
+                "provider": control.broker.permit.provider, "permit_id": control.permit_id,
+                "permit_epoch": control.epoch, "permit_digest": permit_digest,
+                "ssh_failure": list(ssh_ref) if ssh_ref is not None else None, "raw_refs": [],
+            })
+            receipt = control._turn_failure_ref[1]
+        except BaseException:
+            pass
+        error.add_note(f"Container lifecycle failed; seat requires quarantine; receipt={receipt}")
+        if control is not None and handle is not None:
             provider, permit_id = control.broker.permit.provider, control.permit_id
-            store = SessionStore(self.controller, spec.run_id, spec.task_id, spec.target_id, spec.seat_id, spec.session_volume)
-        error.add_note(_cleanup_failure_note(self.controller, "coordinator-lifecycle", error,
-            spec=spec, handle=handle, permit_id=permit_id, provider=provider, store=store))
+            try:
+                store = SessionStore(self.controller, spec.run_id, spec.task_id, spec.target_id,
+                                     spec.seat_id, spec.session_volume)
+                store.require_quarantine(provider, permit_id, handle.container_id)
+            except BaseException as cleanup:
+                error.add_note(_cleanup_failure_note(self.controller, "coordinator-lifecycle", cleanup,
+                    primary=error, spec=spec, handle=handle, permit_id=permit_id, provider=provider))
 
 
 def _coordinator_lifecycle(coordinator):

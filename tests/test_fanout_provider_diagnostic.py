@@ -661,10 +661,10 @@ def test_agy_native_fake_initial_stays_blocked_before_broker(seat):
 
 
 @pytest.mark.parametrize("entrypoint", ("project", "reopen"))
-def test_quality_catalog_uses_explicit_responses_tools_without_changing_effort(monkeypatch, entrypoint):
+def test_quality_catalog_uses_explicit_responses_tools_without_changing_effort(tmp_path, monkeypatch, entrypoint):
     import copy
     from types import SimpleNamespace
-    from shared.lib.fanout.artifacts import ArtifactRef, canonical_json
+    from shared.lib.fanout.artifacts import ArtifactRef, ArtifactStore, canonical_json
 
     model = {"slug": "gpt-6.1-sol", "use_responses_lite": True,
              "shell_type": "unified_exec", "apply_patch_tool_type": "freeform",
@@ -689,13 +689,14 @@ def test_quality_catalog_uses_explicit_responses_tools_without_changing_effort(m
     expected["models"][0].update(shell_type="disabled", apply_patch_tool_type=None,
         experimental_supported_tools=[], supports_search_tool=False, tool_mode="direct",
         use_responses_lite=False)
-    refs = {"original": ArtifactRef("original.json", original_hash, len(raw)),
-            "projected": ArtifactRef("projected.json", "c" * 64, len(canonical_json(expected)))}
-    store = SimpleNamespace(read_bytes=lambda ref: raw if ref.path == "original.json" else canonical_json(expected),
-                            read_json=lambda _ref: copy.deepcopy(original),
-                            write_json=lambda _path, value: value)
+    store = ArtifactStore(tmp_path / "catalog-artifacts")
+    stored = store.write_bytes("original.json", raw)
+    refs = {"original": ArtifactRef(stored.path, original_hash, stored.size),
+            "projected": store.write_json("projected.json", expected)}
     if entrypoint == "project":
-        actual = diagnostic.project_quality_catalog(store, refs["original"], "projected.json")
+        # Projection's ordinary source read uses the real artifact digest.
+        projected = diagnostic.project_quality_catalog(store, stored, "second-projection.json")
+        actual = store.read_json(projected)
     else:
         actual = json.loads(diagnostic._reopen_quality_catalog(store,
             {key: asdict(ref) for key, ref in refs.items()}))

@@ -401,7 +401,7 @@ class PinnedDockerTransport:
                         session_control=session_control, original_input=original_input)
                 except BaseException as primary:
                     if not lifecycle_scope.blocked:
-                        lifecycle_scope.fail(spec, None, session_control, primary)
+                        lifecycle_scope.fail(spec, None, session_control, primary, phase="container_launch")
                     raise
         return cls._start_guarded(controller, spec, launcher=launcher,
             vm_attestor=vm_attestor, socket_attestor=socket_attestor,
@@ -446,7 +446,7 @@ class PinnedDockerTransport:
                     controller, "launch-receipt", cleanup, primary=primary,
                     spec=spec, handle=handle))
             if lifecycle_scope is not None:
-                lifecycle_scope.fail(spec, handle, session_control, primary)
+                lifecycle_scope.fail(spec, handle, session_control, primary, phase="container_launch")
             raise
         return transport
 
@@ -483,10 +483,13 @@ class PinnedDockerTransport:
                     raise ProviderRequestError("container lifecycle pending permit changed")
         control = PinnedSSHSeatControl(controller, spec, ledger, broker,
                                        permit_id, epoch)
+        phase = "relay_open"
         try:
             control.open()
             launcher = ContainerLauncher(quality_docker, guest_socket_attestor=control.attest_socket)
+            phase = "vm_attestation"
             control.attest_vm()
+            phase = "container_launch"
             transport = cls.start(
                 controller, spec, launcher=launcher,
                 vm_attestor=control.attest_vm,
@@ -504,9 +507,9 @@ class PinnedDockerTransport:
             transport._production_edge = True
             return transport
         except BaseException as primary:
-            if lifecycle_scope is not None and not lifecycle_scope.blocked:
+            if lifecycle_scope is not None and getattr(control, "_turn_failure_ref", None) is None:
                 with lifecycle_scope.guard:
-                    lifecycle_scope.fail(spec, None, control, primary)
+                    lifecycle_scope.fail(spec, None, control, primary, phase=phase)
             try:
                 control.close()
             except BaseException as cleanup:
@@ -1199,6 +1202,10 @@ class PinnedSSHSeatControl:
         self._relay_error: BaseException | None = None
         self._guest_relay_path: str | None = None
         self._socket_at_open: GuestSocketAttestation | None = None
+        self._startup_failure: str | None = None
+        self._last_ssh_failure: tuple[str, str] | None = None
+        self._startup_ssh_failure: tuple[str, str] | None = None
+        self._turn_failure_ref: tuple[str, str] | None = None
         from scripts.fanout_container_vm_probe import _read_pinned_host_key
         self._host_key = _read_pinned_host_key(Path.home())
 
@@ -1234,7 +1241,7 @@ class PinnedSSHSeatControl:
                 source_sha256 = runtime_source_digest(Path(__file__).resolve().parents[3])
                 if type(source_sha256) is not str or _SHA.fullmatch(source_sha256) is None:
                     raise ProviderRequestError("pinned guest SSH diagnostic source is invalid")
-                write_evidence(self.controller, "container-ssh-control-failure", {
+                self._last_ssh_failure = write_evidence(self.controller, "container-ssh-control-failure", {
                     "schema_version": 1, "operation": operation, "category": category,
                     "returncode": returncode, "timeout": timed_out, "stderr": text,
                     "stderr_omission": omission, "stdout_bytes": stdout_bytes,
@@ -1372,7 +1379,7 @@ print(observed)
             if source.name == "relay.py":
                 self._guest_relay_path = guest
 
-    def attest_socket(self, path: str) -> GuestSocketAttestation:
+    def attest_socket(self, path: str, *, timeout: float = 30) -> GuestSocketAttestation:
         if path != self.spec.socket_path:
             raise ProviderRequestError("guest socket path differs")
         script = ("import json,os,sys; s=os.lstat(sys.argv[1]); "
@@ -1381,7 +1388,7 @@ print(observed)
                   "'ctime_ns':s.st_ctime_ns},sort_keys=True))")
         try:
             value = json.loads(self._ssh(_as_guest_relay_uid("-c", script,
-                                                             path), operation="socket_attestation"))
+                                                             path), operation="socket_attestation", timeout=timeout))
             proof = GuestSocketAttestation(**value)
         except (TypeError, ValueError, KeyError) as error:
             raise ProviderRequestError("guest socket attestation is malformed") from error
@@ -1394,10 +1401,14 @@ print(observed)
         return proof
 
     def open(self) -> None:
+        self._startup_failure = None
+        self._startup_ssh_failure = None
+        self._last_ssh_failure = None
         lease = HostSessionLease(self.controller, self.permit_id, self.epoch)
         lease.__enter__()
         self._lease = lease
         try:
+            self._startup_failure = "bootstrap_failure"
             self._bootstrap()
             if self._guest_relay_path is None:
                 raise ProviderRequestError("guest relay bootstrap is unavailable")
@@ -1410,6 +1421,7 @@ print(observed)
                 "--max-request-bytes", str(permit.max_request_bytes),
                 "--max-response-bytes", str(permit.max_response_bytes),
             )
+            self._startup_failure = "relay_process_spawn_failure"
             self._process = subprocess.Popen(self._argv(guest), stdin=subprocess.PIPE,
                                              stdout=subprocess.PIPE,
                                              stderr=subprocess.DEVNULL)
@@ -1423,18 +1435,43 @@ print(observed)
                 except BaseException as error:
                     self._relay_error = error
             self._thread = threading.Thread(target=serve, daemon=True)
+            self._startup_failure = "relay_worker_start_failure"
             self._thread.start()
+            self._startup_failure = None
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
-                if self._process.poll() is not None or self._relay_error is not None:
+                if self._relay_error is not None:
+                    self._startup_failure = "relay_worker_failure"
+                    raise ProviderRequestError("guest relay failed before readiness") from self._relay_error
+                if self._process.poll() is not None:
+                    self._startup_failure = "relay_process_exit"
                     raise ProviderRequestError("guest relay failed before readiness")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 try:
-                    self._socket_at_open = self.attest_socket(self.spec.socket_path)
-                    return
+                    proof = self.attest_socket(self.spec.socket_path, timeout=remaining)
                 except ProviderRequestError:
-                    time.sleep(0.1)
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(0.1, remaining))
+                    continue
+                # Retain the genuine socket identity for cleanup, never admission after expiry.
+                self._socket_at_open = proof
+                if time.monotonic() >= deadline:
+                    break
+                if self._relay_error is not None:
+                    self._startup_failure = "relay_worker_failure"
+                    raise ProviderRequestError("guest relay failed before readiness") from self._relay_error
+                if self._process.poll() is not None:
+                    self._startup_failure = "relay_process_exit"
+                    raise ProviderRequestError("guest relay failed before readiness")
+                self._startup_failure = None
+                return
+            self._startup_failure = "readiness_expired"
             raise ProviderRequestError("guest relay readiness expired")
         except BaseException as primary:
+            self._startup_ssh_failure = self._last_ssh_failure
             try:
                 self.close()
             except BaseException as cleanup:

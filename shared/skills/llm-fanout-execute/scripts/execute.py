@@ -28,6 +28,7 @@ _MAX_CANDIDATE_MANIFEST_BYTES = 64 * 1024 * 1024
 _UNCERTAIN_STATUS_LIMIT = 64
 _DESCRIPTOR = "run.json"
 _BOOTSTRAP = "startup.json"
+_QUALITY_CASE = "quality-case.json"
 _FROZEN_V1_FIXTURE_MANIFEST_SHA256 = "871fe5ba13e9226c0b6b1936f3ada8d094cf59bff23be997b2d2c5a15d9a6676"
 
 
@@ -334,10 +335,13 @@ def save_private_descriptor(root: Path | str, document: dict[str, object], *,
     root = Path(root)
     _private_dir(root)
     expected_schema = {_DESCRIPTOR: {"fanout-execute-private-v1", "fanout-execute-private-v2"},
-                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"}}.get(name)
+                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"},
+                       _QUALITY_CASE: {"fanout-quality-case-pointer-v1"}}.get(name)
     if (expected_schema is None or not isinstance(document, dict)
             or document.get("schema_version") not in expected_schema):
         raise ValueError("private descriptor schema is invalid")
+    if name == _QUALITY_CASE:
+        _quality_pointer(document)
     raw_document = _canonical(document)
     if len(raw_document) > _MAX_PACKET_BYTES:
         raise ValueError("private descriptor exceeds its byte limit")
@@ -368,7 +372,8 @@ def load_private_descriptor(root: Path | str, *, name: str = _DESCRIPTOR) -> dic
     root = Path(root)
     _private_dir(root)
     expected_schema = {_DESCRIPTOR: {"fanout-execute-private-v1", "fanout-execute-private-v2"},
-                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"}}.get(name)
+                       _BOOTSTRAP: {"fanout-execute-startup-v1", "fanout-execute-startup-v2"},
+                       _QUALITY_CASE: {"fanout-quality-case-pointer-v1"}}.get(name)
     if expected_schema is None:
         raise ValueError("private descriptor name is invalid")
     try:
@@ -394,6 +399,8 @@ def load_private_descriptor(root: Path | str, *, name: str = _DESCRIPTOR) -> dic
                 or envelope["document"].get("schema_version") not in expected_schema
                 or envelope["sha256"] != _sha256(_canonical(envelope["document"]))):
             raise ValueError("private descriptor changed")
+        if name == _QUALITY_CASE:
+            _quality_pointer(envelope["document"])
         return envelope["document"]
     except (UnicodeError, TypeError, ValueError) as error:
         raise ValueError("private descriptor changed") from error
@@ -2152,6 +2159,16 @@ def _open_v2_run(private_root, descriptor, *, runtime, registry, memory_factory,
 def open_run(private_root: Path | str, *, runtime=None, registry=None, memory_factory=None,
              memory_preflight: Callable[[], bool] | None = None,
              provider_runner=None, for_dispatch: bool = False, trial_certificate=None) -> RunContext:
+    pointer = Path(private_root) / _QUALITY_CASE
+    if pointer.exists() or pointer.is_symlink():
+        raise ValueError("attached runs require the closed quality-case entry")
+    return _rebuild_run(private_root, runtime=runtime, registry=registry,
+        memory_factory=memory_factory, memory_preflight=memory_preflight,
+        provider_runner=provider_runner, for_dispatch=for_dispatch, trial_certificate=trial_certificate)
+
+
+def _rebuild_run(private_root: Path | str, *, runtime=None, registry=None, memory_factory=None,
+                 memory_preflight=None, provider_runner=None, for_dispatch=False, trial_certificate=None):
     """Rebuild the same service from private bytes and every authenticated store."""
     reject_nested(os.environ)
     runtime = runtime or _runtime()
@@ -2282,6 +2299,50 @@ def open_run(private_root: Path | str, *, runtime=None, registry=None, memory_fa
         artifacts.close()
         scheduler_backend.close()
         execution_backend.close()
+        raise
+
+
+def _quality_pointer(value):
+    ref = value.get("attachment") if type(value) is dict else None
+    if (type(value) is not dict or set(value) != {"schema_version", "attachment"}
+            or value["schema_version"] != "fanout-quality-case-pointer-v1"
+            or len(_canonical(value)) > 1024 or type(ref) is not list or len(ref) != 2
+            or type(ref[0]) is not str or re.fullmatch(r"[0-9a-f]{64}\.json", ref[0]) is None
+            or type(ref[1]) is not str or re.fullmatch(r"[0-9a-f]{64}", ref[1]) is None):
+        raise ValueError("quality attachment pointer fields differ")
+    return ref
+
+
+def attach_quality_case(private_root, document):
+    """Owner-local adoption only; fixed runtime and existing stores, no spend."""
+    if (Path(private_root) / _QUALITY_CASE).exists() or (Path(private_root) / _QUALITY_CASE).is_symlink():
+        raise ValueError("quality attachment already published")
+    runtime = _runtime()
+    module = importlib.import_module(runtime.__name__ + ".quality_case")
+    with open_run(private_root, runtime=runtime) as opened:
+        attachment = module.adopt_quality_case(opened.service, opened.owner, document,
+            helper=Path(__file__), runtime_digest=_runtime_digest(runtime))
+        save_private_descriptor(private_root, {"schema_version": "fanout-quality-case-pointer-v1",
+            "attachment": [attachment.name, attachment.digest]}, name=_QUALITY_CASE)
+        return attachment
+
+
+def open_quality_case(private_root):
+    """Closed installed consumer: no registry, version probe, Memory or runner injection."""
+    try:
+        pointer = _quality_pointer(load_private_descriptor(private_root, name=_QUALITY_CASE))
+    except ValueError as error:
+        raise ValueError("quality attachment pointer is unavailable or differs") from error
+    runtime = _runtime()
+    module = importlib.import_module(runtime.__name__ + ".quality_case")
+    attachment = module.QualityCaseAttachment(*pointer)
+    runner = module.QualityCaseRunner(attachment, helper=Path(__file__), runtime_digest=_runtime_digest(runtime))
+    opened = _rebuild_run(private_root, runtime=runtime, provider_runner=runner)
+    try:
+        runner.bind(opened.service)
+        return opened
+    except BaseException:
+        opened.close()
         raise
 
 
@@ -2662,6 +2723,9 @@ def _parser() -> argparse.ArgumentParser:
     command("status", "read safe durable task metadata")
     command("recover-journal", "resolve authenticated current-v1 journal authority without provider work")
     command("resume", "advance a started run from its durable barriers")
+    command("quality-case", "advance one authenticated installed read-only Council case")
+    quality_attach = command("quality-attach", "adopt an existing allocation before any turn")
+    quality_attach.add_argument("--attachment-file", required=True)
     uncertain = command("recover-uncertain", "exclude one uncertain source turn by owner action")
     uncertain.add_argument("--task-id", required=True)
     uncertain.add_argument("--seat-id", required=True)
@@ -2711,6 +2775,22 @@ def main(argv: list[str] | None = None, *, runtime=None, registry=None,
     args = _parser().parse_args(argv)
     try:
         reject_nested(os.environ)
+        if args.command in {"quality-case", "quality-attach"}:
+            if any(value is not None for value in (runtime, registry, memory_factory, memory_preflight, provider_runner)):
+                raise ValueError("quality entry rejects injected execution dependencies")
+            if args.command == "quality-attach":
+                attachment = attach_quality_case(args.private_root, _strict_json(_read_file(args.attachment_file, limit=64 * 1024)))
+                result = {"attachment": [attachment.name, attachment.digest]}
+            else:
+                with open_quality_case(args.private_root) as opened:
+                    result = opened.service.resume(owner=opened.owner).to_dict()
+                    runner = opened.service.coordinator.provider_runner
+                    task_id = next(iter(opened.service.preparations))
+                    if opened.service.scheduler.task_phase(task_id) == "reconciliation-pending":
+                        result = {"delivery": list(runner.synthesize_and_submit(opened.owner)),
+                                  "status": opened.service.status().to_dict()}
+            print(_canonical(result).decode("utf-8"), end="")
+            return 0
         runtime = runtime or _runtime()
         common = dict(runtime=runtime, registry=registry, memory_factory=memory_factory,
                       memory_preflight=memory_preflight, provider_runner=provider_runner)

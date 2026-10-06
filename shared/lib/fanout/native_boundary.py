@@ -619,9 +619,11 @@ def _native_environment(state: Path, request: object,
 def _quality_agy_agent(home):
     from .eval_provider import AGY_AGENT_TEXT
     directory = home / ".gemini" / "config" / "agents"
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    for path in (home / ".gemini" / "config", directory):
-        if path.is_symlink() or path.stat().st_mode & 0o077:
+    for path in (home / ".gemini", home / ".gemini" / "config", directory):
+        path.mkdir(mode=0o700, exist_ok=True)
+        info = path.lstat()
+        if (path.is_symlink() or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
             raise ProviderRequestError("quality agy private agent directory differs")
     path = directory / "eval-no-tools.md"
     data = AGY_AGENT_TEXT.encode()

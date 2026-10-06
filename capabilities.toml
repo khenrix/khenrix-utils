@@ -203,6 +203,7 @@ instruction_source = "house-style.md"
 [skill_delivery.skill_bundles]
 
 [skill_delivery.skill_bundles.llm-fanout-plan]
+".runtime/components/skills/skillctl.py" = "components/skills/skillctl.py"
 ".runtime/capabilities.toml" = "capabilities.toml"
 ".runtime/scripts/lib/checks.py" = "scripts/lib/checks.py"
 ".runtime/shared/lib/fanout" = "shared/lib/fanout"
@@ -229,6 +230,7 @@ instruction_source = "house-style.md"
 ".runtime/scripts/fanout_smoke.py" = "scripts/fanout_smoke.py"
 
 [skill_delivery.skill_bundles.llm-fanout-execute]
+".runtime/components/skills/skillctl.py" = "components/skills/skillctl.py"
 ".runtime/capabilities.toml" = "capabilities.toml"
 ".runtime/scripts/lib/checks.py" = "scripts/lib/checks.py"
 ".runtime/shared/lib/fanout" = "shared/lib/fanout"

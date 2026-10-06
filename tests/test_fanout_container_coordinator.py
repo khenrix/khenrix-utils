@@ -528,7 +528,8 @@ def _assert_persisted_certificate_turn_refusals(root, certificate, trial_control
                 request = copy.deepcopy(changed_state["requests"][original["ledger"][0][0]["request_id"]])
                 changed_state["requests"][fourth_id] = request
                 changed_state["send_claims"][fourth_id] = True
-                entry.update(used=4, attempts=7)
+                entry.update(used=entry["max_requests"] + 1,
+                             attempts=entry["max_requests"] + entry["auxiliary_attempts"] + 1)
             elif damage == "auxiliary":
                 entry.update(attempts=2, auxiliary_attempts=1, auxiliary_refusals=1)
             else:

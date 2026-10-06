@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import time
 from dataclasses import asdict, dataclass, replace
@@ -32,6 +33,186 @@ from .repo import SeatWorkspaceVerification
 
 _CATEGORY = "brokered-provider-diagnostic"
 _QUALITY_ALLOCATION = "quality-case-allocation"
+_QUALITY_REQUEST_CONTROLS = frozenset({
+    "executor_id", "execution_class", "session_id", "resume", "timeout",
+    "timeout_override_reason", "timeout_override_review_sha256", "retries",
+    "artifact_prefix", "slot_cap", "slot_timeout", "context_sha256",
+    "skill_bundle_sha256", "skill_delivery_sha256", "run_id", "task_id",
+    "target_id", "seat_id", "inputs_digest", "cwd", "slot_root", "staged_skill_root",
+})
+
+
+def _quality_request_material(request, prefix):
+    controls = {name: getattr(request, name) for name in _QUALITY_REQUEST_CONTROLS}
+    for name in ("cwd", "slot_root", "staged_skill_root"):
+        controls[name] = None if controls[name] is None else str(controls[name])
+    prompt_bytes, profile_bytes = request.prompt_bytes, canonical_json(request.profile.to_dict())
+    prompt = ArtifactRef(prefix + "/prompt.bin", hashlib.sha256(prompt_bytes).hexdigest(), len(prompt_bytes))
+    profile = ArtifactRef(prefix + "/profile.json", hashlib.sha256(profile_bytes).hexdigest(), len(profile_bytes))
+    value = {
+        "schema": "fanout-quality-request-v1", "controls": controls,
+        "prompt": asdict(prompt), "profile": asdict(profile)}
+    if (prompt.size > 1024 * 1024 or profile.size > 64 * 1024
+            or len(canonical_json(value)) > 64 * 1024):
+        raise ProviderRequestError("quality retained request, prompt or profile exceeds its bound")
+    return value, prompt_bytes, profile_bytes
+
+
+def _retain_quality_request(store, request, prefix):
+    value, prompt_bytes, profile_bytes = _quality_request_material(request, prefix)
+    prompt, profile = (ArtifactRef(**value[key]) for key in ("prompt", "profile"))
+    store.write_bytes(prompt.path, prompt_bytes)
+    store.write_bytes(profile.path, profile_bytes)
+    return store.write_json(prefix + "/request.json", value)
+
+
+def _read_quality_request_artifact(store, ref, limit):
+    if (type(store) is not ArtifactStore or type(ref) is not ArtifactRef
+            or type(ref.size) is not int or not 0 <= ref.size <= limit
+            or type(ref.digest) is not str or re.fullmatch(r"[0-9a-f]{64}", ref.digest) is None):
+        raise ProviderRequestError("quality retained artifact reference differs or exceeds its bound")
+    parts = store._parts(ref.path)
+    store._reject_reserved_path(parts)
+    root_fd = store._root_fd_copy()
+    try:
+        parent_fd = store._open_parent(root_fd, parts, create=False)
+    finally:
+        os.close(root_fd)
+    try:
+        fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                    or before.st_size != ref.size or before.st_size > limit):
+                raise ProviderRequestError("quality retained artifact actual size or ownership differs")
+            remaining, chunks = before.st_size, []
+            while remaining:
+                chunk = os.read(fd, min(remaining, 64 * 1024))
+                if not chunk:
+                    raise ProviderRequestError("quality retained artifact changed during bounded read")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(fd)
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ProviderRequestError("quality retained artifact changed during bounded read")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+    raw = b"".join(chunks)
+    if hashlib.sha256(raw).hexdigest() != ref.digest:
+        raise ProviderRequestError("quality retained artifact bytes differ")
+    return raw
+
+
+def _read_quality_request_json(store, ref):
+    from .artifacts import _unique_json_object, _finite_json_number
+    return json.loads(_read_quality_request_artifact(store, ref, 64 * 1024),
+        object_pairs_hook=_unique_json_object, parse_constant=_finite_json_number,
+        parse_float=_finite_json_number)
+
+
+def _reopen_quality_request(store, ref, request):
+    from .providers import ExecutorProfile
+    from .skills import SkillAdmission
+    if type(request) is not ProviderRequest or type(request.profile) is not ExecutorProfile:
+        raise ProviderRequestError("quality predecessor requires the exact admitted request")
+    if request.staged_skill_admission is not None and type(request.staged_skill_admission) is not SkillAdmission:
+        raise ProviderRequestError("quality predecessor skill admission differs")
+    if ref.size > 64 * 1024:
+        raise ProviderRequestError("quality retained request exceeds its bound")
+    value = _read_quality_request_json(store, ref)
+    if (set(value) != {"schema", "controls", "prompt", "profile"}
+            or value["schema"] != "fanout-quality-request-v1"
+            or set(value["controls"]) != _QUALITY_REQUEST_CONTROLS):
+        raise ProviderRequestError("quality retained request fields differ")
+    prompt, profile_ref = (ArtifactRef(**value[key]) for key in ("prompt", "profile"))
+    if prompt.size > 1024 * 1024 or profile_ref.size > 64 * 1024:
+        raise ProviderRequestError("quality retained prompt or profile exceeds its bound")
+    adapter = ProviderRegistry.default().require(request.executor_id)
+    profile = ExecutorProfile.from_dict(_read_quality_request_json(store, profile_ref), adapter=adapter)
+    if profile.digest != request.profile.digest:
+        raise ProviderRequestError("quality retained profile differs from resume")
+    original = ProviderRequest(**value["controls"], prompt=_read_quality_request_artifact(store, prompt, 1024 * 1024), profile=profile,
+        artifact_store=store, staged_skill_admission=request.staged_skill_admission,
+        skill_delivery_ref=request.skill_delivery_ref, agy_guard=request.agy_guard)
+    if (original.resume or original.execution_class != "read-only" or original.retries != 0
+            or any(getattr(original, name) != getattr(request, name) for name in (
+                "executor_id", "execution_class", "run_id", "task_id", "target_id", "seat_id",
+                "inputs_digest", "context_sha256", "skill_bundle_sha256", "skill_delivery_sha256"))
+            or str(original.cwd) != str(request.cwd)
+            or original.staged_skill_root != request.staged_skill_root):
+        raise ProviderRequestError("quality retained original association differs from resume")
+    return original
+
+
+@dataclass(frozen=True, slots=True)
+class QualityPredecessor:
+    """Pointers to existing authority, reauthenticated on every quality-only use."""
+
+    quality_proof: tuple[str, str]
+    receipt_name: str
+    receipt_digest: str
+    row_digest: str
+    session_id: str
+
+
+def reopen_quality_predecessor(controller, store, request, proof, *, verification,
+                               authority, bindings, initial_digest) -> QualityPredecessor:
+    """Reopen an allocated original without recreating a result, boundary or listener."""
+    from .native_boundary import _require_broker_initial
+    from .repo import validate_seat_workspace
+    # Cold reopening must load the same fixed quality command builder as issuance.
+    from . import eval_provider  # noqa: F401
+    try:
+        if (type(store) is not ArtifactStore or type(request) is not ProviderRequest
+                or not request.resume or request.execution_class != "read-only" or request.retries != 0
+                or request.native_boundary is not None):
+            raise ValueError("exact quality resume")
+        if type(verification) is not SeatWorkspaceVerification:
+            raise ValueError("issued workspace verification")
+        validate_seat_workspace(controller, verification)
+        allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
+        value = read_evidence(controller, "quality-readonly-turn", *proof)
+        original = _reopen_quality_request(store, ArtifactRef(**value["request"]), request)
+        validate_quality_readonly_turn(controller, store, original, proof)
+        command = read_evidence(controller, "quality-native-command", *value["command"])
+        registration = command["registration"]
+        row = registration["row"]
+        if (command["allocation"] != list(authority) or command["bindings"] != bindings
+                or row not in allocation["rows"] or row["initial"] is not None
+                or quality_row_identity(row) != initial_digest
+                or registration["initial_receipt"] is not None):
+            raise ValueError("allocated original")
+        claim = {"allocation": authority[1], "row": row}
+        digest = hashlib.sha256(canonical_json(claim)).hexdigest()
+        from .container_certification import _read_owned_json
+        actual, _ = _read_owned_json(controller.root / "locks" / f"quality-row-{digest}")
+        pointer, _ = _read_owned_json(controller.root / "locks" / f"quality-registration-{digest}")
+        if (actual != claim or read_evidence(controller, "quality-permit-registration",
+                *pointer["authority"]) != registration):
+            raise ValueError("original row consumption")
+        parsed = ProviderRegistry((original.profile,)).require(original.executor_id).parse(
+            store.read_bytes(ArtifactRef(**value["stdout"])))
+        terminal_ref = tuple(value["terminal"])
+        terminal = read_evidence(controller, _CATEGORY, *terminal_ref)
+        if (not parsed.final or parsed.error is not None or not parsed.session_id
+                or parsed.session_id != request.session_id or terminal["session_id"] != parsed.session_id
+                or parsed.observed_model != terminal["observed_model"]):
+            raise ValueError("original raw session")
+        _require_broker_initial(controller, verification, request, terminal_ref)
+        boundary_digest = terminal["boundary_receipt_digest"]
+        boundary = read_evidence(controller, "native-seat-boundary",
+                                 f"{boundary_digest}.json", boundary_digest)
+        admission = read_evidence(controller, "native-broker-diagnostic-admission",
+            boundary["broker_admission_name"], boundary["broker_admission_digest"])
+        if admission.get("quality_admission") != value["command"]:
+            raise ValueError("original quality native admission")
+        return QualityPredecessor(tuple(proof), *terminal_ref, initial_digest, parsed.session_id)
+    except Exception as error:
+        raise ProviderRequestError("quality predecessor authority or original completion differs") from error
 
 
 def quality_row_identity(row):
@@ -331,7 +512,66 @@ def _quality_loaded_sources():
             if path.is_symlink() or path.resolve(strict=True) != path:
                 raise ProviderRequestError("quality loaded source origin differs")
             loaded[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    helper_key = "shared/skills/llm-fanout-execute/scripts/execute.py"
+    helpers = [root / helper_key]
+    if root.name == ".runtime":
+        helpers.append(root.parent / "scripts/execute.py")
+    for helper in helpers:
+        for module in tuple(sys.modules.values()):
+            raw = getattr(module, "__file__", None)
+            origin = getattr(getattr(module, "__spec__", None), "origin", None)
+            if raw != str(helper) and origin != str(helper):
+                continue
+            if (raw != str(helper) or origin not in (None, str(helper))
+                    or helper.is_symlink() or helper.resolve(strict=True) != helper):
+                raise ProviderRequestError("quality loaded execute helper origin differs")
+            loaded[helper_key] = hashlib.sha256(helper.read_bytes()).hexdigest()
     return loaded
+
+
+def _require_quality_loaded_sources(expected):
+    from .container_source import _source_paths, _read_source
+    root = Path(__file__).resolve().parents[3]
+    allowed = set(_source_paths(root))
+    required = {"shared/lib/fanout/diagnostic.py", "shared/lib/fanout/native_boundary.py",
+                "shared/lib/fanout/providers.py"}
+    if type(expected) is not dict or not required <= expected.keys() or len(expected) > len(allowed):
+        raise ProviderRequestError("quality loaded source evidence fields differ")
+    from . import eval_provider
+    for module, name in ((sys.modules[__name__], "diagnostic.py"),
+            (sys.modules[NativeSeatBoundary.__module__], "native_boundary.py"),
+            (sys.modules[ProviderRequest.__module__], "providers.py"), (eval_provider, "eval_provider.py")):
+        if Path(module.__file__) != root / "shared/lib/fanout" / name:
+            raise ProviderRequestError("quality current protected assembly loaded a foreign origin")
+    for name in allowed:
+        if name.startswith("shared/lib/fanout/") and name.endswith(".py"):
+            identity = __package__ + "." + name.removeprefix("shared/lib/fanout/")[:-3].replace("/", ".")
+            identity = identity.removesuffix(".__init__")
+        elif name.startswith("scripts/fanout_") and name.endswith(".py"):
+            identity = name[:-3].replace("/", ".")
+        else:
+            continue
+        module = sys.modules.get(identity)
+        if module is not None and (getattr(module, "__file__", None) != str(root / name)
+                or getattr(getattr(module, "__spec__", None), "origin", None) != str(root / name)):
+            raise ProviderRequestError("quality current canonical module loaded a foreign source origin")
+    for module in tuple(sys.modules.values()):
+        origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        if type(origin) is not str:
+            continue
+        try:
+            name = Path(origin).relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if name in allowed and getattr(module, "__file__", None) != origin:
+            raise ProviderRequestError("quality current loaded module origin differs")
+    loaded = _quality_loaded_sources()
+    for name, digest in expected.items():
+        if (type(name) is not str or name not in allowed or type(digest) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or hashlib.sha256(_read_source(root, name, 1024 * 1024)).hexdigest() != digest
+                or name in loaded and loaded[name] != digest):
+            raise ProviderRequestError("quality loaded source origin or closed source bytes differ")
 
 
 def project_quality_catalog(store, original_ref, path):
@@ -358,17 +598,17 @@ def _reopen_quality_catalog(store, catalog):
     if set(catalog) != {"original", "projected"}:
         raise ProviderRequestError("quality catalog association differs")
     original_ref, projected_ref = (ArtifactRef(**catalog[key]) for key in ("original", "projected"))
-    original = store.read_bytes(original_ref)
+    original = _read_quality_request_artifact(store, original_ref, 2 * 1024 * 1024)
     if hashlib.sha256(original).hexdigest() != "fd219bd9f061278275f528939f82f54d2eb97df4b25c23b022adbe48813d920b":
         raise ProviderRequestError("quality catalog authentic source differs")
-    expected = store.read_json(original_ref)
+    expected = json.loads(original)
     selected = [model for model in expected.get("models", ()) if model.get("slug") == "gpt-6.1-sol"]
     if len(selected) != 1 or hashlib.sha256(json_catalog_bytes(selected[0])).hexdigest() != "56373206bcf4c478be9aa324af04e2324219a836005e1044260910307f2cceeb":
         raise ProviderRequestError("quality catalog descriptor differs")
     selected[0].update(shell_type="disabled", apply_patch_tool_type=None,
         experimental_supported_tools=[], supports_search_tool=False, tool_mode="direct",
         use_responses_lite=False)
-    if store.read_bytes(projected_ref) != canonical_json(expected):
+    if _read_quality_request_artifact(store, projected_ref, 2 * 1024 * 1024) != canonical_json(expected):
         raise ProviderRequestError("quality catalog tool projection differs")
     return canonical_json(expected)
 
@@ -438,10 +678,9 @@ def reopen_quality_native_command(controller, request, proof):
         value = read_evidence(controller, "quality-native-command", *proof)
         if (set(value) != {"allocation", "store", "bindings", "registration", "catalog", "loaded", "request"}
                 or value["request"] != _quality_request_identity(request)
-                or runtime_source_digest() != value["bindings"]["source"]
-                or not value["loaded"] or any(_quality_loaded_sources().get(name) != digest
-                    for name, digest in value["loaded"].items())):
+                or runtime_source_digest() != value["bindings"]["source"]):
             raise ValueError("request/source")
+        _require_quality_loaded_sources(value["loaded"])
         with ArtifactStore.open_existing(value["store"]) as store:
             allocation = reopen_quality_allocation(controller, store, tuple(value["allocation"]),
                 bindings=value["bindings"])
@@ -512,10 +751,9 @@ def validate_quality_prior_command(controller, request, proof):
         registration = value["registration"]
         row = registration["row"]
         permit = registration["permit"]
+        _require_quality_loaded_sources(value["loaded"])
         if (row not in allocation["rows"] or permit["route"] != "initial"
                 or runtime_source_digest() != value["bindings"]["source"]
-                or any(_quality_loaded_sources().get(name) != digest
-                       for name, digest in value["loaded"].items())
                 or any(permit[name] != getattr(request, name) for name in
                        ("run_id", "task_id", "target_id", "seat_id", "inputs_digest"))
                 or permit["provider"] != request.executor_id
@@ -541,7 +779,8 @@ def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
     from .container_upstream import HostUpstream
     from scripts.fanout_container_certify import _capture_private_wire
     if (type(request) is not ProviderRequest or request.execution_class != "read-only"
-            or request.retries != 0 or request.native_boundary is not None):
+            or request.retries != 0 or request.native_boundary is not None
+            or initial is not None and not isinstance(initial, (BrokeredDiagnosticResult, QualityPredecessor))):
         raise ProviderRequestError("quality readonly turn requires the exact zero-retry request")
     allocation = reopen_quality_allocation(controller, store, authority, bindings=bindings)
     row = next((row for row in allocation["rows"] if (row["role"], row["phase"],
@@ -555,6 +794,12 @@ def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
         previous = read_evidence(controller, "quality-readonly-turn", *initial_proof)
         if previous["terminal"] != [initial.receipt_name, initial.receipt_digest]:
             raise ProviderRequestError("quality readonly original terminal differs")
+        if type(initial) is QualityPredecessor and initial != reopen_quality_predecessor(
+                controller, store, request, initial_proof, verification=verification,
+                authority=authority, bindings=bindings, initial_digest=initial_digest):
+            raise ProviderRequestError("quality readonly predecessor pointer differs")
+    prefix = f"quality/{role}/{phase}/{epoch}"
+    _quality_request_material(request, prefix)
     started = time.monotonic()
     permit_id = register_quality_permit(controller, store, authority, ledger,
         role=role, phase=phase, condition=condition, permit=permit, epoch=epoch,
@@ -565,13 +810,14 @@ def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
         captured = _capture_private_wire(ledger, permit_id, epoch, store.root,
                                         f"quality-{role}-{phase}-{epoch}", payload)
         wires[captured["request_id"]] = captured
-    sender = quality_upstream_sender(HostUpstream(permit, route,
-        max_response_bytes=permit.max_response_bytes, deadline_seconds=permit.response_deadline,
-        success_sink=success), store, f"{role}-{phase}-{epoch}")
-    command_proof = issue_quality_native_command(controller, store, authority,
-        request=request, ledger=ledger, permit=permit, epoch=epoch, bindings=bindings,
-        role=role, phase=phase, condition=condition, catalog=catalog)
     try:
+        sender = quality_upstream_sender(HostUpstream(permit, route,
+            max_response_bytes=permit.max_response_bytes, deadline_seconds=permit.response_deadline,
+            success_sink=success), store, f"{role}-{phase}-{epoch}")
+        command_proof = issue_quality_native_command(controller, store, authority,
+            request=request, ledger=ledger, permit=permit, epoch=epoch, bindings=bindings,
+            role=role, phase=phase, condition=condition, catalog=catalog)
+        request_ref = _retain_quality_request(store, request, prefix)
         with BrokerListener(Broker(permit, credential=credential, send=sender),
                             ledger_binding=(ledger, permit_id, epoch)) as listener:
             terminal = run_brokered_provider_diagnostic(request, controller=controller,
@@ -582,7 +828,6 @@ def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
         ledger.fence_epoch(permit_id, epoch)
     elapsed = time.monotonic() - started
     process = terminal.process
-    prefix = f"quality/{role}/{phase}/{epoch}"
     stdout = store.write_bytes(prefix + "/stdout.bin", process.stdout)
     stderr = store.write_bytes(prefix + "/stderr.bin", process.stderr)
     final = store.write_bytes(prefix + "/final.txt", terminal.result.answer.encode("utf-8"))
@@ -591,6 +836,7 @@ def run_quality_readonly_turn(request, *, controller, store, authority, ledger,
     proof = write_evidence(controller, "quality-readonly-turn", {
         "schema": "fanout-quality-readonly-turn-v1", "command": list(command_proof),
         "terminal": [terminal.receipt_name, terminal.receipt_digest],
+        "request": asdict(request_ref),
         "stdout": asdict(stdout), "stderr": asdict(stderr), "final": asdict(final),
         "records": list(records), "prepared": [asdict(ref) for ref in sender.captures.values()],
         "wires": wires, "route": asdict(route), "main_attempts": main, "auxiliary_attempts": auxiliary,
@@ -605,7 +851,7 @@ def validate_quality_readonly_turn(controller, store, request, proof):
     value = read_evidence(controller, "quality-readonly-turn", *proof)
     expected_fields = {"schema", "command", "terminal", "stdout", "stderr", "final",
         "records", "prepared", "wires", "route", "main_attempts", "auxiliary_attempts", "elapsed", "outer_seconds"}
-    if set(value) != expected_fields or value["schema"] != "fanout-quality-readonly-turn-v1":
+    if set(value) not in (expected_fields, expected_fields | {"request"}) or value["schema"] != "fanout-quality-readonly-turn-v1":
         raise ProviderRequestError("quality readonly receipt differs")
     command = read_evidence(controller, "quality-native-command", *value["command"])
     if command["request"] != _quality_request_identity(request) or command["store"] != str(store.root):
@@ -625,7 +871,7 @@ def validate_quality_readonly_turn(controller, store, request, proof):
     terminal = read_evidence(controller, _CATEGORY, *value["terminal"])
     if (row not in allocation["rows"] or value["records"] != list(records)
             or attempts != (value["main_attempts"], value["auxiliary_attempts"])
-            or sum(attempts) > attempt_limit(permit) or len(records) > permit.max_requests
+            or attempts[0] > attempt_limit(permit) or len(records) > permit.max_requests
             or terminal["valid"] is not True or terminal["process_status"] != "exit"
             or terminal["exit_code"] != 0 or value["outer_seconds"] != row["outer_seconds"]
             or type(value["elapsed"]) not in (int, float) or not math.isfinite(value["elapsed"])
@@ -672,7 +918,7 @@ def run_brokered_provider_diagnostic(
     request: ProviderRequest, *, controller: LifecycleController,
     verification: SeatWorkspaceVerification, broker_listener: BrokerListener,
     other_target_roots: Sequence[Path], denied_owner_roots: Sequence[Path],
-    initial: BrokeredDiagnosticResult | None = None,
+    initial: BrokeredDiagnosticResult | QualityPredecessor | None = None,
     quality_admission: tuple[str, str] | None = None,
 ) -> BrokeredDiagnosticResult:
     """Run one fake or approved probe turn; never authorize ordinary dispatch."""
@@ -683,8 +929,24 @@ def run_brokered_provider_diagnostic(
         raise ProviderRequestError("brokered diagnostic requires one exact controller seat turn")
     if request.execution_class != "read-only":
         raise ProviderRequestError("brokered diagnostic supports read-only diagnostics only")
-    if request.resume:
+    initial_receipt = None
+    quality_command = None
+    if request.resume and type(initial) is QualityPredecessor:
+        if quality_admission is None:
+            raise ProviderRequestError("cold quality predecessor requires its allocated quality admission")
+        quality_command = reopen_quality_native_command(controller, request, quality_admission)
+        value = read_evidence(controller, "quality-native-command", *quality_admission)
+        registration = value["registration"]
+        with ArtifactStore.open_existing(value["store"]) as store:
+            reopened = reopen_quality_predecessor(controller, store, request, initial.quality_proof,
+                verification=verification, authority=tuple(value["allocation"]),
+                bindings=value["bindings"], initial_digest=registration["row"]["initial"])
+        if initial != reopened or registration["initial_receipt"] != list(initial.quality_proof):
+            raise ProviderRequestError("cold quality predecessor differs from its allocated resume")
+        initial_receipt = (initial.receipt_name, initial.receipt_digest)
+    elif request.resume:
         _authenticate_resume(controller, request, initial)
+        initial_receipt = (initial.receipt_name, initial.receipt_digest)
     elif initial is not None:
         raise ProviderRequestError("initial diagnostic cannot consume a prior turn")
     selected_registry = (ProviderRegistry((request.profile,)) if request.resume
@@ -697,7 +959,8 @@ def run_brokered_provider_diagnostic(
     selected_registry.assert_installed_version(profile)
     adapter = selected_registry.require(request.executor_id)
     if quality_admission is not None:
-        command, registration = reopen_quality_native_command(controller, request, quality_admission)
+        command, registration = (quality_command if quality_command is not None else
+                                 reopen_quality_native_command(controller, request, quality_admission))
         claim = {"allocation": registration["allocation"], "row": registration["row"]}
         digest = hashlib.sha256(canonical_json(claim)).hexdigest()
         try:
@@ -724,8 +987,7 @@ def run_brokered_provider_diagnostic(
         raise ProviderRequestError("brokered diagnostic command carries environment overrides")
     admission = issue_broker_admission(
         controller, verification, request, command, broker_listener,
-        initial_receipt=(None if initial is None else
-                         (initial.receipt_name, initial.receipt_digest)),
+        initial_receipt=initial_receipt,
         quality_admission=quality_admission,
     )
     boundary = issue_native_boundary(

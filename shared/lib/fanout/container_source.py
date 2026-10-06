@@ -129,6 +129,9 @@ def _source_paths(root: Path) -> list[str]:
         for pattern in ("shared/lib/fanout/*.py", "scripts/fanout_*.py")
         for path in root.glob(pattern)
     }
+    validator = root / "components/skills/skillctl.py"
+    if validator.exists() or validator.is_symlink():
+        selected.add("components/skills/skillctl.py")
     for relative in ("shared/lib/fanout", "components/fanout-container"):
         selected.update(_owned_files(root, relative))
     required = {

@@ -35,6 +35,10 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_eval_provider.py tests/test_tuneup_fanout.py \
                 tests/test_fanout_native_boundary.py tests/test_fanout_provider_diagnostic.py \
                 tests/test_fanout_quality_predecessor_route.py \
+                tests/test_fanout_quality_predecessor.py \
+                tests/test_fanout_quality_agy_private_agent.py \
+                tests/test_fanout_quality_case.py \
+                tests/test_fanout_quality_delivery_requests.py \
                 tests/test_fanout_process.py \
                 tests/test_fanout_preparation.py \
                 tests/test_fanout_providers.py tests/test_fanout_broker.py tests/test_fanout_profiles.py \
@@ -62,6 +66,7 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_route_doctor.py \
                 tests/test_fanout_container_certify.py tests/test_fanout_container_certification.py \
                 tests/test_fanout_container_coordinator.py \
+                tests/test_fanout_container_startup_diagnostics.py \
                 tests/test_fanout_container_runtime.py \
                 tests/test_fanout_container_image.py \
                 tests/test_fanout_container_source.py tests/test_fanout_container_transfer.py \
