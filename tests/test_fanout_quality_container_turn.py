@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import threading
+import subprocess
 from contextlib import ExitStack
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -21,6 +22,7 @@ from shared.lib.fanout import container_boundary as boundary, container_coordina
 from shared.lib.fanout.artifacts import ArtifactStore, canonical_json
 from shared.lib.fanout.broker import Broker, BrokerPermit, BrokerRejected
 from shared.lib.fanout.container_broker import PermitLedger
+from shared.lib.fanout.collaboration import CollaborationCoordinator
 from shared.lib.fanout.container_runtime import ContainerLauncher
 from shared.lib.fanout.container_source import release_source_binding, runtime_source_digest
 from shared.lib.fanout.container_transfer import TransferIdentity, snapshot_manifest
@@ -84,8 +86,10 @@ def quality_container_provisioning(tmp_path, monkeypatch):
     anchor = LocalAnchorAuthority.bootstrap(tmp_path / "authority", run_root=tmp_path / "run", repo_root=repo)
     journal, owner = RunJournal.create(tmp_path / "run", inputs, anchor_store=anchor)
     controller = create_lifecycle_controller(tmp_path / "controller")
-    coordinator = SimpleNamespace(journal=journal, owner=owner, lifecycle_controller=controller,
-                                  _journal_guard=threading.RLock())
+    store = ArtifactStore(tmp_path / "allocation")
+    coordinator = CollaborationCoordinator(artifacts=store, journal=journal, owner=owner,
+        lifecycle_controller=controller, memory=_ExactMemory(),
+        provider_runner=lambda *_args, **_kwargs: pytest.fail("model dispatch"))
     scope = lifecycle._coordinator_lifecycle(coordinator)
     guest_bin = tmp_path / 'guest-bin'
     guest_bin.mkdir(mode=0o700)
@@ -124,7 +128,6 @@ def quality_container_provisioning(tmp_path, monkeypatch):
         return ProcessResult(ProcessStatus.EXIT, result.returncode, result.stdout, result.stderr)
     monkeypatch.setattr(boundary, "_run_bounded_command", physical)
     socket = first_launcher._socket_attestor(spec.socket_path)
-    store = ArtifactStore(tmp_path / "allocation")
     request = ProviderRequest("claude", b"original narrow scope fixture question", tmp_path,
         profile=profile, session_id="11111111-1111-4111-8111-111111111111", timeout=30,
         artifact_store=store, artifact_prefix="providers/claude/initial",
@@ -217,6 +220,73 @@ def quality_container_provisioning(tmp_path, monkeypatch):
         stack.close()
         store.close()
         journal.close()
+
+
+@pytest.mark.parametrize("operation", ["reservation", "exclusion"])
+def test_actual_coordinator_guard_allows_nested_owner_scope_without_unlocking_siblings(tmp_path, operation):
+    child = """
+import sys
+import threading
+from pathlib import Path
+import pytest
+sys.path.insert(0, str(Path.cwd() / "tests"))
+from test_fanout_quality_container_turn import quality_container_provisioning
+from shared.lib.fanout.collaboration import CollaborationCoordinator
+
+with pytest.MonkeyPatch.context() as monkeypatch:
+    fixture = quality_container_provisioning.__wrapped__(Path(sys.argv[1]), monkeypatch)
+    q = next(fixture)
+    try:
+        assert type(q.coordinator) is CollaborationCoordinator
+        assert q.scope.guard is q.coordinator._journal_guard
+        print("before nested owner scope", flush=True)
+        with q.scope.guard:
+            if sys.argv[2] == "reservation":
+                assert q.scope.reserve_registered(q.context, q.spec, q.ledger, q.permit, q.row["epoch"]) == q.permit_id
+                assert (q.permit_id, q.row["epoch"]) in q.scope.pending
+                q.scope.authorize()
+            else:
+                attempted, acquired = threading.Event(), threading.Event()
+                failures = []
+                def sibling():
+                    try:
+                        early = q.scope.guard.acquire(blocking=False)
+                        if early:
+                            q.scope.guard.release()
+                        assert not early, "sibling entered the held outer owner scope"
+                        attempted.set()
+                        with q.scope.guard:
+                            acquired.set()
+                    except BaseException as error:
+                        failures.append(error)
+                        attempted.set()
+                worker = threading.Thread(target=sibling, daemon=True)
+                worker.start()
+                assert attempted.wait(2)
+                assert not acquired.is_set()
+                with q.scope.guard:
+                    q.scope.authorize()
+                assert not acquired.is_set(), "inner release unlocked the outer owner scope"
+        if sys.argv[2] == "exclusion":
+            worker.join(2)
+            assert not worker.is_alive() and acquired.is_set() and not failures
+        assert (q.ledger.root / "ledger.json").read_bytes() == q.frozen_ledger
+        assert q.store.read_bytes(q.allocation) == q.frozen_allocation
+        assert q.ledger.attempt_counts(q.permit_id, q.row["epoch"]) == (0, 0)
+        assert q.ledger.request_records(q.permit_id, q.row["epoch"]) == ()
+        assert q.physical_calls == [] and q.model_calls == []
+        print("owner scope completed without dispatch", flush=True)
+    finally:
+        fixture.close()
+"""
+    try:
+        result = subprocess.run((sys.executable, "-B", "-c", child, str(tmp_path), operation),
+            cwd=SOURCE, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired as error:
+        pytest.fail(f"actual coordinator deadlocked at nested owner scope; child progress: {error.stdout!r}")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "owner scope completed without dispatch" in result.stdout
 
 
 def _import(q, tmp_path):

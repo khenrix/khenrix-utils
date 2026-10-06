@@ -1295,7 +1295,7 @@ class CollaborationCoordinator:
             raise TypeError("repository_baselines must map target IDs to repository baselines")
         self.slot_root = None if slot_root is None else Path(slot_root)
         self.dependency_scheduler = dependency_scheduler
-        self._journal_guard = threading.Lock()
+        self._journal_guard = threading.RLock()
 
     def preflight_round(
         self,
