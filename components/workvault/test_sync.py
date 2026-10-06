@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 class Source:
@@ -109,6 +110,35 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(self.sync.sync_status(self.config),
             {'schema_version': 'workvault-sync-status-v1', 'state': 'empty'})
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_actual_second_note_publisher_failure_restores_whole_requested_batch(self):
+        paths = self.paths[:2]
+        self.sync.sync_all(self.config, source=Source(paths), curator=Curator())
+        before = {path: (self.config.vault / self.sync.publication_name(
+            self.config.repository, path)).read_bytes() for path in paths}
+        human = self.config.vault / 'Human-note.md'
+        human.write_bytes(b'Keep this human note unchanged.\n')
+        publisher = self.sync.publish_curated_batch
+        replace = os.replace
+        calls = []
+
+        def actual_publisher(*args, **kwargs):
+            calls.append(kwargs['publication'])
+            return publisher(*args, **kwargs)
+
+        def second_publication_fault(source, destination, *args, **kwargs):
+            if destination == self.sync.publication_name(self.config.repository, paths[1]):
+                raise OSError('synthetic second note replacement failure')
+            return replace(source, destination, *args, **kwargs)
+
+        with patch.object(self.sync, 'publish_curated_batch', actual_publisher), \
+                patch('os.replace', side_effect=second_publication_fault):
+            result = self.sync.sync_all(self.config, source=Source(paths, '2' * 40), curator=Curator())
+        self.assertEqual(calls, [self.sync.publication_name(self.config.repository, path) for path in paths])
+        self.assertFalse(result['full_source_coverage'])
+        self.assertEqual({path: (self.config.vault / self.sync.publication_name(
+            self.config.repository, path)).read_bytes() for path in paths}, before)
+        self.assertEqual(human.read_bytes(), b'Keep this human note unchanged.\n')
 
     def test_overlap_is_rejected_before_source_access(self):
         config = self.sync.SyncConfig(self.config.repository, self.config.vault,

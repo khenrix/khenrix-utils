@@ -1,6 +1,6 @@
 """Full-tree inbound sync. Raw source and model payloads stay in this process."""
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -16,6 +16,8 @@ from curation import (_path, _reject_constant, _strings, _unique_object,
                       validate_curated_batch, validate_repository)
 from workvault import (_directory, _file, _identity, _private, _read, _root_path,
                        _unlink_owned, _write_private, publish_curated_batch, status)
+from batch import (BatchPublicationRejected, publication_batch, publication_name,
+                   publication_pending, recover_publication_batch)
 
 
 STATE = 'source-state.json'
@@ -51,11 +53,15 @@ def _config(config):
     return SyncConfig(config.repository, *paths, config.project, config.location, config.model)
 
 
-def publication_name(repository, path):
-    validate_repository(repository)
-    _path(path)
-    digest = hashlib.sha256((repository + '\n' + path).encode()).hexdigest()[:24]
-    return 'Knowledge-' + digest + '.md'
+@contextmanager
+def _read_publications(path):
+    from workvault import _publication_lock
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(_publication_lock(_root_path(path), shared=True))
+        except FileNotFoundError:
+            pass
+        yield
 
 
 def _json(data):
@@ -185,17 +191,26 @@ def sync_status(config):
     """Inspect the last pinned inventory and publications without network or writes."""
     try:
         config = _config(config)
-        try:
-            with _directory(config.state) as directory:
-                state = _load_state(directory, config.repository)
-        except FileNotFoundError:
-            state = None
-        return _status(config, state)
+        with _read_publications(config.vault):
+            try:
+                with _directory(config.state) as directory:
+                    state = _load_state(directory, config.repository)
+            except FileNotFoundError:
+                state = None
+            return _status(config, state)
     except Exception:
         raise SyncError('sync status refused') from None
 
 
 def maintain_status(config):
+    try:
+        with _read_publications(config.vault):
+            return _maintain_status(config)
+    except Exception:
+        raise SyncError('maintenance refused') from None
+
+
+def _maintain_status(config):
     """Report local publication metadata against the last observed inventory."""
     try:
         config = _config(config)
@@ -288,6 +303,7 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
             source = source if source is not None else GitHubSource()
             curator = curator if curator is not None else VertexCurator(config.project, config.location, config.model)
         with _lock(config.state) as directory:
+            recover_publication_batch(config.vault, config.snapshots)
             previous = _load_state(directory, config.repository)
             if previous is not None and _status(config, previous)['uncertain_paths']:
                 raise SyncError('uncertain provider work requires explicit inspection')
@@ -305,6 +321,7 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
             for start in range(0, len(pending), 5):
                 paths = pending[start:start + 5]
                 dispatched = False
+                publication_started = False
                 try:
                     pages = source.read_pages(snapshot, paths)
                     state['uncertain_paths'] = paths
@@ -317,22 +334,25 @@ def sync_all(config, *, source=None, curator=None, ref=None, progress=None):
                             or set(clean['discovered_paths']) != set(state['discovered_paths'])
                             or set(clean['indexed_paths']) != set(state['indexed_paths'])):
                         raise SyncError('collector coverage differs')
-                    state['uncertain_paths'] = []
                     state['provider_evidence'] = _evidence(getattr(curator, 'last_evidence', {'outcome': 'settled'}))
                     _save_state(directory, state)
-                    with _directory(config.snapshots, create=True):
-                        pass
-                    for card in clean['cards']:
-                        name = publication_name(config.repository, card['path'])
-                        single = dict(clean, requested_paths=[card['path']], cards=[card])
-                        publish_curated_batch(config.vault, config.snapshots / name[:-3],
-                                              single, publication=name)
+                    publication_started = True
+                    with publication_batch(config.vault, config.snapshots, clean):
+                        for card in clean['cards']:
+                            name = publication_name(config.repository, card['path'])
+                            single = dict(clean, requested_paths=[card['path']], cards=[card])
+                            publish_curated_batch(config.vault, config.snapshots / name[:-3],
+                                                  single, publication=name)
+                    state['uncertain_paths'] = []
+                    _save_state(directory, state)
                     if progress is not None:
                         progress({'published_count': len(paths), 'remaining_count': len(pending) - start - len(paths)})
-                except Exception:
+                except Exception as error:
                     if dispatched:
                         state['provider_evidence'] = _evidence(getattr(curator, 'last_evidence', {'outcome': 'uncertain'}))
-                        if state['provider_evidence']['outcome'] != 'uncertain':
+                        if (state['provider_evidence']['outcome'] != 'uncertain'
+                                and (not publication_started or isinstance(error, BatchPublicationRejected))
+                                and not publication_pending(config.vault)):
                             state['uncertain_paths'] = []
                     state['failed_paths'] = paths
                     _save_state(directory, state)

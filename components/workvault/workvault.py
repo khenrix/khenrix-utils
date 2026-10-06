@@ -1,5 +1,6 @@
 """Owner-operated publication of already-curated WorkVault batches on POSIX."""
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import fcntl
 import os
@@ -16,6 +17,7 @@ MANAGED = 'Knowledge.md'
 LOCK = '.workvault.lock'
 _SNAPSHOT = re.compile(r'snapshot-([0-9]{20})\.md\Z')
 _FILE_FLAGS = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+_ACTIVE_BATCH = ContextVar('workvault_batch', default=None)
 
 
 class WorkVaultError(RuntimeError):
@@ -134,7 +136,7 @@ def status(vault: Path, publication: str = MANAGED) -> dict:
         publication = validate_publication_name(publication)
         path = _root_path(vault)
         try:
-            with _directory(path) as directory:
+            with _publication_lock(path, shared=True) as directory:
                 _, checkpoint = _current(directory, publication)
         except FileNotFoundError:
             checkpoint = None
@@ -145,6 +147,41 @@ def status(vault: Path, publication: str = MANAGED) -> dict:
 
 def _identity(info):
     return info.st_dev, info.st_ino
+
+
+@contextmanager
+def _publication_lock(path, *, create=False, shared=False, recovery=False):
+    active = _ACTIVE_BATCH.get()
+    if active is not None:
+        _private(path.lstat(), directory=True)
+        _private(os.fstat(active.directory), directory=True)
+        if path != active.vault or _identity(path.lstat()) != _identity(os.fstat(active.directory)):
+            raise WorkVaultError('batch root changed')
+        yield active.directory
+        return
+    with _directory(path, create=create) as directory:
+        with ExitStack() as stack:
+            try:
+                lock = stack.enter_context(_file(directory, LOCK, os.O_RDONLY if shared else os.O_RDWR,
+                                                 create=not shared))
+            except FileNotFoundError:
+                if not shared:
+                    raise
+                if any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
+                    raise WorkVaultError('batch recovery required')
+                yield directory
+                return
+            fcntl.flock(lock, (fcntl.LOCK_SH | fcntl.LOCK_NB) if shared else fcntl.LOCK_EX)
+            try:
+                info = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
+                _private(info)
+                if _identity(info) != _identity(os.fstat(lock)):
+                    raise WorkVaultError('runtime file changed')
+                if not recovery and any(name.startswith('.workvault-batch') for name in os.listdir(directory)):
+                    raise WorkVaultError('batch recovery required')
+                yield directory
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def _unlink_owned(directory, name, identity):
@@ -196,6 +233,8 @@ def _snapshot(directory, old, found):
     if found and _read(directory, found[-1][1]) == old:
         return found
     if len(found) == 8:
+        if _ACTIVE_BATCH.get() is not None:
+            raise WorkVaultError('snapshot settlement required')
         # A prior replacement completed before its history pruning did.
         _prune_snapshots(directory, found)
         found = found[-7:]
@@ -205,6 +244,9 @@ def _snapshot(directory, old, found):
     name = f'snapshot-{sequence:020d}.md'
     identity = _write_private(directory, name, old)
     try:
+        active = _ACTIVE_BATCH.get()
+        if active is not None:
+            active.snapshot(name, identity, old)
         os.fsync(directory)
     except BaseException:
         _unlink_owned(directory, name, identity)
@@ -233,7 +275,9 @@ def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
     try:
         publication = validate_publication_name(publication)
         clean = validate_curated_batch(batch)
-        published_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        active = _ACTIVE_BATCH.get()
+        published_at = (active.published_at if active is not None else
+                        datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
         new = render_publication(clean, published_at)
         vault_path, snapshot_path = _root_path(vault), _root_path(snapshots)
         if (vault_path == snapshot_path or vault_path.is_relative_to(snapshot_path)
@@ -247,34 +291,32 @@ def publish_curated_batch(vault: Path, snapshots: Path, batch: dict,
                 _same_selection(checkpoint, clean)
         except FileNotFoundError:
             pass
-        with _directory(vault_path, create=True) as directory:
-            with _file(directory, LOCK, os.O_RDWR, create=True) as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+        with _publication_lock(vault_path, create=True) as directory:
+            if active is not None:
+                active.select(publication, snapshot_path, clean)
+            old, checkpoint = _current(directory, publication)
+            _same_selection(checkpoint, clean)
+            with _directory(snapshot_path, create=True) as snapshot_directory:
+                found = _snapshot_files(snapshot_directory)
+                if old is None and found:
+                    raise WorkVaultError('snapshots without publication')
+                if old is not None:
+                    found = _snapshot(snapshot_directory, old, found)
+                staged = '.workvault-stage-' + uuid.uuid4().hex
+                identity = _write_private(directory, staged, new)
                 try:
-                    lock_info = os.stat(LOCK, dir_fd=directory, follow_symlinks=False)
-                    _private(lock_info)
-                    if _identity(lock_info) != _identity(os.fstat(lock)):
-                        raise WorkVaultError('runtime file changed')
-                    old, checkpoint = _current(directory, publication)
-                    _same_selection(checkpoint, clean)
-                    with _directory(snapshot_path, create=True) as snapshot_directory:
-                        found = _snapshot_files(snapshot_directory)
-                        if old is None and found:
-                            raise WorkVaultError('snapshots without publication')
-                        if old is not None:
-                            found = _snapshot(snapshot_directory, old, found)
-                        staged = '.workvault-stage-' + uuid.uuid4().hex
-                        identity = _write_private(directory, staged, new)
-                        try:
-                            if _current(directory, publication)[0] != old:
-                                raise WorkVaultError('managed file changed')
-                            os.replace(staged, publication, src_dir_fd=directory, dst_dir_fd=directory)
-                            _prune_snapshots(snapshot_directory, found)
-                            os.fsync(directory)
-                        finally:
-                            _unlink_owned(directory, staged, identity)
-                    return _state(parse_publication(new))
+                    if active is not None:
+                        active.stage(publication, identity, new)
+                    if _current(directory, publication)[0] != old:
+                        raise WorkVaultError('managed file changed')
+                    if active is not None:
+                        active.check()
+                    os.replace(staged, publication, src_dir_fd=directory, dst_dir_fd=directory)
+                    if active is None:
+                        _prune_snapshots(snapshot_directory, found)
+                    os.fsync(directory)
                 finally:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    _unlink_owned(directory, staged, identity)
+            return _state(parse_publication(new))
     except Exception:
         raise WorkVaultError('publication refused; inspect status') from None

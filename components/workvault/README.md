@@ -76,15 +76,33 @@ Only validated curated notes, source metadata and content-free provider evidence
 are persisted. Links are retained as provenance without fetching linked bodies.
 
 A published page at the target commit is skipped without another model call.
-A failed batch stops the campaign and leaves already published notes intact.
+A failed batch stops the campaign and preserves that requested batch's entire
+last-good notes and their embedded checkpoints. Earlier successful batches remain
+published independently.
 Confirmed settled failures may be retried by running sync again; uncertain provider
 work fences implicit replay. Source disappearance is reported as retained removed
 notes, never automatically erased. Authentication failure is not source removal.
 
-Publication uses private storage, a cooperative lock, bounded validation and atomic
-replacement. It preserves human notes and retains seven prior successful generations
-outside the vault. A failed replacement can leave one pending snapshot until retry;
-it does not discard successful history.
+Sync stages at most five validated curated notes, backs up their exact prior bytes,
+and completes every pre-sync snapshot before replacing a note. A bounded private
+curated-only journal uses the existing vault lock to serialize publication and
+recovery. An ordinary publication failure restores the whole requested batch;
+interrupted publication is recovered by the next explicitly requested sync, before
+any source read. A recorded committed batch finishes cleanup without reverting or
+recurating it. Recovery validates owned names, identities, permissions and content;
+operator edits or ambiguous journal state refuse recovery without overwriting them.
+Uncertain provider work still fences implicit replay after recovery.
+
+Cooperative status and maintenance readers take the vault's shared lock and refuse
+an in-progress or recovery-pending batch. Individual note renames are atomic, but
+several renames are not instantly atomic: external readers that ignore the lock can
+observe a mixed generation until recovery. Human notes remain untouched and seven
+available prior generations remain outside the vault; one additional pending
+snapshot can remain after a failed replacement, without discarding prior history.
+An interruption while preparing backups, before the complete journal is durable,
+can leave an ambiguous private backup directory; sync and reports refuse it for
+operator inspection. This is bounded local recovery, not disk-failure protection or
+isolation from an unrestricted same-user process.
 
 `cli.py publish` and `cli.py status` also support already-curated JSON batches.
 They do not collect source pages or call a model.
