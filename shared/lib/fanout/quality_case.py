@@ -9,6 +9,7 @@ import os
 import pwd
 import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from .skills import SkillAdmission
 from .quality import _validate_casebook, case_prompt
 from .repo import validate_seat_workspace
 from .verification import load_answer_synthesis
+from . import errors
 
 _CATEGORY = "quality-installed-case-attachment"
 _CASEBOOK = "7e36393b56d37e9fd482adbde5169a25252be878c9f93a59b3fc64ddaf3ff535"
@@ -41,6 +43,61 @@ _FIELDS = {"schema", "case_id", "run_id", "task_id", "target_id", "condition",
     "execution_class", "inputs_digest", "allocation", "bindings", "casebook",
     "case_input", "catalog", "manifest", "policy", "manifest_digest", "policy_digest",
     "seats", "installation"}
+
+_FAILURE_TYPES = (ValueError, TypeError, AttributeError, KeyError, RuntimeError, OSError,
+    FileNotFoundError, PermissionError, TimeoutError, AssertionError, KeyboardInterrupt, SystemExit,
+    *(value for value in vars(errors).values() if type(value) is type
+      and value.__module__ == errors.__name__ and issubclass(value, BaseException)))
+
+
+def _quality_failure_causes(error):
+    """Retain locations, never exception text, locals, or foreign frame paths."""
+    causes, seen = [], set()
+    source = Path(__file__).resolve().parent
+    while error is not None and id(error) not in seen and len(causes) < 8:
+        seen.add(id(error))
+        frames, trace, visited = [], error.__traceback__, 0
+        while trace is not None and visited < 64:
+            frame = trace.tb_frame
+            name = frame.f_globals.get("__name__")
+            module = sys.modules.get(name) if type(name) is str else None
+            if (module is not None and name.startswith(__package__ + ".")
+                    and frame.f_globals is vars(module)
+                    and type(getattr(module, "__file__", None)) is str):
+                path = Path(module.__file__).resolve()
+                if (path.parent == source and path.suffix == ".py" and len(path.name) <= 64
+                        and Path(frame.f_code.co_filename).resolve() == path):
+                    frames.append({"path": path.name, "line": trace.tb_lineno})
+            trace, visited = trace.tb_next, visited + 1
+        causes.append({"type": type(error).__name__ if any(type(error) is known for known in _FAILURE_TYPES) else "other",
+            "frames": frames[-16:], "frames_truncated": trace is not None or len(frames) > 16})
+        error = error.__cause__ if error.__cause__ is not None else (
+            None if error.__suppress_context__ else error.__context__)
+    return causes, error is not None
+
+
+@contextmanager
+def _quality_container_failure(service, request, value, row):
+    stage = ["preflight"]
+    try:
+        yield stage
+    except BaseException as error:
+        try:
+            from .container_source import release_source_binding
+            causes, truncated = _quality_failure_causes(error)
+            write_evidence(service.lifecycle_controller, "quality-container-failure", {
+                "schema": "fanout-quality-container-failure-v1", "stage": stage[0],
+                **{key: getattr(request, key) for key in ("run_id", "task_id", "target_id", "seat_id")},
+                "provider": request.executor_id, "request_digest": admitted_request_digest(request),
+                "release_source_binding": release_source_binding().to_dict(),
+                "allocation": value["allocation"], "row": quality_row_identity(row),
+                "causes": causes, "causes_truncated": truncated})
+        except BaseException:
+            try:
+                BaseException.add_note(error, "Quality failure diagnostic unavailable")
+            except BaseException:
+                pass
+        raise
 
 
 def _quality_backend(value):
@@ -549,12 +606,16 @@ class QualityCaseRunner:
         permit = _quality_row_permit(row, request.session_id if request.resume else None)
         claim = {"allocation": value["allocation"][1], "row": row}
         path = service.lifecycle_controller.root / "locks" / ("quality-row-" + hashlib.sha256(canonical_json(claim)).hexdigest())
+        if backend == "container-read-only":
+            with _quality_container_failure(service, request, value, row) as stage:
+                if path.exists() or path.is_symlink():
+                    raise ProviderRequestError("quality row already consumed; no credential load or replay")
+                service.coordinator.registry.assert_installed_version(request.profile)
+                return self._container_turn(request, value, row, route, seat, initial, proof, stage)
         if path.exists() or path.is_symlink():
             raise ProviderRequestError("quality row already consumed; no credential load or replay")
         # The existing native command validator repeats all request/row checks before launch.
         service.coordinator.registry.assert_installed_version(request.profile)
-        if backend == "container-read-only":
-            return self._container_turn(request, value, row, route, seat, initial, proof)
         credential = HostCredentialSource(route.profile).load()
         return run_quality_readonly_turn(request, controller=service.lifecycle_controller,
             store=service.artifacts, authority=tuple(value["allocation"]),
@@ -566,7 +627,7 @@ class QualityCaseRunner:
             catalog=value["catalog"] if request.executor_id == "codex" else None,
             initial=initial, initial_digest=row["initial"], initial_proof=proof)
 
-    def _container_turn(self, request, value, row, route, seat, initial, proof):
+    def _container_turn(self, request, value, row, route, seat, initial, proof, stage):
         service = self._service
         service._authorize_command(service.coordinator.owner)
         current, (_, preparation, allocation, _) = self._context()
@@ -602,6 +663,7 @@ class QualityCaseRunner:
         permit_id = transport = None
         primary = None
         try:
+            stage[0] = "registration"
             # First prepare fences abandoned registrations under this same owner lock.
             with scope.guard:
                 scope.authorize()
@@ -611,10 +673,12 @@ class QualityCaseRunner:
                     initial=proof, backend_attachment=attachment)
                 context = bind_quality_turn_context(self, request, row, permit_id)
                 scope.reserve_registered(context, spec, ledger, permit, row["epoch"])
+            stage[0] = "credential"
             credential = HostCredentialSource(route.profile).load()
             def before_model_binding(*_args):
                 raise ProviderRequestError("quality provisioning cannot send a model request")
             broker = Broker(permit, credential=credential, send=before_model_binding)
+            stage[0] = "relay_start"
             if request.resume:
                 original_turn = read_evidence(controller, "quality-readonly-turn", *proof)
                 command = read_evidence(controller, "quality-container-command", *original_turn["command"])
@@ -641,15 +705,20 @@ class QualityCaseRunner:
                     quality_provisioning=QualityProvisioning(store.root, authority, value["bindings"],
                         row["role"], row["phase"], row["condition"],
                         value["catalog"] if request.executor_id == "codex" else None, attachment))
+                stage[0] = "material_stage"
                 source, name, digest = stage_input_material(service.coordinator, preparation.packet,
                     seat, request, transport.handle, quality=self)
+                stage[0] = "input_grant"
                 grant = issue_input_source_grant(controller, request, transport, admission, source, name, digest)
+                stage[0] = "input_transfer"
                 admission = replace(admission, input_receipt=transport.stage_inputs(request, grant))
+                stage[0] = "handoff"
                 transport = transport.handoff_quality_inputs(request, admission)
                 handoff = transport.handoff_evidence
                 admission = replace(admission, transport=transport, socket_attestation=transport.attest_socket(),
                     handle_evidence_name=transport.handle_evidence_name,
                     handle_evidence_digest=transport.handle_evidence_digest, quality_provisioning=None)
+            stage[0] = "quality_turn"
             return run_quality_container_readonly_turn(request, controller=controller, store=store,
                 authority=authority, admission=admission, backend_attachment=attachment,
                 handoff=handoff, original_request=original_request, bindings=value["bindings"],

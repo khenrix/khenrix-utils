@@ -39,6 +39,7 @@ FANOUT_TESTS := tests/test_fanout_baseline.py tests/test_fanout_artifacts.py \
                 tests/test_fanout_quality_container_predecessor.py \
                 tests/test_fanout_quality_agy_private_agent.py \
                 tests/test_fanout_quality_case.py \
+                tests/test_fanout_quality_failure.py \
                 tests/test_fanout_quality_delivery_requests.py \
                 tests/test_fanout_quality_container_turn.py \
                 tests/test_fanout_process.py \

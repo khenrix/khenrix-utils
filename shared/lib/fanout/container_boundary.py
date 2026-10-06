@@ -315,7 +315,8 @@ def _quality_docker_argv(argv, data):
     command = argv[len(DOCKER):]
     if command[:1] == ('exec',):
         handle = ContainerHandle(command[4] if len(command) > 4 else '', '', '', '')
-        if (argv in (quality_agy_agent_command(handle).argv,
+        if (argv in (quality_agy_settings_command(handle).argv,
+                     quality_agy_agent_command(handle).argv,
                      quality_agy_agent_command(handle, verify_only=True).argv)
                 or any(argv == _quality_cli_command(handle, provider).argv for provider in _PROVIDERS)):
             if data not in (None, b''):
@@ -2441,6 +2442,16 @@ class QualityContainerCommand:
     guest_digest: str
 
 
+def quality_agy_settings_command(handle: ContainerHandle) -> ProcessCommand:
+    """Fixed no-model Gemini key-route provision/check for the allocated guest."""
+    if (type(handle) is not ContainerHandle or type(handle.container_id) is not str
+            or _SHA.fullmatch(handle.container_id) is None):
+        raise ProviderRequestError('quality container settings operation differs')
+    return ProcessCommand((*DOCKER, 'exec', '-i', '--user', '65532:65532',
+        handle.container_id, 'python', '-c', _AGY_SETTINGS_SCRIPT, '/session', '65532'),
+        b'', timeout=30, max_output_bytes=65)
+
+
 def quality_agy_agent_command(handle: ContainerHandle, *, verify_only: bool = False) -> ProcessCommand:
     """Fixed no-model create/check operation, to be joined before any guest dispatch."""
     from .eval_provider import AGY_AGENT_TEXT
@@ -2996,6 +3007,13 @@ def run_quality_container_readonly_turn(request, *, controller, store, authority
             initial_session_id=request.session_id if request.executor_id == 'claude' and not request.resume else None)
         if request.executor_id == 'agy':
             runner = _quality_container_controls(controller, authority, attachment)
+            observed = runner(quality_agy_settings_command(transport.handle).argv, b'')
+            terminal = read_evidence(controller, 'quality-docker-terminal', *observed.quality_terminal)
+            if (terminal['status'] != ProcessStatus.EXIT.value
+                    or terminal['capture_complete'] is not True or observed.returncode != 0
+                    or observed.stdout != hashlib.sha256(_AGY_SETTINGS_BYTES).hexdigest().encode() + b'\n'
+                    or observed.stderr):
+                raise ProviderRequestError('quality container agy settings are unsafe')
             from .eval_provider import AGY_AGENT_TEXT
             for verify in (False, True):
                 observed = runner(quality_agy_agent_command(transport.handle, verify_only=verify).argv, b'')

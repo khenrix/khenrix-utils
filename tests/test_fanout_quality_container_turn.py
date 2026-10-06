@@ -74,12 +74,14 @@ def _vm_observation():
 
 
 @pytest.fixture
-def quality_container_provisioning(tmp_path, monkeypatch):
+def quality_container_provisioning(tmp_path, monkeypatch, request):
     """Real local owner authority, registry and importer; only daemon/relay I/O synthetic."""
-    profile = ProviderRegistry.default().select("claude", "read-only", "standard")
+    provider = "agy" if getattr(request, "param", None) == "agy-container" else "claude"
+    seat_id = "seat-" + provider
+    profile = ProviderRegistry.default().select(provider, "read-only", "standard")
     inputs = RunInputs(run_id="run-synthetic", compiled_plan_sha256="a" * 64,
         source_sha256="b" * 64, draft_sha256="c" * 64, compiler_sha256="d" * 64,
-        parser_sha256="e" * 64, provider_profiles={"claude": profile.digest},
+        parser_sha256="e" * 64, provider_profiles={provider: profile.digest},
         skill_manifests={"task-plan": "1" * 64}, repo_baseline_sha256="2" * 64)
     repo = tmp_path / "repository"
     repo.mkdir(mode=0o700)
@@ -93,17 +95,17 @@ def quality_container_provisioning(tmp_path, monkeypatch):
     scope = lifecycle._coordinator_lifecycle(coordinator)
     guest_bin = tmp_path / 'guest-bin'
     guest_bin.mkdir(mode=0o700)
-    cli_file = guest_bin / 'claude'
+    cli_file = guest_bin / provider
     cli_file.write_bytes(b'controlled fixture CLI bytes, never executed\n')
     cli_file.chmod(0o700)
     daemon = SharedDocker()
     from shared.lib.fanout.container_runtime import ContainerSpec, private_volume_names
-    spec = ContainerSpec('run-synthetic', 'task-plan', 'target-one', 'seat-claude', IMAGE,
-        *private_volume_names('run-synthetic', 'task-plan', 'target-one', 'seat-claude'),
-        '/run/fanout/seat-claude.sock', hashlib.sha256(cli_file.read_bytes()).hexdigest())
-    spec, first_launcher, first, _ = daemon.seat("seat-claude", "c" * 64, spec=spec)
+    spec = ContainerSpec('run-synthetic', 'task-plan', 'target-one', seat_id, IMAGE,
+        *private_volume_names('run-synthetic', 'task-plan', 'target-one', seat_id),
+        '/run/fanout/' + seat_id + '.sock', hashlib.sha256(cli_file.read_bytes()).hexdigest())
+    spec, first_launcher, first, _ = daemon.seat(seat_id, "c" * 64, spec=spec)
     ro_spec = replace(spec, workspace_readonly=True)
-    _, second_launcher, second, _ = daemon.seat("seat-claude", "9" * 64, spec=ro_spec)
+    _, second_launcher, second, _ = daemon.seat(seat_id, "9" * 64, spec=ro_spec)
     for mount in second.inspect["Mounts"]:
         if mount["Destination"] == "/workspace":
             mount["RW"] = False
@@ -113,13 +115,20 @@ def quality_container_provisioning(tmp_path, monkeypatch):
     switched = False
     model_launchers = [second_launcher]
     physical_calls = []
+    guest_session = tmp_path / 'guest-session'
+    guest_session.mkdir(mode=0o700)
     def physical(command, **_kwargs):
         nonlocal switched
         physical_calls.append(command)
         assert command.stdin == b""
         if command.argv[3:4] == ('exec',):
             import subprocess
-            result = subprocess.run((sys.executable, '-c', command.argv[-2], command.argv[-1]),
+            offset = command.argv.index('python')
+            script, *arguments = command.argv[offset + 2:]
+            if script in (boundary._AGY_SETTINGS_SCRIPT, boundary._AGY_QUALITY_AGENT_SCRIPT):
+                assert arguments[:2] == ['/session', '65532']
+                arguments[:2] = [str(guest_session), str(os.getuid())]
+            result = subprocess.run((sys.executable, '-c', script, *arguments),
                 env={'PATH': str(guest_bin)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             return ProcessResult(ProcessStatus.EXIT, result.returncode, result.stdout, result.stderr)
         if command.argv[3] == "create" and "c" * 64 in daemon.items:
@@ -128,24 +137,26 @@ def quality_container_provisioning(tmp_path, monkeypatch):
         return ProcessResult(ProcessStatus.EXIT, result.returncode, result.stdout, result.stderr)
     monkeypatch.setattr(boundary, "_run_bounded_command", physical)
     socket = first_launcher._socket_attestor(spec.socket_path)
-    request = ProviderRequest("claude", b"original narrow scope fixture question", tmp_path,
-        profile=profile, session_id="11111111-1111-4111-8111-111111111111", timeout=30,
-        artifact_store=store, artifact_prefix="providers/claude/initial",
+    request = ProviderRequest(provider, b"original narrow scope fixture question", tmp_path,
+        profile=profile, session_id="11111111-1111-4111-8111-111111111111" if provider == "claude" else None, timeout=30,
+        artifact_store=store, artifact_prefix="providers/" + provider + "/initial",
         run_id=spec.run_id, task_id=spec.task_id, target_id=spec.target_id,
         seat_id=spec.seat_id, inputs_digest=inputs.digest, context_sha256="a" * 64,
         skill_bundle_sha256="b" * 64, skill_delivery_sha256="8" * 64)
     from test_fanout_container_upstream import _route
-    route = _route('claude')
-    permit = BrokerPermit("claude", spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
+    route = _route(provider)
+    permit = BrokerPermit(provider, spec.run_id, spec.task_id, spec.target_id, spec.seat_id,
         "initial", profile.requested_model, "inert-test-placeholder", 1, 100_000, 100_000, 8192,
         inputs_digest=inputs.digest, session_id=request.session_id,
         upstream_route_digest=route.digest, upstream_origin=route.profile.origin,
-        upstream_model=profile.requested_model, upstream_path='/v1/projects/fictional-project/locations/europe-west1/publishers/anthropic/models/claude-opus-5-5:streamRawPredict')
+        upstream_model=route.profile.effective_model,
+        upstream_path=('/v1/projects/fictional-project/locations/europe-west1/publishers/google/models/gemini-3.8-flash:streamGenerateContent?alt=sse'
+            if provider == 'agy' else '/v1/projects/fictional-project/locations/europe-west1/publishers/anthropic/models/claude-opus-5-5:streamRawPredict'))
     ledger = PermitLedger(controller.root / "locks/spend", controller)
     row = {"role": "candidate-seat", "phase": "initial", "condition": "candidate", "epoch": 1,
         "permit": asdict(permit), "blocker": None, "initial": None, "profile": profile.digest,
         "catalog": None, "process_seconds": 30, "outer_seconds": 60}
-    resume_permit = replace(permit, route="resume")
+    resume_permit = replace(permit, route="resume", session_id=permit.session_id or "fixture-agy-session")
     resume_row = {**row, "phase": "resume", "epoch": 2, "permit": asdict(resume_permit),
         "initial": diagnostic.quality_row_identity(row)}
     case_input = store.write_json("quality/input.json", {"schema": "independent-scope-input-v1",
@@ -157,7 +168,7 @@ def quality_container_provisioning(tmp_path, monkeypatch):
         case_id="normal-01", run_id=spec.run_id, task_id=spec.task_id, target_id=spec.target_id,
         condition="candidate", execution_class="read-only", inputs_digest=inputs.digest,
         case_input=asdict(case_input), catalog=None,
-        seats={"claude": {"seat_id": spec.seat_id, "workspace_digest": "7" * 64,
+        seats={provider: {"seat_id": spec.seat_id, "workspace_digest": "7" * 64,
                           "profile_digest": profile.digest, "route_id": "scope-fixture"}})
     bindings = dict.fromkeys(("campaign", "casebook", "source", "projection", "profile", "inputs"), "b" * 64)
     bindings.update(source=runtime_source_digest(), profile=profile.digest, inputs=inputs.digest,
@@ -210,7 +221,7 @@ def quality_container_provisioning(tmp_path, monkeypatch):
         permit=permit, ledger=ledger, permit_id=permit_id, context=context, registration=registration,
         store=store, authority=authority, bindings=bindings, allocation=allocation,
         attachment=attachment, value=value, runner=runner, control=control, start=start,
-        sessions=sessions, physical_calls=physical_calls, backend_attachment=attachment,
+        sessions=sessions, physical_calls=physical_calls, guest_session=guest_session, backend_attachment=attachment,
         resume_row=resume_row, model_launchers=model_launchers,
         route=route, tmp_path=tmp_path, model_calls=[], frozen_ledger=frozen_ledger,
         frozen_allocation=frozen_allocation, transport=None)
@@ -234,7 +245,7 @@ from test_fanout_quality_container_turn import quality_container_provisioning
 from shared.lib.fanout.collaboration import CollaborationCoordinator
 
 with pytest.MonkeyPatch.context() as monkeypatch:
-    fixture = quality_container_provisioning.__wrapped__(Path(sys.argv[1]), monkeypatch)
+    fixture = quality_container_provisioning.__wrapped__(Path(sys.argv[1]), monkeypatch, None)
     q = next(fixture)
     try:
         assert type(q.coordinator) is CollaborationCoordinator
@@ -393,6 +404,123 @@ def _turn(q, connection_factory, *, observed_model=True, served_model=True):
         handoff=model.handoff_evidence, original_request=q.request, bindings=q.bindings,
         role=q.row["role"], phase=q.row["phase"], condition=q.row["condition"],
         route=q.route, credential="inert-test-controller")
+
+
+class _ModelReached(Exception):
+    pass
+
+
+def _agy_until_model(q, spawn):
+    _import(q, q.tmp_path)
+    model = q.transport.handoff_quality_inputs(q.request, q.admission)
+    model._process_runner = spawn
+    q.admission = replace(q.admission, transport=model, socket_attestation=model.attest_socket(),
+        handle_evidence_name=model.handle_evidence_name, handle_evidence_digest=model.handle_evidence_digest)
+    return boundary.run_quality_container_readonly_turn(q.request, controller=q.controller, store=q.store,
+        authority=q.authority, admission=q.admission, backend_attachment=q.attachment,
+        handoff=model.handoff_evidence, original_request=q.request, bindings=q.bindings,
+        role=q.row["role"], phase=q.row["phase"], condition=q.row["condition"],
+        route=q.route, credential="inert-test-controller")
+
+
+@pytest.mark.parametrize("quality_container_provisioning", ("agy-container",), indirect=True)
+def test_quality_agy_key_route_settings_exist_before_actual_turn_model_spawn(quality_container_provisioning):
+    q = quality_container_provisioning
+    def spawn(command):
+        settings = q.guest_session / '.gemini/antigravity-cli/settings.json'
+        assert settings.is_file(), 'Gemini key-route settings missing before model spawn'
+        assert settings.read_bytes() == b'{"modelProvider":"gemini"}\n'
+        assert settings.stat().st_mode & 0o777 == 0o600
+        assert settings.parent.stat().st_mode & 0o777 == 0o700
+        agent = q.guest_session / '.gemini/config/agents/eval-no-tools.md'
+        assert agent.is_file()
+        assert command.argv[0] == '/usr/local/bin/agy'
+        raise _ModelReached
+    with pytest.raises(_ModelReached):
+        _agy_until_model(q, spawn)
+    assert q.ledger.attempt_counts(q.permit_id, q.row['epoch']) == (0, 0)
+    assert q.store.read_bytes(q.allocation) == q.frozen_allocation
+
+
+@pytest.mark.parametrize("quality_container_provisioning", ("agy-container",), indirect=True)
+@pytest.mark.parametrize("unsafe", ("wrong-provider", "public-file", "symlink"))
+def test_quality_agy_unsafe_key_route_settings_refuse_before_model_spawn(quality_container_provisioning, unsafe):
+    q = quality_container_provisioning
+    directory = q.guest_session / '.gemini/antigravity-cli'
+    directory.mkdir(parents=True, mode=0o700)
+    directory.parent.chmod(0o700)
+    settings = directory / 'settings.json'
+    if unsafe == 'symlink':
+        settings.symlink_to(q.tmp_path / 'missing')
+    else:
+        settings.write_bytes(b'{"modelProvider":"other"}\n' if unsafe == 'wrong-provider' else b'{"modelProvider":"gemini"}\n')
+        settings.chmod(0o644 if unsafe == 'public-file' else 0o600)
+    with pytest.raises(ProviderRequestError, match='settings'):
+        _agy_until_model(q, lambda _: pytest.fail('unsafe settings reached model spawn'))
+    assert q.ledger.attempt_counts(q.permit_id, q.row['epoch']) == (0, 0)
+    with q.ledger._locked() as state:
+        assert state['permits'][q.permit_id]['fenced'] is True
+
+
+@pytest.mark.parametrize("quality_container_provisioning", ("agy-container",), indirect=True)
+@pytest.mark.parametrize("fault", ("settings-digest", "settings-timeout", "settings-incomplete", "agent-bytes"))
+def test_quality_agy_control_failure_preserves_no_tools_guard_before_spawn(
+        quality_container_provisioning, monkeypatch, fault):
+    q = quality_container_provisioning
+    if fault in ('settings-timeout', 'settings-incomplete'):
+        controls = boundary._quality_container_controls
+        def changed_terminal(*args, **kwargs):
+            runner = controls(*args, **kwargs)
+            def run(argv, data):
+                result = runner(argv, data)
+                if boundary._AGY_SETTINGS_SCRIPT in argv:
+                    terminal = read_evidence(q.controller, 'quality-docker-terminal', *result.quality_terminal)
+                    terminal.update(status='timeout' if fault == 'settings-timeout' else 'exit',
+                        capture_complete=fault != 'settings-incomplete', returncode=0)
+                    result.quality_terminal = write_evidence(q.controller, 'quality-docker-terminal', terminal)
+                return result
+            run.controller, run.controls = runner.controller, runner.controls
+            return run
+        monkeypatch.setattr(boundary, '_quality_container_controls', changed_terminal)
+    elif fault == 'settings-digest':
+        physical = boundary._run_bounded_command
+        def changed_digest(command, **kwargs):
+            result = physical(command, **kwargs)
+            if boundary._AGY_SETTINGS_SCRIPT in command.argv:
+                return replace(result, stdout=b'0' * 64 + b'\n')
+            return result
+        monkeypatch.setattr(boundary, '_run_bounded_command', changed_digest)
+    else:
+        directory = q.guest_session / '.gemini/config/agents'
+        directory.mkdir(parents=True, mode=0o700)
+        directory.parent.chmod(0o700)
+        directory.parent.parent.chmod(0o700)
+        (directory / 'eval-no-tools.md').write_bytes(b'foreign agent bytes\n')
+        (directory / 'eval-no-tools.md').chmod(0o600)
+    with pytest.raises(ProviderRequestError, match='settings|empty-tools agent'):
+        _agy_until_model(q, lambda _: pytest.fail('failed control reached model spawn'))
+    assert q.ledger.attempt_counts(q.permit_id, q.row['epoch']) == (0, 0)
+    assert (q.guest_session / '.gemini/antigravity-cli/settings.json').read_bytes() == b'{"modelProvider":"gemini"}\n'
+
+
+@pytest.mark.parametrize('changed', ('root', 'uid', 'user', 'script', 'input'))
+def test_quality_agy_settings_control_rejects_unadmitted_exec_grammar(changed):
+    from shared.lib.fanout.container_runtime import ContainerHandle
+    command = boundary.quality_agy_settings_command(ContainerHandle('a' * 64, '', '', ''))
+    boundary._quality_docker_argv(command.argv, b'')
+    argv, data = list(command.argv), b''
+    if changed == 'root':
+        argv[-2] = '/unrelated'
+    elif changed == 'uid':
+        argv[-1] = '0'
+    elif changed == 'user':
+        argv[6] = '0:0'
+    elif changed == 'script':
+        argv[-3] += '\nprint("unadmitted")'
+    else:
+        data = b'unadmitted input'
+    with pytest.raises(ProviderRequestError):
+        boundary._quality_docker_argv(tuple(argv), data)
 
 
 def test_quality_container_actual_registered_turn_has_cold_terminal(quality_container_provisioning, connection_factory):
